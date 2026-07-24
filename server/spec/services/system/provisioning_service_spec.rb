@@ -16,12 +16,13 @@ RSpec.describe System::ProvisioningService do
     allow(System::Providers::Registry).to receive(:for_node).and_return(adapter)
   end
 
-  def provision(operation_id: nil)
+  def provision(operation_id: nil, options: {})
     described_class.provision_instance(
       node: node,
       provider_region_id: region.id,
       provider_instance_type_id: instance_type.id,
-      operation_id: operation_id
+      operation_id: operation_id,
+      options: options
     )
   end
 
@@ -508,6 +509,136 @@ RSpec.describe System::ProvisioningService do
         .and_return({ success: false, error_code: "NotFound", error: "gone" })
 
       expect { terminate }.to change(Sdwan::Peer, :count).by(-1)
+    end
+  end
+
+  # RCP v2 (campaign 019f9250, increment p0c) — INV-1: no self-management.
+  # Nil-safe/inert by default (see System::Autonomy::SelfManagementFence) —
+  # these specs prove BOTH halves: zero behavior change while unconfigured,
+  # and a hard refusal once self_hosting_node_id names the target.
+  describe "INV-1 self-management fence" do
+    describe "#provision_instance" do
+      it "does not raise when self_hosting_node_id is unconfigured (today's default on every plane)" do
+        allow(adapter).to receive(:create_instance).and_return(success: true, cloud_instance_id: "i-1", status: "running")
+
+        expect { provision }.not_to raise_error
+      end
+
+      it "raises SelfManagementViolation before creating any instance row when the target node is self-hosting" do
+        SiteSetting.set("self_hosting_node_id", node.id)
+
+        expect { provision }
+          .to raise_error(System::Autonomy::SelfManagementFence::SelfManagementViolation, /INV-1/)
+          .and change(System::NodeInstance, :count).by(0)
+      end
+
+      it "is unaffected when a DIFFERENT node is configured as self-hosting" do
+        SiteSetting.set("self_hosting_node_id", create(:system_node, account: account).id)
+        allow(adapter).to receive(:create_instance).and_return(success: true, cloud_instance_id: "i-1", status: "running")
+
+        expect { provision }.not_to raise_error
+      end
+    end
+
+    describe "#terminate_instance" do
+      let(:instance) do
+        create(:system_node_instance, node: node, status: "starting", config: { "cloud_instance_id" => "i-123" })
+      end
+
+      before { allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter) }
+
+      it "does not raise when unconfigured" do
+        allow(adapter).to receive(:terminate_instance).and_return({ success: true })
+        expect { described_class.terminate_instance(instance: instance) }.not_to raise_error
+      end
+
+      it "raises SelfManagementViolation for an instance on the self-hosting node, before calling the provider" do
+        SiteSetting.set("self_hosting_node_id", node.id)
+        expect(adapter).not_to receive(:terminate_instance)
+
+        expect { described_class.terminate_instance(instance: instance) }
+          .to raise_error(System::Autonomy::SelfManagementFence::SelfManagementViolation, /terminate/)
+        expect(instance.reload.status).to eq("starting") # unchanged
+      end
+    end
+  end
+
+  # RCP v2 (campaign 019f9250, increment p0c) — INV-2 (no boot-time network
+  # dependency) + INV-6 (member storage = local disk). Opt-in via
+  # options[:rcp_member_provisioning] — everything above in this file
+  # (the entire default provisioning path) is unaffected by these checks.
+  describe "INV-2/INV-6 rcp_member_provisioning opt-in" do
+    let(:proxmox_connection) { instance_double("System::ProviderConnection", config: {}, provider: nil) }
+    let(:proxmox_adapter) do
+      instance_double("System::Providers::ProxmoxProvider",
+        provider_type: "proxmox", supports?: true, connection: proxmox_connection)
+    end
+
+    before do
+      allow(System::Providers::Registry).to receive(:for_node).and_return(proxmox_adapter)
+    end
+
+    it "does not check anything when the option is omitted (default path unaffected)" do
+      allow(proxmox_adapter).to receive(:create_instance).and_return(success: true, cloud_instance_id: "i-1", status: "running")
+      expect(System::Autonomy::BootPathInvariantCheck).not_to receive(:violation_for)
+
+      result = provision
+      expect(result.success?).to be(true)
+    end
+
+    it "rejects a uefi_disk provision whose connection has no cidata_transport iso opt-in" do
+      template = create(:system_node_template, account: account, config: { "boot_mode" => "uefi_disk" })
+      member_node = create(:system_node, account: account, node_template: template)
+
+      result = described_class.provision_instance(
+        node: member_node, provider_region_id: region.id, provider_instance_type_id: instance_type.id,
+        options: { rcp_member_provisioning: true, user_data: "#cloud-config\n" }
+      )
+
+      expect(result.success?).to be(false)
+      expect(result.error).to match(/NFS/)
+      expect(System::NodeInstance.where(node: member_node)).to be_empty
+    end
+
+    it "allows a uefi_disk provision once the connection opts into the ISO transport" do
+      allow(proxmox_connection).to receive(:config).and_return({ "cidata_transport" => "iso" })
+      allow(proxmox_adapter).to receive(:create_instance).and_return(success: true, cloud_instance_id: "i-1", status: "running")
+      template = create(:system_node_template, account: account, config: { "boot_mode" => "uefi_disk" })
+      member_node = create(:system_node, account: account, node_template: template)
+
+      result = described_class.provision_instance(
+        node: member_node, provider_region_id: region.id, provider_instance_type_id: instance_type.id,
+        options: { rcp_member_provisioning: true, user_data: "#cloud-config\n" }
+      )
+
+      expect(result.success?).to be(true)
+    end
+
+    it "rejects when the resolved storage cannot be verified as local (fails closed under strict mode)" do
+      allow(proxmox_connection).to receive(:config).and_return({ "default_storage" => "dsm-data" })
+      # A plain (non-verifying) double with no list_volume_types defined at
+      # all — respond_to?(:list_volume_types) is naturally false, exercising
+      # StorageLocalityCheck's "adapter doesn't support the query" branch
+      # without needing to override #respond_to? on a verified double.
+      no_query_adapter = double("adapter", provider_type: "proxmox", supports?: true, connection: proxmox_connection) # rubocop:disable RSpec/VerifiedDoubles
+      allow(System::Providers::Registry).to receive(:for_node).and_return(no_query_adapter)
+
+      result = provision(options: { rcp_member_provisioning: true })
+
+      expect(result.success?).to be(false)
+      expect(result.error).to match(/could not verify/)
+    end
+
+    it "allows provisioning once storage is confirmed local via a live list_volume_types answer" do
+      allow(proxmox_connection).to receive(:config).and_return({ "default_storage" => "dna-data" })
+      allow(proxmox_adapter).to receive(:list_volume_types).and_return([
+        { cloud_id: "dna-data", name: "dna-data", plugin_type: "zfspool", shared: false }
+      ])
+      allow(proxmox_adapter).to receive(:create_instance).and_return(success: true, cloud_instance_id: "i-1", status: "running")
+
+      result = provision(options: { rcp_member_provisioning: true })
+
+      expect(result.success?).to be(true)
     end
   end
 end

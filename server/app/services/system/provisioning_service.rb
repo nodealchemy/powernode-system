@@ -6,6 +6,13 @@ module System
   # cloud-shape hash (`success:, cloud_instance_id:, ...`) — this service
   # is the boundary that maps that into the platform-standard Result.
   class ProvisioningService
+    # RCP v2 (campaign 019f9250, increment p0c) — INV-1: no self-management.
+    # Nil-safe / inert until an operator configures self_hosting_node_id
+    # (not performed by this increment — see
+    # System::Autonomy::SelfManagementFence's doc comment for why this is a
+    # distinct concern from the existing ControlPlaneFence).
+    include ::System::Autonomy::SelfManagementFence
+
     class ProvisioningError < StandardError; end
 
     def self.provision_instance(node:, provider_region_id:, provider_instance_type_id:, operation_id: nil, options: {})
@@ -20,6 +27,10 @@ module System
 
     def provision_instance(node:, provider_region_id:, provider_instance_type_id:, operation_id: nil, options: {})
       validate_node!(node)
+      # INV-1 — refuse to provision an instance onto this deployment's own
+      # hosting node (no-op / fully inert while self_hosting_node_id is
+      # unconfigured, which is every plane today).
+      assert_not_self_managed!(node, action: "provision an instance onto")
 
       # M1 Self-Serve Hardening — gate provisioning on the active subscription's
       # plan limits. Surfaces a structured deny reason that propagates up through
@@ -47,6 +58,23 @@ module System
       # Capability gate (F4-06) — refuse before creating the instance row.
       unless provider_adapter.supports?(:instances)
         return Runtime::Result.err(error: "Provider #{provider_adapter.provider_type} does not support instance provisioning")
+      end
+
+      # RCP v2 (campaign 019f9250, increment p0c) — INV-2 (no boot-time
+      # network dependency) + INV-6 (member storage = local disk, no shared
+      # NFS root). Opt-in via options[:rcp_member_provisioning]: true —
+      # NOT a blanket check on every provision. Today's default Proxmox
+      # connection has no cidata_transport: "iso" opt-in, and existing
+      # federation spawns intentionally ride the NFS cicustom channel even
+      # in uefi_disk boot_mode (see BootPathInvariantCheck's doc comment) —
+      # blanket-rejecting could break that live, working path. Callers that
+      # ARE provisioning an actual RCP consensus member (P1-a/P1-d) opt in
+      # explicitly to get the hard guarantee; everyone else is unaffected
+      # (zero behavior change on the existing default path).
+      if options[:rcp_member_provisioning]
+        violation = rcp_member_boot_path_violation(node: node, provider_adapter: provider_adapter, region: region, options: options) ||
+                    rcp_member_storage_violation(node: node, provider_adapter: provider_adapter, region: region, options: options)
+        return Runtime::Result.err(error: violation[:detail], data: violation) if violation
       end
 
       Rails.logger.info("[ProvisioningService] Provisioning instance for node #{node.name} in #{region.name} using #{provider_adapter.provider_type}")
@@ -165,7 +193,7 @@ module System
         instance: instance, node: node, payload: { error: e.message }
       )
       Runtime::Result.err(error: e.message, data: { instance: instance }.compact)
-    rescue ArgumentError, ProvisioningError
+    rescue ArgumentError, ProvisioningError, ::System::Autonomy::SelfManagementFence::SelfManagementViolation
       raise
     rescue StandardError => e
       Rails.logger.error("[ProvisioningService] Provisioning failed: #{e.message}")
@@ -184,6 +212,10 @@ module System
 
     def terminate_instance(instance:)
       validate_instance!(instance)
+      # INV-1 — refuse to terminate this deployment's own hosting node's
+      # instance (no-op / fully inert while self_hosting_node_id is
+      # unconfigured).
+      assert_not_self_managed!(instance, action: "terminate")
 
       return Runtime::Result.err(error: "Instance has no cloud instance ID") unless instance.cloud_instance_id.present?
 
@@ -269,6 +301,67 @@ module System
       raise ArgumentError, "Node required" unless node
       raise ArgumentError, "Node must be a System::Node" unless node.is_a?(::System::Node)
       raise ProvisioningError, "Node is disabled" unless node.enabled
+    end
+
+    # RCP v2 INV-2 — non-raising violation check (see the options[:rcp_
+    # member_provisioning] gate above). Mirrors ProxmoxProvider's own
+    # boot_mode + payload resolution precedence closely enough for the
+    # common case (an explicit options[:boot_mode]/[:user_data] override
+    # takes precedence, else the node's template).
+    #
+    # provider_config is read from provider_adapter.connection — NOT
+    # region.provider — because ProxmoxProvider#cidata_iso_transport? reads
+    # ONLY the resolved ProviderConnection's own config, with no fallback to
+    # the parent Provider (unlike default_storage below, which DOES fall
+    # back — see #rcp_member_storage_violation and ProxmoxProvider#pve_
+    # credential). Reading region.provider&.config here would silently miss
+    # a connection-level cidata_transport override.
+    def rcp_member_boot_path_violation(node:, provider_adapter:, region:, options:)
+      tmpl_config = node.node_template&.config.is_a?(Hash) ? node.node_template.config : {}
+      boot_mode = (options[:boot_mode].presence || tmpl_config["boot_mode"] || tmpl_config[:boot_mode]).to_s
+      boot_mode = "cloud_init" if boot_mode.blank?
+      payload_present = options[:user_data].present? || options[:spawn_payload].present?
+
+      ::System::Autonomy::BootPathInvariantCheck.violation_for(
+        provider_type: provider_adapter.provider_type,
+        boot_mode: boot_mode,
+        provider_config: provider_adapter.respond_to?(:connection) ? provider_adapter.connection&.config : nil,
+        payload_present: payload_present,
+        node: node
+      )
+    end
+
+    # RCP v2 INV-6 — non-raising violation check. An undetermined live
+    # answer (network_backed_storage? => nil) FAILS CLOSED here: the caller
+    # explicitly opted into options[:rcp_member_provisioning], so "couldn't
+    # verify" must not silently pass as "must be fine".
+    #
+    # storage_name resolution mirrors ProxmoxProvider#pve_credential's own
+    # precedence for default_storage: an explicit per-call override, else
+    # the resolved ProviderConnection's config, else its parent Provider's
+    # config (that key DOES fall back, unlike cidata_transport above).
+    def rcp_member_storage_violation(node:, provider_adapter:, region:, options:)
+      connection = provider_adapter.respond_to?(:connection) ? provider_adapter.connection : nil
+      connection_storage = connection&.config.is_a?(Hash) ? connection.config["default_storage"] : nil
+      provider_storage = connection&.provider&.config.is_a?(Hash) ? connection.provider.config["default_storage"] : nil
+      storage_name = options[:storage].presence || connection_storage.presence || provider_storage
+      return nil if storage_name.blank?
+
+      network_backed = ::System::Autonomy::StorageLocalityCheck.network_backed_storage?(
+        provider_adapter: provider_adapter, region_code: region.name, storage_name: storage_name
+      )
+
+      if network_backed.nil?
+        return {
+          invariant: "INV-6", severity: :high, node_id: node.id, storage_name: storage_name, verified: false,
+          detail: "could not verify storage #{storage_name.inspect} is local (INV-6 strict mode " \
+                  "requires a live, confirmed answer) — refusing under strict RCP member provisioning"
+        }
+      end
+
+      ::System::Autonomy::StorageLocalityCheck.violation_for(
+        storage_name: storage_name, network_backed: network_backed, node: node
+      )
     end
 
     def validate_instance!(instance)
