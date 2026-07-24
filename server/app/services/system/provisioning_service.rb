@@ -480,6 +480,22 @@ module System
         params[:root_volume_type] = options[:root_volume_type]
       end
 
+      # Explicit placement pins. Proxmox's create_instance already reads
+      # top-level params[:vmid]/[:storage]/[:cidata_iso_storage] (see
+      # ProxmoxProvider#create_vm_instance / #create_uefi_disk_vm_instance /
+      # #stage_cidata_iso) but until now nothing threaded the caller's
+      # options hash into them — every provision silently auto-selected
+      # (cluster/nextid; first *shared* storage with the right content
+      # type), which could never land on a node-local, non-shared pool
+      # (e.g. a consensus-group member that must sit on one node's
+      # independent local storage, not a cluster-shared NFS export).
+      # Additive only: unused by every other provider adapter (aws/gcp/
+      # azure/openstack/local_qemu/mock/pro_cloud), and a no-op for any
+      # existing caller that doesn't pass these options.
+      params[:vmid] = options[:vmid] if options[:vmid].present?
+      params[:storage] = options[:storage] if options[:storage].present?
+      params[:cidata_iso_storage] = options[:cidata_iso_storage] if options[:cidata_iso_storage].present?
+
       if options[:ssh_key].present?
         params[:ssh_key] = options[:ssh_key]
       elsif node.ssh_key.present?

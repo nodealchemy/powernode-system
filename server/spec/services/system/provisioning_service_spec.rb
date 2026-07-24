@@ -252,6 +252,91 @@ RSpec.describe System::ProvisioningService do
     end
   end
 
+  # RCP campaign 019f9250, P1-a prerequisite fix — build_provider_params previously
+  # never threaded options[:vmid]/[:storage]/[:cidata_iso_storage] to the top-level
+  # params keys ProxmoxProvider#create_vm_instance / #create_uefi_disk_vm_instance /
+  # #stage_cidata_iso actually read, so a caller could never pin a specific PVE
+  # VMID or storage pool (e.g. a node-local, non-shared pool) — every provision
+  # silently auto-selected (cluster/nextid; first *shared* storage with the right
+  # content type). Verified via code + live-cluster recon that no existing caller
+  # (pool replenishment, federation spawn, MCP tools, orchestrators) ever passed
+  # these options, so the regression spec below documents that the fix is
+  # opt-in-only and leaves every pre-existing call shape unchanged.
+  describe "placement pin threading (options[:vmid]/[:storage]/[:cidata_iso_storage] -> provider params)" do
+    it "passes options[:vmid]/[:storage]/[:cidata_iso_storage] through to the provider params" do
+      allow(adapter).to receive(:create_instance)
+        .and_return(success: true, cloud_instance_id: "i-pin-1", status: "running")
+
+      described_class.provision_instance(
+        node: node,
+        provider_region_id: region.id,
+        provider_instance_type_id: instance_type.id,
+        options: { vmid: 9100, storage: "local-data", cidata_iso_storage: "local" }
+      )
+
+      expect(adapter).to have_received(:create_instance)
+        .with(hash_including(vmid: 9100, storage: "local-data", cidata_iso_storage: "local"))
+    end
+
+    it "pins independently — storage alone, without vmid or cidata_iso_storage" do
+      captured = nil
+      allow(adapter).to receive(:create_instance) do |params|
+        captured = params
+        { success: true, cloud_instance_id: "i-pin-2", status: "running" }
+      end
+
+      described_class.provision_instance(
+        node: node,
+        provider_region_id: region.id,
+        provider_instance_type_id: instance_type.id,
+        options: { storage: "local-data" }
+      )
+
+      expect(captured[:storage]).to eq("local-data")
+      expect(captured).not_to have_key(:vmid)
+      expect(captured).not_to have_key(:cidata_iso_storage)
+    end
+
+    # Regression guard: every real caller in the tree today (InstancePoolService,
+    # Federation::SpawnProvisioner, agent_fleet_mission_service, system_fleet_tool,
+    # platform_deployment_orchestrator, the internal nodes_controller, ...) never
+    # passes vmid/storage/cidata_iso_storage — this must keep resolving exactly as
+    # before (keys absent, provider adapter falls through to its own
+    # cluster/nextid + first-shared-storage discovery), not merely "falsy".
+    it "does not set vmid/storage/cidata_iso_storage keys when options omits them entirely" do
+      captured = nil
+      allow(adapter).to receive(:create_instance) do |params|
+        captured = params
+        { success: true, cloud_instance_id: "i-pin-3", status: "running" }
+      end
+
+      provision
+
+      expect(captured).not_to have_key(:vmid)
+      expect(captured).not_to have_key(:storage)
+      expect(captured).not_to have_key(:cidata_iso_storage)
+    end
+
+    it "does not set the keys when options is passed but doesn't include them" do
+      captured = nil
+      allow(adapter).to receive(:create_instance) do |params|
+        captured = params
+        { success: true, cloud_instance_id: "i-pin-4", status: "running" }
+      end
+
+      described_class.provision_instance(
+        node: node,
+        provider_region_id: region.id,
+        provider_instance_type_id: instance_type.id,
+        options: { hostname: "unrelated-option" }
+      )
+
+      expect(captured).not_to have_key(:vmid)
+      expect(captured).not_to have_key(:storage)
+      expect(captured).not_to have_key(:cidata_iso_storage)
+    end
+  end
+
   describe "fleet-event observability" do
     it "emits a system.instance_provisioned event on success" do
       allow(adapter).to receive(:create_instance)
