@@ -82,8 +82,10 @@ func (h *UpgradeBootImageHandler) Execute(ctx context.Context, task *tasks.Task)
 	// slot to the persistent default if it boots healthy — or clear it if the
 	// node rolled back. If this record can't be persisted we must NOT reboot: a
 	// healthy new boot would then find no pending state, never bless/promote the
-	// slot, and revert to the old image at the next reboot. (slot == "" on the
-	// single-slot fallback path — nothing to record.)
+	// slot, and revert to the old image at the next reboot. (The slot == ""
+	// case was the single-slot fallback path, removed 2026-07-25 — Apply now
+	// returns an error rather than "" for a node with no A/B layout, so the
+	// guard is retained only as belt-and-braces.)
 	if slot != "" {
 		st := bootslots.Load()
 		st.Pending = slot

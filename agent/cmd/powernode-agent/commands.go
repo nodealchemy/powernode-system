@@ -30,6 +30,7 @@ import (
 	agentcli "github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
 	"github.com/nodealchemy/powernode-system/agent/internal/a2a"
 	"github.com/nodealchemy/powernode-system/agent/internal/boot"
+	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
 	"github.com/nodealchemy/powernode-system/agent/internal/bootupgrade"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
@@ -1107,7 +1108,7 @@ func upgradeBootImageCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read cosign public key: %w", err)
 			}
-			if _, err := bootupgrade.Apply(cmd.Context(), bootupgrade.Deps{
+			slot, err := bootupgrade.Apply(cmd.Context(), bootupgrade.Deps{
 				Runner: mount.ExecRunner{},
 				Client: cctx.Transport,
 			}, bootupgrade.Options{
@@ -1116,8 +1117,25 @@ func upgradeBootImageCmd() *cobra.Command {
 				CosignPublicKey: string(pubKey),
 				CosignBundleB64: base64.StdEncoding.EncodeToString(bundle),
 				DownloadPath:    downloadPath,
-			}); err != nil {
+			})
+			if err != nil {
 				return err
+			}
+			// Persist the pending slot exactly as the production task handler
+			// does. Without this the post-reboot ConfirmBoot finds no upgrade in
+			// flight, never blesses the new slot, and the node silently reverts
+			// to the old image once the boot counter runs out — so a CLI-driven
+			// upgrade could never stick. Observed during RCP v2 P0-b: the slot
+			// booted healthy but stayed powernode-b+2-1.efi until the state was
+			// written by hand. As in the handler, a failure to record MUST stop
+			// us before rebooting.
+			if slot != "" {
+				st := bootslots.Load()
+				st.Pending = slot
+				st.PendingSHA = targetGitSHA
+				if serr := st.Save(); serr != nil {
+					return fmt.Errorf("persist pending slot: %w", serr)
+				}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "boot image written + cosign-verified")
 			if doReboot {
