@@ -46,18 +46,16 @@ func IsUEFI() bool {
 	return err == nil && fi.IsDir()
 }
 
-// WriteUKI locates the ESP, backs up EFI/BOOT/<filename> to <filename>.bak, and
-// atomically replaces it with the UKI at srcUKIPath. This is the single-slot
-// (increment 2) writer, kept for nodes whose ESP predates the systemd-boot A/B
-// layout; the A/B path uses WriteUKISlot. Idempotent.
-func WriteUKI(ctx context.Context, r mount.Runner, srcUKIPath, filename string) error {
-	if _, statErr := os.Stat(srcUKIPath); statErr != nil {
-		return fmt.Errorf("source UKI: %w", statErr)
-	}
-	return withMountedESP(ctx, r, func(mnt string) error {
-		return installUKI(mnt, srcUKIPath, filename)
-	})
-}
+// NOTE: the single-slot writer (WriteUKI/installUKI) was REMOVED on 2026-07-25.
+// It replaced /EFI/BOOT/<removable> — the firmware's own bootloader — with the
+// new UKI, keeping only a <filename>.bak an operator had to restore by hand.
+// Its doc claimed that was "no brick"; RCP v2 increment P0-b proved otherwise on
+// VM 9002: a broken-but-validly-signed UKI written this way produced an
+// unrecoverable panic-reboot loop (48 boots of the bad image, 24 kernel panics,
+// zero automatic recovery) because systemd-boot — and with it the boot counter,
+// the one-shot, and the default-entry fallback — had itself been overwritten.
+// A node with no A/B layout now REFUSES the upgrade (see bootupgrade.Apply)
+// instead. Do not reintroduce this without an out-of-band recovery path.
 
 // WriteUKISlot installs the UKI at srcUKIPath as /EFI/Linux/<entryName> on the
 // ESP (campaign 019f505f inc 3 A/B slots). entryBase (e.g. "powernode-b") is the
@@ -189,38 +187,6 @@ func withMountedESP(ctx context.Context, r mount.Runner, fn func(mnt string) err
 	}
 	if e := r.Run(ctx, "sync"); e != nil {
 		return fmt.Errorf("sync ESP: %w", e)
-	}
-	return nil
-}
-
-// installUKI writes srcUKIPath into <mnt>/EFI/BOOT/<filename> with a backup and
-// an atomic rename. Split out from WriteUKI so the crash-safe file logic can be
-// unit-tested against a temp dir without a real mount. The old bootloader
-// survives until the final rename, so an interrupted install leaves a bootable
-// node.
-func installUKI(mnt, srcUKIPath, filename string) error {
-	bootDir := filepath.Join(mnt, "EFI", "BOOT")
-	if e := os.MkdirAll(bootDir, 0o755); e != nil {
-		return fmt.Errorf("mkdir %s: %w", bootDir, e)
-	}
-	dst := filepath.Join(bootDir, filename)
-
-	// Back up the current bootloader (interim single-slot recovery aid — an
-	// operator can restore <filename>.bak if the new UKI fails to boot; the A/B
-	// increment replaces this with systemd-boot auto-rollback).
-	if _, e := os.Stat(dst); e == nil {
-		if e := copyFile(dst, dst+".bak"); e != nil {
-			return fmt.Errorf("backup %s: %w", dst, e)
-		}
-	}
-
-	// Stage to <filename>.new then rename over the target.
-	tmp := dst + ".new"
-	if e := copyFile(srcUKIPath, tmp); e != nil {
-		return fmt.Errorf("stage new UKI: %w", e)
-	}
-	if e := os.Rename(tmp, dst); e != nil {
-		return fmt.Errorf("install UKI: %w", e)
 	}
 	return nil
 }

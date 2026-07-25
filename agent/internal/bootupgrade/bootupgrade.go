@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
 	"github.com/nodealchemy/powernode-system/agent/internal/espwrite"
@@ -132,17 +131,24 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	//    - A/B (booted via systemd-boot): write the INACTIVE slot boot-counted
 	//      and arm it as the one-shot next boot. The active slot stays as the
 	//      rollback target; a UKI that fails to boot falls back to it.
-	//    - Fallback (older node whose ESP predates systemd-boot): the single-slot
-	//      writer so upgrades still work — no A/B, but no brick either.
-	arch := d.Arch
-	if arch == "" {
-		arch = runtime.GOARCH
-	}
+	//    - Otherwise: REFUSE. This used to fall back to the single-slot writer,
+	//      which overwrites /EFI/BOOT/<removable> — i.e. systemd-boot itself —
+	//      with the new UKI. Its comment claimed "no A/B, but no brick either";
+	//      that was empirically false. On 2026-07-25 (RCP v2 P0-b, VM 9002) a
+	//      broken-but-validly-signed UKI took this path and produced an
+	//      UNRECOVERABLE panic-reboot loop: 48 boots of the bad image, 24 kernel
+	//      panics, zero automatic recovery, fixed only by host-side offline
+	//      surgery on the stopped VM. Replacing the firmware's only bootloader
+	//      with an unverified payload leaves nothing to roll back TO, so INV-3
+	//      ("rollback lives below the payload") cannot hold. Failing closed
+	//      means such a node simply does not upgrade — a stuck node beats a
+	//      bricked one.
 	if !bootslots.BootedViaSystemdBoot() {
-		if err := espwrite.WriteUKI(ctx, d.Runner, ukiPath, espwrite.RemovableBootName(arch)); err != nil {
-			return "", fmt.Errorf("write ESP (single-slot fallback): %w", err)
-		}
-		return "", nil // no A/B slot to record
+		return "", errors.New("refusing boot-image upgrade: this node did not boot via " +
+			"systemd-boot (no LoaderInfo EFI variable), so it has no A/B slot layout and " +
+			"no below-payload rollback. The former single-slot fallback overwrote the " +
+			"firmware's own bootloader with the payload and bricked the node; it was " +
+			"removed deliberately. Reimage this node onto the A/B layout instead")
 	}
 	inactive := bootslots.Other(bootslots.Load().Active)
 	base := bootslots.EntryBase(inactive)

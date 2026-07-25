@@ -3,7 +3,6 @@ package espwrite
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
@@ -18,60 +17,11 @@ func TestRemovableBootName(t *testing.T) {
 	}
 }
 
-func TestInstallUKI_FreshWrite(t *testing.T) {
-	mnt := t.TempDir()
-	src := filepath.Join(t.TempDir(), "new.uki")
-	if err := os.WriteFile(src, []byte("NEW-UKI-BYTES"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := installUKI(mnt, src, "BOOTX64.EFI"); err != nil {
-		t.Fatalf("installUKI: %v", err)
-	}
-
-	dst := filepath.Join(mnt, "EFI", "BOOT", "BOOTX64.EFI")
-	got, err := os.ReadFile(dst)
-	if err != nil {
-		t.Fatalf("read installed: %v", err)
-	}
-	if string(got) != "NEW-UKI-BYTES" {
-		t.Errorf("installed bytes = %q", got)
-	}
-	// No prior bootloader → no backup, and the temp .new is gone.
-	if _, err := os.Stat(dst + ".bak"); !os.IsNotExist(err) {
-		t.Errorf(".bak should not exist on a fresh write")
-	}
-	if _, err := os.Stat(dst + ".new"); !os.IsNotExist(err) {
-		t.Errorf(".new should have been renamed away")
-	}
-}
-
-func TestInstallUKI_BacksUpExisting(t *testing.T) {
-	mnt := t.TempDir()
-	bootDir := filepath.Join(mnt, "EFI", "BOOT")
-	if err := os.MkdirAll(bootDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	dst := filepath.Join(bootDir, "BOOTX64.EFI")
-	if err := os.WriteFile(dst, []byte("OLD-UKI"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	src := filepath.Join(t.TempDir(), "new.uki")
-	if err := os.WriteFile(src, []byte("NEW-UKI"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := installUKI(mnt, src, "BOOTX64.EFI"); err != nil {
-		t.Fatalf("installUKI: %v", err)
-	}
-
-	if got, _ := os.ReadFile(dst); string(got) != "NEW-UKI" {
-		t.Errorf("live bootloader = %q, want NEW-UKI", got)
-	}
-	if bak, err := os.ReadFile(dst + ".bak"); err != nil || string(bak) != "OLD-UKI" {
-		t.Errorf(".bak = %q (err %v), want OLD-UKI — the prior bootloader must be recoverable", bak, err)
-	}
-}
+// The single-slot installUKI tests were removed with installUKI itself on
+// 2026-07-25 (RCP v2 P0-b): writing the UKI over /EFI/BOOT/<removable> replaced
+// systemd-boot with the payload and bricked VM 9002 unrecoverably. A node with
+// no A/B layout now refuses the upgrade — see bootupgrade.Apply and
+// bootslots.TestBootedViaSystemdBootDetectsRealLoaderInfo.
 
 func TestLocateESP_ByFatLabel(t *testing.T) {
 	r := &mount.RecorderRunner{StubOutput: map[string][]byte{
