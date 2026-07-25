@@ -113,7 +113,8 @@ errors  = []
   template.enabled = true
   template.public = false
   template.description = "Warm AI-agent dev cell: Powernode-as-OS base + Ruby runtime + local " \
-                          "Postgres + claude-tmux harness, enrolled onto the dev-fleet SDWAN overlay."
+                          "Postgres + claude-tmux harness. Reachable over the LAN; NOT bound to the " \
+                          "dev-fleet SDWAN overlay (see the sdwan_network_id note below)."
   # boot_mode: uefi_disk. dev-cell layers the same system-base +
   # base-os-ubuntu-noble pivot-boot stack as powernode-hub-pivot, but is
   # provisioned onto Proxmox via an API token — and PVE restricts the qemu
@@ -122,10 +123,26 @@ errors  = []
   # set it. The platform publishes a UEFI disk image; the cell boots that
   # image and the agent's initramfs does the module pull + switch_root from
   # there (same pivot outcome, without needing qemu `args`).
+  # NOTE (2026-07-25): sdwan_network_id is deliberately NOT written here.
+  #
+  # Binding the template to the overlay makes ProvisioningService auto-enroll an
+  # Sdwan::Peer for every cell, and InstancePool promotion gates on
+  # NodeInstance#sdwan_overlay_ready?, which requires a fresh WireGuard handshake
+  # from that peer. With no overlay hub actually running, that handshake never
+  # arrives: cells sat in "warming" forever and acquire! could never return one,
+  # so the warm-cell pool was silently dead (which is why it sat at target_size 0).
+  #
+  # This also contradicts the standing "SDWAN preferred, not required" rule — a
+  # cell on the LAN is perfectly usable, and gating usability on an overlay that
+  # does not exist trades a working workflow for an aspirational one.
+  #
+  # The Sdwan::Network above is still created, so re-enabling this is a one-line
+  # change once a hub is actually running and handshakes are observed:
+  #     "sdwan_network_id" => network.id
+  # Do not re-add it before then without also re-checking sdwan_overlay_ready?.
   template.config = (template.config || {}).merge(
-    "boot_mode" => "uefi_disk",
-    "sdwan_network_id" => network.id
-  )
+    "boot_mode" => "uefi_disk"
+  ).except("sdwan_network_id")
   template.save!
 
   desired_module_ids = []
