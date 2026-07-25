@@ -81,6 +81,18 @@ const loaderGUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 // of trusting the constant by inspection.
 var efivarsDir = "/sys/firmware/efi/efivars"
 
+// SetEfivarsDirForTest points the EFI variable store at dir and returns a
+// restore func. Exported ONLY so packages layered on BootedViaSystemdBoot (i.e.
+// bootupgrade) can test the branch that hangs off it — without a seam, Apply's
+// refusal path is untestable and a regression re-adding a bootloader-overwriting
+// fallback would pass every test in the repo. Production code must never call
+// this; nothing outside _test.go does.
+func SetEfivarsDirForTest(dir string) (restore func()) {
+	prev := efivarsDir
+	efivarsDir = dir
+	return func() { efivarsDir = prev }
+}
+
 // BootedViaSystemdBoot reports whether the CURRENT boot went through systemd-boot
 // (it exports LoaderInfo into the EFI variable store). Nodes whose ESP predates
 // the A/B layout boot the bare UKI directly from the firmware and have no such

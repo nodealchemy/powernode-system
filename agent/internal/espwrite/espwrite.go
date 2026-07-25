@@ -1,9 +1,18 @@
-// Package espwrite installs a UKI onto the EFI System Partition for in-place
-// boot-image upgrades (campaign 019f505f increment 2). It locates the ESP,
-// mounts it if needed, backs up the current removable bootloader, and atomically
-// replaces it — the old bootloader stays intact until the final rename, so a
-// crash mid-write never bricks the node (interim single-slot safety before the
-// A/B auto-rollback increment).
+// Package espwrite installs UKIs into the A/B slots on the EFI System Partition
+// for in-place boot-image upgrades (campaign 019f505f increment 3). It locates
+// the ESP, mounts it if needed, and writes /EFI/Linux/<slot> entries atomically
+// (stage to .new, then rename), so a crash mid-write leaves the previous slot
+// contents intact.
+//
+// It deliberately NEVER touches /EFI/BOOT/<removable> — the firmware's own
+// bootloader — nor the opposite slot, which is the rollback target. An earlier
+// increment-2 single-slot writer did replace the removable bootloader with the
+// payload and claimed that "never bricks the node"; on 2026-07-25 that path
+// bricked VM 9002 unrecoverably (48 boots of a dead image, 24 panics, no
+// rollback) precisely because systemd-boot, and with it the boot counter and
+// the default-entry fallback, had been overwritten. It was removed — see the
+// NOTE further down. Rollback can only live below the payload if the payload
+// never overwrites the thing implementing rollback.
 package espwrite
 
 import (

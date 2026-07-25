@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
@@ -71,7 +70,6 @@ func (h *UpgradeBootImageHandler) Execute(ctx context.Context, task *tasks.Task)
 	slot, err := bootupgrade.Apply(ctx, bootupgrade.Deps{
 		Runner: h.deps.MountRunner,
 		Client: client,
-		Arch:   runtime.GOARCH,
 	}, opts)
 	if err != nil {
 		return nil, fmt.Errorf("upgrade_boot_image: %w", err)

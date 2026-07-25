@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
 )
 
 // fakeRunner fails on cosign and records whether the ESP was ever touched, so a
@@ -110,5 +112,83 @@ func TestApply_SkipsDownloadForCachedVerifiedBytes(t *testing.T) {
 	// It reached cosign (not a "nil transport client" download error).
 	if err == nil || !strings.Contains(err.Error(), "cosign verify") {
 		t.Fatalf("cached bytes should skip download and reach cosign; got %v", err)
+	}
+}
+
+// stageVerifiedUKI writes a UKI whose sha matches its name so Apply skips the
+// download, and returns that sha.
+func stageVerifiedUKI(t *testing.T, stage string) string {
+	t.Helper()
+	body := []byte("fake-uki-bytes")
+	sum := sha256.Sum256(body)
+	sha := hex.EncodeToString(sum[:])
+	if err := os.WriteFile(filepath.Join(stage, sha+".uki"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return sha
+}
+
+func applyOpts(sha string) Options {
+	return Options{
+		TargetGitSHA:    "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		UkiSha256:       sha,
+		DownloadPath:    "/api/v1/system/node_api/boot_image/download",
+		CosignBundleB64: base64.StdEncoding.EncodeToString([]byte("bundle")),
+		CosignPublicKey: "-----BEGIN PUBLIC KEY-----\nx\n-----END PUBLIC KEY-----\n",
+	}
+}
+
+// TestApply_RefusesWhenNotBootedViaSystemdBoot covers the behavioural change made
+// on 2026-07-25. The old code fell through here to a single-slot writer that
+// replaced /EFI/BOOT/<removable> — systemd-boot itself — with the payload, which
+// bricked VM 9002 unrecoverably. Apply must now refuse, and must not touch the
+// ESP at all. Without this test a regression re-adding the fallback passes every
+// other test in the repo.
+func TestApply_RefusesWhenNotBootedViaSystemdBoot(t *testing.T) {
+	restore := bootslots.SetEfivarsDirForTest(t.TempDir()) // empty → no LoaderInfo
+	defer restore()
+
+	stage := t.TempDir()
+	sha := stageVerifiedUKI(t, stage)
+	fr := &fakeRunner{} // cosign succeeds, so we reach the A/B precondition
+
+	slot, err := Apply(context.Background(), Deps{Runner: fr, StageDir: stage}, applyOpts(sha))
+	if err == nil {
+		t.Fatal("expected Apply to refuse on a node with no A/B layout, got nil error")
+	}
+	if !strings.Contains(err.Error(), "refusing boot-image upgrade") {
+		t.Fatalf("error should explain the refusal, got: %v", err)
+	}
+	if slot != "" {
+		t.Errorf("refusal must not report a written slot, got %q", slot)
+	}
+	if fr.sawMount {
+		t.Error("refusal must not mount or write the ESP")
+	}
+}
+
+// TestApply_ProceedsPastPreconditionWhenLoaderInfoPresent is the negative control
+// for the test above: with LoaderInfo present the refusal must NOT be the failure
+// reason, proving the guard keys off the real variable rather than always
+// refusing.
+func TestApply_ProceedsPastPreconditionWhenLoaderInfoPresent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(dir, "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"),
+		[]byte("systemd-boot 255.4"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restore := bootslots.SetEfivarsDirForTest(dir)
+	defer restore()
+
+	stage := t.TempDir()
+	sha := stageVerifiedUKI(t, stage)
+	fr := &fakeRunner{}
+
+	// Fails later (no real ESP in a temp dir) — the point is only that it is no
+	// longer the no-A/B-layout refusal.
+	_, err := Apply(context.Background(), Deps{Runner: fr, StageDir: stage}, applyOpts(sha))
+	if err != nil && strings.Contains(err.Error(), "did not boot via systemd-boot") {
+		t.Fatalf("must not refuse when LoaderInfo is present, got: %v", err)
 	}
 }

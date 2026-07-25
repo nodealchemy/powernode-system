@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
@@ -63,7 +64,6 @@ type Deps struct {
 	Runner   mount.Runner
 	Client   *transport.Client
 	StageDir string // "" → DefaultStageDir
-	Arch     string // "" → runtime.GOARCH
 }
 
 // BootTries is the systemd-boot boot-counter a newly-written slot starts with.
@@ -150,7 +150,34 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 			"firmware's own bootloader with the payload and bricked the node; it was " +
 			"removed deliberately. Reimage this node onto the A/B layout instead")
 	}
-	inactive := bootslots.Other(bootslots.Load().Active)
+	active := bootslots.Load().Active
+
+	// Verify the ROLLBACK TARGET actually exists before touching anything. The
+	// active slot is read from /persist, which can be lost or reset (a documented
+	// event class) — after which Active reads "a" while the node is really running
+	// b. WriteUKISlot would then clear slot b's files, destroying the good image
+	// of record, and a failed upgrade would fall back to whatever stale UKI sits
+	// in slot a. Refusing here costs one stat and keeps a known-good rollback
+	// target as a precondition of every upgrade (INV-3).
+	activeOK, err := espwrite.SlotGoodExists(ctx, d.Runner, bootslots.EntryBase(active))
+	if err != nil {
+		return "", fmt.Errorf("check rollback target %s: %w", active, err)
+	}
+	if !activeOK {
+		return "", fmt.Errorf("refusing boot-image upgrade: rollback target slot %s has no blessed "+
+			"UKI on the ESP, so a failed upgrade would have nothing to fall back to. This usually "+
+			"means /persist slot state diverged from the ESP; reconcile before upgrading", active)
+	}
+
+	// bootctl is required for set-oneshot below. Probe it BEFORE writing the slot
+	// so a node without it fails cleanly instead of leaving a written-but-unarmed
+	// slot behind (it ships via the base-os module, not the minimal initramfs).
+	if _, lookErr := exec.LookPath("bootctl"); lookErr != nil {
+		return "", fmt.Errorf("refusing boot-image upgrade: bootctl not found, cannot arm the "+
+			"one-shot boot entry: %w", lookErr)
+	}
+
+	inactive := bootslots.Other(active)
 	base := bootslots.EntryBase(inactive)
 	entry := bootslots.EntryName(inactive, BootTries) // e.g. powernode-b+3.efi
 	if err := espwrite.WriteUKISlot(ctx, d.Runner, ukiPath, base, entry); err != nil {
@@ -184,7 +211,22 @@ func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error
 	}
 	base := bootslots.EntryBase(st.Pending)
 
-	if bootedGitSHA != "" && bootedGitSHA == st.PendingSHA {
+	// An empty booted sha means "unknown", NOT "rolled back". Treating it as a
+	// rollback is actively destructive: if the pending slot DID boot but the
+	// cmdline marker is missing or unparsed, the rollback branch below would
+	// CleanSlot() the boot file of the slot we are RUNNING FROM, then clear
+	// Pending so nothing ever retries. The node keeps running from RAM, looks
+	// healthy, and silently reverts to the old image at the next reboot — the
+	// same class of defect as the 2026-07-25 incident, where state logic
+	// diverged from boot reality. Return an error and leave Pending set so the
+	// next heartbeat tick re-evaluates once the sha is readable.
+	if bootedGitSHA == "" {
+		return fmt.Errorf("confirm boot: booted image git_sha unknown while slot %s is pending "+
+			"(refusing to treat unknown as rollback — that would delete the running slot's boot file)",
+			st.Pending)
+	}
+
+	if bootedGitSHA == st.PendingSHA {
 		// New slot booted healthy: bless it, confirm the good file exists, then
 		// promote it to default. Order matters — never set-default a name that
 		// doesn't resolve to a file (bootctl doesn't validate existence).
