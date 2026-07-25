@@ -22,7 +22,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"unicode/utf16"
 )
 
 const (
@@ -131,9 +133,19 @@ var stateMu sync.Mutex
 func Update(fn func(*State) error) error {
 	stateMu.Lock()
 	defer stateMu.Unlock()
-	s := Load()
+	before := Load()
+	s := before
 	if err := fn(&s); err != nil {
 		return err
+	}
+	// Never write when nothing changed. An unconditional Save turned every
+	// no-op confirm into a write on EVERY node on EVERY boot — including nodes
+	// that have never upgraded — so a non-writable /persist produced a permanent
+	// per-tick error on a node with no upgrade in flight at all. It also asserted
+	// {"active":"a"} onto nodes whose state was legitimately absent, manufacturing
+	// exactly the state-vs-ESP divergence SlotGoodExists exists to catch.
+	if s == before {
+		return nil
 	}
 	return s.Save()
 }
@@ -160,6 +172,42 @@ func SetStatePathForTest(path string) (restore func()) {
 	prev := statePath
 	statePath = path
 	return func() { statePath = prev }
+}
+
+// BootedEntry returns the /EFI/Linux entry name systemd-boot actually selected
+// for THIS boot, read from the LoaderEntrySelected EFI variable (UTF-16LE, after
+// a 4-byte attribute prefix). Empty when unavailable.
+//
+// This is the authoritative answer to "which slot are we running?". Inferring it
+// from a git_sha comparison cannot distinguish "rolled back" from "booted the new
+// slot but the sha is wrong/unreadable" — and those need opposite handling, since
+// one is a routine rollback and the other must never touch the ESP.
+func BootedEntry() string {
+	b, err := os.ReadFile(filepath.Join(efivarsDir, "LoaderEntrySelected-"+loaderGUID))
+	if err != nil || len(b) <= 4 {
+		return ""
+	}
+	u := make([]uint16, 0, (len(b)-4)/2)
+	for i := 4; i+1 < len(b); i += 2 {
+		u = append(u, uint16(b[i])|uint16(b[i+1])<<8)
+	}
+	return strings.TrimRight(string(utf16.Decode(u)), "\x00")
+}
+
+// BootedSlot maps BootedEntry onto "a"/"b", or "" when undeterminable. Handles
+// boot-counter suffixes (powernode-b+2-1.efi) as well as blessed names.
+func BootedSlot() string {
+	e := BootedEntry()
+	if !strings.HasPrefix(e, EntryPrefix) {
+		return ""
+	}
+	switch rest := e[len(EntryPrefix):]; {
+	case strings.HasPrefix(rest, SlotA):
+		return SlotA
+	case strings.HasPrefix(rest, SlotB):
+		return SlotB
+	}
+	return ""
 }
 
 // Load reads the slot state, defaulting to {Active: "a"} when absent/unreadable

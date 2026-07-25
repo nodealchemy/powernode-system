@@ -1100,16 +1100,6 @@ func upgradeBootImageCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// --target-git-sha became load-bearing when the pending slot started
-			// being persisted from here: ConfirmBoot compares the booted cmdline sha
-			// against it, and a typo reads as "we are not on the target" -> the
-			// upgrade is abandoned and silently reverts. Reject anything that cannot
-			// be a full git sha rather than letting a fat-finger cost a boot cycle.
-			if !isFullGitSHA(targetGitSHA) {
-				return fmt.Errorf("--target-git-sha %q is not a 40-character hex git sha; "+
-					"it must match the powernode.image_git_sha the new UKI reports, or the "+
-					"post-reboot confirm will treat the upgrade as failed", targetGitSHA)
-			}
 			bundle, err := os.ReadFile(bundleFile)
 			if err != nil {
 				return fmt.Errorf("read cosign bundle: %w", err)
@@ -1619,17 +1609,4 @@ Maps puppet --detailed-exitcodes (0/2/4/6) to CLI exit codes (0/0/9/10).`,
 
 	c.AddCommand(apply)
 	return c
-}
-
-// isFullGitSHA reports whether s is a 40-character lowercase hex git sha.
-func isFullGitSHA(s string) bool {
-	if len(s) != 40 {
-		return false
-	}
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }

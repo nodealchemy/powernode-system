@@ -47,7 +47,7 @@ func TestApply_ValidateRejectsMissingFields(t *testing.T) {
 	// A payload missing only the cosign bundle must still be rejected — we never
 	// dispatch an unverifiable image.
 	_, err := Apply(context.Background(), Deps{}, Options{
-		TargetGitSHA: "a", UkiSha256: "b", DownloadPath: "/d",
+		TargetGitSHA: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", UkiSha256: "b", DownloadPath: "/d",
 		CosignPublicKey: "key",
 	})
 	if err == nil || !strings.Contains(err.Error(), "cosign_bundle_b64") {
@@ -55,7 +55,7 @@ func TestApply_ValidateRejectsMissingFields(t *testing.T) {
 	}
 	// And missing the public key must be rejected.
 	_, err = Apply(context.Background(), Deps{}, Options{
-		TargetGitSHA: "a", UkiSha256: "b", DownloadPath: "/d",
+		TargetGitSHA: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", UkiSha256: "b", DownloadPath: "/d",
 		CosignBundleB64: "eA==",
 	})
 	if err == nil || !strings.Contains(err.Error(), "cosign_public_key") {
@@ -75,7 +75,7 @@ func TestApply_CosignFailureRefusesESPWrite(t *testing.T) {
 
 	fr := &fakeRunner{cosignErr: errors.New("certificate identity mismatch")}
 	_, err := Apply(context.Background(), Deps{Runner: fr, StageDir: stage}, Options{
-		TargetGitSHA:    "deadbeef",
+		TargetGitSHA:    "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 		UkiSha256:       sha,
 		CosignPublicKey: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----",
 		CosignBundleB64: base64.StdEncoding.EncodeToString([]byte("bundle")),
@@ -106,7 +106,7 @@ func TestApply_SkipsDownloadForCachedVerifiedBytes(t *testing.T) {
 	}
 	fr := &fakeRunner{cosignErr: errors.New("stop here")}
 	_, err := Apply(context.Background(), Deps{Runner: fr, StageDir: stage}, Options{
-		TargetGitSHA: "x", UkiSha256: sha, DownloadPath: "/d",
+		TargetGitSHA: "abcdefabcdefabcdefabcdefabcdefabcdefabcd", UkiSha256: sha, DownloadPath: "/d",
 		CosignPublicKey: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----",
 		CosignBundleB64: base64.StdEncoding.EncodeToString([]byte("b")),
 	})
@@ -218,8 +218,30 @@ func (e *espSpy) touchedESP() bool { return len(e.cmds) > 0 }
 // confirmEnv points bootslots at a temp state file and a temp efivars dir
 // containing a real LoaderInfo, i.e. "booted via systemd-boot".
 func confirmEnv(t *testing.T, st bootslots.State) *espSpy {
+	return confirmEnvWithEntry(t, st, "")
+}
+
+// utf16leVar renders an EFI variable body: 4-byte attribute prefix + UTF-16LE.
+func utf16leVar(sv string) []byte {
+	b := []byte{7, 0, 0, 0}
+	for _, r := range sv {
+		b = append(b, byte(r), byte(r>>8))
+	}
+	return b
+}
+
+// confirmEnvWithEntry additionally publishes LoaderEntrySelected, i.e. tells the
+// agent which slot systemd-boot really booted. entry "" omits it.
+func confirmEnvWithEntry(t *testing.T, st bootslots.State, entry string) *espSpy {
 	t.Helper()
 	ev := t.TempDir()
+	if entry != "" {
+		if err := os.WriteFile(
+			filepath.Join(ev, "LoaderEntrySelected-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"),
+			utf16leVar(entry), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.WriteFile(
 		filepath.Join(ev, "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"),
 		[]byte("systemd-boot 255.4"), 0o644); err != nil {
@@ -311,5 +333,71 @@ func TestConfirmBoot_PendingButNotSystemdBootErrors(t *testing.T) {
 	}
 	if st := bootslots.Load(); st.Pending != "b" {
 		t.Errorf("Pending must survive, got %+v", st)
+	}
+}
+
+// Regression guard: a node with no upgrade in flight must not be written to at
+// all. An unconditional save here turned a clean no-op into a per-tick permanent
+// error on every node whose /persist is not writable — fleet-wide, including
+// nodes that have never upgraded.
+func TestConfirmBoot_NoPendingMustNotCreateStateFile(t *testing.T) {
+	sp := filepath.Join(t.TempDir(), "boot-slot.json") // deliberately absent
+	defer bootslots.SetStatePathForTest(sp)()
+	ev := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(ev, "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"),
+		[]byte("systemd-boot 255.4"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defer bootslots.SetEfivarsDirForTest(ev)()
+
+	spy := &espSpy{}
+	if err := ConfirmBoot(context.Background(), spy, "somesha"); err != nil {
+		t.Fatalf("no pending upgrade must be a clean no-op, got %v", err)
+	}
+	if _, err := os.Stat(sp); err == nil {
+		b, _ := os.ReadFile(sp)
+		t.Fatalf("must not create the state file when nothing is pending; wrote %s", b)
+	}
+	if spy.touchedESP() {
+		t.Errorf("must not touch the ESP, ran: %v", spy.cmds)
+	}
+}
+
+// Authoritative rollback: systemd-boot reports we are on the OTHER slot. That is
+// the routine, designed outcome — clear the attempt and report success, so it
+// does not error every tick for the rest of the boot.
+func TestConfirmBoot_AuthoritativeRollbackClearsCleanly(t *testing.T) {
+	spy := confirmEnvWithEntry(t,
+		bootslots.State{Active: "a", Pending: "b", PendingSHA: "aaaa"}, "powernode-a.efi")
+
+	if err := ConfirmBoot(context.Background(), spy, "old-image-sha"); err != nil {
+		t.Fatalf("a detected rollback is routine, not an error: %v", err)
+	}
+	if spy.touchedESP() {
+		t.Errorf("rollback must not touch the ESP, ran: %v", spy.cmds)
+	}
+	if st := bootslots.Load(); st.Pending != "" || st.Active != "a" {
+		t.Errorf("rollback must clear Pending and leave Active, got %+v", st)
+	}
+}
+
+// The dangerous case the sha comparison alone could not see: we ARE running the
+// pending slot, but it reports a different sha than requested (wrong target).
+// Cleaning here would delete the running slot's only boot file — it is unblessed,
+// so no counterless copy exists.
+func TestConfirmBoot_OnPendingSlotWithWrongShaRefusesAndRetains(t *testing.T) {
+	spy := confirmEnvWithEntry(t,
+		bootslots.State{Active: "a", Pending: "b", PendingSHA: "requested-sha"}, "powernode-b+2-1.efi")
+
+	err := ConfirmBoot(context.Background(), spy, "what-actually-booted")
+	if err == nil {
+		t.Fatal("running the pending slot with a mismatched sha is unprovable — must not report success")
+	}
+	if spy.touchedESP() {
+		t.Errorf("must not touch the ESP for the slot we are running from, ran: %v", spy.cmds)
+	}
+	if st := bootslots.Load(); st.Pending != "b" {
+		t.Errorf("Pending must be retained for the next boot, got %+v", st)
 	}
 }

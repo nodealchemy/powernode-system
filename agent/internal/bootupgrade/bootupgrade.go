@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
 	"github.com/nodealchemy/powernode-system/agent/internal/espwrite"
@@ -47,6 +48,15 @@ func (o Options) validate() error {
 	switch {
 	case o.TargetGitSHA == "":
 		return errors.New("target_git_sha required")
+	case !isFullGitSHA(o.TargetGitSHA):
+		// Checked HERE, not in the CLI, because this is the shared path. The
+		// platform-dispatched handler is the unattended, fleet-wide one: a
+		// malformed target sha there silently fails the confirm on every node it
+		// reaches with nobody watching, whereas a CLI operator sees the error and
+		// retries. Validating only the attended path protected the one that needed
+		// it least. Shape is not correctness — a well-formed but WRONG sha still
+		// fails the confirm — but it removes the whole malformed class.
+		return fmt.Errorf("target_git_sha %q is not a 40-character hex git sha", o.TargetGitSHA)
 	case o.UkiSha256 == "":
 		return errors.New("uki_sha256 required")
 	case o.DownloadPath == "":
@@ -66,6 +76,14 @@ type Deps struct {
 	StageDir string // "" → DefaultStageDir
 }
 
+// bootMu serializes ALL boot-image mutation. bootslots.Update only guards the
+// state file; the ESP is the other shared resource, and Apply (task-lease
+// goroutine) writes slot files while ConfirmBoot (heartbeat goroutine) renames
+// and stats them. Unguarded, Apply's removeSlotFiles can delete the very file
+// ConfirmBoot just blessed — leaving `bootctl set-default` pointing at an entry
+// that no longer exists. Both hold this for their whole body.
+var bootMu sync.Mutex
+
 // BootTries is the systemd-boot boot-counter a newly-written slot starts with.
 // The upgrade also `bootctl set-oneshot`s the new slot, so in practice the new
 // UKI gets exactly ONE forced attempt: if that boot doesn't reach a healthy
@@ -83,6 +101,8 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	if err := o.validate(); err != nil {
 		return "", err
 	}
+	bootMu.Lock()
+	defer bootMu.Unlock()
 	stage := d.StageDir
 	if stage == "" {
 		stage = DefaultStageDir
@@ -210,13 +230,19 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 // no-op. Returns an error (leaving Pending set for a retry) if any step fails, so
 // a healthy upgrade is never left un-promoted while state claims success.
 func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error {
-	// The whole load-decide-save cycle runs under bootslots.Update: the agent's
-	// heartbeat goroutine (this function) and its task-lease goroutine (the
-	// upgrade handler) both read-modify-write this file, and a lost update there
-	// can delete a freshly-written slot and strand the node with no retry.
+	// Cheap pre-check OUTSIDE any write path: the overwhelmingly common case is
+	// "no upgrade in flight", and that must touch nothing at all — no lock, no
+	// state file creation, no ESP access.
+	if bootslots.Load().Pending == "" {
+		return nil
+	}
+
+	bootMu.Lock()
+	defer bootMu.Unlock()
+
 	return bootslots.Update(func(st *bootslots.State) error {
 		if st.Pending == "" {
-			return nil // no upgrade in flight this boot
+			return nil // raced with another confirm; nothing to do
 		}
 
 		// A slot is pending, so we MUST reach a verdict. Returning nil here would
@@ -251,6 +277,28 @@ func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error
 				st.Pending)
 		}
 
+		// Which slot actually booted is answered by systemd-boot itself, not
+		// inferred. A sha comparison alone cannot separate "sd-boot rolled us
+		// back" (routine, must clear cleanly) from "we ARE on the pending slot but
+		// the sha is wrong or unreadable" (must never touch the ESP, must not
+		// report success) — and treating the second as the first is what deletes a
+		// running node's only boot file.
+		if booted := bootslots.BootedSlot(); booted != "" && booted != st.Pending {
+			// Genuinely running the other slot: sd-boot fell back. Ordinary,
+			// expected rollback — clear the attempt and report success so this does
+			// not spam an error every tick for the rest of the boot.
+			st.Pending = ""
+			st.PendingSHA = ""
+			return nil
+		} else if booted == st.Pending && bootedGitSHA != st.PendingSHA {
+			// On the pending slot, but it does not report the sha we asked for
+			// (wrong target, or an unreadable marker). Unprovable => do not latch
+			// success, do not touch the ESP, keep Pending for the next boot.
+			return fmt.Errorf("confirm boot: running slot %s but its image reports git_sha %q, "+
+				"not the requested %q — refusing to bless or to clean (the running slot's only "+
+				"boot file is unblessed); check the target sha", st.Pending, bootedGitSHA, st.PendingSHA)
+		}
+
 		if bootedGitSHA == st.PendingSHA {
 			// New slot booted healthy: bless it, confirm the good file exists, then
 			// promote it to default. Order matters — never set-default a name that
@@ -270,14 +318,11 @@ func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error
 			}
 			st.Active = st.Pending
 		}
-		// MISMATCH: we are NOT on the target. Most likely sd-boot rolled us back to
-		// the good slot — but we cannot prove it, and the destructive reading is
-		// unrecoverable. If the mismatch instead came from a wrong/typo'd target sha
-		// while the pending slot is what actually booted, cleaning that slot would
-		// delete the running slot's only boot file (it is unblessed, so it has no
-		// counterless copy). So: clear Pending and leave the ESP ALONE. Stale
-		// counter files are harmless — WriteUKISlot removes the entire slot family
-		// before every write — whereas a wrong deletion is not recoverable in place.
+		// Reached when the authoritative slot signal is unavailable (no
+		// LoaderEntrySelected) and the sha did not match. Clear the attempt but
+		// leave the ESP ALONE: stale counter files are harmless (WriteUKISlot
+		// clears the whole slot family before every write) whereas deleting a slot
+		// we might be running from is not recoverable in place.
 		st.Pending = ""
 		st.PendingSHA = ""
 		return nil
@@ -330,4 +375,17 @@ func fileHasSHA(path, want string) bool {
 		return false
 	}
 	return hex.EncodeToString(h.Sum(nil)) == want
+}
+
+// isFullGitSHA reports whether s is a 40-character lowercase hex git sha.
+func isFullGitSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
