@@ -1,6 +1,7 @@
 package bootslots
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -59,5 +60,48 @@ func TestLoadDefaultAndRoundTrip(t *testing.T) {
 	}
 	if s := LoadFrom(path); s.Active != SlotA {
 		t.Fatalf("invalid active should default to a, got %q", s.Active)
+	}
+}
+
+// specLoaderGUID is the systemd-boot vendor GUID transcribed independently from
+// the systemd Boot Loader Interface specification (and confirmed against a live
+// node's /sys/firmware/efi/efivars). It is deliberately duplicated here rather
+// than referencing loaderGUID, so that a typo in the production constant fails
+// this test instead of silently agreeing with itself.
+const specLoaderGUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+
+func TestLoaderGUIDMatchesSpec(t *testing.T) {
+	if loaderGUID != specLoaderGUID {
+		t.Fatalf("loaderGUID = %q, want %q.\n"+
+			"A wrong GUID makes BootedViaSystemdBoot() false on EVERY node, which "+
+			"silently disables A/B boot-counter rollback and routes upgrades into "+
+			"the single-slot bootloader-overwrite path (bricked VM 9002, 2026-07-25).",
+			loaderGUID, specLoaderGUID)
+	}
+}
+
+// TestBootedViaSystemdBootDetectsRealLoaderInfo is the regression guard that
+// would have caught the 2026-07-25 brick: it creates the efivar under the name
+// systemd-boot really uses and asserts detection succeeds. Asserting the
+// constant alone is not enough — the filename construction must match too.
+func TestBootedViaSystemdBootDetectsRealLoaderInfo(t *testing.T) {
+	dir := t.TempDir()
+	orig := efivarsDir
+	efivarsDir = dir
+	t.Cleanup(func() { efivarsDir = orig })
+
+	if BootedViaSystemdBoot() {
+		t.Fatal("BootedViaSystemdBoot() = true with an empty efivars dir, want false")
+	}
+
+	// Exactly how systemd-boot names it: LoaderInfo-<vendor GUID>.
+	name := filepath.Join(dir, "LoaderInfo-"+specLoaderGUID)
+	if err := os.WriteFile(name, []byte("systemd-boot 255.4"), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+
+	if !BootedViaSystemdBoot() {
+		t.Fatalf("BootedViaSystemdBoot() = false although %s exists — "+
+			"detection does not match the real systemd-boot variable name", name)
 	}
 }

@@ -66,16 +66,28 @@ func EntryName(slot string, tries int) string {
 	return EntryBase(slot) + ".efi"
 }
 
-// loaderGUID is the systemd-boot Boot Loader Interface vendor GUID.
-const loaderGUID = "4a67b082-0246-4e07-9e78-2c9f24a68a41"
+// loaderGUID is the systemd-boot Boot Loader Interface vendor GUID, as defined
+// by the systemd Boot Loader Interface specification. It MUST match the GUID
+// systemd-boot actually stamps onto its EFI variables — a wrong value makes
+// BootedViaSystemdBoot() return false on every node, which silently disables
+// the entire A/B boot-counter rollback path and routes every upgrade into the
+// single-slot bootloader-overwrite fallback. TestLoaderGUIDMatchesSpec and
+// TestBootedViaSystemdBootDetectsRealLoaderInfo pin this; do not "simplify"
+// them away.
+const loaderGUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+
+// efivarsDir is the EFI variable store mount point. A variable (not a const) so
+// tests can point it at a temp dir and exercise the detection for real instead
+// of trusting the constant by inspection.
+var efivarsDir = "/sys/firmware/efi/efivars"
 
 // BootedViaSystemdBoot reports whether the CURRENT boot went through systemd-boot
 // (it exports LoaderInfo into the EFI variable store). Nodes whose ESP predates
 // the A/B layout boot the bare UKI directly from the firmware and have no such
-// variable — the upgrade path falls back to the single-slot writer for them
-// rather than writing /EFI/Linux slots the firmware will never read.
+// variable — the upgrade path refuses to write for them rather than writing
+// /EFI/Linux slots the firmware will never read.
 func BootedViaSystemdBoot() bool {
-	_, err := os.Stat("/sys/firmware/efi/efivars/LoaderInfo-" + loaderGUID)
+	_, err := os.Stat(filepath.Join(efivarsDir, "LoaderInfo-"+loaderGUID))
 	return err == nil
 }
 
