@@ -130,6 +130,16 @@ var stateMu sync.Mutex
 // perform slow work (ESP mounts) — the critical sections here are short-lived
 // relative to an upgrade, and correctness beats contention on a once-per-boot
 // path. Returning an error from fn aborts WITHOUT saving.
+//
+// INVARIANT: never call into bootupgrade from an fn callback. ConfirmBoot takes
+// bootupgrade's bootMu and then stateMu via this function; doing the reverse
+// would invert the lock order. (bootslots cannot import bootupgrade, so the only
+// way to create that cycle is from a caller in handlers/ or cmd/.)
+//
+// A skipped write also means a corrupt on-disk state file is left in place rather
+// than silently "repaired" — deliberate: Load already returns the safe {Active:"a"}
+// default, and rewriting it would assert that guess onto a node that may genuinely
+// be running slot b.
 func Update(fn func(*State) error) error {
 	stateMu.Lock()
 	defer stateMu.Unlock()
@@ -201,11 +211,19 @@ func BootedSlot() string {
 	if !strings.HasPrefix(e, EntryPrefix) {
 		return ""
 	}
-	switch rest := e[len(EntryPrefix):]; {
-	case strings.HasPrefix(rest, SlotA):
-		return SlotA
-	case strings.HasPrefix(rest, SlotB):
-		return SlotB
+	// Require a delimiter after the slot letter so only OUR entries match.
+	// A bare prefix test would map powernode-backup.efi to slot "b" and
+	// powernode-alt.efi to slot "a" — and the in-place ESP migration runbook has
+	// operators hand-copy a UKI under a filename they choose, which feeds
+	// straight into this matcher.
+	rest := e[len(EntryPrefix):]
+	for _, slot := range []string{SlotA, SlotB} {
+		if strings.HasPrefix(rest, slot) {
+			switch tail := rest[len(slot):]; {
+			case strings.HasPrefix(tail, "."), strings.HasPrefix(tail, "+"):
+				return slot
+			}
+		}
 	}
 	return ""
 }

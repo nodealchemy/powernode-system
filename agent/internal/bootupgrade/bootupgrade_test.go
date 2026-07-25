@@ -227,7 +227,7 @@ func utf16leVar(sv string) []byte {
 	for _, r := range sv {
 		b = append(b, byte(r), byte(r>>8))
 	}
-	return b
+	return append(b, 0, 0) // sd-boot NUL-terminates; exercises the TrimRight
 }
 
 // confirmEnvWithEntry additionally publishes LoaderEntrySelected, i.e. tells the
@@ -399,5 +399,48 @@ func TestConfirmBoot_OnPendingSlotWithWrongShaRefusesAndRetains(t *testing.T) {
 	}
 	if st := bootslots.Load(); st.Pending != "b" {
 		t.Errorf("Pending must be retained for the next boot, got %+v", st)
+	}
+}
+
+// The case the authoritative signal exists for: a node that genuinely rolled back
+// to an image carrying NO git_sha marker. LoaderEntrySelected proves the rollback,
+// so this must clear cleanly. Checking the sha first would error here on every
+// heartbeat tick for the rest of the boot, since the sha cannot change within a
+// boot — the same permanent-per-tick failure the mismatch path refuses to inflict.
+func TestConfirmBoot_RollbackToUnmarkedImageClearsCleanly(t *testing.T) {
+	spy := confirmEnvWithEntry(t,
+		bootslots.State{Active: "a", Pending: "b", PendingSHA: "requested-sha"}, "powernode-a.efi")
+
+	if err := ConfirmBoot(context.Background(), spy, ""); err != nil {
+		t.Fatalf("rollback is provable from LoaderEntrySelected even with no sha marker: %v", err)
+	}
+	if spy.touchedESP() {
+		t.Errorf("rollback must not touch the ESP, ran: %v", spy.cmds)
+	}
+	if st := bootslots.Load(); st.Pending != "" {
+		t.Errorf("a proven rollback must clear Pending, got %+v", st)
+	}
+}
+
+// Guard for the loose-prefix bug: only our own slot entries may match.
+func TestBootedSlotIgnoresForeignPowernodeEntries(t *testing.T) {
+	for _, c := range []struct{ entry, want string }{
+		{"powernode-a.efi", "a"},
+		{"powernode-b+2-1.efi", "b"},
+		{"powernode-backup.efi", ""}, // must NOT read as slot b
+		{"powernode-alt.efi", ""},    // must NOT read as slot a
+		{"ubuntu.efi", ""},
+	} {
+		ev := t.TempDir()
+		if err := os.WriteFile(
+			filepath.Join(ev, "LoaderEntrySelected-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"),
+			utf16leVar(c.entry), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		restore := bootslots.SetEfivarsDirForTest(ev)
+		if got := bootslots.BootedSlot(); got != c.want {
+			t.Errorf("BootedSlot(%q) = %q, want %q", c.entry, got, c.want)
+		}
+		restore()
 	}
 }

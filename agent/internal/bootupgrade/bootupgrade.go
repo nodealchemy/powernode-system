@@ -101,8 +101,6 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	if err := o.validate(); err != nil {
 		return "", err
 	}
-	bootMu.Lock()
-	defer bootMu.Unlock()
 	stage := d.StageDir
 	if stage == "" {
 		stage = DefaultStageDir
@@ -180,6 +178,15 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 			"see docs/runbooks/ops-hub-boot-image-reprovision.md (offline ESP copy from the " +
 			"hypervisor) — do NOT reprovision a node whose /persist must survive")
 	}
+	// Take the boot lock ONLY now. Everything above (download, sha check, cosign
+	// verify) touches just the staging dir, which ConfirmBoot never reads. Holding
+	// it across a full UKI pull would stall the heartbeat goroutine — ConfirmBoot
+	// runs synchronously in PostSend alongside authorized_keys, SDWAN and docker
+	// reconcile — and make the platform see the node as silent, on exactly the
+	// nodes that have an upgrade in flight.
+	bootMu.Lock()
+	defer bootMu.Unlock()
+
 	active := bootslots.Load().Active
 
 	// Verify the ROLLBACK TARGET actually exists before touching anything. The
@@ -260,43 +267,38 @@ func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error
 
 		base := bootslots.EntryBase(st.Pending)
 
-		// UNKNOWN IS NOT ROLLBACK. If the pending slot DID boot but the cmdline
-		// marker is missing or unparsed, treating that as a rollback would delete
-		// the boot file of the slot we are RUNNING FROM and clear Pending so
-		// nothing retries — the node keeps running from RAM, looks healthy, and
-		// silently reverts at the next reboot. Same class of defect as the
-		// 2026-07-25 incident: state logic diverging from boot reality.
-		//
-		// Note the sha is captured ONCE per boot by the caller (it cannot change
-		// within a boot), so this condition will NOT clear on a later tick — it
-		// persists until the next reboot, deliberately, because every alternative
-		// risks destroying the running slot.
-		if bootedGitSHA == "" {
-			return fmt.Errorf("confirm boot: booted image git_sha unknown while slot %s is pending "+
-				"(refusing to treat unknown as rollback — that would delete the running slot's boot file)",
-				st.Pending)
-		}
+		// Ask systemd-boot which slot actually booted BEFORE reasoning about the
+		// sha. LoaderEntrySelected settles the question outright, and it must be
+		// consulted first: a node that genuinely rolled back to an image carrying
+		// no powernode.image_git_sha marker (netboot, rpi4, pre-campaign images)
+		// is fully provable here, yet checking the sha first would error on it
+		// every heartbeat tick for the rest of the boot — the sha cannot change
+		// within a boot. That is the same permanent-per-tick error this code
+		// deliberately refuses to inflict on the mismatch path.
+		booted := bootslots.BootedSlot() // "" when undeterminable
 
-		// Which slot actually booted is answered by systemd-boot itself, not
-		// inferred. A sha comparison alone cannot separate "sd-boot rolled us
-		// back" (routine, must clear cleanly) from "we ARE on the pending slot but
-		// the sha is wrong or unreadable" (must never touch the ESP, must not
-		// report success) — and treating the second as the first is what deletes a
-		// running node's only boot file.
-		if booted := bootslots.BootedSlot(); booted != "" && booted != st.Pending {
-			// Genuinely running the other slot: sd-boot fell back. Ordinary,
-			// expected rollback — clear the attempt and report success so this does
-			// not spam an error every tick for the rest of the boot.
+		if booted != "" && booted != st.Pending {
+			// Provably running the OTHER slot: sd-boot fell back. Routine, expected
+			// rollback — clear the attempt and report success, regardless of whether
+			// the booted image reports a sha at all.
 			st.Pending = ""
 			st.PendingSHA = ""
 			return nil
-		} else if booted == st.Pending && bootedGitSHA != st.PendingSHA {
-			// On the pending slot, but it does not report the sha we asked for
-			// (wrong target, or an unreadable marker). Unprovable => do not latch
-			// success, do not touch the ESP, keep Pending for the next boot.
+		}
+
+		// Past here we are either ON the pending slot or cannot tell — both
+		// unprovable. Never latch success and never touch the ESP: the pending
+		// slot is unblessed, so its counter-suffixed file is its ONLY boot file.
+		if bootedGitSHA == "" {
+			return fmt.Errorf("confirm boot: slot %s is pending and the booted image reports no "+
+				"git_sha, and systemd-boot does not identify a different slot — cannot prove the "+
+				"upgrade succeeded or rolled back, so refusing to record either", st.Pending)
+		}
+
+		if booted == st.Pending && bootedGitSHA != st.PendingSHA {
 			return fmt.Errorf("confirm boot: running slot %s but its image reports git_sha %q, "+
-				"not the requested %q — refusing to bless or to clean (the running slot's only "+
-				"boot file is unblessed); check the target sha", st.Pending, bootedGitSHA, st.PendingSHA)
+				"not the requested %q — refusing to bless or to clean; check the target sha",
+				st.Pending, bootedGitSHA, st.PendingSHA)
 		}
 
 		if bootedGitSHA == st.PendingSHA {
