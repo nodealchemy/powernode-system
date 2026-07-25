@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
+	"github.com/nodealchemy/powernode-system/agent/internal/espwrite"
 )
 
 // fakeRunner fails on cosign and records whether the ESP was ever touched, so a
@@ -190,5 +191,125 @@ func TestApply_ProceedsPastPreconditionWhenLoaderInfoPresent(t *testing.T) {
 	_, err := Apply(context.Background(), Deps{Runner: fr, StageDir: stage}, applyOpts(sha))
 	if err != nil && strings.Contains(err.Error(), "did not boot via systemd-boot") {
 		t.Fatalf("must not refuse when LoaderInfo is present, got: %v", err)
+	}
+}
+
+// --- ConfirmBoot -------------------------------------------------------------
+//
+// These cover the branch that deleted a running node's boot file. The rule they
+// enforce: ConfirmBoot may only remove a slot's files when it is CERTAIN the slot
+// did not boot. Anything less than certain must leave the ESP alone.
+
+// espSpy records EVERY command attempted. Recording only "mount" is not enough:
+// ESP work begins with a blkid/lsblk probe via Output, and a test that watches
+// only mount can pass because the code failed earlier for an unrelated reason.
+type espSpy struct{ cmds []string }
+
+func (e *espSpy) Run(_ context.Context, name string, _ ...string) error {
+	e.cmds = append(e.cmds, name)
+	return nil
+}
+func (e *espSpy) Output(_ context.Context, name string, _ ...string) ([]byte, error) {
+	e.cmds = append(e.cmds, name)
+	return nil, errors.New("no device")
+}
+func (e *espSpy) touchedESP() bool { return len(e.cmds) > 0 }
+
+// confirmEnv points bootslots at a temp state file and a temp efivars dir
+// containing a real LoaderInfo, i.e. "booted via systemd-boot".
+func confirmEnv(t *testing.T, st bootslots.State) *espSpy {
+	t.Helper()
+	ev := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(ev, "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"),
+		[]byte("systemd-boot 255.4"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restoreEv := bootslots.SetEfivarsDirForTest(ev)
+	t.Cleanup(restoreEv)
+
+	// Force the UEFI marker true, otherwise ESP helpers short-circuit in IsUEFI
+	// and "we never touched the ESP" would pass for the wrong reason on a BIOS host.
+	restoreEfi := espwrite.SetEFIDirForTest(t.TempDir())
+	t.Cleanup(restoreEfi)
+
+	sp := filepath.Join(t.TempDir(), "boot-slot.json")
+	restoreSp := bootslots.SetStatePathForTest(sp)
+	t.Cleanup(restoreSp)
+
+	if err := st.SaveTo(sp); err != nil {
+		t.Fatal(err)
+	}
+	return &espSpy{}
+}
+
+func TestConfirmBoot_NoPendingIsNoOp(t *testing.T) {
+	spy := confirmEnv(t, bootslots.State{Active: "a"})
+	if err := ConfirmBoot(context.Background(), spy, "abc"); err != nil {
+		t.Fatalf("no pending upgrade should be a clean no-op, got %v", err)
+	}
+	if spy.touchedESP() {
+		t.Errorf("no-op must not touch the ESP, ran: %v", spy.cmds)
+	}
+}
+
+// The regression guard for the 2026-07-25 defect class: an unknown booted sha is
+// NOT evidence of rollback. Erroring keeps Pending set; cleaning would delete the
+// boot file of the slot we may well be running from.
+func TestConfirmBoot_EmptyShaErrorsAndPreservesPendingAndESP(t *testing.T) {
+	spy := confirmEnv(t, bootslots.State{Active: "a", Pending: "b", PendingSHA: "deadbeef"})
+
+	err := ConfirmBoot(context.Background(), spy, "")
+	if err == nil {
+		t.Fatal("empty booted sha must error, not be treated as rollback")
+	}
+	if spy.touchedESP() {
+		t.Errorf("must not touch the ESP when the booted sha is unknown, ran: %v", spy.cmds)
+	}
+	if st := bootslots.Load(); st.Pending != "b" || st.PendingSHA != "deadbeef" {
+		t.Fatalf("Pending must survive so a later boot can resolve it, got %+v", st)
+	}
+}
+
+// A mismatched (non-empty) sha is the far more likely rollback, but still not
+// provable — so Pending clears while the ESP is left untouched. Cleaning here is
+// what would delete a running-but-unblessed slot's only boot file.
+func TestConfirmBoot_MismatchClearsPendingWithoutTouchingESP(t *testing.T) {
+	spy := confirmEnv(t, bootslots.State{Active: "a", Pending: "b", PendingSHA: "target-sha"})
+
+	if err := ConfirmBoot(context.Background(), spy, "some-other-sha"); err != nil {
+		t.Fatalf("a mismatch is an ordinary rollback, not an error: %v", err)
+	}
+	if spy.touchedESP() {
+		t.Errorf("mismatch must NOT clean the slot — it may be the slot we are running from; ran: %v", spy.cmds)
+	}
+	st := bootslots.Load()
+	if st.Pending != "" || st.PendingSHA != "" {
+		t.Errorf("Pending must clear after a mismatch, got %+v", st)
+	}
+	if st.Active != "a" {
+		t.Errorf("Active must not advance on a mismatch, got %q", st.Active)
+	}
+}
+
+// With a slot pending but the boot method undeterminable, ConfirmBoot must NOT
+// report success — the caller latches "blessed" on nil and would never retry,
+// silently abandoning a healthy upgrade.
+func TestConfirmBoot_PendingButNotSystemdBootErrors(t *testing.T) {
+	sp := filepath.Join(t.TempDir(), "boot-slot.json")
+	restoreSp := bootslots.SetStatePathForTest(sp)
+	defer restoreSp()
+	if err := (bootslots.State{Active: "a", Pending: "b", PendingSHA: "x"}).SaveTo(sp); err != nil {
+		t.Fatal(err)
+	}
+	restoreEv := bootslots.SetEfivarsDirForTest(t.TempDir()) // empty: no LoaderInfo
+	defer restoreEv()
+
+	spy := &espSpy{}
+	if err := ConfirmBoot(context.Background(), spy, "x"); err == nil {
+		t.Fatal("a pending slot with an undeterminable boot method must error, not report success")
+	}
+	if st := bootslots.Load(); st.Pending != "b" {
+		t.Errorf("Pending must survive, got %+v", st)
 	}
 }

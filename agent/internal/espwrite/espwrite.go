@@ -35,11 +35,26 @@ const ESPFatLabel = "BOOT"
 // fallback discovery when the FAT-label lookup misses.
 const espPartType = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 
+// efiFirmwareDir is the sysfs marker for "this node booted via UEFI". A variable
+// so tests can control it — without that, any test asserting "we did NOT touch
+// the ESP" silently passes on a BIOS host for the wrong reason (IsUEFI short-
+// circuits before the runner is ever used), which makes the assertion worthless
+// exactly where it matters most.
+var efiFirmwareDir = "/sys/firmware/efi"
+
+// SetEFIDirForTest points the UEFI marker at dir and returns a restore func.
+// Test-only; production never calls it.
+func SetEFIDirForTest(dir string) (restore func()) {
+	prev := efiFirmwareDir
+	efiFirmwareDir = dir
+	return func() { efiFirmwareDir = prev }
+}
+
 // IsUEFI reports whether this node booted via UEFI (an ESP exists to write).
 // Non-UEFI nodes (e.g. rpi4's config.txt boot) have no /sys/firmware/efi; the
 // boot-image writers refuse rather than scribble a UKI into the wrong partition.
 func IsUEFI() bool {
-	fi, err := os.Stat("/sys/firmware/efi")
+	fi, err := os.Stat(efiFirmwareDir)
 	return err == nil && fi.IsDir()
 }
 

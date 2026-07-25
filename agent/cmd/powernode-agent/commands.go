@@ -1100,6 +1100,16 @@ func upgradeBootImageCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// --target-git-sha became load-bearing when the pending slot started
+			// being persisted from here: ConfirmBoot compares the booted cmdline sha
+			// against it, and a typo reads as "we are not on the target" -> the
+			// upgrade is abandoned and silently reverts. Reject anything that cannot
+			// be a full git sha rather than letting a fat-finger cost a boot cycle.
+			if !isFullGitSHA(targetGitSHA) {
+				return fmt.Errorf("--target-git-sha %q is not a 40-character hex git sha; "+
+					"it must match the powernode.image_git_sha the new UKI reports, or the "+
+					"post-reboot confirm will treat the upgrade as failed", targetGitSHA)
+			}
 			bundle, err := os.ReadFile(bundleFile)
 			if err != nil {
 				return fmt.Errorf("read cosign bundle: %w", err)
@@ -1130,10 +1140,11 @@ func upgradeBootImageCmd() *cobra.Command {
 			// written by hand. As in the handler, a failure to record MUST stop
 			// us before rebooting.
 			if slot != "" {
-				st := bootslots.Load()
-				st.Pending = slot
-				st.PendingSHA = targetGitSHA
-				if serr := st.Save(); serr != nil {
+				if serr := bootslots.Update(func(st *bootslots.State) error {
+					st.Pending = slot
+					st.PendingSHA = targetGitSHA
+					return nil
+				}); serr != nil {
 					return fmt.Errorf("persist pending slot: %w", serr)
 				}
 			}
@@ -1149,7 +1160,9 @@ func upgradeBootImageCmd() *cobra.Command {
 	c.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (default: identity-discovered)")
 	c.Flags().StringVar(&pkiDir, "pki-dir", "", "agent PKI directory (default: /persist/var/lib/powernode/pki)")
 	c.Flags().StringVar(&downloadPath, "download-path", "/api/v1/system/node_api/boot_image/download", "node_api path to GET the UKI")
-	c.Flags().StringVar(&targetGitSHA, "target-git-sha", "", "expected image git_sha (informational)")
+	c.Flags().StringVar(&targetGitSHA, "target-git-sha", "", "git_sha the new UKI will report on its kernel cmdline. NOT informational: "+
+		"it is persisted as the pending target and the post-reboot confirm compares the booted sha against it. "+
+		"A wrong value makes the confirm see a mismatch and abandon the upgrade, silently reverting at the next reboot")
 	c.Flags().StringVar(&ukiSHA256, "uki-sha256", "", "expected UKI sha256 (required)")
 	c.Flags().StringVar(&cosignPubKeyFile, "cosign-public-key-file", "", "path to the platform's cosign public key (required)")
 	c.Flags().StringVar(&bundleFile, "cosign-bundle-file", "", "path to the UKI cosign bundle (required)")
@@ -1606,4 +1619,17 @@ Maps puppet --detailed-exitcodes (0/2/4/6) to CLI exit codes (0/0/9/10).`,
 
 	c.AddCommand(apply)
 	return c
+}
+
+// isFullGitSHA reports whether s is a 40-character lowercase hex git sha.
+func isFullGitSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }

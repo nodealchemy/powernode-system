@@ -85,10 +85,14 @@ func (h *UpgradeBootImageHandler) Execute(ctx context.Context, task *tasks.Task)
 	// returns an error rather than "" for a node with no A/B layout, so the
 	// guard is retained only as belt-and-braces.)
 	if slot != "" {
-		st := bootslots.Load()
-		st.Pending = slot
-		st.PendingSHA = opts.TargetGitSHA
-		if serr := st.Save(); serr != nil {
+		// Atomic against the heartbeat goroutine's ConfirmBoot, which
+		// read-modify-writes the same file; a lost update here can delete the slot
+		// we just wrote and strand the node with no retry.
+		if serr := bootslots.Update(func(st *bootslots.State) error {
+			st.Pending = slot
+			st.PendingSHA = opts.TargetGitSHA
+			return nil
+		}); serr != nil {
 			return nil, fmt.Errorf("upgrade_boot_image: persist pending slot: %w", serr)
 		}
 	}

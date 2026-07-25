@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 const (
@@ -93,13 +94,48 @@ func SetEfivarsDirForTest(dir string) (restore func()) {
 	return func() { efivarsDir = prev }
 }
 
-// EfivarsAvailable reports whether the EFI variable store is readable at all.
-// Used to tell "this node has no A/B layout" apart from "we cannot SEE the EFI
-// variables" (efivarfs not mounted in our namespace) — both make
-// BootedViaSystemdBoot false, but they need different operator remedies.
+// EfivarsAvailable reports whether the EFI variable store is actually readable —
+// i.e. efivarfs is mounted here and exposing variables.
+//
+// It must NOT be an os.Stat/IsDir check. /sys/firmware/efi/efivars is a
+// kernel-created sysfs directory: it is the mountpoint efivarfs mounts ONTO, so
+// it pre-exists the mount and Stat succeeds on every UEFI node whether or not
+// efivarfs is mounted. That would make this predicate always true and defeat the
+// whole point of distinguishing "no A/B layout" from "cannot see EFI variables",
+// sending an operator to reimage a node that is fine. Requiring at least one
+// entry is what actually separates the two: an unmounted (or empty, e.g. EFI
+// runtime services disabled) store yields nothing to read.
 func EfivarsAvailable() bool {
-	fi, err := os.Stat(efivarsDir)
-	return err == nil && fi.IsDir()
+	f, err := os.Open(efivarsDir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	names, err := f.Readdirnames(1)
+	return err == nil && len(names) > 0
+}
+
+// stateMu serializes read-modify-write cycles on the slot-state file. Two
+// goroutines touch it concurrently in the live agent — the heartbeat loop
+// (ConfirmBoot) and the task-lease loop (the upgrade handler) — and a lost
+// update there can delete a freshly-written slot and strand the node with no
+// retry. Load/Save alone cannot fix that; the whole cycle must be atomic, which
+// is what Update provides.
+var stateMu sync.Mutex
+
+// Update runs fn against the persisted state under a lock and saves the result,
+// making the load-modify-save cycle atomic against the other goroutine. fn may
+// perform slow work (ESP mounts) — the critical sections here are short-lived
+// relative to an upgrade, and correctness beats contention on a once-per-boot
+// path. Returning an error from fn aborts WITHOUT saving.
+func Update(fn func(*State) error) error {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	s := Load()
+	if err := fn(&s); err != nil {
+		return err
+	}
+	return s.Save()
 }
 
 // BootedViaSystemdBoot reports whether the CURRENT boot went through systemd-boot
@@ -112,9 +148,23 @@ func BootedViaSystemdBoot() bool {
 	return err == nil
 }
 
+// statePath is where Load/Save read and write. A variable so tests in dependent
+// packages (bootupgrade's ConfirmBoot) can point it at a temp dir — without this
+// the headline empty-sha / mismatch guards are untestable, and those are the two
+// branches that must never delete the running slot's boot file.
+var statePath = DefaultStatePath
+
+// SetStatePathForTest points the slot-state file at path and returns a restore
+// func. Test-only, like SetEfivarsDirForTest; production never calls it.
+func SetStatePathForTest(path string) (restore func()) {
+	prev := statePath
+	statePath = path
+	return func() { statePath = prev }
+}
+
 // Load reads the slot state, defaulting to {Active: "a"} when absent/unreadable
 // (a fresh image booting slot A).
-func Load() State { return LoadFrom(DefaultStatePath) }
+func Load() State { return LoadFrom(statePath) }
 
 // LoadFrom is Load with an explicit path (for tests).
 func LoadFrom(path string) State {
@@ -131,7 +181,7 @@ func LoadFrom(path string) State {
 }
 
 // Save persists the state atomically.
-func (s State) Save() error { return s.SaveTo(DefaultStatePath) }
+func (s State) Save() error { return s.SaveTo(statePath) }
 
 // SaveTo is Save with an explicit path (for tests).
 func (s State) SaveTo(path string) error {

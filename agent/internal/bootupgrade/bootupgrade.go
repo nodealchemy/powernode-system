@@ -156,7 +156,9 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 			"systemd-boot (no LoaderInfo EFI variable), so it has no A/B slot layout and " +
 			"no below-payload rollback. The former single-slot fallback overwrote the " +
 			"firmware's own bootloader with the payload and bricked the node; it was " +
-			"removed deliberately. Reimage this node onto the A/B layout instead")
+			"removed deliberately. To migrate an existing node onto the A/B layout in place, " +
+			"see docs/runbooks/ops-hub-boot-image-reprovision.md (offline ESP copy from the " +
+			"hypervisor) — do NOT reprovision a node whose /persist must survive")
 	}
 	active := bootslots.Load().Active
 
@@ -208,58 +210,78 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 // no-op. Returns an error (leaving Pending set for a retry) if any step fails, so
 // a healthy upgrade is never left un-promoted while state claims success.
 func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error {
-	// Only meaningful when we actually booted through systemd-boot's counted
-	// entries — old-layout nodes have nothing to bless.
-	if !bootslots.BootedViaSystemdBoot() {
+	// The whole load-decide-save cycle runs under bootslots.Update: the agent's
+	// heartbeat goroutine (this function) and its task-lease goroutine (the
+	// upgrade handler) both read-modify-write this file, and a lost update there
+	// can delete a freshly-written slot and strand the node with no retry.
+	return bootslots.Update(func(st *bootslots.State) error {
+		if st.Pending == "" {
+			return nil // no upgrade in flight this boot
+		}
+
+		// A slot is pending, so we MUST reach a verdict. Returning nil here would
+		// mark the boot confirmed (the caller latches bootBlessed) and never retry,
+		// silently abandoning a healthy upgrade. Distinguish the two causes the way
+		// Apply does, because they need different operator remedies.
+		if !bootslots.BootedViaSystemdBoot() {
+			if !bootslots.EfivarsAvailable() {
+				return fmt.Errorf("confirm boot: slot %s is pending but the EFI variable store is "+
+					"unreadable (efivarfs not mounted?), so the booted entry cannot be determined", st.Pending)
+			}
+			return fmt.Errorf("confirm boot: slot %s is pending but this boot did not go through "+
+				"systemd-boot (no LoaderInfo), so there is nothing to bless", st.Pending)
+		}
+
+		base := bootslots.EntryBase(st.Pending)
+
+		// UNKNOWN IS NOT ROLLBACK. If the pending slot DID boot but the cmdline
+		// marker is missing or unparsed, treating that as a rollback would delete
+		// the boot file of the slot we are RUNNING FROM and clear Pending so
+		// nothing retries — the node keeps running from RAM, looks healthy, and
+		// silently reverts at the next reboot. Same class of defect as the
+		// 2026-07-25 incident: state logic diverging from boot reality.
+		//
+		// Note the sha is captured ONCE per boot by the caller (it cannot change
+		// within a boot), so this condition will NOT clear on a later tick — it
+		// persists until the next reboot, deliberately, because every alternative
+		// risks destroying the running slot.
+		if bootedGitSHA == "" {
+			return fmt.Errorf("confirm boot: booted image git_sha unknown while slot %s is pending "+
+				"(refusing to treat unknown as rollback — that would delete the running slot's boot file)",
+				st.Pending)
+		}
+
+		if bootedGitSHA == st.PendingSHA {
+			// New slot booted healthy: bless it, confirm the good file exists, then
+			// promote it to default. Order matters — never set-default a name that
+			// doesn't resolve to a file (bootctl doesn't validate existence).
+			if err := espwrite.BlessSlot(ctx, r, base); err != nil {
+				return fmt.Errorf("bless slot %s: %w", st.Pending, err)
+			}
+			ok, err := espwrite.SlotGoodExists(ctx, r, base)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("bless slot %s: good file missing after bless", st.Pending)
+			}
+			if err := r.Run(ctx, "bootctl", "set-default", base+".efi"); err != nil {
+				return fmt.Errorf("bootctl set-default %s.efi: %w", base, err)
+			}
+			st.Active = st.Pending
+		}
+		// MISMATCH: we are NOT on the target. Most likely sd-boot rolled us back to
+		// the good slot — but we cannot prove it, and the destructive reading is
+		// unrecoverable. If the mismatch instead came from a wrong/typo'd target sha
+		// while the pending slot is what actually booted, cleaning that slot would
+		// delete the running slot's only boot file (it is unblessed, so it has no
+		// counterless copy). So: clear Pending and leave the ESP ALONE. Stale
+		// counter files are harmless — WriteUKISlot removes the entire slot family
+		// before every write — whereas a wrong deletion is not recoverable in place.
+		st.Pending = ""
+		st.PendingSHA = ""
 		return nil
-	}
-	st := bootslots.Load()
-	if st.Pending == "" {
-		return nil // no upgrade in flight this boot
-	}
-	base := bootslots.EntryBase(st.Pending)
-
-	// An empty booted sha means "unknown", NOT "rolled back". Treating it as a
-	// rollback is actively destructive: if the pending slot DID boot but the
-	// cmdline marker is missing or unparsed, the rollback branch below would
-	// CleanSlot() the boot file of the slot we are RUNNING FROM, then clear
-	// Pending so nothing ever retries. The node keeps running from RAM, looks
-	// healthy, and silently reverts to the old image at the next reboot — the
-	// same class of defect as the 2026-07-25 incident, where state logic
-	// diverged from boot reality. Return an error and leave Pending set so the
-	// next heartbeat tick re-evaluates once the sha is readable.
-	if bootedGitSHA == "" {
-		return fmt.Errorf("confirm boot: booted image git_sha unknown while slot %s is pending "+
-			"(refusing to treat unknown as rollback — that would delete the running slot's boot file)",
-			st.Pending)
-	}
-
-	if bootedGitSHA == st.PendingSHA {
-		// New slot booted healthy: bless it, confirm the good file exists, then
-		// promote it to default. Order matters — never set-default a name that
-		// doesn't resolve to a file (bootctl doesn't validate existence).
-		if err := espwrite.BlessSlot(ctx, r, base); err != nil {
-			return fmt.Errorf("bless slot %s: %w", st.Pending, err)
-		}
-		ok, err := espwrite.SlotGoodExists(ctx, r, base)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("bless slot %s: good file missing after bless", st.Pending)
-		}
-		if err := r.Run(ctx, "bootctl", "set-default", base+".efi"); err != nil {
-			return fmt.Errorf("bootctl set-default %s.efi: %w", base, err)
-		}
-		st.Active = st.Pending
-	} else {
-		// Rolled back to the previous slot — drop the failed attempt's counter
-		// files; the active slot is unchanged.
-		_ = espwrite.CleanSlot(ctx, r, base)
-	}
-	st.Pending = ""
-	st.PendingSHA = ""
-	return st.Save()
+	})
 }
 
 func download(ctx context.Context, c *transport.Client, path, dst string) error {

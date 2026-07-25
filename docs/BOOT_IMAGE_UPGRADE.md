@@ -67,7 +67,7 @@ flowchart TD
         DL["GET /api/v1/system/node_api/boot_image/download<br/>(digest-addressed, via OciBlobProxyService)"]
         SHA["sha256 recheck<br/>(bootupgrade.Apply)"]
         CV["cosign verify-blob --key <inline pubkey><br/>--bundle <inline bundle><br/>(verify.CosignVerifier, static-key mode)"]
-        ESP["espwrite.WriteUKI:<br/>locate ESP → back up *.bak → atomic rename"]
+        ESP["espwrite.WriteUKISlot:<br/>locate ESP → write INACTIVE slot<br/>powernode-&lt;slot&gt;+3.efi → bootctl set-oneshot"]
         MARK["write /persist attempt marker"]
         REBOOT["systemctl reboot"]
     end
@@ -290,24 +290,36 @@ idempotent against the loop's own crash-recovery re-dispatch:
    Static-key mode (not keyless/Fulcio) because Gitea CI isn't on Sigstore's
    trusted-issuer list, so the platform signs with a private key
    (`COSIGN_PRIVATE_KEY`) and ships only the public half to nodes.
-3. **Write the ESP** — `espwrite.WriteUKI`, only reached after verification
-   passes.
+3. **Write the INACTIVE A/B slot** — `espwrite.WriteUKISlot`, only reached
+   after verification passes AND after two preconditions hold: the node booted
+   via systemd-boot, and the *rollback target* (the active slot) has a blessed
+   UKI on the ESP. If either fails, the upgrade is REFUSED — see
+   [Refusal cases](#refusal-cases).
 
-`extensions/system/agent/internal/espwrite/espwrite.go` — `WriteUKI` locates
-the ESP (FAT label `BOOT` first, then the EFI System Partition GPT type GUID
-as fallback), mounts it read-write if not already mounted, and calls
-`installUKI`:
+`extensions/system/agent/internal/espwrite/espwrite.go` — `WriteUKISlot` locates
+the ESP (FAT label `BOOT` first, then the EFI System Partition GPT type GUID as
+fallback), mounts it read-write if not already mounted, and writes the UKI into
+`/EFI/Linux/` as the inactive slot:
 
-- Backs up the current `EFI/BOOT/<name>` to `<name>.bak` if one exists.
-- Copies the new UKI to `<name>.new`, then `os.Rename`s it over `<name>` —
-  the atomic step. The old bootloader is never touched until this rename
-  succeeds, so a crash mid-copy leaves a bootable node.
-- `<name>` is the architecture's EFI removable-media default bootloader
-  (`BOOTX64.EFI` amd64 / `BOOTAA64.EFI` arm64), per
-  `espwrite.RemovableBootName`.
+- Clears that slot's whole file family first (counterless + any stale counter
+  variants), so a re-attempt cannot collide with a leftover file.
+- Copies the new UKI to `<entry>.new`, then `os.Rename`s it over `<entry>` —
+  the atomic step.
+- `<entry>` carries the systemd-boot boot counter, e.g. `powernode-b+3.efi`.
+- Then `bootctl set-oneshot` arms it for exactly one attempt.
 
-This is an **interim single-slot** scheme — one bootloader slot plus one
-`.bak` — not A/B (see [Known Limitations](#known-limitations)).
+It **never** touches `/EFI/BOOT/<removable>` (systemd-boot itself) or the other
+slot — the other slot is the rollback target.
+
+> **Removed 2026-07-25:** the earlier single-slot writer (`WriteUKI` /
+> `installUKI` / `RemovableBootName`) replaced `/EFI/BOOT/<removable>` — the
+> firmware's own bootloader — with the payload, keeping only a `<name>.bak`.
+> Its documentation claimed that "never bricks the node". It did: on VM 9002 a
+> broken-but-validly-signed UKI written this way produced an unrecoverable
+> panic-reboot loop (48 boots, 24 kernel panics, zero automatic recovery),
+> because systemd-boot — and with it the boot counter, the one-shot and the
+> default-entry fallback — had itself been overwritten. **There is no `.bak`
+> any more.** A node with no A/B layout now refuses the upgrade instead.
 
 Because the reboot reuses the `/persist`-backed PKI (the same certificate
 and enrolled identity), the node comes back as the **same** `NodeInstance` —
@@ -430,14 +442,33 @@ Before `system_upgrade_boot_image` can succeed on any instance:
 Both are platform-side/CI-side prerequisites, not per-instance — once
 satisfied for a `NodePlatform`, every instance on it becomes eligible.
 
+## Refusal cases
+
+The upgrade fails closed rather than proceeding when it cannot guarantee a way
+back. Each refusal names its own remedy:
+
+| Condition | Meaning | Remedy |
+|---|---|---|
+| No `LoaderInfo` EFI variable | Node did not boot via systemd-boot; no A/B layout | Migrate the ESP in place — `docs/runbooks/ops-hub-boot-image-reprovision.md`. Do **not** reprovision a node whose `/persist` must survive |
+| EFI variable store unreadable | efivarfs not mounted/visible in this namespace; boot method undeterminable | Mount efivarfs and retry — the node itself is likely fine |
+| Rollback target has no blessed UKI | `/persist` slot state has diverged from the ESP; a failed upgrade would have nothing to fall back to | Reconcile slot state against `/EFI/Linux/` before upgrading |
+| `bootctl` not found | Cannot arm the one-shot; it ships via the base-os module, not the minimal initramfs runtime | Upgrade from a node running the composed base-os |
+
 ## Known Limitations
 
-- **Single-slot `.bak`, manual-recovery brick window.** `espwrite.WriteUKI`
-  keeps exactly one backup (`<name>.bak`) and one live slot — there is no
-  automatic rollback if the newly-written UKI fails to boot. Recovery today
-  means physical/out-of-band access to rename `.bak` back over the live
-  file. Increment 3 (A/B systemd-boot auto-rollback) replaces this scheme
-  and removes the brick window; it is not implemented yet.
+- **A/B auto-rollback is live** (increment 3, proven on hardware 2026-07-25).
+  A failed UKI consumes its one-shot, panics, and systemd-boot falls back to the
+  blessed default slot unattended — measured ~20s end to end. The previous
+  single-slot `.bak` scheme, and the manual brick-recovery it required, are gone.
+  Two caveats remain:
+  - **Bless is identity-gated, not health-gated.** A slot that boots but is
+    functionally dead is still blessed and promoted, because the check compares
+    the booted `git_sha` to the target and does not require app health. INV-4
+    ("good is EARNED") is therefore not yet implemented.
+  - **The promoted default lives in NVRAM.** `bootctl set-default` writes
+    `LoaderEntryDefault`; `loader.conf` still names slot A. If the firmware
+    varstore is lost or recreated, a node promoted to slot B silently reverts to
+    slot A's older image.
 - **arm64 UKI CI publish is deferred.** Only the amd64 UEFI build job
   currently pushes a standalone UKI artifact (§3); the arm64 UEFI and rpi4
   jobs still publish full disk images but no parallel UKI ref. In-place
