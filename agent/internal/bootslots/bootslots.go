@@ -93,6 +93,15 @@ func SetEfivarsDirForTest(dir string) (restore func()) {
 	return func() { efivarsDir = prev }
 }
 
+// EfivarsAvailable reports whether the EFI variable store is readable at all.
+// Used to tell "this node has no A/B layout" apart from "we cannot SEE the EFI
+// variables" (efivarfs not mounted in our namespace) — both make
+// BootedViaSystemdBoot false, but they need different operator remedies.
+func EfivarsAvailable() bool {
+	fi, err := os.Stat(efivarsDir)
+	return err == nil && fi.IsDir()
+}
+
 // BootedViaSystemdBoot reports whether the CURRENT boot went through systemd-boot
 // (it exports LoaderInfo into the EFI variable store). Nodes whose ESP predates
 // the A/B layout boot the bare UKI directly from the firmware and have no such

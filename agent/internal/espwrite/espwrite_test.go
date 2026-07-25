@@ -8,15 +8,6 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
-func TestRemovableBootName(t *testing.T) {
-	cases := map[string]string{"amd64": "BOOTX64.EFI", "arm64": "BOOTAA64.EFI", "riscv64": "BOOTX64.EFI"}
-	for arch, want := range cases {
-		if got := RemovableBootName(arch); got != want {
-			t.Errorf("RemovableBootName(%q) = %q, want %q", arch, got, want)
-		}
-	}
-}
-
 // The single-slot installUKI tests were removed with installUKI itself on
 // 2026-07-25 (RCP v2 P0-b): writing the UKI over /EFI/BOOT/<removable> replaced
 // systemd-boot with the payload and bricked VM 9002 unrecoverably. A node with

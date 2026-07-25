@@ -35,18 +35,6 @@ const ESPFatLabel = "BOOT"
 // fallback discovery when the FAT-label lookup misses.
 const espPartType = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 
-// RemovableBootName returns the EFI removable-media default bootloader basename
-// the firmware loads for the given GOARCH — the file an in-place upgrade
-// replaces on the ESP.
-func RemovableBootName(goarch string) string {
-	switch goarch {
-	case "arm64":
-		return "BOOTAA64.EFI"
-	default:
-		return "BOOTX64.EFI"
-	}
-}
-
 // IsUEFI reports whether this node booted via UEFI (an ESP exists to write).
 // Non-UEFI nodes (e.g. rpi4's config.txt boot) have no /sys/firmware/efi; the
 // boot-image writers refuse rather than scribble a UKI into the wrong partition.

@@ -144,6 +144,14 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	//      means such a node simply does not upgrade — a stuck node beats a
 	//      bricked one.
 	if !bootslots.BootedViaSystemdBoot() {
+		// Distinguish the two causes — they need different remedies, and reporting
+		// "no A/B layout" for an unmounted efivarfs would misdirect an operator
+		// into reimaging a node that is actually fine.
+		if !bootslots.EfivarsAvailable() {
+			return "", errors.New("refusing boot-image upgrade: the EFI variable store is not " +
+				"readable (efivarfs not mounted in this namespace?), so the boot method cannot be " +
+				"determined. Refusing rather than guessing — mount efivarfs and retry")
+		}
 		return "", errors.New("refusing boot-image upgrade: this node did not boot via " +
 			"systemd-boot (no LoaderInfo EFI variable), so it has no A/B slot layout and " +
 			"no below-payload rollback. The former single-slot fallback overwrote the " +
