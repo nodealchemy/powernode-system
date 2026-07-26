@@ -117,7 +117,11 @@ func run() error {
 
 	// Write the candidate to a TEMP file beside the target and validate THAT.
 	// Only a candidate the agent's own validator accepts may become the live LKG.
-	tmp := *path + ".candidate"
+	// Per-process candidate: a fixed shared name lets two concurrent runs
+	// validate their own bytes and then rename the OTHER's under that approval.
+	// Both are independently validated so the promoted file is still valid, but
+	// the operator would not be looking at what landed.
+	tmp := fmt.Sprintf("%s.candidate.%d", *path, os.Getpid())
 	defer os.Remove(tmp)
 	if err := runtime.WriteBootLKG(tmp, lkg); err != nil {
 		return fmt.Errorf("write candidate: %w", err)
@@ -137,7 +141,7 @@ func run() error {
 		return nil
 	}
 
-	bak := fmt.Sprintf("%s.bak-%s", *path, time.Now().UTC().Format("20060102T150405Z"))
+	bak := fmt.Sprintf("%s.bak-%s.%d", *path, time.Now().UTC().Format("20060102T150405Z"), os.Getpid())
 	if err := copyFile(*path, bak); err != nil {
 		return fmt.Errorf("backup: %w", err)
 	}
@@ -145,6 +149,12 @@ func run() error {
 
 	if err := os.Rename(tmp, *path); err != nil {
 		return fmt.Errorf("promote candidate (original preserved at %s): %w", bak, err)
+	}
+	// Durability: the rename is atomic but the DIRECTORY entry is not yet on
+	// stable storage. Power loss here silently reverts to the old LKG — valid,
+	// so not a brick, but a retarget the operator was told had APPLIED.
+	if err := syncDir(filepath.Dir(*path)); err != nil {
+		return fmt.Errorf("fsync %s after promote: %w", filepath.Dir(*path), err)
 	}
 	fmt.Printf("APPLIED  : %s now targets %s\n", *path, *digest)
 	return nil
@@ -195,7 +205,11 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	mode := os.FileMode(0o644)
+	if st, serr := in.Stat(); serr == nil {
+		mode = st.Mode().Perm()
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return err
 	}
@@ -203,5 +217,18 @@ func copyFile(src, dst string) error {
 	if _, err := io.Copy(out, in); err != nil {
 		return err
 	}
-	return out.Sync()
+	if err := out.Sync(); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(dst))
+}
+
+// syncDir fsyncs a directory so a rename/create in it survives power loss.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
