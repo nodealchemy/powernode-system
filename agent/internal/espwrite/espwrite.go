@@ -155,15 +155,72 @@ func SlotGoodExists(ctx context.Context, r mount.Runner, entryBase string) (bool
 	return found, err
 }
 
+// SetLoaderDefault rewrites loader.conf's `default` directive to point at a
+// slot, so the ESP itself records which slot is active.
+//
+// `bootctl set-default` writes only LoaderEntryDefault, an EFI variable living
+// in firmware NVRAM (on a VM, the efidisk varstore). loader.conf shipped by the
+// image builder says `default powernode-a*` forever, so after an a→b promote
+// that EFI variable is the ONLY thing keeping the node on b — lose or recreate
+// the varstore and the node silently reverts to the previous slot, with nothing
+// on disk disagreeing. That is a silent downgrade to an image the operator
+// believes was replaced. Writing the ESP too makes the two agree.
+func SetLoaderDefault(ctx context.Context, r mount.Runner, entryBase string) error {
+	return withMountedESP(ctx, r, func(mnt string) error {
+		return setLoaderDefaultDir(mnt, entryBase)
+	})
+}
+
+// setLoaderDefaultDir is the mount-relative half of SetLoaderDefault, split out
+// so it is unit-testable against a temp dir.
+func setLoaderDefaultDir(mnt, entryBase string) error {
+	path := filepath.Join(mnt, "loader", "loader.conf")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		// No loader.conf is not fatal: systemd-boot falls back to the EFI
+		// variable, which is exactly today's behaviour. Don't fail a healthy
+		// promote over a missing convenience file.
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	lines := strings.Split(string(body), "\n")
+	replaced := false
+	for i, ln := range lines {
+		if fields := strings.Fields(ln); len(fields) >= 1 && fields[0] == "default" {
+			lines[i] = "default " + entryBase + ".efi"
+			replaced = true
+		}
+	}
+	if !replaced {
+		lines = append(lines, "default "+entryBase+".efi")
+	}
+	out := strings.Join(lines, "\n")
+	tmp := path + ".new"
+	if err := os.WriteFile(tmp, []byte(out), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 func removeSlotFiles(linuxDir, entryBase string) {
 	_ = os.Remove(filepath.Join(linuxDir, entryBase+".efi"))
 	removeSlotCounters(linuxDir, entryBase)
 }
 
+// removeSlotCounters drops a slot's counter variants AND any staging litter.
+// The `.efi.new` glob matters: WriteUKISlot stages to <name>.efi.new and renames
+// into place, so a crash — or a write that fails at sync, which is exactly what
+// an over-provisioned ESP produces — leaves a full-size .new file behind that
+// the `+*.efi` glob never matches. Observed on ops-hub 2026-07-26: a failed
+// slot-B write left an 83MB powernode-b+3.efi.new stranded on the ESP.
 func removeSlotCounters(linuxDir, entryBase string) {
-	matches, _ := filepath.Glob(filepath.Join(linuxDir, entryBase+"+*.efi"))
-	for _, m := range matches {
-		_ = os.Remove(m)
+	for _, pat := range []string{entryBase + "+*.efi", entryBase + "*.efi.new"} {
+		matches, _ := filepath.Glob(filepath.Join(linuxDir, pat))
+		for _, m := range matches {
+			_ = os.Remove(m)
+		}
 	}
 }
 

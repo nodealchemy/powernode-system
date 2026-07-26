@@ -101,6 +101,20 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	if err := o.validate(); err != nil {
 		return "", err
 	}
+
+	// Fail fast on an in-flight upgrade, BEFORE staging and pulling ~80MB. With
+	// Pending set the node is running a slot that is NOT yet blessed, so its
+	// counter-suffixed file is its only boot file — and the "inactive" slot this
+	// upgrade would clear is the one we booted from. Advisory only: the state can
+	// change while the download runs (the heartbeat's ConfirmBoot may bless or
+	// roll back mid-pull), so the authoritative check is repeated under bootMu.
+	// Both outcomes clear Pending, so this unblocks itself.
+	if p := bootslots.Load().Pending; p != "" {
+		return "", fmt.Errorf("refusing boot-image upgrade: slot %s is pending confirmation — "+
+			"the running slot is not yet blessed, so overwriting the inactive slot now would "+
+			"clear the image this node booted from", p)
+	}
+
 	stage := d.StageDir
 	if stage == "" {
 		stage = DefaultStageDir
@@ -187,7 +201,23 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	bootMu.Lock()
 	defer bootMu.Unlock()
 
-	active := bootslots.Load().Active
+	state := bootslots.Load()
+	active := state.Active
+
+	// Refuse while a previous upgrade is still unproven. With Pending set, the
+	// node is running a slot that has NOT yet been blessed, so its counter-suffixed
+	// file is its only boot file. A second upgrade targets the inactive slot —
+	// which, mid-confirmation, is the one we are currently running from — and
+	// WriteUKISlot clears the whole slot family before writing. That destroys the
+	// running image and leaves an unproven replacement in its place. The pending
+	// upgrade must reach a verdict (bless or roll back) first; both outcomes clear
+	// Pending, so this unblocks by itself on the next heartbeat or reboot.
+	if state.Pending != "" {
+		return "", fmt.Errorf("refusing boot-image upgrade: slot %s is pending confirmation "+
+			"(target %s) — the running slot is not yet blessed, so overwriting the inactive slot "+
+			"now would clear the image this node booted from. Wait for the in-flight upgrade to "+
+			"bless or roll back", state.Pending, state.PendingSHA)
+	}
 
 	// Verify the ROLLBACK TARGET actually exists before touching anything. The
 	// active slot is read from /persist, which can be lost or reset (a documented
@@ -318,6 +348,19 @@ func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error
 			if err := r.Run(ctx, "bootctl", "set-default", base+".efi"); err != nil {
 				return fmt.Errorf("bootctl set-default %s.efi: %w", base, err)
 			}
+			// Record the promotion on the ESP as well. set-default writes only the
+			// LoaderEntryDefault EFI variable, which on a VM lives in the efidisk
+			// varstore; loader.conf otherwise keeps naming the OLD slot forever, so
+			// losing or recreating that varstore silently reverts the node to the
+			// previous image with nothing on disk disagreeing. Best-effort: a
+			// healthy, blessed, NVRAM-promoted slot must not be failed back over
+			// this belt-and-braces write.
+			// Deliberately ignored: the slot is already blessed and promoted in
+			// NVRAM, so the upgrade HAS succeeded. Returning here would leave
+			// Pending set and re-run the whole confirm every heartbeat over a
+			// convenience file. The cost of the miss is the pre-existing
+			// behaviour (NVRAM-only), not a regression.
+			_ = espwrite.SetLoaderDefault(ctx, r, base)
 			st.Active = st.Pending
 		}
 		// Reached when the authoritative slot signal is unavailable (no

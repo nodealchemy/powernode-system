@@ -444,3 +444,43 @@ func TestBootedSlotIgnoresForeignPowernodeEntries(t *testing.T) {
 		restore()
 	}
 }
+
+// Risk 3 from the INV-8 review: a second upgrade dispatched while a slot is
+// still pending confirmation would clear the slot family of the image the node
+// is CURRENTLY running from (unblessed ⇒ its counter-suffixed file is its only
+// boot file), replacing a running image with an unproven one.
+func TestApply_RefusesWhileAnUpgradeIsPendingConfirmation(t *testing.T) {
+	dir := t.TempDir()
+	restoreState := bootslots.SetStatePathForTest(filepath.Join(dir, "boot-slot.json"))
+	defer restoreState()
+	restoreEFI := espwrite.SetEFIDirForTest(dir)
+	defer restoreEFI()
+
+	if err := bootslots.Update(func(st *bootslots.State) error {
+		st.Active = "a"
+		st.Pending = "b"
+		st.PendingSHA = "deadbeef"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	spy := &espSpy{}
+	_, err := Apply(context.Background(), Deps{Runner: spy}, Options{
+		TargetGitSHA:    "1111111111111111111111111111111111111111",
+		UkiSha256:       "2222222222222222222222222222222222222222222222222222222222222222",
+		CosignPublicKey: "k",
+		CosignBundleB64: "Yg==",
+		DownloadPath:    "/dl",
+	})
+	if err == nil {
+		t.Fatal("expected refusal while a slot is pending confirmation")
+	}
+	if !strings.Contains(err.Error(), "pending confirmation") {
+		t.Errorf("wrong refusal reason: %v", err)
+	}
+	// The ESP must be untouched — no mount, no write, nothing.
+	if spy.touchedESP() {
+		t.Errorf("ESP was touched despite refusal: ran %v", spy.cmds)
+	}
+}
