@@ -1154,7 +1154,7 @@ func upgradeBootImageCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read cosign public key: %w", err)
 			}
-			slot, err := bootupgrade.Apply(cmd.Context(), bootupgrade.Deps{
+			_, err = bootupgrade.Apply(cmd.Context(), bootupgrade.Deps{
 				Runner: mount.ExecRunner{},
 				Client: cctx.Transport,
 			}, bootupgrade.Options{
@@ -1167,23 +1167,11 @@ func upgradeBootImageCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Persist the pending slot exactly as the production task handler
-			// does. Without this the post-reboot ConfirmBoot finds no upgrade in
-			// flight, never blesses the new slot, and the node silently reverts
-			// to the old image once the boot counter runs out — so a CLI-driven
-			// upgrade could never stick. Observed during RCP v2 P0-b: the slot
-			// booted healthy but stayed powernode-b+2-1.efi until the state was
-			// written by hand. As in the handler, a failure to record MUST stop
-			// us before rebooting.
-			if slot != "" {
-				if serr := bootslots.Update(func(st *bootslots.State) error {
-					st.Pending = slot
-					st.PendingSHA = targetGitSHA
-					return nil
-				}); serr != nil {
-					return fmt.Errorf("persist pending slot: %w", serr)
-				}
-			}
+			// Apply records the pending slot itself, under bootMu and before arming
+			// the one-shot. It used to be done here instead, which left a window
+			// where a crash after arming but before recording booted the new slot
+			// with nothing marking it pending — it then never blessed and silently
+			// reverted when the boot counter ran out (observed in RCP v2 P0-b).
 			fmt.Fprintln(cmd.OutOrStdout(), "boot image written + cosign-verified")
 			if doReboot {
 				fmt.Fprintln(cmd.OutOrStdout(), "rebooting into the new image…")

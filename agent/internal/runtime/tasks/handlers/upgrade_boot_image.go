@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
 	"github.com/nodealchemy/powernode-system/agent/internal/bootupgrade"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
@@ -67,7 +66,7 @@ func (h *UpgradeBootImageHandler) Execute(ctx context.Context, task *tasks.Task)
 		return nil, errors.New("upgrade_boot_image: no platform transport")
 	}
 
-	slot, err := bootupgrade.Apply(ctx, bootupgrade.Deps{
+	_, err := bootupgrade.Apply(ctx, bootupgrade.Deps{
 		Runner: h.deps.MountRunner,
 		Client: client,
 	}, opts)
@@ -75,27 +74,17 @@ func (h *UpgradeBootImageHandler) Execute(ctx context.Context, task *tasks.Task)
 		return nil, fmt.Errorf("upgrade_boot_image: %w", err)
 	}
 
-	// Record the pending slot + target (survives the reboot on /persist) so the
-	// post-reboot bless (agent's first successful heartbeat) can promote this
-	// slot to the persistent default if it boots healthy — or clear it if the
-	// node rolled back. If this record can't be persisted we must NOT reboot: a
-	// healthy new boot would then find no pending state, never bless/promote the
-	// slot, and revert to the old image at the next reboot. (The slot == ""
-	// case was the single-slot fallback path, removed 2026-07-25 — Apply now
-	// returns an error rather than "" for a node with no A/B layout, so the
-	// guard is retained only as belt-and-braces.)
-	if slot != "" {
-		// Atomic against the heartbeat goroutine's ConfirmBoot, which
-		// read-modify-writes the same file; a lost update here can delete the slot
-		// we just wrote and strand the node with no retry.
-		if serr := bootslots.Update(func(st *bootslots.State) error {
-			st.Pending = slot
-			st.PendingSHA = opts.TargetGitSHA
-			return nil
-		}); serr != nil {
-			return nil, fmt.Errorf("upgrade_boot_image: persist pending slot: %w", serr)
-		}
-	}
+	// Apply records the pending slot + target itself, under bootMu and BEFORE it
+	// arms the one-shot, and it fails closed if that record cannot be written —
+	// so by the time we get here the state survives the reboot and the
+	// post-reboot bless can promote the slot (or clear it on a rollback).
+	//
+	// This used to be done HERE, after Apply returned, which left a window where
+	// a crash between arming and recording booted the new slot with nothing
+	// marking it pending: it never blessed, and the boot counter silently
+	// reverted the upgrade with no operator signal. Keeping the write inside
+	// Apply also stops this path drifting from the CLI's copy (4b13c961 fixed
+	// exactly that drift once already).
 	markAttempted(opts.TargetGitSHA)
 	if err := h.deps.MountRunner.Run(ctx, "systemctl", "reboot"); err != nil {
 		return nil, fmt.Errorf("upgrade_boot_image: reboot: %w", err)

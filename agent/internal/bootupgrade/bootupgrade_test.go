@@ -484,3 +484,20 @@ func TestApply_RefusesWhileAnUpgradeIsPendingConfirmation(t *testing.T) {
 		t.Errorf("ESP was touched despite refusal: ran %v", spy.cmds)
 	}
 }
+
+// NOTE — the Apply ordering fix (record Pending BEFORE arming the one-shot) has
+// NO unit coverage, deliberately rather than by oversight.
+//
+// A test was written and then removed: it passed with the bug reintroduced. In
+// this harness Apply never reaches `bootctl set-oneshot` at all — WriteUKISlot
+// goes through espwrite.withMountedESP, which needs a real UEFI node and a
+// mounted ESP, so the run dies before the ordering under test is exercised. A
+// test that cannot be demonstrated failing is not evidence, and shipping one
+// here would assert coverage that does not exist.
+//
+// Real coverage needs an injection seam in withMountedESP — the same missing
+// seam that leaves Apply's rollback-target refusal (INV-8 residual risk 5)
+// covered only at the predicate level. Tracked with that work; until then the
+// ordering is guaranteed structurally instead: Apply is now the single writer of
+// the pending record, and it fails closed if the record cannot be written, so
+// the arm cannot be reached with the state unwritten.

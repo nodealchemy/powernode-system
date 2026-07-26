@@ -259,6 +259,31 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	if err := espwrite.WriteUKISlot(ctx, d.Runner, ukiPath, base, entry); err != nil {
 		return "", fmt.Errorf("write ESP slot: %w", err)
 	}
+
+	// Record the pending upgrade BEFORE arming the one-shot, and record it HERE
+	// rather than leaving it to the caller.
+	//
+	// Ordering: a crash between these two steps must fail toward "no upgrade",
+	// never toward "unprovable upgrade". Recorded-but-unarmed means the next boot
+	// is the OLD slot, where ConfirmBoot sees Pending set, sees a different slot
+	// booted, and clears it as a proven rollback — clean. Armed-but-unrecorded
+	// (the previous order) means the node boots the NEW slot with nothing marking
+	// it pending, so ConfirmBoot never blesses it and the boot counter silently
+	// reverts the upgrade three boots later, with no operator signal.
+	//
+	// Single writer: both callers — the task handler and the CLI — used to do this
+	// themselves after Apply returned, which is what created the window and let
+	// the two paths drift (4b13c961 fixed one such drift already). Apply holds
+	// bootMu here and bootslots.Update takes stateMu, matching the documented
+	// bootMu→stateMu lock order.
+	if err := bootslots.Update(func(st *bootslots.State) error {
+		st.Pending = inactive
+		st.PendingSHA = o.TargetGitSHA
+		return nil
+	}); err != nil {
+		return "", fmt.Errorf("record pending slot %s: %w", inactive, err)
+	}
+
 	if err := d.Runner.Run(ctx, "bootctl", "set-oneshot", entry); err != nil {
 		return "", fmt.Errorf("bootctl set-oneshot %s: %w", entry, err)
 	}
