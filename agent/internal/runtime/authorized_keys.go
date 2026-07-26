@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -107,8 +108,11 @@ func (s *AuthorizedKeysSyncer) Run(ctx context.Context) error {
 			if lastErr != "" && s.OnError != nil {
 				// Not an error — the transition back to healthy is the useful
 				// signal after a reported failure, and OnError is the only
-				// channel this type has.
-				s.OnError("authorized_keys_sync_recovered", nil)
+				// channel this type has. Carries a real error value rather than
+				// nil: the wired sink formats with %v, so nil would log a bare
+				// "<nil>" where the operator needs to read what recovered.
+				s.OnError("authorized_keys_sync_recovered",
+					errors.New("platform reachable again; operator SSH keys synced"))
 			}
 			lastErr = ""
 			sawSuccess = true
