@@ -1,7 +1,10 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -605,24 +608,92 @@ func (r *Reconciler) stagePendingCompose(assigned []AssignedModule, manifests ma
 			"with the frozen LKG still underneath", len(mods), len(bc.Modules)))
 }
 
-// sameComposition compares two module sets by (id, digest), order-insensitively.
-// Priority and manifest churn are deliberately ignored: restaging on cosmetic
-// changes would burn the attempt budget without changing what actually mounts.
+// sameComposition compares two module sets by (id, digest) AND by the manifest
+// fields that change what a module RUNS, order-insensitively.
+//
+// Digest alone is not enough. The agent renders systemd units, users, groups
+// and security policy from the manifest, so a build that adds a SERVICE changes
+// the node's behaviour while mounting a blob whose digest may be unchanged (or
+// whose digest changed for unrelated reasons). Treating that as "same
+// composition" means the new service is never staged and never runs — the
+// delivery looks complete because the files are there. Confirmed live
+// 2026-07-26: reverse-proxy-traefik shipped a new restore-dynamic oneshot whose
+// unit was never created, on the sibling lkgretarget path with the identical
+// blind spot.
+//
+// Cosmetic churn is still ignored, which is what the original comment here was
+// protecting: priority, description, display names and the rest do not change
+// what runs, and restaging on them would burn the attempt budget for nothing.
+// behaviouralManifestKey draws that line explicitly.
 func sameComposition(a, b []LKGModule) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	seen := make(map[string]string, len(a))
+	type sig struct{ digest, manifest string }
+	seen := make(map[string]sig, len(a))
 	for _, m := range a {
-		seen[m.ID] = m.Digest
+		seen[m.ID] = sig{m.Digest, behaviouralManifestKey(m.Manifest)}
 	}
 	for _, m := range b {
-		d, ok := seen[m.ID]
-		if !ok || d != m.Digest {
+		s, ok := seen[m.ID]
+		if !ok || s.digest != m.Digest {
+			return false
+		}
+		if s.manifest != behaviouralManifestKey(m.Manifest) {
 			return false
 		}
 	}
 	return true
+}
+
+// behaviouralManifestFields are the manifest keys that decide what a module
+// RUNS on the node, as opposed to how it is described. Everything outside this
+// set is cosmetic for staging purposes.
+//
+//	services  -> systemd units (name, exec, deps, health, user)
+//	users     -> /etc/passwd entries the agent reconciles
+//	groups    -> /etc/group entries
+//	security  -> capability/userns/egress drop-ins
+//	sudoers   -> /etc/sudoers.d grants
+//	init      -> init_start/stop/restart lifecycle hooks
+var behaviouralManifestFields = []string{"services", "users", "groups", "security", "sudoers", "init"}
+
+// behaviouralManifestKey returns a stable digest over just those fields. Empty
+// string for an absent or unparseable manifest, so a module without one
+// compares equal to another without one rather than restaging every tick.
+//
+// Uses encoding/json round-tripping for canonicalisation: Go marshals map keys
+// in sorted order, so two manifests differing only in key order or whitespace
+// produce the same key and do NOT trigger a restage.
+func behaviouralManifestKey(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var man map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber() // don't let 1 and 1.0 differ across a float round-trip
+	if err := dec.Decode(&man); err != nil {
+		// Unparseable: fall back to the raw bytes so a corrupt manifest still
+		// compares consistently with itself instead of silently matching
+		// everything.
+		sum := sha256.Sum256(raw)
+		return "raw:" + hex.EncodeToString(sum[:8])
+	}
+	subset := make(map[string]any, len(behaviouralManifestFields))
+	for _, k := range behaviouralManifestFields {
+		if v, ok := man[k]; ok {
+			subset[k] = v
+		}
+	}
+	if len(subset) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(subset)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:8])
 }
 
 // mountModuleArtifact pulls the module's erofs blob, verifies it (cosign bundle
