@@ -110,9 +110,19 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	// roll back mid-pull), so the authoritative check is repeated under bootMu.
 	// Both outcomes clear Pending, so this unblocks itself.
 	if p := bootslots.Load().Pending; p != "" {
+		// NOT self-clearing in every case. ConfirmBoot reaches a verdict and clears
+		// Pending when it can prove bless-or-rollback, but three branches retain it
+		// deliberately: no systemd-boot, no booted sha, and "running the pending
+		// slot but its image reports a different sha than requested". The last one
+		// is what a WRONG target sha produces, it survives reboots (Pending lives on
+		// /persist), and the operator's remedy for it is to dispatch a CORRECTED
+		// upgrade — which this guard would otherwise refuse forever. Name the escape
+		// in the error so a stuck node is a documented state, not a dead end.
 		return "", fmt.Errorf("refusing boot-image upgrade: slot %s is pending confirmation — "+
 			"the running slot is not yet blessed, so overwriting the inactive slot now would "+
-			"clear the image this node booted from", p)
+			"clear the image this node booted from. If the pending upgrade can never confirm "+
+			"(e.g. it was dispatched with the wrong target sha), clear \"pending\"/\"pending_sha\" "+
+			"in %s and re-dispatch", p, bootslots.DefaultStatePath)
 	}
 
 	stage := d.StageDir
