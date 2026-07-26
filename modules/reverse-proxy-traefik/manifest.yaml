@@ -33,6 +33,7 @@ file_spec:
   - /usr/bin/traefik
   - /usr/share/traefik/**
   - /etc/traefik/**
+  - /usr/local/bin/traefik-restore-dynamic.sh
 mask: []
 dependency_spec: []
 protected_spec:
@@ -40,11 +41,47 @@ protected_spec:
 reboot_required: false
 
 services:
+  # Restores the persisted host-login ingress config (routers + the
+  # tls.options.default clientAuth block) into the watched dynamic dir BEFORE
+  # traefik starts, so clientAuth is in force from the very first handshake
+  # instead of ~2 minutes into boot once Rails can rewrite it. See the script
+  # for why it is guarded and why it can never fail closed.
+  #
+  # A separate oneshot rather than an ExecStartPre on traefik itself: the
+  # structured service fields cannot express ExecStartPre, and expressing
+  # traefik via unit_body would move a privileged-port service off the
+  # generated-unit path that supplies its ambient CAP_NET_BIND_SERVICE — the
+  # exact shape that once left traefik unable to bind :80 on pivot-booted
+  # nodes. Ordering comes from `dependencies:` below, which renders
+  # After=/Requires= on the traefik unit.
+  #
+  # unit_body (not start_command) because Type=oneshot + RemainAfterExit is
+  # what makes Requires= mean "the copy finished", rather than "the process
+  # was spawned". Runs as root: the watched dir is root-owned and traefik
+  # itself runs as User=traefik, which is precisely why traefik cannot do this
+  # for itself.
+  - name: restore-dynamic
+    unit_body: |
+      [Unit]
+      Description=Restore persisted Traefik dynamic config before start
+      DefaultDependencies=no
+      After=local-fs.target
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/bin/traefik-restore-dynamic.sh
+      StandardOutput=journal
+      StandardError=journal
+      [Install]
+      WantedBy=multi-user.target
+
   - name: traefik
     start_command: "/usr/bin/traefik --configFile=/etc/traefik/traefik.yml"
     restart_policy: always
     user: traefik
     working_directory: /etc/traefik
+    dependencies:
+      - restore-dynamic
     exposed_ports:
       - { port: 80,  protocol: tcp, name: web }
       - { port: 443, protocol: tcp, name: websecure }
