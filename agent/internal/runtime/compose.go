@@ -255,6 +255,38 @@ func (r *Reconciler) resolveComposeSet(ctx context.Context) (mount.ModuleStack, 
 	if LKGFallbackDisabled(LKGDisableSentinel) {
 		return nil, nil, nil, fmt.Errorf("fetch assigned modules: %w (boot-LKG fallback disabled)", ferr)
 	}
+	// Middle rung: a composition staged post-pivot by the running agent, not yet
+	// proven to boot. On a self-hosted control plane this is the ONLY way a new
+	// module set can ever be tried — the live fetch above can never succeed there,
+	// because the platform it would fetch from is this node, still pre-pivot.
+	// TakePendingCompose burns an attempt BEFORE we compose, so a set that never
+	// comes back cannot retry forever; when the attempts run out we fall through
+	// to the frozen LKG below exactly as if it had never been staged.
+	if pend := TakePendingCompose(PendingComposePath, r.cfg.Layout.ModuleCachePath, r.cfg.OnError); pend != nil {
+		desired, manifests, cerr := pend.Set.ToComposeInputs()
+		if cerr == nil {
+			r.cfg.OnError("compose:booted_from_pending", fmt.Errorf(
+				"live fetch failed (%v) — composing STAGED set (attempt %d/%d, staged %s): %d modules. "+
+					"The frozen LKG remains the fallback if this boot does not reach health",
+				ferr, pend.Attempts, PendingMaxTries, pend.StagedAt.Format(time.RFC3339), len(desired)))
+			bc := &BootComposedBreadcrumb{
+				ComposedAt:                time.Now().UTC(),
+				FromLKG:                   false,
+				FromPending:               true,
+				Source:                    pend.Set.Source,
+				NodeID:                    pend.Set.NodeID,
+				Hostname:                  pend.Set.Hostname,
+				StalenessThresholdSeconds: pend.Set.StalenessThresholdSeconds,
+				AppHealth:                 pend.Set.AppHealth,
+				Modules:                   pend.Set.Modules,
+			}
+			return desired, manifests, bc, nil
+		}
+		// A staged set that cannot produce compose inputs is unusable; say so and
+		// fall through rather than failing the boot over an optional rung.
+		r.cfg.OnError("compose:pending_unusable", cerr)
+	}
+
 	lkg, lerr := loadValidatedBootLKG(r.cfg.Layout)
 	if lerr != nil {
 		// No usable fallback — fail LOUD rather than compose a half-broken root.

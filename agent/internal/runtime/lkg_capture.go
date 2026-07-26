@@ -225,6 +225,9 @@ func (c *LKGCapturer) Run(ctx context.Context) error {
 	if bc.FromLKG {
 		return nil // this boot fell back to the LKG — nothing new to promote
 	}
+	// A FromPending boot is the opposite case: it composed something NEW that has
+	// not been proven yet, which is precisely what the gate below exists to prove.
+	// It falls through deliberately.
 	if bc.Incomplete {
 		// Degraded boot (a data module was dropped at compose) — never freeze an
 		// incomplete set as last-known-good. Surfaces via the arm-telemetry
@@ -252,6 +255,16 @@ func (c *LKGCapturer) Run(ctx context.Context) error {
 		if consecutive >= required {
 			if err := c.promote(bc); err != nil {
 				c.onError("lkg_capture:promote", err)
+				return nil
+			}
+			// The staged set has now proven healthy and IS the frozen LKG; drop it
+			// so a later boot does not burn attempts re-trying what it already is.
+			// Best-effort: a leftover file is harmless (its checksum still matches
+			// the LKG) and it expires by attempt count regardless.
+			if bc.FromPending {
+				if err := ClearPendingCompose(PendingComposePath); err != nil {
+					c.onError("lkg_capture:clear_pending", err)
+				}
 			}
 			return nil
 		}
@@ -269,7 +282,13 @@ func (c *LKGCapturer) Run(ctx context.Context) error {
 // (belt: never overwrite one). Promotes the snapshot VERBATIM — never a re-read
 // of the on-disk breadcrumb and never the live/hot-reconciled mount state.
 func (c *LKGCapturer) promote(bc *BootComposedBreadcrumb) error {
-	if existing, err := LoadBootLKG(c.LKGPath); err == nil && existing.Frozen {
+	// A frozen LKG is normally never overwritten — it is the proven floor, and a
+	// later boot has nothing better to offer. The ONE exception is a boot that
+	// composed from a STAGED set and then proved healthy: that is strictly newer
+	// evidence about a strictly newer set, and promoting it is the only mechanism
+	// by which a self-hosted control plane's LKG can ever advance (its pre-pivot
+	// fetch can never succeed, so without this the frozen set is permanent).
+	if existing, err := LoadBootLKG(c.LKGPath); err == nil && existing.Frozen && !bc.FromPending {
 		return nil // already captured (or re-provision raced) — do not overwrite
 	}
 	if bc == nil {

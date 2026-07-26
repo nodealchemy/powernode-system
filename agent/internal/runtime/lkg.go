@@ -119,8 +119,13 @@ type BootComposedBreadcrumb struct {
 	// remaining modules, but the composed set is NOT the complete assignment.
 	// The capturer refuses to freeze an incomplete set as last-known-good, so the
 	// LKG is only ever a COMPLETE proven composition.
-	Incomplete bool        `json:"incomplete,omitempty"`
-	Modules    []LKGModule `json:"modules"`
+	Incomplete bool `json:"incomplete,omitempty"`
+	// FromPending marks a boot that composed from a STAGED, not-yet-proven set
+	// (see pending_compose.go). Unlike FromLKG, such a boot is exactly what the
+	// capturer must promote once health-gated — that promotion is the only way a
+	// self-hosted control plane's frozen LKG can ever advance.
+	FromPending bool        `json:"from_pending,omitempty"`
+	Modules     []LKGModule `json:"modules"`
 }
 
 // AppHealthCfg is the SiteSetting-delivered promotion-gate config, carried on

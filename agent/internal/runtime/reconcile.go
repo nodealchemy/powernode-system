@@ -2,10 +2,12 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -498,7 +500,103 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 
 	r.lastReconcileAt = time.Now()
 	r.lastError = nil
+
+	// Stage the desired set for the NEXT boot. This is the post-pivot half of the
+	// pending-compose mechanism: we are running, healthy enough to have completed
+	// a reconcile, and — unlike the pre-pivot compose — we can actually reach the
+	// platform. On a self-hosted control plane this is the only moment the node
+	// ever learns what it is supposed to be running.
+	r.stagePendingCompose(desiredModules, manifests, assignmentMeta)
 	return nil
+}
+
+// stagePendingCompose records the currently-desired module set so the next boot
+// can compose it even though its own pre-pivot fetch will fail.
+//
+// It stages ONLY when the desired set differs from what this boot actually
+// composed, and only when every data module's blob is already in the local
+// cache — a staged set whose blobs are missing would compose into a root that
+// cannot mount, and the pre-pivot side has no network to fetch them with.
+//
+// Best-effort throughout: this is an optimisation for the next boot, never a
+// reason to fail the current reconcile.
+func (r *Reconciler) stagePendingCompose(assigned []AssignedModule, manifests map[string]*manifest.Manifest, meta AssignmentMeta) {
+	bc, err := LoadBreadcrumb(BootBreadcrumbPath)
+	if err != nil {
+		return // no breadcrumb (non-pivot node, or compose wrote none) — nothing to compare against
+	}
+
+	mods := make([]LKGModule, 0, len(assigned))
+	for _, mod := range assigned {
+		lm := LKGModule{ID: mod.ID, Name: mod.Name, EffectivePriority: mod.EffectivePriority,
+			HasDataFile: mod.HasDataFile, Variety: mod.Variety}
+		if mod.HasDataFile {
+			m, ok := manifests[mod.ID]
+			if !ok || m.Digest == "" {
+				return // incomplete view of the desired set — never stage a partial one
+			}
+			// The blob must already be local: the pre-pivot consumer cannot fetch.
+			if _, statErr := os.Stat(r.cfg.Layout.ModuleCachePath(m.Digest)); statErr != nil {
+				return // not pulled yet; a later reconcile will stage once it is
+			}
+			lm.EffectivePriority = m.EffectivePriority
+			lm.Digest = m.Digest
+			if raw, mErr := json.Marshal(m); mErr == nil {
+				lm.Manifest = raw
+			}
+		}
+		mods = append(mods, lm)
+	}
+	if len(mods) == 0 {
+		return
+	}
+	if sameComposition(bc.Modules, mods) {
+		return // already running exactly this; nothing to stage
+	}
+
+	pend := &PendingCompose{
+		Set: BootLKG{
+			ConfirmedAt:               time.Now().UTC(),
+			Source:                    r.cfg.PlatformURL,
+			Hostname:                  meta.Hostname,
+			StalenessThresholdSeconds: meta.StalenessThresholdSeconds,
+			AppHealth: AppHealthCfg{
+				URL:                 meta.AppHealthURL,
+				RequiredConsecutive: meta.AppHealthRequiredConsecutive,
+				PollIntervalSeconds: meta.AppHealthPollIntervalSeconds,
+			},
+			Modules: mods,
+		},
+		StagedAt: time.Now().UTC(),
+		Reason:   "assigned-module set differs from the composed set",
+	}
+	if err := WritePendingCompose(PendingComposePath, pend); err != nil {
+		r.cfg.OnError("reconciler:stage_pending_compose", err)
+		return
+	}
+	r.cfg.OnError("reconciler:staged_pending_compose", fmt.Errorf(
+		"staged %d-module composition for the next boot (was %d) — it will be tried once, "+
+			"with the frozen LKG still underneath", len(mods), len(bc.Modules)))
+}
+
+// sameComposition compares two module sets by (id, digest), order-insensitively.
+// Priority and manifest churn are deliberately ignored: restaging on cosmetic
+// changes would burn the attempt budget without changing what actually mounts.
+func sameComposition(a, b []LKGModule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]string, len(a))
+	for _, m := range a {
+		seen[m.ID] = m.Digest
+	}
+	for _, m := range b {
+		d, ok := seen[m.ID]
+		if !ok || d != m.Digest {
+			return false
+		}
+	}
+	return true
 }
 
 // mountModuleArtifact pulls the module's erofs blob, verifies it (cosign bundle
