@@ -559,9 +559,23 @@ func (r *Reconciler) stagePendingCompose(assigned []AssignedModule, manifests ma
 	// that keeps the platform serving but never passes the health gate would
 	// retry forever across reboots instead of being abandoned after
 	// PendingMaxTries. It also fsync'd /persist every minute for nothing.
+	attempts := 0
 	if existing, err := LoadPendingCompose(PendingComposePath); err == nil {
 		if sameComposition(existing.Set.Modules, mods) {
-			return // already staged, with its burned attempts intact
+			// Same modules. Normally nothing to do — but the SiteSetting-delivered
+			// health-gate config travels with the staged set, so an operator fixing
+			// a bad gate URL would otherwise never reach an already-staged set: its
+			// remaining attempt would retry against the same broken gate and burn
+			// out. Refresh the metadata while PRESERVING the burned attempts, which
+			// is what stops the exhaustion cap being reset.
+			if existing.Set.AppHealth == (AppHealthCfg{
+				URL:                 meta.AppHealthURL,
+				RequiredConsecutive: meta.AppHealthRequiredConsecutive,
+				PollIntervalSeconds: meta.AppHealthPollIntervalSeconds,
+			}) && existing.Set.StalenessThresholdSeconds == meta.StalenessThresholdSeconds {
+				return // identical set AND identical gate config — nothing to write
+			}
+			attempts = existing.Attempts
 		}
 	}
 
@@ -579,6 +593,7 @@ func (r *Reconciler) stagePendingCompose(assigned []AssignedModule, manifests ma
 			Modules: mods,
 		},
 		StagedAt: time.Now().UTC(),
+		Attempts: attempts,
 		Reason:   "assigned-module set differs from the composed set",
 	}
 	if err := WritePendingCompose(PendingComposePath, pend); err != nil {

@@ -17,7 +17,12 @@ import (
 func lkgTestEnv(t *testing.T) (dir string, restore func()) {
 	t.Helper()
 	dir = t.TempDir()
+	// PendingComposePath too: resolveComposeSet now CLEARS the staged file on a
+	// successful live fetch and READS it on a failed one, so a test that does not
+	// redirect it mutates the host's real /persist state.
 	origLKG, origBC, origSentinel := BootLKGPath, BootBreadcrumbPath, LKGDisableSentinel
+	origPending := PendingComposePath
+	PendingComposePath = filepath.Join(dir, "pending-compose.json")
 	origAttempts, origBackoff, origCmdline := lkgFetchAttempts, lkgFetchBackoff, procCmdlinePath
 	BootLKGPath = filepath.Join(dir, "assignment-lkg.json")
 	BootBreadcrumbPath = filepath.Join(dir, "boot-composed.json")
@@ -28,6 +33,7 @@ func lkgTestEnv(t *testing.T) (dir string, restore func()) {
 	_ = os.WriteFile(procCmdlinePath, []byte("ro quiet\n"), 0o644)
 	return dir, func() {
 		BootLKGPath, BootBreadcrumbPath, LKGDisableSentinel = origLKG, origBC, origSentinel
+		PendingComposePath = origPending
 		lkgFetchAttempts, lkgFetchBackoff, procCmdlinePath = origAttempts, origBackoff, origCmdline
 	}
 }

@@ -39,7 +39,34 @@ import (
 // panics the node cannot retry forever. When a pending-composed boot passes the
 // same health gate that guards the boot-slot bless, LKGCapturer promotes it to
 // the frozen LKG, which is what finally lets the LKG advance.
-const PendingComposePath = "/persist/var/lib/powernode/pending-compose.json"
+// DefaultPendingComposePath is the /persist-backed staging file.
+const DefaultPendingComposePath = "/persist/var/lib/powernode/pending-compose.json"
+
+// PendingComposePath is where the staged set is read and written. A var, not a
+// const, so tests can point it at a temp dir — matching BootLKGPath and
+// BootBreadcrumbPath, which are vars for exactly this reason. As a const it was
+// a live footgun: the promote path calls ClearPendingCompose(PendingComposePath),
+// so running `go test` on any node with a staged set silently DELETED it, and
+// the fetch-failure paths read the host's real file. Debugging on the control
+// plane is precisely when that would happen.
+var PendingComposePath = DefaultPendingComposePath
+
+// SetPendingComposePathForTest points the staging file at path and returns a
+// restore func.
+func SetPendingComposePathForTest(path string) (restore func()) {
+	prev := PendingComposePath
+	PendingComposePath = path
+	return func() { PendingComposePath = prev }
+}
+
+// SetBootBreadcrumbPathForTest points the breadcrumb at path and returns a
+// restore func. Same reasoning: stagePendingCompose reads the breadcrumb, so a
+// test that does not redirect it reads the host's real boot state.
+func SetBootBreadcrumbPathForTest(path string) (restore func()) {
+	prev := BootBreadcrumbPath
+	BootBreadcrumbPath = path
+	return func() { BootBreadcrumbPath = prev }
+}
 
 // PendingMaxTries bounds how many boots may attempt an unproven composition
 // before it is abandoned and the node falls back to the frozen LKG. One real

@@ -228,11 +228,25 @@ func (c *LKGCapturer) Run(ctx context.Context) error {
 	// one could promote a set that already failed its trial. Empty on either side
 	// means the id is unavailable (non-Linux, /proc absent), where we keep the
 	// prior behaviour rather than refusing to capture at all.
-	if now := CurrentBootID(); now != "" && bc.BootID != "" && bc.BootID != now {
+	nowBoot := CurrentBootID()
+	if nowBoot != "" && bc.BootID != "" && bc.BootID != nowBoot {
 		c.onError("lkg_capture:stale_breadcrumb", fmt.Errorf(
 			"breadcrumb is from boot %s but this is boot %s — refusing to promote a set this boot did not compose",
-			bc.BootID, now))
+			bc.BootID, nowBoot))
 		return nil
+	}
+	// Proceeding without id verification is deliberate: refusing would let any
+	// future sandbox that hides /proc permanently and silently disable LKG
+	// advancement — the same failure SHAPE this mechanism exists to remove. But a
+	// FromPending promotion is the one case where staleness could overwrite a
+	// proven LKG, so say so out loud rather than degrading quietly. Also covers
+	// the one-boot transition window after an agent upgrade, where the previous
+	// binary wrote a breadcrumb with no BootID at all.
+	if bc.FromPending && (nowBoot == "" || bc.BootID == "") {
+		c.onError("lkg_capture:unverified_pending_promotion", fmt.Errorf(
+			"promoting a staged set without boot-id verification (breadcrumb id %q, current %q) — "+
+				"a breadcrumb left by a previous boot could not be distinguished from this one",
+			bc.BootID, nowBoot))
 	}
 	if bc.FromLKG {
 		return nil // this boot fell back to the LKG — nothing new to promote

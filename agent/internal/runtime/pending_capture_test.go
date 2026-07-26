@@ -6,6 +6,8 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"os"
 	"testing"
 	"time"
@@ -33,7 +35,9 @@ func TestCapturer_PromotesAFromPendingBootOverAFrozenLKG(t *testing.T) {
 	// This boot composed the STAGED set (TakePendingCompose already burned the
 	// attempt) and recorded FromPending pre-pivot.
 	if err := WriteBreadcrumb(bcPath, &BootComposedBreadcrumb{
-		ComposedAt: time.Now().UTC(), FromPending: true, Modules: newSet,
+		ComposedAt: time.Now().UTC(), FromPending: true,
+		BootID:  CurrentBootID(), // exercise the MATCHING-id accept path, not the empty-id bypass
+		Modules: newSet,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,46 +64,61 @@ func TestCapturer_PromotesAFromPendingBootOverAFrozenLKG(t *testing.T) {
 	}
 }
 
-// P2 (round 4): staging must compare against what is ALREADY staged, not only
-// against what booted. Rewriting the file each reconcile tick reset Attempts to
-// zero, silently erasing the exhaustion cap — so a set that never passes the
-// health gate would retry forever instead of being abandoned.
-func TestStagePendingCompose_PreservesBurnedAttempts(t *testing.T) {
+// P2 (round 4/5): the guard lives in stagePendingCompose, so the test must
+// DRIVE stagePendingCompose. The previous version of this test wrote a file,
+// reloaded it and asserted the field it had just written — it passed with the
+// P2 fix reverted, i.e. it covered nothing.
+func TestStagePendingCompose_SecondStageDoesNotResetAttempts(t *testing.T) {
 	dir := t.TempDir()
+	defer SetPendingComposePathForTest(dir + "/pending.json")()
 	cache := dir + "/cache"
 	if err := os.MkdirAll(cache, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cache+"/blob.erofs", []byte("x"), 0o644); err != nil {
+	lay := mount.Layout{ModulesCacheRoot: cache}
+	if err := os.WriteFile(lay.ModuleCachePath("sha256:new"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	path := dir + "/pending.json"
-	mods := []LKGModule{{ID: "m1", Name: "mod", HasDataFile: true,
-		Digest: "sha256:aa", Manifest: json.RawMessage(`{"id":"m1"}`)}}
-
-	if err := WritePendingCompose(path, &PendingCompose{
-		Set: BootLKG{ConfirmedAt: time.Now().UTC(), Modules: mods}, Attempts: 1,
+	bcPath := dir + "/boot-composed.json"
+	// What THIS boot composed — deliberately different from desired below.
+	if err := WriteBreadcrumb(bcPath, &BootComposedBreadcrumb{
+		ComposedAt: time.Now().UTC(),
+		Modules:    []LKGModule{{ID: "m1", HasDataFile: true, Digest: "sha256:old"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Same composition already staged → a re-stage must be a no-op.
-	existing, err := LoadPendingCompose(path)
+	defer SetBootBreadcrumbPathForTest(bcPath)()
+
+	r := &Reconciler{cfg: ReconcilerConfig{
+		Layout:  mount.Layout{ModulesCacheRoot: cache},
+		OnError: func(string, error) {},
+	}}
+	assigned := []AssignedModule{{ID: "m1", Name: "mod", HasDataFile: true}}
+	manifests := map[string]*manifest.Manifest{"m1": {ID: "m1", Digest: "sha256:new"}}
+
+	r.stagePendingCompose(assigned, manifests, AssignmentMeta{})
+	first, err := LoadPendingCompose(PendingComposePath)
+	if err != nil {
+		t.Fatalf("first stage wrote nothing: %v", err)
+	}
+	if first.Attempts != 0 {
+		t.Fatalf("fresh stage should start at 0 attempts, got %d", first.Attempts)
+	}
+
+	// A boot consumes it, burning an attempt.
+	if got := TakePendingCompose(PendingComposePath, lay.ModuleCachePath, nil); got == nil {
+		t.Fatal("staged set was not offered")
+	}
+
+	// The reconciler ticks again with the SAME desired set. It must not rewrite.
+	r.stagePendingCompose(assigned, manifests, AssignmentMeta{})
+	after, err := LoadPendingCompose(PendingComposePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameComposition(existing.Set.Modules, mods) {
-		t.Fatal("fixture problem: compositions should match")
-	}
-	if existing.Attempts != 1 {
-		t.Fatalf("burned attempt lost: Attempts = %d, want 1", existing.Attempts)
-	}
-	// And the cap must still bind after the remaining attempt is taken.
-	cp := func(string) string { return cache + "/blob.erofs" }
-	if got := TakePendingCompose(path, cp, nil); got == nil {
-		t.Fatal("expected the last attempt to be offered")
-	}
-	if got := TakePendingCompose(path, cp, nil); got != nil {
-		t.Error("offered a set past PendingMaxTries — the exhaustion cap did not bind")
+	if after.Attempts != 1 {
+		t.Errorf("re-stage reset the attempt counter to %d — the exhaustion cap is defeated "+
+			"and a never-healthy set would retry forever", after.Attempts)
 	}
 }
 
