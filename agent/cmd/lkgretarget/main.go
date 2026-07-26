@@ -56,6 +56,7 @@ func run() error {
 	digest := flag.String("digest", "", "new sha256:<64-hex> blob digest")
 	fsv := flag.String("fsverity", "", "new sha256:<64-hex> fsverity root hash")
 	cacheDir := flag.String("cache-dir", "/persist/cache/modules", "module erofs blob cache")
+	manifestPath := flag.String("manifest", "", "JSON manifest to REPLACE the module's stored one (required when the new build changes services/users/security — see -help)")
 	apply := flag.Bool("apply", false, "write the change (default: dry-run, which still validates)")
 	flag.Parse()
 
@@ -105,8 +106,31 @@ func run() error {
 	}
 	fmt.Printf("blob     : %s (sha256 verified)\n", cachePath(*digest))
 
-	if len(m.Manifest) > 0 {
-		patched, prev, err := patchManifest(m.Manifest, *digest, *fsv)
+	// The stored manifest is NOT cosmetic: the agent renders systemd units,
+	// users, groups and security policy from THIS copy, not from the manifest
+	// inside the newly-composed erofs. Retargeting only the digest therefore
+	// ships a module's FILES while silently discarding any change to what it
+	// RUNS — the delivery looks complete (digest matches, files present on the
+	// node) and the new behaviour simply never appears. Observed 2026-07-26:
+	// reverse-proxy-traefik shipped a new restore script and its new oneshot
+	// unit was never created, because the stored manifest still listed only the
+	// original service.
+	base := m.Manifest
+	replaced := false
+	if strings.TrimSpace(*manifestPath) != "" {
+		supplied, err := os.ReadFile(*manifestPath)
+		if err != nil {
+			return fmt.Errorf("read -manifest: %w", err)
+		}
+		if !json.Valid(supplied) {
+			return fmt.Errorf("-manifest %s is not valid JSON", *manifestPath)
+		}
+		base = supplied
+		replaced = true
+	}
+
+	if len(base) > 0 {
+		patched, prev, err := patchManifest(base, *digest, *fsv)
 		if err != nil {
 			return fmt.Errorf("manifest: %w", err)
 		}
@@ -114,6 +138,16 @@ func run() error {
 		m.Manifest = patched
 	}
 	m.Digest = *digest
+
+	if replaced {
+		fmt.Printf("manifest : REPLACED from %s (%s)\n", *manifestPath, describeUnits(m.Manifest))
+	} else {
+		fmt.Printf("manifest : kept as-is (%s)\n", describeUnits(m.Manifest))
+		fmt.Println("           NOTE: only the blob digest changes. If this build added or altered")
+		fmt.Println("           services/users/groups/security, those will NOT take effect — the")
+		fmt.Println("           agent renders units from the stored manifest above. Re-run with")
+		fmt.Println("           -manifest <file.json> to replace it.")
+	}
 
 	// Write the candidate to a TEMP file beside the target and validate THAT.
 	// Only a candidate the agent's own validator accepts may become the live LKG.
@@ -231,4 +265,30 @@ func syncDir(dir string) error {
 	}
 	defer d.Close()
 	return d.Sync()
+}
+
+// describeUnits summarises what the stored manifest will actually RUN, so the
+// operator can see at a glance whether the delivery carries the services they
+// expect. The whole failure mode this guards against is a retarget that reports
+// success while the module's units stay frozen at the previous build's set.
+func describeUnits(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "no manifest stored"
+	}
+	var man struct {
+		Services []struct {
+			Name string `json:"name"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(raw, &man); err != nil {
+		return "unparseable manifest"
+	}
+	if len(man.Services) == 0 {
+		return "declares no services"
+	}
+	names := make([]string, 0, len(man.Services))
+	for _, s := range man.Services {
+		names = append(names, s.Name)
+	}
+	return "services: " + strings.Join(names, ", ")
 }
