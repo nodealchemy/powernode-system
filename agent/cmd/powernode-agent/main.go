@@ -76,6 +76,7 @@ See https://docs.powernode.org/agent for full documentation.`,
 		persistSetupCmd(),
 		puppetCmd(),
 		upgradeBootImageCmd(),
+		abandonBootImageCmd(),
 		versionCmd(),
 	)
 

@@ -33,6 +33,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
 	"github.com/nodealchemy/powernode-system/agent/internal/bootupgrade"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
+	"github.com/nodealchemy/powernode-system/agent/internal/espwrite"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
@@ -1608,5 +1609,69 @@ Maps puppet --detailed-exitcodes (0/2/4/6) to CLI exit codes (0/0/9/10).`,
 	apply.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output")
 
 	c.AddCommand(apply)
+	return c
+}
+
+// abandonBootImageCmd clears a boot-slot upgrade that can never confirm.
+//
+// ConfirmBoot deliberately RETAINS Pending on the three branches where it cannot
+// reach a verdict: efivars/LoaderInfo undeterminable, an empty booted git_sha
+// with no contradicting slot signal, and running the pending slot while its image
+// reports a different sha than was requested (what a wrong --target-git-sha
+// produces). Refusing to guess is correct — the alternative deletes the only boot
+// file of a slot that may be the running one.
+//
+// But Pending lives on /persist, and the in-flight guard in Apply refuses every
+// subsequent upgrade while it is set. Within a boot the sha cannot change, so
+// those branches never resolve; across boots they resolve only when systemd-boot
+// exhausts the entry's boot counter, which needs three more reboots — on a
+// long-uptime control plane, potentially never. Without this the only escape is
+// hand-editing the state file.
+//
+// Abandoning touches the PENDING slot only: it clears the state and removes that
+// slot's counter files. The ACTIVE slot — the rollback target, and on the
+// no-verdict branches quite possibly what is actually running — is never touched.
+func abandonBootImageCmd() *cobra.Command {
+	var yes bool
+	c := &cobra.Command{
+		Use:   "abandon-boot-image",
+		Short: "Clear a pending boot-slot upgrade that can never confirm (operator escape)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			st := bootslots.Load()
+			if st.Pending == "" {
+				fmt.Fprintln(cmd.OutOrStdout(), "no boot-image upgrade pending — nothing to abandon")
+				return nil
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "pending slot   : %s\n", st.Pending)
+			fmt.Fprintf(out, "pending sha    : %s\n", st.PendingSHA)
+			fmt.Fprintf(out, "active slot    : %s (will NOT be touched)\n", st.Active)
+			if !yes {
+				fmt.Fprintln(out, "\nDRY RUN — pass --yes to abandon. This clears the pending state and removes")
+				fmt.Fprintln(out, "slot "+st.Pending+"'s counter files. If the node is CURRENTLY RUNNING the pending")
+				fmt.Fprintln(out, "slot, that removes the image it booted from: reboot onto the active slot first.")
+				return nil
+			}
+			// Order matters: clear the state BEFORE touching the ESP. If the ESP
+			// removal fails we must not be left claiming an upgrade is still in
+			// flight for files that are already gone.
+			if err := bootslots.Update(func(s *bootslots.State) error {
+				s.Pending = ""
+				s.PendingSHA = ""
+				return nil
+			}); err != nil {
+				return fmt.Errorf("clear pending state: %w", err)
+			}
+			if err := espwrite.CleanSlot(cmd.Context(), mount.ExecRunner{}, bootslots.EntryBase(st.Pending)); err != nil {
+				// The state is already clear, so the upgrade IS abandoned and the
+				// guard is unblocked; stale counter files are harmless (WriteUKISlot
+				// clears the slot family before every write). Report, don't fail.
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: pending state cleared but slot %s counter files remain: %v\n", st.Pending, err)
+			}
+			fmt.Fprintf(out, "\nabandoned: slot %s is no longer pending; upgrades are unblocked\n", st.Pending)
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&yes, "yes", false, "actually abandon (default: dry-run)")
 	return c
 }

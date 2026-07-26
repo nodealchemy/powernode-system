@@ -206,8 +206,25 @@ func setLoaderDefaultDir(mnt, entryBase string) error {
 		lines = append(lines, "default "+entryBase+".efi")
 	}
 	out := strings.Join(lines, "\n")
+	// fsync the staged file before the rename: vfat guarantees no ordering
+	// between data and rename, so a crash inside the promote window could
+	// otherwise leave loader.conf structurally present but garbled. Bounded harm
+	// (sd-boot skips unparseable lines and NVRAM takes precedence), but the write
+	// path either syncs or it doesn't — be symmetric with every other ESP write.
 	tmp := path + ".new"
-	if err := os.WriteFile(tmp, []byte(out), 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(out); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

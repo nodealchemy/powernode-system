@@ -108,7 +108,6 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	// upgrade would clear is the one we booted from. Advisory only: the state can
 	// change while the download runs (the heartbeat's ConfirmBoot may bless or
 	// roll back mid-pull), so the authoritative check is repeated under bootMu.
-	// Both outcomes clear Pending, so this unblocks itself.
 	if p := bootslots.Load().Pending; p != "" {
 		// NOT self-clearing in every case. ConfirmBoot reaches a verdict and clears
 		// Pending when it can prove bless-or-rollback, but three branches retain it
@@ -121,8 +120,8 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 		return "", fmt.Errorf("refusing boot-image upgrade: slot %s is pending confirmation — "+
 			"the running slot is not yet blessed, so overwriting the inactive slot now would "+
 			"clear the image this node booted from. If the pending upgrade can never confirm "+
-			"(e.g. it was dispatched with the wrong target sha), clear \"pending\"/\"pending_sha\" "+
-			"in %s and re-dispatch", p, bootslots.DefaultStatePath)
+			"(e.g. it was dispatched with the wrong target sha), run "+
+			"`powernode-agent abandon-boot-image --yes` to clear it, then re-dispatch", p)
 	}
 
 	stage := d.StageDir
@@ -271,8 +270,13 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 // actually booted, it blesses the new slot — strips the systemd-boot boot-counter
 // from its UKI filename so it stops counting toward rollback — and, only after
 // confirming the blessed file exists, promotes it to the persistent default. If
-// the node instead rolled back to the previous slot, it cleans the failed
-// attempt's counter files and leaves the active slot unchanged. Idempotent: on a
+// the node instead rolled back to the previous slot, it clears the attempt from
+// state and leaves the ESP ALONE — deliberately (see the tail comment): it does
+// NOT remove the failed attempt's counter files, because on the branches where
+// the booted slot is unprovable those files may belong to the slot currently
+// running. Stale counter files are harmless — WriteUKISlot clears a slot family
+// before every write — and `powernode-agent abandon-boot-image` removes them on
+// demand. Idempotent: on a
 // retry (e.g. set-default failed), the already-blessed slot re-blesses as a
 // no-op. Returns an error (leaving Pending set for a retry) if any step fails, so
 // a healthy upgrade is never left un-promoted while state claims success.
