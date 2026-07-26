@@ -27,6 +27,7 @@ file_spec:
   - "/sbin/poweroff"
   - "/sbin/halt"
   - "/sbin/reboot"
+  - "/sbin/modprobe"
   - "/etc/powernode/**"
 
 # Ubuntu is usr-merged: /sbin is normally a SYMLINK to usr/sbin. Because this
