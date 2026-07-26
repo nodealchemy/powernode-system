@@ -127,3 +127,37 @@ func TestRemoveSlotCountersAlsoRemovesStagingLitter(t *testing.T) {
 		t.Errorf("the other slot's good file was removed: %v", err)
 	}
 }
+
+// Risk 5 from the INV-8 review: the rollback-target refusal (Apply bails when
+// the ACTIVE slot has no blessed UKI) was exercised only incidentally. This
+// covers the predicate that gates it. A slot holding only counter-suffixed
+// files is NOT a valid rollback target — systemd-boot may still count it bad,
+// so falling back to it is not guaranteed to boot.
+func TestSlotGoodExistsDirRequiresTheCounterlessFile(t *testing.T) {
+	dir := t.TempDir()
+
+	if slotGoodExistsDir(dir, "powernode-a") {
+		t.Error("empty slot reported as a good rollback target")
+	}
+
+	// Counter-suffixed only: still NOT good.
+	if err := os.WriteFile(filepath.Join(dir, "powernode-a+3.efi"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if slotGoodExistsDir(dir, "powernode-a") {
+		t.Error("slot with only a counter-suffixed UKI reported as a good rollback target")
+	}
+
+	// Blessed (counterless) file present: good.
+	if err := os.WriteFile(filepath.Join(dir, "powernode-a.efi"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !slotGoodExistsDir(dir, "powernode-a") {
+		t.Error("blessed slot not reported as a good rollback target")
+	}
+
+	// Must not be fooled by the OTHER slot being blessed.
+	if slotGoodExistsDir(dir, "powernode-b") {
+		t.Error("slot b reported good on the strength of slot a's file")
+	}
+}

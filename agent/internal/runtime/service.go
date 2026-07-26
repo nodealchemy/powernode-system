@@ -269,6 +269,14 @@ func (s *Service) Run(ctx context.Context) error {
 	// default. PostSend runs sequentially in the heartbeat goroutine, so this
 	// plain flag needs no lock; it retries each tick until ConfirmBoot succeeds.
 	bootBlessed := false
+	// lastBootConfirmErr de-duplicates the confirm's error reporting. Several of
+	// ConfirmBoot's refusals are PERMANENT for the rest of the boot — the booted
+	// sha cannot change, so e.g. the unprovable-slot branch returns the identical
+	// error on every heartbeat tick until the next reboot. Reporting it each time
+	// buries everything else in the log without adding information. Report on
+	// first occurrence and whenever the message CHANGES (a changed message is real
+	// news: the situation moved), stay quiet while it repeats.
+	lastBootConfirmErr := ""
 	heartbeat := &Heartbeater{
 		Client:    client,
 		StartedAt: startedAt,
@@ -278,7 +286,10 @@ func (s *Service) Run(ctx context.Context) error {
 		PostSend: func() {
 			if !bootBlessed {
 				if err := bootupgrade.ConfirmBoot(ctx, mount.ExecRunner{}, s.bootedImageGitSHA); err != nil {
-					s.cfg.OnError("boot_confirm", err)
+					if msg := err.Error(); msg != lastBootConfirmErr {
+						lastBootConfirmErr = msg
+						s.cfg.OnError("boot_confirm", err)
+					}
 				} else {
 					bootBlessed = true
 				}

@@ -148,11 +148,20 @@ func CleanSlot(ctx context.Context, r mount.Runner, entryBase string) error {
 func SlotGoodExists(ctx context.Context, r mount.Runner, entryBase string) (bool, error) {
 	found := false
 	err := withMountedESP(ctx, r, func(mnt string) error {
-		_, e := os.Stat(filepath.Join(mnt, "EFI", "Linux", entryBase+".efi"))
-		found = e == nil
+		found = slotGoodExistsDir(filepath.Join(mnt, "EFI", "Linux"), entryBase)
 		return nil
 	})
 	return found, err
+}
+
+// slotGoodExistsDir is the mount-relative half of SlotGoodExists: does the
+// COUNTERLESS (blessed) file for this slot exist? Split out so the predicate is
+// unit-testable without a real UEFI node and a mounted ESP — the distinction
+// that matters is that a slot holding ONLY counter-suffixed files is not a valid
+// rollback target, because systemd-boot may still count it bad.
+func slotGoodExistsDir(linuxDir, entryBase string) bool {
+	_, err := os.Stat(filepath.Join(linuxDir, entryBase+".efi"))
+	return err == nil
 }
 
 // SetLoaderDefault rewrites loader.conf's `default` directive to point at a
