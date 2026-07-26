@@ -250,10 +250,30 @@ func removeSlotCounters(linuxDir, entryBase string) {
 	}
 }
 
-// withMountedESP requires UEFI, locates + mounts the ESP (fresh rw when it isn't
-// already mounted — post-switch_root the ESP is unmounted, so this is the write
-// path), runs fn, syncs, and unmounts what it mounted.
-func withMountedESP(ctx context.Context, r mount.Runner, fn func(mnt string) error) (err error) {
+// withMountedESP is a VAR, not a plain func, so tests can redirect the ESP
+// write path at a temp directory (SetESPMountForTest). Without that seam the
+// only way to exercise WriteUKISlot — and therefore anything in bootupgrade
+// that writes a slot before doing something else — is on a machine with a real
+// UEFI ESP, which is why several boot-upgrade behaviours had no coverage at
+// all. The read/bless side already had dir-variant seams (slotGoodExistsDir,
+// blessSlotDir, setLoaderDefaultDir); this closes the same gap for the writer.
+var withMountedESP = withMountedESPReal
+
+// SetESPMountForTest redirects every ESP write to dir and returns a restore
+// func. Tests MUST defer the restore — a leaked override would silently point
+// production code at a temp dir for the rest of the process.
+func SetESPMountForTest(dir string) (restore func()) {
+	prev := withMountedESP
+	withMountedESP = func(_ context.Context, _ mount.Runner, fn func(mnt string) error) error {
+		return fn(dir)
+	}
+	return func() { withMountedESP = prev }
+}
+
+// withMountedESPReal requires UEFI, locates + mounts the ESP (fresh rw when it
+// isn't already mounted — post-switch_root the ESP is unmounted, so this is the
+// write path), runs fn, syncs, and unmounts what it mounted.
+func withMountedESPReal(ctx context.Context, r mount.Runner, fn func(mnt string) error) (err error) {
 	if !IsUEFI() {
 		return errors.New("not a UEFI node — refusing ESP write")
 	}
