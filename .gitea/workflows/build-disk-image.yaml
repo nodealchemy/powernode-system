@@ -500,6 +500,7 @@ jobs:
         env:
           POWERNODE_DISK_IMAGE_WEBHOOK_URL: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_URL }}
           POWERNODE_DISK_IMAGE_WEBHOOK_SECRET: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_SECRET }}
+          POWERNODE_PLATFORM_CA_PEM: ${{ secrets.POWERNODE_PLATFORM_CA_PEM }}
           ORAS_REGISTRY: ${{ env.REGISTRY_HOST }}
         run: |
           for entry in "ubuntu-24.04-rpi4:disk-image-rpi4/powernode-rpi4.img" \
@@ -526,12 +527,17 @@ jobs:
             sig=$(printf %s "$body" | openssl dgst -sha256 -hmac "$POWERNODE_DISK_IMAGE_WEBHOOK_SECRET" -hex \
                   | awk '{print $2}')
 
+            ca_opt=""
+            if [ -n "${POWERNODE_PLATFORM_CA_PEM:-}" ]; then
+              printf '%s' "$POWERNODE_PLATFORM_CA_PEM" > /tmp/platform-ca.pem
+              ca_opt="--cacert /tmp/platform-ca.pem"
+            fi
             echo "→ Notifying platform: $POWERNODE_DISK_IMAGE_WEBHOOK_URL"
-            curl -fsSL -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \
+            curl -fsSL $ca_opt -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \
               -H "X-Powernode-Signature: sha256=$sig" \
               -H "Content-Type: application/json" \
               -d "$body" \
-              || echo "WARN: webhook POST failed for $platform"
+              || { echo "::error::webhook POST failed for $platform — built and pushed but NOT published"; exit 1; }
           done
 
       - name: Direct-upload disk images (cloud-install mode)
@@ -876,6 +882,7 @@ jobs:
         env:
           POWERNODE_DISK_IMAGE_WEBHOOK_URL: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_URL }}
           POWERNODE_DISK_IMAGE_WEBHOOK_SECRET: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_SECRET }}
+          POWERNODE_PLATFORM_CA_PEM: ${{ secrets.POWERNODE_PLATFORM_CA_PEM }}
           ORAS_REGISTRY: ${{ env.REGISTRY_HOST }}
         run: |
           platform="ubuntu-24.04-amd64-uefi"
@@ -901,11 +908,24 @@ jobs:
             '{platform_name:$p, oci_ref:$ref, sha256:$sha, size_bytes:$sz, git_sha:$gs, arch:$arch}
              + (if $uref != "" then {uki_oci_ref:$uref, uki_sha256:$usha, uki_cosign_bundle:$ub} else {} end)')
           sig=$(printf %s "$body" | openssl dgst -sha256 -hmac "$POWERNODE_DISK_IMAGE_WEBHOOK_SECRET" -hex | awk '{print $2}')
+          # The platform may serve a private or self-signed certificate (ops-hub
+          # does — a self-signed leaf, chain depth 1). Without pinning it,
+          # `curl -f` fails TLS verification and the publish is LOST. That was
+          # invisible until now because the POST below swallowed its own failure,
+          # so a build could push the image, report SUCCESS, and create no
+          # publication at all. Observed 2026-07-21 → 2026-07-26: five green runs,
+          # zero publications.
+          ca_opt=""
+          if [ -n "${POWERNODE_PLATFORM_CA_PEM:-}" ]; then
+            printf '%s' "$POWERNODE_PLATFORM_CA_PEM" > /tmp/platform-ca.pem
+            ca_opt="--cacert /tmp/platform-ca.pem"
+          fi
           echo "→ Notifying platform: $POWERNODE_DISK_IMAGE_WEBHOOK_URL"
-          curl -fsSL -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \
+          curl -fsSL $ca_opt -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \
             -H "X-Powernode-Signature: sha256=$sig" \
             -H "Content-Type: application/json" \
-            -d "$body" || echo "WARN: webhook POST failed"
+            -d "$body" \
+            || { echo "::error::webhook POST failed — image built and pushed but NOT published"; exit 1; }
 
       - name: Direct-upload amd64 image (cloud-install mode)
         if: env.POWERNODE_STORAGE_MODE == 'cloud-direct' && env.POWERNODE_CI_WORKER_TOKEN != ''
