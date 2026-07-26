@@ -211,7 +211,7 @@ ESP_DECLARED=$(od -An -tu2 -j $((P1_OFFSET + 19)) -N2 "$OUTPUT" | tr -d ' ')
 if [[ "${ESP_DECLARED:-0}" -eq 0 ]]; then
   ESP_DECLARED=$(od -An -tu4 -j $((P1_OFFSET + 32)) -N4 "$OUTPUT" | tr -d ' ')
 fi
-if [[ "${ESP_DECLARED:-0}" -gt "$P1_SECTORS" ]]; then
+if [[ "${ESP_DECLARED:-0}" -le 0 || "${ESP_DECLARED}" -gt "$P1_SECTORS" ]]; then
   log "ERROR: ESP filesystem declares ${ESP_DECLARED} sectors but partition holds only ${P1_SECTORS}"
   exit 1
 fi

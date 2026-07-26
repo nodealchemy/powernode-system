@@ -245,7 +245,25 @@ if [[ "$HAVE_MTOOLS" -eq 1 ]]; then
   log "creating FAT32 boot partition via mtools at offset $P1_OFFSET (offline, no losetup)"
   # mformat -F = FAT32, -i image@@offset = address partition inside disk image,
   # -v BOOT = volume label (init-powernode.sh tries LABEL=BOOT).
-  mformat -F -i "${OUTPUT}@@${P1_OFFSET}" -v BOOT ::
+  # -T: @@offset conveys where the partition STARTS but nothing about where it
+  # ENDS, so without it mtools sizes the FAT from the remainder of the image file
+  # and silently builds a filesystem that overruns its own partition (SIZE_GB=4
+  # ⇒ ~4095MiB inside a 512MiB partition). This mtools branch is the PRIMARY path
+  # — the losetup/mkfs.fat branch below is only the privileged-runner fallback —
+  # so CI-built rpi4 images were affected too.
+  mformat -F -T "$P1_SIZE_SECTORS" -i "${OUTPUT}@@${P1_OFFSET}" -v BOOT ::
+  # Fail the build rather than ship an ESP that overruns its partition. Files
+  # still read back correctly while the filesystem is merely *capable* of
+  # overrunning, so only this boot-sector check catches it.
+  ESP_DECLARED=$(od -An -tu2 -j $((P1_OFFSET + 19)) -N2 "$OUTPUT" | tr -d ' ')
+  if [[ "${ESP_DECLARED:-0}" -eq 0 ]]; then
+    ESP_DECLARED=$(od -An -tu4 -j $((P1_OFFSET + 32)) -N4 "$OUTPUT" | tr -d ' ')
+  fi
+  if [[ "${ESP_DECLARED:-0}" -le 0 || "${ESP_DECLARED}" -gt "$P1_SIZE_SECTORS" ]]; then
+    log "ERROR: boot filesystem declares ${ESP_DECLARED} sectors, partition holds ${P1_SIZE_SECTORS}"
+    exit 1
+  fi
+  log "  boot FS sanity: declares ${ESP_DECLARED} sectors ≤ ${P1_SIZE_SECTORS} partition sectors ✓"
   log "populating FAT32 with $(find "$STAGE" -type f | wc -l) files / $(find "$STAGE" -type d | wc -l) dirs"
   ( cd "$STAGE" && for entry in * .* ; do
       [[ "$entry" == "." || "$entry" == ".." ]] && continue
