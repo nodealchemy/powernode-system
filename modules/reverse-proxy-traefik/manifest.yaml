@@ -80,8 +80,19 @@ services:
     restart_policy: always
     user: traefik
     working_directory: /etc/traefik
+    # Hash form, not a bare name: the platform validator requires
+    # {service:, kind:} so the edge can carry its semantics, and the node_api
+    # serializer flattens it back to the plain name the agent's manifest struct
+    # expects (`dependencies: svc.dependencies.map(&:name)`). A list of strings
+    # here parses fine on the agent side but is REJECTED by
+    # ManifestImportService, so the module's service rows would silently never
+    # update — which is exactly how this was found.
+    # start_before (not the requires_health default): restore-dynamic is a
+    # Type=oneshot with no health endpoint; the contract is "it finished", which
+    # RemainAfterExit + the generated Requires=/After= already express.
     dependencies:
-      - restore-dynamic
+      - service: restore-dynamic
+        kind: start_before
     exposed_ports:
       - { port: 80,  protocol: tcp, name: web }
       - { port: 443, protocol: tcp, name: websecure }
