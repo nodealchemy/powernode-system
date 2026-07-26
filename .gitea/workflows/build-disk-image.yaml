@@ -545,11 +545,22 @@ jobs:
 
             ca_opt=""; [ -f /tmp/platform-ca.pem ] && ca_opt="--cacert /tmp/platform-ca.pem"
             echo "→ Notifying platform: $POWERNODE_DISK_IMAGE_WEBHOOK_URL"
-            curl -fsSL $ca_opt -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \
+            # See the amd64 step: the receiver answers 200 even when it rejects
+            # the delivery, so the body has to be inspected as well.
+            resp=$(curl -sS $ca_opt -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \
               -H "X-Powernode-Signature: sha256=$sig" \
               -H "Content-Type: application/json" \
-              -d "$body" \
-              || { echo "::error::webhook POST failed for $platform — built and pushed but NOT published"; exit 1; }
+              -d "$body" -w '\n%{http_code}') \
+              || { echo "::error::webhook POST could not reach the platform for $platform — pushed but NOT published"; exit 1; }
+            code=$(printf '%s' "$resp" | tail -n1)
+            payload=$(printf '%s' "$resp" | sed '$d')
+            echo "webhook http=$code body=$payload"
+            if [ "$code" != "200" ] && [ "$code" != "202" ]; then
+              echo "::error::webhook returned http=$code for $platform — pushed but NOT published"; exit 1
+            fi
+            if printf '%s' "$payload" | grep -q '"status":"error"'; then
+              echo "::error::webhook REJECTED $platform: $payload — pushed but NOT published"; exit 1
+            fi
           done
 
       - name: Direct-upload disk images (cloud-install mode)
@@ -946,11 +957,25 @@ jobs:
           # zero publications.
           ca_opt=""; [ -f /tmp/platform-ca.pem ] && ca_opt="--cacert /tmp/platform-ca.pem"
           echo "→ Notifying platform: $POWERNODE_DISK_IMAGE_WEBHOOK_URL"
-          curl -fsSL $ca_opt -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \
+          # The receiver deliberately answers 200 even when it REJECTS the
+          # delivery (webhooks must never 5xx at a provider), e.g.
+          #   {"success":true,"status":"error","reason":"bad_signature"}
+          # so an HTTP-only check cannot tell "published" from "silently
+          # discarded". Inspect the body too.
+          resp=$(curl -sS $ca_opt -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \
             -H "X-Powernode-Signature: sha256=$sig" \
             -H "Content-Type: application/json" \
-            -d "$body" \
-            || { echo "::error::webhook POST failed — image built and pushed but NOT published"; exit 1; }
+            -d "$body" -w '\n%{http_code}') \
+            || { echo "::error::webhook POST could not reach the platform — image pushed but NOT published"; exit 1; }
+          code=$(printf '%s' "$resp" | tail -n1)
+          payload=$(printf '%s' "$resp" | sed '$d')
+          echo "webhook http=$code body=$payload"
+          if [ "$code" != "200" ] && [ "$code" != "202" ]; then
+            echo "::error::webhook returned http=$code — image pushed but NOT published"; exit 1
+          fi
+          if printf '%s' "$payload" | grep -q '"status":"error"'; then
+            echo "::error::webhook REJECTED the delivery: $payload — image pushed but NOT published"; exit 1
+          fi
 
       - name: Direct-upload amd64 image (cloud-install mode)
         if: env.POWERNODE_STORAGE_MODE == 'cloud-direct' && env.POWERNODE_CI_WORKER_TOKEN != ''
