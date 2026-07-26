@@ -235,6 +235,7 @@ func (r *Reconciler) resolveComposeSet(ctx context.Context) (mount.ModuleStack, 
 		}
 		bc := &BootComposedBreadcrumb{
 			ComposedAt:                time.Now().UTC(),
+			BootID:                    CurrentBootID(),
 			FromLKG:                   false,
 			Source:                    r.cfg.PlatformURL,
 			Hostname:                  meta.Hostname,
@@ -246,6 +247,14 @@ func (r *Reconciler) resolveComposeSet(ctx context.Context) (mount.ModuleStack, 
 			},
 			Incomplete: incomplete,
 			Modules:    bcMods,
+		}
+		// Live truth supersedes any staged guess. A normal pivot node stages
+		// whenever desired != composed, then live-fetches fine on its next boot —
+		// leaving that file to linger at Attempts=0 until some later platform
+		// outage, where it would be preferred over the LKG despite possibly having
+		// been rolled back platform-side. Drop it now that we have the real answer.
+		if err := ClearPendingCompose(PendingComposePath); err != nil {
+			r.cfg.OnError("compose:clear_pending_after_live_fetch", err)
 		}
 		return desired, manifests, bc, nil
 	}
@@ -271,6 +280,7 @@ func (r *Reconciler) resolveComposeSet(ctx context.Context) (mount.ModuleStack, 
 				ferr, pend.Attempts, PendingMaxTries, pend.StagedAt.Format(time.RFC3339), len(desired)))
 			bc := &BootComposedBreadcrumb{
 				ComposedAt:                time.Now().UTC(),
+				BootID:                    CurrentBootID(),
 				FromLKG:                   false,
 				FromPending:               true,
 				Source:                    pend.Set.Source,
@@ -307,6 +317,7 @@ func (r *Reconciler) resolveComposeSet(ctx context.Context) (mount.ModuleStack, 
 		fmt.Errorf("live fetch failed (%v) — composed from frozen boot-LKG: %d modules, confirmed %s", ferr, len(desired), lkg.ConfirmedAt.Format(time.RFC3339)))
 	bc := &BootComposedBreadcrumb{
 		ComposedAt:                time.Now().UTC(),
+		BootID:                    CurrentBootID(),
 		FromLKG:                   true,
 		LKGConfirmedAt:            lkg.ConfirmedAt,
 		Source:                    lkg.Source,

@@ -124,8 +124,15 @@ type BootComposedBreadcrumb struct {
 	// (see pending_compose.go). Unlike FromLKG, such a boot is exactly what the
 	// capturer must promote once health-gated — that promotion is the only way a
 	// self-hosted control plane's frozen LKG can ever advance.
-	FromPending bool        `json:"from_pending,omitempty"`
-	Modules     []LKGModule `json:"modules"`
+	FromPending bool `json:"from_pending,omitempty"`
+	// BootID is the kernel's boot_id at compose time. The capturer refuses a
+	// breadcrumb from a different boot: the breadcrumb write is best-effort, so a
+	// failed write leaves the PREVIOUS boot's file on disk — and once FromPending
+	// can authorise overwriting a proven LKG, a stale one could promote a set that
+	// already failed. Cheap to stamp, and it hardens the FromLKG/Incomplete reads
+	// as well.
+	BootID  string      `json:"boot_id,omitempty"`
+	Modules []LKGModule `json:"modules"`
 }
 
 // AppHealthCfg is the SiteSetting-delivered promotion-gate config, carried on
@@ -289,6 +296,17 @@ func (lkg *BootLKG) ToComposeInputs() (mount.ModuleStack, map[string]*manifest.M
 // WriteBreadcrumb atomically records what THIS boot composed. Best-effort in
 // callers: a failed breadcrumb write must not abort a boot (the node still
 // runs; it just can't self-provision an LKG this boot).
+// CurrentBootID reads the kernel's per-boot random id. Empty when unavailable
+// (non-Linux, or /proc not mounted yet) — callers treat empty as "unknown" and
+// fall back to the pre-existing behaviour rather than refusing to work.
+func CurrentBootID() string {
+	b, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
 func WriteBreadcrumb(path string, bc *BootComposedBreadcrumb) error {
 	if bc == nil {
 		return errors.New("WriteBreadcrumb: nil breadcrumb")

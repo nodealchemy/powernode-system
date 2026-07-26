@@ -553,6 +553,17 @@ func (r *Reconciler) stagePendingCompose(assigned []AssignedModule, manifests ma
 	if sameComposition(bc.Modules, mods) {
 		return // already running exactly this; nothing to stage
 	}
+	// Compare against what is ALREADY staged, not just against what booted.
+	// Without this, every reconcile tick (60s) rewrites the file with a
+	// zero-valued Attempts — which silently erases the exhaustion cap, so a set
+	// that keeps the platform serving but never passes the health gate would
+	// retry forever across reboots instead of being abandoned after
+	// PendingMaxTries. It also fsync'd /persist every minute for nothing.
+	if existing, err := LoadPendingCompose(PendingComposePath); err == nil {
+		if sameComposition(existing.Set.Modules, mods) {
+			return // already staged, with its burned attempts intact
+		}
+	}
 
 	pend := &PendingCompose{
 		Set: BootLKG{

@@ -33,6 +33,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
 )
 
 // HealthProber reports whether the composed control plane is serving. Injected
@@ -195,14 +197,12 @@ func (c *LKGCapturer) onError(stage string, err error) {
 // done); it never propagates a fatal error — capture is best-effort and its
 // failure must never take down the service.
 func (c *LKGCapturer) Run(ctx context.Context) error {
-	// Already have a frozen LKG (fresh boot that fell back to it, or a prior
-	// boot already captured) → nothing to do. Only a genuinely-absent file
-	// warrants a promotion; a present-but-unreadable file is left alone for the
-	// operator rather than clobbered.
+	// A present-but-unreadable LKG is left alone for the operator rather than
+	// clobbered. Checked first because it is a refusal, not a decision about
+	// what this boot composed.
+	frozenExists := false
 	if existing, err := LoadBootLKG(c.LKGPath); err == nil {
-		if existing.Frozen {
-			return nil
-		}
+		frozenExists = existing.Frozen
 	} else if !errors.Is(err, os.ErrNotExist) {
 		c.onError("lkg_capture:load_existing", err)
 		return nil
@@ -222,12 +222,31 @@ func (c *LKGCapturer) Run(ctx context.Context) error {
 		c.onError("lkg_capture:no_breadcrumb", err)
 		return nil
 	}
+	// Refuse a breadcrumb that did not come from THIS boot. The breadcrumb write
+	// is best-effort, so a failed write leaves the previous boot's file in place —
+	// and since FromPending can now authorise overwriting a proven LKG, a stale
+	// one could promote a set that already failed its trial. Empty on either side
+	// means the id is unavailable (non-Linux, /proc absent), where we keep the
+	// prior behaviour rather than refusing to capture at all.
+	if now := CurrentBootID(); now != "" && bc.BootID != "" && bc.BootID != now {
+		c.onError("lkg_capture:stale_breadcrumb", fmt.Errorf(
+			"breadcrumb is from boot %s but this is boot %s — refusing to promote a set this boot did not compose",
+			bc.BootID, now))
+		return nil
+	}
 	if bc.FromLKG {
 		return nil // this boot fell back to the LKG — nothing new to promote
 	}
-	// A FromPending boot is the opposite case: it composed something NEW that has
-	// not been proven yet, which is precisely what the gate below exists to prove.
-	// It falls through deliberately.
+	// The frozen-LKG bail lives HERE, below the breadcrumb read, precisely because
+	// it must NOT apply to a FromPending boot. It used to sit above, before the
+	// breadcrumb existed — which made the whole promotion path unreachable on the
+	// nodes this mechanism was built for: a self-hosted control plane always has a
+	// frozen LKG (that is the premise), so the capturer returned before it could
+	// ever see that this boot had composed something new. Ordinary boots still
+	// never overwrite a frozen floor.
+	if frozenExists && !bc.FromPending {
+		return nil
+	}
 	if bc.Incomplete {
 		// Degraded boot (a data module was dropped at compose) — never freeze an
 		// incomplete set as last-known-good. Surfaces via the arm-telemetry
@@ -293,6 +312,18 @@ func (c *LKGCapturer) promote(bc *BootComposedBreadcrumb) error {
 	}
 	if bc == nil {
 		return errors.New("promote: nil breadcrumb snapshot")
+	}
+	// Overwriting a proven LKG leaves nothing beneath the new one. The kernel A/B
+	// always keeps the previous slot as the floor below the payload; the module
+	// rung has no equivalent, so a gate-passing-but-degraded set would become the
+	// only floor. Keep one generation back. Best-effort: failing to copy must not
+	// block a promotion that is otherwise correct.
+	if bc.FromPending {
+		if prev, rerr := os.ReadFile(c.LKGPath); rerr == nil {
+			if werr := fsutil.AtomicWrite(c.LKGPath+".prev", prev, 0o644); werr != nil {
+				c.onError("lkg_capture:keep_previous", werr)
+			}
+		}
 	}
 	if bc.FromLKG {
 		// This boot itself fell back to the LKG — nothing new to promote (Run()
