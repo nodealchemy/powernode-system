@@ -27,6 +27,13 @@ const defaultRefreshAt = 0.75
 // lifetimes (e.g., 24h test certs) get caught well before expiry.
 const defaultCheckInterval = 6 * time.Hour
 
+// defaultFailureRetryInterval is the gap after a FAILED rotation, as opposed to
+// the steady CheckInterval. Rotation failures at boot are transient (platform
+// not up yet on a self-hosted node, proxy clientAuth not loaded, DNS unsettled)
+// and clear in ~2 minutes; waiting a full check interval to retry risks letting
+// a cert expire outright.
+const defaultFailureRetryInterval = 5 * time.Minute
+
 // rotationEndpoint is the platform action that re-issues a cert
 // authenticated by the existing mTLS cert. Bootstrap tokens are
 // single-use and cannot be reused for refresh.
@@ -63,6 +70,9 @@ type CertRotator struct {
 	// CheckInterval is the gap between rotation checks. 0 = use
 	// defaultCheckInterval (6h).
 	CheckInterval time.Duration
+	// FailureRetryInterval is the gap after a FAILED rotation attempt.
+	// 0 = use defaultFailureRetryInterval (5m). Clamped to CheckInterval.
+	FailureRetryInterval time.Duration
 	// OnError surfaces non-fatal rotation errors to the service-level
 	// observer. Errors don't stop the loop — a network blip just
 	// means we retry next interval.
@@ -121,15 +131,44 @@ func (r *CertRotator) Run(ctx context.Context) {
 			return
 		default:
 		}
+
+		// A FAILED rotation must not wait a full CheckInterval to try again.
+		// Every reason a rotation fails at boot is transient and short-lived —
+		// the platform isn't listening yet on a self-hosted node, the reverse
+		// proxy has not loaded its clientAuth config, DNS has not settled — and
+		// all of them clear within a couple of minutes. Retrying on the 6h
+		// interval means a cert that came up already past its refresh deadline
+		// burns both attempts inside that window and then does nothing until
+		// the evening. Comfortable at the 25% margin defaultRefreshAt leaves on
+		// a long-lived cert; not comfortable at all on a short-lived one, and
+		// the failure mode is an EXPIRED cert, i.e. a node that can no longer
+		// authenticate to its platform.
+		wait := r.CheckInterval
 		if err := r.checkAndRotate(ctx); err != nil {
 			r.OnError("cert_rotation", err)
+			wait = r.failureRetryInterval()
 		}
+
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(r.CheckInterval):
+		case <-time.After(wait):
 		}
 	}
+}
+
+// failureRetryInterval is the gap after a FAILED rotation attempt. Bounded by
+// CheckInterval so a caller configuring an unusually short interval never gets
+// a longer retry than its own cadence.
+func (r *CertRotator) failureRetryInterval() time.Duration {
+	retry := r.FailureRetryInterval
+	if retry <= 0 {
+		retry = defaultFailureRetryInterval
+	}
+	if retry > r.CheckInterval {
+		return r.CheckInterval
+	}
+	return retry
 }
 
 // CheckAndRotate is the synchronous entry point — tests + an
@@ -222,7 +261,26 @@ func (r *CertRotator) rotate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load new transport: %w", err)
 	}
+	old := r.Transport.Get()
 	r.Transport.Swap(newClient)
+
+	// Swapping the pointer does NOT retire the old client's connection pool.
+	// Those connections completed their handshake with the PREVIOUS certificate
+	// and keep presenting it for as long as they are reused — along with their
+	// persistConn read-loop goroutines, which linger until the server's idle
+	// timeout. Nothing else ever closes them: every caller now reads the new
+	// pointer, so the old pool has no rider left to notice.
+	//
+	// kubernetes client-go closes ALL connections on cert rotation for exactly
+	// this reason ("Certificate rotation detected, shutting down client
+	// connections to start using new credentials"). We can only reach idle ones
+	// through the standard API, which is sufficient here: an in-flight request
+	// on the old client still holds a valid cert (the old one stays valid until
+	// its NotAfter), and its connection is destroyed rather than re-pooled the
+	// moment it 401s through Client.Do.
+	if old != nil && old != newClient {
+		old.CloseIdleConnections()
+	}
 
 	_ = ctx // ctx reserved for future cancelable PostJSON
 	return nil

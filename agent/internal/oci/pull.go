@@ -49,10 +49,19 @@ type ModuleArtifactRef struct {
 type Puller struct {
 	// Transport is used for the manifest GET (small JSON response).
 	Transport Client
-	// HTTPClient is used for the actual blob streaming. In production
-	// this is the same *http.Client wrapped by *transport.Client; share
-	// it so mTLS material is uniform across calls.
-	HTTPClient *http.Client
+	// HTTPClient streams the actual blob. Deliberately an interface, not a
+	// *http.Client: production passes the *transport.Client itself so blob GETs
+	// go through its Do, which self-heals a TLS connection that was negotiated
+	// without a client certificate. Handed the bare embedded *http.Client
+	// instead, blob pulls silently opt out of that recovery — they would 401
+	// against the same poisoned pooled connection every other call recovers
+	// from, and (worse) a poisoned connection checked out here during another
+	// goroutine's purge can be drained and re-pooled, weakening the guarantee
+	// for everyone. *http.Client still satisfies this, so tests keep passing
+	// httptest's client unchanged.
+	HTTPClient interface {
+		Do(*http.Request) (*http.Response, error)
+	}
 	// PlatformURL is the base URL for resolving relative download_url
 	// values returned by the platform. Required when DownloadURL is
 	// relative (the common case).

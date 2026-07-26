@@ -23,11 +23,23 @@ import (
 // Client wraps an http.Client built from on-disk mTLS material.
 //
 // Auth model: mTLS only. The TLS handshake presents the agent's cert
-// (signed by the platform's internal CA); the reverse proxy verifies it
-// via `tls.options=mtls-optional@file` (VerifyClientCertIfGiven on the
-// single websecure entrypoint) and forwards the CN to Rails via
-// X-Forwarded-Tls-Client-Cert-Info. No bearer token, no second auth
-// surface — see extensions/system/docs/agent-internals.md.
+// (signed by the platform's internal CA); the reverse proxy verifies it and
+// forwards the CN to Rails via X-Forwarded-Tls-Client-Cert-Info. No bearer
+// token, no second auth surface — see extensions/system/docs/agent-internals.md.
+//
+// The proxy side is `tls.options.default.clientAuth` with clientAuthType
+// VerifyClientCertIfGiven, emitted by Core::IngressConfigWriter into
+// 00-host-login.yaml and applied AT THE ROUTER (the writer's own comment
+// explains why it is not relied on at the websecure entrypoint: a composed hub
+// node's static config does not carry that reference, so the CN would be
+// silently dropped). An earlier version of this comment named a
+// `mtls-optional@file` option that the writer has never emitted.
+//
+// VerifyClientCertIfGiven means the proxy only *validates* a certificate that
+// was offered — it is the CertificateRequest during the handshake that decides
+// whether one is offered at all. A connection established before that config
+// loads carries no certificate for its entire life, which is the failure
+// Client.Do below recovers from.
 type Client struct {
 	*http.Client
 	PlatformURL string
@@ -64,6 +76,16 @@ func LoadFromPKIDir(platformURL string, paths enroll.PKIPaths) (*Client, error) 
 			MinVersion:   tls.VersionTLS13,
 		},
 		ResponseHeaderTimeout: 10 * time.Second,
+		// A custom Transport does NOT inherit DefaultTransport's 90s, it gets
+		// the zero value — which means pooled connections never expire. That is
+		// how a connection negotiated during the ~2-minute window before the
+		// proxy loads its clientAuth config survived indefinitely, and the
+		// agent's 10-30s poll cadence meant it was never idle long enough to be
+		// dropped anyway. Client.Do's 401 recovery is the real fix; this is a
+		// cheap ceiling on every OTHER stale-connection class (a DNS repoint
+		// while the old address still answers, a pool displaced by cert
+		// rotation) that produces no 401 to react to.
+		IdleConnTimeout: 90 * time.Second,
 		// Slice 7d: prefer IPv6 when the platform URL hostname has
 		// both AAAA and A records. The default Go resolver doesn't
 		// guarantee v6 ordering — we do it explicitly so agent →

@@ -496,7 +496,7 @@ func NewPivotComposer(platformURL, pkiDir string, onError func(string, error)) (
 		ManifestRoot:   manifest.DefaultRoot,
 		Puller: &oci.Puller{
 			Transport:   client,
-			HTTPClient:  client.Client,
+			HTTPClient:  client, // the wrapper, NOT client.Client — see Puller.HTTPClient
 			PlatformURL: client.PlatformURL,
 			Cache:       "/persist/cache/modules",
 		},
