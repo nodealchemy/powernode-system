@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/transport"
@@ -21,6 +22,108 @@ import (
 type AuthorizedKeysOptions struct {
 	Client *transport.Client
 	OnWarn func(stage string, err error)
+}
+
+// Default cadences for AuthorizedKeysSyncer. The pre-success interval is short
+// because nothing else can put keys on disk: until the first successful sync
+// the node has no operator SSH access at all, so seconds matter. Once keys are
+// on disk the node is reachable and the sync is only propagating rotations, so
+// it relaxes to a cadence comparable to the heartbeat's.
+const (
+	defaultAuthorizedKeysInterval      = 60 * time.Second
+	defaultAuthorizedKeysRetryInterval = 10 * time.Second
+)
+
+// AuthorizedKeysSyncer keeps operator SSH keys converged with the platform on
+// its OWN timer. The independent goroutine is the entire point.
+//
+// This used to hang off Heartbeater.PostSend, which only fires after a
+// SUCCESSFUL heartbeat — so key sync was gated on the health of the very link
+// an operator needs SSH to debug. Observed live on ops-hub 2026-07-26: a
+// Traefik cert race made every heartbeat fail x509 verification for the first
+// ~2 minutes of each boot, PostSend never ran, ~/.ssh/authorized_keys was
+// never written, and the node was unreachable exactly when someone needed to
+// get in. A node whose platform link is down must still be reachable; that is
+// the same reasoning that gives BootConfirmer its own goroutine (INV-4).
+//
+// Errors are reported on first occurrence and on change, never once per tick —
+// a platform that is down for ten minutes should not produce sixty identical
+// log lines. Recovery after a reported failure is reported too, so the log
+// shows the transition rather than silence.
+type AuthorizedKeysSyncer struct {
+	Client *transport.Client
+	// Interval is the steady-state cadence once keys are on disk.
+	Interval time.Duration
+	// RetryInterval is the cadence used until the FIRST success.
+	RetryInterval time.Duration
+	OnError       func(stage string, err error)
+	// Fetch overrides the sync call. nil uses FetchAuthorizedKeys against
+	// Client; tests inject a stub so the loop is exercised without HTTP or a
+	// real unix user (resolveSSHDir does a user.Lookup).
+	Fetch func(ctx context.Context) error
+}
+
+// Run syncs immediately, then on a ticker, until ctx is cancelled. It only
+// returns on cancellation: a fetch failure is never terminal, because the
+// condition it usually signals (platform not up yet) is exactly the condition
+// that resolves on its own a minute later.
+func (s *AuthorizedKeysSyncer) Run(ctx context.Context) error {
+	interval := s.Interval
+	if interval <= 0 {
+		interval = defaultAuthorizedKeysInterval
+	}
+	retry := s.RetryInterval
+	if retry <= 0 {
+		retry = defaultAuthorizedKeysRetryInterval
+	}
+
+	fetch := s.Fetch
+	if fetch == nil {
+		fetch = func(ctx context.Context) error {
+			return FetchAuthorizedKeys(ctx, AuthorizedKeysOptions{
+				Client: s.Client,
+				OnWarn: s.OnError,
+			})
+		}
+	}
+
+	// Tracks the last REPORTED error so repeats stay quiet (see doc comment).
+	lastErr := ""
+	// Governs cadence only: the fast pre-success retry exists to get keys on
+	// disk at boot, not to hammer a platform that is merely down later.
+	sawSuccess := false
+
+	for {
+		err := fetch(ctx)
+		switch {
+		case err != nil:
+			if msg := err.Error(); msg != lastErr {
+				lastErr = msg
+				if s.OnError != nil {
+					s.OnError("authorized_keys_sync", err)
+				}
+			}
+		default:
+			if lastErr != "" && s.OnError != nil {
+				// Not an error — the transition back to healthy is the useful
+				// signal after a reported failure, and OnError is the only
+				// channel this type has.
+				s.OnError("authorized_keys_sync_recovered", nil)
+			}
+			lastErr = ""
+			sawSuccess = true
+		}
+
+		wait := retry
+		if sawSuccess {
+			wait = interval
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
 }
 
 // FetchAuthorizedKeys retrieves operator-supplied SSH keys from the

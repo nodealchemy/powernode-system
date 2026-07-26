@@ -128,14 +128,13 @@ func (s *Service) Run(ctx context.Context) error {
 		s.cfg.OnError("hostname_apply", err)
 	}
 
-	// Fetch operator-supplied SSH keys from the platform once, immediately
-	// after enrollment. Best-effort: failures don't abort the service since
-	// heartbeat is the higher-priority loop. The same fetch runs on every
-	// heartbeat tick (see Heartbeater.PostSend) so key rotation propagates
-	// without an agent restart.
-	if err := s.fetchAuthorizedKeys(ctx, client); err != nil {
-		s.cfg.OnError("authorized_keys_initial", err)
-	}
+	// Operator SSH keys are synced by AuthorizedKeysSyncer on its own goroutine
+	// (spawned below), NOT here and NOT from the heartbeat's PostSend hook. Both
+	// of those were fire-once-or-gated: the one-shot fetch here ran before the
+	// platform could possibly be up on a self-hosted control plane, and PostSend
+	// only fires after a SUCCESSFUL heartbeat, so a node with a broken platform
+	// link never received keys — no SSH exactly when an operator needed to debug
+	// it. See AuthorizedKeysSyncer for the incident this comes from.
 
 	// AI/MCP workload substrate L2.5/L3 — the agent-to-agent (A2A) MCP server is
 	// started below, after sdwanMgr is constructed, so its peer announcement can
@@ -274,9 +273,8 @@ func (s *Service) Run(ctx context.Context) error {
 			return s.buildHeartbeat(bootID, sdwanMgr)
 		},
 		PostSend: func() {
-			if err := s.fetchAuthorizedKeys(ctx, client); err != nil {
-				s.cfg.OnError("authorized_keys", err)
-			}
+			// authorized_keys is deliberately NOT here — it runs on its own
+			// timer so key sync survives a failing heartbeat (AuthorizedKeysSyncer).
 			sdwanMgr.Reconcile(ctx)
 			// Order matters: SDWAN must reconcile FIRST so the docker
 			// reconciler sees a fresh overlay address. The address is
@@ -442,6 +440,20 @@ func (s *Service) Run(ctx context.Context) error {
 			s.cfg.OnError("boot_confirm", err)
 		}
 	})
+	// Operator SSH key sync on an independent timer. Same reasoning as
+	// boot_confirm above: a node whose platform link is down must still be
+	// reachable, and gating this on heartbeat success meant the break-glass
+	// path depended on the thing the operator was trying to debug.
+	spawn("authorized_keys_sync", func() {
+		syncer := &AuthorizedKeysSyncer{
+			Client:  client,
+			OnError: s.cfg.OnError,
+		}
+		if err := syncer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			s.cfg.OnError("authorized_keys_sync", err)
+		}
+	})
+
 	if rotator != nil {
 		spawn("cert_rotation", func() {
 			rotator.Run(ctx)
@@ -679,18 +691,6 @@ func (s *Service) bootstrap(ctx context.Context, paths enroll.PKIPaths) (*transp
 	s.cfg.PlatformURL = platformURL
 
 	return transport.LoadFromPKIDir(platformURL, paths)
-}
-
-// fetchAuthorizedKeys is the Service-bound wrapper around the
-// top-level FetchAuthorizedKeys function. The function lives in
-// authorized_keys.go so the sync CLI can call it without instantiating
-// a Service struct; this method preserves the existing call shape from
-// Run() and the heartbeat PostSend hook.
-func (s *Service) fetchAuthorizedKeys(ctx context.Context, client *transport.Client) error {
-	return FetchAuthorizedKeys(ctx, AuthorizedKeysOptions{
-		Client: client,
-		OnWarn: s.cfg.OnError,
-	})
 }
 
 // applyHostnameFromFwCfg sets the node's hostname from the platform-provided
