@@ -115,6 +115,14 @@ type Module struct {
 	ID       string // platform NodeModule.id
 	Digest   string // OCI digest, "sha256:..."
 	Priority int    // effective_priority (higher = closer to merged top)
+	// FsverityRoot is the fs-verity MERKLE ROOT of the erofs blob, which is a
+	// different hash from Digest: Digest is the sha256 of the blob bytes as
+	// stored in the registry, while this is the root of the Merkle tree the
+	// kernel builds over the file. Comparing one against the other never
+	// matches. Carried here because the verifier needs it at mount time and the
+	// manifest is not in scope there. Empty when the platform published no
+	// fs-verity root for this version.
+	FsverityRoot string
 }
 
 // SortByPriority sorts the stack ascending by priority. Pass the result

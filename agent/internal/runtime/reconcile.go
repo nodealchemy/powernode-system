@@ -221,9 +221,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		desired = append(desired, mount.Module{
-			ID:       mod.ID,
-			Digest:   m.Digest,
-			Priority: m.EffectivePriority,
+			ID:           mod.ID,
+			Digest:       m.Digest,
+			Priority:     m.EffectivePriority,
+			FsverityRoot: m.FsverityRootHash,
 		})
 		manifests[mod.ID] = m
 	}
@@ -716,7 +717,20 @@ func (r *Reconciler) mountModuleArtifact(ctx context.Context, mod mount.Module) 
 		return fmt.Errorf("verify cosign: %w", err)
 	}
 	if r.cfg.Fsverity != nil {
-		if err := r.cfg.Fsverity.VerifyDigest(ctx, cfsPath, mod.Digest); err != nil {
+		// mod.FsverityRoot, NOT mod.Digest: Digest is the sha256 of the blob
+		// bytes, FsverityRoot is the kernel's Merkle-tree root over the same
+		// file. Passing Digest here compared two unrelated hashes, so every
+		// module mount would have failed the moment fs-verity was enabled.
+		// Dormant until now only because cfg.Fsverity is nil by default.
+		if mod.FsverityRoot == "" {
+			// Fail closed. A configured verifier with nothing to verify against
+			// is a silent bypass, which is worse than refusing the mount: the
+			// operator turned fs-verity ON and would otherwise get unverified
+			// modules while believing they were protected.
+			return fmt.Errorf("verify fs-verity: module %s has no fsverity_root_hash published; "+
+				"refusing to mount unverified while fs-verity is enabled", mod.ID)
+		}
+		if err := r.cfg.Fsverity.VerifyDigest(ctx, cfsPath, mod.FsverityRoot); err != nil {
 			return fmt.Errorf("verify fs-verity: %w", err)
 		}
 	}
@@ -1059,7 +1073,7 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 		}
 	}
 
-	mod := mount.Module{ID: moduleID, Digest: mf.Digest, Priority: mf.EffectivePriority}
+	mod := mount.Module{ID: moduleID, Digest: mf.Digest, Priority: mf.EffectivePriority, FsverityRoot: mf.FsverityRootHash}
 	if err := r.attachModule(ctx, mod, mf); err != nil {
 		return "", err
 	}

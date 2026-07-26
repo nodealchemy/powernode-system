@@ -211,7 +211,7 @@ func (r *Reconciler) resolveComposeSet(ctx context.Context) (mount.ModuleStack, 
 					r.cfg.OnError("compose:no_digest", fmt.Errorf("module %s has no digest (not published)", mod.ID))
 					continue
 				}
-				desired = append(desired, mount.Module{ID: mod.ID, Digest: m.Digest, Priority: m.EffectivePriority})
+				desired = append(desired, mount.Module{ID: mod.ID, Digest: m.Digest, Priority: m.EffectivePriority, FsverityRoot: m.FsverityRootHash})
 				manifests[mod.ID] = m
 				lm.EffectivePriority = m.EffectivePriority
 				lm.Digest = m.Digest

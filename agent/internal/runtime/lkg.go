@@ -284,7 +284,7 @@ func (lkg *BootLKG) ToComposeInputs() (mount.ModuleStack, map[string]*manifest.M
 		if err := json.Unmarshal(m.Manifest, &mf); err != nil {
 			return nil, nil, fmt.Errorf("boot-lkg: decode manifest for %s: %w", m.ID, err)
 		}
-		desired = append(desired, mount.Module{ID: m.ID, Digest: m.Digest, Priority: m.EffectivePriority})
+		desired = append(desired, mount.Module{ID: m.ID, Digest: m.Digest, Priority: m.EffectivePriority, FsverityRoot: lkgFsverityRoot(m)})
 		manifests[m.ID] = &mf
 	}
 	if len(desired) == 0 {
@@ -388,4 +388,27 @@ func parsePositiveInt(s string) (int64, error) {
 		return 0, err
 	}
 	return n, nil
+}
+
+// lkgFsverityRoot extracts the fs-verity Merkle root from an LKG entry's
+// embedded manifest.
+//
+// The LKG stores the manifest verbatim rather than as a typed struct, so the
+// root has to be read out here. It is NOT the same value as LKGModule.Digest —
+// Digest is the sha256 of the blob bytes, this is the kernel's Merkle-tree root
+// over that file — and conflating the two is exactly the bug this exists to
+// close. Returns "" when the manifest is absent or carries no root, which the
+// mount path treats as "refuse to mount while fs-verity is enabled" rather than
+// as a silent bypass.
+func lkgFsverityRoot(m LKGModule) string {
+	if len(m.Manifest) == 0 {
+		return ""
+	}
+	var mf struct {
+		FsverityRootHash string `json:"fsverity_root_hash"`
+	}
+	if err := json.Unmarshal(m.Manifest, &mf); err != nil {
+		return ""
+	}
+	return mf.FsverityRootHash
 }
