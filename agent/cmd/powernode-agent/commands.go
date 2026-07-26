@@ -1708,3 +1708,132 @@ func abandonBootImageCmd() *cobra.Command {
 	c.Flags().BoolVar(&yes, "yes", false, "actually abandon (default: dry-run)")
 	return c
 }
+
+// lkgCmd groups read-only inspection of the frozen boot-LKG. Read-only on
+// purpose: the mutating counterpart (repointing a module at a new blob) lives
+// in the separate lkgretarget binary, whose safety contract — temp-file
+// candidate, agent-owned validator, timestamped backup — should not be diluted
+// by growing write paths here.
+func lkgCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "lkg",
+		Short: "Inspect the frozen boot last-known-good composition",
+	}
+	c.AddCommand(lkgValidateCmd())
+	return c
+}
+
+// lkgValidateCmd answers "would this node boot from its LKG?" without a reboot
+// and without shipping a tool to the node.
+//
+// This exists because the LKG is the file that decides whether a node boots at
+// all, on nodes that typically cannot be re-provisioned, and until now the only
+// way to check it was to copy lkgretarget over and run a dry-run — which is
+// exactly what an operator does NOT want to be doing on a node they are already
+// worried about. It runs the agent's own ValidateBootLKG, so a pass here means
+// the same code the boot path uses accepted the file.
+func lkgValidateCmd() *cobra.Command {
+	var path, cacheDir string
+	c := &cobra.Command{
+		Use:   "validate",
+		Short: "Check that the frozen boot-LKG is well-formed and every blob it needs is cached",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			out := cmd.OutOrStdout()
+			lkg, err := runtime.LoadBootLKG(path)
+			if err != nil {
+				return fmt.Errorf("load %s: %w", path, err)
+			}
+			fmt.Fprintf(out, "path     : %s\n", path)
+			fmt.Fprintf(out, "frozen   : %v\n", lkg.Frozen)
+			fmt.Fprintf(out, "source   : %s\n", lkg.Source)
+			fmt.Fprintf(out, "modules  : %d\n", len(lkg.Modules))
+
+			cachePath := func(d string) string {
+				return filepath.Join(cacheDir, strings.Replace(d, "sha256:", "sha256_", 1)+".erofs")
+			}
+
+			// Report EVERY missing blob, not just the first. ValidateBootLKG stops
+			// at the first failure, which would make an operator fix one module,
+			// re-run, and discover the next — the worst possible loop on a node
+			// that is already in trouble.
+			missing := 0
+			for _, m := range lkg.Modules {
+				p := cachePath(m.Digest)
+				if _, statErr := os.Stat(p); statErr != nil {
+					fmt.Fprintf(out, "  MISSING blob  %-30s %s\n", m.Name, m.Digest)
+					missing++
+				}
+			}
+
+			if err := runtime.ValidateBootLKG(lkg, cachePath); err != nil {
+				fmt.Fprintf(out, "\nINVALID: %v\n", err)
+				return fmt.Errorf("boot-LKG would be REJECTED by the boot path")
+			}
+			if missing > 0 {
+				// Defensive: ValidateBootLKG is the authority, so this should be
+				// unreachable. If it ever fires, the two disagree and that is worth
+				// surfacing rather than silently reporting VALID.
+				return fmt.Errorf("%d blob(s) missing but the validator passed — "+
+					"validator and cache check disagree, do NOT trust this LKG", missing)
+			}
+			fmt.Fprintln(out, "\nVALID — the boot path would accept this composition,")
+			fmt.Fprintln(out, "and every module blob it needs is already in the cache.")
+			return nil
+		},
+	}
+	c.Flags().StringVar(&path, "path", runtime.BootLKGPath, "frozen LKG path")
+	c.Flags().StringVar(&cacheDir, "cache-dir", "/persist/cache/modules", "module erofs blob cache")
+	return c
+}
+
+// retryPendingComposeCmd gives a staged-but-exhausted composition one more
+// chance, without hand-editing /persist.
+//
+// TakePendingCompose burns an attempt BEFORE composing, so a set that panics
+// the node cannot retry forever — correct, but it means a set that failed for a
+// reason the operator has since FIXED (a blob that was missing and is now
+// cached, a health-gate URL that was wrong) stays abandoned with no way back
+// except deleting the file, which on a self-hosted control plane is the one
+// thing that bricks it. Resetting the counter is the safe inverse.
+func retryPendingComposeCmd() *cobra.Command {
+	var yes bool
+	c := &cobra.Command{
+		Use:   "retry-pending-compose",
+		Short: "Reset the attempt counter on a staged composition so the next boot tries it again",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			out := cmd.OutOrStdout()
+			p, err := runtime.LoadPendingCompose(runtime.PendingComposePath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					fmt.Fprintln(out, "no staged composition — nothing to retry")
+					return nil
+				}
+				return fmt.Errorf("load pending compose: %w", err)
+			}
+			fmt.Fprintf(out, "staged at : %s\n", p.StagedAt.Format(time.RFC3339))
+			fmt.Fprintf(out, "modules   : %d\n", len(p.Set.Modules))
+			fmt.Fprintf(out, "attempts  : %d of %d used\n", p.Attempts, runtime.PendingMaxTries)
+			if p.Reason != "" {
+				fmt.Fprintf(out, "reason    : %s\n", p.Reason)
+			}
+			if p.Attempts == 0 {
+				fmt.Fprintln(out, "\nalready has its full attempt budget — nothing to reset")
+				return nil
+			}
+			if !yes {
+				fmt.Fprintln(out, "\nDRY RUN — pass --yes to reset the counter to 0.")
+				fmt.Fprintln(out, "Only do this once the reason it failed is actually fixed: the counter is")
+				fmt.Fprintln(out, "what stops a set that hangs or panics the node from retrying forever.")
+				return nil
+			}
+			p.Attempts = 0
+			if err := runtime.WritePendingCompose(runtime.PendingComposePath, p); err != nil {
+				return fmt.Errorf("write pending compose: %w", err)
+			}
+			fmt.Fprintln(out, "\nattempt counter reset — the next boot will try this composition again")
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&yes, "yes", false, "actually reset the counter (default: dry run)")
+	return c
+}
