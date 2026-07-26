@@ -1,0 +1,46 @@
+# Default serving certificate, shipped by the reverse-proxy-traefik module so it
+# is present in the composed overlay from Traefik's FIRST start.
+#
+# Root cause it closes (ops-hub, observed 2026-07-26): the real ingress config
+# (00-host-login.yaml, written by hub-backend's rails-start.sh via
+# Core::IngressConfigWriter) cannot land until Rails has booted — measured ~2
+# minutes after the node comes up:
+#
+#   18:52:43  boot
+#   18:53:01  agent -> platform: x509: certificate is valid for
+#             <hash>.traefik.default, not ops-hub.ipnode.us
+#   18:54:50  00-host-login.yaml finally written; agent recovers 12s earlier-ish
+#
+# In that window Traefik has no TLS config matching any hostname, so it serves
+# its built-in self-signed "TRAEFIK DEFAULT CERT". Every mTLS call the on-node
+# agent makes to its own platform (heartbeat, task lease, module fetch, storage
+# volume) fails x509 verification for the whole window, and browsers get
+# cert-authority-invalid. This is distinct from the earlier race fixed in
+# 7d12277e — that one was "the file never appears at all"; this one is "the file
+# appears, just far too late".
+#
+# Why a static file fixes it: the cert/key pair this points at is DURABLE. It
+# lives on /persist and is regenerated-in-place (same paths) by
+# Core::IngressConfigWriter, so after the node's first successful boot the pair
+# is already on disk before Traefik starts. Setting it as the default
+# certificate means the correct cert is served immediately, and 00-host-login's
+# richer config (routers, mTLS clientAuth, per-cert store entries) still layers
+# on top when it arrives — Traefik merges all files in this directory.
+#
+# Path note: this matches rails-start.sh's TRAEFIK_CERT_DIR for the
+# /persist-backed case (`mountpoint -q /persist`), which is every
+# module-composed node — i.e. exactly the nodes that have this race. On a node
+# without /persist the pair lives under /var/lib and these files are simply
+# absent; Traefik then logs that it cannot load them and keeps its own default,
+# which is precisely today's behaviour. This file can therefore never make
+# things worse than not shipping it.
+#
+# Deliberately sets ONLY tls.stores.default.defaultCertificate:
+# Core::IngressConfigWriter emits tls.certificates and tls.options but never
+# tls.stores, so there is no key collision between the two files.
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /persist/powernode-traefik/certs/core-self-signed.crt
+        keyFile: /persist/powernode-traefik/certs/core-self-signed.key
