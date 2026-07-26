@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/a2a"
-	"github.com/nodealchemy/powernode-system/agent/internal/bootupgrade"
 	"github.com/nodealchemy/powernode-system/agent/internal/dockerd"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
 	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
@@ -263,20 +262,11 @@ func (s *Service) Run(ctx context.Context) error {
 		OnError:     s.cfg.OnError,
 	}
 
-	// boot-image A/B bless (campaign 019f505f inc 3): the FIRST successful
-	// heartbeat means this boot is healthy, so we bless the running systemd-boot
-	// entry (disarming auto-rollback) and promote a pending upgrade slot to the
-	// default. PostSend runs sequentially in the heartbeat goroutine, so this
-	// plain flag needs no lock; it retries each tick until ConfirmBoot succeeds.
-	bootBlessed := false
-	// lastBootConfirmErr de-duplicates the confirm's error reporting. Several of
-	// ConfirmBoot's refusals are PERMANENT for the rest of the boot — the booted
-	// sha cannot change, so e.g. the unprovable-slot branch returns the identical
-	// error on every heartbeat tick until the next reboot. Reporting it each time
-	// buries everything else in the log without adding information. Report on
-	// first occurrence and whenever the message CHANGES (a changed message is real
-	// news: the situation moved), stay quiet while it repeats.
-	lastBootConfirmErr := ""
+	// The boot-image A/B bless used to live here, gated on the first successful
+	// heartbeat. That was identity-gated, not health-gated (INV-4): it asked
+	// whether the PLATFORM was reachable, not whether THIS image came up. It now
+	// runs in its own goroutine below, gated on the node probing its own composed
+	// app — see BootConfirmer.
 	heartbeat := &Heartbeater{
 		Client:    client,
 		StartedAt: startedAt,
@@ -284,16 +274,6 @@ func (s *Service) Run(ctx context.Context) error {
 			return s.buildHeartbeat(bootID, sdwanMgr)
 		},
 		PostSend: func() {
-			if !bootBlessed {
-				if err := bootupgrade.ConfirmBoot(ctx, mount.ExecRunner{}, s.bootedImageGitSHA); err != nil {
-					if msg := err.Error(); msg != lastBootConfirmErr {
-						lastBootConfirmErr = msg
-						s.cfg.OnError("boot_confirm", err)
-					}
-				} else {
-					bootBlessed = true
-				}
-			}
 			if err := s.fetchAuthorizedKeys(ctx, client); err != nil {
 				s.cfg.OnError("authorized_keys", err)
 			}
@@ -442,6 +422,24 @@ func (s *Service) Run(ctx context.Context) error {
 	spawn("lkg_capture", func() {
 		if err := capturer.Run(ctx); err != nil {
 			s.cfg.OnError("lkg_capture", err)
+		}
+	})
+	// INV-4: bless a pending boot slot on the node's OWN health, not on platform
+	// reachability. Its own goroutine (not the heartbeat's PostSend) is the point
+	// — a node whose image is healthy must be able to bless even while the
+	// platform link is down, and a node that can reach the platform must NOT be
+	// blessed until its composed stack actually comes up.
+	spawn("boot_confirm", func() {
+		confirmer := &BootConfirmer{
+			BreadcrumbPath:      BootBreadcrumbPath,
+			DefaultAppHealthURL: healthURL,
+			Hostname:            desiredHostname(),
+			BootedGitSHA:        s.bootedImageGitSHA,
+			Runner:              mount.ExecRunner{},
+			OnError:             s.cfg.OnError,
+		}
+		if err := confirmer.Run(ctx); err != nil {
+			s.cfg.OnError("boot_confirm", err)
 		}
 	})
 	if rotator != nil {

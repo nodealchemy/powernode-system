@@ -136,24 +136,31 @@ func (c *LKGCapturer) resolveGate(bc *BootComposedBreadcrumb) (HealthProber, int
 	}
 	prober := c.Prober
 	if prober == nil {
-		// Build the health client ONCE here and reuse it across every probe.
-		// Constructing a fresh http.Client/Transport per probe would leak idle
-		// connections + FDs on a never-healthy node, where the gate can probe for
-		// the whole life of the boot. IdleConnTimeout reaps idle keep-alives.
-		prober = &HTTPHealthProber{
-			URL:        url,
-			HostHeader: c.Hostname,
-			Timeout:    5 * time.Second,
-			Client: &http.Client{
-				Timeout: 5 * time.Second,
-				Transport: &http.Transport{
-					TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // loopback self-probe
-					IdleConnTimeout: 30 * time.Second,
-				},
-			},
-		}
+		prober = newLoopbackProber(url, c.Hostname)
 	}
 	return prober, required, interval
+}
+
+// newLoopbackProber builds the shared self-probe used by every health gate on
+// the node (LKG capture and boot-slot bless). The health client is built ONCE
+// per gate and reused across probes: a fresh http.Client/Transport per probe
+// would leak idle connections + FDs on a never-healthy node, where a gate can
+// probe for the whole life of the boot. IdleConnTimeout reaps idle keep-alives.
+// TLS verification is skipped because this is a loopback probe of the node's own
+// ingress, which legitimately presents a cert for its public name.
+func newLoopbackProber(url, hostname string) HealthProber {
+	return &HTTPHealthProber{
+		URL:        url,
+		HostHeader: hostname,
+		Timeout:    5 * time.Second,
+		Client: &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // loopback self-probe
+				IdleConnTimeout: 30 * time.Second,
+			},
+		},
+	}
 }
 
 func (c *LKGCapturer) required() int {

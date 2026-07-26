@@ -27,6 +27,13 @@ func (p *scriptedProber) Healthy(ctx context.Context) (bool, error) {
 	return p.results[i], nil
 }
 
+// probes reports how many times Healthy was called.
+func (p *scriptedProber) probes() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.idx
+}
+
 func writeTestBreadcrumb(t *testing.T, path string, fromLKG bool, digest string) {
 	t.Helper()
 	bc := &BootComposedBreadcrumb{
