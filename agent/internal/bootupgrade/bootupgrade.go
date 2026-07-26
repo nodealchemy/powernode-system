@@ -30,7 +30,21 @@ import (
 // DefaultStageDir stages the pulled UKI + cosign bundle for verification before
 // the ESP write. Under /persist so it survives switch_root and a crash-recovery
 // re-dispatch can reuse an already-verified download.
-const DefaultStageDir = "/persist/cache/boot-image"
+// DefaultStageDir stages the pulled UKI + cosign bundle for verification before
+// the ESP write. A var, not a const, so tests can sandbox it: every current Apply
+// test passes an explicit StageDir, but one that forgets would write cosign.pub
+// and the bundle under /persist/cache/boot-image on the host running `go test`.
+// Same class as the PendingComposePath const that let the suite delete live boot
+// state.
+var DefaultStageDir = "/persist/cache/boot-image"
+
+// SetDefaultStageDirForTest points the staging dir at path, returning a restore
+// func.
+func SetDefaultStageDirForTest(path string) (restore func()) {
+	prev := DefaultStageDir
+	DefaultStageDir = path
+	return func() { DefaultStageDir = prev }
+}
 
 // Options is the decoded upgrade_boot_image task payload.
 type Options struct {

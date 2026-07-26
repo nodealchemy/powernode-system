@@ -18,7 +18,18 @@ import (
 // NOT on the target (a failed/rolled-back boot, or a boot whose cmdline lacks
 // the sha marker), a crash-recovery re-dispatch sees this and refuses to reboot
 // again — bounding what would otherwise be a reboot loop.
-const attemptMarkerPath = "/persist/var/lib/powernode/boot-image-upgrade.attempted"
+// A var, not a const, so tests can sandbox it. markAttempted() runs on the
+// success path, so a handler test would otherwise write this marker into the
+// host's live /persist — the same class of hazard as the PendingComposePath
+// const that let the suite delete real boot state.
+var attemptMarkerPath = "/persist/var/lib/powernode/boot-image-upgrade.attempted"
+
+// SetAttemptMarkerPathForTest points the marker at path, returning a restore func.
+func SetAttemptMarkerPathForTest(path string) (restore func()) {
+	prev := attemptMarkerPath
+	attemptMarkerPath = path
+	return func() { attemptMarkerPath = prev }
+}
 
 func alreadyAttempted(target string) bool {
 	b, err := os.ReadFile(attemptMarkerPath)
