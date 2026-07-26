@@ -21,7 +21,7 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
     "-----END PUBLIC KEY-----"
   end
 
-  def setup_platform(target_sha: "target-sha", oki_ref: "oki-ref", uki_ref: "uki-ref", uki_sha256: "sha256:uki")
+  def setup_platform(target_sha: "target-sha", oki_ref: "oki-ref", uki_ref: "uki-ref", uki_sha256: "c" * 64)
     platform_record.update!(
       disk_image_git_sha: target_sha,
       disk_image_oci_ref: oki_ref,
@@ -30,7 +30,14 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
     )
   end
 
-  def setup_publication(target_sha: "target-sha", oki_ref: "oki-ref", bundle: "base64_bundle")
+  # The dispatcher sources the UKI pins from the PUBLICATION ROW, not from the
+  # NodePlatform.disk_image_uki_* columns (df4a2000): a partial-field promote can
+  # leave those columns stale relative to disk_image_git_sha and smear a
+  # mismatched (uki, bundle) pair into the task. So the publication is what has
+  # to carry uki_oci_ref/uki_sha256 here — setting them only on the platform
+  # exercises nothing the dispatcher reads.
+  def setup_publication(target_sha: "target-sha", oki_ref: "oki-ref", bundle: "base64_bundle",
+                        uki_ref: "uki-ref", uki_sha256: "c" * 64)
     System::DiskImagePublication.create!(
       account: account,
       node_platform: platform_record,
@@ -39,6 +46,8 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
       oci_ref: oki_ref,
       sha256: "#{'a' * 64}",
       size_bytes: 1024,
+      uki_oci_ref: uki_ref,
+      uki_sha256: uki_sha256,
       uki_cosign_bundle: bundle
     )
   end
@@ -77,14 +86,33 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
         expect(result.reason).to match(/no promoted disk image/)
       end
 
-      it "returns err when platform has no standalone UKI artifact (disk_image_uki_oci_ref blank)" do
-        setup_platform(uki_ref: nil, uki_sha256: nil)
+      it "returns err when the promoted PUBLICATION has no standalone UKI artifact" do
+        # Blank on the publication, NOT the platform: the platform columns are
+        # deliberately left populated here so this fails only if the dispatcher
+        # is reading the publication row, which is the invariant df4a2000 added.
+        setup_platform
+        setup_publication(uki_ref: nil, uki_sha256: nil)
 
         result = described_class.dispatch!(instance: instance, source: "test")
 
         expect(result.ok?).to be false
         expect(result.reason).to match(/no standalone UKI artifact/)
         expect(result.reason).to match(/republish/)
+      end
+
+      it "returns err when the platform pointer names a git_sha with no published record" do
+        # Pointer-consistency guard: disk_image_git_sha advanced but no matching
+        # publication row exists, so the (uki, bundle) pair cannot be resolved
+        # self-consistently. Dispatching anyway would smear mismatched pins into
+        # the task and fail cosign verification on-node.
+        setup_platform(target_sha: "promoted-but-unpublished")
+
+        result = described_class.dispatch!(instance: instance, source: "test")
+
+        expect(result.ok?).to be false
+        expect(result.reason).to match(/pointer inconsistent/i)
+        expect(result.reason).to include("promoted-but-unpublished")
+        expect(result.task).to be_nil
       end
 
       it "returns err when ENV POWERNODE_COSIGN_PUBLIC_KEY is unset" do
@@ -105,6 +133,8 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
       it "returns err when promoted publication has no uki_cosign_bundle" do
         target_sha = "target-sha"
         setup_platform(target_sha: target_sha)
+        # UKI pins present so the artifact guard passes and we reach the bundle
+        # guard — the point of this example.
         System::DiskImagePublication.create!(
           account: account,
           node_platform: platform_record,
@@ -113,6 +143,8 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
           oci_ref: "test-oci-ref",
           sha256: "#{'b' * 64}",
           size_bytes: 1024,
+          uki_oci_ref: "uki-ref",
+          uki_sha256: "d" * 64,
           uki_cosign_bundle: nil
         )
 
@@ -299,11 +331,18 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
         target_sha = "target-sha-xyz"
         oki_ref = "ghcr.io/nodealchemy/system/boot:0.1.0"
         uki_ref = "ghcr.io/nodealchemy/system/boot-uki:0.1.0"
-        uki_sha256 = "sha256:uki_abc"
+        uki_sha256 = "e" * 64
         cosign_bundle_b64 = "LS0tLS1CRUdJTiBQR1AgU0lHTkVEIE1FU1NBR0UtLS0tLQo="
 
-        setup_platform(target_sha: target_sha, oki_ref: oki_ref, uki_ref: uki_ref, uki_sha256: uki_sha256)
-        setup_publication(target_sha: target_sha, oki_ref: oki_ref, bundle: cosign_bundle_b64)
+        # The platform columns are seeded with DIVERGENT values on purpose. The
+        # dispatch must carry the publication row's pins; if it ever regresses to
+        # reading NodePlatform.disk_image_uki_* (the stale-pointer smear df4a2000
+        # fixed), these assertions fail loudly instead of silently passing on
+        # values that happen to agree.
+        setup_platform(target_sha: target_sha, oki_ref: oki_ref,
+                       uki_ref: "stale-platform-uki-ref-MUST-NOT-BE-USED", uki_sha256: "f" * 64)
+        setup_publication(target_sha: target_sha, oki_ref: oki_ref, bundle: cosign_bundle_b64,
+                          uki_ref: uki_ref, uki_sha256: uki_sha256)
 
         allow(ENV).to receive(:[]).and_call_original
         allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
