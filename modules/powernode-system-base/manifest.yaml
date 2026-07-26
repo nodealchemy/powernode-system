@@ -19,10 +19,27 @@ package_spec: []
 #                                for the initramfs/dracut hook + legacy
 #                                lookups that still expect /sbin
 #   /etc/powernode/           — config skeleton; OS variants + boot.go fill it
+#   /sbin/{shutdown,poweroff,halt,reboot} — see below
 file_spec:
   - "/usr/sbin/powernode-agent"
   - "/sbin/powernode-agent"
+  - "/sbin/shutdown"
+  - "/sbin/poweroff"
+  - "/sbin/halt"
+  - "/sbin/reboot"
   - "/etc/powernode/**"
+
+# Ubuntu is usr-merged: /sbin is normally a SYMLINK to usr/sbin. Because this
+# module ships real paths under /sbin, the composed overlay materialises /sbin as
+# a DIRECTORY, which shadows that symlink — everything in /usr/sbin silently
+# disappears from /sbin. Nothing notices until something looks a binary up by its
+# /sbin path, and one thing does: qemu-ga's `guest-shutdown` execs the hardcoded
+# /sbin/shutdown. With it missing, the RPC fails, Proxmox's `qm shutdown` falls
+# through to a 90s timeout, and the node CANNOT be shut down gracefully at all —
+# every stop becomes a hard power-off. Observed on ops-hub 2026-07-26: adding the
+# symlink took `qm shutdown` from a 90s timeout to a clean stop in 8.7s.
+# Re-declare the usr-merge entries we shadow, rather than dropping /sbin (the
+# agent's own /sbin/powernode-agent legacy path depends on it existing).
 
 mask: []
 dependency_spec: []
