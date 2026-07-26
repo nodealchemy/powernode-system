@@ -499,10 +499,26 @@ func ensureCanonicalInit(sysroot string) (string, error) {
 		if rel == "sbin/init" {
 			return "/sbin/init", nil
 		}
-		sbinInit := filepath.Join(sysroot, "sbin/init")
-		if err := os.MkdirAll(filepath.Join(sysroot, "sbin"), 0o755); err != nil {
-			return "", fmt.Errorf("mkdir %s/sbin: %w", sysroot, err)
+		// Materialising /sbin as a DIRECTORY here is what broke usr-merge on every
+		// composed node. Ubuntu ships /sbin as a symlink to usr/sbin; /bin, /lib and
+		// /lib64 survive as symlinks precisely because nothing mkdir's them, while
+		// this MkdirAll ran on every boot and turned /sbin into a real directory
+		// containing only init. Everything else in /usr/sbin then vanished from
+		// /sbin — 1 entry visible against 170 — silently breaking anything that
+		// resolves a binary by its /sbin path. Two such consumers were found on
+		// ops-hub: qemu-ga's guest-shutdown execs /sbin/shutdown (so the node could
+		// never be shut down gracefully) and the kernel's usermode helper execs
+		// /sbin/modprobe (so request_module autoloading failed fleet-wide).
+		//
+		// Preserve the merge instead: when /sbin is absent, create it AS the
+		// symlink, and let the init link land in usr/sbin through it. switch-root
+		// chases /sbin/init → /usr/sbin/init → the real systemd, so the contract it
+		// validates still holds. A pre-existing real /sbin (non-usr-merged distro,
+		// or a module that legitimately ships one) is left exactly as it was.
+		if err := ensureSbin(sysroot); err != nil {
+			return "", err
 		}
+		sbinInit := filepath.Join(sysroot, "sbin/init")
 		// Clear any pre-existing (possibly dangling) entry so Symlink won't EEXIST.
 		_ = os.Remove(sbinInit)
 		target := "/" + rel
@@ -512,6 +528,35 @@ func ensureCanonicalInit(sysroot string) (string, error) {
 		return target, nil
 	}
 	return "", fmt.Errorf("no init found in %s (tried %v)", sysroot, rels)
+}
+
+// ensureSbin guarantees a usable /sbin under sysroot WITHOUT destroying
+// usr-merge. Ubuntu's /sbin is a symlink to usr/sbin; creating a real directory
+// there shadows every binary in /usr/sbin for anything that resolves by /sbin
+// path. Order of preference:
+//
+//   - /sbin already exists (symlink or directory) → leave it alone. A real
+//     directory here is legitimate on non-usr-merged layouts.
+//   - /usr/sbin exists → create /sbin as a RELATIVE symlink to usr/sbin, matching
+//     what the distro itself ships. Relative (not "/usr/sbin") so it resolves
+//     correctly both now, under the /sysroot prefix, and after the pivot.
+//   - otherwise → fall back to a real directory, which is all we can do.
+func ensureSbin(sysroot string) error {
+	sbin := filepath.Join(sysroot, "sbin")
+	if _, err := os.Lstat(sbin); err == nil {
+		return nil // exists as symlink or dir — do not disturb it
+	}
+	if st, err := os.Stat(filepath.Join(sysroot, "usr", "sbin")); err == nil && st.IsDir() {
+		if err := os.Symlink("usr/sbin", sbin); err == nil {
+			return nil
+		}
+		// Fall through to mkdir on symlink failure — a working boot beats a tidy
+		// layout, and switch-root only needs /sbin/init to resolve.
+	}
+	if err := os.MkdirAll(sbin, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", sbin, err)
+	}
+	return nil
 }
 
 func isMountedAt(path string) bool {

@@ -19,28 +19,27 @@ package_spec: []
 #                                for the initramfs/dracut hook + legacy
 #                                lookups that still expect /sbin
 #   /etc/powernode/           — config skeleton; OS variants + boot.go fill it
-#   /sbin/{shutdown,poweroff,halt,reboot} — see below
 file_spec:
   - "/usr/sbin/powernode-agent"
   - "/sbin/powernode-agent"
-  - "/sbin/shutdown"
-  - "/sbin/poweroff"
-  - "/sbin/halt"
-  - "/sbin/reboot"
-  - "/sbin/modprobe"
   - "/etc/powernode/**"
 
-# Ubuntu is usr-merged: /sbin is normally a SYMLINK to usr/sbin. Because this
-# module ships real paths under /sbin, the composed overlay materialises /sbin as
-# a DIRECTORY, which shadows that symlink — everything in /usr/sbin silently
-# disappears from /sbin. Nothing notices until something looks a binary up by its
-# /sbin path, and one thing does: qemu-ga's `guest-shutdown` execs the hardcoded
-# /sbin/shutdown. With it missing, the RPC fails, Proxmox's `qm shutdown` falls
-# through to a 90s timeout, and the node CANNOT be shut down gracefully at all —
-# every stop becomes a hard power-off. Observed on ops-hub 2026-07-26: adding the
-# symlink took `qm shutdown` from a 90s timeout to a clean stop in 8.7s.
-# Re-declare the usr-merge entries we shadow, rather than dropping /sbin (the
-# agent's own /sbin/powernode-agent legacy path depends on it existing).
+# NOTE ON /sbin — do NOT ship real files here.
+#
+# Ubuntu is usr-merged: /sbin is a symlink to usr/sbin. Any module that ships a
+# real path under /sbin forces the composed overlay to materialise /sbin as a
+# DIRECTORY, which shadows that symlink and hides every binary in /usr/sbin from
+# anything that resolves by /sbin path. On ops-hub that meant 1 visible entry
+# against 170, and it silently broke two consumers: qemu-ga's guest-shutdown
+# (execs /sbin/shutdown, so `qm shutdown` could never work — every stop degraded
+# to a hard power-off) and the kernel's usermode helper (execs /sbin/modprobe, so
+# request_module autoloading failed fleet-wide).
+#
+# This module previously carried a rootfs/sbin/.gitkeep placeholder plus explicit
+# symlinks for the casualties as they were discovered. Both are gone: the agent's
+# prepare-root now creates /sbin AS the usr-merge symlink (see ensureSbin), so
+# /sbin/powernode-agent below resolves through it to /usr/sbin/powernode-agent —
+# along with everything else in /usr/sbin — with nothing shipped here at all.
 
 mask: []
 dependency_spec: []
