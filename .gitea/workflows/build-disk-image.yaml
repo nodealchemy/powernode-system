@@ -82,6 +82,7 @@ jobs:
       POWERNODE_STORAGE_MODE: ${{ vars.POWERNODE_STORAGE_MODE }}
       POWERNODE_DISK_IMAGE_WEBHOOK_URL: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_URL }}
       POWERNODE_CI_WORKER_TOKEN: ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}
+      POWERNODE_PLATFORM_CA_PEM: ${{ secrets.POWERNODE_PLATFORM_CA_PEM }}
 
     steps:
       - uses: actions/checkout@v4
@@ -231,9 +232,20 @@ jobs:
           ls -la /tmp/rpi4-firmware-rootfs/rootfs/boot/firmware/ | head
 
       - name: Fetch platform CA
-        if: inputs.ca_pem_url != ''
+        # Every later call to the platform (registry config, HMAC webhook)
+        # verifies TLS against this when present. A platform serving a private or
+        # self-signed certificate — ops-hub serves a self-signed leaf — otherwise
+        # fails verification and takes the whole publish path down with it.
+        # Sourced from the dispatch input when given, else from the secret, so
+        # push-triggered builds get it too: gating on a dispatch-only input left
+        # every push build unable to reach the platform.
+        if: inputs.ca_pem_url != '' || env.POWERNODE_PLATFORM_CA_PEM != ''
         run: |
-          curl -fsSL "${{ inputs.ca_pem_url }}" -o /tmp/platform-ca.pem
+          if [ -n "${{ inputs.ca_pem_url }}" ]; then
+            curl -fsSL "${{ inputs.ca_pem_url }}" -o /tmp/platform-ca.pem
+          else
+            printf '%s' "$POWERNODE_PLATFORM_CA_PEM" > /tmp/platform-ca.pem
+          fi
           echo "CA fingerprint:"
           openssl x509 -in /tmp/platform-ca.pem -noout -fingerprint -sha256 || true
 
@@ -388,7 +400,11 @@ jobs:
           POWERNODE_CI_WORKER_TOKEN: ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}
         run: |
           : "${POWERNODE_API_BASE:=https://ops.powernode.org}"
-          http_code=$(curl -sS -m 15 -o /tmp/registry-config.json -w '%{http_code}' \
+          # Verify against the pinned platform CA when we have one; without it a
+          # privately-issued platform fails TLS HERE and the job dies before
+          # pushing or publishing anything (observed: run 1343).
+          ca_opt=""; [ -f /tmp/platform-ca.pem ] && ca_opt="--cacert /tmp/platform-ca.pem"
+          http_code=$(curl -sS -m 15 $ca_opt -o /tmp/registry-config.json -w '%{http_code}' \
             "$POWERNODE_API_BASE/api/v1/system/disk_image_registry_config" \
             -H "Authorization: Bearer $POWERNODE_CI_WORKER_TOKEN") \
             || { echo "::error::could not reach $POWERNODE_API_BASE/api/v1/system/disk_image_registry_config"; exit 1; }
@@ -527,11 +543,7 @@ jobs:
             sig=$(printf %s "$body" | openssl dgst -sha256 -hmac "$POWERNODE_DISK_IMAGE_WEBHOOK_SECRET" -hex \
                   | awk '{print $2}')
 
-            ca_opt=""
-            if [ -n "${POWERNODE_PLATFORM_CA_PEM:-}" ]; then
-              printf '%s' "$POWERNODE_PLATFORM_CA_PEM" > /tmp/platform-ca.pem
-              ca_opt="--cacert /tmp/platform-ca.pem"
-            fi
+            ca_opt=""; [ -f /tmp/platform-ca.pem ] && ca_opt="--cacert /tmp/platform-ca.pem"
             echo "→ Notifying platform: $POWERNODE_DISK_IMAGE_WEBHOOK_URL"
             curl -fsSL $ca_opt -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \
               -H "X-Powernode-Signature: sha256=$sig" \
@@ -631,6 +643,7 @@ jobs:
       POWERNODE_STORAGE_MODE: ${{ vars.POWERNODE_STORAGE_MODE }}
       POWERNODE_DISK_IMAGE_WEBHOOK_URL: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_URL }}
       POWERNODE_CI_WORKER_TOKEN: ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}
+      POWERNODE_PLATFORM_CA_PEM: ${{ secrets.POWERNODE_PLATFORM_CA_PEM }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -713,9 +726,21 @@ jobs:
           echo "OK: agent (amd64) compiled from source ($(sha256sum "$OUT" | awk '{print $1}'))"
 
       - name: Fetch platform CA
-        if: inputs.ca_pem_url != ''
+        # Every later call to the platform (registry config, HMAC webhook)
+        # verifies TLS against this when present. A platform serving a private or
+        # self-signed certificate — ops-hub serves a self-signed leaf — otherwise
+        # fails verification and takes the whole publish path down with it.
+        # Sourced from the dispatch input when given, else from the secret, so
+        # push-triggered builds get it too: gating on a dispatch-only input left
+        # every push build unable to reach the platform.
+        if: inputs.ca_pem_url != '' || env.POWERNODE_PLATFORM_CA_PEM != ''
         run: |
-          curl -fsSL "${{ inputs.ca_pem_url }}" -o /tmp/platform-ca.pem
+          if [ -n "${{ inputs.ca_pem_url }}" ]; then
+            curl -fsSL "${{ inputs.ca_pem_url }}" -o /tmp/platform-ca.pem
+          else
+            printf '%s' "$POWERNODE_PLATFORM_CA_PEM" > /tmp/platform-ca.pem
+          fi
+          echo "CA fingerprint:"
           openssl x509 -in /tmp/platform-ca.pem -noout -fingerprint -sha256 || true
 
       - name: Build amd64 UEFI image (UKI, in clean amd64 container)
@@ -784,7 +809,11 @@ jobs:
           POWERNODE_CI_WORKER_TOKEN: ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}
         run: |
           : "${POWERNODE_API_BASE:=https://ops.powernode.org}"
-          http_code=$(curl -sS -m 15 -o /tmp/registry-config.json -w '%{http_code}' \
+          # Verify against the pinned platform CA when we have one; without it a
+          # privately-issued platform fails TLS HERE and the job dies before
+          # pushing or publishing anything (observed: run 1343).
+          ca_opt=""; [ -f /tmp/platform-ca.pem ] && ca_opt="--cacert /tmp/platform-ca.pem"
+          http_code=$(curl -sS -m 15 $ca_opt -o /tmp/registry-config.json -w '%{http_code}' \
             "$POWERNODE_API_BASE/api/v1/system/disk_image_registry_config" \
             -H "Authorization: Bearer $POWERNODE_CI_WORKER_TOKEN") \
             || { echo "::error::could not reach $POWERNODE_API_BASE/api/v1/system/disk_image_registry_config"; exit 1; }
@@ -915,11 +944,7 @@ jobs:
           # so a build could push the image, report SUCCESS, and create no
           # publication at all. Observed 2026-07-21 → 2026-07-26: five green runs,
           # zero publications.
-          ca_opt=""
-          if [ -n "${POWERNODE_PLATFORM_CA_PEM:-}" ]; then
-            printf '%s' "$POWERNODE_PLATFORM_CA_PEM" > /tmp/platform-ca.pem
-            ca_opt="--cacert /tmp/platform-ca.pem"
-          fi
+          ca_opt=""; [ -f /tmp/platform-ca.pem ] && ca_opt="--cacert /tmp/platform-ca.pem"
           echo "→ Notifying platform: $POWERNODE_DISK_IMAGE_WEBHOOK_URL"
           curl -fsSL $ca_opt -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \
             -H "X-Powernode-Signature: sha256=$sig" \
