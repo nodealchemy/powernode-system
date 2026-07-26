@@ -175,15 +175,21 @@ sgdisk \
   "$OUTPUT" >/dev/null
 
 P1_START=$(sgdisk -i 1 "$OUTPUT" | sed -nE 's/^First sector: ([0-9]+).*/\1/p')
+P1_END=$(sgdisk   -i 1 "$OUTPUT" | sed -nE 's/^Last sector: ([0-9]+).*/\1/p')
 P2_START=$(sgdisk -i 2 "$OUTPUT" | sed -nE 's/^First sector: ([0-9]+).*/\1/p')
 P2_END=$(sgdisk   -i 2 "$OUTPUT" | sed -nE 's/^Last sector: ([0-9]+).*/\1/p')
-for v in P1_START P2_START P2_END; do
+for v in P1_START P1_END P2_START P2_END; do
   [[ "${!v}" =~ ^[0-9]+$ ]] || { log "ERROR: failed to parse $v from sgdisk -i"; sgdisk -p "$OUTPUT" >&2; exit 1; }
 done
 P1_OFFSET=$((P1_START * 512))
+# See the amd64 script: mformat's @@offset conveys the partition START only, so
+# left to itself mtools sizes the filesystem from the rest of the image file and
+# silently builds a FAT that overruns its own partition.
+P1_SECTORS=$(( P1_END - P1_START + 1 ))
+P1_BYTES=$(( P1_SECTORS * 512 ))
 P2_OFFSET=$((P2_START * 512))
 P2_BYTES=$(( (P2_END - P2_START + 1) * 512 ))
-log "  p1 ESP:     offset=$P1_OFFSET"
+log "  p1 ESP:     offset=$P1_OFFSET size=$P1_BYTES ($P1_SECTORS sectors)"
 log "  p2 persist: offset=$P2_OFFSET size=$P2_BYTES"
 
 # ── 4. ESP via mtools — systemd-boot manager + boot-counted UKI slot A ──────
@@ -197,7 +203,19 @@ default powernode-a*
 editor  no
 LOADER
 log "formatting ESP (FAT32, label BOOT) + systemd-boot + UKI slot A"
-mformat -F -i "${OUTPUT}@@${P1_OFFSET}" -v BOOT ::
+mformat -F -T "$P1_SECTORS" -i "${OUTPUT}@@${P1_OFFSET}" -v BOOT ::
+# Fail the build rather than ship an ESP that overruns its partition. Files still
+# read back correctly while the filesystem is merely *capable* of overrunning, so
+# only this boot-sector check catches it — a functional smoke test cannot.
+ESP_DECLARED=$(od -An -tu2 -j $((P1_OFFSET + 19)) -N2 "$OUTPUT" | tr -d ' ')
+if [[ "${ESP_DECLARED:-0}" -eq 0 ]]; then
+  ESP_DECLARED=$(od -An -tu4 -j $((P1_OFFSET + 32)) -N4 "$OUTPUT" | tr -d ' ')
+fi
+if [[ "${ESP_DECLARED:-0}" -gt "$P1_SECTORS" ]]; then
+  log "ERROR: ESP filesystem declares ${ESP_DECLARED} sectors but partition holds only ${P1_SECTORS}"
+  exit 1
+fi
+log "  ESP sanity: filesystem declares ${ESP_DECLARED} sectors ≤ ${P1_SECTORS} partition sectors ✓"
 mmd -i "${OUTPUT}@@${P1_OFFSET}" ::/EFI ::/EFI/BOOT ::/EFI/Linux ::/EFI/systemd ::/loader
 mcopy -i "${OUTPUT}@@${P1_OFFSET}" -Q "$SDBOOT" ::/EFI/BOOT/BOOTAA64.EFI
 mcopy -i "${OUTPUT}@@${P1_OFFSET}" -Q "$SDBOOT" ::/EFI/systemd/systemd-bootaa64.efi
