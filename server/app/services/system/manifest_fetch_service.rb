@@ -18,6 +18,12 @@ module System
   class ManifestFetchService
     DEFAULT_PATH = "manifest.yaml"
 
+    # Platform modules (gitea_repo_full_name blank) carry their manifest in the
+    # shared module source repo under modules/<name>/. Mirrors
+    # ModuleBuildPlannerService::CI_BUILD_SOURCE_REPO_DEFAULT — the repo the
+    # builder itself clones.
+    PLATFORM_SOURCE_REPO_DEFAULT = "powernode/powernode-system"
+
     class FetchError < StandardError; end
 
     class << self
@@ -55,20 +61,68 @@ module System
 
     def fetch(node_module:, ref:, path: DEFAULT_PATH)
       return nil unless node_module
-      return nil if node_module.gitea_repo_full_name.blank?
       return nil if ref.blank?
 
-      owner, repo = node_module.gitea_repo_full_name.split("/", 2)
-      return nil if owner.blank? || repo.blank?
+      source = resolve_source(node_module, path)
+      return nil unless source
 
       self.class.adapter.fetch_file(
-        owner: owner, repo: repo, path: path, ref: ref
+        owner: source[:owner], repo: source[:repo], path: source[:path], ref: ref
       )
     rescue StandardError => e
       Rails.logger.warn("[ManifestFetchService] fetch failed for " \
-                        "#{node_module&.gitea_repo_full_name}@#{ref}: " \
-                        "#{e.class}: #{e.message}")
+                        "#{node_module&.name}@#{ref}: #{e.class}: #{e.message}")
       nil
+    end
+
+    # Where a module's manifest.yaml lives. Two shapes exist and only one used
+    # to be handled:
+    #
+    #   per-repo modules  gitea_repo_full_name set -> <owner>/<repo>:manifest.yaml
+    #   PLATFORM modules  gitea_repo_full_name BLANK -> the platform module source
+    #                     repo, at modules/<name>/manifest.yaml
+    #
+    # Returning nil for the second shape meant `ModulePublicationProcessor`'s
+    # "refresh manifest FIRST" step silently did nothing for every platform
+    # module — system-base, the hub apps, the reverse proxy, the extensions.
+    # Their ModuleService/user/group rows were therefore frozen at whatever the
+    # module was first imported with, so the platform served a manifest that no
+    # longer matched the artifact it was serving alongside it. Observed
+    # 2026-07-26 on ops-hub: reverse-proxy-traefik had ZERO ModuleService rows,
+    # so a build that added a service could not be described to any node, and
+    # the operator had to hand-build the manifest JSON to deliver it.
+    #
+    # The platform path deliberately mirrors how the artifact was BUILT:
+    # module-forge-build.sh clones the same source repo and reads
+    # modules/$MODULE/manifest.yaml at the same BUILD_SHA that becomes this
+    # `ref`. So the manifest imported here is, by construction, the one the
+    # blob was built from — not an approximation from some other revision.
+    def resolve_source(node_module, path)
+      if node_module.gitea_repo_full_name.present?
+        owner, repo = node_module.gitea_repo_full_name.split("/", 2)
+        return nil if owner.blank? || repo.blank?
+        return { owner: owner, repo: repo, path: path }
+      end
+
+      return nil if node_module.name.blank?
+
+      owner, repo = platform_source_repo.to_s.split("/", 2)
+      return nil if owner.blank? || repo.blank?
+
+      # Only the default filename maps into the modules/<name>/ tree; an
+      # explicit path is honoured verbatim so callers can still target
+      # something else in the same repo.
+      resolved = path == DEFAULT_PATH ? "modules/#{node_module.name}/#{DEFAULT_PATH}" : path
+      { owner: owner, repo: repo, path: resolved }
+    end
+
+    # Same resolution order as ModuleBuildPlannerService — SiteSetting, then
+    # env, then the default — so the manifest is read from exactly the repo the
+    # builder was pointed at.
+    def platform_source_repo
+      ::SiteSetting.get("ci_build_source_repo").presence ||
+        ENV["POWERNODE_CI_BUILD_SOURCE_REPO"].presence ||
+        PLATFORM_SOURCE_REPO_DEFAULT
     end
 
     # === Adapters ===
