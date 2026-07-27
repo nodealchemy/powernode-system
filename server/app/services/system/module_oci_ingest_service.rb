@@ -80,8 +80,6 @@ module System
       return failure("node_module_version required") unless node_module_version
 
       adapter = self.class.adapter
-      manifest = adapter.fetch_manifest(oci_ref)
-      return failure("manifest fetch failed: #{manifest[:error]}") if manifest[:error]
 
       # Pull cosign trust policy from the parent NodeModule. Per-module
       # pinning means each module source (internal CI, third-party publisher)
@@ -91,12 +89,38 @@ module System
       issuer_regexp   = mod.cosign_issuer_regexp.presence
       effective_signers = expected_signers || (identity_regexp ? [ identity_regexp ] : nil)
 
-      verification = adapter.verify_signature(
-        oci_ref,
-        expected_signers: effective_signers,
-        issuer_regexp: issuer_regexp
-      )
-      return failure("cosign verify failed: #{verification[:error]}") if verification[:error]
+      # Authenticate to the registry for BOTH the manifest fetch and the cosign
+      # verify. This path used to do neither: fetch_manifest shelled out to
+      # `oras manifest fetch` with no login at all, relying on an ambient
+      # credential that exists on a developer laptop and on no control plane,
+      # and verify_signature was called without the registry_env keyword it
+      # already accepts. Against the platform's own private Gitea registry that
+      # fails at the first call with a bare "unauthorized", which reads like a
+      # permissions problem rather than a missing login. ingest_native! had it
+      # right already — same helper, same shape.
+      #
+      # BOTH calls must happen INSIDE the block: with_registry_docker_config
+      # logs into a Dir.mktmpdir DOCKER_CONFIG that is deleted when the block
+      # returns, so hoisting the env out and using it afterwards would point
+      # oras and cosign at a directory that no longer exists.
+      fetched = with_registry_docker_config(mod&.account) do |reg_env|
+        manifest = adapter.fetch_manifest(oci_ref, registry_env: reg_env)
+        next { error: "manifest fetch failed: #{manifest[:error]}" } if manifest[:error]
+
+        verification = adapter.verify_signature(
+          oci_ref,
+          expected_signers: effective_signers,
+          issuer_regexp: issuer_regexp,
+          registry_env: reg_env
+        )
+        next { error: "cosign verify failed: #{verification[:error]}" } if verification[:error]
+
+        { manifest: manifest, verification: verification }
+      end
+      return failure(fetched[:error]) if fetched.is_a?(Hash) && fetched[:error]
+
+      manifest     = fetched.fetch(:manifest)
+      verification = fetched.fetch(:verification)
 
       created = []
       ::ActiveRecord::Base.transaction do
@@ -398,7 +422,8 @@ module System
         @stub_verification = nil
       end
 
-      def fetch_manifest(oci_ref)
+      def fetch_manifest(oci_ref, registry_env: {})
+        _ = registry_env # stub: no registry involved
         return @stub_manifest if @stub_manifest
 
         digest_suffix = ::Digest::SHA256.hexdigest(oci_ref)
@@ -438,9 +463,9 @@ module System
       # `layers` array — see fetch_manifest_single_arch.
       EROFS_LAYER_MEDIA_TYPE = "application/vnd.powernode.erofs"
 
-      def fetch_manifest(oci_ref)
+      def fetch_manifest(oci_ref, registry_env: {})
         ensure_binary!("oras")
-        out, err, status = Open3.capture3("oras", "manifest", "fetch", oci_ref)
+        out, err, status = Open3.capture3(registry_env, "oras", "manifest", "fetch", oci_ref)
         # oras may echo the auth header or `Authorization: Bearer …`
         # snippet in its error output (esp. on 401/403). Sanitize before
         # the err string lands in the operator-facing error: payload.

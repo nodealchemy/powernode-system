@@ -150,7 +150,8 @@ RSpec.describe System::ModuleOciIngestService do
     end
 
     it "fails clearly against the pre-fix CI shape (nothing ever published at the bare tag)" do
-      allow(Open3).to receive(:capture3).with("oras", "manifest", "fetch", oci_ref)
+      allow(Open3).to receive(:capture3)
+        .with({}, "oras", "manifest", "fetch", oci_ref)
         .and_return([ "", "Error: #{oci_ref}: not found", status_double(false, code: 1) ])
 
       result = adapter.fetch_manifest(oci_ref)
@@ -179,7 +180,8 @@ RSpec.describe System::ModuleOciIngestService do
           }
         end
       }.to_json
-      allow(Open3).to receive(:capture3).with("oras", "manifest", "fetch", oci_ref)
+      allow(Open3).to receive(:capture3)
+        .with({}, "oras", "manifest", "fetch", oci_ref)
         .and_return([ index, "", status_double(true) ])
 
       result = adapter.fetch_manifest(oci_ref)
@@ -237,7 +239,8 @@ RSpec.describe System::ModuleOciIngestService do
           "org.powernode.packages-sha256" => "#{Digest::SHA256.hexdigest('packages')}"
         }
       }.to_json
-      allow(Open3).to receive(:capture3).with("oras", "manifest", "fetch", oci_ref)
+      allow(Open3).to receive(:capture3)
+        .with({}, "oras", "manifest", "fetch", oci_ref)
         .and_return([ single_arch, "", status_double(true) ])
 
       result = adapter.fetch_manifest(oci_ref)
@@ -260,7 +263,8 @@ RSpec.describe System::ModuleOciIngestService do
           { mediaType: "application/vnd.powernode.module.meta", digest: "sha256:#{Digest::SHA256.hexdigest('meta')}", size: 10 }
         ]
       }.to_json
-      allow(Open3).to receive(:capture3).with("oras", "manifest", "fetch", oci_ref)
+      allow(Open3).to receive(:capture3)
+        .with({}, "oras", "manifest", "fetch", oci_ref)
         .and_return([ no_erofs, "", status_double(true) ])
 
       result = adapter.fetch_manifest(oci_ref)
@@ -557,5 +561,54 @@ RSpec.describe System::ModuleOciIngestService do
         expect(result.ok?).to be true
       end
     end
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Registry authentication on the ingest path (dev-cell, 2026-07-27)
+# ---------------------------------------------------------------------------
+#
+# ingest! used to authenticate for NEITHER of its two registry calls:
+# fetch_manifest shelled out to `oras manifest fetch` with no login, and
+# verify_signature was invoked without the registry_env keyword it already
+# accepted. Against the platform's own private Gitea registry that fails at the
+# first call with a bare "unauthorized" — which reads as a permissions problem
+# rather than a missing login, and cost real time to trace.
+RSpec.describe System::ModuleOciIngestService, "registry auth on ingest!" do
+  let(:account) { create(:account) }
+  let(:node_module) { create(:system_node_module, account: account) }
+  let(:version) { create(:system_node_module_version, node_module: node_module) }
+  let(:oci_ref) { "git.example.org/powernode/mod:abc1234" }
+
+  # A stub standing in for the throwaway DOCKER_CONFIG the login helper yields.
+  let(:auth_env) { { "DOCKER_CONFIG" => "/tmp/fake-docker-config" } }
+
+  before do
+    described_class.adapter = adapter
+    allow_any_instance_of(described_class)
+      .to receive(:with_registry_docker_config) { |_svc, _acct, &blk| blk.call(auth_env) }
+  end
+  after { described_class.reset! }
+
+  let(:adapter) { instance_double("OciAdapter") }
+
+  it "passes the authenticated env to BOTH the manifest fetch and the verify" do
+    expect(adapter).to receive(:fetch_manifest)
+      .with(oci_ref, registry_env: auth_env)
+      .and_return(per_arch_descriptors: [])
+    expect(adapter).to receive(:verify_signature)
+      .with(oci_ref, hash_including(registry_env: auth_env))
+      .and_return(bundle: "sig")
+
+    described_class.new.ingest!(node_module_version: version, oci_ref: oci_ref)
+  end
+
+  it "surfaces a login failure instead of attempting an unauthenticated fetch" do
+    allow_any_instance_of(described_class)
+      .to receive(:with_registry_docker_config).and_return({ error: "registry login for verify failed: bad creds" })
+    expect(adapter).not_to receive(:fetch_manifest)
+
+    result = described_class.new.ingest!(node_module_version: version, oci_ref: oci_ref)
+    expect(result.error.to_s).to match(/registry login/)
   end
 end
