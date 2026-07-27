@@ -47,6 +47,7 @@ DEV_CELL_MODULES = %w[
   dev-cell-docker
   dev-cell-browser
   tmux-manager
+  gitleaks
 ].freeze
 # tmux-manager ships installed-but-not-enabled (see its own manifest) —
 # template-wide assignment is safe: no dev-cell instance auto-starts a tmux

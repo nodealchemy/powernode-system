@@ -1286,6 +1286,46 @@ case "$MODULE" in
     du -sh /tmp/fat/opt/buildenv 2>&1 | awk 'NR==1'
     ls /tmp/fat/opt/module-build/
     ;;
+  gitleaks)
+    # gitleaks has no apt package — fetch the pinned upstream release
+    # tarball and verify its sha256, same hermetic pattern as the
+    # act_runner/oras/cosign fetches elsewhere in this stage. gitleaks is a
+    # fully-static Go binary, so it needs no *.so companions (contrast the
+    # apt-sourced modules) — the single /usr/local/bin/gitleaks entry in the
+    # manifest file_spec is the module's entire payload.
+    GITLEAKS_VERSION=$(jq -r '.build.gitleaks_version // "8.21.2"' /tmp/manifest.json)
+
+    # Upstream names amd64 assets "x64", arm64 assets "arm64"
+    # (github.com/gitleaks/gitleaks/releases). Pinned sha256 for
+    # gitleaks_${GITLEAKS_VERSION}_linux_<glarch>.tar.gz — bump both alongside
+    # build.gitleaks_version on any version change.
+    case "${ARCH:-amd64}" in
+      amd64) GL_ARCH=x64;   GITLEAKS_SHA256=5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba ;;
+      arm64) GL_ARCH=arm64; GITLEAKS_SHA256=654c935542c89f565aabe7bf7c6c500830f116c114f0aeb509d2460c1ac2e6da ;;
+      *) echo "[stage-1.5] FATAL: no pinned gitleaks sha256 for ARCH=${ARCH:-amd64}"; exit 1 ;;
+    esac
+
+    curl -fsSL \
+      "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${GL_ARCH}.tar.gz" \
+      -o /tmp/gitleaks.tar.gz
+    echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+
+    mkdir -p /tmp/fat/usr/local/bin
+    tar -xzf /tmp/gitleaks.tar.gz -C /tmp/fat/usr/local/bin gitleaks
+    chmod 0755 /tmp/fat/usr/local/bin/gitleaks
+    rm -f /tmp/gitleaks.tar.gz
+
+    # Verify what actually shipped. Only exec on an amd64 runner (the only
+    # ARCH built today) — a cross-arch fetch has its integrity confirmed by
+    # the sha256sum -c above and can't be exec'd on this runner anyway.
+    if [ "${ARCH:-amd64}" = "amd64" ]; then
+      GITLEAKS_OUT=$(/tmp/fat/usr/local/bin/gitleaks version 2>&1 || true)
+      echo "[stage-1.5] gitleaks: $GITLEAKS_OUT"
+      echo "$GITLEAKS_OUT" | grep -q "${GITLEAKS_VERSION}" || { echo "[stage-1.5] FATAL: expected gitleaks ${GITLEAKS_VERSION}, got: $GITLEAKS_OUT"; exit 1; }
+    else
+      echo "[stage-1.5] skipping gitleaks version exec check for ARCH=${ARCH:-amd64} (cross-arch binary) — sha256 already verified above"
+    fi
+    ;;
 esac
 
 echo "=== /tmp/fat top-level layout after stage 1.5 ==="

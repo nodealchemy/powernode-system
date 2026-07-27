@@ -1,0 +1,78 @@
+schema_version: 1
+
+name: gitleaks
+display_name: "gitleaks secret scanner"
+description: >
+  Ships the gitleaks secret-scanning CLI (github.com/gitleaks/gitleaks, MIT)
+  as a single fully-static Go binary at /usr/local/bin/gitleaks. gitleaks has
+  no apt package, so it is fetched from its pinned upstream GitHub release and
+  sha256-verified at CI build time (see the gitleaks case in
+  scripts/module-build/stage15.sh Stage 1.5), the same hermetic pattern as
+  act_runner/oras/cosign. Carries no service, no scripts, and no systemd
+  units — the binary is the module's entire payload. Added to the dev-cell
+  stack so the platform's `scripts/validate.sh` completion gate (which runs
+  `gitleaks` when present) is reproducible from the node template rather than
+  relying on an ad-hoc per-user install. Reusable standalone — any fleet
+  instance can carry this module for repo secret scanning.
+license: MIT
+category: build-dev
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+
+# The gitleaks binary is written directly into /tmp/fat by the Stage 1.5
+# gitleaks case (curl + sha256 verify + tar extract) — it is NOT apt-derivable,
+# so --mode deb-payload structurally can't verify it (it never appears in the
+# apt-resolved candidate set the tool diffs against — same "Fidelity blind
+# spots" situation claude-tmux's manifest documents for its npm-written CLI).
+# Declared here so stage2-carve.sh's real fat-root carve keeps it. Single
+# entry: gitleaks is a static Go binary with no shared-library companions.
+file_spec:
+  - "/usr/local/bin/gitleaks"
+
+# No apt closure to waive (package_spec is empty — see below).
+carve_waivers: []
+
+# gitleaks ships only its own binary — no other module's paths.
+protected_spec: []
+
+# Empty on purpose: gitleaks is a single fully-static Go binary (CGO disabled
+# upstream) — it links no glibc and needs no apt-installed dependencies. The
+# binary is staged by the Stage 1.5 gitleaks case regardless of package_spec
+# (same as claude-tmux's npm-installed CLI), and base-os-ubuntu-noble already
+# provides ca-certificates for the platform. Nothing to install via mmdebstrap.
+package_spec: []
+
+dependencies:
+  requires:
+    # Base layer only. Deliberately NO capability:os.userland edge (contrast
+    # claude-tmux / gitea-act-runner, whose payloads dynamically link base-os's
+    # glibc): gitleaks is a fully-static binary with no runtime library
+    # dependency, so it carries no glibc closure guarantee to assert.
+    - powernode/powernode-system-base@^1.0
+  provides:
+    - dev.gitleaks
+
+reboot_required: false
+
+security:
+  # Runtime posture: gitleaks scans local git repositories and files — it makes
+  # no network calls at runtime (the release fetch happens at BUILD time on the
+  # CI runner, not on the instance), needs no elevated capabilities, and runs
+  # unprivileged. The strictest possible box for a self-contained scanner.
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"
+  # gitleaks release fetched + sha256-verified in Stage 1.5 (see the gitleaks
+  # case in scripts/module-build/stage15.sh). Bump this alongside the pinned
+  # amd64 (x64) / arm64 sha256 in that step.
+  gitleaks_version: "8.21.2"
