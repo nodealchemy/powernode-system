@@ -247,8 +247,11 @@ describe('TemplateDetailModal', () => {
       mockGetNodes.mockResolvedValue({ nodes: [], meta: DEFAULT_META });
       mockGetTemplateModules.mockResolvedValue({ modules: [] });
 
-      const { container } = renderModal();
-      expect(container.querySelector('.fixed.inset-0')).toBeInTheDocument();
+      renderModal();
+      // The Modal portals to document.body, so it is NOT inside the container
+      // RTL returns — query the document, and do it by role rather than by a
+      // utility class that a restyle can silently invalidate.
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
     });
   });
 
@@ -420,7 +423,7 @@ describe('TemplateDetailModal', () => {
       renderModal();
 
       await waitFor(() =>
-        expect(screen.getByRole('heading', { level: 2, name: 'Ubuntu Base' })).toBeInTheDocument()
+        expect(screen.getByRole('heading', { level: 3, name: 'Ubuntu Base' })).toBeInTheDocument()
       );
     });
 
@@ -951,9 +954,9 @@ describe('TemplateDetailModal', () => {
       renderModal({ onClose });
 
       await waitFor(() =>
-        expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
       );
-      fireEvent.click(screen.getByRole('button', { name: /close/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Close' }));
 
       expect(onClose).toHaveBeenCalledTimes(1);
     });
@@ -986,7 +989,7 @@ describe('TemplateDetailModal', () => {
       renderModal(); // no onEdit
 
       await waitFor(() =>
-        expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
       );
 
       expect(screen.queryByRole('button', { name: /edit template/i })).not.toBeInTheDocument();
@@ -1001,7 +1004,7 @@ describe('TemplateDetailModal', () => {
       renderModal({ onEdit, hasPermission: false });
 
       await waitFor(() =>
-        expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
       );
 
       expect(screen.queryByRole('button', { name: /edit template/i })).not.toBeInTheDocument();
@@ -1016,13 +1019,17 @@ describe('TemplateDetailModal', () => {
     it('calls onClose when the backdrop is clicked', async () => {
       setupHappyPath();
       const onClose = jest.fn();
-      const { container } = renderModal({ onClose });
+      renderModal({ onClose });
 
       await waitFor(() =>
-        expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
       );
 
-      const backdrop = container.querySelector('.bg-black\\/50') as HTMLElement;
+      // handleBackdropClick only fires when target === currentTarget, so click
+      // the positioning wrapper that owns the handler — not the decorative
+      // overlay (aria-hidden, pointer-events pass through) and not a class name
+      // like bg-black/50, which the restyle already moved to bg-black/60.
+      const backdrop = screen.getByRole('dialog').firstElementChild as HTMLElement;
       expect(backdrop).toBeInTheDocument();
       fireEvent.click(backdrop);
 
@@ -1035,19 +1042,14 @@ describe('TemplateDetailModal', () => {
       renderModal({ onClose });
 
       await waitFor(() =>
-        expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
       );
 
-      // Header has an X button (ghost button with X icon, no text)
-      const buttons = screen.getAllByRole('button');
-      const xBtn = buttons.find(btn => {
-        const label = btn.getAttribute('aria-label');
-        return !label && btn.querySelector('svg');
-      });
-      if (xBtn) {
-        fireEvent.click(xBtn);
-        expect(onClose).toHaveBeenCalled();
-      }
+      // The canonical Modal titlebar labels its X button "Close modal". The
+      // previous version of this test looked for a button with NO aria-label
+      // and an svg, found nothing, and passed vacuously through `if (xBtn)`.
+      fireEvent.click(screen.getByRole('button', { name: 'Close modal' }));
+      expect(onClose).toHaveBeenCalledTimes(1);
     });
   });
 
