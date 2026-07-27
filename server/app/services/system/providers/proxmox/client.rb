@@ -135,6 +135,24 @@ module System
           CGI.escape(upid)
         end
 
+        # The node a UPID's task actually runs on — its second field, which is
+        # authoritative and self-describing.
+        #
+        # This is NOT always the node the request targeted. PVE runs a storage
+        # UPLOAD as an `imgcopy` task on the node that RECEIVES the API call (the
+        # endpoint host), then copies the bytes to the target node's storage. So
+        # uploading to /nodes/rna/storage/local/upload against a dna endpoint
+        # returns UPID:dna:...:imgcopy:, and polling /nodes/rna/tasks/<that>
+        # answers "no such task" — correctly, because the task belongs to dna.
+        #
+        # Observed on PVE 9.2.3 while provisioning the first instance onto a node
+        # other than the API endpoint. It stayed invisible for as long as every
+        # provision happened to target the endpoint host itself.
+        def upid_node(upid)
+          m = /\AUPID:([^:]+):/.match(upid.to_s)
+          m && m[1].presence
+        end
+
         # @param node [String] PVE node name (e.g. "dna")
         # @param upid [String] task UPID returned from a write call
         # @param timeout [Integer] max seconds to wait
@@ -145,6 +163,10 @@ module System
         def wait_task(node:, upid:, timeout: DEFAULT_TASK_TIMEOUT, poll_every: DEFAULT_TASK_POLL_EVERY)
           deadline = monotonic_now + timeout
           encoded = encode_upid(upid)
+          # Poll where the task actually LIVES, not where the request was aimed
+          # (see upid_node). `node` remains the fallback for a malformed UPID so
+          # this cannot be worse than the previous behaviour.
+          node = upid_node(upid) || node
           not_ready = 0
           loop do
             begin
