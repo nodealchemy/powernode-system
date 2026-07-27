@@ -107,6 +107,23 @@ file_spec:
   - "/etc/bash_completion.d/git-prompt"
   - "/usr/bin/jq"
 
+  # uuid-runtime. Mirrors module-forge's own carve of this SAME package
+  # verbatim — apt file ownership is per-package, so the owned set is
+  # independent of which siblings a module carries, and the base subtracted
+  # out (base-os-ubuntu-noble) is identical for both. Note the absence of
+  # libuuid1: base-os's util-linux already depends on it, so it is a
+  # BASE-SHARED candidate and carving it here would be the same
+  # over-inclusion this manifest's file_spec comment documents above.
+  - "/usr/bin/uuidgen"
+  - "/usr/bin/uuidparse"
+  - "/usr/sbin/uuidd"
+  - "/etc/init.d/uuidd"
+  - "/usr/lib/systemd/system/uuidd.service"
+  - "/usr/lib/systemd/system/uuidd.socket"
+  - "/usr/share/bash-completion/completions/uuidd"
+  - "/usr/share/bash-completion/completions/uuidgen"
+  - "/usr/share/bash-completion/completions/uuidparse"
+
   - /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.3
   - /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4
   - /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4.8.0
@@ -616,6 +633,15 @@ package_spec:
   # `man` for the interactive toolchain.
   - python3
   - man-db
+  # uuidgen — needed to run the platform's OWN build tooling and test suite on
+  # a cell, which is the whole point of a dev-cell. scripts/module-build/
+  # stage2-carve.sh derives each erofs image's UUID with `uuidgen --sha1`, and
+  # the backend suite drives that script for real (module_forge_build_head_sha
+  # _spec), so without this the scripts/validate.sh completion gate cannot go
+  # green here — it failed with "required command 'uuidgen' not found on PATH".
+  # module-forge package_spec's this same package for the builder-side half of
+  # the identical need.
+  - uuid-runtime
 
 dependencies:
   requires:
