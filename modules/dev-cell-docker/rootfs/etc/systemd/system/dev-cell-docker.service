@@ -31,8 +31,13 @@ ExecReload=/bin/kill -s HUP $MAINPID
 TimeoutSec=0
 RestartSec=2
 Restart=always
-StartLimitBurst=3
-StartLimitInterval=60s
+# Upstream docker.service ships StartLimitBurst=3 / StartLimitInterval=60s
+# HERE, in [Service] — where systemd ignores them (they are [Unit] keys), so
+# every Docker install has in practice always restarted dockerd unbounded.
+# Dropped rather than promoted to [Unit]: promoting them would newly make
+# dockerd give up after 3 failures in 60s, a behavior change this module never
+# had and never validated. Removing the dead keys keeps behavior identical and
+# stops the config from reading as a bound that isn't there.
 LimitNOFILE=infinity
 LimitNPROC=infinity
 LimitCORE=infinity

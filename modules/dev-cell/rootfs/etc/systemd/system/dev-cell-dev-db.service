@@ -7,6 +7,13 @@ ConditionPathExists=/usr/local/bin/dev-cell-dev-db.sh
 # psql/createuser/createdb come from postgres-primary (co-assigned); skip
 # cleanly on a template without it rather than crash-loop.
 ConditionPathExists=/usr/bin/psql
+# Bounds the [Service] Restart=on-failure below to 10 attempts per 30 minutes.
+# These two keys are [Unit]-section keys — systemd parses start rate limiting on
+# the unit, not the service. Declared under [Service] they are silently dropped
+# ("Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring")
+# and the unit crash-loops unbounded, which is what it did until 2026-07-27.
+StartLimitIntervalSec=1800
+StartLimitBurst=10
 
 [Service]
 Type=oneshot
@@ -19,8 +26,6 @@ StandardOutput=journal
 StandardError=journal
 Restart=on-failure
 RestartSec=30s
-StartLimitIntervalSec=1800
-StartLimitBurst=10
 
 [Install]
 WantedBy=multi-user.target

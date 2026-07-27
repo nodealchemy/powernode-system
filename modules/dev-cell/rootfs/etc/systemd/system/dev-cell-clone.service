@@ -11,6 +11,13 @@ ConditionPathIsMountPoint=/persist
 # repo is cloned to the root of ~/work (REPOS "powernode-platform:." in
 # dev-cell-clone.sh), so its git dir is ~/work/.git — NOT ~/work/powernode-platform/.git.
 ConditionPathExists=!/persist/home/pnadmin/work/.git
+# Bounds the [Service] Restart=on-failure below to 5 attempts per hour. These
+# two keys are [Unit]-section keys — systemd parses start rate limiting on the
+# unit, not the service. Declared under [Service] they are silently dropped
+# ("Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring")
+# and the unit crash-loops unbounded, which is what it did until 2026-07-27.
+StartLimitIntervalSec=3600
+StartLimitBurst=5
 
 [Service]
 Type=oneshot
@@ -29,8 +36,6 @@ StandardError=journal
 # a permanent crash-loop.
 Restart=on-failure
 RestartSec=60s
-StartLimitIntervalSec=3600
-StartLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target
