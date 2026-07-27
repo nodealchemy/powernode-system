@@ -204,3 +204,11 @@ skills: []
 
 build:
   apt_snapshot: "20260415T000000Z"
+  # Claude Code CLI version npm-installed in Stage 1.5 (see the claude-tmux
+  # case in scripts/module-build/stage15.sh). Pinned for reproducibility —
+  # previously the install floated to npm's implicit @latest at CI build time,
+  # the one build input in this repo not version/sha-pinned (contrast
+  # runtime-node/runtime-ruby/oras/act_runner). Unlike a release-binary fetch
+  # there is no single sha256 to verify; the exact npm version + npm's own
+  # package-lock integrity is the reproducibility unit. Bump deliberately.
+  claude_code_version: "2.1.220"

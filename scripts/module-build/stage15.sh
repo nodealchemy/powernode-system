@@ -953,15 +953,30 @@ case "$MODULE" in
       apt-get update
       apt-get install -y --no-install-recommends nodejs npm
     fi
+    # Pin the CLI version from the manifest (build.claude_code_version)
+    # rather than floating to npm's implicit @latest — reproducible builds
+    # and controlled bumps, same manifest-driven idiom as the act_runner
+    # case below. npm has no single release-binary sha to `sha256sum -c`;
+    # the exact version + npm's own package-lock integrity is the pin.
+    CLAUDE_CODE_VERSION=$(jq -r '.build.claude_code_version // "2.1.220"' /tmp/manifest.json)
     mkdir -p /tmp/fat/usr
-    npm install -g --prefix /tmp/fat/usr --no-audit --no-fund @anthropic-ai/claude-code
+    npm install -g --prefix /tmp/fat/usr --no-audit --no-fund \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
     # Guard what actually SHIPS: the CLI is this module's entire
     # payload (beyond tmux) — a failed/partial npm install must
     # not silently carve an empty module.
     if [ ! -e /tmp/fat/usr/bin/claude ] && [ ! -e /tmp/fat/usr/lib/node_modules/@anthropic-ai/claude-code ]; then
       echo "[stage-1.5] FATAL: @anthropic-ai/claude-code did not install into /tmp/fat/usr"; exit 1
     fi
-    echo "=== claude-tmux: npm install result ==="
+    # Assert the pinned version actually landed (mirrors the act_runner
+    # --version check below) — catch an npm resolution that silently
+    # deviated from the manifest pin before it ships.
+    CLAUDE_INSTALLED_VERSION=$(jq -r '.version' \
+      /tmp/fat/usr/lib/node_modules/@anthropic-ai/claude-code/package.json 2>/dev/null || echo "")
+    if [ "$CLAUDE_INSTALLED_VERSION" != "$CLAUDE_CODE_VERSION" ]; then
+      echo "[stage-1.5] FATAL: expected @anthropic-ai/claude-code ${CLAUDE_CODE_VERSION}, got: ${CLAUDE_INSTALLED_VERSION:-<none>}"; exit 1
+    fi
+    echo "=== claude-tmux: npm install result (pinned ${CLAUDE_CODE_VERSION}) ==="
     ls -la /tmp/fat/usr/bin/claude* 2>/dev/null || true
     ls -d /tmp/fat/usr/lib/node_modules/@anthropic-ai/claude-code 2>/dev/null || true
     ;;
