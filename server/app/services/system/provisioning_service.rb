@@ -495,6 +495,12 @@ module System
       params[:vmid] = options[:vmid] if options[:vmid].present?
       params[:storage] = options[:storage] if options[:storage].present?
       params[:cidata_iso_storage] = options[:cidata_iso_storage] if options[:cidata_iso_storage].present?
+      # Optional override for where a uefi_disk boot image is STAGED, which is a
+      # different question from where the disks live: `import` is a content type
+      # block-backed storages cannot carry at all. Omit it and the provider picks
+      # an import-capable storage itself (ProxmoxProvider#resolve_import_storage!);
+      # set it when the auto-pick would choose a storage you don't want written to.
+      params[:import_storage] = options[:import_storage] if options[:import_storage].present?
 
       if options[:ssh_key].present?
         params[:ssh_key] = options[:ssh_key]

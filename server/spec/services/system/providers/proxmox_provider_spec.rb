@@ -26,6 +26,16 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
   before do
     allow(System::Providers::Proxmox::Client).to receive(:new).and_return(client)
+    # The create paths now ask PVE what a storage actually is before hardcoding
+    # a disk format or an import target — a qcow2 cannot exist on a zvol, and
+    # `import` is a content type block-backed storages cannot carry. dna-data is
+    # NFS (file-backed, carries import), which is what every expectation in this
+    # file was written against, so this default keeps them asserting the same
+    # bytes. Contexts that need a different storage shape override it locally.
+    allow(client).to receive(:get).with(%r{\A/api2/json/nodes/[^/]+/storage\z}).and_return(
+      [ { "storage" => "dna-data", "type" => "nfs", "active" => 1, "shared" => 1,
+          "content" => "import,rootdir,vztmpl,iso,images,snippets" } ]
+    )
   end
 
   # The shared_examples expects the standard BaseProvider interface;
@@ -490,10 +500,18 @@ RSpec.describe System::Providers::ProxmoxProvider do
       before { allow(System::ProviderCredential).to receive(:for).and_return(nil) }
 
       it "creates the boot disk on default_storage and never auto-picks by content" do
+        # This used to assert the storage endpoint was never fetched, using
+        # "didn't call it" as a proxy for "didn't auto-pick". That proxy stopped
+        # holding once the create path began asking what a storage IS (to choose
+        # a disk format and an import target) rather than only asking to pick
+        # one. Assert the auto-picker itself is never invoked, which is what the
+        # test was always about, and is now a stronger claim than the proxy.
+        allow(provider).to receive(:first_shared_storage_with_content!).and_call_original
+
         result = provider.create_instance(params)
         expect(result[:success]).to be true
 
-        expect(client).not_to have_received(:get).with("/api2/json/nodes/dna/storage")
+        expect(provider).not_to have_received(:first_shared_storage_with_content!)
         expect(client).to have_received(:post).with(
           "/api2/json/nodes/dna/qemu",
           hash_including("scsi0" => a_string_including("dna-data:0,import-from=dna-data:import/uefi-uki.raw"))

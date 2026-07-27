@@ -769,7 +769,8 @@ module System
           storage:     storage,
           bridge:      bridge,
           ip_config:   ip_config,
-          image_volid: image_volid
+          image_volid: image_volid,
+          disk_format: pve_disk_format_for(c, node: node, storage: storage)
         )
 
         # Federation spawn auto-render — see apply_default_federation_user_data.
@@ -893,7 +894,10 @@ module System
       # Builds the qemu create body. The scsi0 disk uses size=0 with
       # `import-from` (PVE quirk #3: import requires zero target size).
       # We resize after creation.
-      def build_qemu_vm_body(params, preset:, vmid:, storage:, bridge:, ip_config:, image_volid:)
+      # disk_format defaults to qcow2 — the value this hardcoded before it was a
+      # parameter — so any caller that does not resolve it keeps the old
+      # behaviour rather than silently getting raw.
+      def build_qemu_vm_body(params, preset:, vmid:, storage:, bridge:, ip_config:, image_volid:, disk_format: "qcow2")
         body = {
           "vmid"     => vmid,
           "name"     => params.fetch(:name),
@@ -904,8 +908,10 @@ module System
           "balloon"  => 0,
           "machine"  => params[:machine] || DEFAULT_MACHINE_TYPE,
           "bios"     => params[:bios]    || DEFAULT_BIOS,
-          # efidisk0 in qcow2 — PVE quirk #5: snapshots require all-qcow2 disks
-          "efidisk0" => "#{storage}:0,efitype=4m,format=qcow2",
+          # efidisk0 in qcow2 where the storage can hold one — PVE quirk #5:
+          # snapshots require all-qcow2 disks. Block-backed storage gets raw;
+          # see pve_disk_format_for.
+          "efidisk0" => "#{storage}:0,efitype=4m,format=#{disk_format}",
           "scsihw"   => DEFAULT_SCSIHW,
           "scsi0"    => "#{storage}:0,import-from=#{image_volid},iothread=1,discard=on",
           "net0"     => "virtio,bridge=#{bridge}",
@@ -1193,7 +1199,8 @@ module System
         persist_gb = params[:persist_storage_gb].to_i
         if persist_gb > 0
           storage = params[:storage] || first_shared_storage_with_content!(c, node: node, content: "images")
-          body["scsi0"] = "#{storage}:#{persist_gb},iothread=1,discard=on,format=qcow2"
+          fmt = pve_disk_format_for(c, node: node, storage: storage)
+          body["scsi0"] = "#{storage}:#{persist_gb},iothread=1,discard=on,format=#{fmt}"
         end
 
         # Build the qemu `-kernel -initrd -append` args block. PVE
@@ -1311,7 +1318,8 @@ module System
           storage:     storage,
           bridge:      bridge,
           ip_config:   ip_config,
-          image_volid: image_volid
+          image_volid: image_volid,
+          disk_format: pve_disk_format_for(c, node: node, storage: storage)
         )
 
         params = apply_default_federation_user_data(params, boot_mode: "uefi_disk")
@@ -1409,10 +1417,15 @@ module System
         end
 
         filename = uefi_disk_image_filename(platform)
-        volid = "#{storage}:import/#{filename}"
-        return volid if pve_storage_volid_exists?(c, node: node, storage: storage, volid: volid)
+        # Stage into an import-capable storage, which may not be the storage the
+        # disks land on (see resolve_import_storage!). `import-from=` copies
+        # across storages, so the staged volid and the boot disk need not share
+        # one — they only did because this used to pass `storage` for both.
+        import_storage = resolve_import_storage!(c, node: node, storage: storage, params: params)
+        volid = "#{import_storage}:import/#{filename}"
+        return volid if pve_storage_volid_exists?(c, node: node, storage: import_storage, volid: volid)
 
-        import_uefi_disk_image!(c, node: node, storage: storage, platform: platform, filename: filename)
+        import_uefi_disk_image!(c, node: node, storage: import_storage, platform: platform, filename: filename)
         volid
       end
 
@@ -1775,6 +1788,63 @@ module System
         match ||= storages.find { |s| s["active"] == 1 && (s["content"] || "").split(",").include?(content) }
         raise ProviderError, "No storage on node #{node} supports content type #{content}" unless match
         match["storage"]
+      end
+
+      # Storage plugins whose volumes ARE block devices — zvols, LVs, RBD
+      # images. A qcow2 is a file format; there is no file to put it in, and PVE
+      # rejects `format=qcow2` on these outright. Every disk spec that hardcodes
+      # a format therefore has to ask the storage first, or it works only on the
+      # file-backed storages (dir/NFS/CIFS) that happened to be used until now.
+      BLOCK_BACKED_STORAGE_TYPES = %w[zfspool zfs lvm lvmthin rbd iscsi iscsidirect].freeze
+
+      # One GET per node, keyed by storage name, so a caller can ask several
+      # questions (content types, plugin type) without re-fetching per question.
+      def pve_node_storages(c, node:)
+        ((c.get("/api2/json/nodes/#{node}/storage") || []).index_by { |s| s["storage"] })
+      end
+
+      def pve_storage_supports_content?(c, node:, storage:, content:)
+        entry = pve_node_storages(c, node: node)[storage]
+        return false if entry.nil?
+
+        (entry["content"] || "").split(",").include?(content)
+      end
+
+      # qcow2 where the storage can actually hold one (PVE quirk #5: snapshots
+      # require all-qcow2 disks), raw where the volume is a block device.
+      # Unknown/absent storage falls back to qcow2 — the historical default, so
+      # a lookup failure cannot change behaviour on the storages used to date.
+      def pve_disk_format_for(c, node:, storage:)
+        entry = pve_node_storages(c, node: node)[storage]
+        plugin = entry && (entry["plugintype"] || entry["type"])
+        BLOCK_BACKED_STORAGE_TYPES.include?(plugin) ? "raw" : "qcow2"
+      end
+
+      # Where to stage an imported disk image. It is NOT necessarily the storage
+      # the VM's disks land on: `import` is a content type many storages cannot
+      # carry at all (no zfspool/LVM can), while the boot disk only needs
+      # `images`. Conflating the two silently restricts uefi_disk provisioning to
+      # storages that support both, which is why the first zfspool target failed.
+      # Preference order is deliberate and NOT the same as first_shared_storage_
+      # with_content!, which prefers SHARED storage. Staging is transient — the
+      # image is copied out of it by `import-from=` — but the provision fails if
+      # it is unreachable, and provisioning-from-seed is the recovery path for a
+      # lost member. Defaulting to a shared NFS export would therefore make
+      # rebuilding a node-local member depend on the network storage that
+      # INV-6 exists to keep it off. Node-local first; shared only as a last
+      # resort, and then explicitly rather than by accident.
+      def resolve_import_storage!(c, node:, storage:, params: {})
+        explicit = params[:import_storage]
+        return explicit if explicit.present?
+        return storage if pve_storage_supports_content?(c, node: node, storage: storage, content: "import")
+
+        candidates = pve_node_storages(c, node: node).values.select do |s|
+          s["active"] == 1 && (s["content"] || "").split(",").include?("import")
+        end
+        local = candidates.find { |s| s["shared"] != 1 }
+        return local["storage"] if local
+
+        first_shared_storage_with_content!(c, node: node, content: "import")
       end
 
       def next_free_disk_slot!(c, node:, kind:, vmid:)
