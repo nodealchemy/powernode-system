@@ -55,7 +55,16 @@ KNOWN_HOSTS_OUT="$RUNTIME_DIR/known_hosts"
 log() { echo "dev-cell-bootstrap: $*" >&2; }
 
 # --- Resolve the on-node agent's PKI directory ------------------------
-if [ -f /persist/var/lib/powernode/pki/node.crt ]; then
+# $DEV_CELL_PKI_DIR is checked first purely as an explicit override, the
+# same shape as $RUNTIME_DIRECTORY above: the unit never sets it, so on a
+# real node resolution is byte-identical to the two durable paths below.
+# It exists so the retry loop further down can be driven under test
+# without a real enrolled identity (anything that can set this unit's
+# environment is already root, which is what it takes to read node.key
+# anyway).
+if [ -n "${DEV_CELL_PKI_DIR:-}" ] && [ -f "${DEV_CELL_PKI_DIR}/node.crt" ]; then
+  PKI_DIR="$DEV_CELL_PKI_DIR"
+elif [ -f /persist/var/lib/powernode/pki/node.crt ]; then
   PKI_DIR=/persist/var/lib/powernode/pki
 elif [ -f /var/lib/powernode/pki/node.crt ]; then
   PKI_DIR=/var/lib/powernode/pki
@@ -121,12 +130,66 @@ rm -f "$RESPONSE" "$MCP_OUT" "$GITEA_OUT" "$DEPLOY_KEY_OUT" "$KNOWN_HOSTS_OUT"
 # even though $RUNTIME_DIR is already 0700 root-owned, so curl can't hand
 # it back at the default, more permissive mode.
 umask 077
-HTTP_CODE=$(curl -sS -o "$RESPONSE" -w '%{http_code}' \
-  --cert "$PKI_DIR/node.crt" --key "$PKI_DIR/node.key" --cacert "$PKI_DIR/ca-bundle.crt" \
-  "$PLATFORM_URL/api/v1/system/node_api/config/dev_cell_bootstrap") || {
-  log "bootstrap fetch request failed (network/mTLS error)"
-  exit 1
-}
+
+# BOOT RACE (why this is a retry loop and not a single curl): this unit is
+# ordered After=network-online.target, which guarantees a configured link and
+# a route — it says NOTHING about systemd-resolved being able to answer. On a
+# pivot boot the switch-root re-execs PID1 and restarts resolved, and this
+# unit starts in that same second, so the very first fetch can land squarely
+# in the window where DNS is simply down (observed 2026-07-27 14:36:49 on
+# ops-hub-dev-cell-1784413717: "curl: (6) Could not resolve host").
+#
+# Restart=on-failure DOES recover this unit ~15s later — but that is far too
+# late for anything ordered on it. A start job cancelled because a Requires=
+# dependency failed is NEVER re-queued when that dependency later succeeds,
+# so dev-cell-mcp-proxy.service stayed dead for the rest of that boot (nothing
+# listening on 127.0.0.1:18443, MCP unreachable from the cell) even though
+# this unit went on to succeed 17s later. Absorbing the transient HERE, before
+# the unit can ever enter `failed`, is what keeps the dependents alive.
+#
+# Retried: transport failures (DNS/connect/TLS) and 5xx — i.e. "the network or
+# the far end isn't up yet", both of which self-resolve. NOT retried: 404 ("no
+# bundle provisioned for this instance yet") and every other 4xx, which are
+# definitive operator-facing answers that no amount of waiting changes.
+FETCH_ATTEMPTS="${DEV_CELL_BOOTSTRAP_ATTEMPTS:-6}"
+FETCH_RETRY_DELAY="${DEV_CELL_BOOTSTRAP_RETRY_DELAY:-5}"
+
+attempt=1
+while : ; do
+  if HTTP_CODE=$(curl -sS -o "$RESPONSE" -w '%{http_code}' \
+    --cert "$PKI_DIR/node.crt" --key "$PKI_DIR/node.key" --cacert "$PKI_DIR/ca-bundle.crt" \
+    "$PLATFORM_URL/api/v1/system/node_api/config/dev_cell_bootstrap"); then
+    CURL_RC=0
+  else
+    CURL_RC=$?
+    HTTP_CODE=""
+  fi
+
+  # A definitive HTTP answer (anything that isn't 5xx) ends the loop and falls
+  # through to the per-code handling below — including the 200 success path.
+  if [ "$CURL_RC" -eq 0 ]; then
+    case "$HTTP_CODE" in
+      5??) : ;;
+      *) break ;;
+    esac
+  fi
+
+  if [ "$attempt" -ge "$FETCH_ATTEMPTS" ]; then
+    if [ "$CURL_RC" -ne 0 ]; then
+      log "bootstrap fetch request failed (network/mTLS error, curl rc=$CURL_RC) after $attempt attempts"
+      exit 1
+    fi
+    break
+  fi
+
+  if [ "$CURL_RC" -ne 0 ]; then
+    log "bootstrap fetch attempt $attempt/$FETCH_ATTEMPTS failed (network/mTLS error, curl rc=$CURL_RC) — retrying in ${FETCH_RETRY_DELAY}s"
+  else
+    log "bootstrap fetch attempt $attempt/$FETCH_ATTEMPTS returned HTTP $HTTP_CODE — retrying in ${FETCH_RETRY_DELAY}s"
+  fi
+  sleep "$FETCH_RETRY_DELAY"
+  attempt=$((attempt + 1))
+done
 
 if [ "$HTTP_CODE" = "404" ]; then
   log "no dev-cell bootstrap bundle configured for this instance yet (HTTP 404) — an operator must provision one"
