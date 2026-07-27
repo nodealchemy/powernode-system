@@ -5,37 +5,82 @@
   "description": "Authoritative schema for extensions/system/modules/*/manifest.yaml and extensions/system/templates/{module-repo,example-modules}/*/manifest.yaml. See docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md for prose reference.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "name"],
+  "required": [
+    "schema_version",
+    "name"
+  ],
   "properties": {
     "schema_version": {
       "description": "Schema version. Only v1 is supported today.",
       "const": 1
     },
-
     "name": {
       "description": "Stable identifier. Lowercase letters, digits, hyphens; must start with a letter and not end in a hyphen.",
       "type": "string",
       "pattern": "^[a-z](?:[a-z0-9-]{0,62}[a-z0-9])?$"
     },
-    "display_name": { "type": "string", "maxLength": 200 },
-    "description":  { "type": "string" },
-    "license":      { "type": "string" },
+    "display_name": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "description": {
+      "type": "string"
+    },
+    "license": {
+      "type": "string"
+    },
     "category": {
-      "description": "Platform layering taxonomy slug (System::NodeModuleCategory::PLATFORM_TAXONOMY) — determines this module's position in the overlay union stack (bottom = base layers, top = application layers). Optional: modules without one fall back to the seed's default 'workloads' bucket. See db/seeds/powernode_platform_categories.rb.",
-      "enum": ["system-base", "base-os", "language-runtime", "data-plane", "storage-guest", "networking-proxy", "observability", "build-dev", "platform-apps", "workloads"]
+      "description": "Platform layering taxonomy slug (System::NodeModuleCategory::PLATFORM_TAXONOMY) \u2014 determines this module's position in the overlay union stack (bottom = base layers, top = application layers). Optional: modules without one fall back to the seed's default 'workloads' bucket. See db/seeds/powernode_platform_categories.rb.",
+      "enum": [
+        "system-base",
+        "base-os",
+        "language-runtime",
+        "data-plane",
+        "storage-guest",
+        "networking-proxy",
+        "observability",
+        "build-dev",
+        "platform-apps",
+        "workloads"
+      ]
     },
-
-    "mask":            { "type": "array", "items": { "type": "string" } },
-    "file_spec":       { "type": "array", "items": { "type": "string" } },
-    "protected_spec":  { "type": "array", "items": { "type": "string" } },
-    "dependency_spec": { "type": "array", "items": { "type": "string" } },
-    "package_spec":    { "type": "array", "items": { "type": "string" } },
-    "carve_waivers": {
-      "description": "Build-tooling-only (not yet a NodeModule DB column — read directly from the YAML by scripts/module-build/derive-file-spec.sh, so an unrecognized key here still round-trips through ManifestImportService's manifest_extras forward-compat path). Globs of paths this module's package_spec owns (per dpkg -L) but deliberately does NOT carve into file_spec — silences derive-file-spec.sh's conformance under-carve WARN for the matched paths. See docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md's Content specs section.",
+    "mask": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
-
+    "file_spec": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "protected_spec": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dependency_spec": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "package_spec": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "carve_waivers": {
+      "description": "Build-tooling-only (not yet a NodeModule DB column \u2014 read directly from the YAML by scripts/module-build/derive-file-spec.sh, so an unrecognized key here still round-trips through ManifestImportService's manifest_extras forward-compat path). Globs of paths this module's package_spec owns (per dpkg -L) but deliberately does NOT carve into file_spec \u2014 silences derive-file-spec.sh's conformance under-carve WARN for the matched paths. See docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md's Content specs section.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "dependencies": {
       "type": "object",
       "additionalProperties": false,
@@ -49,37 +94,59 @@
         },
         "provides": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
-
     "init": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "start":   { "type": "string" },
-        "stop":    { "type": "string" },
-        "restart": { "type": "string" }
+        "start": {
+          "type": "string"
+        },
+        "stop": {
+          "type": "string"
+        },
+        "restart": {
+          "type": "string"
+        }
       }
     },
-
     "services": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name"],
+        "required": [
+          "name"
+        ],
         "properties": {
           "name": {
             "type": "string",
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
           },
-          "start_command":  { "type": "string" },
-          "stop_command":   { "type": "string" },
-          "restart_policy": { "enum": ["never", "on-failure", "always"] },
-          "user":           { "type": "string" },
-          "working_directory": { "type": "string" },
+          "start_command": {
+            "type": "string"
+          },
+          "stop_command": {
+            "type": "string"
+          },
+          "restart_policy": {
+            "enum": [
+              "never",
+              "on-failure",
+              "always"
+            ]
+          },
+          "user": {
+            "type": "string"
+          },
+          "working_directory": {
+            "type": "string"
+          },
           "env": {
             "description": "Environment variables passed to the service. Values are forwarded to systemd which interprets them as strings; YAML scalar values of any type are accepted here.",
             "type": "object",
@@ -90,11 +157,26 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["port", "protocol"],
+              "required": [
+                "port",
+                "protocol"
+              ],
               "properties": {
-                "port":     { "type": "integer", "minimum": 1, "maximum": 65535 },
-                "protocol": { "enum": ["tcp", "udp", "sctp"] },
-                "name":     { "type": "string" }
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "protocol": {
+                  "enum": [
+                    "tcp",
+                    "udp",
+                    "sctp"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                }
               }
             }
           },
@@ -109,14 +191,34 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "endpoint":              { "type": "string" },
-              "method":                { "enum": ["GET", "POST", "PUT", "TCP"] },
-              "interval_seconds":      { "type": "integer", "minimum": 1 },
-              "timeout_seconds":       { "type": "integer", "minimum": 1 },
-              "initial_delay_seconds": { "type": "integer", "minimum": 0 }
+              "endpoint": {
+                "type": "string"
+              },
+              "method": {
+                "enum": [
+                  "GET",
+                  "POST",
+                  "PUT",
+                  "TCP"
+                ]
+              },
+              "interval_seconds": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "timeout_seconds": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "initial_delay_seconds": {
+                "type": "integer",
+                "minimum": 0
+              }
             }
           },
-          "metadata": { "type": "object" },
+          "metadata": {
+            "type": "object"
+          },
           "unit_body": {
             "description": "Verbatim systemd unit body; the agent renders it through the same write/enable/detach lifecycle as a generated unit (see MODULE_MANIFEST_SCHEMA.md). Mutually exclusive with start_command (enforced server-side).",
             "type": "string"
@@ -127,19 +229,29 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["service"],
+              "required": [
+                "service"
+              ],
               "properties": {
-                "service": { "type": "string" },
-                "kind": { "enum": ["start_before", "requires_health", "softdep"] }
+                "service": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "start_before",
+                    "requires_health",
+                    "softdep"
+                  ]
+                }
               }
             }
           }
         }
       }
     },
-
-    "reboot_required": { "type": "boolean" },
-
+    "reboot_required": {
+      "type": "boolean"
+    },
     "security": {
       "type": "object",
       "additionalProperties": false,
@@ -151,96 +263,194 @@
             "pattern": "^CAP_[A-Z_]+$"
           }
         },
-        "selinux_profile":  { "type": ["string", "null"] },
-        "apparmor_profile": { "type": ["string", "null"] },
-        "seccomp_profile":  { "type": ["string", "null"] },
-        "egress_allow":     { "type": "array", "items": { "type": "string" } },
-        "privileged":       { "type": "boolean" },
-        "user_namespace":   { "type": "boolean" }
+        "selinux_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "apparmor_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seccomp_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "egress_allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "privileged": {
+          "type": "boolean"
+        },
+        "user_namespace": {
+          "type": "boolean"
+        }
       }
     },
-
     "users": {
       "type": "array",
       "description": "Fleet-managed Unix users this module needs. The agent's etcidentity unions these across installed modules to render /etc/passwd + /etc/shadow. uid/primary_gid are allocated by the platform (reserved.go) and may be absent in the authored manifest.",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [ "name" ],
+        "required": [
+          "name"
+        ],
         "properties": {
-          "name":                 { "type": "string" },
-          "uid":                  { "type": "integer" },
-          "primary_gid":          { "type": "integer" },
-          "primary_group":        { "type": "string" },
-          "shell":                { "type": "string" },
-          "home":                 { "type": "string" },
-          "gecos":                { "type": "string" },
-          "supplementary_groups": { "type": "array", "items": { "type": "string" } }
+          "name": {
+            "type": "string"
+          },
+          "uid": {
+            "type": "integer"
+          },
+          "primary_gid": {
+            "type": "integer"
+          },
+          "primary_group": {
+            "type": "string"
+          },
+          "shell": {
+            "type": "string"
+          },
+          "home": {
+            "type": "string"
+          },
+          "gecos": {
+            "type": "string"
+          },
+          "supplementary_groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       }
     },
-
     "groups": {
       "type": "array",
       "description": "Fleet-managed Unix groups this module needs (rendered into /etc/group). gid is platform-allocated and may be absent in the authored manifest.",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [ "name" ],
+        "required": [
+          "name"
+        ],
         "properties": {
-          "name":    { "type": "string" },
-          "gid":     { "type": "integer" },
-          "members": { "type": "array", "items": { "type": "string" } }
+          "name": {
+            "type": "string"
+          },
+          "gid": {
+            "type": "integer"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       }
     },
-
     "sudoers": {
       "type": "array",
       "description": "Sudo grants this module declares. The agent's etcsudoers validates each via visudo -cf and writes one /etc/sudoers.d/powernode-<module>-<id> file per grant. `runas` is the authored alias the platform maps to runas_user.",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [ "id", "user", "commands" ],
+        "required": [
+          "id",
+          "user",
+          "commands"
+        ],
         "properties": {
-          "id":          { "type": "string" },
-          "user":        { "type": "string" },
-          "runas":       { "type": "string" },
-          "runas_user":  { "type": "string" },
-          "runas_group": { "type": "string" },
-          "commands":    { "type": "array", "items": { "type": "string" } },
-          "flags":       { "type": "array", "items": { "type": "string" } }
+          "id": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "runas": {
+            "type": "string"
+          },
+          "runas_user": {
+            "type": "string"
+          },
+          "runas_group": {
+            "type": "string"
+          },
+          "commands": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "flags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       }
     },
-
     "skills": {
       "type": "array",
       "description": "AI Skills this module ships. Each entry is an object whose schema is owned by the skill subsystem; this manifest only validates that it's an array."
     },
-
     "build": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "gitleaks_version": {
+          "description": "Pinned gitleaks release fetched as a sha256-verified binary (gitleaks module). Bump alongside the pinned amd64 (x64) / arm64 checksums in the gitleaks case of scripts/module-build/stage15.sh.",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
         "ubuntu_digest": {
           "description": "Pinned Ubuntu base image digest. Format: sha256:<64-hex>, or null to inherit Containerfile default.",
           "oneOf": [
-            { "type": "null" },
-            { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
           ]
         },
         "apt_snapshot": {
-          "description": "Pinned snapshot.ubuntu.com APT snapshot timestamp, consumed by build-platform-modules.yaml Stage 1 as the mmdebstrap base_url (campaign 019f5885 inc5 — determinism hardening). Format: YYYYMMDDTHHMMSSZ. Null (field omitted) and the literal string \"none\" are equivalent documented opt-outs — both fall back to the live archive.ubuntu.com mirror (today's behavior), for a module whose exact package set snapshot.ubuntu.com hasn't caught up on yet.",
+          "description": "Pinned snapshot.ubuntu.com APT snapshot timestamp, consumed by build-platform-modules.yaml Stage 1 as the mmdebstrap base_url (campaign 019f5885 inc5 \u2014 determinism hardening). Format: YYYYMMDDTHHMMSSZ. Null (field omitted) and the literal string \"none\" are equivalent documented opt-outs \u2014 both fall back to the live archive.ubuntu.com mirror (today's behavior), for a module whose exact package set snapshot.ubuntu.com hasn't caught up on yet.",
           "oneOf": [
-            { "type": "null" },
-            { "const": "none" },
-            { "type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z$" }
+            {
+              "type": "null"
+            },
+            {
+              "const": "none"
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]{8}T[0-9]{6}Z$"
+            }
           ]
         },
-        "firmware_repo": { "type": "string" },
-        "firmware_ref":  { "type": "string" },
-        "k3s_version":   { "type": "string" },
+        "firmware_repo": {
+          "type": "string"
+        },
+        "firmware_ref": {
+          "type": "string"
+        },
+        "k3s_version": {
+          "type": "string"
+        },
         "ruby_version": {
           "description": "Pinned Ruby version to source-compile (runtime-ruby module). Keep in sync with server/.ruby-version.",
           "type": "string",
