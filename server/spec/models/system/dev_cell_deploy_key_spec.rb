@@ -38,7 +38,6 @@ RSpec.describe System::DevCellDeployKey, type: :model do
       record.vault_path = "system/dev-cell-deploy-keys/some-id"
       expect(record.vault_path_credentials).to eq("system/dev-cell-deploy-keys/some-id")
     end
-
   end
 
   describe "#store_in_vault" do

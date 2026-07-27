@@ -51,7 +51,7 @@ RSpec.describe "dev-cell-bootstrap.sh transient-fetch retry" do
       pki      = File.join(root, "pki")
       runtime  = File.join(root, "run-dev-cell")
       counter  = File.join(root, "attempts")
-      [stubs, pki, runtime].each { |d| FileUtils.mkdir_p(d) }
+      [ stubs, pki, runtime ].each { |d| FileUtils.mkdir_p(d) }
 
       # Enough of an "enrolled" identity for PKI resolution + meta.json's
       # platform_url to satisfy the script. No real key material.
@@ -72,11 +72,11 @@ RSpec.describe "dev-cell-bootstrap.sh transient-fetch retry" do
         "OUTCOMES"                        => outcomes.join(" ")
       }
 
-      out = IO.popen(env, ["sh", script], err: [:child, :out], unsetenv_others: true, &:read)
+      out = IO.popen(env, [ "sh", script ], err: [ :child, :out ], unsetenv_others: true, &:read)
       status = $?
       made = File.read(counter).strip.to_i
       staged = Dir.children(runtime).sort
-      [status, out, made, staged]
+      [ status, out, made, staged ]
     end
   end
 

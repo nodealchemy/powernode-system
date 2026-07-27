@@ -14,7 +14,7 @@ RSpec.describe System::PackageModuleMaterializer, "baseline exclusion (§4.3.1)"
 
   let(:suffix)   { "bl#{SecureRandom.hex(3)}" }
   let(:libc)     { "libc6-#{suffix}" }        # baseline (base-os ships it)
-  let(:coreutils){ "coreutils-#{suffix}" }    # baseline (base-os ships it)
+  let(:coreutils) { "coreutils-#{suffix}" }    # baseline (base-os ships it)
   let(:libpcre)  { "libpcre-#{suffix}" }      # NON-baseline transitive dep
   let(:top_pkg)  { "webserver-#{suffix}" }    # user-requested top-level
 

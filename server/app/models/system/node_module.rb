@@ -557,9 +557,9 @@ module System
       loaded = association(:current_version).loaded? ? current_version : nil
       number = if loaded && loaded.id == current_version_id
                  loaded.version_number
-               else
+      else
                  ::System::NodeModuleVersion.where(id: current_version_id).pick(:version_number)
-               end
+      end
       self.current_version_number = number if number && current_version_number != number
     end
 

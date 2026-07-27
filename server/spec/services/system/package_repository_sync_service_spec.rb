@@ -52,7 +52,7 @@ RSpec.describe System::PackageRepositorySyncService do
 
       expect(result.success?).to be true
       expect(result.upserted).to eq(0)
-      expect(key_set(repo)).to eq(Set[ %w[keep 1] ]) # untouched — no obsoletion
+      expect(key_set(repo)).to eq(Set[%w[keep 1]]) # untouched — no obsoletion
     end
 
     it "does a full sync when the fingerprint changed" do
@@ -62,7 +62,7 @@ RSpec.describe System::PackageRepositorySyncService do
       described_class.call(repository: repo)
 
       expect(repo.reload.sync_fingerprint).to eq("NEW")
-      expect(key_set(repo)).to eq(Set[ %w[a 1] ])
+      expect(key_set(repo)).to eq(Set[%w[a 1]])
     end
   end
 
@@ -71,7 +71,7 @@ RSpec.describe System::PackageRepositorySyncService do
       stub_adapter(packages: [ parsed("a", "1"), parsed("b", "2") ])
       result = described_class.call(repository: repo)
       expect(result.upserted).to eq(2)
-      expect(key_set(repo)).to eq(Set[ %w[a 1], %w[b 2] ])
+      expect(key_set(repo)).to eq(Set[%w[a 1], %w[b 2]])
     end
 
     it "no-change re-sync writes NOTHING (the whole point)" do
@@ -126,7 +126,7 @@ RSpec.describe System::PackageRepositorySyncService do
 
       expect(result.success?).to be false
       expect(result.error).to match(/zero packages|refusing/i)
-      expect(key_set(repo)).to eq(Set[ %w[a 1] ]) # NOT obsoleted
+      expect(key_set(repo)).to eq(Set[%w[a 1]]) # NOT obsoleted
       expect(repo.reload.sync_status).to eq("failed")
     end
 

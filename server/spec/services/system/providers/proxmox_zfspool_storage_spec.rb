@@ -90,7 +90,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
     it "raises rather than guessing when nothing on the node can stage an import" do
       allow(client).to receive(:get).with("/api2/json/nodes/rna/storage")
-                                    .and_return([rna_storages.first]) # zfspool only
+                                    .and_return([ rna_storages.first ]) # zfspool only
       expect {
         provider.send(:resolve_import_storage!, client, node: "rna", storage: "local-data")
       }.to raise_error(System::Providers::BaseProvider::ProviderError, /content type import/)

@@ -806,9 +806,9 @@ module System
 
         action = if instance.may_reboot?
                    "reboot"
-                 elsif instance.may_start?
+        elsif instance.may_start?
                    "start"
-                 end
+        end
         unless action
           return { applied: false, instance_id: instance.id,
                    reason: "instance in #{instance.status} status — no self-heal action available, needs manual intervention" }

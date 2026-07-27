@@ -175,9 +175,9 @@ module System
 
       artifact = if architecture.present?
                    version.module_artifacts.find { |a| a.architecture == architecture }
-                 else
+      else
                    version.module_artifacts.find { |a| a.architecture == "amd64" } || version.module_artifacts.first
-                 end
+      end
 
       {
         version_number:  version.version_number,

@@ -143,8 +143,8 @@ module System
         instance_ids: instance_ids,
         matched_via: "System::Node#name (exact match)",
         historical_instance_count: all_instances.count,
-        caveats: live.exists? ? [] : ["All #{all_instances.count} NodeInstance row(s) under this Node are terminated; " \
-                                      "falling back to the most recent for traversal."]
+        caveats: live.exists? ? [] : [ "All #{all_instances.count} NodeInstance row(s) under this Node are terminated; " \
+                                      "falling back to the most recent for traversal." ]
       }
     end
 

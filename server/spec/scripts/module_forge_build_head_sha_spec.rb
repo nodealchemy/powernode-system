@@ -33,7 +33,7 @@ RSpec.describe "module-forge-build.sh head_sha build-script selection" do
       golden  = File.join(root, "golden-buildenv")  # MODULE_FORGE_BUILDENV_GOLDEN
       jobroot = File.join(root, "jobs")             # MODULE_FORGE_JOB_ROOT
       mount_log = File.join(root, "mount.log")
-      [stubs, baked, golden, jobroot].each { |d| FileUtils.mkdir_p(d) }
+      [ stubs, baked, golden, jobroot ].each { |d| FileUtils.mkdir_p(d) }
 
       # Baked scripts (preflight requires build-one-module.sh + push.sh present
       # and executable). Distinct marker dir so we can tell it apart from the
@@ -65,10 +65,10 @@ RSpec.describe "module-forge-build.sh head_sha build-script selection" do
         "ORAS_REGISTRY"               => "registry.invalid"
       }
 
-      out = IO.popen(env, ["bash", script], err: [:child, :out], unsetenv_others: true, &:read)
+      out = IO.popen(env, [ "bash", script ], err: [ :child, :out ], unsetenv_others: true, &:read)
       status = $?
       lines = File.exist?(mount_log) ? File.read(mount_log).lines.map(&:strip) : []
-      [status, lines, out]
+      [ status, lines, out ]
     end
   end
 

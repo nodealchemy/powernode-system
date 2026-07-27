@@ -215,7 +215,7 @@ RSpec.describe System::NodeApi::RuntimeConfigBuilder do
         result = described_class.build(runtime: "docker", instance: instance)
         boot_image = result[:boot_image]
 
-        expect(boot_image.keys.sort).to eq([:git_sha, :oci_ref, :sha256].sort)
+        expect(boot_image.keys.sort).to eq([ :git_sha, :oci_ref, :sha256 ].sort)
         expect(boot_image[:git_sha]).to eq("git-value")
         expect(boot_image[:oci_ref]).to eq("oci-value")
         expect(boot_image[:sha256]).to eq("sha256-value")

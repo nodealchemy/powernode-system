@@ -369,7 +369,7 @@ RSpec.describe System::BootImage::UpgradeReconciler do
         allow(::System::Task).to receive(:where).and_call_original
         allow(::System::Task).to receive(:where)
           .with(operable: instance, command: "upgrade_boot_image")
-          .and_return([task])
+          .and_return([ task ])
 
         # The reconciler should not raise
         expect {

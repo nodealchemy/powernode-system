@@ -12,9 +12,9 @@ namespace :rcp do
   task :invariant_scan, [ :account_id ] => :environment do |_t, args|
     account = if args[:account_id].present?
                 Account.find(args[:account_id])
-              else
+    else
                 Account.first
-              end
+    end
 
     unless account
       puts "No account found — nothing to scan."
