@@ -1745,6 +1745,10 @@ module System
         node["node"]
       end
 
+      # PVE refuses ids below 100, so this is the implicit floor when a
+      # connection configures none.
+      PVE_MIN_VMID = 100
+
       def allocate_next_vmid!(c)
         nextid = Integer(c.get("/api2/json/cluster/nextid").to_s)
 
@@ -1755,16 +1759,43 @@ module System
         # ci-native-builders-amd64) never collide on `cluster/nextid` — which
         # has no per-tenant floor and would otherwise hand out an id another
         # plane's VM already owns. Unset/0 = plain nextid (single-tenant).
-        floor = connection&.config&.dig("vmid_min").to_i
-        return nextid if floor <= 0 || nextid >= floor
+        #
+        # `config["vmid_max"]` closes the band at the top. A floor alone is not
+        # a reservation: the search walks upward without limit, so a band
+        # "reserved" by convention above a floored connection is reached as soon
+        # as that connection's own range fills, and the reservation was never
+        # more than a comment. With a ceiling, exhaustion RAISES instead of
+        # silently spilling into whatever lies above — spilling is precisely the
+        # cross-plane collision the floor exists to prevent, so failing to
+        # provision is the better outcome and the one an operator can see.
+        floor   = [ connection&.config&.dig("vmid_min").to_i, PVE_MIN_VMID ].max
+        ceiling = connection&.config&.dig("vmid_max").to_i
+        ceiling = nil unless ceiling.positive?
 
-        # nextid is below our band: pick the first free id at/above the floor,
-        # skipping any already in use cluster-wide (each resources row carries
-        # its own vmid).
+        if ceiling && ceiling < floor
+          raise ProviderError,
+                "Proxmox connection has vmid_max (#{ceiling}) below vmid_min (#{floor}) — " \
+                "the allocation band is empty; fix the connection config"
+        end
+
+        # nextid already inside our band is taken as-is (the common case, and
+        # byte-identical to the previous behaviour for an unfenced connection).
+        return nextid if nextid >= floor && (ceiling.nil? || nextid <= ceiling)
+
+        # Otherwise pick the first free id at/above the floor, skipping any
+        # already in use cluster-wide (each resources row carries its own vmid).
         used = (c.get("/api2/json/cluster/resources", { "type" => "vm" }) || [])
                .filter_map { |r| r["vmid"].to_i if r["vmid"] }
         id = floor
-        id += 1 while used.include?(id)
+        id += 1 while used.include?(id) && (ceiling.nil? || id <= ceiling)
+
+        if ceiling && id > ceiling
+          raise ProviderError,
+                "Proxmox VMID band #{floor}-#{ceiling} is exhausted for this connection " \
+                "(#{used.count { |u| u >= floor && u <= ceiling }} of #{ceiling - floor + 1} in use). " \
+                "Reap unused instances or widen vmid_max — allocating outside the band would risk " \
+                "colliding with another control plane on this cluster"
+        end
         id
       end
 
