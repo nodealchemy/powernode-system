@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -42,8 +43,26 @@ import (
 // Client.Do below recovers from.
 type Client struct {
 	*http.Client
+	// stream is the same transport with NO whole-request Timeout, used for
+	// response bodies whose size is unbounded (OCI blobs). See DoStream.
+	stream      *http.Client
 	PlatformURL string
 	InstanceID  string
+}
+
+// blobStallTimeout bounds how long a streaming transfer may make NO progress.
+// It replaces the whole-request deadline for blobs: a transfer that is moving,
+// however slowly, is allowed to finish, while one that has genuinely stalled
+// still fails in bounded time instead of hanging the reconciler forever.
+var blobStallTimeout = 60 * time.Second
+
+// SetBlobStallTimeoutForTest shortens the stall budget and returns a restore
+// func. A leaked override would let a genuinely hung transfer pin a reconciler
+// goroutine in production, so callers MUST defer the restore.
+func SetBlobStallTimeoutForTest(d time.Duration) (restore func()) {
+	prev := blobStallTimeout
+	blobStallTimeout = d
+	return func() { blobStallTimeout = prev }
 }
 
 // LoadFromPKIDir reads cert + key + CA bundle from the canonical agent
@@ -99,11 +118,18 @@ func LoadFromPKIDir(platformURL string, paths enroll.PKIPaths) (*Client, error) 
 		Timeout:   30 * time.Second,
 	}
 
+	// Second client for STREAMING bodies, sharing tr — so it shares the
+	// connection pool, the mTLS config and the idle-eviction that Do's 401
+	// self-heal depends on. It differs in exactly one field: no whole-request
+	// Timeout. See DoStream.
+	streamClient := &http.Client{Transport: tr}
+
 	// Read meta.json for instance_id (best-effort; non-fatal if absent).
 	instanceID := readInstanceID(paths.Meta)
 
 	return &Client{
 		Client:      httpClient,
+		stream:      streamClient,
 		PlatformURL: platformURL,
 		InstanceID:  instanceID,
 	}, nil
@@ -214,7 +240,17 @@ func (c *Client) GetJSON(path string) (*http.Response, error) {
 // unchanged, so a genuinely revoked cert still surfaces as 401 — it just costs
 // one extra handshake.
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
-	resp, err := c.Client.Do(req)
+	return c.doWith(c.Client, req)
+}
+
+// doWith is Do's body, parameterised by which http.Client actually issues the
+// request, so the request path and the STREAMING path (DoStream) share one copy
+// of the 401 self-heal. They were nearly written as two copies; the upgrade
+// path in this same agent has already been bitten once by two callers drifting
+// apart (4b13c961), and a self-heal that silently applies to only one of them
+// is the same failure wearing a different hat.
+func (c *Client) doWith(hc *http.Client, req *http.Request) (*http.Response, error) {
+	resp, err := hc.Do(req)
 	if err != nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		return resp, err
 	}
@@ -233,7 +269,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		// *bytes.Reader); a future streaming one must not silently lose the
 		// self-heal.
 		_ = resp.Body.Close()
-		c.Client.CloseIdleConnections()
+		hc.CloseIdleConnections()
 		return resp, nil
 	}
 
@@ -253,10 +289,11 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	// reconcilers share one Client and poll together.
 	_ = resp.Body.Close()
 	// Still purge the pool: OTHER goroutines' connections were negotiated in the
-	// same certless window and are equally poisoned.
-	c.Client.CloseIdleConnections()
+	// same certless window and are equally poisoned. Both clients share one
+	// Transport, so purging via either drains the pool for both.
+	hc.CloseIdleConnections()
 
-	retryResp, retryErr := c.Client.Do(replay)
+	retryResp, retryErr := hc.Do(replay)
 	if retryErr != nil {
 		// Report the transport error; the caller has already lost the original
 		// response body, and a dial failure is more actionable than a stale 401.
@@ -326,4 +363,93 @@ func indexOf(haystack, needle []byte) int {
 		}
 	}
 	return -1
+}
+
+// DoStream issues req for a response whose body is UNBOUNDED in size (OCI
+// blobs), and is the reason c.stream exists.
+//
+// The bug it fixes (dev-cell, 2026-07-27). Blob GETs went through c.Client,
+// whose Timeout is 30s — and http.Client.Timeout is a deadline on the WHOLE
+// request INCLUDING reading the body. That turns a size limit into a time
+// limit: any artifact bigger than roughly (link rate x 30s) can never be
+// pulled, no matter how many times the reconciler retries, because every
+// attempt is killed mid-body at the same point. Observed on one node: gitleaks
+// (4MB) mounted, dev-cell (77MB) and dev-cell-docker (171MB) failed forever
+// with "context deadline exceeded ... while reading body", and the same ceiling
+// had been failing ~80MB UKI downloads for a week. It is a deterministic
+// failure that presents as a flaky one.
+//
+// The transport already carries the right instruments for a hung peer —
+// ResponseHeaderTimeout bounds "server never answers" and the dialer bounds
+// "server never connects". What was missing is a bound on a transfer that
+// answered and then STOPPED, so that is what the body guard adds: progress is
+// required, total duration is not. A slow link now finishes; a dead one still
+// fails in blobStallTimeout rather than pinning a reconciler goroutine forever.
+func (c *Client) DoStream(req *http.Request) (*http.Response, error) {
+	hc := c.stream
+	if hc == nil {
+		// Zero-value/test-constructed Client: fall back rather than panic. Such a
+		// caller keeps the old whole-request behaviour, which is wrong for blobs
+		// but no worse than before this method existed.
+		hc = c.Client
+	}
+
+	ctx, cancel := context.WithCancel(req.Context())
+	resp, err := c.doWith(hc, req.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if resp.Body == nil {
+		cancel()
+		return resp, nil
+	}
+
+	g := &stallGuard{rc: resp.Body, cancel: cancel, d: blobStallTimeout}
+	// AfterFunc cancels the request context, which aborts the in-flight read and
+	// surfaces to the caller as a normal transfer error.
+	g.timer = time.AfterFunc(blobStallTimeout, cancel)
+	resp.Body = g
+	return resp, nil
+}
+
+// BlobClient is the streaming view of this Client, shaped for
+// oci.Puller.HTTPClient. Returned as an interface value so the puller keeps
+// accepting a plain *http.Client in tests.
+func (c *Client) BlobClient() interface {
+	Do(*http.Request) (*http.Response, error)
+} {
+	return blobClient{c: c}
+}
+
+type blobClient struct{ c *Client }
+
+func (b blobClient) Do(req *http.Request) (*http.Response, error) { return b.c.DoStream(req) }
+
+// stallGuard fails a transfer that stops making progress, without capping how
+// long a transfer that IS making progress may take.
+type stallGuard struct {
+	rc     io.ReadCloser
+	timer  *time.Timer
+	cancel context.CancelFunc
+	d      time.Duration
+}
+
+func (s *stallGuard) Read(p []byte) (int, error) {
+	n, err := s.rc.Read(p)
+	if n > 0 {
+		// Any forward progress renews the budget. Reset only on n>0: a stream of
+		// zero-length reads is not progress and must still trip the guard.
+		s.timer.Reset(s.d)
+	}
+	return n, err
+}
+
+func (s *stallGuard) Close() error {
+	s.timer.Stop()
+	err := s.rc.Close()
+	// Cancel AFTER closing so the transport can reclaim the connection normally
+	// on a fully-read body; cancelling first would mark it unusable.
+	s.cancel()
+	return err
 }

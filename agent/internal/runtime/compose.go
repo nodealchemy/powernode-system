@@ -495,8 +495,11 @@ func NewPivotComposer(platformURL, pkiDir string, onError func(string, error)) (
 		ManifestClient: client,
 		ManifestRoot:   manifest.DefaultRoot,
 		Puller: &oci.Puller{
-			Transport:   client,
-			HTTPClient:  client, // the wrapper, NOT client.Client — see Puller.HTTPClient
+			Transport: client,
+			// BlobClient(), not `client`: blob bodies are unbounded and must not ride
+			// the 30s whole-request Timeout. It still routes through Client.doWith, so
+			// the 401 self-heal Puller.HTTPClient documents is preserved. See DoStream.
+			HTTPClient:  client.BlobClient(),
 			PlatformURL: client.PlatformURL,
 			Cache:       "/persist/cache/modules",
 		},
