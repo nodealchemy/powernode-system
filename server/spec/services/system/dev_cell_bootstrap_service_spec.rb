@@ -157,4 +157,62 @@ RSpec.describe System::DevCellBootstrapService do
       expect(service.send(:branch_protection_enabled?)).to be false
     end
   end
+
+  # Regression: provision.service crash-looped with "known_hosts is empty in
+  # the bootstrap bundle — refusing SSH TOFU". known_hosts_for returned "" when
+  # neither the SiteSetting nor the ENV pin was set (it never derived the key),
+  # so the bundle shipped an empty known_hosts and the dev-cell fail-closed.
+  # bundle_known_hosts now falls back to a live ssh-keyscan of the SAME endpoint
+  # the clone URL uses, so a reachable Gitea with no pin configured self-heals.
+  describe "#bundle_known_hosts" do
+    before do
+      # No operator-pinned known_hosts (the broken state that caused the loop).
+      allow(::SiteSetting).to receive(:get).with("dev_cell_gitea_known_hosts").and_return(nil)
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_DEV_CELL_GITEA_KNOWN_HOSTS").and_return(nil)
+    end
+
+    def bundle_known_hosts
+      service.send(:bundle_known_hosts, client, credential, "powernode", "powernode-platform")
+    end
+
+    it "returns the operator-pinned known_hosts verbatim without scanning when configured" do
+      pin = "[git.powernode.net]:2200 ssh-ed25519 AAAAPINNED"
+      allow(::SiteSetting).to receive(:get).with("dev_cell_gitea_known_hosts").and_return(pin)
+      expect(::Open3).not_to receive(:capture3)
+      expect(bundle_known_hosts).to eq(pin)
+    end
+
+    it "ssh-keyscans the resolved endpoint when nothing is pinned (host from Gitea, port 22)" do
+      scanned = "git.powernode.net ssh-ed25519 AAAASCANNED\n"
+      status = instance_double(Process::Status, success?: true)
+      # Host = Gitea's reported host; port = 22 (Gitea's internal :220 is ignored,
+      # no SiteSetting override) — the SAME endpoint ssh_clone_url derives.
+      expect(::Open3).to receive(:capture3)
+        .with("ssh-keyscan", "-T", "5", "-p", "22", "git.powernode.net")
+        .and_return([ scanned, "", status ])
+      expect(bundle_known_hosts).to eq(scanned)
+    end
+
+    it "uses the configured SSH port for the scan (must match the clone URL)" do
+      allow(::SiteSetting).to receive(:get).with("dev_cell_gitea_ssh_port").and_return("2200")
+      status = instance_double(Process::Status, success?: true)
+      expect(::Open3).to receive(:capture3)
+        .with("ssh-keyscan", "-T", "5", "-p", "2200", "git.powernode.net")
+        .and_return([ "[git.powernode.net]:2200 ssh-ed25519 AAAA\n", "", status ])
+      expect(bundle_known_hosts).to include("[git.powernode.net]:2200")
+    end
+
+    it "returns \"\" (fail-closed on the node) when the scan fails, and never raises" do
+      status = instance_double(Process::Status, success?: false)
+      allow(::Open3).to receive(:capture3).and_return([ "", "", status ])
+      expect(bundle_known_hosts).to eq("")
+    end
+
+    it "returns \"\" when ssh-keyscan is absent on the platform host (Errno::ENOENT)" do
+      allow(::Open3).to receive(:capture3).and_raise(Errno::ENOENT)
+      expect { bundle_known_hosts }.not_to raise_error
+      expect(bundle_known_hosts).to eq("")
+    end
+  end
 end

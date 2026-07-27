@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "open3"
+
 module System
   # Assembles the two things a pooled dev-cell NodeInstance needs to act as an
   # autonomous campaign executor, WITHOUT ever minting an account-wide secret:
@@ -136,7 +138,7 @@ module System
       {
         clone_url: ssh_clone_url(client, credential, owner, repo),
         private_key: keypair.private_key_openssh,
-        known_hosts: known_hosts_for(credential)
+        known_hosts: bundle_known_hosts(client, credential, owner, repo)
       }
     rescue ::Devops::Git::ApiClient::ApiError, VaultStoreError => e
       Rails.logger.warn(
@@ -278,15 +280,31 @@ module System
     #   3. else the provider's web host (last resort — may differ from SSH host);
     #   4. else the https web URL.
     def ssh_clone_url(client, credential, owner, repo)
-      host, port = endpoint_from_known_hosts(known_hosts_for(credential))
-      host = host.presence || gitea_ssh_host(client, owner, repo) || web_host(credential)
-      port ||= configured_ssh_port
+      host, port = resolved_ssh_endpoint(client, credential, owner, repo)
       return "#{credential.provider.effective_web_base_url}/#{owner}/#{repo}.git" if host.blank?
 
       if port == 22
         "git@#{host}:#{owner}/#{repo}.git"
       else
         "ssh://git@#{host}:#{port}/#{owner}/#{repo}.git"
+      end
+    end
+
+    # [host, port] to reach Gitea over SSH — the SINGLE source of truth shared
+    # by BOTH the clone URL (above) and the known_hosts host-key pin
+    # (bundle_known_hosts, below), so the two can never disagree (a mismatch
+    # would make StrictHostKeyChecking reject the clone). Preference order is
+    # unchanged from the original ssh_clone_url derivation (see the doc comment
+    # above): pinned known_hosts line → Gitea's reported ssh host (config-driven
+    # port; Gitea's self-reported internal port ignored) → provider web host.
+    # Memoised: owner/repo are constant per bootstrap, and this avoids a second
+    # get_repository round-trip now that known_hosts also consumes it.
+    def resolved_ssh_endpoint(client, credential, owner, repo)
+      @resolved_ssh_endpoint ||= begin
+        host, port = endpoint_from_known_hosts(known_hosts_for(credential))
+        host = host.presence || gitea_ssh_host(client, owner, repo) || web_host(credential)
+        port ||= configured_ssh_port
+        [ host, port ]
       end
     end
 
@@ -343,14 +361,77 @@ module System
       port.positive? ? port : 22
     end
 
-    # SSH host public key line for StrictHostKeyChecking pinning. Sourced from
-    # config (SiteSetting → ENV) when the platform has one on record; otherwise
-    # empty — the dev-cell module falls back (documented contract), but pinning
-    # is preferred.
+    # Operator-PINNED SSH host key line for StrictHostKeyChecking, sourced from
+    # config (SiteSetting → ENV). Empty string when nothing is on record. This
+    # is the authoritative/offline pin and also drives endpoint derivation
+    # (resolved_ssh_endpoint, preference #1). The bundle's actual known_hosts is
+    # produced by bundle_known_hosts, which keyscans when this is empty.
     def known_hosts_for(_credential)
       ::SiteSetting.get("dev_cell_gitea_known_hosts").presence ||
         ENV["POWERNODE_DEV_CELL_GITEA_KNOWN_HOSTS"].presence ||
         ""
+    end
+
+    # ssh-keyscan timeout (seconds). Fixed + short: this runs inline in the
+    # bootstrap request path, which must not hang on an unreachable Gitea.
+    SSH_KEYSCAN_TIMEOUT_SECONDS = 5
+
+    # The known_hosts line(s) actually shipped in the bootstrap bundle.
+    #
+    # Preference:
+    #   1. operator-pinned config (known_hosts_for) — authoritative, offline,
+    #      highest assurance; when set, NO scan is performed.
+    #   2. else a live `ssh-keyscan` of the SAME endpoint the clone URL uses
+    #      (resolved_ssh_endpoint) — removes the manual prerequisite that
+    #      previously left this empty and crash-looped provision.service with
+    #      "known_hosts is empty in the bootstrap bundle". This is trust-on-
+    #      first-use performed at the platform (a controlled position) once at
+    #      bootstrap, then pinned for the node — strictly better than the node
+    #      itself doing TOFU. Operators wanting strict pinning set option #1,
+    #      which suppresses the scan.
+    #
+    # Best-effort: returns "" on any scan failure (unreachable Gitea, ssh-keyscan
+    # not installed on the platform host, empty output). The node then still
+    # fails closed — but a reachable Gitea with no pin now self-provisions
+    # instead of dead-looping.
+    def bundle_known_hosts(client, credential, owner, repo)
+      pinned = known_hosts_for(credential)
+      return pinned if pinned.present?
+
+      host, port = resolved_ssh_endpoint(client, credential, owner, repo)
+      return "" if host.blank?
+
+      scan_ssh_host_key(host, port)
+    end
+
+    # Live host-key scan via `ssh-keyscan`, hardened for unattended server use:
+    # array-form Open3 (no shell → no injection via a hostile host string),
+    # fixed timeout, output validated as real (non-comment) key lines. Returns
+    # "" and never raises, so bootstrap degrades gracefully if ssh-keyscan is
+    # missing or Gitea is unreachable.
+    def scan_ssh_host_key(host, port)
+      return "" if host.blank?
+
+      port = port.to_i
+      port = 22 unless port.positive?
+
+      # capture3 (not capture2e): ssh-keyscan writes host-key lines to STDOUT
+      # and its informational banner ("# host:port SSH-2.0-...") to STDERR —
+      # parse STDOUT only so a stderr line can never be mistaken for a key.
+      out, _err, status = ::Open3.capture3(
+        "ssh-keyscan", "-T", SSH_KEYSCAN_TIMEOUT_SECONDS.to_s, "-p", port.to_s, host
+      )
+      return "" unless status.success?
+
+      lines = out.each_line.map(&:strip).reject { |l| l.blank? || l.start_with?("#") }
+      return "" if lines.empty?
+
+      "#{lines.join("\n")}\n"
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[DevCellBootstrap] ssh-keyscan #{host}:#{port} failed: #{e.class}: #{e.message}"
+      )
+      ""
     end
 
     def deploy_key_title
