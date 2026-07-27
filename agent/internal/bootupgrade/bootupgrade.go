@@ -153,7 +153,7 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 		if d.Client == nil {
 			return "", errors.New("bootupgrade: nil transport client")
 		}
-		if err := download(ctx, d.Client, o.DownloadPath, ukiPath); err != nil {
+		if err := applyDeps.download(ctx, d.Client, o.DownloadPath, ukiPath); err != nil {
 			return "", fmt.Errorf("download UKI: %w", err)
 		}
 		if !fileHasSHA(ukiPath, o.UkiSha256) {
@@ -176,8 +176,7 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	if err := os.WriteFile(keyPath, []byte(o.CosignPublicKey), 0o600); err != nil {
 		return "", fmt.Errorf("write cosign public key: %w", err)
 	}
-	verifier := &verify.CosignVerifier{Runner: d.Runner, KeyPath: keyPath}
-	if err := verifier.VerifyBlob(ctx, ukiPath, bundlePath); err != nil {
+	if err := applyDeps.verifyBlob(ctx, d.Runner, keyPath, ukiPath, bundlePath); err != nil {
 		_ = os.Remove(ukiPath) // don't leave an unverified blob staged
 		return "", fmt.Errorf("cosign verify UKI: %w", err)
 	}
@@ -198,11 +197,11 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	//      ("rollback lives below the payload") cannot hold. Failing closed
 	//      means such a node simply does not upgrade — a stuck node beats a
 	//      bricked one.
-	if !bootslots.BootedViaSystemdBoot() {
+	if !applyDeps.bootedViaSystemdBoot() {
 		// Distinguish the two causes — they need different remedies, and reporting
 		// "no A/B layout" for an unmounted efivarfs would misdirect an operator
 		// into reimaging a node that is actually fine.
-		if !bootslots.EfivarsAvailable() {
+		if !applyDeps.efivarsAvailable() {
 			return "", errors.New("refusing boot-image upgrade: the EFI variable store is not " +
 				"readable (efivarfs not mounted in this namespace?), so the boot method cannot be " +
 				"determined. Refusing rather than guessing — mount efivarfs and retry")
@@ -224,7 +223,7 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	bootMu.Lock()
 	defer bootMu.Unlock()
 
-	state := bootslots.Load()
+	state := applyDeps.loadState()
 	active := state.Active
 
 	// Refuse while a previous upgrade is still unproven. With Pending set, the
@@ -249,7 +248,7 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	// of record, and a failed upgrade would fall back to whatever stale UKI sits
 	// in slot a. Refusing here costs one stat and keeps a known-good rollback
 	// target as a precondition of every upgrade (INV-3).
-	activeOK, err := espwrite.SlotGoodExists(ctx, d.Runner, bootslots.EntryBase(active))
+	activeOK, err := applyDeps.slotGoodExists(ctx, d.Runner, bootslots.EntryBase(active))
 	if err != nil {
 		return "", fmt.Errorf("check rollback target %s: %w", active, err)
 	}
@@ -262,7 +261,7 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	// bootctl is required for set-oneshot below. Probe it BEFORE writing the slot
 	// so a node without it fails cleanly instead of leaving a written-but-unarmed
 	// slot behind (it ships via the base-os module, not the minimal initramfs).
-	if _, lookErr := exec.LookPath("bootctl"); lookErr != nil {
+	if _, lookErr := applyDeps.lookPath("bootctl"); lookErr != nil {
 		return "", fmt.Errorf("refusing boot-image upgrade: bootctl not found, cannot arm the "+
 			"one-shot boot entry: %w", lookErr)
 	}
@@ -270,7 +269,7 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	inactive := bootslots.Other(active)
 	base := bootslots.EntryBase(inactive)
 	entry := bootslots.EntryName(inactive, BootTries) // e.g. powernode-b+3.efi
-	if err := espwrite.WriteUKISlot(ctx, d.Runner, ukiPath, base, entry); err != nil {
+	if err := applyDeps.writeUKISlot(ctx, d.Runner, ukiPath, base, entry); err != nil {
 		return "", fmt.Errorf("write ESP slot: %w", err)
 	}
 
@@ -290,7 +289,7 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	// the two paths drift (4b13c961 fixed one such drift already). Apply holds
 	// bootMu here and bootslots.Update takes stateMu, matching the documented
 	// bootMu→stateMu lock order.
-	if err := bootslots.Update(func(st *bootslots.State) error {
+	if err := applyDeps.updateState(func(st *bootslots.State) error {
 		st.Pending = inactive
 		st.PendingSHA = o.TargetGitSHA
 		return nil
@@ -486,4 +485,58 @@ func isFullGitSHA(s string) bool {
 		}
 	}
 	return true
+}
+
+// applyDeps indirects every call Apply makes into another package.
+//
+// Apply is the single most consequential function in the agent: it decides what
+// a node boots next, on nodes that typically cannot be re-provisioned. Its
+// interesting behaviour is ORDERING and REFUSAL — which guard fires first, and
+// what has NOT happened when one does — and none of that was reachable from a
+// test, because every step was a direct call into bootslots/espwrite/verify or
+// the network. The result was that the guards protecting against a documented
+// brick (VM 9002) had no coverage at all.
+//
+// Every field defaults to the exact call it replaces, so the production path is
+// unchanged; tests swap individual fields via withApplyDeps.
+type applyDepSet struct {
+	download             func(ctx context.Context, c *transport.Client, path, dst string) error
+	verifyBlob           func(ctx context.Context, r mount.Runner, keyPath, blobPath, bundlePath string) error
+	bootedViaSystemdBoot func() bool
+	efivarsAvailable     func() bool
+	loadState            func() bootslots.State
+	updateState          func(fn func(*bootslots.State) error) error
+	slotGoodExists       func(ctx context.Context, r mount.Runner, entryBase string) (bool, error)
+	writeUKISlot         func(ctx context.Context, r mount.Runner, src, entryBase, entryName string) error
+	lookPath             func(file string) (string, error)
+}
+
+func defaultApplyDeps() applyDepSet {
+	return applyDepSet{
+		download: download,
+		verifyBlob: func(ctx context.Context, r mount.Runner, keyPath, blobPath, bundlePath string) error {
+			return (&verify.CosignVerifier{Runner: r, KeyPath: keyPath}).VerifyBlob(ctx, blobPath, bundlePath)
+		},
+		bootedViaSystemdBoot: bootslots.BootedViaSystemdBoot,
+		efivarsAvailable:     bootslots.EfivarsAvailable,
+		loadState:            bootslots.Load,
+		updateState:          bootslots.Update,
+		slotGoodExists:       espwrite.SlotGoodExists,
+		writeUKISlot:         espwrite.WriteUKISlot,
+		lookPath:             exec.LookPath,
+	}
+}
+
+var applyDeps = defaultApplyDeps()
+
+// withApplyDeps installs a mutated dep set for one test and returns a restore
+// func. The restore is returned rather than left to the caller to reconstruct:
+// a leaked override would point the real upgrade path at fakes for the rest of
+// the process, which on this particular function is the worst possible leak.
+func withApplyDeps(mutate func(*applyDepSet)) (restore func()) {
+	prev := applyDeps
+	next := defaultApplyDeps()
+	mutate(&next)
+	applyDeps = next
+	return func() { applyDeps = prev }
 }
