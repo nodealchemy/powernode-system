@@ -8,7 +8,7 @@ require "rails_helper"
 # Redesigned (A1' security rework): NO account-wide secret is minted. The action
 # is GATED to instances actually provisioned with the dev-cell module (mTLS
 # enrollment alone is not enough). The MCP half returns { mcp_url } only and
-# grants the peer EXACTLY the three dev-loop tools — and only AFTER Gitea fully
+# grants the peer the dev-cell tool set (dev-loop + MCP-first) — only AFTER Gitea fully
 # succeeds (fail-closed ordering). The Gitea half returns a per-repo read-WRITE
 # Ed25519 DEPLOY KEY on ONLY the source repo, issued only after develop/master
 # branch protection is confirmed and the private key is confirmed stored in
@@ -98,14 +98,20 @@ RSpec.describe "Api::V1::System::NodeApi::Config#dev_cell_bootstrap", type: :req
       expect(gitea).to have_key("known_hosts")
     end
 
-    it "announces the peer and grants EXACTLY the three dev-loop tools" do
+    it "announces the peer and grants the dev-cell tool set (dev-loop + MCP-first)" do
       get path, headers: headers
 
       peer = System::NodeInstancePeer.find_by(node_instance_id: instance.id)
       expect(peer).to be_present
-      expect(peer.granted_mcp_tools).to contain_exactly(
-        "platform.dev_next_task", "platform.dev_complete_task", "platform.dev_list_tasks"
+      # Exactly the server-defined grant — dev-loop plus the MCP-first recall +
+      # contribute-back set (default-deny everything else). Asserted against the
+      # constant so the two stay in lockstep.
+      expect(peer.granted_mcp_tools).to contain_exactly(*System::DevCellBootstrapService::DEV_CELL_MCP_TOOLS)
+      expect(peer.granted_mcp_tools).to include(
+        "platform.dev_next_task", "platform.search_knowledge", "platform.create_learning"
       )
+      # Curation/lifecycle + fleet mutation stay denied.
+      expect(peer.granted_mcp_tools).not_to include("platform.delete_knowledge", "platform.delegate_ralph_task")
     end
 
     it "confirms develop/master protection BEFORE issuing a read-WRITE deploy key" do

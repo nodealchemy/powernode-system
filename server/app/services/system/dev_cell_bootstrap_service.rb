@@ -9,7 +9,7 @@ module System
   #   MCP   — the cell authenticates to /mcp by presenting its node client cert
   #           (mTLS; resolved by Mcp::Principal.for_instance_cn). We only have
   #           to (a) ensure the instance has announced as a NodeInstancePeer and
-  #           (b) grant that peer EXACTLY the three dev-loop tools. No token,
+  #           (b) grant that peer the dev-loop + MCP-first tool set. No token,
   #           no OAuth client, no operator-user binding. The returned block is
   #           just { mcp_url } — the cell runs a local mTLS proxy that presents
   #           the node cert; that proxy is the dev-cell MODULE's concern.
@@ -31,20 +31,44 @@ module System
 
     Result = Struct.new(:ok?, :mcp, :gitea, :error, keyword_init: true)
 
-    # FIXED, server-defined dev-loop tool grant (NOT caller-specified). The
-    # dev-cell peer may invoke EXACTLY these three platform MCP tools and
-    # nothing else (default-deny). These are the /mcp catalog names
-    # ("platform.<tool>") that Mcp::Principal#may_invoke? fnmatches the request
-    # tool name against — verified against Ai::Tools::PlatformApiToolRegistry,
-    # where each Ai::Tools::DevLoopTool action (dev_next_task / dev_complete_task
-    # / dev_list_tasks) is registered as its own `platform.<action>` catalog
-    # entry (registry all_tools map + tool_definitions). `delegate_ralph_task`
-    # (also DevLoopTool) is intentionally NOT granted.
+    # Server-defined MCP tool grant for a dev-cell peer (NOT caller-specified;
+    # default-deny everything else). Granted in two tiers, combined into
+    # DEV_CELL_MCP_TOOLS below. All are /mcp catalog names ("platform.<action>")
+    # that Mcp::Principal#may_invoke? fnmatches the request tool name against —
+    # verified against Ai::Tools::PlatformApiToolRegistry (registry all_tools map
+    # + tool_definitions).
+    #
+    # DEV_LOOP_MCP_TOOLS — the autonomous campaign dev-loop (dev-cell-executor
+    # drives these headless). Each Ai::Tools::DevLoopTool action is its own
+    # platform.<action> entry; `delegate_ralph_task` (also DevLoopTool) is
+    # intentionally NOT granted.
     DEV_LOOP_MCP_TOOLS = %w[
       platform.dev_next_task
       platform.dev_complete_task
       platform.dev_list_tasks
     ].freeze
+
+    # MCP_FIRST_MCP_TOOLS — the MCP-first workflow CLAUDE.md mandates for
+    # INTERACTIVE dev on the cell: knowledge/skill RECALL plus the three
+    # contribute-back create_* tools. Deliberately excludes curation/lifecycle
+    # mutation (update_/promote_/delete_/verify_/mutate_/toggle_ knowledge,
+    # learnings, skills) and every system_* fleet-mutation tool — a dev cell
+    # reads the graph and files new learnings/knowledge/skills; it does not
+    # curate the graph or run fleet ops.
+    MCP_FIRST_MCP_TOOLS = %w[
+      platform.search_knowledge
+      platform.query_learnings
+      platform.code_semantic_search
+      platform.search_knowledge_graph
+      platform.discover_skills
+      platform.get_skill_context
+      platform.create_learning
+      platform.create_knowledge
+      platform.create_skill
+    ].freeze
+
+    # The full grant handed to every dev-cell peer (dev-loop + MCP-first).
+    DEV_CELL_MCP_TOOLS = (DEV_LOOP_MCP_TOOLS + MCP_FIRST_MCP_TOOLS).freeze
 
     # Capability marker recorded on the peer so fleet views / the operator UI
     # can distinguish a dev-cell executor peer from a general announced peer.
@@ -94,9 +118,9 @@ module System
       )
       return nil unless result.ok? && result.peer
 
-      # mode: :replace so the dev-cell peer is scoped to ONLY these three tools
+      # mode: :replace so the dev-cell peer is scoped to EXACTLY this grant
       # (default-deny everything else) even across re-boots / prior grants.
-      result.peer.grant_mcp_tools!(DEV_LOOP_MCP_TOOLS, mode: :replace)
+      result.peer.grant_mcp_tools!(DEV_CELL_MCP_TOOLS, mode: :replace)
 
       # The MCP streamable-HTTP endpoint is /api/v1/mcp/message (routes.rb:
       # `post "message" => streamable_http#message`), NOT a bare /mcp. The

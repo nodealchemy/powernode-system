@@ -201,8 +201,8 @@ module Api
           #             presenting its node client cert (mTLS), which resolves to
           #             an Mcp::Principal.for_instance_cn scoped by this
           #             instance's NodeInstancePeer grant. Bootstrap ensures the
-          #             instance has announced as a peer and grants it EXACTLY the
-          #             three dev-loop tools (default-deny everything else). No
+          #             instance has announced as a peer and grants it the dev-loop
+          #             + MCP-first tool set (default-deny everything else). No
           #             token is issued here — the cell runs a local mTLS proxy
           #             presenting the node cert (the dev-cell MODULE's concern).
           #   * gitea — { clone_url (SSH), private_key, known_hosts }. A per-repo
