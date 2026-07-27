@@ -23,6 +23,10 @@ file_spec:
   - "/usr/sbin/powernode-agent"
   - "/sbin/powernode-agent"
   - "/etc/powernode/**"
+  # Recovery console drop-in (see the file's own header). Narrow glob on
+  # purpose: a broad /etc/systemd/system/** would sweep unrelated units out
+  # of the builder rootfs into this module's layer.
+  - '/etc/systemd/system/serial-getty@ttyS0.service.d/**'
 
 # NOTE ON /sbin — do NOT ship real files here.
 #
