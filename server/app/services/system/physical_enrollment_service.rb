@@ -239,9 +239,43 @@ module System
       Rails.logger.warn "[PhysicalEnrollmentService] claim event emit failed: #{e.class}: #{e.message}"
     end
 
+    # Where a claim-by-ID device should call home. Returns nil when nothing is
+    # configured — deliberately, because the caller emits this verbatim into an
+    # identity.cfg that gets flashed onto physical media.
+    #
+    # This used to fall back to "https://platform.local" in production and
+    # "http://localhost:3000" otherwise. Both are fabrications, and a fabricated
+    # value is far worse here than no value: it produces a boot config that looks
+    # completely valid, passes every glance, and then fails to resolve on a device
+    # that has already been flashed and shipped. The operator finds out at the
+    # site, not at the desk. A missing value can be surfaced as a placeholder the
+    # reader must fill in; an invented one cannot be distinguished from a real one.
+    #
+    # Resolution order reuses the SAME SiteSetting the VM/cicustom enrollment path
+    # reads (Providers::Proxmox::EnrollmentSeed#resolve_platform_url) rather than
+    # introducing a second key. Both paths answer one question — "where do devices
+    # enroll?" — and two sources of truth for that is how a fleet ends up split
+    # across planes. The key name is historical (it predates the physical path);
+    # its meaning is the platform's enrollment URL.
+    PLATFORM_URL_SETTING = "system.ci_builder.enroll_platform_url"
+    # Presence means devices cannot rely on public roots and MUST carry this chain.
+    ENROLL_CA_SETTING    = "system.ci_builder.enroll_ca_pem"
+
     def self.platform_url
-      ENV["POWERNODE_PLATFORM_URL"] ||
-        (Rails.env.production? ? "https://platform.local" : "http://localhost:3000")
+      ::SiteSetting.get(PLATFORM_URL_SETTING).presence || ENV["POWERNODE_PLATFORM_URL"].presence
+    rescue StandardError => e
+      Rails.logger.warn "[PhysicalEnrollmentService] platform_url lookup failed: #{e.class}: #{e.message}"
+      ENV["POWERNODE_PLATFORM_URL"].presence
+    end
+
+    # True when this platform serves a chain the stock image does not already
+    # trust, so a claim-by-ID device needs the CA on its BOOT partition. ops-hub
+    # is self-signed (verified 2026-07-26: subject == issuer == CN=ops-hub.ipnode.us),
+    # which is exactly the case that silently fails TLS if the CA is left out.
+    def self.private_ca?
+      ::SiteSetting.get(ENROLL_CA_SETTING).present?
+    rescue StandardError
+      false
     end
 
     def self.ca_pem_url

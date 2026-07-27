@@ -65,18 +65,55 @@ module Api
               status: :conflict
             )
           end
+          # Emit a PLACEHOLDER rather than a guess when no platform URL is
+          # configured. This file gets flashed onto physical media: an invented
+          # but plausible value (the previous code produced "https://platform.local"
+          # in production) reads as correct, survives review, and then fails to
+          # resolve on a device that has already been imaged and shipped —
+          # discovered at the site rather than at the desk. A placeholder cannot
+          # be mistaken for a working value.
+          platform_url = ::System::PhysicalEnrollmentService.platform_url
+          url_note =
+            if platform_url.blank?
+              "# !! ACTION REQUIRED — SERVER below is a PLACEHOLDER.\n" \
+              "# !! This platform has no enrollment URL configured, so one could not\n" \
+              "# !! be filled in. Either set the SiteSetting\n" \
+              "# !! #{::System::PhysicalEnrollmentService::PLATFORM_URL_SETTING}\n" \
+              "# !! and re-download, or replace the SERVER line by hand before\n" \
+              "# !! flashing. A device will NOT enroll until it names a reachable\n" \
+              "# !! platform.\n"
+            else
+              ""
+            end
+
+          # A private/self-signed chain is normal for a self-hosted plane, and
+          # leaving CA_PEM_FILE commented out in that case is a silent TLS failure
+          # on every device. Decide it from what the platform actually serves
+          # rather than asking the reader to know which case they are in.
+          ca_lines =
+            if ::System::PhysicalEnrollmentService.private_ca?
+              "# This platform serves a chain the stock image does NOT already trust,\n" \
+              "# so the CA is REQUIRED. Drop it at /boot/powernode-ca.pem alongside\n" \
+              "# this file; its contents are the SiteSetting\n" \
+              "# #{::System::PhysicalEnrollmentService::ENROLL_CA_SETTING}.\n" \
+              "# Without it the device reaches the platform and fails TLS silently.\n" \
+              "CA_PEM_FILE=/boot/powernode-ca.pem\n"
+            else
+              "# This platform's chain is publicly trusted, so no CA file is needed\n" \
+              "# (the generic image already trusts public roots). If that changes,\n" \
+              "# drop the CA at /boot/powernode-ca.pem and uncomment the next line.\n" \
+              "# CA_PEM_FILE=/boot/powernode-ca.pem\n"
+            end
+
           config = <<~CFG
             # Powernode claim-by-ID identity for "#{@instance.name}" (#{@instance.id})
             # Copy to the device's BOOT partition as /boot/identity.cfg. On first
             # boot the device claims as this instance — no operator confirmation.
             # No secret here: the bootstrap token is delivered to the device over
             # TLS by the claim poll, never written to this file.
-            SERVER=#{::System::PhysicalEnrollmentService.platform_url}
+            #{url_note}SERVER=#{platform_url.presence || "<<REPLACE-WITH-PLATFORM-URL>>"}
             ID=#{@instance.id}
-            # Private-CA platforms: also drop the CA PEM at /boot/powernode-ca.pem
-            # and uncomment the next line. Public/Let's Encrypt platforms can omit
-            # it (the generic image already trusts public roots).
-            # CA_PEM_FILE=/boot/powernode-ca.pem
+            #{ca_lines}
           CFG
           send_data config,
                     filename: "identity-#{@instance.name.parameterize}.cfg",
