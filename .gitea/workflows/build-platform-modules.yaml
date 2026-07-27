@@ -109,6 +109,7 @@ jobs:
             ca-certificates \
             curl \
             gnupg \
+            openssl \
             tar \
             uuid-runtime
 
@@ -313,6 +314,40 @@ jobs:
           # module attach time (see ModuleOciIngestService).
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${{ steps.push.outputs.erofs_ref }}"
 
+      # Pin the platform's CA so the notify step can verify TLS against a
+      # privately-issued chain. The platform serves a private leaf (ops-hub's is
+      # self-signed), which this Debian Trixie container does not trust, so the
+      # notify preflight died with `curl: (60) SSL certificate problem:
+      # self-signed certificate` — health-check http=000 — and the job failed
+      # AFTER oras push + cosign sign. The artifact was therefore published and
+      # signed but never recorded by the platform, leaving NodeModuleVersion
+      # stale while the build reported failure (observed: run 1402, and every
+      # module build since the platform moved to a private chain).
+      #
+      # build-disk-image.yaml already pinned this CA for exactly this reason;
+      # this workflow was simply never updated. Same secret, same file path.
+      # Trust is PINNED, never disabled — `curl -k` here would send the CI
+      # worker bearer token to an unverified endpoint.
+      - name: Trust the platform CA
+        env:
+          POWERNODE_PLATFORM_CA_PEM: ${{ secrets.POWERNODE_PLATFORM_CA_PEM }}
+        run: |
+          set -euo pipefail
+          if [ -z "${POWERNODE_PLATFORM_CA_PEM:-}" ]; then
+            echo "POWERNODE_PLATFORM_CA_PEM unset — TLS will verify against system roots only."
+            echo "A platform on a private chain will fail the notify preflight; set the secret to fix."
+            exit 0
+          fi
+          printf '%s' "$POWERNODE_PLATFORM_CA_PEM" > /tmp/platform-ca.pem
+          # Parse it here rather than letting curl fail later with an opaque
+          # error: a truncated or mangled PEM is indistinguishable from an
+          # untrusted server at the point of use.
+          if ! openssl x509 -in /tmp/platform-ca.pem -noout -subject -issuer -fingerprint -sha256; then
+            echo "::error::POWERNODE_PLATFORM_CA_PEM is not a parseable PEM certificate."
+            rm -f /tmp/platform-ca.pem
+            exit 1
+          fi
+
       - name: Notify platform — module published
         run: |
           set -euo pipefail
@@ -380,6 +415,16 @@ jobs:
             exit 1
           fi
 
+          # Verify against the pinned platform CA when the previous step wrote
+          # one; unset means "system roots only", which is the correct posture
+          # for a publicly-trusted platform. Spelled as an explicit if- rather
+          # than `[ -f x ] && y` purely for legibility — both are safe under
+          # `set -e` (bash exempts a failing non-final command in an && list).
+          ca_opt=""
+          if [ -f /tmp/platform-ca.pem ]; then
+            ca_opt="--cacert /tmp/platform-ca.pem"
+          fi
+
           # Pre-flight: confirm POWERNODE_API_BASE points at a live
           # platform before we publish the OCI artifact + notify. The
           # secret has historically drifted across deployments (dev
@@ -389,7 +434,7 @@ jobs:
           # right at the start of Stage 3 with a clear message that
           # tells the operator EXACTLY which secret to fix.
           echo "Verifying API_BASE=$API_BASE is reachable..."
-          if ! curl -fsSL -m 10 -o /dev/null -w 'health-check http=%{http_code}\n' \
+          if ! curl -fsSL -m 10 $ca_opt -o /dev/null -w 'health-check http=%{http_code}\n' \
                   "${API_BASE}/api/v1/health"; then
             echo "::error::POWERNODE_API_BASE=$API_BASE is not responding on /api/v1/health."
             echo "::error::  This usually means the secret POWERNODE_API_BASE has drifted out of sync"
@@ -404,7 +449,7 @@ jobs:
           # --fail-with-body returns response body even on HTTP error so the
           # actual server-side message (auth, validation, etc.) lands in the
           # CI log instead of getting swallowed.
-          if ! curl --fail-with-body -sS -X POST \
+          if ! curl --fail-with-body -sS -X POST $ca_opt \
                  -H "Authorization: Bearer $CI_TOKEN" \
                  -H "Content-Type: application/json" \
                  -d "$payload" \
