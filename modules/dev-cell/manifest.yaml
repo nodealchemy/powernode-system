@@ -525,6 +525,14 @@ file_spec:
   - "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33"
   - "/usr/lib/x86_64-linux-gnu/libuchardet.so.0"
   - "/usr/lib/x86_64-linux-gnu/libuchardet.so.0.0.8"
+  # python3-yaml's only entries outside /usr/lib/python3/** (which the existing
+  # blanket above already carves, dist-info and the _yaml C extension
+  # included). Carried explicitly because that carved extension —
+  # yaml/_yaml.cpython-312-x86_64-linux-gnu.so — links these: shipping it
+  # without them leaves a .so that cannot load. LITERAL soname + real file, not
+  # a "libyaml*" glob, per this file_spec's own convention.
+  - "/usr/lib/x86_64-linux-gnu/libyaml-0.so.2"
+  - "/usr/lib/x86_64-linux-gnu/libyaml-0.so.2.0.9"
   - "/usr/libexec/dpkg/dpkg-db-backup"
   - "/usr/libexec/dpkg/dpkg-db-keeper"
   - "/usr/sbin/accessdb"
@@ -642,6 +650,21 @@ package_spec:
   # module-forge package_spec's this same package for the builder-side half of
   # the identical need.
   - uuid-runtime
+  # PyYAML — the parser scripts/module-build/{derive-file-spec,build-one-module}
+  # .sh fall back to when yq is absent, so a cell can read a module manifest and
+  # run the carve-conformance check locally instead of discovering an
+  # over-carve only once CI builds it.
+  #
+  # DELIBERATELY NOT the `yq` package: on Noble that is kislyuk/yq (a Python jq
+  # wrapper, Homepage github.com/kislyuk/yq), NOT mikefarah/yq (Go) whose
+  # syntax these scripts actually use. Verified against the 3.1.0-3 package —
+  # its CLI has --output-format but no `-o` short flag, so the scripts' literal
+  # `yq -o=json '.'` call does not parse. Installing it would be worse than
+  # installing nothing: `command -v yq` would then succeed and divert the
+  # scripts out of this working python3 branch into the broken one. If literal
+  # yq parity with the buildenv is ever wanted, it has to be mikefarah's static
+  # binary fetched in stage15 (the gitleaks/oras pattern), never this package.
+  - python3-yaml
 
 dependencies:
   requires:
