@@ -225,6 +225,7 @@ file_spec:
   - "/usr/local/bin/dev-cell-git-ssh-env.sh"
   - "/usr/local/bin/dev-cell-mcp-proxy.js"
   - "/usr/local/bin/dev-cell-executor.sh"
+  - "/usr/local/bin/dev-cell-mcp-register.sh"
 
   # Persistent-home mechanism (this module's own rootfs overlay files):
   # binds /home/pnadmin onto the durable /persist partition so the operator's
@@ -894,6 +895,48 @@ services:
       ExecStart=/usr/local/bin/dev-cell-executor.sh
       Restart=on-failure
       RestartSec=30s
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - name: mcp-register
+    unit_body: |
+      [Unit]
+      Description=Dev-cell: register the powernode MCP server in pnadmin's Claude Code config
+      Documentation=https://github.com/nodealchemy/powernode-platform
+      # Writes /home/pnadmin/.claude.json, so it MUST run after the durable
+      # /persist bind of pnadmin's home — otherwise the entry lands on the
+      # pre-mount tmpfs home and is shadowed once the bind mounts.
+      # home-pnadmin.mount is a raw unit this module ships via file_spec (not a
+      # manifest `services:` sibling), so the ordering lives in the body here
+      # rather than in `dependencies:`.
+      After=home-pnadmin.mount
+      Requires=home-pnadmin.mount
+      # `claude` comes from the claude-tmux module — skip cleanly (the service
+      # succeeds as a no-op via the script) if it isn't co-assigned, same
+      # fail-closed posture as the executor unit.
+      ConditionPathExists=/usr/bin/claude
+
+      [Service]
+      # Oneshot: registers the MCP server into user config once per boot and
+      # stays "active" so `systemctl status` reads as done, not dead. The write
+      # is idempotent + self-healing (see dev-cell-mcp-register.sh).
+      Type=oneshot
+      RemainAfterExit=yes
+      # Runs as the INTERACTIVE operator identity (same account claude-tmux's
+      # own session runs as) — NOT pnagent. This wires up the human/tmux
+      # `claude`; the headless executor injects its own inline --mcp-config and
+      # is unaffected. pnadmin is an agent-baseline identity (not declared under
+      # `users:`), governed by this User= just like claude-tmux's unit.
+      User=pnadmin
+      Group=pnadmin
+      Environment=HOME=/home/pnadmin
+      # Must match the proxy's own listener (dev-cell-mcp-proxy.service).
+      Environment=DEV_CELL_MCP_PROXY_BIND=127.0.0.1
+      Environment=DEV_CELL_MCP_PROXY_PORT=18443
+      ExecStart=/usr/local/bin/dev-cell-mcp-register.sh
       StandardOutput=journal
       StandardError=journal
 
