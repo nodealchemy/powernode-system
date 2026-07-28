@@ -43,6 +43,7 @@ module Ai
         "system_get_module"             => "system.modules.read",
         "system_list_module_versions"   => "system.modules.read",
         "system_module_publish_target"  => "system.modules.read",
+        "system_module_publication_integrity" => "system.modules.read",
         "system_drift_report"           => "system.node_instances.read",
         "system_list_tasks"             => "system.infra_tasks.read",
         "system_get_task"               => "system.infra_tasks.read",
@@ -1265,6 +1266,7 @@ module Ai
         when "system_abort_task"               then abort_task(params)
         when "system_module_diff"              then module_diff(params)
         when "system_module_publish_target"    then module_publish_target(params)
+        when "system_module_publication_integrity" then module_publication_integrity(params)
         when "system_deploy_platform"          then deploy_platform(params)
         # Storage volume CRUD (MCP.1) — wraps ProviderVolume + ProviderVolumeType
         when "system_list_volumes"             then list_volumes(params)
@@ -2147,6 +2149,32 @@ module Ai
                       "No module named #{module_name.inspect} exists yet; a publish would " \
                       "create one on this account."
                     end
+        )
+      end
+
+      # Artifacts that reached the OCI registry but never reached the platform.
+      #
+      # A module build pushes and cosign-signs BEFORE it notifies, so every
+      # failure after that point leaves a real signed artifact in the registry
+      # that NodeModuleVersion knows nothing about — while the run goes red and
+      # reads as "the build broke". Comparing the two sides catches that class
+      # whatever the cause (TLS trust, bad token, wrong API base, 422).
+      #
+      # NOT a staleness sweep: source age is never consulted. A module whose
+      # newest build predates its newest commit is normal here and is not
+      # reported.
+      def module_publication_integrity(params)
+        findings = ::System::ModulePublicationIntegrityService
+                   .new(account: @account)
+                   .check(module_name: params[:module_name].presence)
+
+        unrecorded = findings.reject(&:ok?)
+        success_result(
+          checked:            findings.length,
+          clean:              unrecorded.empty?,
+          modules_with_gaps:  unrecorded.length,
+          findings:           unrecorded.map(&:to_h),
+          all:                findings.map { |f| { module_name: f.module_name, ok: f.ok? } }
         )
       end
 
