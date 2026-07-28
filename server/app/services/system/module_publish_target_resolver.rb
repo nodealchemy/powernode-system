@@ -16,10 +16,36 @@ module System
     # worker's owning account (controller passes @current_ci_worker.account).
     #
     # Lookup order — ALL scoped to the supplied account:
-    #   1. gitea_repo_full_name match (canonical OCI namespace)
-    #   2. bare name match within the account
-    #   3. create a NodeModule on `account` with stub defaults; the
+    #   1. bare name match within the account
+    #   2. create a NodeModule on `account` with stub defaults; the
     #      apply_manifest_yaml step immediately following populates the rest.
+    #
+    # NAME IS AUTHORITATIVE, and that is forced on us by the very next step in
+    # the pipeline: ManifestImportService REFUSES any target whose `name`
+    # differs from the manifest's `name:` (unconditionally — there is no
+    # rename-allowed path). Whatever this method returns is handed straight to
+    # it, so returning a differently-named module is not a lesser match, it is a
+    # guaranteed 422. Since `name` is unique per account, a name lookup is
+    # deterministic and is the only lookup that can produce a usable target.
+    #
+    # This used to try gitea_repo_full_name FIRST, on the reasoning that the OCI
+    # namespace is canonical and would let a module renamed in the source tree
+    # keep resolving without an ops-side cutover. That benefit is unreachable:
+    # a renamed module is precisely the mismatch the importer rejects, so the
+    # repo-first branch could only ever select a doomed target. What it did
+    # instead was let ANY module holding the binding intercept publishes meant
+    # for another.
+    #
+    # Measured on ops-hub 2026-07-27: the canonical `powernode-system-base` (54
+    # assignments) had no binding, while a one-off
+    # `powernode-system-base-vm104-devpin` (1 assignment, named for a VMID that
+    # no longer exists) held "powernode/powernode-system-base". Every publish
+    # resolved to the variant and 422'd, so no module build landed on that
+    # platform. `gitea_repo_full_name` carries a UNIQUE index, so exactly one
+    # module can hoard a repo this way.
+    #
+    # The binding is still meaningful metadata elsewhere (build dispatch,
+    # manifest fetch, parity) — it simply must not outrank the name here.
     #
     # Scoping every lookup to the worker's account closes the cross-tenant
     # IDOR where an unscoped find_by(name:)/find_by(gitea_repo_full_name:)
@@ -32,8 +58,8 @@ module System
     def find_or_create_publish_target(gitea_repo, module_name, account:)
       return nil unless account
 
-      existing = account.system_node_modules.find_by(gitea_repo_full_name: gitea_repo) ||
-                 account.system_node_modules.find_by(name: module_name)
+      existing = account.system_node_modules.find_by(name: module_name)
+      warn_on_foreign_repo_binding(gitea_repo, module_name, account)
       return existing if existing
 
       category = resolve_publisher_category(account)
@@ -57,6 +83,25 @@ module System
     end
 
     private
+
+    # A repo binding held by a DIFFERENT module is drift: the binding points at
+    # a module the build no longer publishes to. It no longer breaks the
+    # publish (name wins), but it is invisible otherwise — and its invisibility
+    # is exactly what let ops-hub sit broken. Surface it at publish time.
+    def warn_on_foreign_repo_binding(gitea_repo, module_name, account)
+      return if gitea_repo.blank?
+
+      holder = account.system_node_modules.find_by(gitea_repo_full_name: gitea_repo)
+      return if holder.nil? || holder.name == module_name
+
+      Rails.logger.warn(
+        "[ModulePublishTargetResolver] #{holder.name} (#{holder.id}) holds the OCI repo " \
+        "binding #{gitea_repo}, but this publish is for #{module_name.inspect} — resolved " \
+        "by name instead. The binding is stale or belongs on the published module; clear it " \
+        "or rebind it, or build dispatch/manifest fetch for #{module_name.inspect} will keep " \
+        "falling back to a derived repo name."
+      )
+    end
 
     # Category for auto-created NodeModules. campaign 019f6084 retired the
     # single "Powernode Platform" catch-all in favor of System::
