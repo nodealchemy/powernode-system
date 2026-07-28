@@ -44,6 +44,9 @@ module Ai
         "system_list_module_versions"   => "system.modules.read",
         "system_module_publish_target"  => "system.modules.read",
         "system_module_publication_integrity" => "system.modules.read",
+        "system_instance_hold_status"   => "system.instances.read",
+        "system_instance_hold"          => "system.instances.control",
+        "system_instance_release_hold"  => "system.instances.control",
         "system_drift_report"           => "system.node_instances.read",
         "system_list_tasks"             => "system.infra_tasks.read",
         "system_get_task"               => "system.infra_tasks.read",
@@ -1267,6 +1270,9 @@ module Ai
         when "system_module_diff"              then module_diff(params)
         when "system_module_publish_target"    then module_publish_target(params)
         when "system_module_publication_integrity" then module_publication_integrity(params)
+        when "system_instance_hold_status"     then instance_hold_status(params)
+        when "system_instance_hold"            then instance_hold(params)
+        when "system_instance_release_hold"    then instance_release_hold(params)
         when "system_deploy_platform"          then deploy_platform(params)
         # Storage volume CRUD (MCP.1) — wraps ProviderVolume + ProviderVolumeType
         when "system_list_volumes"             then list_volumes(params)
@@ -2150,6 +2156,68 @@ module Ai
                       "create one on this account."
                     end
         )
+      end
+
+      # === Operator ops hold ===
+      #
+      # Blocks the platform from starting an instance while offline work is
+      # happening on its disks, and pushes the block down to the provider where
+      # one exists — a platform-side flag only binds callers that come through
+      # the platform, and the start that caused the 2026-07-27 incident was a
+      # hypervisor task.
+      def instance_hold(params)
+        instance = find_instance(params)
+        return instance if instance.is_a?(Hash)
+        return error_result("reason required — a hold records why, so the next person knows whether to clear it") if params[:reason].blank?
+
+        ttl = params[:ttl_hours].present? ? params[:ttl_hours].to_f.hours : ::System::InstanceOpsHoldService::DEFAULT_TTL
+        result = ::System::InstanceOpsHoldService.hold!(
+          instance: instance, user: @user, reason: params[:reason].to_s, ttl: ttl
+        )
+        return error_result(result.error) unless result.ok?
+
+        success_result(
+          instance_id: instance.id, name: instance.name,
+          provider_enforced: result.provider_enforced, provider_state: result.provider_state,
+          expires_at: instance.reload.ops_hold_expires_at&.iso8601,
+          message: result.message
+        )
+      end
+
+      def instance_release_hold(params)
+        instance = find_instance(params)
+        return instance if instance.is_a?(Hash)
+
+        result = ::System::InstanceOpsHoldService.release!(instance: instance, user: @user)
+        return error_result(result.error) unless result.ok?
+
+        success_result(instance_id: instance.id, name: instance.name, message: result.message)
+      end
+
+      # Verified by READING provider state — never by attempting a start, which
+      # on a broken hold would start the very instance the operator needed
+      # stopped. Reports drift between platform intent and provider reality.
+      def instance_hold_status(params)
+        instance = find_instance(params)
+        return instance if instance.is_a?(Hash)
+
+        result = ::System::InstanceOpsHoldService.status(instance: instance)
+        success_result(
+          instance_id: instance.id, name: instance.name,
+          held: instance.ops_held?, expired: instance.ops_hold_expired?,
+          reason: instance.ops_hold_reason, held_by: instance.ops_held_by&.email,
+          held_at: instance.ops_hold_at&.iso8601,
+          expires_at: instance.ops_hold_expires_at&.iso8601,
+          provider_enforced: result.provider_enforced, provider_state: result.provider_state,
+          summary: result.message, drift: result.error
+        )
+      end
+
+      def find_instance(params)
+        id = params[:instance_id].presence || params[:id].presence
+        return error_result("instance_id required") if id.blank?
+
+        account_instances.find_by(id: id) || error_result("instance #{id} not found in this account")
       end
 
       # Artifacts that reached the OCI registry but never reached the platform.

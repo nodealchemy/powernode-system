@@ -44,6 +44,10 @@ module System
 
     # Associations
     belongs_to :node, class_name: "System::Node"
+    # Operator who placed the current ops hold. Optional: a hold is only ever
+    # set through InstanceOpsHoldService, which requires a user, but historical
+    # rows and released holds carry nil.
+    belongs_to :ops_held_by, class_name: "User", foreign_key: :ops_hold_by_id, optional: true
     # Account is denormalized as a first-class column (mirroring sibling
     # tables like system_provider_volumes, system_acme_certificates).
     # The before_validation callback below inherits the value from the
@@ -183,6 +187,39 @@ module System
     prepend System::LifecycleAuditable
 
     # Scopes
+    # === Operator ops hold ===
+    #
+    # A hold blocks the platform from STARTING this instance while offline work
+    # is happening on its disks. See the migration for the incident that
+    # motivated it: a start that arrived 30s after a stop, while the hypervisor
+    # still had the guest's filesystem mounted read-write, silently truncated a
+    # file to zero bytes in the guest's view.
+    #
+    # Expiry ALERTS, it does not release. `held?` stays true past
+    # ops_hold_expires_at on purpose — a hold that lifts itself part-way through
+    # maintenance is worse than no hold, because the operator believes they are
+    # protected. Release is always explicit.
+    scope :ops_held, -> { where.not(ops_hold_at: nil) }
+
+    def ops_held? = ops_hold_at.present?
+
+    def ops_hold_expired?
+      ops_held? && ops_hold_expires_at.present? && ops_hold_expires_at.past?
+    end
+
+    # Human-facing single line for refusal messages and status output. The
+    # "who and why" is the whole reason this is a lease rather than a flag.
+    def ops_hold_summary
+      return nil unless ops_held?
+
+      who   = ops_held_by&.email.presence || ops_hold_by_id.presence || "unknown"
+      since = ops_hold_at.iso8601
+      base  = "held by #{who} since #{since}"
+      base += " — #{ops_hold_reason}" if ops_hold_reason.present?
+      base += " (lease expired #{ops_hold_expires_at.iso8601}; still held, release is explicit)" if ops_hold_expired?
+      base
+    end
+
     scope :cloud, -> { where(variety: "cloud") }
     scope :physical, -> { where(variety: "physical") }
     scope :dynamic, -> { where(variety: "dynamic") }

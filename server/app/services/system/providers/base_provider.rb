@@ -142,6 +142,40 @@ module System
         raise NotImplementedError, "#{self.class} must implement #start_instance"
       end
 
+      # === Operator ops hold (optional provider capability) ===
+      #
+      # A platform-side hold only binds callers that go through the platform.
+      # On 2026-07-27 the start that raced offline maintenance on ops-hub was a
+      # hypervisor task, and a DB flag would not have stopped it. Providers that
+      # can refuse a start at their own layer should do so, so the hold survives
+      # callers the platform never sees.
+      #
+      # Optional by design: a provider without such a primitive reports false
+      # and the platform-level guard still applies. Default no-op rather than
+      # NotImplementedError so a hold never fails outright on a provider that
+      # simply cannot reinforce it.
+      def supports_ops_hold?
+        false
+      end
+
+      # @return [Hash] :success, and :state describing what the provider now reports
+      def apply_ops_hold!(_instance_id, reason: nil)
+        { success: false, unsupported: true,
+          error: "#{self.class} cannot enforce an ops hold at the provider layer" }
+      end
+
+      def release_ops_hold!(_instance_id)
+        { success: false, unsupported: true,
+          error: "#{self.class} cannot enforce an ops hold at the provider layer" }
+      end
+
+      # Read back what the provider actually reports. A hold is verified by
+      # READING this, never by attempting a start: a probe that finds the hold
+      # broken has just started the instance you needed stopped.
+      def ops_hold_state(_instance_id)
+        nil
+      end
+
       # Stop a running instance
       #
       # @param instance_id [String] Cloud instance ID

@@ -19,6 +19,20 @@ module System
 
       Rails.logger.info("[InstanceControlService] Executing #{action} on #{instance.name}")
 
+      # An operator hold outranks every caller that reaches this service —
+      # operator UI, MCP, fleet autonomy, pool replenisher, rolling upgrades.
+      # This is the single choke point for instance lifecycle, which is why the
+      # check lives here rather than at each call site: a guard the autonomous
+      # paths can miss is exactly the guard that fails when it matters.
+      #
+      # `force` deliberately does NOT bypass it. force exists for provider-level
+      # stubbornness, not for overriding a human who said "do not start this
+      # while I have its disk mounted". Release is explicit, always.
+      if (refusal = ops_hold_refusal(instance, action))
+        Rails.logger.warn("[InstanceControlService] #{action} refused — #{refusal}")
+        return Runtime::Result.err(error: refusal)
+      end
+
       unless can_execute_action?(instance, action)
         return Runtime::Result.err(error: "Cannot #{action} instance in #{instance.status} status")
       end
@@ -49,6 +63,21 @@ module System
     end
 
     private
+
+    # Actions blocked by an ops hold. `stop` is deliberately allowed: the whole
+    # point of a hold is that the instance should be DOWN, so stopping one that
+    # is somehow up moves toward the operator's intent rather than away from it.
+    # start/reboot would race the offline work; terminate would destroy the disks
+    # being worked on.
+    HOLD_BLOCKED_ACTIONS = %i[start reboot terminate].freeze
+
+    def ops_hold_refusal(instance, action)
+      return nil unless instance.respond_to?(:ops_held?) && instance.ops_held?
+      return nil unless HOLD_BLOCKED_ACTIONS.include?(action.to_sym)
+
+      "Refusing to #{action}: instance is under an operator ops hold (#{instance.ops_hold_summary}). " \
+      "Release the hold explicitly before this action — it is not overridable with force."
+    end
 
     def validate_instance!(instance)
       raise ArgumentError, "Instance required" unless instance

@@ -278,6 +278,57 @@ module System
         build_error_response("PVE error: #{e.message}")
       end
 
+      # === Operator ops hold, enforced by PVE itself ===
+      #
+      # PVE refuses lifecycle operations on a locked guest ("VM is locked
+      # (<lock>)"), which is what makes this worth pushing down: it binds
+      # hypervisor-side callers the platform never sees. On 2026-07-27 the start
+      # that raced offline maintenance on ops-hub was a PVE task, so a
+      # platform-only flag would not have stopped it.
+      #
+      # `backup` is used as the lock kind because it is a real PVE lock value
+      # whose semantics ("something is operating on this guest, leave it alone")
+      # match, and it is the one an operator can clear with `qm unlock`.
+      OPS_HOLD_LOCK = "backup"
+
+      def supports_ops_hold?
+        true
+      end
+
+      def apply_ops_hold!(instance_id, reason: nil)
+        log_operation("apply_ops_hold", instance_id: instance_id, reason: reason)
+        node, kind, vmid = parse_instance_id!(instance_id)
+        require_client!.put("/api2/json/nodes/#{node}/#{kind}/#{vmid}/config", { "lock" => OPS_HOLD_LOCK })
+        { success: true, state: ops_hold_state(instance_id) }
+      rescue Proxmox::Client::NotFoundError => e
+        raise ResourceNotFoundError, e.message
+      rescue Proxmox::Client::Error => e
+        build_error_response("PVE lock failed: #{e.message}")
+      end
+
+      def release_ops_hold!(instance_id)
+        log_operation("release_ops_hold", instance_id: instance_id)
+        node, kind, vmid = parse_instance_id!(instance_id)
+        # `delete=lock` is the API form of `qm unlock`.
+        require_client!.put("/api2/json/nodes/#{node}/#{kind}/#{vmid}/config", { "delete" => "lock" })
+        { success: true, state: ops_hold_state(instance_id) }
+      rescue Proxmox::Client::NotFoundError => e
+        raise ResourceNotFoundError, e.message
+      rescue Proxmox::Client::Error => e
+        build_error_response("PVE unlock failed: #{e.message}")
+      end
+
+      # Reads what PVE reports. This is how a hold is verified — never by
+      # attempting a start, which on a broken hold would start the very instance
+      # the operator needed stopped.
+      def ops_hold_state(instance_id)
+        node, kind, vmid = parse_instance_id!(instance_id)
+        cfg = require_client!.get("/api2/json/nodes/#{node}/#{kind}/#{vmid}/config")
+        cfg.is_a?(Hash) ? cfg["lock"].presence : nil
+      rescue Proxmox::Client::Error
+        nil
+      end
+
       def start_instance(instance_id)
         log_operation("start_instance", instance_id: instance_id)
         node, kind, vmid = parse_instance_id!(instance_id)
