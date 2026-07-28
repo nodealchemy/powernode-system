@@ -6,6 +6,51 @@ Quick-start for authoring, signing, publishing, and assigning a new `NodeModule`
 
 **Audience:** module authors (internal + external open-source contributors), template designers composing fleet-wide assignments.
 
+## Phase 0 — Should this be a module at all?
+
+Added 2026-07-28 after a proposal to split five new modules out of `dev-cell`
+was cut to one. Module sprawl is a real cost: every module is a manifest, a
+build arm, a publish, a template assignment, a version to bump, and another
+entry in every composing node's LKG manifest. Answer this BEFORE Phase 1.
+
+**A new module must satisfy at least one of:**
+
+- **R1 — Two or more real consumers today**, or a hard
+  `requires: capability:<name>` edge from another module's manifest. "Assumed
+  co-assigned on the same template" prose does NOT count: the resolver cannot
+  enforce it, so it protects nothing.
+- **R2 — An independent third-party payload with its own version/CVE cadence.**
+  The per-module CVE remediation pipeline (`package_module_refresh`,
+  `rolling_module_upgrade`) operates per module, so a vendored upstream binary
+  needs its own boundary to be CVE-bumped without dragging an unrelated module's
+  churn. This is why traefik, gitleaks, act_runner and Chrome are separate.
+- **R3 — An opt-in heavy payload a node type must be able to EXCLUDE**
+  (`dev-cell-browser`, `dev-cell-docker`).
+
+**Otherwise, bake it into the owning node-type module's own build arm and
+file_spec.** Four of the five candidates in that review failed all three prongs
+and stayed in `dev-cell`; `runtime-go` passed on R2 alone (Go ships security
+releases roughly monthly, while dev-cell's scripts churn constantly — baked in,
+every script tweak would re-ship a ~150MB-heavier blob and every Go CVE would
+ride dev-cell's release treadmill).
+
+Note that "it completes a family" is the WEAKEST justification — a family label
+can rationalise any new member. `runtime-*` is demand-driven and should stay
+that way: a language runtime earns a module only when the distro package cannot
+satisfy the floor (ruby 3.2.8, node 24, go 1.25 all can't), never by analogy.
+
+**Where functionality belongs, once you have decided it is not its own module:**
+
+| Kind | Home |
+|---|---|
+| Fleet-wide generic mechanism | `base-os-*` (model: the ssh-hostkeys generalisation) |
+| Per-node-type policy | the node-type module — **never** base-os |
+| Per-instance data | never in any blob: identity envelope / fw_cfg / `/persist` |
+
+That last row is an invariant, not a preference: a non-instance/node-specific
+module must not contain instance/node-specific files, and no instance-specific
+file belongs in a base-os build.
+
 ## Concept reference
 
 | Concept | What it is | Backing model |
