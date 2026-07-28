@@ -431,7 +431,19 @@ func download(ctx context.Context, c *transport.Client, path, dst string) error 
 	if err != nil {
 		return err
 	}
-	resp, err := c.Do(req)
+	// DoStream, not Do: a UKI is ~83MB and the platform may have to pull it from
+	// the OCI registry before it can answer, so both the wait for headers and the
+	// body transfer routinely exceed the client's whole-request Timeout — which
+	// is a deadline on the ENTIRE request, not an idle timeout. Observed on
+	// ops-hub 2026-07-28: `download UKI: net/http: timeout awaiting response
+	// headers`, with the boot upgrade failing before a single byte was written.
+	//
+	// This is the same defect fixed for OCI module blobs (DoStream/BlobClient);
+	// that fix corrected the module path and missed this one. DoStream drops the
+	// whole-request cap and substitutes a stall guard, so a transfer that keeps
+	// making progress is allowed to finish while one that goes silent still dies
+	// in bounded time.
+	resp, err := c.DoStream(req)
 	if err != nil {
 		return err
 	}

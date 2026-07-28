@@ -56,6 +56,23 @@ type Client struct {
 // still fails in bounded time instead of hanging the reconciler forever.
 var blobStallTimeout = 60 * time.Second
 
+// NewForTest builds a Client shaped exactly like the production one — two
+// http.Clients sharing ONE transport, differing only in the whole-request
+// Timeout — for tests in OTHER packages.
+//
+// It exists because `stream` is unexported, so no package outside this one could
+// construct a Client capable of DoStream. That made the very regression this
+// guards untestable where it happens: bootupgrade downloaded an ~83MB UKI
+// through the capped client and could not be covered without reaching in here.
+func NewForTest(platformURL string, timeout time.Duration) *Client {
+	tr := &http.Transport{}
+	return &Client{
+		Client:      &http.Client{Transport: tr, Timeout: timeout},
+		stream:      &http.Client{Transport: tr},
+		PlatformURL: platformURL,
+	}
+}
+
 // SetBlobStallTimeoutForTest shortens the stall budget and returns a restore
 // func. A leaked override would let a genuinely hung transfer pin a reconciler
 // goroutine in production, so callers MUST defer the restore.
