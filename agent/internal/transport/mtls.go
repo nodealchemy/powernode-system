@@ -111,7 +111,25 @@ func LoadFromPKIDir(platformURL string, paths enroll.PKIPaths) (*Client, error) 
 			RootCAs:      pool,
 			MinVersion:   tls.VersionTLS13,
 		},
-		ResponseHeaderTimeout: 10 * time.Second,
+		// Bounds "the server accepted the connection and then never answered".
+		//
+		// 10s was right for the JSON control plane and WRONG for blobs. The
+		// platform's boot_image/download must pull an ~83MB UKI out of the OCI
+		// registry before it can send a single header, and on a first request for
+		// a NEW artifact that routinely exceeds 10s — so the boot-image upgrade
+		// died with `net/http: timeout awaiting response headers` before a byte
+		// moved. It was masked once: an earlier attempt succeeded only because a
+		// prior failed run had already staged that UKI platform-side, so headers
+		// came back instantly.
+		//
+		// Raising this does NOT loosen the control plane. Client (the JSON path)
+		// carries its own 30s whole-request Timeout, which fires first and keeps
+		// those calls tight; this bound only becomes reachable on the streaming
+		// client, which deliberately has no whole-request cap. Together with the
+		// body stall guard (blobStallTimeout) a streaming transfer is bounded at
+		// both ends: the server must START within this window, and must keep
+		// making progress once it has.
+		ResponseHeaderTimeout: 120 * time.Second,
 		// A custom Transport does NOT inherit DefaultTransport's 90s, it gets
 		// the zero value — which means pooled connections never expire. That is
 		// how a connection negotiated during the ~2-minute window before the

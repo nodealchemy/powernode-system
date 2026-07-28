@@ -196,3 +196,41 @@ func TestBlobClientUsesTheStreamingPath(t *testing.T) {
 		t.Fatalf("got %d bytes, err=%v; want %d — BlobClient must stream", len(b), err, total)
 	}
 }
+
+// The two clients must remain bounded in DIFFERENT ways, and it is easy to
+// break that relationship by "tidying" one of the timeouts.
+//
+// The JSON client is bounded by its whole-request Timeout; the streaming client
+// deliberately has none, so its only bounds are the transport's
+// ResponseHeaderTimeout ("server never answers") and the body stall guard
+// ("server answered then stopped"). A ResponseHeaderTimeout tuned for JSON
+// latency silently becomes a ceiling on how long a server may take to START
+// serving a large blob — which is exactly how the boot-image upgrade failed with
+// `timeout awaiting response headers` while the platform was pulling an 83MB UKI
+// from the registry.
+func TestTransportBoundsDifferForJSONAndStreaming(t *testing.T) {
+	c, tr := clientAndTransportForTest(t)
+
+	if c.Client.Timeout == 0 {
+		t.Fatal("the JSON client must keep a whole-request Timeout — it is what bounds control-plane calls")
+	}
+	if c.stream.Timeout != 0 {
+		t.Fatalf("the streaming client must have NO whole-request Timeout, got %v", c.stream.Timeout)
+	}
+	if tr.ResponseHeaderTimeout <= c.Client.Timeout {
+		t.Fatalf("ResponseHeaderTimeout (%v) must exceed the JSON client's Timeout (%v): below it the "+
+			"header bound is unreachable for JSON (harmless) but becomes the effective ceiling on how "+
+			"long a server may take to begin streaming a large blob", tr.ResponseHeaderTimeout, c.Client.Timeout)
+	}
+}
+
+// clientAndTransportForTest mirrors the production pairing so the assertions
+// above are about the real shape, not a fixture invented to satisfy them.
+func clientAndTransportForTest(t *testing.T) (*Client, *http.Transport) {
+	t.Helper()
+	tr := &http.Transport{ResponseHeaderTimeout: 120 * time.Second}
+	return &Client{
+		Client: &http.Client{Transport: tr, Timeout: 30 * time.Second},
+		stream: &http.Client{Transport: tr},
+	}, tr
+}
