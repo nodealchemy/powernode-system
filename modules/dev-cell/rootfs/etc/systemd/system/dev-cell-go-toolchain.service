@@ -1,0 +1,40 @@
+[Unit]
+Description=Dev-cell: provision the Go toolchain onto /persist for the verification gate
+Documentation=https://github.com/nodealchemy/powernode-platform
+# After the clone so agent/go.mod exists and the script can read the required
+# version from it; Wants (not Requires) because a missing/late clone is not
+# fatal — the script falls back to a pinned floor and a later run corrects it.
+After=network-online.target home-pnadmin.mount dev-cell-clone.service
+Wants=network-online.target dev-cell-clone.service
+ConditionPathExists=/usr/local/bin/dev-cell-go-toolchain.sh
+ConditionPathIsMountPoint=/persist
+# Skip once the toolchain is unpacked. The script itself re-checks the version
+# against agent/go.mod and replaces an out-of-date toolchain, so this condition
+# is only the cheap "normal boot does nothing" guard — deleting the directory is
+# how an operator forces a reinstall.
+ConditionPathExists=!/persist/dev/toolchain/go/bin/go
+# [Unit]-section keys on purpose: systemd parses start rate limiting on the
+# unit, not the service. Under [Service] they are silently dropped and the unit
+# crash-loops unbounded — the exact bug dev-cell-clone.service carried until
+# 2026-07-27.
+StartLimitIntervalSec=3600
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+# Downloading and unpacking ~270MB over a constrained link legitimately exceeds
+# the default 90s ExecStart timeout.
+TimeoutStartSec=0
+ExecStart=/usr/local/bin/dev-cell-go-toolchain.sh
+StandardOutput=journal
+StandardError=journal
+# No egress (or a go.dev blip) should not be permanent: retry a few times, then
+# leave it — /etc/profile.d/50-dev-cell-go.sh is conditional, so a box without
+# the toolchain still logs in cleanly and everything else keeps working.
+Restart=on-failure
+RestartSec=60s
+
+[Install]
+WantedBy=multi-user.target

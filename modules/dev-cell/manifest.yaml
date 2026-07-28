@@ -270,6 +270,17 @@ file_spec:
   - "/etc/systemd/system/multi-user.target.wants/dev-cell-git-keygen.service"
   - "/etc/systemd/system/multi-user.target.wants/dev-cell-clone.service"
 
+  # Go toolchain for the verification gate. Shipping platform updates from a
+  # dev-cell means running `cd agent && go test ./...` before pushing, but
+  # there is no runtime-go module and the composed root is ephemeral — so the
+  # toolchain is unpacked onto /persist once (dev-cell-go-toolchain.service)
+  # and put on PATH by the profile.d snippet on every login. Same
+  # rootfs-unit + wants-symlink shape as the clone service above.
+  - "/usr/local/bin/dev-cell-go-toolchain.sh"
+  - "/etc/systemd/system/dev-cell-go-toolchain.service"
+  - "/etc/systemd/system/multi-user.target.wants/dev-cell-go-toolchain.service"
+  - "/etc/profile.d/50-dev-cell-go.sh"
+
   # SSH host-key persistence (#43, "disposable not ephemeral"): the root
   # overlay upper is ephemeral tmpfs, so /etc/ssh/ssh_host_*_key otherwise
   # regenerates every boot — the operator's client hits "REMOTE HOST
