@@ -398,8 +398,26 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// present this boot (e.g. a non-QEMU/cloud node with no instance_name
 	// fw-cfg, where the hostname is set by cloud-init and left untouched here).
 	if name := desiredHostname(); name != "" {
-		if _, err := etcidentity.ApplyHostname("", name, true); err != nil {
+		changed, err := etcidentity.ApplyHostname("", name, true)
+		switch {
+		case err != nil:
 			r.cfg.OnError("reconciler:hostname_write", err)
+		case changed:
+			// The announced-hostname drop-in ApplyHostname just wrote only
+			// applies to the NEXT DHCP request, and this boot's lease was
+			// already taken in the initramfs while the hostname was still
+			// "localhost". On a fleet whose DHCP server publishes DNS from the
+			// client-supplied hostname, the node's own record therefore stays
+			// wrong until the lease renews — an hour here — and that is exactly
+			// the window in which the agent must heartbeat to bless a boot slot,
+			// promote a pending composition and sync operator SSH keys.
+			//
+			// `changed` is true once per boot (the composed root is fresh, so
+			// the drop-in is always absent on the first tick), which is the
+			// correct cadence: re-announce immediately, then never churn.
+			if rerr := RenewDHCPLeases(ctx, r.cfg.MountRunner); rerr != nil {
+				r.cfg.OnError("reconciler:dhcp_renew", rerr)
+			}
 		}
 	}
 
