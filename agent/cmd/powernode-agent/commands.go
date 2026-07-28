@@ -8,13 +8,16 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1734,6 +1737,7 @@ func lkgCmd() *cobra.Command {
 // the same code the boot path uses accepted the file.
 func lkgValidateCmd() *cobra.Command {
 	var path, cacheDir string
+	var verify bool
 	c := &cobra.Command{
 		Use:   "validate",
 		Short: "Check that the frozen boot-LKG is well-formed and every blob it needs is cached",
@@ -1776,14 +1780,85 @@ func lkgValidateCmd() *cobra.Command {
 				return fmt.Errorf("%d blob(s) missing but the validator passed — "+
 					"validator and cache check disagree, do NOT trust this LKG", missing)
 			}
+
+			// PRESENCE IS NOT INTEGRITY. ValidateBootLKG only os.Stat()s each blob,
+			// and the loop above does the same, so a blob that EXISTS but whose
+			// bytes are wrong passes both — while the boot path re-hashes, misses,
+			// and tries to pull from a platform that is down pre-pivot. On a
+			// self-hosted control plane that is a brick.
+			//
+			// This is not hypothetical. On 2026-07-27 a blob seeded into ops-hub's
+			// cache while the guest also had /persist mounted landed as a 0-byte
+			// file in the guest's view (it hashed correctly from the host's, so the
+			// tooling reported success). The LKG then pointed at a truncated blob
+			// and nothing could detect it short of a reboot. --verify is the check
+			// that would have caught it.
+			//
+			// Opt-in because it reads every blob — gigabytes on a full node — and
+			// the cheap structural check is the common case.
+			if verify {
+				fmt.Fprintln(out, "\nverifying blob CONTENTS (--verify) — hashing each cached blob:")
+				bad := 0
+				for _, m := range lkg.Modules {
+					if !m.HasDataFile {
+						continue
+					}
+					p := cachePath(m.Digest)
+					got, size, hashErr := hashFileSHA256(p)
+					switch {
+					case hashErr != nil:
+						fmt.Fprintf(out, "  UNREADABLE %-32s %v\n", m.Name, hashErr)
+						bad++
+					case got != m.Digest:
+						fmt.Fprintf(out, "  CORRUPT    %-32s %d bytes\n", m.Name, size)
+						fmt.Fprintf(out, "             %-32s want %s\n", "", m.Digest)
+						fmt.Fprintf(out, "             %-32s got  %s\n", "", got)
+						bad++
+					default:
+						fmt.Fprintf(out, "  ok         %-32s %d bytes\n", m.Name, size)
+					}
+				}
+				if bad > 0 {
+					return fmt.Errorf("%d blob(s) FAILED content verification — this LKG would "+
+						"pass the structural check and still fail to boot, because the boot path "+
+						"re-hashes and treats a mismatch as a cache miss. Re-seed the blob(s) "+
+						"above before trusting this composition", bad)
+				}
+				fmt.Fprintln(out, "  all blob contents match their recorded digests.")
+			}
+
 			fmt.Fprintln(out, "\nVALID — the boot path would accept this composition,")
 			fmt.Fprintln(out, "and every module blob it needs is already in the cache.")
+			if !verify {
+				fmt.Fprintln(out, "NOTE: blob PRESENCE was checked, not their contents. Pass --verify")
+				fmt.Fprintln(out, "to re-hash each blob; a truncated or partially-written blob passes")
+				fmt.Fprintln(out, "this check and still fails the boot.")
+			}
 			return nil
 		},
 	}
 	c.Flags().StringVar(&path, "path", runtime.BootLKGPath, "frozen LKG path")
 	c.Flags().StringVar(&cacheDir, "cache-dir", "/persist/cache/modules", "module erofs blob cache")
+	c.Flags().BoolVar(&verify, "verify", false,
+		"re-hash every cached blob against its recorded digest (slow; catches truncated or corrupt blobs that a presence check cannot)")
 	return c
+}
+
+// hashFileSHA256 returns "sha256:<hex>" and the byte count, matching the digest
+// form the LKG stores.
+func hashFileSHA256(path string) (string, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	n, err := io.Copy(h, f)
+	if err != nil {
+		return "", n, err
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
 // retryPendingComposeCmd gives a staged-but-exhausted composition one more
