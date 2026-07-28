@@ -51,7 +51,8 @@ description: >
   root. Composed onto a template ALONGSIDE claude-tmux (Claude Code CLI +
   the credential-fetch script this module reuses for its own headless
   ANTHROPIC_API_KEY), runtime-ruby (Ruby/bundler for scripts/validate.sh
-  and the test-DB prep), and postgres-primary (local Postgres the prepared
+  and the test-DB prep), runtime-go (the Go toolchain the agent half of the
+  verification gate needs), and postgres-primary (local Postgres the prepared
   test DB lives on, and the psql/createuser/pg_isready this module's own
   provisioning uses) — this module ships only the dev-workspace
   provisioning + the executor-loop pieces, not those runtimes themselves.
@@ -269,17 +270,6 @@ file_spec:
   - "/etc/systemd/system/dev-cell-clone.service"
   - "/etc/systemd/system/multi-user.target.wants/dev-cell-git-keygen.service"
   - "/etc/systemd/system/multi-user.target.wants/dev-cell-clone.service"
-
-  # Go toolchain for the verification gate. Shipping platform updates from a
-  # dev-cell means running `cd agent && go test ./...` before pushing, but
-  # there is no runtime-go module and the composed root is ephemeral — so the
-  # toolchain is unpacked onto /persist once (dev-cell-go-toolchain.service)
-  # and put on PATH by the profile.d snippet on every login. Same
-  # rootfs-unit + wants-symlink shape as the clone service above.
-  - "/usr/local/bin/dev-cell-go-toolchain.sh"
-  - "/etc/systemd/system/dev-cell-go-toolchain.service"
-  - "/etc/systemd/system/multi-user.target.wants/dev-cell-go-toolchain.service"
-  - "/etc/profile.d/50-dev-cell-go.sh"
 
   # SSH host-key persistence is NOT shipped here any more. base-os-ubuntu-noble
   # ships /usr/sbin/powernode-ssh-hostkeys (ff844e0f), generalised FROM the
@@ -699,6 +689,11 @@ dependencies:
 # (node + npm on PATH, for `npm ci`, the mcp-proxy, and validate.sh's
 # `npx tsc` — Noble's apt node is v18/npm-less and V8-crashes here, so
 # shipping Node 24 via runtime-node is load-bearing, not a convenience),
+# runtime-go (go + gofmt on PATH via /usr/local/bin symlinks, for the Go
+# half of the verification gate: `cd agent && go test ./...`. Noble's apt
+# Go is 1.22, BELOW the `go 1.25.0` directive in agent/go.mod, so the
+# distro package cannot build the agent at all — runtime-go is likewise
+# load-bearing, not a convenience),
 # and postgres-primary (a local Postgres on 127.0.0.1:5432, trust-auth,
 # matching server/config/database.yml.example's defaults) are co-assigned
 # on the same NodeTemplate. dev-cell-provision.sh's own preflight step

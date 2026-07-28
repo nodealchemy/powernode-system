@@ -89,12 +89,22 @@ chown -R "$PNAGENT_USER:$PNAGENT_USER" "$STATE_DIR"
 # anyway since this whole privilege-separation design depends on it being
 # present. Fail here with a clear message instead of a cryptic "command
 # not found" deep inside a later phase if any is missing.
-for cmd in bundle npm node psql pg_isready createuser runuser; do
+for cmd in bundle npm node go psql pg_isready createuser runuser; do
   command -v "$cmd" >/dev/null 2>&1 || {
-    log "missing '$cmd' — is this instance's NodeTemplate missing a co-required module (runtime-ruby / runtime-node / postgres-primary), or util-linux broken?"
+    log "missing '$cmd' — is this instance's NodeTemplate missing a co-required module (runtime-ruby / runtime-node / runtime-go / postgres-primary), or util-linux broken?"
     exit 1
   }
 done
+# Assert the Go toolchain satisfies agent/go.mod's directive (runtime-go ships
+# 1.26.x; Noble's apt Go is 1.22). go(1) refuses to build when the toolchain is
+# OLDER than the `go` directive, so a stale toolchain fails the Go half of
+# scripts/validate.sh with a confusing compile error deep in the run. Same
+# shape, and same reasoning, as the Node 24 assertion below.
+GO_MINOR=$(go version 2>/dev/null | sed -n 's/^go version go1\.\([0-9]\{1,\}\).*/\1/p')
+if [ "${GO_MINOR:-0}" -lt 25 ]; then
+  log "go is 'go1.${GO_MINOR:-<none>}' (<1.25) — the runtime-go module is missing from this NodeTemplate or is stale; agent/go.mod declares go 1.25.0 and go(1) will not build below its own directive."
+  exit 1
+fi
 # Assert Node 24+ (runtime-node), not Noble's stale apt v18: a bare `command -v
 # node` passes on v18, but the frontend needs engines >=24.9, and v18 lacks npm
 # and SIGABRTs on V8 snapshot init in this pivot env. `node --version` on a

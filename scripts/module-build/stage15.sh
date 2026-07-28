@@ -331,6 +331,48 @@ case "$MODULE" in
     echo "$NODE_OUT" | grep -q "v${NODE_VER}" || { echo "[stage-1.5] FATAL: expected node v${NODE_VER}, got: $NODE_OUT"; exit 1; }
     test -x /tmp/fat/usr/local/bin/npm || { echo "[stage-1.5] FATAL: npm missing from node tarball"; exit 1; }
     ;;
+  runtime-go)
+    # Go toolchain, fetched + sha256-pinned here so it ships INSIDE the signed
+    # erofs. Same hermetic pattern as runtime-node above. Deliberately not an
+    # apt package: noble ships Go 1.22, below the `go 1.25.0` directive in
+    # extensions/system/agent/go.mod, and go(1) refuses to build when the
+    # toolchain is older than the directive.
+    GO_VER=$(jq -r '.build.go_version // "1.26.5"' /tmp/manifest.json)
+
+    # Official checksums from https://go.dev/dl/?mode=json for go${GO_VER}.
+    # Bump BOTH arches alongside build.go_version on any version change.
+    case "${ARCH:-amd64}" in
+      amd64) GO_SHA256=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053 ;;
+      arm64) GO_SHA256=fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49 ;;
+      *) echo "[stage-1.5] FATAL: no pinned go sha256 for ARCH=${ARCH:-amd64}"; exit 1 ;;
+    esac
+
+    curl -fsSL "https://go.dev/dl/go${GO_VER}.linux-${ARCH:-amd64}.tar.gz" -o /tmp/go.tar.gz
+    echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c -
+
+    # Upstream tarball contains a top-level go/ directory: extracting to
+    # /usr/local yields the canonical /usr/local/go layout. NO --strip-components
+    # here (unlike node, whose tarball is node-vX/bin/... and must be flattened).
+    mkdir -p /tmp/fat/usr/local
+    tar -xzf /tmp/go.tar.gz -C /tmp/fat/usr/local
+
+    # Symlink the two user-facing entrypoints onto the default PATH so no
+    # profile.d wiring is needed anywhere downstream. Relative targets so the
+    # links resolve identically in the builder chroot and on the composed node.
+    mkdir -p /tmp/fat/usr/local/bin
+    ln -sf ../go/bin/go    /tmp/fat/usr/local/bin/go
+    ln -sf ../go/bin/gofmt /tmp/fat/usr/local/bin/gofmt
+
+    # Verify what actually shipped, on the runner (amd64-only exec, same caveat
+    # as the act_runner arm: a cross-arch fetch is covered by the sha256 above).
+    if [ "${ARCH:-amd64}" = "amd64" ]; then
+      GO_OUT=$(/tmp/fat/usr/local/go/bin/go version)
+      echo "[stage-1.5] go: $GO_OUT"
+      echo "$GO_OUT" | grep -q "go${GO_VER}" || { echo "[stage-1.5] FATAL: expected go${GO_VER}, got: $GO_OUT"; exit 1; }
+    fi
+    test -x /tmp/fat/usr/local/go/bin/gofmt || { echo "[stage-1.5] FATAL: gofmt missing from go tarball"; exit 1; }
+    ;;
+
   powernode-hub-backend)
     mkdir -p /tmp/fat/opt/powernode
     rsync -a \

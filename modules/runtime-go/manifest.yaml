@@ -1,0 +1,59 @@
+schema_version: 1
+
+name: runtime-go
+display_name: "Powernode Base Go Runtime"
+description: >
+  Go 1.26.5 (official upstream linux tarball) installed to /usr/local/go, with
+  go + gofmt symlinked into /usr/local/bin so they land on the default PATH
+  with no profile wiring. Sibling of runtime-ruby and runtime-node, completing
+  the language-runtime family: a node that needs a Go toolchain composes this
+  and gets `capability:runtime.go` rather than fetching a toolchain itself.
+
+  WHY A MODULE AND NOT A BOOT-TIME INSTALL. dev-cell briefly shipped a unit that
+  downloaded the Go tarball from go.dev on first boot and unpacked it to
+  /persist. That was wrong on three counts: it verified no checksum or
+  signature, it made a boot depend on a third party, and it simply cannot work
+  on a node with a restricted egress policy. Fetching in CI Stage 1.5 against a
+  pinned sha256 puts the toolchain inside a cosign-signed, fs-verity-verified
+  erofs that the node mounts from its local cache — the same treatment ruby,
+  node, traefik, cosign and act_runner already get.
+license: "BSD-3-Clause"
+category: language-runtime
+
+# Nothing from apt. Ubuntu noble ships Go 1.22, which is BELOW the floor the
+# agent's go.mod declares (go 1.25.0) — `go` refuses to build when the
+# toolchain is older than the directive, so the distro package is unusable
+# here regardless of size. The whole toolchain comes from Stage 1.5.
+package_spec: []
+
+# Go unpacks to /usr/local/go; the bin symlinks land in /usr/local/bin. Carving
+# all of /usr/local matches runtime-node's file_spec exactly.
+file_spec:
+  - "/usr/local/**"
+
+mask: []
+dependency_spec: []
+protected_spec: []
+
+reboot_required: false
+
+dependencies:
+  requires:
+    - "capability:os.userland"
+  provides:
+    - runtime.go
+
+services: []
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"
+  # Fetched + sha256-verified in Stage 1.5 (see the runtime-go case in
+  # .gitea/workflows -> scripts/module-build/stage15.sh). Bump this alongside
+  # BOTH pinned arch sha256 values in that step; they are the official
+  # checksums published at https://go.dev/dl/?mode=json.
+  #
+  # Floor, not a ceiling: extensions/system/agent/go.mod declares `go 1.25.0`
+  # and Go is backward compatible, so any toolchain >= that works. Keep this at
+  # or above the go.mod directive when bumping either one.
+  go_version: "1.26.5"
