@@ -42,6 +42,7 @@ module Ai
         "system_list_modules"           => "system.modules.read",
         "system_get_module"             => "system.modules.read",
         "system_list_module_versions"   => "system.modules.read",
+        "system_module_publish_target"  => "system.modules.read",
         "system_drift_report"           => "system.node_instances.read",
         "system_list_tasks"             => "system.infra_tasks.read",
         "system_get_task"               => "system.infra_tasks.read",
@@ -238,6 +239,8 @@ module Ai
             instance_id: { type: "string", required: false },
             module_id: { type: "string", required: false },
             module_version_id: { type: "string", required: false },
+            module_name: { type: "string", required: false, description: "Module slug as CI publishes it (system_module_publish_target)" },
+            gitea_repo: { type: "string", required: false, description: "OCI repo full name; defaults to powernode/<module_name> (system_module_publish_target)" },
             target_state: { type: "string", required: false, description: "Module promotion target: staging|blessed|live|retired" },
             provider_id: { type: "string", required: false },
             provider_region_id: { type: "string", required: false },
@@ -1261,6 +1264,7 @@ module Ai
         when "system_cancel_task"              then cancel_task(params)
         when "system_abort_task"               then abort_task(params)
         when "system_module_diff"              then module_diff(params)
+        when "system_module_publish_target"    then module_publish_target(params)
         when "system_deploy_platform"          then deploy_platform(params)
         # Storage volume CRUD (MCP.1) — wraps ProviderVolume + ProviderVolumeType
         when "system_list_volumes"             then list_volumes(params)
@@ -2093,6 +2097,58 @@ module Ai
       end
 
       # === Module diff ===
+
+      # Read-only preview of where a CI publish for `module_name` would land,
+      # and whether the platform would then accept it.
+      #
+      # Exists because diagnosing that took a live 422, a CI log, and a hand
+      # query against the platform's database. The failure was that a one-off
+      # module held the canonical OCI repo binding, the resolver matched the
+      # binding before the name, and ManifestImportService then refused the
+      # name mismatch — a chain visible nowhere until it failed.
+      #
+      # Deliberately does NOT run the resolver's auto-create branch: a preview
+      # that creates a NodeModule as a side effect is not a preview.
+      def module_publish_target(params)
+        module_name = params[:module_name].to_s
+        return error_result("module_name required") if module_name.blank?
+
+        gitea_repo = params[:gitea_repo].presence || "powernode/#{module_name}"
+
+        by_name = @account.system_node_modules.find_by(name: module_name)
+        by_repo = @account.system_node_modules.find_by(gitea_repo_full_name: gitea_repo)
+
+        # The resolver matches by name; the importer then requires the stored
+        # name to equal the manifest's. So a publish is accepted iff the target
+        # is the name match (or a fresh module created under that same name).
+        would_create = by_name.nil?
+        foreign_binding = by_repo && by_repo.name != module_name
+
+        success_result(
+          module_name:      module_name,
+          gitea_repo:       gitea_repo,
+          resolves_to:      by_name && { id: by_name.id, name: by_name.name,
+                                         gitea_repo_full_name: by_name.gitea_repo_full_name,
+                                         current_version_number: by_name.current_version_number },
+          would_auto_create: would_create,
+          # True whenever the publish can proceed: either an existing module
+          # whose name matches, or a new one created with that name.
+          would_be_accepted: true,
+          repo_binding_holder: by_repo && { id: by_repo.id, name: by_repo.name },
+          foreign_repo_binding: foreign_binding.present?,
+          advisory: if foreign_binding
+                      "#{by_repo.name} holds #{gitea_repo} but publishes for " \
+                      "#{module_name.inspect} resolve by name to " \
+                      "#{by_name ? by_name.name : "a module that would be auto-created"}. " \
+                      "The binding is stale or belongs on the published module — build " \
+                      "dispatch and manifest fetch will fall back to a derived repo name " \
+                      "until it is cleared or rebound."
+                    elsif would_create
+                      "No module named #{module_name.inspect} exists yet; a publish would " \
+                      "create one on this account."
+                    end
+        )
+      end
 
       def module_diff(params)
         ver_a = ::System::NodeModuleVersion

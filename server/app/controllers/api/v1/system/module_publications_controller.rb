@@ -81,7 +81,8 @@ module Api
           # where 9 renamed modules triggered notify 404s until
           # /tmp/ops-create-renamed-modules.rb was run by hand).
           gitea_repo = "powernode/#{module_name}"
-          node_module = ::System::ModulePublishTargetResolver.new.find_or_create_publish_target(
+          resolver = ::System::ModulePublishTargetResolver.new
+          node_module = resolver.find_or_create_publish_target(
             gitea_repo, module_name, account: @current_ci_worker.account
           )
           unless node_module
@@ -166,7 +167,13 @@ module Api
             manifest_applied:       manifest_import_error.nil?,
             manifest_import_error:  manifest_import_error,
             oci_digest_resolved:    version.artifacts.dig("erofs", "oci_digest").present?,
-            promoted_to_current:    node_module.reload.current_version_id == version.id
+            promoted_to_current:    node_module.reload.current_version_id == version.id,
+            # Resolution advisories (e.g. another module holds this repo's OCI
+            # binding) travel back to CI so they land in the build log. Logged
+            # server-side only, they are invisible to the person whose publish
+            # they concern — the failure mode that kept ops-hub broken while its
+            # CI output pointed at TLS.
+            resolver_warnings:      resolver.warnings.presence
           )
         end
 

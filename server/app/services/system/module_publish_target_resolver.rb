@@ -8,6 +8,17 @@ module System
   # move — same lookup chain, same publisher-account/category/platform
   # heuristics, same RecordInvalid-swallowing auto-create.
   class ModulePublishTargetResolver
+    # Advisories raised while resolving, for the caller to surface to whoever
+    # triggered the publish. Rails.logger alone is not enough: a warning that
+    # only reaches the server log is invisible to CI, and that invisibility is
+    # exactly what let ops-hub publish nothing for days while the run output
+    # blamed TLS. Anything worth logging here is worth putting in the response.
+    attr_reader :warnings
+
+    def initialize
+      @warnings = []
+    end
+
     # Find the NodeModule receiving this publish; create one if absent.
     #
     # ACCOUNT-SCOPED (multi-tenant safe). The module registry is owned
@@ -94,13 +105,15 @@ module System
       holder = account.system_node_modules.find_by(gitea_repo_full_name: gitea_repo)
       return if holder.nil? || holder.name == module_name
 
-      Rails.logger.warn(
-        "[ModulePublishTargetResolver] #{holder.name} (#{holder.id}) holds the OCI repo " \
-        "binding #{gitea_repo}, but this publish is for #{module_name.inspect} — resolved " \
-        "by name instead. The binding is stale or belongs on the published module; clear it " \
-        "or rebind it, or build dispatch/manifest fetch for #{module_name.inspect} will keep " \
-        "falling back to a derived repo name."
-      )
+      message =
+        "#{holder.name} (#{holder.id}) holds the OCI repo binding #{gitea_repo}, but this " \
+        "publish is for #{module_name.inspect} — resolved by name instead. The binding is " \
+        "stale or belongs on the published module; clear it or rebind it, or build dispatch " \
+        "and manifest fetch for #{module_name.inspect} will keep falling back to a derived " \
+        "repo name."
+
+      @warnings << message
+      Rails.logger.warn("[ModulePublishTargetResolver] #{message}")
     end
 
     # Category for auto-created NodeModules. campaign 019f6084 retired the
