@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
 	"github.com/nodealchemy/powernode-system/agent/internal/bootupgrade"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
@@ -59,10 +58,16 @@ type BootConfirmer struct {
 // Run gates on health, then confirms. It returns once the boot is confirmed, or
 // when ctx ends.
 func (c *BootConfirmer) Run(ctx context.Context) error {
-	// Nothing in flight is the overwhelmingly common case — do not probe, do not
+	// Nothing to do is the overwhelmingly common case — do not probe, do not
 	// touch the ESP, do not hold anything. Cheap enough to re-check rather than
 	// assume, since a task-lease upgrade can set Pending after boot.
-	if bootslots.Load().Pending == "" {
+	//
+	// Ask bootupgrade rather than testing Pending here. "Pending is empty" is NOT
+	// "nothing to do": a boot onto a slot whose earlier attempt fell back arrives
+	// with Pending already cleared and still needs blessing, and testing Pending
+	// at this gate made that entire path unreachable — the bless logic would sit
+	// in ConfirmBoot and never once run. (ops-hub 2026-07-28, blessed by hand.)
+	if !bootupgrade.ConfirmNeeded(c.BootedGitSHA) {
 		return nil
 	}
 

@@ -45,6 +45,22 @@ type State struct {
 	// when no upgrade is in flight), and PendingSHA the target it carries.
 	Pending    string `json:"pending,omitempty"`
 	PendingSHA string `json:"pending_sha,omitempty"`
+	// LastTargetSHA is the sha of the most recent upgrade we ATTEMPTED, and it
+	// deliberately outlives Pending.
+	//
+	// Pending is cleared the moment a boot falls back to the other slot — correct
+	// for that boot, but the written UKI stays on the ESP with tries remaining.
+	// A LATER boot onto that slot then has no Pending record, so ConfirmBoot's
+	// cheap pre-check returns immediately and the healthy slot can never be
+	// blessed: the node runs the new image and silently reverts on the next
+	// reboot. Observed on ops-hub 2026-07-28, where it had to be blessed by hand.
+	//
+	// Keeping the target sha lets ConfirmBoot recognise "we are running an image
+	// we were TRYING to install" from observable state alone. It is deliberately
+	// narrow: without it, reconciliation would bless any unblessed slot that
+	// happens to boot healthy, which would also make a deliberate one-shot test
+	// boot permanent and defeat try-once-then-revert.
+	LastTargetSHA string `json:"last_target_sha,omitempty"`
 }
 
 // Other returns the opposite slot.

@@ -3,12 +3,14 @@ package runtime
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
+	"github.com/nodealchemy/powernode-system/agent/internal/espwrite"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
@@ -143,6 +145,63 @@ func TestBootConfirmer_NoPendingUpgradeDoesNotProbe(t *testing.T) {
 	if prober.probes() != 0 {
 		t.Errorf("probed %d times with no upgrade in flight", prober.probes())
 	}
+}
+
+// The gate that kept the reconciliation path from EVER running.
+//
+// A boot onto a slot whose earlier attempt fell back arrives with Pending
+// already cleared, so a `Pending == ""` test here returns before probing and
+// ConfirmBoot is never called — the bless logic downstream is unreachable dead
+// code, and the healthy slot silently reverts on the next reboot. This asserts
+// the gate lets such a boot through by watching for probes, which is the only
+// externally visible evidence that Run entered the loop at all.
+func TestBootConfirmer_ReconciliationOnlyBootStillProbes(t *testing.T) {
+	restore := bootslots.SetStatePathForTest(filepath.Join(t.TempDir(), "boot-slot.json"))
+	defer restore()
+	if err := bootslots.Update(func(st *bootslots.State) error {
+		st.Active = "a"
+		st.LastTargetSHA = "1111111111111111111111111111111111111111"
+		return nil // note: NO Pending — an earlier attempt already cleared it
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// systemd-boot says we are running slot b, i.e. the slot we were installing.
+	ev := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(ev, "LoaderEntrySelected-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"),
+		utf16leEFIVar("powernode-b+1-2.efi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defer bootslots.SetEfivarsDirForTest(ev)()
+	// Keep every ESP operation inside a temp dir: this host may well be UEFI, and
+	// a confirm reaching the real ESP would rewrite this machine's boot entries.
+	defer espwrite.SetESPMountForTest(t.TempDir())()
+
+	prober := &scriptedProber{results: []bool{true}}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	c := &BootConfirmer{
+		Prober:       prober,
+		PollInterval: 5 * time.Millisecond,
+		Runner:       &recordingRunner{},
+		BootedGitSHA: "1111111111111111111111111111111111111111",
+	}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if prober.probes() == 0 {
+		t.Fatal("returned without probing — a boot needing reconciliation never reaches ConfirmBoot, " +
+			"so the bless can never happen and the node reverts on its next reboot")
+	}
+}
+
+// utf16leEFIVar renders an EFI variable body: 4-byte attribute prefix + UTF-16LE.
+func utf16leEFIVar(sv string) []byte {
+	b := []byte{7, 0, 0, 0}
+	for _, r := range sv {
+		b = append(b, byte(r), byte(r>>8))
+	}
+	return append(b, 0, 0)
 }
 
 // Default gate is 3 consecutive, matching the LKG capturer's.

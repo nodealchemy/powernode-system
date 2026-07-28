@@ -17,6 +17,7 @@ func pendingState(t *testing.T) {
 		s.Active = "a"
 		s.Pending = "b"
 		s.PendingSHA = "1111111111111111111111111111111111111111"
+		s.LastTargetSHA = "1111111111111111111111111111111111111111"
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -76,5 +77,20 @@ func TestAbandonBootImage_NoPendingIsANoOp(t *testing.T) {
 	out := runAbandon(t, "--yes")
 	if !strings.Contains(out, "nothing to abandon") {
 		t.Errorf("expected a no-op message, got:\n%s", out)
+	}
+}
+
+// Abandoning must also drop the recorded target sha. It deliberately outlives
+// Pending everywhere else — that is what lets a later healthy boot bless a slot
+// whose first attempt fell back — but here the operator has said the attempt is
+// over. Leaving it behind lets the reconciliation path bless the abandoned slot
+// on a subsequent boot, silently undoing this command.
+func TestAbandonBootImage_AlsoClearsTheRecordedTarget(t *testing.T) {
+	pendingState(t)
+	runAbandon(t, "--yes")
+
+	if st := bootslots.Load(); st.LastTargetSHA != "" {
+		t.Fatalf("abandon left the target sha behind (%q) — a later boot onto slot %q would "+
+			"bless the very upgrade the operator just abandoned", st.LastTargetSHA, "b")
 	}
 }

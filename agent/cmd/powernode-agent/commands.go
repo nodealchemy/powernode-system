@@ -1694,6 +1694,13 @@ func abandonBootImageCmd() *cobra.Command {
 			if err := bootslots.Update(func(s *bootslots.State) error {
 				s.Pending = ""
 				s.PendingSHA = ""
+				// LastTargetSHA too, and this is NOT optional. It normally outlives
+				// Pending on purpose, so that a later healthy boot onto the written
+				// slot can still be blessed. "Abandon" is the operator saying that
+				// attempt is over — leaving the target behind would let the
+				// reconciliation path bless the very slot they just abandoned,
+				// silently undoing this command a boot or two later.
+				s.LastTargetSHA = ""
 				return nil
 			}); err != nil {
 				return fmt.Errorf("clear pending state: %w", err)

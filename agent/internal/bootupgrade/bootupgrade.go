@@ -292,6 +292,10 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	if err := applyDeps.updateState(func(st *bootslots.State) error {
 		st.Pending = inactive
 		st.PendingSHA = o.TargetGitSHA
+		// Outlives Pending on purpose — see State.LastTargetSHA. This is what lets
+		// a healthy boot onto this slot still bless it after an earlier attempt
+		// fell back and cleared Pending.
+		st.LastTargetSHA = o.TargetGitSHA
 		return nil
 	}); err != nil {
 		return "", fmt.Errorf("record pending slot %s: %w", inactive, err)
@@ -301,6 +305,122 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 		return "", fmt.Errorf("bootctl set-oneshot %s: %w", entry, err)
 	}
 	return inactive, nil
+}
+
+// reconcileOwed is the cheap, side-effect-free gate for the reconciliation path
+// below: is this boot one we should bless despite having no Pending record?
+// It reads state and one EFI variable — never the ESP.
+//
+// Split out and shared by all three callers (the caller's pre-check via
+// ConfirmNeeded, the reconcile entry, and its re-check under the lock) so the
+// conditions cannot drift apart. A gate that disagrees with its own pre-check is
+// how this path becomes unreachable dead code.
+func reconcileOwed(bootedGitSHA string, st bootslots.State) (slot string, owed bool) {
+	// Pending has its own path; empty/mismatched sha means we are not running an
+	// image we were trying to install, and there is nothing to reconcile.
+	if st.Pending != "" || st.LastTargetSHA == "" ||
+		bootedGitSHA == "" || bootedGitSHA != st.LastTargetSHA {
+		return "", false
+	}
+	booted := bootslots.BootedSlot()
+	if booted == "" || booted == st.Active {
+		return "", false // undeterminable, or already the slot we believe is active
+	}
+	return booted, true
+}
+
+// ConfirmNeeded reports whether ConfirmBoot has anything to do this boot.
+//
+// It exists because the caller (runtime.BootConfirmer) short-circuits on
+// `Pending == ""` before it will probe health at all — so a reconciliation-only
+// boot would never reach ConfirmBoot, and the whole path below would be
+// unreachable. The caller must ask THIS, not test Pending itself.
+func ConfirmNeeded(bootedGitSHA string) bool {
+	st := bootslots.Load()
+	if st.Pending != "" {
+		return true
+	}
+	_, owed := reconcileOwed(bootedGitSHA, st)
+	return owed
+}
+
+// reconcileUnblessedBootedSlot blesses a slot we are demonstrably running and
+// were demonstrably trying to install, when no Pending record survives to drive
+// the normal path.
+//
+// Every precondition is derived from OBSERVABLE state, because the remembered
+// state is precisely what is missing:
+//   - systemd-boot reports which slot booted,
+//   - the running image reports its git sha,
+//   - the ESP says whether that slot still carries a boot counter (unblessed).
+//
+// It is deliberately gated on LastTargetSHA rather than blessing any unblessed
+// slot that happens to boot healthy. Without that gate an operator's deliberate
+// one-shot test boot would become permanent, defeating try-once-then-revert —
+// the counter exists to make a trial a trial. Only an image we actually
+// attempted to install qualifies.
+//
+// Caller contract: ConfirmBoot runs only after N consecutive PROVEN-healthy
+// probes, so reaching here means this boot is healthy.
+//
+// Failures AFTER the gate are returned, not swallowed: the caller keeps ticking
+// on an error, and a busy or momentarily unreadable ESP is exactly the transient
+// that deserves a retry. Swallowing them would spend the node's one chance per
+// boot on a transient and leave a healthy slot to revert.
+func reconcileUnblessedBootedSlot(ctx context.Context, r mount.Runner, bootedGitSHA string, st bootslots.State) error {
+	booted, owed := reconcileOwed(bootedGitSHA, st)
+	if !owed {
+		return nil
+	}
+
+	bootMu.Lock()
+	defer bootMu.Unlock()
+
+	// Re-run the gate against freshly-read state. The pre-check ran UNLOCKED, and
+	// an Apply that won the race in between has already cleared this slot's
+	// family, written a brand-new UKI into it, and recorded a new target (leaving
+	// Pending set, which the gate rejects). Blessing on the stale snapshot would
+	// strip the boot counter from an image that has never booted — promoting it as
+	// though THIS boot had proven it, and destroying the try-once guarantee for
+	// the upgrade now in flight.
+	if again, still := reconcileOwed(bootedGitSHA, bootslots.Load()); !still || again != booted {
+		return nil
+	}
+
+	base := bootslots.EntryBase(booted)
+	good, err := espwrite.SlotGoodExists(ctx, r, base)
+	if err != nil {
+		return fmt.Errorf("reconcile slot %s: read ESP: %w", booted, err)
+	}
+	if !good {
+		if err := espwrite.BlessSlot(ctx, r, base); err != nil {
+			return fmt.Errorf("reconcile slot %s: bless: %w", booted, err)
+		}
+		ok, serr := espwrite.SlotGoodExists(ctx, r, base)
+		if serr != nil {
+			return fmt.Errorf("reconcile slot %s: re-read ESP: %w", booted, serr)
+		}
+		if !ok {
+			return fmt.Errorf("reconcile slot %s: good file missing after bless", booted)
+		}
+		// Order matters, as in the Pending path: never set-default a name that does
+		// not resolve to a file.
+		if err := r.Run(ctx, "bootctl", "set-default", base+".efi"); err != nil {
+			return fmt.Errorf("reconcile slot %s: bootctl set-default: %w", booted, err)
+		}
+		// Best-effort, for the same reason as the Pending path: the slot is already
+		// blessed and promoted in NVRAM, so failing here would re-run the whole
+		// reconcile every tick over a convenience file.
+		_ = espwrite.SetLoaderDefault(ctx, r, base)
+	}
+	// `good` already true means the slot was blessed on an earlier attempt (or by
+	// an operator) and only the state file lagged — record it and stop.
+
+	return bootslots.Update(func(s *bootslots.State) error {
+		s.Active = booted
+		s.LastTargetSHA = ""
+		return nil
+	})
 }
 
 // ConfirmBoot is called once per boot after the FIRST successful heartbeat
@@ -322,8 +442,15 @@ func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error
 	// Cheap pre-check OUTSIDE any write path: the overwhelmingly common case is
 	// "no upgrade in flight", and that must touch nothing at all — no lock, no
 	// state file creation, no ESP access.
-	if bootslots.Load().Pending == "" {
-		return nil
+	if st0 := bootslots.Load(); st0.Pending == "" {
+		// No upgrade in flight — but that is NOT the same as nothing to do. A
+		// confirm that saw a fallback clears Pending while the written UKI stays on
+		// the ESP with tries remaining, so a LATER boot onto that slot arrives here
+		// with no Pending record and, before this path existed, returned
+		// immediately. The node then ran the new image healthily and silently
+		// reverted on the next reboot, because the slot was never blessed.
+		// Observed on ops-hub 2026-07-28 and blessed by hand.
+		return reconcileUnblessedBootedSlot(ctx, r, bootedGitSHA, st0)
 	}
 
 	bootMu.Lock()
@@ -414,6 +541,7 @@ func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error
 			// behaviour (NVRAM-only), not a regression.
 			_ = espwrite.SetLoaderDefault(ctx, r, base)
 			st.Active = st.Pending
+			st.LastTargetSHA = "" // reached its target; no reconciliation owed
 		}
 		// Reached when the authoritative slot signal is unavailable (no
 		// LoaderEntrySelected) and the sha did not match. Clear the attempt but
