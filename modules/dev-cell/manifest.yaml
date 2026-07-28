@@ -678,13 +678,43 @@ dependencies:
     # etc.) link against base-os's glibc — closure guarantee (campaign
     # 019f6084 inc1).
     - capability:os.userland
+
+    # The runtimes and the database this module's scripts actually invoke.
+    # These were previously NOT declared — carried as a prose note that they
+    # were "assumed co-assigned on the same NodeTemplate" and enforced only by
+    # dev-cell-provision.sh's preflight. That protected nothing the resolver
+    # could act on: a template could be composed without them and the failure
+    # surfaced late, as a provisioning crash on a booted box.
+    #
+    # Declared as capability tags rather than module names on purpose — any
+    # future module providing the tag satisfies the edge, which is the whole
+    # point of the capability indirection (see resolve_capability_requirement
+    # in manifest_import_service.rb).
+    #
+    # ORDERING NOTE for whoever adds the next one: a capability that no
+    # published module provides yet is SKIPPED SILENTLY at import and
+    # re-resolved when the provider publishes. So publish the provider FIRST,
+    # then this module — otherwise the edge is quietly absent and you are back
+    # to the prose-and-hope arrangement this replaced.
+    - capability:runtime.ruby      # bundle — scripts/validate.sh, bin/rails, test-DB prep
+    - capability:runtime.node      # node 24 + npm — `npm ci`, mcp-proxy, `npx tsc`
+    - capability:runtime.go        # go 1.25+ — the agent half of the gate, `go test ./...`
+    # NOT the generic `database.postgres` tag: postgres-replica provides that
+    # too, at the same priority, so the highest-priority match is a coin flip
+    # and dev-cell could resolve onto a READ-ONLY replica. This module creates
+    # roles and a test database — it needs the writable primary specifically.
+    - capability:database.postgres.primary # psql/pg_isready/createuser + prepared test DB
   provides:
     - dev.cell
     - dev.cell.executor
 
-# NOT declared here as a `requires:` edge (no sibling module in this
-# codebase — postgres-primary, runtime-ruby — declares one for a co-located
-# runtime it needs either): dev-cell also assumes runtime-ruby (ruby +
+# SUPERSEDED 2026-07-28: the four co-required modules below are now real
+# `capability:` edges in the dependencies block above, so the resolver pulls
+# them into any composition that includes dev-cell and a template can no longer
+# be built without them. The text below is retained only for the WHY of each
+# one — it no longer describes how they are enforced.
+#
+# (Historic) dev-cell also assumes runtime-ruby (ruby +
 # bundler on PATH, for scripts/validate.sh and bin/rails), runtime-node
 # (node + npm on PATH, for `npm ci`, the mcp-proxy, and validate.sh's
 # `npx tsc` — Noble's apt node is v18/npm-less and V8-crashes here, so

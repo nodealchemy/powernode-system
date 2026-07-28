@@ -81,14 +81,19 @@ mkdir -p "$STATE_DIR" "$STEP_DIR"
 chown -R "$PNAGENT_USER:$PNAGENT_USER" "$STATE_DIR"
 
 # --- 0. preflight — verify co-required modules are actually present ------
-# dev-cell only `requires:` powernode-system-base + claude-tmux in its own
-# manifest; runtime-ruby (bundle) and postgres-primary (psql/pg_isready/
-# createuser) are ASSUMED co-assigned on the same NodeTemplate, not hard
-# dependencies (see the manifest's own comment on why). `runuser` is a
-# real hard dependency (util-linux, via powernode-system-base) — checked
-# anyway since this whole privilege-separation design depends on it being
-# present. Fail here with a clear message instead of a cryptic "command
-# not found" deep inside a later phase if any is missing.
+# As of 2026-07-28 these are real `capability:` edges in the manifest
+# (runtime.ruby / runtime.node / runtime.go / database.postgres), so the
+# resolver pulls them into any composition containing dev-cell and a template
+# can no longer be built without them. This preflight is therefore now
+# DEFENCE IN DEPTH, not the primary protection — it still earns its place:
+#   - a capability that no published module provided yet is skipped silently
+#     at manifest import, so an edge can be quietly absent;
+#   - assignments can be disabled per-node after resolution;
+#   - it catches a module that composed but whose binary is missing/broken,
+#     which no dependency edge can express.
+# `runuser` is a hard dependency (util-linux, via powernode-system-base),
+# checked for the same reason. Fail here with a clear message instead of a
+# cryptic "command not found" deep inside a later phase.
 for cmd in bundle npm node go psql pg_isready createuser runuser; do
   command -v "$cmd" >/dev/null 2>&1 || {
     log "missing '$cmd' — is this instance's NodeTemplate missing a co-required module (runtime-ruby / runtime-node / runtime-go / postgres-primary), or util-linux broken?"
