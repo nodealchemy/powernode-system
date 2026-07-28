@@ -281,17 +281,15 @@ file_spec:
   - "/etc/systemd/system/multi-user.target.wants/dev-cell-go-toolchain.service"
   - "/etc/profile.d/50-dev-cell-go.sh"
 
-  # SSH host-key persistence (#43, "disposable not ephemeral"): the root
-  # overlay upper is ephemeral tmpfs, so /etc/ssh/ssh_host_*_key otherwise
-  # regenerates every boot — the operator's client hits "REMOTE HOST
-  # IDENTIFICATION HAS CHANGED" on every reconnect, not just on a
-  # deliberate instance replacement. Same rootfs .service + local-fs.
-  # target.wants shipping convention as dev-cell-persist-home.service
-  # above. See dev-cell-ssh-hostkeys.sh's own comment for the generate-
-  # once-in-/persist, restore-before-sshd-reads mechanics.
-  - "/usr/local/bin/dev-cell-ssh-hostkeys.sh"
-  - "/etc/systemd/system/dev-cell-ssh-hostkeys.service"
-  - "/etc/systemd/system/local-fs.target.wants/dev-cell-ssh-hostkeys.service"
+  # SSH host-key persistence is NOT shipped here any more. base-os-ubuntu-noble
+  # ships /usr/sbin/powernode-ssh-hostkeys (ff844e0f), generalised FROM the
+  # script this module used to carry, and dev-cell requires
+  # `capability:os.userland` which only base-os provides — so that unit is
+  # always present underneath us. Keeping a second copy meant BOTH units ran
+  # and restored the same keys into /etc/ssh within the same second (observed
+  # on VM 9000, boot 2026-07-28 22:47:05), racing on the same files for no
+  # benefit. base-os's version is strictly better: it flocks the generate step
+  # and creates /persist/etc/ssh 0700 rather than 0755.
 
   # vi/vim/editor symlinks to vim.tiny (#43): vim-tiny is already carved
   # (see the Interactive dev userland section below), but the immutable

@@ -50,13 +50,18 @@ PDIR="$PERSIST_ROOT/etc/ssh"
 install -d -m 0755 -o root -g root "$PERSIST_ROOT/etc"
 install -d -m 0700 -o root -g root "$PDIR"
 
-# Serialise against any other unit doing the same thing. dev-cell ships its own
-# host-key persister (dev-cell-ssh-hostkeys.service) ordered into the same
-# Before=local-fs.target window, so on a dev-cell node BOTH run and systemd is
-# free to start them in parallel. Two ssh-keygen invocations racing on one path
-# is how you get a truncated or half-written key — the failure would look like a
+# Serialise against any other unit doing the same thing. A higher-priority
+# module can ship its own host-key persister ordered into the same
+# Before=local-fs.target window, in which case BOTH run and systemd is free to
+# start them in parallel. Two ssh-keygen invocations racing on one path is how
+# you get a truncated or half-written key — the failure would look like a
 # corrupt host key at the worst possible moment. flock makes whichever runs
 # second observe the first's finished work and reuse it.
+#
+# Deliberately stated generically: base-os is the shared floor under every node
+# type and must not encode knowledge of any particular module above it. (The
+# concrete case that motivated this — a dev-cell-local duplicate — was removed
+# once this generalised version shipped.)
 #
 # -w 60: wait rather than skip. Bailing out would leave sshd with no persisted
 # key and silently revert to an ephemeral identity, which is the bug this exists
