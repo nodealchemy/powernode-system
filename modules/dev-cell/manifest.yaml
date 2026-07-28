@@ -702,7 +702,7 @@ dependencies:
 # message rather than a cryptic error deep inside a later phase if either
 # is missing — see that script for what's assumed vs. verified.
 
-# unit_body passthrough (option A2): these 4 units carry hand-tuned
+# unit_body passthrough (option A2): these 6 units carry hand-tuned
 # Type=oneshot/RemainAfterExit=/StartLimit*=/ExecStartPre= semantics the
 # generated-unit Service fields can't express, so each rides the
 # services: lifecycle with its systemd unit file's body verbatim. Sibling

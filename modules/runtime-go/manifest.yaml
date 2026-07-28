@@ -3,7 +3,7 @@ schema_version: 1
 name: runtime-go
 display_name: "Powernode Base Go Runtime"
 description: >
-  Go 1.26.5 (official upstream linux tarball) installed to /usr/local/go, with
+  Go 1.25.0 (official upstream linux tarball) installed to /usr/local/go, with
   go + gofmt symlinked into /usr/local/bin so they land on the default PATH
   with no profile wiring. Sibling of runtime-ruby and runtime-node, completing
   the language-runtime family: a node that needs a Go toolchain composes this
@@ -53,7 +53,15 @@ build:
   # BOTH pinned arch sha256 values in that step; they are the official
   # checksums published at https://go.dev/dl/?mode=json.
   #
-  # Floor, not a ceiling: extensions/system/agent/go.mod declares `go 1.25.0`
-  # and Go is backward compatible, so any toolchain >= that works. Keep this at
-  # or above the go.mod directive when bumping either one.
-  go_version: "1.26.5"
+  # Deliberately EQUAL to agent/go.mod's `go` directive, not merely above it:
+  # the powernode-system-base arm reads that same directive to pick the
+  # toolchain it compiles the agent with, so holding them equal lets ONE pinned
+  # sha256 serve both arms (the cosign pin is shared between arms the same
+  # way). Bump agent/go.mod, this key, and BOTH pins together.
+  #
+  # Note GOTOOLCHAIN is left at its default (auto): if a future go.mod asks for
+  # a newer toolchain than this module ships, `go` will try to fetch it at
+  # RUNTIME and fail loudly on a restricted-egress node. That is the intended
+  # signal to bump this module — not something to paper over with
+  # GOTOOLCHAIN=local here.
+  go_version: "1.25.0"
