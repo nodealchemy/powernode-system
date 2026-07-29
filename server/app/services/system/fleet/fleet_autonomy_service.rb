@@ -213,6 +213,10 @@ module System
         # Emits system.acme_cert_expiring → platform_maintenance cert_rotate.
         ::System::Fleet::Sensors::CertExpirySensor,
         ::System::Fleet::Sensors::ModulePromotionSensor,
+        # `capability:<tag>` requirements no module on the account provides.
+        # Advisory only — closing a gap means authoring a module, which must
+        # pass the human reuse gate (see the sensor's own doc).
+        ::System::Fleet::Sensors::CapabilityGapSensor,
         ::System::Fleet::Sensors::ConfigDriftSensor,
         ::System::Fleet::Sensors::SloViolationSensor,
         ::System::Fleet::Sensors::HoneypotAccessSensor,

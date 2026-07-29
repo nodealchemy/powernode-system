@@ -701,38 +701,17 @@ module System
     #     satisfy Gem::Requirement(constraint). Bare tags (no @ver) do NOT
     #     satisfy a versioned constraint — that's a manifest-quality signal
     #     (provider should declare its version explicitly).
+    # Delegates to the shared resolver. The logic lives there because
+    # CapabilityGapSensor reports precisely the requirements this method
+    # fails to satisfy — if the two ever disagreed, the sensor would either
+    # report gaps that are not real or miss ones that are.
     def resolve_capability(mod, tag, constraint)
-      # PostgreSQL JSONB array containment: capabilities ?| array[tag]
-      # matches modules whose capabilities array contains the bare tag
-      # OR contains a `tag@anything` entry (we LIKE-match the prefix).
-      candidates = ::System::NodeModule
-                   .where(account_id: mod.account_id)
-                   .where.not(id: mod.id)
-                   .where("capabilities ?| array[:t] OR capabilities::text LIKE :p",
-                          t: tag, p: "%\"#{tag}@%")
-                   .order(priority: :desc, created_at: :desc)
-
-      return candidates.first if constraint.blank?
-
-      requirement = begin
-        ::Gem::Requirement.new(constraint)
-      rescue ::ArgumentError
-        ::Rails.logger.warn("[ManifestImportService] invalid version constraint #{constraint.inspect} for capability #{tag.inspect}")
-        return nil
-      end
-
-      candidates.detect do |cand|
-        Array(cand.capabilities).any? do |cap|
-          cap_tag, cap_ver = cap.to_s.split("@", 2)
-          next false unless cap_tag == tag
-          next false if cap_ver.blank? # bare tag can't satisfy a versioned constraint
-          begin
-            requirement.satisfied_by?(::Gem::Version.new(cap_ver))
-          rescue ::ArgumentError
-            false
-          end
-        end
-      end
+      ::System::CapabilityResolver.resolve(
+        account_id: mod.account_id,
+        tag: tag,
+        constraint: constraint,
+        exclude_module_id: mod.id
+      )
     end
 
     def upsert_dependency!(mod, target, constraint: nil, capability_tag: nil)
