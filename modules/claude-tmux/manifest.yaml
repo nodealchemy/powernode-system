@@ -51,6 +51,16 @@ file_spec:
   - "/usr/bin/claude"
   - "/usr/bin/jq"
   - "/usr/bin/tmux"
+  # The terminfo database tmux needs to start at all. BOTH paths are
+  # claimed deliberately: ncurses-base installs to /lib/terminfo (usr-merged
+  # to /usr/lib/terminfo) while ncurses-term installs to
+  # /usr/share/terminfo, and claiming only one leaves tmux's own default
+  # TERM unresolvable. Globs rather than individual entries because the set
+  # is data, not an interface — pinning entry names here would silently
+  # drop terminals on any ncurses refresh.
+  - "/lib/terminfo/**"
+  - "/usr/lib/terminfo/**"
+  - "/usr/share/terminfo/**"
   - "/usr/lib/node_modules/@anthropic-ai/claude-code/**"
   - "/usr/lib/x86_64-linux-gnu/libevent_core-2.1.so*"
   - "/usr/lib/x86_64-linux-gnu/libjq.so*"
@@ -99,6 +109,24 @@ package_spec:
   # with jq; declare it so the module is self-sufficient rather than
   # silently relying on a neighbor module (e.g. dev-cell) to pull jq in.
   - jq
+  # tmux CANNOT START without a terminfo database — it exits with
+  # "missing or unsuitable terminal: <TERM>" before doing anything else.
+  # apt pulls ncurses-base in transitively (tmux -> libtinfo6), but a
+  # transitive package's FILES are still dropped by Stage 2's rsync filter
+  # unless file_spec claims them, so the module shipped the binary without
+  # the data it requires. Declared explicitly for the same reason as jq
+  # above: on a fat node (dev-cell composes 13 other modules) some
+  # neighbour happened to carve /usr/share/terminfo in and tmux worked by
+  # accident; the first lean node to compose claude-tmux without such a
+  # neighbour — ops-cell, 2026-07-29 — could not start tmux at all.
+  - ncurses-base
+  # ncurses-term supplies the entries tmux itself sets INSIDE a session
+  # (tmux-256color, screen-256color) plus the long tail of client TERMs an
+  # operator may arrive with. ncurses-base alone covers xterm-256color and
+  # would fix the reported symptom, but a module whose entire purpose is
+  # running tmux should not ship a terminfo set that tmux's own default
+  # TERM is missing from.
+  - ncurses-term
 
 dependencies:
   requires:
