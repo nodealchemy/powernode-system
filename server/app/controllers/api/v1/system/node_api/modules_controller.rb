@@ -15,6 +15,40 @@ module Api
             modules = node_modules.enabled.includes(:category, :dependencies)
             resolved_modules = resolve_module_dependencies(modules)
 
+            # FAIL CLOSED on an incomplete list.
+            #
+            # This response is the agent's ONLY statement of desired state, and
+            # a module missing from it is indistinguishable — to the agent —
+            # from one the operator genuinely unassigned. It reconciles the
+            # difference by DETACHING, stopping the module's services. On
+            # 2026-07-28 ops-hub acted on a list missing its own platform
+            # modules and detached rails/traefik/sidekiq: the services that
+            # serve this very endpoint. Self-hosted, that is unrecoverable —
+            # the list that would say "re-attach" is served by what was just
+            # detached. It took a reboot.
+            #
+            # Only the server can tell "incomplete" from "unassigned", and only
+            # here, while it still holds both the input and the output. So the
+            # invariant is asserted at the one place it is checkable:
+            # resolution REORDERS, it must never change the population.
+            #
+            # 503 rather than 500 because this is explicitly retryable, and
+            # because the agent already treats any non-2xx as "could not
+            # determine desired state" and skips the tick without detaching
+            # (observed during that incident: a 502 caused no detach). An
+            # honest error is strictly safer than a confident wrong answer.
+            unless resolution_complete?(modules, resolved_modules)
+              ::Rails.logger.error(
+                "[NodeApi::Modules] incomplete resolution for node #{current_node&.id}: " \
+                "#{modules.size} assigned -> #{resolved_modules.size} resolved; refusing to serve partial desired state"
+              )
+              return render_error(
+                "module dependency resolution returned an incomplete list; refusing to serve a partial desired state",
+                status: :service_unavailable,
+                code: "incomplete_module_resolution"
+              )
+            end
+
             render_success(
               modules: resolved_modules.map { |m| ::System::NodeModuleNodeApiSerializer.new(m).summary },
               count: resolved_modules.size,
@@ -175,6 +209,15 @@ module Api
                             .pluck(:id)
 
             ::System::NodeModule.where(id: (assigned_ids + dependant_ids).uniq)
+          end
+
+          # Resolution is a topological REORDERING, so the set of ids going in
+          # must equal the set coming out. Comparing sorted ids catches both
+          # directions of corruption: a dropped module (the dangerous one — it
+          # reads as an unassignment and triggers a detach) and a duplicated
+          # one (which would make the agent's digest diff incoherent).
+          def resolution_complete?(input, resolved)
+            input.map(&:id).sort == resolved.map(&:id).sort
           end
 
           def resolve_module_dependencies(modules)
