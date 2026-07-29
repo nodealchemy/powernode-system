@@ -51,12 +51,16 @@ import (
 //     calls (e.g. a reconcile tick where nothing actually changed on
 //     disk despite a digest bump) are cheap and don't spam the caller's
 //     changed count.
-//   - Deletions are OUT OF SCOPE for v1: if the new module version
-//     dropped a file the old one shipped, the stale copy is left in
-//     dstRoot untouched. Most module updates add or modify files rather
-//     than remove them, and detecting a removal requires diffing the
-//     old and new erofs trees (we only have the new one mounted here) —
-//     left for a follow-up.
+//   - Deletions are NOT handled here — this function only ever adds or
+//     overwrites. Removals are a separate pass with materially different
+//     safety requirements (a path must be re-resolved against the
+//     surviving layers before it can be unlinked, or the unlink punches
+//     a whiteout through content the union should still serve), so they
+//     live in hotprune.go and run immediately after this in
+//     hotReconcileIfNeeded. Note the constraint that shapes both: the
+//     old erofs tree is already unmounted by then, so the deletion pass
+//     works from a path inventory captured before the detach loop
+//     rather than from a live diff.
 //   - Device nodes, FIFOs, and sockets (none expected in module content,
 //     which is OS userland + application files) are skipped rather than
 //     erroring.

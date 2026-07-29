@@ -307,6 +307,13 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// loop below — that ordering is the entire point of this call.
 	r.prefetchNewArtifacts(ctx, toAttach)
 
+	// Inventory the outgoing versions BEFORE the detach loop unmounts them.
+	// This is the only window in which the old trees are still readable, and
+	// without their path sets a hot-reconcile cannot tell "the new version
+	// dropped this file" from "this file was never ours" — which is why
+	// deletions were originally out of scope. See hotprune.go.
+	outgoingPaths := r.captureOutgoingPaths(toDetach, toAttach, manifests)
+
 	// Detaches first, in reverse priority (highest priority unmounted first
 	// so dependency stacks come down cleanly).
 	detachStack := mount.ModuleStack(toDetach).SortByPriority()
@@ -440,7 +447,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		}
 		current.AttachedModules = append(current.AttachedModules, mod)
 		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
-		r.hotReconcileIfNeeded(mod, mf, stateWasEmpty)
+		r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired)
 	}
 
 	// Re-attach loop for manifest-only changes. attachModule is
@@ -458,7 +465,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
-		r.hotReconcileIfNeeded(mod, mf, stateWasEmpty)
+		r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired)
 	}
 
 	// Filter out detached modules from current — both from the attached
@@ -914,7 +921,7 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 //     changed == 0, i.e. nothing had actually drifted) is not logged —
 //     OnError is reserved for failures and there's no dedicated
 //     benign/info-log hook in this package.
-func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifest, stateWasEmpty bool) {
+func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifest, stateWasEmpty bool, oldPaths map[string]bool, desired mount.ModuleStack) {
 	if r.cfg.DryRun || stateWasEmpty || mf == nil {
 		return
 	}
@@ -931,6 +938,99 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 	if _, err := SyncModuleFilesToRoot(srcDir, dstRoot); err != nil {
 		r.cfg.OnError("reconciler:hot_reconcile", fmt.Errorf("module %s: %w", mod.ID, err))
 	}
+
+	// Removals. Only reachable when the previous version's tree was
+	// inventoried before it was unmounted; a first attach (nothing
+	// outgoing) has no baseline and correctly prunes nothing.
+	if len(oldPaths) == 0 {
+		return
+	}
+	res, err := PruneRemovedFiles(PruneOptions{
+		OldPaths:        oldPaths,
+		NewErofsDir:     srcDir,
+		DstRoot:         dstRoot,
+		SurvivingLayers: r.survivingLayerDirs(desired, mod.ID),
+		Protected:       mf.ProtectedSpec,
+	})
+	if err != nil {
+		r.cfg.OnError("reconciler:hot_prune", fmt.Errorf("module %s: %w", mod.ID, err))
+	}
+	// Restored means another module in the stack also claims a path this
+	// one just dropped. That resolves correctly here, but two modules
+	// owning one path is a composition smell the operator should see —
+	// it is the shape that produced the shadowed-`go` defect this
+	// mechanism was built after.
+	if res.Restored > 0 {
+		r.cfg.OnError("reconciler:hot_prune_contested",
+			fmt.Errorf("module %s: %d path(s) it dropped are also provided by another module and were restored from it", mod.ID, res.Restored))
+	}
+}
+
+// survivingLayerDirs returns the mount dirs of every module in the desired
+// composition EXCEPT excludeID, ordered highest-priority first — the same
+// order overlayfs resolves lower layers in (see mount.LowerDirString), so a
+// path looked up through this list resolves to what the union would serve.
+//
+// Built from `desired` rather than the incrementally-populated
+// current.AttachedModules because the attach loop calls this mid-flight:
+// modules later in the stack are already mounted (prefetchNewArtifacts
+// mounts every incoming blob before any detach) but not yet recorded, and
+// consulting the partial list would miss legitimate providers and turn a
+// restore into a removal.
+func (r *Reconciler) survivingLayerDirs(desired mount.ModuleStack, excludeID string) []string {
+	sorted := desired.SortByPriority()
+	dirs := make([]string, 0, len(sorted))
+	for i := len(sorted) - 1; i >= 0; i-- {
+		if sorted[i].ID == excludeID {
+			continue
+		}
+		dirs = append(dirs, r.cfg.Layout.ModuleMountPath(sorted[i].Digest))
+	}
+	return dirs
+}
+
+// captureOutgoingPaths inventories each superseded module version's file set
+// while its erofs is STILL MOUNTED — the detach loop that follows unmounts
+// it, and after that the old tree is unrecoverable without re-pulling the
+// blob.
+//
+// Only versions with a same-ID successor are captured. A module leaving the
+// composition entirely is a different operation with different semantics
+// (its files come out on the next recompose, and removing them live would
+// race an operator who is mid-reassignment), and a full detach of a large
+// layer is exactly where an unnecessary walk would cost the most.
+//
+// reboot_required modules are skipped: their successor short-circuits in
+// hotReconcileIfNeeded before it ever reaches the prune, so walking
+// base-os-sized trees here would be pure waste.
+func (r *Reconciler) captureOutgoingPaths(toDetach, toAttach mount.ModuleStack, manifests map[string]*manifest.Manifest) map[string]map[string]bool {
+	if len(toDetach) == 0 || len(toAttach) == 0 {
+		return nil
+	}
+	incoming := make(map[string]bool, len(toAttach))
+	for _, m := range toAttach {
+		incoming[m.ID] = true
+	}
+	out := make(map[string]map[string]bool)
+	for _, mod := range toDetach {
+		if !incoming[mod.ID] {
+			continue // leaving the composition, not being replaced
+		}
+		if mf, ok := manifests[mod.ID]; ok && mf != nil && mf.RebootRequired {
+			continue
+		}
+		tp, err := ModuleTreePaths(r.cfg.Layout.ModuleMountPath(mod.Digest))
+		if err != nil {
+			// A partial inventory would understate what the old version
+			// shipped, which understates the removals — safe, but worth
+			// surfacing. Drop it rather than prune from a partial baseline.
+			r.cfg.OnError("reconciler:capture_outgoing",
+				fmt.Errorf("module %s: %w", mod.ID, err))
+			continue
+		}
+		out[mod.ID] = tp.Files
+	}
+	return out
 }
 
 // detachModule stops the module's units and unmounts it.
