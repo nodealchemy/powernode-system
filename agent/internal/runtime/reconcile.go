@@ -105,6 +105,12 @@ type Reconciler struct {
 	mu              sync.Mutex
 	lastReconcileAt time.Time
 	lastError       error
+
+	// Latched result of the self-host probe (see selfhost.go). Guarded
+	// separately from mu because selfHosted() is called from inside a
+	// RunOnce that already holds mu.
+	selfHostMu      sync.Mutex
+	selfHostLatched bool
 }
 
 // NewReconciler validates required fields and returns a Reconciler.
@@ -306,6 +312,14 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// anything (see prefetchNewArtifacts doc). Must run before the detach
 	// loop below — that ordering is the entire point of this call.
 	r.prefetchNewArtifacts(ctx, toAttach)
+
+	// Refuse detaches that would take down this node's own control plane
+	// (see selfhost.go). Applied HERE, before both the detach loop and the
+	// state bookkeeping below, so a refused module stays in
+	// current.AttachedModules and is simply re-proposed — and re-refused —
+	// on later ticks, rather than being recorded as detached while it is
+	// still running.
+	toDetach = r.filterUnsafeDetaches(toDetach, toAttach, manifests)
 
 	// Inventory the outgoing versions BEFORE the detach loop unmounts them.
 	// This is the only window in which the old trees are still readable, and
