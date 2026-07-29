@@ -51,12 +51,62 @@ MNT="/run/powernode-cidata"
 
 log() { echo "[powernode-cidata] $*"; }
 
-# Fast, latency-free exit when this boot has no NoCloud drive at all. PVE always
-# attaches its cloud-init seed as an optical (media=cdrom) device, so the
-# absence of both an optical node and a cidata-labelled device means there is
-# nothing to stage.
-if [ ! -b /dev/sr0 ] && [ ! -b /dev/sr1 ] &&
-   [ ! -e /dev/disk/by-label/cidata ] && [ ! -e /dev/disk/by-label/CIDATA ]; then
+# PVE always attaches its cloud-init seed as an optical (media=cdrom) device,
+# so the absence of both an optical node and a cidata-labelled device means
+# there is nothing to stage.
+# Candidate list is overridable ONLY so the guard is exercisable on a host
+# that has (or lacks) a real optical device; nothing in production sets it.
+# Without the seam the enumeration-wait below is untestable except by booting
+# a VM, which for a unit that gates node enrollment is a bad place to find out
+# it is wrong.
+CIDATA_DEVICES="${CIDATA_DEVICES:-/dev/sr0 /dev/sr1 /dev/disk/by-label/cidata /dev/disk/by-label/CIDATA}"
+
+# -e rather than -b: it must match both the raw optical nodes and the
+# by-label SYMLINKS. Being permissive is safe — a false positive falls
+# through to the mount loop below, which fails cleanly and still exits 0
+# ("cidata device present but not mountable").
+cidata_device_present() {
+    for _d in $CIDATA_DEVICES; do
+        if [ -e "$_d" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# WAIT FOR ENUMERATION BEFORE CONCLUDING "ABSENT".
+#
+# This unit is ordered only After=basic.target, which does NOT mean block
+# devices have been enumerated — udev coldplug runs in parallel with it. On
+# q35 (ProxmoxProvider::DEFAULT_MACHINE_TYPE) the NoCloud CD-ROM hangs off the
+# ich9-ahci SATA controller, so /dev/sr0 appears only once the ahci module has
+# loaded, probed, and udev has created the node. A single-shot check races
+# that.
+#
+# It lost the race on ops-cell's FIRST boot (2026-07-29): the stager took the
+# no-op exit below, nothing staged /run/powernode/identity.cfg, and the agent
+# looped "identity: not found by this strategy" forever. `qm stop && qm start`
+# — different timing — fixed it. The failure is SILENT because this same exit
+# is the correct, common behaviour for a node with no CD-ROM at all, so
+# nothing anywhere reports an error.
+#
+# udevadm settle returns as soon as the event queue drains, NOT after the full
+# timeout, so a node that genuinely has no optical device still exits fast —
+# the "latency-free" property of the original check is preserved for it. The
+# short poll afterwards covers a node landing just after settle returns.
+if ! cidata_device_present; then
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm settle --timeout="${CIDATA_SETTLE_TIMEOUT:-15}" >/dev/null 2>&1 || true
+    fi
+    waited=0
+    while [ "$waited" -lt "${CIDATA_WAIT_SECONDS:-10}" ] && ! cidata_device_present; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    [ "$waited" -gt 0 ] && log "waited ${waited}s for a NoCloud drive to enumerate"
+fi
+
+if ! cidata_device_present; then
     log "no NoCloud (cidata) drive present — nothing to stage"
     exit 0
 fi
