@@ -1,0 +1,15 @@
+[Unit]
+Description=Probe the self-hosted Powernode control plane every minute
+
+[Timer]
+# One minute. The platform's own heartbeat cadence is 30s and its in-platform
+# silence threshold is 3 minutes, so a 1-minute external probe with a
+# 3-failure threshold alerts at ~3 minutes of genuine unreachability — fast
+# enough to matter, slow enough that a single dropped request is not an alert.
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=powernode-fleet-watchdog.service
+
+[Install]
+WantedBy=timers.target

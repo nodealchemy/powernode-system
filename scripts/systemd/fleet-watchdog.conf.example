@@ -1,0 +1,25 @@
+# Config for powernode-fleet-watchdog. Install to /etc/powernode/fleet-watchdog.conf
+#
+# Nothing here has a built-in default that points at real infrastructure — the
+# script refuses to start without TARGET_URL rather than guessing a host.
+
+# REQUIRED. Health endpoint of the control plane being watched.
+TARGET_URL="https://<control-plane-host>/api/v1/health"
+
+# Label used in alerts and for the state filename.
+TARGET_NAME="ops-hub"
+
+# Consecutive failures before alerting. With a 1-minute timer, 3 ≈ 3 minutes.
+FAIL_THRESHOLD=3
+
+# Seconds per probe.
+PROBE_TIMEOUT=10
+
+# Where the alert goes. Leave EMPTY to log to journald only.
+# Accepts any JSON-POST endpoint (ntfy, Slack, Discord, a webhook relay).
+# MUST NOT be an endpoint served by the platform being watched — a
+# notification path that dies with the target notifies nobody.
+WEBHOOK_URL=""
+
+# 1 = tolerate the internal CA on the target (default). 0 = strict TLS.
+INSECURE=1

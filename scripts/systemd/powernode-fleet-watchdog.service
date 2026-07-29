@@ -1,0 +1,23 @@
+[Unit]
+Description=External liveness watchdog for a self-hosted Powernode control plane
+Documentation=file:/opt/powernode/extensions/system/scripts/fleet-watchdog.sh
+# Deliberately NO dependency on any powernode unit. This watches the platform
+# from outside its failure domain; coupling it to the platform would recreate
+# the blind spot it exists to close.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/powernode-fleet-watchdog
+# The script exits 0 even when the probe fails (a real outage would otherwise
+# mark this unit failed on every tick and bury the alert in unit noise), so a
+# non-zero exit here means a genuine config or environment fault.
+Nice=10
+# It reads one config file, writes one state dir, and makes outbound HTTP.
+# Nothing else needs to be reachable.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/var/lib/powernode-watchdog
