@@ -48,6 +48,7 @@ module System
 
       file_object = upload_to_storage!(publication, ingest.local_path)
       publish!(publication, file_object, ingest)
+      warm_uki_blob_cache!(publication)
       enqueue_retention_sweep(publication.node_platform)
 
       Result.new(ok?: true, publication: publication, file_object: file_object)
@@ -203,6 +204,47 @@ module System
     # Schedules a retention sweep so old publications get retired on
     # the next worker tick. The reaper job runs daily anyway, but
     # triggering on-publish keeps history compact between runs.
+    # Pull the freshly promoted UKI into the local blob cache NOW, while we
+    # know the registry is healthy — CI pushed the blob moments ago.
+    #
+    # WHY: OciBlobProxyService is a READ-THROUGH cache, so before this the
+    # first node to upgrade always paid a cold miss, and it paid it at the
+    # worst moment: a just-published digest is exactly the one nothing has
+    # fetched yet. On 2026-07-29 a registry DNS fault turned that cold miss
+    # into a 500 and a failed boot-image upgrade. Warming here moves the
+    # registry dependency to a point where the registry is known-good instead
+    # of to an arbitrary later moment when it may not be.
+    #
+    # INLINE, deliberately. The cache is local disk on whichever host serves
+    # /node_api/boot_image/download, so handing this to the worker — which
+    # talks to the server over HTTP and need not share a filesystem — could
+    # warm the wrong machine. It is affordable here because this same path
+    # already downloads the FULL disk image synchronously in run_ingest!; a
+    # UKI is a small fraction of that.
+    #
+    # BEST EFFORT. A publication is valid whether or not the cache is warm —
+    # the read-through path still works — so a failure here must never fail
+    # the publish or flip the platform pointer back.
+    def warm_uki_blob_cache!(publication)
+      ref    = publication.uki_oci_ref
+      digest = publication.uki_sha256
+      return if ref.blank? || digest.blank?
+
+      ::System::OciBlobProxyService.new(
+        oci_ref:    ref,
+        # Must match BootImageController::UKI_MEDIA_TYPE. Note the cache key is
+        # the DIGEST alone, so a drift here cannot cause a serving-path miss —
+        # it would only affect manifest resolution, which digest mode skips.
+        media_type: "application/vnd.powernode.uki.v1",
+        digest:     digest,
+        account:    publication.account
+      ).fetch_blob!
+
+      Rails.logger.info("[DiskImagePublicationProcessor] warmed UKI blob cache for #{digest[0, 19]}")
+    rescue StandardError => e
+      Rails.logger.warn("[DiskImagePublicationProcessor] UKI cache warm skipped: #{e.class}: #{e.message}")
+    end
+
     def enqueue_retention_sweep(platform)
       return unless defined?(::WorkerApiClient)
       # System owns this worker job; enqueue it through the core client's slug-agnostic
