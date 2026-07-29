@@ -61,7 +61,29 @@ module System
     class ManifestError < PullError; end
     class VerificationError < PullError; end
 
-    CACHE_ROOT = ENV.fetch("POWERNODE_OCI_CACHE_DIR", "/var/lib/powernode/oci-cache").freeze
+    # Where proxied blobs are cached. Prefers the DURABLE partition when the
+    # host has one.
+    #
+    # This defaulted to /var/lib/powernode/oci-cache, which on a pivot node is
+    # the EPHEMERAL composed overlay — wiped at every boot. Verified 2026-07-29:
+    # after an ops-hub reboot the directory did not exist at all. So the "first
+    # request per digest caches for the rest of the fleet" property only ever
+    # held WITHIN a single boot, and every reboot reset fleet-wide registry
+    # dependence to zero-cached. A freshly published digest then had to be
+    # fetched from the registry at exactly the moment a node needed it, which is
+    # how a registry/DNS fault became a failed boot-image upgrade.
+    #
+    # /persist is the durable partition on a pivot node and is absent on a
+    # workstation or container, so this self-configures rather than assuming a
+    # layout. An explicit POWERNODE_OCI_CACHE_DIR always wins.
+    def self.default_cache_root(env_override = ENV["POWERNODE_OCI_CACHE_DIR"])
+      return env_override if env_override.present?
+      return "/persist/var/lib/powernode/oci-cache" if File.directory?("/persist")
+
+      "/var/lib/powernode/oci-cache"
+    end
+
+    CACHE_ROOT = default_cache_root.freeze
     MANIFEST_IMAGE_TYPES = %w[
       application/vnd.oci.image.manifest.v1+json
       application/vnd.docker.distribution.manifest.v2+json
@@ -156,7 +178,16 @@ module System
     rescue StandardError => e
       emit_event(severity: "high", kind: "oci.blob.fetch_failed",
                  payload: { oci_ref: @oci_ref, error: e.message })
-      raise
+      # Re-raising the ORIGINAL exception meant a raw network fault
+      # (Net::OpenTimeout on a registry DNS failure) sailed past
+      # BootImageController's `rescue PullError`, which exists to answer 502
+      # "upstream failed, retry". The node instead got a 500, which reads as a
+      # platform defect — and was misdiagnosed as exactly that on 2026-07-29.
+      # PullError subclasses already carry precise meaning (auth / manifest /
+      # verification) and pass through unflattened.
+      raise if e.is_a?(PullError)
+
+      raise PullError, "#{e.class}: #{e.message}"
     end
 
     # Returns [normalized_digest, expected_size]. When the caller supplied
