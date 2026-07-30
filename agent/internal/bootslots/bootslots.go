@@ -45,6 +45,20 @@ type State struct {
 	// when no upgrade is in flight), and PendingSHA the target it carries.
 	Pending    string `json:"pending,omitempty"`
 	PendingSHA string `json:"pending_sha,omitempty"`
+	// PendingBootID is the kernel boot_id of the boot that ARMED the attempt.
+	//
+	// It exists because "we are running a slot other than Pending" is not, on its
+	// own, evidence that the trial ran and lost. It describes two opposite
+	// situations equally well: an upgrade that booted and fell back, and an
+	// upgrade Apply armed seconds ago that has not rebooted yet. Without a boot
+	// identity on the record, nothing downstream can tell them apart — so an
+	// agent restart between Apply and the reboot looked exactly like a rollback
+	// and erased a live upgrade's record, stranding its UKI on the ESP armed and
+	// unremembered.
+	//
+	// Empty means "written by an agent that predates this field": treat as
+	// unprovable rather than assuming either case.
+	PendingBootID string `json:"pending_boot_id,omitempty"`
 	// LastTargetSHA is the sha of the most recent upgrade we ATTEMPTED, and it
 	// deliberately outlives Pending.
 	//
@@ -110,6 +124,30 @@ func SetEfivarsDirForTest(dir string) (restore func()) {
 	prev := efivarsDir
 	efivarsDir = dir
 	return func() { efivarsDir = prev }
+}
+
+// bootIDPath is the kernel's per-boot random identifier. A variable for the same
+// reason as efivarsDir: tests must be able to simulate a different boot.
+var bootIDPath = "/proc/sys/kernel/random/boot_id"
+
+// SetBootIDPathForTest points the boot-id source at path. Test-only.
+func SetBootIDPathForTest(path string) (restore func()) {
+	prev := bootIDPath
+	bootIDPath = path
+	return func() { bootIDPath = prev }
+}
+
+// CurrentBootID returns the kernel's boot_id, or "" if it cannot be read.
+//
+// "" is never treated as a match by callers — an unknown boot identity means
+// unprovable, which must fail closed into "do nothing", never into "assume the
+// trial ran".
+func CurrentBootID() string {
+	b, err := os.ReadFile(bootIDPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // EfivarsAvailable reports whether the EFI variable store is actually readable —

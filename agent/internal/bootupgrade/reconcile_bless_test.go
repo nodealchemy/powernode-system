@@ -274,3 +274,32 @@ func TestApply_RecordsLastTargetSHA(t *testing.T) {
 		t.Fatalf("Apply did not record the target sha for later reconciliation: %+v", recorded)
 	}
 }
+
+// The boot-identity guard in ResolveFallback/ConfirmBoot is only worth anything
+// if Apply actually stamps the field. Without this assertion the whole guard
+// degrades silently to its legacy branch — PendingBootID stays "", every record
+// reads as unprovable, and the protection is inert while all its own tests still
+// pass. That is precisely the shape of dead-code fix this package has shipped
+// before, so the stamp gets its own test rather than being assumed.
+func TestApply_StampsTheArmingBootID(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "boot_id")
+	if err := os.WriteFile(p, []byte("33333333-3333-3333-3333-333333333333\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defer bootslots.SetBootIDPathForTest(p)()
+
+	o, d, _ := stagedOpts(t)
+	var recorded bootslots.State
+	defer withApplyDeps(func(dep *applyDepSet) {
+		happyDeps(dep)
+		dep.updateState = func(fn func(*bootslots.State) error) error { return fn(&recorded) }
+	})()
+
+	if _, err := Apply(context.Background(), *d, o); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if recorded.PendingBootID != "33333333-3333-3333-3333-333333333333" {
+		t.Fatalf("Apply did not stamp the arming boot id (%+v) — an agent restart before the "+
+			"reboot would then read this armed upgrade as a rollback and erase it", recorded)
+	}
+}

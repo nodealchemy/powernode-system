@@ -98,6 +98,20 @@ type Deps struct {
 // that no longer exists. Both hold this for their whole body.
 var bootMu sync.Mutex
 
+// reportStampFailure announces that Apply armed a slot it could not stamp with
+// a boot id. A var so tests can observe it.
+//
+// Deliberately a warning and not a refusal: the UKI is verified and the slot is
+// written by the time we get here, and failing the upgrade over an unreadable
+// /proc entry would be a worse outcome than an upgrade that carries the
+// pre-boot-identity risk for one cycle. But it must not be SILENT — the record
+// it just wrote is indistinguishable from a legacy one, so it inherits legacy
+// handling and loses its protection against pre-reboot erasure.
+var reportStampFailure = func() {
+	fmt.Fprintln(os.Stderr, "bootupgrade: WARNING: could not read boot_id; the pending record is "+
+		"unstamped and will be treated as legacy, so an agent restart before the reboot may clear it")
+}
+
 // BootTries is the systemd-boot boot-counter a newly-written slot starts with.
 // The upgrade also `bootctl set-oneshot`s the new slot, so in practice the new
 // UKI gets exactly ONE forced attempt: if that boot doesn't reach a healthy
@@ -289,9 +303,26 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 	// the two paths drift (4b13c961 fixed one such drift already). Apply holds
 	// bootMu here and bootslots.Update takes stateMu, matching the documented
 	// bootMu→stateMu lock order.
+	stampWarn := false
 	if err := applyDeps.updateState(func(st *bootslots.State) error {
 		st.Pending = inactive
 		st.PendingSHA = o.TargetGitSHA
+		// Stamp WHICH boot armed this, so a later reader can tell "the trial ran
+		// and fell back" from "the trial has not run yet". Both look identical
+		// from the slot letters alone, and the window between here and the reboot
+		// is not small — the reboot can fail, and restarting the agent is
+		// standing practice on this fleet.
+		st.PendingBootID = bootslots.CurrentBootID()
+		if st.PendingBootID == "" {
+			// Empty here does NOT mean what empty means elsewhere. Readers treat
+			// "" as "written by an agent predating this field" and fall back to
+			// the old, unprotected behaviour — correct for a genuinely old
+			// record, wrong for a fresh one that simply could not be stamped.
+			// Such a record silently loses the only thing protecting it from
+			// being erased in the pre-reboot window, so say so rather than let
+			// the protection evaporate quietly.
+			stampWarn = true
+		}
 		// Outlives Pending on purpose — see State.LastTargetSHA. This is what lets
 		// a healthy boot onto this slot still bless it after an earlier attempt
 		// fell back and cleared Pending.
@@ -301,6 +332,9 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 		return "", fmt.Errorf("record pending slot %s: %w", inactive, err)
 	}
 
+	if stampWarn {
+		reportStampFailure()
+	}
 	if err := d.Runner.Run(ctx, "bootctl", "set-oneshot", entry); err != nil {
 		return "", fmt.Errorf("bootctl set-oneshot %s: %w", entry, err)
 	}
@@ -342,6 +376,97 @@ func ConfirmNeeded(bootedGitSHA string) bool {
 	}
 	_, owed := reconcileOwed(bootedGitSHA, st)
 	return owed
+}
+
+// ResolveFallback records a provable rollback WITHOUT consulting node health,
+// and is the only part of the confirm verdict that may run before the health
+// gate. It returns true when it cleared an attempt.
+//
+// The verdict it reaches rests on nothing but evidence: systemd-boot's
+// LoaderEntrySelected says which slot booted, and if that is not the slot we
+// were trying to install then the trial provably fell back. Health cannot make
+// that more or less true.
+//
+// Gating it on health was backwards, and the reason it had to be split out.
+// A node that rolled back is by construction the one LEAST likely to look
+// healthy — the previous image may be old, degraded, or missing the very
+// service the gate probes — so the case the cleanup exists for is exactly the
+// case that could never reach it. The attempt then stayed Pending for the rest
+// of the boot, which is not inert: ConfirmNeeded keeps reporting work owed, and
+// a later Apply has to reason around a stale record for an upgrade that is long
+// dead. Observed on ops-cell 2026-07-29, where a loopback health gate no
+// non-hub node can ever pass left the confirmer spinning forever.
+//
+// It deliberately does NOT bless, and does NOT touch the ESP — blessing is the
+// half of the verdict that genuinely needs proof of health, and it stays behind
+// the gate. Nor does it clear the ESP's counter files, for the same reason
+// ConfirmBoot does not: on the unprovable branches those files may belong to
+// the slot currently running.
+// bootedGitSHA is accepted for symmetry with ConfirmNeeded/ConfirmBoot, which
+// the same caller invokes with the same value, and is deliberately NOT consulted
+// — a fallback is proven by which slot booted, and a node that rolled back to an
+// image carrying no sha marker (netboot, rpi4, pre-campaign images) is fully
+// provable here. Consulting it would make those nodes unprovable for no gain.
+func ResolveFallback(_ string) (bool, error) {
+	// Cheap pre-check outside the lock — the common case is no upgrade in
+	// flight, which must touch nothing at all.
+	if bootslots.Load().Pending == "" {
+		return false, nil
+	}
+	// Read the boot-time facts BEFORE taking the lock; neither can change within
+	// a boot, and both are unrelated to the state file.
+	if !bootslots.BootedViaSystemdBoot() {
+		return false, nil // unprovable — leave the verdict to the gated path
+	}
+	booted := bootslots.BootedSlot()
+	if booted == "" {
+		return false, nil
+	}
+
+	bootMu.Lock()
+	defer bootMu.Unlock()
+
+	cleared := false
+	err := bootslots.Update(func(st *bootslots.State) error {
+		// Re-read under the lock, and require the attempt to carry the identity
+		// of an EARLIER boot.
+		//
+		// Comparing slot letters alone is not enough, and the `st.Pending ==
+		// booted` test that used to stand here does not save it: on a rollback
+		// boot the slot we are running IS Active, so a racing Apply picks the
+		// other slot — the very letter the stale snapshot named — and the guard
+		// falls straight through. The only thing carried across the unlocked
+		// window was "Pending was non-empty", which cannot tell two different
+		// attempts apart. Boot identity can.
+		//
+		// It also closes the same hole with no concurrency at all: between Apply
+		// and the reboot, a node still running the old slot with a freshly armed
+		// Pending is indistinguishable from one that tried and fell back.
+		//
+		// Empty PendingBootID (state written before the field existed) is
+		// UNPROVABLE, so this does nothing and leaves the verdict to the gated
+		// ConfirmBoot path exactly as before.
+		if st.Pending == "" || st.Pending == booted {
+			return nil
+		}
+		// cur == "" is UNPROVABLE, not "some other boot". Omitting that test
+		// makes an unreadable /proc/sys/kernel/random/boot_id fail OPEN: the
+		// stamped ID would differ from "" and every armed upgrade would be read
+		// as a rollback — the precise failure this field was added to stop,
+		// re-entering through the door left open to detect it.
+		cur := bootslots.CurrentBootID()
+		if st.PendingBootID == "" || cur == "" || st.PendingBootID == cur {
+			return nil
+		}
+		st.Pending = ""
+		st.PendingSHA = ""
+		cleared = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("resolve fallback: %w", err)
+	}
+	return cleared, nil
 }
 
 // reconcileUnblessedBootedSlot blesses a slot we are demonstrably running and
@@ -485,6 +610,25 @@ func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error
 		// within a boot. That is the same permanent-per-tick error this code
 		// deliberately refuses to inflict on the mismatch path.
 		booted := bootslots.BootedSlot() // "" when undeterminable
+
+		// An attempt armed during THIS boot has not been tried yet, so there is
+		// no verdict to reach — the reboot that would decide it has not happened.
+		// Without this, the fallback branch below reads "running a slot other
+		// than Pending" as proof of a rollback and erases a live upgrade's
+		// record; the health gate only delays that, it does not prevent it.
+		//
+		// Empty PendingBootID means the record predates the field, so fall
+		// through to the original behaviour rather than change it.
+		//
+		// cur == "" is UNPROVABLE and must decline, exactly as in
+		// ResolveFallback. Testing only `PendingBootID == cur` fails OPEN when
+		// boot_id is unreadable (/proc masked, ProtectProc= in a hardened or
+		// module-sandboxed unit): the equality is false, the guard does not
+		// fire, and the fallback branch below erases a live armed upgrade —
+		// the same fail-open shape, in the same mechanism, one function away.
+		if cur := bootslots.CurrentBootID(); st.PendingBootID != "" && (cur == "" || st.PendingBootID == cur) {
+			return nil
+		}
 
 		if booted != "" && booted != st.Pending {
 			// Provably running the OTHER slot: sd-boot fell back. Routine, expected

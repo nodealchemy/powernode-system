@@ -1694,6 +1694,12 @@ func abandonBootImageCmd() *cobra.Command {
 			if err := bootslots.Update(func(s *bootslots.State) error {
 				s.Pending = ""
 				s.PendingSHA = ""
+				// The arming boot's identity goes with the attempt it describes.
+				// Inert today — both boot-identity guards sit behind Pending != "",
+				// and a later Apply overwrites it — but leaving a stamp behind for
+				// an attempt that no longer exists is exactly the kind of stale
+				// field a future reader draws a wrong conclusion from.
+				s.PendingBootID = ""
 				// LastTargetSHA too, and this is NOT optional. It normally outlives
 				// Pending on purpose, so that a later healthy boot onto the written
 				// slot can still be blessed. "Abandon" is the operator saying that
