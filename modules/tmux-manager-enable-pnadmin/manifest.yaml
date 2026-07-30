@@ -2,11 +2,12 @@ schema_version: 1
 name: tmux-manager-enable-pnadmin
 display_name: "tmux-manager — enable boot sessions for pnadmin"
 description: >
-  Enables tmux-manager@pnadmin at boot by shipping the multi-user.target.wants
-  symlink as composed content. Assign it to any instance whose operator wants
-  their declared tmux sessions (~pnadmin/.tmux-manager/*.conf) to start
-  automatically. Without it, `systemctl enable` appears to work and is silently
-  undone by the next reboot.
+  Declares pnadmin's tmux sessions AND enables them at boot, entirely as
+  composed content: the session config, a drop-in pointing the CLI at
+  /etc/tmux-manager instead of $HOME, and the multi-user.target.wants symlink.
+  Assign it to any instance whose operator wants a managed session. Without it,
+  both `systemctl enable` and a hand-written ~/.tmux-manager config appear to
+  work and are silently undone by the next reboot.
 license: MIT
 category: build-dev
 
@@ -31,6 +32,8 @@ package_spec: []
 
 file_spec:
   - "/etc/systemd/system/multi-user.target.wants/tmux-manager@pnadmin.service"
+  - "/etc/systemd/system/tmux-manager@pnadmin.service.d/10-conf-dir.conf"
+  - "/etc/tmux-manager/claude.conf"
 
 mask: []
 dependency_spec: []
