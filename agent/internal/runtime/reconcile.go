@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
@@ -105,6 +106,19 @@ type Reconciler struct {
 	mu              sync.Mutex
 	lastReconcileAt time.Time
 	lastError       error
+	// composeFailed records whether the LAST pass that got as far as composing
+	// observed a module attach or union-mount failure. Distinct from lastError,
+	// which deliberately does NOT cover these — see ComposedOK.
+	//
+	// ATOMIC, not guarded by mu, because the boot-confirm gate reads it on every
+	// probe and mu is held across the ENTIRE RunOnce body — network fetches,
+	// ~80MB blob pulls, systemctl, mount. Reading it under mu would park the
+	// confirm loop for minutes: the same stall the systemctl probe timeout
+	// exists to prevent, and worse, since it is checked BEFORE that timeout
+	// applies and would suppress the stuck-gate warning that is only evaluated
+	// after a probe returns. sync.Mutex.Lock is also not context-aware, so a
+	// parked probe would hold up agent shutdown at wg.Wait().
+	composeFailed atomic.Bool
 
 	// Latched result of the self-host probe (see selfhost.go). Guarded
 	// separately from mu because selfHosted() is called from inside a
@@ -448,15 +462,20 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// mount via attachModule's idempotency, re-runs AttachServices to
 	// pick up the new units). Each successful attach refreshes the
 	// per-module manifest hash so the next cycle's diff sees no drift.
+	// Reaching the compose stage re-opens the verdict: a failure recorded on an
+	// earlier pass must not outlive a pass that composed cleanly.
+	r.composeFailed.Store(false)
 	attachStack := mount.ModuleStack(toAttach).SortByPriority()
 	for _, mod := range attachStack {
 		mf, ok := manifests[mod.ID]
 		if !ok {
 			r.cfg.OnError("reconciler:missing_manifest", fmt.Errorf("module %s: manifest not loaded", mod.ID))
+			r.composeFailed.Store(true)
 			continue
 		}
 		if err := r.attachModule(ctx, mod, mf); err != nil {
 			r.cfg.OnError("reconciler:attach", fmt.Errorf("module %s: %w", mod.ID, err))
+			r.composeFailed.Store(true)
 			continue
 		}
 		current.AttachedModules = append(current.AttachedModules, mod)
@@ -529,6 +548,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			overlay := &mount.Overlay{Layout: r.cfg.Layout, Runner: r.cfg.MountRunner}
 			if err := overlay.MountUnion(ctx, mount.ModuleStack(current.AttachedModules)); err != nil {
 				r.cfg.OnError("reconciler:union_mount", err)
+				r.composeFailed.Store(true)
 				current.UnionMounted = false
 			} else {
 				current.UnionMounted = true
@@ -1310,4 +1330,36 @@ func (r *Reconciler) LastError() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.lastError
+}
+
+// ComposedOK reports that this boot has shown NO evidence of a broken module
+// composition. It is the boot-confirm gate's other half, and its exact wording
+// is the point.
+//
+// It deliberately does NOT require a SUCCESSFUL reconcile. The obvious version
+// — "a pass completed with lastError == nil" — was written first and is wrong
+// twice over.
+//
+// Wrong on what it catches: lastError is only ever set by fetching the assigned
+// modules, taking the state lock, and loading or saving state. Every attach,
+// re-attach, detach and union-mount failure is reported through OnError and the
+// pass then stamps success regardless. A UKI whose module machinery is broken —
+// precisely the /sbin-shadowing and module-overlay class this gate exists for —
+// would have satisfied it and blessed.
+//
+// Wrong on what it blocks: three of those four sites need the PLATFORM. Gating
+// a bless on them re-couples blessing to "can I reach the platform", which
+// BootConfirmer's own header calls the wrong question. A node whose platform
+// link, DNS, or mTLS identity is down for a whole boot could then never bless a
+// good image, and would silently revert it — the original bug, wearing a
+// different hat, aimed at the node classes least able to complain.
+//
+// So this asks the narrower, honest question. Absence of evidence is not proof
+// the composition is sound, and it is not claimed to be: a node whose reconcile
+// never reached the compose stage passes here and is gated on systemd alone,
+// which is what it was before this conjunct existed. What it does buy is that
+// an observed attach or union-mount failure now BLOCKS the bless instead of
+// being logged while the image is promoted.
+func (r *Reconciler) ComposedOK() bool {
+	return !r.composeFailed.Load()
 }
