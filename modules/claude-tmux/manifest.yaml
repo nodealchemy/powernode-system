@@ -224,7 +224,23 @@ reboot_required: false
 
 security:
   capabilities: []
-  egress_allow: []
+  # The module ships the Claude Code CLI and must therefore permit the one
+  # host that CLI exists to talk to. An empty list here is not "no policy" —
+  # the agent unions every desired module's egress_allow into one node-wide
+  # nftables default-deny chain, so shipping the CLI with [] guaranteed it
+  # could never work. Observed on ops-cell 2026-07-29 as
+  # "ECONNREFUSED api.anthropic.com" while git.powernode.org stayed reachable,
+  # which reads like a network fault and is actually this manifest.
+  #
+  # CAVEAT worth knowing before trusting this: entries are resolved to A/AAAA
+  # records at install time and re-resolved only on cert-rotate (~67 days).
+  # api.anthropic.com sits behind a CDN whose addresses rotate, so the pinned
+  # IPs can go stale between resolutions and the symptom returns looking
+  # identical. If that recurs, the fix is not another host here — it is
+  # DNS-aware egress (see ApplyEgressAllowlist's sidecar note), and a
+  # reconcile or cert-rotate is the interim unstick.
+  egress_allow:
+    - api.anthropic.com
   privileged: false
   user_namespace: true
 
