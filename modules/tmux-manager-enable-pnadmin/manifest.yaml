@@ -1,0 +1,61 @@
+schema_version: 1
+name: tmux-manager-enable-pnadmin
+display_name: "tmux-manager — enable boot sessions for pnadmin"
+description: >
+  Enables tmux-manager@pnadmin at boot by shipping the multi-user.target.wants
+  symlink as composed content. Assign it to any instance whose operator wants
+  their declared tmux sessions (~pnadmin/.tmux-manager/*.conf) to start
+  automatically. Without it, `systemctl enable` appears to work and is silently
+  undone by the next reboot.
+license: MIT
+category: build-dev
+
+# WHY THIS MODULE EXISTS AT ALL, rather than a one-line `systemctl enable`:
+#
+# On a pivot node the root overlay upper is tmpfs, so /etc does not survive a
+# reboot — and `systemctl enable` does its work by writing a symlink into
+# /etc/systemd/system/<target>.wants/. The enablement is therefore exactly as
+# ephemeral as the home directory was. Observed on ops-cell 2026-07-29: after a
+# reboot, tmux-manager@pnadmin was inactive with zero claude processes and
+# multi-user.target.wants held no tmux-manager link, even though the session
+# config in the (now persistent) home was intact. Durable state has to be
+# composed content or live on /persist; nothing else survives.
+#
+# It is a SEPARATE module from tmux-manager on purpose. That module's charter
+# is explicit — "ships INSTALLED, NOT ENABLED … makes no session-management
+# decisions and starts nothing on its own" — and baking a pnadmin session into
+# it would impose that decision on every node that merely wants the CLI.
+# Keeping the decision in its own assignable module preserves that separation:
+# the capability is one module, the policy of using it is another.
+package_spec: []
+
+file_spec:
+  - "/etc/systemd/system/multi-user.target.wants/tmux-manager@pnadmin.service"
+
+mask: []
+dependency_spec: []
+protected_spec: []
+# The symlink is composed content, so it only appears in the union at boot.
+reboot_required: true
+
+dependencies:
+  requires:
+    # The template unit this symlink points at is shipped by tmux-manager;
+    # without it the link dangles and systemd logs a failed unit at boot.
+    - capability:dev.tmux-manager
+    - capability:os.userland
+  provides:
+    - dev.tmux-manager.enabled
+
+services: []
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: false
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"
