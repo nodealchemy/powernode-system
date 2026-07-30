@@ -285,3 +285,30 @@ func TestApply_ReportsWhenTheBootIDCannotBeStamped(t *testing.T) {
 			"indistinguishable from a legacy one, so it silently inherits the unprotected path")
 	}
 }
+
+// A retired attempt must not leave its boot identity behind. Found by the
+// first real end-to-end upgrade under the new gate (ops-cell, 40b4a69b): the
+// bless succeeded and boot-slot.json still read
+// {"active":"a","pending_boot_id":"1d3e34e3-..."}. Inert today, because both
+// guards are Pending-gated and the next Apply overwrites the stamp — but it is
+// exactly the sort of leftover a later reader draws a wrong conclusion from.
+func TestConfirmBoot_ClearsTheBootIdentityWithTheAttempt(t *testing.T) {
+	seedBootID(t, "22222222-2222-2222-2222-222222222222")
+	spy := confirmEnvWithEntry(t, bootslots.State{
+		Active:        "a",
+		Pending:       "b",
+		PendingSHA:    "1111111111111111111111111111111111111111",
+		PendingBootID: "11111111-1111-1111-1111-111111111111",
+	}, "powernode-a.efi") // booted the OTHER slot => provable rollback
+
+	if err := ConfirmBoot(context.Background(), spy, "2222222222222222222222222222222222222222"); err != nil {
+		t.Fatalf("ConfirmBoot: %v", err)
+	}
+	st := bootslots.Load()
+	if st.Pending != "" || st.PendingSHA != "" {
+		t.Fatalf("attempt not retired: %+v", st)
+	}
+	if st.PendingBootID != "" {
+		t.Errorf("PendingBootID = %q — the boot identity outlived the attempt it describes", st.PendingBootID)
+	}
+}

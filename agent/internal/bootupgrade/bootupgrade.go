@@ -460,6 +460,9 @@ func ResolveFallback(_ string) (bool, error) {
 		}
 		st.Pending = ""
 		st.PendingSHA = ""
+		// The arming boot's identity describes the attempt being retired here;
+		// leaving it behind is stale state a later reader can misread.
+		st.PendingBootID = ""
 		cleared = true
 		return nil
 	})
@@ -636,6 +639,9 @@ func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error
 			// the booted image reports a sha at all.
 			st.Pending = ""
 			st.PendingSHA = ""
+			// The arming boot's identity describes the attempt being retired
+			// here; leaving it behind is stale state a later reader can misread.
+			st.PendingBootID = ""
 			return nil
 		}
 
@@ -694,6 +700,9 @@ func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error
 		// we might be running from is not recoverable in place.
 		st.Pending = ""
 		st.PendingSHA = ""
+		// The arming boot's identity describes the attempt being retired here;
+		// leaving it behind is stale state a later reader can misread.
+		st.PendingBootID = ""
 		return nil
 	})
 }
