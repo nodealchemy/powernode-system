@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
 )
 
 // TestMain sandboxes every /persist-backed path in this package BEFORE any test
@@ -46,6 +48,20 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "TestMain: cannot seed cmdline:", werr)
 		os.Exit(1)
 	}
+	// EFI variables are the same read-dependence hazard, and BootConfirmer.Run
+	// began reading them the moment the rollback verdict moved ahead of the health
+	// gate: it now asks systemd-boot which slot booted before probing anything.
+	// Unsandboxed, that reads the HOST's LoaderEntrySelected — so on any real A/B
+	// machine (dev-cell, the drill VMs) a test that seeds Pending="b" has its
+	// attempt resolved as a rollback because the host booted slot a, and the test
+	// then measures nothing it claims to. Two of this package's gate tests would
+	// fail there and a third would pass for the wrong reason, while passing here
+	// only because this host publishes no LoaderEntrySelected.
+	//
+	// An empty dir means "no LoaderInfo, no LoaderEntrySelected" — not booted via
+	// systemd-boot, booted slot undeterminable — which is the inert default. Tests
+	// needing a real answer override it locally.
+	bootslots.SetEfivarsDirForTest(filepath.Join(sandbox, "efivars-absent"))
 
 	code := m.Run()
 	_ = os.RemoveAll(sandbox)

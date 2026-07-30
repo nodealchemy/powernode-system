@@ -408,6 +408,14 @@ func (s *Service) Run(ctx context.Context) error {
 	// only the boot breadcrumb — it never touches the live reconcile state, so a
 	// module the reconciler hot-mounts post-boot (whose new code only runs after
 	// a future reboot) can never be promoted as last-known-good.
+	//
+	// NOTE the asymmetry with boot_confirm below, which is deliberate. LKG
+	// capture keeps the loopback default; the bless gate does not. Promoting an
+	// LKG is a PERMANENT composition freeze on a self-hosted control plane
+	// (ops-hub can no longer re-capture), so widening what counts as healthy
+	// here could freeze a bad composition forever, whereas the cost of the
+	// bless gate being unpassable is an image that reverts. Same mechanism,
+	// very different blast radius — revisit LKG separately, not as a rider.
 	healthURL := s.cfg.AppHealthURL
 	if healthURL == "" {
 		healthURL = defaultAppHealthURL
@@ -432,12 +440,18 @@ func (s *Service) Run(ctx context.Context) error {
 	// blessed until its composed stack actually comes up.
 	spawn("boot_confirm", func() {
 		confirmer := &BootConfirmer{
-			BreadcrumbPath:      BootBreadcrumbPath,
-			DefaultAppHealthURL: healthURL,
-			Hostname:            desiredHostname(),
-			BootedGitSHA:        s.bootedImageGitSHA,
-			Runner:              mount.ExecRunner{},
-			OnError:             s.cfg.OnError,
+			BreadcrumbPath: BootBreadcrumbPath,
+			// s.cfg.AppHealthURL RAW, not healthURL — an unset URL must stay
+			// unset so the gate can tell "this node serves /up" apart from
+			// "nothing was configured" and pick a probe the node can pass.
+			AppHealthURL: s.cfg.AppHealthURL,
+			Hostname:     desiredHostname(),
+			BootedGitSHA: s.bootedImageGitSHA,
+			Runner:       mount.ExecRunner{},
+			// The local gate's other half: systemd cannot see a broken module
+			// composition, and this can.
+			ReconcileOK: reconciler.ComposedOK,
+			OnError:     s.cfg.OnError,
 		}
 		if err := confirmer.Run(ctx); err != nil {
 			s.cfg.OnError("boot_confirm", err)

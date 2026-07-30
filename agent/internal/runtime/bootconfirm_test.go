@@ -207,11 +207,11 @@ func utf16leEFIVar(sv string) []byte {
 // Default gate is 3 consecutive, matching the LKG capturer's.
 func TestBootConfirmer_DefaultsToThreeConsecutive(t *testing.T) {
 	c := &BootConfirmer{Prober: &scriptedProber{results: []bool{true}}}
-	_, required, interval := c.resolveGate()
-	if required != 3 {
-		t.Errorf("required = %d, want 3", required)
+	gate := c.resolveGate()
+	if gate.required != 3 {
+		t.Errorf("required = %d, want 3", gate.required)
 	}
-	if interval != 15*time.Second {
-		t.Errorf("interval = %v, want 15s", interval)
+	if gate.interval != 15*time.Second {
+		t.Errorf("interval = %v, want 15s", gate.interval)
 	}
 }
