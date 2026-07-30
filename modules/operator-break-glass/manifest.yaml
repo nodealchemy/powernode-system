@@ -6,7 +6,7 @@ description: >-
   module is assigned to. A DELIBERATE, per-node privilege grant for the
   development phase — assign it only where an operator needs a standing path to
   root, and unassign it to revoke.
-category: config
+category: build-dev
 
 # The whole module is the sudoers grant below — it ships no payload.
 #
