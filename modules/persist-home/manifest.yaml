@@ -1,0 +1,61 @@
+schema_version: 1
+name: persist-home
+display_name: "persist-home — durable /persist-backed pnadmin home"
+description: >
+  Backs /home/pnadmin with the durable /persist partition via an early-boot
+  bind mount, so operator state (Claude Code auth in ~/.claude, ~/.ssh,
+  tmux-manager session configs, shell history, uncommitted work) survives a
+  reboot or recompose. On a pivot node the root overlay upper is tmpfs, so a
+  home left on the root filesystem is WIPED on every boot. Reusable standalone —
+  any instance that an operator logs into wants this.
+license: MIT
+category: system-base
+
+# Extracted verbatim in behaviour from dev-cell, which has carried this
+# mechanism since the cell needed to survive a reboot. dev-cell keeps its own
+# copy (its script also seeds a dev clone and DEVCELL.md), so this module is
+# for the nodes that want a durable home WITHOUT a whole dev environment —
+# ops-cell being the case that prompted it.
+#
+# MUTUALLY EXCLUSIVE WITH dev-cell: a mount unit's name is derived from its
+# mount point, so both modules necessarily ship /etc/systemd/system/
+# home-pnadmin.mount. Composing both on one node puts the same path in two
+# overlay layers and the higher-priority module silently wins. Assign this only
+# to instances that do NOT carry dev-cell.
+package_spec: []
+
+file_spec:
+  - "/usr/local/bin/persist-home.sh"
+  - "/etc/systemd/system/persist-home.service"
+  - "/etc/systemd/system/home-pnadmin.mount"
+  - "/etc/systemd/system/local-fs.target.wants/persist-home.service"
+  - "/etc/systemd/system/local-fs.target.wants/home-pnadmin.mount"
+
+mask: []
+dependency_spec: []
+protected_spec: []
+reboot_required: true
+
+dependencies:
+  requires:
+    # pnadmin, /etc/skel and the coreutils this uses all come from the OS layer.
+    - capability:os.userland
+  provides:
+    - home.persistent
+
+# No services: block. The two units ship as raw files with their own
+# local-fs.target.wants symlinks, because both must run in EARLY boot
+# (DefaultDependencies=no, before systemd-user-sessions and
+# systemd-tmpfiles-setup) — ordering the agent's generated units cannot express.
+services: []
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: false
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"
