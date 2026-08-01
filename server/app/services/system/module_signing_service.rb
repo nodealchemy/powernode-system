@@ -186,7 +186,10 @@ module System
 
     def cosign_sign!(ref_at_digest, env: {})
       key_flag, sign_env = signing_key_flag_and_env
-      cmd = [ "cosign", "sign", "--yes", "--key", key_flag, ref_at_digest ]
+      cmd = [ "cosign", "sign", "--yes" ]
+      # LOCAL mode only — the vault path stays byte-identical.
+      cmd += [ "--signing-config", ensure_signing_config!(File.dirname(key_flag)) ] if signing_mode == "local"
+      cmd += [ "--key", key_flag, ref_at_digest ]
       # sign_env carries the signing credential (vault: VAULT_ADDR/VAULT_TOKEN;
       # local: COSIGN_PASSWORD for the on-disk 0600 key) — ALWAYS via Open3's env
       # hash, NEVER argv. env carries DOCKER_CONFIG for the registry auth cosign
@@ -202,6 +205,42 @@ module System
 
     def signing_mode
       ::SiteSetting.get(MODE_SETTING).presence || DEFAULT_MODE
+    end
+
+    # Path to a cosign signing config with NO transparency-log service,
+    # generated once beside the local key and reused thereafter.
+    #
+    # WHY THIS EXISTS. cosign 3.x resolves a *signing config* from the Sigstore
+    # TUF repository and FAILS HARD when it cannot reach it — even for `--key`
+    # signing, which involves no Sigstore service whatsoever. On a plane with
+    # restricted egress (ops-hub cannot reach tuf-repo-cdn.sigstore.dev) that
+    # makes signing impossible:
+    #
+    #   Error: error getting signing config from TUF: ...
+    #     Get "https://tuf-repo-cdn.sigstore.dev/14.root.json": i/o timeout
+    #
+    # cosign 2.x did not consult TUF for key-based signing, so this surfaced as
+    # a regression the moment cosign was upgraded — and it surfaced badly:
+    # every native module build failed here, NativeModuleBuildOrchestrator
+    # re-dispatched instead of finalizing, and batches looped without ever
+    # publishing a NodeModuleVersion. The build artifacts were fine throughout.
+    #
+    # `--tlog-upload=false` is NOT the fix; cosign 3.x deprecates it and refuses
+    # it alongside a signing config, naming this exact approach instead.
+    #
+    # Lives beside the key on the same durable dir (/persist on a composed
+    # node), and is regenerated when absent so a fresh plane self-provisions.
+    def ensure_signing_config!(dir)
+      path = ::File.join(dir, "signing-config.json")
+      return path if ::File.size?(path)
+
+      _out, err, status = ::Open3.capture3("cosign", "signing-config", "create", "--out", path)
+      unless status.success? && ::File.size?(path)
+        raise CosignError,
+              "cosign signing-config create failed: #{::System::ShellOutputSanitizer.redact(err.presence) || "exit #{status.exitstatus}"}"
+      end
+
+      path
     end
 
     # Returns [cosign --key value, subprocess env]. The VAULT branch is

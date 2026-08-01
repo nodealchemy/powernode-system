@@ -217,17 +217,25 @@ RSpec.describe System::ModuleSigningService do
     end
     # NO injected vault client — proves local mode never resolves Vault at all.
     let(:local_service) { described_class.new }
+    # cosign 3.x resolves a signing config from the Sigstore TUF repo and fails
+    # hard without one, even for --key signing. Local mode therefore passes an
+    # explicit no-transparency-log config kept beside the key.
+    let(:signing_config_path) { "/var/lib/powernode/internal-ca/module-signing/signing-config.json" }
 
     before do
       ::SiteSetting.set("system.module_signing.mode", "local", setting_type: "string")
       allow(System::ModuleSigningKey).to receive(:ensure!).and_return(local_material)
+      # Present by default so the sign path does not shell out to generate it;
+      # the generate-when-absent branch has its own example below.
+      allow(File).to receive(:size?).and_call_original
+      allow(File).to receive(:size?).with(signing_config_path).and_return(512)
     end
 
     it "signs with the on-disk key file (--key <path>) + COSIGN_PASSWORD env, and NEVER resolves Vault" do
       stub_manifest_fetch
       expect(Security::VaultClient).not_to receive(:instance)
       expect(Open3).to receive(:capture3)
-        .with({ "COSIGN_PASSWORD" => cosign_password }, "cosign", "sign", "--yes", "--key", key_path, ref_at_digest)
+        .with({ "COSIGN_PASSWORD" => cosign_password }, "cosign", "sign", "--yes", "--signing-config", signing_config_path, "--key", key_path, ref_at_digest)
         .and_return([ "signed", "", status_double(true) ])
 
       result = local_service.sign!(oci_ref: oci_ref, expected_digest: digest, account: account)
@@ -236,9 +244,14 @@ RSpec.describe System::ModuleSigningService do
 
     it "passes the password via env only — nothing key/password-shaped in argv" do
       stub_manifest_fetch
-      expect(Open3).to receive(:capture3) do |env, *argv|
+      # Constrained to the cosign call. An unconstrained `receive(:capture3)`
+      # block is a catch-all that also swallows the `which oras` / `which
+      # cosign` probes, so the first assertion saw env == "which" and this
+      # example failed before it ever reached the signing call (pre-existing —
+      # it fails the same way on an unmodified tree).
+      expect(Open3).to receive(:capture3).with(anything, "cosign", "sign", any_args) do |env, *argv|
         expect(env).to eq("COSIGN_PASSWORD" => cosign_password)
-        expect(argv).to eq([ "cosign", "sign", "--yes", "--key", key_path, ref_at_digest ])
+        expect(argv).to eq([ "cosign", "sign", "--yes", "--signing-config", signing_config_path, "--key", key_path, ref_at_digest ])
         expect(argv).not_to include(cosign_password)
         [ "signed", "", status_double(true) ]
       end
@@ -246,10 +259,25 @@ RSpec.describe System::ModuleSigningService do
       expect(local_service.sign!(oci_ref: oci_ref, expected_digest: digest, account: account).ok?).to be true
     end
 
+    it "generates the signing config when absent, and reuses it when present" do
+      stub_manifest_fetch
+      # Absent on the entry check, present after create (ensure_signing_config!
+      # re-checks size? to confirm the file actually landed).
+      allow(File).to receive(:size?).with(signing_config_path).and_return(nil, 512)
+      expect(Open3).to receive(:capture3)
+        .with("cosign", "signing-config", "create", "--out", signing_config_path)
+        .and_return([ "", "", status_double(true) ])
+      allow(Open3).to receive(:capture3)
+        .with({ "COSIGN_PASSWORD" => cosign_password }, "cosign", "sign", "--yes", "--signing-config", signing_config_path, "--key", key_path, ref_at_digest)
+        .and_return([ "signed", "", status_double(true) ])
+
+      expect(local_service.sign!(oci_ref: oci_ref, expected_digest: digest, account: account).ok?).to be true
+    end
+
     it "emits the module_signed event with mode=local and keyname=local" do
       stub_manifest_fetch
       allow(Open3).to receive(:capture3)
-        .with({ "COSIGN_PASSWORD" => cosign_password }, "cosign", "sign", "--yes", "--key", key_path, ref_at_digest)
+        .with({ "COSIGN_PASSWORD" => cosign_password }, "cosign", "sign", "--yes", "--signing-config", signing_config_path, "--key", key_path, ref_at_digest)
         .and_return([ "signed", "", status_double(true) ])
       expect(::System::Fleet::EventBroadcaster).to receive(:emit!)
         .with(hash_including(payload: hash_including(mode: "local", keyname: "local")))
