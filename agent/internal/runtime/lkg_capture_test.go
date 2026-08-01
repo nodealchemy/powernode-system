@@ -36,11 +36,19 @@ func (p *scriptedProber) probes() int {
 
 func writeTestBreadcrumb(t *testing.T, path string, fromLKG bool, digest string) {
 	t.Helper()
+	writeTestBreadcrumbPending(t, path, fromLKG, false, digest)
+}
+
+// writeTestBreadcrumbPending also sets FromPending — the flag that authorises
+// overwriting a frozen LKG.
+func writeTestBreadcrumbPending(t *testing.T, path string, fromLKG, fromPending bool, digest string) {
+	t.Helper()
 	bc := &BootComposedBreadcrumb{
-		ComposedAt: time.Now().UTC(),
-		FromLKG:    fromLKG,
-		Source:     "https://dev.example.test",
-		Hostname:   "ops-hub",
+		ComposedAt:  time.Now().UTC(),
+		FromLKG:     fromLKG,
+		FromPending: fromPending,
+		Source:      "https://dev.example.test",
+		Hostname:    "ops-hub",
 		Modules: []LKGModule{
 			{ID: "hub-backend", Name: "hub-backend", EffectivePriority: 100, HasDataFile: true, Digest: digest, Manifest: []byte(`{"id":"hub-backend"}`)},
 		},
@@ -172,6 +180,53 @@ func TestLKGCapturer_SkipsWhenFrozenExists(t *testing.T) {
 // reconcile state.json AND, adversarially, the breadcrumb) and assert the LKG
 // still holds G0 — the capturer promotes the boot-composed breadcrumb once,
 // then freezes, and never consults reconcile state.
+// A boot that composed the STAGED set MUST be able to overwrite a frozen LKG.
+//
+// This is the only path by which the LKG advances on a self-hosted control
+// plane — which by premise always has a frozen LKG, so if the frozen bail
+// applied here the promotion path would be permanently unreachable and the node
+// would compose the same stale set on every boot forever. That was the real
+// behaviour once, and the fix was to move the bail below the breadcrumb read;
+// nothing pinned it, and the file's header still described the OLD behaviour.
+// Untested + mis-documented is how an operator ends up deleting the LKG (the
+// one action that removes the fallback) to fix a freeze that no longer exists.
+func TestLKGCapturer_FromPendingBoot_OverwritesFrozenLKG(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := dir + "/cache"
+	bcPath := dir + "/boot-composed.json"
+	lkgPath := dir + "/assignment-lkg.json"
+
+	// A frozen LKG from an earlier boot.
+	if err := WriteBootLKG(lkgPath, validLKG(t, cacheDir)); err != nil {
+		t.Fatal(err)
+	}
+	// THIS boot composed the staged set — a different digest, FromPending.
+	writeTestBreadcrumbPending(t, bcPath, false, true, "sha256:staged999")
+
+	c := &LKGCapturer{
+		Prober:         &scriptedProber{results: []bool{true, true, true}},
+		BreadcrumbPath: bcPath,
+		LKGPath:        lkgPath,
+		PollInterval:   time.Millisecond,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := c.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := LoadBootLKG(lkgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Modules[0].Digest != "sha256:staged999" {
+		t.Fatalf("a FromPending boot must advance the frozen LKG; got %s", after.Modules[0].Digest)
+	}
+	if !after.Frozen {
+		t.Fatal("promoted LKG must still be marked frozen")
+	}
+}
+
 func TestLKGCapturer_Correction1_NeverPromotesPostBootDrift(t *testing.T) {
 	dir := t.TempDir()
 	bcPath := dir + "/boot-composed.json"

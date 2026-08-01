@@ -20,10 +20,30 @@ package runtime
 // boot cold-composed and is now serving — guarantees the LKG is always a
 // proven-cold-boots-healthy composition.
 //
-// One-shot + frozen: the capturer promotes at most once per boot and never
-// overwrites an existing frozen LKG. Re-provisioning (to capture a newer desired
-// composition before a decommission) is a deliberate operator action that
-// removes the LKG file so the next app-health-confirmed boot recaptures.
+// One-shot per boot: the capturer promotes at most once per boot.
+//
+// Overwrite rule — read this before touching a frozen LKG by hand:
+//
+//   - An ORDINARY boot never overwrites an existing frozen LKG. The frozen set
+//     is a floor; a boot that merely composed the same-or-other live state
+//     cannot move it.
+//   - A boot that composed the STAGED set (breadcrumb.FromPending) DOES
+//     overwrite it, once app-health confirms. This is the only way the LKG ever
+//     advances on a self-hosted control plane, which by premise ALWAYS has a
+//     frozen LKG — see the bail's placement below, which sits deliberately
+//     AFTER the breadcrumb read so FromPending can reach it.
+//
+// So the LKG is not permanently frozen, and advancing it does NOT require an
+// operator to delete the file. Deleting it is the one action that removes the
+// fallback entirely: if the next boot then fails to compose, there is nothing
+// left to fall back to. Stage a pending set instead and let this gate promote
+// it.
+//
+// (An earlier version of this comment said the capturer "never overwrites an
+// existing frozen LKG" and that advancing it required removing the file. That
+// described the code before the bail moved, and following it would have meant
+// deleting the fallback on a live control plane to fix a freeze that no longer
+// exists.)
 
 import (
 	"context"
