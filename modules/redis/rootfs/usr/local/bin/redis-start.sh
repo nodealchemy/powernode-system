@@ -44,15 +44,31 @@ sed -i 's#^[[:space:]]*logfile[[:space:]].*#logfile ""#' "$CONF"
 # foreground process exits 0, so systemd marks the service "deactivated"
 # and restart-loops it. Pin daemonize off so systemd tracks the real server.
 sed -i 's#^[[:space:]]*daemonize[[:space:]].*#daemonize no#' "$CONF"
-# Move persistence off the overlay (see PERSIST_DATA above).
-#
-# Applied by sed here rather than in the module's own conf.d drop-in because
-# THAT DROP-IN IS NEVER LOADED: the apt redis.conf carries no `include`
-# directive, so /etc/redis/conf.d/powernode.conf has never taken effect on any
-# node. Anything added there would be silently dead. See the warning at the top
-# of that file — fixing the include is a separate, wider change because it
-# would simultaneously activate appendonly/save/maxmemory/protected-mode.
+# Move persistence off the overlay (see PERSIST_DATA above). Done by sed on the
+# staged copy so it holds regardless of the include below.
 sed -i "s#^[[:space:]]*dir[[:space:]].*#dir ${PERSIST_DATA}#" "$CONF"
+
+# Load the module's own overrides.
+#
+# The apt redis.conf carries NO `include` directive — Debian does not read
+# conf.d despite the long-standing comment claiming it did — so
+# /etc/redis/conf.d/*.conf had never taken effect on any node. The module
+# declared AOF persistence for Sidekiq durability and RDB snapshots disabled,
+# and neither was ever true: AOF was off, and the RDB snapshotting the module
+# meant to disable is what filled a 512 MB tmpfs overlay and wedged a node into
+# MISCONF, refusing every write.
+#
+# Appended LAST so these win: redis takes the last occurrence of a directive,
+# and everything above came from the apt file. The drop-in deliberately does
+# NOT set maxmemory/eviction or the bind — see the header in powernode.conf for
+# why shipping those would have been wrong.
+#
+# Glob, not a fixed filename, so an operator drop-in also applies. Guarded so a
+# node without the directory still starts.
+if compgen -G "/etc/redis/conf.d/*.conf" >/dev/null 2>&1; then
+  printf '\n# Loaded by redis-start.sh — see modules/redis/rootfs/etc/redis/conf.d/\ninclude /etc/redis/conf.d/*.conf\n' >> "$CONF"
+fi
+
 chown redis:redis "$CONF"
 chmod 0644 "$CONF"
 
