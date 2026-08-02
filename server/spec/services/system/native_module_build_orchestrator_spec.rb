@@ -396,4 +396,75 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
       expect(mod.versions.count).to eq(1) # ingested + recorded, just not promoted
     end
   end
+
+  # Found live on ops-hub 2026-08-02. apply_module_manifest! read ONLY the
+  # on-disk source tree (PlatformModuleManifestLoader::DEFAULT_ROOT). A
+  # fleet-hosted control plane has no such tree — the extension module ships
+  # /opt/powernode/extensions/system/** but not modules/ — so the read returned
+  # blank, the method warned and returned, and ModuleService rows were never
+  # synced. A manifest that ADDED a service (worker-web) therefore produced no
+  # systemd unit while the build still reported success. The orchestrator's own
+  # comment already recorded the same class of failure for hub-frontend's caddy.
+  #
+  # ManifestFetchService does handle platform modules (blank
+  # gitea_repo_full_name falls through to ci_build_source_repo), so it is a
+  # valid fallback — and a strictly better one, since it is pinned to the
+  # build's head_sha where the on-disk read explicitly is not.
+  describe "manifest apply when there is no on-disk source tree" do
+    let(:mod) { create_module("powernode-hub-worker") }
+    let(:yaml) do
+      <<~YAML
+        schema_version: 1
+        name: powernode-hub-worker
+        services:
+          - name: sidekiq
+            start_command: "/usr/local/bin/sidekiq-start.sh"
+          - name: worker-web
+            start_command: "/usr/local/bin/worker-web-start.sh"
+      YAML
+    end
+
+    before do
+      # Simulate the fleet-hosted box: no manifest on disk.
+      allow(File).to receive(:file?).and_call_original
+      allow(File).to receive(:file?).with(/modules\/powernode-hub-worker\/manifest\.yaml/).and_return(false)
+    end
+
+    it "falls back to fetching the manifest at the batch head_sha" do
+      batch = build_batch(modules: [ mod ], head_sha: "sysTip999")
+
+      expect(::System::ManifestFetchService).to receive(:fetch)
+        .with(hash_including(node_module: mod, ref: "sysTip999")).and_return(yaml)
+      expect(::System::ManifestImportService).to receive(:import!)
+        .with(hash_including(node_module: mod, yaml: yaml))
+        .and_return(double(ok?: true, error: nil, validation_errors: []))
+
+      described_class.new(batch: batch).send(:apply_module_manifest!, mod, mod.name)
+    end
+
+    it "escalates loudly when neither disk nor fetch yields a manifest" do
+      batch = build_batch(modules: [ mod ])
+      allow(::System::ManifestFetchService).to receive(:fetch).and_return(nil)
+
+      orchestrator = described_class.new(batch: batch)
+      expect(Rails.logger).to receive(:error).with(/manifest/i)
+      expect(orchestrator).to receive(:emit_event)
+        .with(a_string_matching(/manifest/), hash_including(severity: :high))
+
+      orchestrator.send(:apply_module_manifest!, mod, mod.name)
+    end
+
+    it "does not fetch when the on-disk manifest is present" do
+      allow(File).to receive(:file?).with(/modules\/powernode-hub-worker\/manifest\.yaml/).and_return(true)
+      allow(File).to receive(:read).and_call_original
+      allow(File).to receive(:read).with(/modules\/powernode-hub-worker\/manifest\.yaml/).and_return(yaml)
+      batch = build_batch(modules: [ mod ])
+
+      expect(::System::ManifestFetchService).not_to receive(:fetch)
+      allow(::System::ManifestImportService).to receive(:import!)
+        .and_return(double(ok?: true, error: nil, validation_errors: []))
+
+      described_class.new(batch: batch).send(:apply_module_manifest!, mod, mod.name)
+    end
+  end
 end

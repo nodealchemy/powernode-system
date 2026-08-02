@@ -571,10 +571,16 @@ module System
     # retried build (retrying can't fix a bad manifest).
     def apply_module_manifest!(node_module, slug)
       yaml = read_platform_module_manifest(slug)
+      yaml = fetch_module_manifest(node_module, slug) if yaml.blank?
+
       if yaml.blank?
-        Rails.logger.warn("[NativeModuleBuildOrchestrator] no on-disk manifest.yaml for #{slug} under " \
-                          "#{::System::PlatformModuleManifestLoader::DEFAULT_ROOT} — ModuleService/spec " \
-                          "rows NOT re-synced for this native publish")
+        Rails.logger.error("[NativeModuleBuildOrchestrator] NO manifest.yaml for #{slug} — not on disk under " \
+                           "#{::System::PlatformModuleManifestLoader::DEFAULT_ROOT} and the fetch fallback " \
+                           "returned nothing. ModuleService/spec rows are NOT synced: if this build changed " \
+                           "the manifest's `services:` block, the agent will render NO unit for it and the " \
+                           "build will still report success.")
+        emit_event("system.module_build.manifest_apply_skipped",
+                   severity: :high, module_name: slug, reason: "manifest_unavailable")
         return
       end
 
@@ -586,6 +592,34 @@ module System
       Rails.logger.error("[NativeModuleBuildOrchestrator] #{msg}")
     rescue StandardError => e
       Rails.logger.error("[NativeModuleBuildOrchestrator] manifest apply crashed for #{slug}: #{e.class}: #{e.message}")
+    end
+
+    # Fallback for a platform that has no source tree on disk.
+    #
+    # A fleet-hosted control plane composes /opt/powernode/extensions/system/**
+    # from a module layer, which does NOT include modules/ — so
+    # read_platform_module_manifest finds nothing and, before this fallback
+    # existed, the ModuleService sync was silently skipped while the build
+    # reported success. Live consequence on ops-hub 2026-08-02: hub-worker
+    # gained a `worker-web` service that never got a systemd unit (and, earlier,
+    # hub-frontend's `caddy` the same way).
+    #
+    # ManifestFetchService handles platform modules: a blank
+    # gitea_repo_full_name falls through to the platform module source repo
+    # (ci_build_source_repo), which is exactly where module-forge-build.sh read
+    # the manifest from when it built this artifact. Pinning to the batch's
+    # head_sha therefore makes this fallback STRICTER than the on-disk read,
+    # which is deliberately unpinned ("the CURRENT on-disk source-tree
+    # manifest") and can drift from the sha actually built.
+    #
+    # Best-effort by the same rationale as the caller: a fetch failure must not
+    # fail a build whose artifact already published.
+    def fetch_module_manifest(node_module, slug)
+      ::System::ManifestFetchService.fetch(node_module: node_module, ref: @batch.head_sha)
+    rescue StandardError => e
+      Rails.logger.warn("[NativeModuleBuildOrchestrator] manifest fetch fallback failed for #{slug} " \
+                        "at #{@batch.head_sha}: #{e.class}: #{e.message}")
+      nil
     end
 
     def read_platform_module_manifest(slug)
