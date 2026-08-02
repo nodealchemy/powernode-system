@@ -208,6 +208,15 @@ RSpec.describe System::InstancePoolService, type: :service do
     let!(:claimed) { seed_pool_member(state: "claimed") }
 
     it "transitions pool to draining + ready members to draining state" do
+      # Explicit success stub. Without it the REAL terminate_instance runs and
+      # returns err("Instance has no cloud instance ID") for these fixtures —
+      # which this example used to pass through silently, asserting drained==2
+      # for two members whose terminates had both failed. That swallowed error
+      # is the defect fixed alongside this; the happy path now needs the
+      # terminate to actually succeed, same as the race context below.
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .and_return(::System::Runtime::Result.ok)
+
       result = described_class.drain!(pool: pool)
       expect(pool.reload.status).to eq("draining")
       expect(ready_a.reload.pool_state).to eq("draining")
@@ -218,6 +227,34 @@ RSpec.describe System::InstancePoolService, type: :service do
     it "leaves claimed members untouched (operator finishes their work)" do
       described_class.drain!(pool: pool)
       expect(claimed.reload.pool_state).to eq("claimed")
+    end
+
+    # ProvisioningService.terminate_instance RETURNS a Runtime::Result and only
+    # raises ArgumentError — a provider failure comes back as an err Result, so
+    # the `rescue StandardError` around the call never fires. The result was
+    # discarded, meaning a failed terminate was counted as a successful drain,
+    # logged as ready_terminated=N, and left the row in pool_state=draining with
+    # status untouched. Those rows then went silent and the fleet decision
+    # engine's presumed-dead ladder flipped them to status=error — which is
+    # exactly the 20 draining/error ci-builder records found on ops-hub
+    # 2026-08-02.
+    context "when the provider terminate FAILS (err Result, no exception)" do
+      before do
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+          .and_return(::System::Runtime::Result.err(error: "provider refused"))
+      end
+
+      it "does not count a failed terminate as drained" do
+        result = described_class.drain!(pool: pool)
+
+        expect(result[:drained]).to eq(0)
+      end
+
+      it "marks the member errored instead of leaving it silently draining" do
+        described_class.drain!(pool: pool)
+
+        expect([ ready_a.reload.pool_state, ready_b.reload.pool_state ]).to all(eq("errored"))
+      end
     end
 
     # F2-02 — drain! must not clobber a member a concurrent acquire!
@@ -703,6 +740,78 @@ RSpec.describe System::InstancePoolService, type: :service do
       expect(result[:seed_reloads]).to eq(1)
     end
   end
+
+  # Nothing pruned dead pool members, so their Node + NodeInstance rows
+  # accumulated forever: 94 ci-native-builder nodes piled up in 15 days on
+  # ops-hub (2026-08-02) for a pool whose members live minutes.
+  # NodeMaintenanceService#task_resource_cleanup exists but is never scheduled,
+  # is per-node, defaults to a 30-day window (longer than a builder's entire
+  # lifecycle), covers only "terminated", and never removes the Node row.
+  describe ".recycle_stale_members! record retention" do
+    def seed_dead_member(status:, age:)
+      member = seed_pool_member(state: "draining")
+      member.update_columns(status: status, updated_at: age.ago)
+      member
+    end
+
+    it "prunes pool members dead longer than the retention window" do
+      old = seed_dead_member(status: "terminated", age: 30.days)
+
+      expect { described_class.recycle_stale_members!(pool: pool) }
+        .to change { System::NodeInstance.where(id: old.id).count }.from(1).to(0)
+    end
+
+    it "prunes errored members too, not just terminated ones" do
+      old = seed_dead_member(status: "error", age: 30.days)
+
+      described_class.recycle_stale_members!(pool: pool)
+
+      expect(System::NodeInstance.where(id: old.id)).not_to exist
+    end
+
+    it "keeps members that died recently" do
+      recent = seed_dead_member(status: "terminated", age: 1.hour)
+
+      described_class.recycle_stale_members!(pool: pool)
+
+      expect(System::NodeInstance.where(id: recent.id)).to exist
+    end
+
+    it "never prunes a live member, however old" do
+      live = seed_pool_member(state: "ready")
+      live.update_columns(updated_at: 90.days.ago)
+
+      described_class.recycle_stale_members!(pool: pool)
+
+      expect(System::NodeInstance.where(id: live.id)).to exist
+    end
+
+    it "removes the node once its last pool instance is pruned" do
+      old = seed_dead_member(status: "terminated", age: 30.days)
+      node_id = old.node_id
+
+      described_class.recycle_stale_members!(pool: pool)
+
+      expect(System::Node.where(id: node_id)).not_to exist
+    end
+
+    it "honours a per-pool retention override" do
+      pool.update!(metadata: pool.metadata.merge("record_retention_days" => 60))
+      old = seed_dead_member(status: "terminated", age: 30.days)
+
+      described_class.recycle_stale_members!(pool: pool)
+
+      expect(System::NodeInstance.where(id: old.id)).to exist
+    end
+
+    it "reports what it pruned" do
+      seed_dead_member(status: "terminated", age: 30.days)
+
+      counts = described_class.recycle_stale_members!(pool: pool)
+
+      expect(counts[:records_pruned]).to eq(1)
+    end
+  end
 end
 
 RSpec.describe System::InstancePool, type: :model do
@@ -898,4 +1007,5 @@ RSpec.describe System::NodeInstance, "pool methods (slice 7)", type: :model do
       }.to raise_error(ActiveRecord::CheckViolation, /chk_node_instances_pool_state/)
     end
   end
+
 end

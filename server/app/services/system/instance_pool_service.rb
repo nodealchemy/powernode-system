@@ -19,6 +19,13 @@ module System
     class PoolAtMaxCapacityError < PoolError; end
     class InvalidPoolStateError < PoolError; end
 
+    # How long a dead pool member's DB records survive before the reaper
+    # prunes them. Pool members are ephemeral (a CI builder lives minutes), so
+    # a week is already generous for post-mortem inspection while keeping the
+    # fleet list bounded. Override per pool with
+    # metadata["record_retention_days"]; 0 or negative disables pruning.
+    DEAD_RECORD_RETENTION_DAYS = 7
+
     # Maximum age (seconds) for a "warming" instance before the reaper
     # marks it errored. Provider boot + agent enrollment + module attach
     # should reach "running" + ready within ~10min for cloud, longer for
@@ -208,6 +215,7 @@ module System
         pool.update!(status: "draining")
 
         terminated = []
+        failed = []
         # F2-02 — re-select under row lock so drain never races acquire!:
         # SKIP LOCKED skips members a concurrent acquire transaction holds,
         # and the conditional UPDATE skips members claimed since the
@@ -220,23 +228,47 @@ module System
 
           # Audit plan P2.5 gap #2 — actually call the cloud-provider
           # terminate. Prior implementation only flipped pool_state.
-          begin
-            ::System::ProvisioningService.terminate_instance(instance: member)
-          rescue StandardError => e
-            Rails.logger.warn(
-              "[InstancePoolService] terminate failed during drain " \
-              "(instance=#{member.id} pool='#{pool.name}'): #{e.class}: #{e.message}"
-            )
+          if terminate_member(member, pool: pool, phase: "drain")
+            terminated << member.id
+          else
+            # The terminate did NOT happen. Leaving the row in 'draining'
+            # made the failure invisible: drain reported success, nothing
+            # retried, the VM kept running, and once the row went silent
+            # the fleet decision engine's presumed-dead ladder flipped it
+            # to status=error. Park it in 'errored' so it is distinguishable
+            # from a clean drain. Set directly rather than via
+            # mark_pool_errored!, which refuses a 'draining' row — that
+            # guard protects members mid-drain from the reaper, and here we
+            # ARE the drain.
+            pool.node_instances
+                .where(id: member.id)
+                .update_all(pool_state: "errored", updated_at: Time.current)
+            failed << member.id
           end
-          terminated << member.id
+        end
+
+        if failed.any?
+          ::System::Fleet::EventBroadcaster.emit!(
+            account: pool.account,
+            kind: "system.pool.terminate_failed",
+            severity: :high,
+            payload: {
+              pool_id: pool.id,
+              pool_name: pool.name,
+              phase: "drain",
+              failed_instance_ids: failed
+            },
+            source: "instance_pool_service"
+          )
         end
 
         Rails.logger.info(
           "[InstancePoolService] drained pool '#{pool.name}' " \
-          "ready_terminated=#{terminated.size} claimed_remaining=#{pool.claimed_count}"
+          "ready_terminated=#{terminated.size} terminate_failed=#{failed.size} " \
+          "claimed_remaining=#{pool.claimed_count}"
         )
 
-        { drained: terminated.size, claimed_remaining: pool.claimed_count }
+        { drained: terminated.size, terminate_failed: failed.size, claimed_remaining: pool.claimed_count }
       end
     end
 
@@ -336,6 +368,8 @@ module System
         ready_to_draining: 0,
         claimed_flagged: 0,
         claimed_heartbeat_flagged: 0,
+        terminate_failed: 0,
+        records_pruned: 0,
         seed_reloads: seed_reload_count
       }
 
@@ -356,14 +390,7 @@ module System
           # never heartbeated). Marking it errored without tearing down the
           # VM leaked it on the provider forever; this was the dominant
           # cause of the ci-builder VM sprawl on dna (2026-07-21).
-          begin
-            ::System::ProvisioningService.terminate_instance(instance: m)
-          rescue StandardError => e
-            Rails.logger.warn(
-              "[InstancePoolService] terminate failed during stale-recycle " \
-              "(instance=#{m.id} pool='#{pool.name}'): #{e.class}: #{e.message}"
-            )
-          end
+          counts[:terminate_failed] += 1 unless terminate_member(m, pool: pool, phase: "stale-warming")
         end
         stale_ready.lock("FOR UPDATE SKIP LOCKED").find_each do |m|
           still_ready = pool.node_instances
@@ -374,14 +401,7 @@ module System
           # Audit plan P2.5 gap #3 — TTL-aware reaping must actually
           # terminate the cloud VM. Prior implementation only flipped
           # pool_state; the underlying VM ran past ready_ttl indefinitely.
-          begin
-            ::System::ProvisioningService.terminate_instance(instance: m)
-          rescue StandardError => e
-            Rails.logger.warn(
-              "[InstancePoolService] terminate failed during stale-recycle " \
-              "(instance=#{m.id} pool='#{pool.name}'): #{e.class}: #{e.message}"
-            )
-          end
+          counts[:terminate_failed] += 1 unless terminate_member(m, pool: pool, phase: "stale-ready")
           counts[:ready_to_draining] += 1
 
           # Observability parity with the claimed-flag event below — a
@@ -463,6 +483,13 @@ module System
           counts[:claimed_heartbeat_flagged] += 1
         end
       end
+
+      # Runs outside the FOR UPDATE transaction above: pruning touches only
+      # rows that are already dead (terminated/error) and long past the
+      # retention window, so it never contends with acquire!/drain!, and
+      # holding the pool's row locks across a cascading destroy would
+      # serialise the 60s tick behind it.
+      counts[:records_pruned] = prune_dead_records!(pool: pool, now: now)
 
       counts.values.sum.positive? &&
         Rails.logger.info("[InstancePoolService] recycled stale members in '#{pool.name}': #{counts}")
@@ -562,6 +589,83 @@ module System
     end
 
     private
+
+    # Terminate one pool member, returning whether it actually happened.
+    #
+    # ProvisioningService.terminate_instance RETURNS a Runtime::Result and only
+    # re-raises ArgumentError — a provider failure comes back as an err Result,
+    # NOT an exception. Every caller here used to wrap the call in `rescue
+    # StandardError` and discard the return value, so a failed terminate was
+    # indistinguishable from a successful one: drain reported success, the VM
+    # kept running on the provider, and the row sat in a non-terminal state
+    # until the fleet decision engine's presumed-dead ladder flipped it to
+    # status=error (reap_presumed_dead!). That is how ops-hub accumulated 20
+    # ci-builder rows in pool_state=draining + status=error by 2026-08-02.
+    #
+    # Tolerates a non-Result return so existing callers and test stubs that
+    # hand back a bare truthy value keep meaning "succeeded" — only an explicit
+    # failure Result counts as a failure.
+    def terminate_member(member, pool:, phase:)
+      result = ::System::ProvisioningService.terminate_instance(instance: member)
+      return true unless result.respond_to?(:failure?) && result.failure?
+
+      Rails.logger.error(
+        "[InstancePoolService] terminate FAILED during #{phase} " \
+        "(instance=#{member.id} pool='#{pool.name}'): #{result.error}"
+      )
+      false
+    rescue StandardError => e
+      Rails.logger.error(
+        "[InstancePoolService] terminate RAISED during #{phase} " \
+        "(instance=#{member.id} pool='#{pool.name}'): #{e.class}: #{e.message}"
+      )
+      false
+    end
+
+    # Retention sweep for dead pool members' DB records.
+    #
+    # Pool members are ephemeral by definition — a CI builder lives minutes —
+    # but nothing ever pruned their rows, so Node + NodeInstance records
+    # accumulated without bound (94 ci-native-builder nodes in 15 days on
+    # ops-hub, 2026-08-02). NodeMaintenanceService#task_resource_cleanup is not
+    # a substitute: it is never scheduled, runs per-node, defaults to a 30-day
+    # window (longer than a member's entire lifecycle), only handles
+    # "terminated", and leaves the Node row behind.
+    #
+    # Deliberately conservative: scoped to this pool's own members via
+    # instance_pool_id, only rows already in a terminal status, and only past
+    # the retention window. `destroy` (not delete_all) so dependent tasks and
+    # certificates go with them — several FKs onto these tables are NO ACTION,
+    # and a raw delete would either violate them or orphan rows.
+    def prune_dead_records!(pool:, now:)
+      retention_days = pool.metadata.to_h["record_retention_days"].presence&.to_i ||
+                       DEAD_RECORD_RETENTION_DAYS
+      return 0 if retention_days <= 0
+
+      dead = pool.node_instances
+                 .where(status: %w[terminated error])
+                 .where("updated_at < ?", now - retention_days.days)
+
+      pruned = 0
+      dead.find_each do |member|
+        node = member.node
+        member.destroy!
+        pruned += 1
+
+        # The pool provisions a dedicated Node per member, so once its last
+        # instance is gone the Node is an empty shell. Guarded on there being
+        # no surviving instances so a shared or pre-provisioned Node is never
+        # taken out from under a live one.
+        node.destroy! if node && node.node_instances.reload.empty?
+      rescue StandardError => e
+        Rails.logger.error(
+          "[InstancePoolService] record prune failed " \
+          "(instance=#{member.id} pool='#{pool.name}'): #{e.class}: #{e.message}"
+        )
+      end
+
+      pruned
+    end
 
     # Best-effort provider resolution for reload_pending_seeds! — a member
     # whose pool/region has no resolvable provider connection (misconfigured,
