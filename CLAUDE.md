@@ -91,7 +91,7 @@ The full action catalog regenerates via `cd server && bundle exec rails mcp:gene
 This is a git submodule. Per root CLAUDE.md:
 - Always run `git rev-parse --show-toplevel` before `git add`/`commit`
 - Commit inside the submodule first, then bump the parent's submodule pointer
-- The system extension is dual-remoted: `origin` = public GitHub mirror (MIT, `github.com/nodealchemy/powernode-system`), `ipnode` = private Gitea upstream. Push to **both** on every push to a shared branch (e.g. `develop`) — keep the public mirror continuously in sync. Do **not** run `git submodule sync` (it would drop the `ipnode` remote).
+- The system extension is dual-remoted: `origin` = private Gitea upstream (`git@git.powernode.net:powernode/powernode-system.git`), `github` = public GitHub mirror (MIT, `github.com/nodealchemy/powernode-system`). Push to **both** on every push to a shared branch (e.g. `develop`) — keep the public mirror continuously in sync. Do **not** run `git submodule sync`: `.gitmodules` records the public **HTTPS** GitHub URL, so sync overwrites `origin`'s Gitea URL with it — losing the private upstream, and leaving an origin that cannot push non-interactively (`could not read Username for 'https://github.com'`).
 
 ### Test patterns
 
