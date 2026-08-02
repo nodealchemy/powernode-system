@@ -48,6 +48,37 @@ module System
     # Configurable per-pool via metadata["claimed_ttl_seconds"].
     DEFAULT_CLAIMED_TTL_SECONDS = 24 * 3600 # 24 hours
 
+    # Bound + backoff for the errored → terminated cleanup phase. That phase
+    # retries a CLOUD PROVIDER call from a reaper that ticks every 60s, so
+    # unbounded retries are not an option: a permanently-failing terminate
+    # (credentials revoked, VM stranded on a dead hypervisor, provider
+    # rejecting the delete) would otherwise cost 1440 provider calls per
+    # member per day, forever.
+    #
+    #   - MAX_ATTEMPTS caps the total number of terminate calls one member
+    #     can ever cost.
+    #   - BACKOFF_SECONDS is the BASE of an exponential delay between
+    #     attempts — base * 2^(attempts - 1), capped at BACKOFF_CAP_SECONDS,
+    #     measured from the member's last recorded attempt.
+    #
+    # With the defaults a stuck member costs at most 5 provider calls spread
+    # over ~75 minutes (attempt 1 immediately, then +5m, +10m, +20m, +40m)
+    # before the reaper stops and escalates to the operator (error log +
+    # high-severity FleetEvent — see #abandon_errored_member!).
+    #
+    # The numbers are POLICY. Override per pool via
+    # metadata["errored_terminate_max_attempts"] /
+    # ["errored_terminate_backoff_seconds"] /
+    # ["errored_terminate_backoff_cap_seconds"], same shape as
+    # ["warming_timeout_seconds"] / ["record_retention_days"]. A missing,
+    # non-numeric, or non-positive override falls back to the default rather
+    # than being taken literally — a 0 cap would silently disable cloud
+    # cleanup (leaking VMs), and a 0 backoff would restore the every-60s
+    # hammering this bound exists to prevent.
+    DEFAULT_ERRORED_TERMINATE_MAX_ATTEMPTS = 5
+    DEFAULT_ERRORED_TERMINATE_BACKOFF_SECONDS = 300 # 5 min
+    DEFAULT_ERRORED_TERMINATE_BACKOFF_CAP_SECONDS = 3600 # 1 hour
+
     def self.acquire!(account:, pool_name: nil, pool_id: nil, lifecycle_class: nil)
       new(account: account).acquire!(
         pool_name: pool_name,
@@ -293,7 +324,16 @@ module System
     #     the platform's presumed-dead ladder (fleet/decision_engine.rb),
     #     which uses a much longer window (30min) + status==running and
     #     still never auto-terminates.
-    #   - errored members → terminated (cleanup)
+    #   - errored members → terminated (cleanup), with a BOUNDED,
+    #     backed-off provider terminate. A member lands in "errored" when
+    #     the warming-timeout path gives up on it or when drain!'s provider
+    #     terminate failed — in the latter case its VM is very likely still
+    #     running, so "never retried, never torn down" leaks a cloud
+    #     instance forever. Retries are capped + exponentially spaced (see
+    #     DEFAULT_ERRORED_TERMINATE_* above) because this calls a cloud
+    #     provider every 60s tick; once the cap is spent the member is
+    #     abandoned LOUDLY (error log + high-severity FleetEvent) and never
+    #     retried again.
     def recycle_stale_members!(pool:)
       # Seed-reload phase runs FIRST and OUTSIDE the FOR UPDATE transaction
       # below — power-cycling a PVE VM is a slow external API call (multiple
@@ -311,6 +351,15 @@ module System
                   DEFAULT_READY_TTL_SECONDS
       claimed_ttl = pool.metadata["claimed_ttl_seconds"]&.to_i ||
                     DEFAULT_CLAIMED_TTL_SECONDS
+      errored_max_attempts = positive_pool_setting(
+        pool, "errored_terminate_max_attempts", DEFAULT_ERRORED_TERMINATE_MAX_ATTEMPTS
+      )
+      errored_backoff_seconds = positive_pool_setting(
+        pool, "errored_terminate_backoff_seconds", DEFAULT_ERRORED_TERMINATE_BACKOFF_SECONDS
+      )
+      errored_backoff_cap_seconds = positive_pool_setting(
+        pool, "errored_terminate_backoff_cap_seconds", DEFAULT_ERRORED_TERMINATE_BACKOFF_CAP_SECONDS
+      )
 
       # Heartbeat-driven staleness — additive to the TTL windows above. A
       # ready/claimed member whose on-node agent has stopped heartbeating is
@@ -363,11 +412,31 @@ module System
         pool.node_instances.none
       end
 
+      # Errored-member cleanup candidates, snapshotted as IDs BEFORE the
+      # transaction below runs its warming phase. Two reasons this is a
+      # snapshot and not a lazy relation:
+      #
+      #   1. The warming-timeout phase marks members "errored" in this same
+      #      transaction AND already makes their first terminate attempt. A
+      #      lazy `pool.errored_members` would pick those up moments later
+      #      and terminate them a second time in the same tick; the snapshot
+      #      defers them to the next tick instead.
+      #   2. Members already abandoned (pool_terminate_gave_up_at stamped)
+      #      are excluded outright — their bound is spent and the operator
+      #      has been notified, so nothing here calls the provider for them
+      #      again. That exclusion is what makes "stop retrying" durable
+      #      across reaper ticks.
+      errored_member_ids = pool.errored_members
+                               .where("config->>'pool_terminate_gave_up_at' IS NULL")
+                               .pluck(:id)
+
       counts = {
         warming_to_errored: 0,
         ready_to_draining: 0,
         claimed_flagged: 0,
         claimed_heartbeat_flagged: 0,
+        errored_terminated: 0,
+        errored_abandoned: 0,
         terminate_failed: 0,
         records_pruned: 0,
         seed_reloads: seed_reload_count
@@ -481,6 +550,97 @@ module System
             node_instance_id: m.id
           )
           counts[:claimed_heartbeat_flagged] += 1
+        end
+
+        # errored → terminated (cleanup). The phase this method's header has
+        # documented since slice 7 but which was never implemented — which is
+        # why System::NodeInstance.pool_errored had zero callers and an
+        # errored member was neither retried nor torn down.
+        #
+        # Same locking discipline as drain!/stale_ready: FOR UPDATE SKIP
+        # LOCKED plus a conditional UPDATE guarded on the member still being
+        # "errored", so a member whose state changed since the snapshot is
+        # never clobbered (and never charged an attempt).
+        pool.node_instances
+            .where(id: errored_member_ids, pool_state: "errored")
+            .lock("FOR UPDATE SKIP LOCKED").find_each do |m|
+          # Nothing to reclaim on the provider: the member never got a cloud
+          # VM (provision died before the provider call, or it isn't a cloud
+          # member), or its row already reached the terminal `terminated`
+          # status so the VM is gone. terminate_instance would answer
+          # err("Instance has no cloud instance ID") / re-delete a destroyed
+          # VM, burning the whole retry bound and ending in a high-severity
+          # "the VM may still be running" alert that is simply false. Take it
+          # out of the errored set directly — 'draining' is the same
+          # out-of-circulation state a successful drain leaves behind, and
+          # record retention takes the row from there.
+          if m.cloud_instance_id.blank? || m.status == "terminated"
+            cleaned = pool.node_instances
+                          .where(id: m.id, pool_state: "errored")
+                          .update_all(pool_state: "draining", updated_at: now)
+            next if cleaned.zero?
+
+            Rails.logger.info(
+              "[InstancePoolService] errored member has no provider resource to reclaim " \
+              "(instance=#{m.id} pool='#{pool.name}' status=#{m.status}) — marking cleaned up"
+            )
+            counts[:errored_terminated] += 1
+            next
+          end
+
+          attempts = m.config.to_h["pool_terminate_attempts"].to_i
+
+          # Bound already spent without an abandonment stamp — reachable when
+          # an operator LOWERS errored_terminate_max_attempts after the fact.
+          # Give up loudly rather than silently retrying past the new cap.
+          if attempts >= errored_max_attempts
+            counts[:errored_abandoned] += 1 if abandon_errored_member!(
+              member: m, pool: pool, now: now,
+              attempts: attempts, max_attempts: errored_max_attempts
+            )
+            next
+          end
+
+          next unless errored_terminate_backoff_elapsed?(
+            member: m, now: now, attempts: attempts,
+            base: errored_backoff_seconds, cap: errored_backoff_cap_seconds
+          )
+
+          # Conditional UPDATE under the row lock: re-checks pool_state AND
+          # records the attempt in the same statement, so the bound is
+          # durable the moment we commit to calling the provider — the
+          # reaper re-reads it 60s later, where an in-memory counter would
+          # be long gone.
+          claimed = pool.node_instances
+                        .where(id: m.id, pool_state: "errored")
+                        .update_all([
+                          "config = config || ?::jsonb, updated_at = ?",
+                          { "pool_terminate_attempts" => attempts + 1,
+                            "pool_terminate_last_attempt_at" => now.iso8601 }.to_json,
+                          now
+                        ])
+          next if claimed.zero?
+
+          # Reuses terminate_member so the Runtime::Result is inspected
+          # correctly (terminate_instance returns an err Result on provider
+          # failure and only RAISES ArgumentError — ignoring its return value
+          # is the original defect this whole cleanup exists to unwind).
+          if terminate_member(m, pool: pool, phase: "errored-cleanup")
+            pool.node_instances
+                .where(id: m.id, pool_state: "errored")
+                .update_all(pool_state: "draining", updated_at: now)
+            counts[:errored_terminated] += 1
+          else
+            counts[:terminate_failed] += 1
+            # Stays "errored" so the next tick can retry it — unless that was
+            # the last attempt the bound allows, in which case stop here.
+            if attempts + 1 >= errored_max_attempts
+              counts[:errored_abandoned] += 1 if abandon_errored_member!(
+                member: m, pool: pool, now: now,
+                attempts: attempts + 1, max_attempts: errored_max_attempts
+              )
+            end
+          end
         end
       end
 
@@ -620,6 +780,82 @@ module System
         "(instance=#{member.id} pool='#{pool.name}'): #{e.class}: #{e.message}"
       )
       false
+    end
+
+    # Per-pool integer setting with the same coercion discipline the
+    # heartbeat_stale_after_seconds override learned the hard way: a missing,
+    # non-numeric ("abc" → 0), or non-positive value falls back to the
+    # built-in default instead of being taken literally. `.to_i` is NOT safe
+    # to call blindly — a boolean in metadata raises NoMethodError, which
+    # would kill every phase in the reaper's transaction.
+    def positive_pool_setting(pool, key, default)
+      raw = pool.metadata.to_h[key]
+      value = raw.respond_to?(:to_i) ? raw.to_i : 0
+      value.positive? ? value : default
+    end
+
+    # Exponential-backoff gate for the errored-member terminate retry.
+    # Never attempted (attempts == 0) → always eligible. Otherwise the next
+    # attempt waits base * 2^(attempts - 1), capped, measured from the last
+    # recorded attempt. A missing or unparseable timestamp means we have no
+    # evidence of a recent attempt, so we proceed — the attempt COUNT bounds
+    # the provider calls independently of the clock.
+    def errored_terminate_backoff_elapsed?(member:, now:, attempts:, base:, cap:)
+      return true if attempts <= 0
+
+      last_attempt_at = begin
+        raw = member.config.to_h["pool_terminate_last_attempt_at"]
+        raw.present? ? Time.zone.parse(raw) : nil
+      rescue ArgumentError
+        nil
+      end
+      return true if last_attempt_at.nil?
+
+      last_attempt_at <= now - [ base * (2**(attempts - 1)), cap ].min
+    end
+
+    # Terminal give-up for an errored member whose bounded terminate retries
+    # are spent. Stamps pool_terminate_gave_up_at — which drops the member
+    # out of the cleanup snapshot for good, so this is also what makes the
+    # alert fire exactly once — then logs at error and emits a high-severity
+    # FleetEvent. Abandoning cleanup can mean a provider VM is still running
+    # (and billing), so it is never silent. Guarded on the member still being
+    # "errored" (the same conditional-UPDATE discipline as the phase itself);
+    # returns false when it isn't, so the caller neither counts nor alerts.
+    def abandon_errored_member!(member:, pool:, now:, attempts:, max_attempts:)
+      stamped = pool.node_instances
+                    .where(id: member.id, pool_state: "errored")
+                    .update_all([
+                      "config = config || ?::jsonb, updated_at = ?",
+                      { "pool_terminate_gave_up_at" => now.iso8601 }.to_json,
+                      now
+                    ])
+      return false if stamped.zero?
+
+      Rails.logger.error(
+        "[InstancePoolService] GIVING UP on errored pool member after #{attempts} failed " \
+        "terminate attempts (limit=#{max_attempts} instance=#{member.id} pool='#{pool.name}' " \
+        "cloud_instance_id=#{member.cloud_instance_id.inspect}) — the provider resource may " \
+        "still exist; operator cleanup required"
+      )
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: pool.account,
+        kind: "system.pool.terminate_abandoned",
+        severity: :high,
+        payload: {
+          pool_id: pool.id,
+          pool_name: pool.name,
+          phase: "errored-cleanup",
+          instance_id: member.id,
+          cloud_instance_id: member.cloud_instance_id,
+          attempts: attempts,
+          max_attempts: max_attempts
+        },
+        source: "instance_pool_service",
+        node_instance_id: member.id
+      )
+      true
     end
 
     # Retention sweep for dead pool members' DB records.

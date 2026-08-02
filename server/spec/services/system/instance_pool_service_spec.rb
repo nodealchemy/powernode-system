@@ -577,6 +577,218 @@ RSpec.describe System::InstancePoolService, type: :service do
         expect(result[:ready_to_draining]).to eq(1)
       end
     end
+
+    # The method's own header documented an "errored members → terminated
+    # (cleanup)" phase that was never implemented (NodeInstance's
+    # pool_errored scope had ZERO callers), so a member in pool_state=errored
+    # was never retried and never torn down. The drain-failure fix made that
+    # gap load-bearing: a failed provider terminate now parks the member in
+    # exactly that state, with its VM very likely still running.
+    #
+    # The retry is BOUNDED and BACKED OFF because it calls a cloud provider
+    # and the reaper ticks every 60s: the attempt count + last-attempt
+    # timestamp live in the member's config jsonb (in-memory counters are
+    # useless across ticks), and exhausting the bound is loud (error log +
+    # high-severity FleetEvent), never silent.
+    context "errored members → terminated cleanup (bounded retry)" do
+      def seed_errored_member(cloud_instance_id: "dna/qemu/#{SecureRandom.hex(3)}", config_extra: {})
+        m = seed_pool_member(state: "errored")
+        cfg = m.config.merge(config_extra)
+        cfg["cloud_instance_id"] = cloud_instance_id if cloud_instance_id
+        m.update!(config: cfg)
+        m
+      end
+
+      def stub_terminate_failure!
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+          .and_return(::System::Runtime::Result.err(error: "provider refused"))
+      end
+
+      it "terminates the provider VM for an errored member and takes it out of the errored set" do
+        m = seed_errored_member
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+          .and_return(::System::Runtime::Result.ok)
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(::System::ProvisioningService).to have_received(:terminate_instance).with(instance: m)
+        expect(m.reload.pool_state).to eq("draining")
+        expect(result[:errored_terminated]).to eq(1)
+      end
+
+      it "records the attempt durably and does not re-call the provider within the backoff window" do
+        m = seed_errored_member
+        stub_terminate_failure!
+
+        first = described_class.recycle_stale_members!(pool: pool)
+
+        expect(first[:terminate_failed]).to eq(1)
+        expect(first[:errored_terminated]).to eq(0)
+        m.reload
+        expect(m.pool_state).to eq("errored") # stays errored — the VM is still there
+        expect(m.config["pool_terminate_attempts"]).to eq(1)
+        expect(m.config["pool_terminate_last_attempt_at"]).to be_present
+
+        # Second tick 60s later: the backoff must suppress the retry.
+        second = described_class.recycle_stale_members!(pool: pool)
+
+        expect(::System::ProvisioningService).to have_received(:terminate_instance).once
+        expect(second[:terminate_failed]).to eq(0)
+        expect(m.reload.config["pool_terminate_attempts"]).to eq(1)
+      end
+
+      it "retries once the backoff window has elapsed" do
+        m = seed_errored_member(config_extra: {
+          "pool_terminate_attempts" => 1,
+          "pool_terminate_last_attempt_at" => 10.minutes.ago.iso8601
+        })
+        stub_terminate_failure!
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(::System::ProvisioningService).to have_received(:terminate_instance).with(instance: m)
+        expect(m.reload.config["pool_terminate_attempts"]).to eq(2)
+      end
+
+      it "gives up loudly once the attempt bound is exhausted (error log + fleet event)" do
+        m = seed_errored_member(config_extra: {
+          "pool_terminate_attempts" => 4,
+          "pool_terminate_last_attempt_at" => 6.hours.ago.iso8601
+        })
+        stub_terminate_failure!
+        allow(Rails.logger).to receive(:error).and_call_original
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(result[:errored_abandoned]).to eq(1)
+        m.reload
+        expect(m.config["pool_terminate_attempts"]).to eq(5)
+        expect(m.config["pool_terminate_gave_up_at"]).to be_present
+        expect(Rails.logger).to have_received(:error).with(/GIVING UP/)
+
+        event = System::FleetEvent.where(account: account, kind: "system.pool.terminate_abandoned").last
+        expect(event).to be_present
+        expect(event.node_instance_id).to eq(m.id)
+        expect(event.severity).to eq("high")
+      end
+
+      it "never calls the provider again for an abandoned member" do
+        seed_errored_member(config_extra: {
+          "pool_terminate_attempts" => 4,
+          "pool_terminate_last_attempt_at" => 6.hours.ago.iso8601
+        })
+        stub_terminate_failure!
+        described_class.recycle_stale_members!(pool: pool)
+
+        second = described_class.recycle_stale_members!(pool: pool)
+
+        expect(::System::ProvisioningService).to have_received(:terminate_instance).once
+        expect(second[:errored_abandoned]).to eq(0)
+        expect(System::FleetEvent.where(account: account, kind: "system.pool.terminate_abandoned").count).to eq(1)
+      end
+
+      it "honours a per-pool errored_terminate_max_attempts override" do
+        pool.update!(metadata: { "errored_terminate_max_attempts" => 1 })
+        m = seed_errored_member
+        stub_terminate_failure!
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(result[:errored_abandoned]).to eq(1)
+        expect(m.reload.config["pool_terminate_gave_up_at"]).to be_present
+      end
+
+      it "honours a per-pool errored_terminate_backoff_seconds override" do
+        pool.update!(metadata: { "errored_terminate_backoff_seconds" => 1 })
+        m = seed_errored_member(config_extra: {
+          "pool_terminate_attempts" => 1,
+          "pool_terminate_last_attempt_at" => 5.seconds.ago.iso8601
+        })
+        stub_terminate_failure!
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        # Would have been suppressed by the 300s default backoff.
+        expect(m.reload.config["pool_terminate_attempts"]).to eq(2)
+      end
+
+      it "falls back to the default bound when the override is garbage" do
+        pool.update!(metadata: { "errored_terminate_max_attempts" => "abc" })
+        m = seed_errored_member
+        stub_terminate_failure!
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        # A literal 0 bound would abandon the member on sight, never calling
+        # the provider at all — cloud cleanup must not be disabled by a typo.
+        expect(result[:errored_abandoned]).to eq(0)
+        expect(result[:terminate_failed]).to eq(1)
+        expect(m.reload.config["pool_terminate_attempts"]).to eq(1)
+      end
+
+      it "does not call the provider for an errored member that never had a cloud VM" do
+        m = seed_errored_member(cloud_instance_id: nil)
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(::System::ProvisioningService).not_to have_received(:terminate_instance)
+        expect(m.reload.pool_state).to eq("draining")
+        expect(result[:errored_terminated]).to eq(1)
+        expect(m.config["pool_terminate_attempts"]).to be_nil
+      end
+
+      it "does not call the provider for an errored member already terminated" do
+        m = seed_errored_member
+        m.update_columns(status: "terminated")
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(::System::ProvisioningService).not_to have_received(:terminate_instance)
+        expect(m.reload.pool_state).to eq("draining")
+        expect(result[:errored_terminated]).to eq(1)
+      end
+
+      # Same locking discipline as drain!/stale_ready: the member set is
+      # snapshotted, so a member whose pool_state changed before this phase
+      # reached it must be left alone rather than terminated.
+      it "does not terminate a member whose pool_state changed since the snapshot" do
+        a = seed_errored_member
+        b = seed_errored_member
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |instance:|
+          other = [ a, b ].find { |m| m.id != instance.id }
+          other.update!(pool_state: "draining") if other&.reload&.pool_state == "errored"
+          ::System::Runtime::Result.ok
+        end
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(::System::ProvisioningService).to have_received(:terminate_instance).once
+        expect(result[:errored_terminated]).to eq(1)
+        expect([ a.reload.pool_state, b.reload.pool_state ]).to all(eq("draining"))
+        # The skipped member was never charged an attempt.
+        expect([ a.config["pool_terminate_attempts"], b.config["pool_terminate_attempts"] ])
+          .to contain_exactly(nil, 1)
+      end
+
+      # A member the warming-timeout phase errors during THIS tick already
+      # got its terminate attempt there — terminating it a second time in
+      # the same pass would double the provider calls.
+      it "leaves a member errored by this same tick's warming phase for the next tick" do
+        m = seed_pool_member(state: "warming", warming_started_at: 2.hours.ago)
+        m.update!(config: m.config.merge("cloud_instance_id" => "dna/qemu/555"))
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+          .and_return(::System::Runtime::Result.ok)
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(::System::ProvisioningService).to have_received(:terminate_instance).once
+        expect(m.reload.pool_state).to eq("errored")
+        expect(result[:warming_to_errored]).to eq(1)
+        expect(result[:errored_terminated]).to eq(0)
+      end
+    end
   end
 
   # Reaper-driven deferred cloud-init seed reload for Proxmox uefi_disk
