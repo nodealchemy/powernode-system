@@ -1,7 +1,7 @@
 schema_version: 1
 name: powernode-hub-worker
-display_name: Powernode Hub Worker (Sidekiq)
-description: Sidekiq worker process; communicates with hub-backend via HTTP API only
+display_name: Powernode Hub Worker (Sidekiq + HTTP API)
+description: Sidekiq job processor plus the worker HTTP API (embeddings, LLM proxy, job endpoints); communicates with hub-backend via HTTP API only
 license: MIT
 category: platform-apps
 package_spec: []
@@ -82,6 +82,54 @@ services:
     metadata:
       sidekiq_version: "7.x"
       notes: "Multi-host worker deployments override BACKEND_API_URL via config-variety child module. Cert material is managed by the agent — worker is read-only on PKI dir."
+
+  - name: worker-web
+    # The worker HTTP API — NOT just the /sidekiq dashboard. config.ru maps
+    # /api/v1 -> JobsController, which is where embeddings and the LLM proxy
+    # live; the backend's WorkerTransport targets it at
+    # Rails.application.config.worker_url (WORKER_URL, default
+    # http://localhost:4567).
+    #
+    # Without this service the platform can search embeddings already at rest
+    # but cannot generate a query embedding, so semantic search and
+    # embed-on-write fail while plain SQL lookups keep working. It ran only on
+    # the dev box as a hand-managed systemd unit
+    # (scripts/systemd/powernode-worker-web.sh) and so was never modularized —
+    # which is why fleet-hosted control planes silently had no embeddings.
+    start_command: "/usr/local/bin/worker-web-start.sh"
+    restart_policy: on-failure
+    user: root
+    working_directory: /opt/powernode/worker
+    env:
+      RAILS_ENV: production
+      # Loopback only — the backend is co-resident and reaches us via
+      # WORKER_URL=http://localhost:4567. A multi-host worker NodeInstance
+      # overrides both sides through the config-variety child module, the
+      # same seam as BACKEND_API_URL.
+      SIDEKIQ_WEB_HOST: "127.0.0.1"
+      SIDEKIQ_WEB_PORT: "4567"
+      # Same values as the sidekiq service above — both are processes of the
+      # same worker app and share its identity and mTLS material.
+      BACKEND_API_URL: "https://localhost:443/"
+      REDIS_URL: "redis://localhost:6379/0"
+      WORKER_PKI_DIR: "/persist/var/lib/powernode/pki"
+      WORKER_TLS_VERIFY: "false"
+      WORKER_ID: "powernode-hub-worker"
+    exposed_ports:
+      - { port: 4567, protocol: tcp, name: http }
+    capabilities: []
+    health:
+      endpoint: "/health"
+      method: GET
+      interval_seconds: 30
+      timeout_seconds: 5
+      initial_delay_seconds: 30
+    dependencies:
+      # sidekiq owns the one-time offline `bundle install` into the shared
+      # vendor/bundle; start after it so the two never install concurrently.
+      - { service: sidekiq, kind: start_before }
+    metadata:
+      notes: "Worker HTTP API (embeddings + LLM proxy + job endpoints), not merely the Sidekiq dashboard. Generates .session.key on first boot because config.ru reads it at load time and the secret is deliberately unshipped."
 
 security:
   capabilities: []
