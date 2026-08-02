@@ -5,7 +5,7 @@ module Api
     module System
       module WorkerApi
         # Worker-side entry point for the FleetAutonomyService reconcile tick.
-        # The standalone worker (powernode-worker@default) hits this endpoint
+        # The standalone worker (powernode-*-sidekiq.service) hits this endpoint
         # on a 60s cron; the controller does no work itself other than
         # delegating to ::System::Fleet::FleetAutonomyService.tick! per
         # account in scope.

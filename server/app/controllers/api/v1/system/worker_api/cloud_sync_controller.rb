@@ -5,7 +5,7 @@ module Api
     module System
       module WorkerApi
         # Worker-side entry point for cloud-state reconciliation.
-        # The standalone worker (powernode-worker@default) hits this endpoint
+        # The standalone worker (powernode-*-sidekiq.service) hits this endpoint
         # on an hourly cron via SystemCloudSyncJob; the controller iterates
         # active provider regions per account in scope and delegates to
         # ::System::CloudSyncService.sync_region_instances for each.

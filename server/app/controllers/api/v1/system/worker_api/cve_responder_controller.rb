@@ -6,7 +6,7 @@ module Api
       module WorkerApi
         # Worker-side entry point for the CVE Responder agent's reconcile
         # tick. Mirrors FleetController#reconcile shape verbatim. The
-        # standalone worker (powernode-worker@default) hits this endpoint
+        # standalone worker (powernode-*-sidekiq.service) hits this endpoint
         # every 60s via SystemCveResponderReconcileJob.
         #
         # Always returns 200 with a per-account summary so a mid-tick

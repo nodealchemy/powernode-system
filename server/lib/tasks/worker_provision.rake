@@ -182,8 +182,11 @@ optional: OUT_DIR (default /persist/var/lib/powernode/pki), TTL_DAYS (default 90
       puts "  Files:        node.key (0600), node.crt (0644), ca-bundle.crt (0644)"
       puts "  Expires:      #{result[:issued][:not_after]&.iso8601}"
       puts ""
-      puts "Next: restart powernode-worker@default — Sidekiq will pick up the"
-      puts "new mTLS material on boot. Cert rotation via the standard agent path"
+      puts "Next: restart the sidekiq unit — Sidekiq picks up the new mTLS"
+      puts "material on boot:"
+      puts "  sudo systemctl restart 'powernode-*-sidekiq.service'"
+      puts ""
+      puts "Cert rotation via the standard agent path"
       puts "is NOT available for self-host (no agent here); operator must re-run"
       puts "this task before NotAfter."
     end
