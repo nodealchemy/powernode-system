@@ -292,7 +292,7 @@ kubectl --kubeconfig=/tmp/k3s-smoke-kubeconfig-a exec pod-a -- wget -qO- http://
 | `Pod subnet prefix must not overlap network 'X' pod_subnet_prefix Y` | Existing dev DB network conflicts with smoke default | Override via `SMOKE_K3S_POD_PREFIX_A=10.250.0.0/16` (or any non-conflicting /16) |
 | Phase 5 prints `skipped (federation requires both Site A and Site B)` | Site B never bootstrapped | Re-run phases 1-4 with `SMOKE_K3S_SITE=b` before phase 5 |
 | `Tier::Insufficient` from a phase that should run | Misread tier matrix | Check the table above; raise `SMOKE_K3S_LEVEL` |
-| `wait_until cluster active timed out` | Real VM boot failed or agent never POST'd bootstrap | Check `cluster.metadata["bootstrap_events"]` (last 50 entries with phase/status); check `/tmp/smoke-serial/*` for kernel log; check `journalctl -u powernode-backend@default` for runtime_controller errors |
+| `wait_until cluster active timed out` | Real VM boot failed or agent never POST'd bootstrap | Check `cluster.metadata["bootstrap_events"]` (last 50 entries with phase/status); check `/tmp/smoke-serial/*` for kernel log; check `journalctl -u 'powernode-*-rails.service'` for runtime_controller errors |
 | `Validation failed: Reason is not included in the list` (VIP failover) | Wrong `reason` argument | Must be one of `initial`, `manual_failover`, `sensor_failover`, `holder_changed`, `revoked` |
 
 ## Teardown

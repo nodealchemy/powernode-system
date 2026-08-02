@@ -57,13 +57,13 @@ Hand the new token off again. If you're scripting accepts, generate the token th
 
 2. **Check the worker is processing the queue:**
    ```bash
-   sudo systemctl status powernode-worker@default
+   sudo systemctl status 'powernode-*-sidekiq.service'
    ```
    The worker should be `active (running)`. The federation heartbeat runs on the `system` queue.
 
 3. **Check worker logs for the sweep:**
    ```bash
-   journalctl -u powernode-worker@default -f | grep -i "FederationHeartbeatJob"
+   journalctl -u 'powernode-*-sidekiq.service' -f | grep -i "FederationHeartbeatJob"
    ```
    You should see `[FederationHeartbeatJob] Starting heartbeat sweep` every 60s.
 

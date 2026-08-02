@@ -246,8 +246,8 @@ platform.agent_introspect({ agent_id: "<fleet-autonomy-uuid>" })
 its tick isn't running. Check:
 
 ```bash
-sudo systemctl status powernode-worker@default
-journalctl -u powernode-worker@default | grep fleet_autonomy
+sudo systemctl status 'powernode-*-sidekiq.service'
+journalctl -u 'powernode-*-sidekiq.service' | grep fleet_autonomy
 ```
 
 **Health checks always fail** — default health check requires the instance

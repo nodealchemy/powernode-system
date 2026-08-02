@@ -231,7 +231,7 @@ moves `running → stopping → stopped` or `→ terminated`), not states.
 
 | Stuck in… | Likely cause | Recovery |
 |---|---|---|
-| `pending` (>5 min) | Worker queue stalled or provider quota | Check `platform.recent_events` for `provider_quota_exceeded`; restart worker via `sudo systemctl restart powernode-worker@default`; retry with the **same `operation_id`** |
+| `pending` (>5 min) | Worker queue stalled or provider quota | Check `platform.recent_events` for `provider_quota_exceeded`; restart worker via `sudo systemctl restart 'powernode-*-sidekiq.service'`; retry with the **same `operation_id`** |
 | `provisioning` (>10 min) | Provider API timeout, libvirt domain creation hung | `platform.system_cancel_task` the provision task; investigate provider. `terminate` does **not** fire from `provisioning` today — see "Clearing a stuck `provisioning` instance" below |
 | `provisioning`, agent up but never `running` (>5 min after first heartbeat) | Module pull failure | SSH to node (if SDWAN attached) → `journalctl -u powernode-agent` shows the failed module + reason; common: cosign signature mismatch, OCI 404, network |
 | `running` but no heartbeats >5 min | Network partition or agent crash | `platform.recent_events` for `instance.silent`; SSH or console-access via libvirt; manual restart of `powernode-agent.service` |

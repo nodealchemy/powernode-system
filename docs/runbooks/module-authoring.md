@@ -370,7 +370,7 @@ The `mask` directive is a deliberate escape hatch — use sparingly; it inverts 
 |---|---|---|
 | `ModuleManifestSchemaError` on push | YAML doesn't match schema_version | Run `platform.system_validate_module_manifest` locally first |
 | Cosign signature rejected | Static-key mismatch (default path) — repo's `POWERNODE_COSIGN_PRIVATE_KEY` doesn't correspond to the platform's `POWERNODE_COSIGN_PUBLIC_KEY`; only the keyless fallback checks `cosign_identity_regexp`/`cosign_issuer_regexp` | Confirm the repo's cosign key secret with your platform operator; for the keyless fallback, verify the signing CI's OIDC issuer matches your regexp |
-| Module shows in registry but no `NodeModuleVersion` row | OCI ingest hasn't run yet | Wait 60 s for the next ingest poll; check `journalctl -u powernode-worker@default \| grep ModuleOciIngest` |
+| Module shows in registry but no `NodeModuleVersion` row | OCI ingest hasn't run yet | Wait 60 s for the next ingest poll; check `journalctl -u 'powernode-*-sidekiq.service' \| grep ModuleOciIngest` |
 | `protected_spec` collision on assignment | Another module owns one of your protected files | Rename your file or use `mask` in a `config`-variety override |
 | Assignment to template succeeds but agent doesn't pull | Module is still `built` promotion_state — agents only pull `blessed`+ | Promote: `system_promote_module_version` |
 | fs-verity digest mismatch on agent | Module artifact corrupted during transit | Re-run CI build; the platform re-ingests on next OCI poll |

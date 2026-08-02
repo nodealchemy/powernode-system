@@ -244,8 +244,8 @@ ask the **System Concierge** in chat to attribute it — the
 unhealthy. Check:
 
 ```bash
-sudo systemctl status powernode-worker@default
-sudo systemctl restart powernode-worker@default       # safe; ~30s drain
+sudo systemctl status 'powernode-*-sidekiq.service'
+sudo systemctl restart 'powernode-*-sidekiq.service'       # safe; ~30s drain
 ```
 
 (Wait 30s before checking status — see `feedback_service_restarts` memory.)

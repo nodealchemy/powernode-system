@@ -335,6 +335,6 @@ For live progress, prefer subscribing to `MissionChannel` over polling
 | Compose returns no plan, upgrade prompt shown | Daily LLM cost cap reached | Wait for the cap window to reset or raise the plan limit |
 | Mission stuck at `review_plan` | Awaiting your approval | Use the inline Approve card |
 | Mission stuck at `handoff` after one approval | Second-signature gate (Business+) | Have a second distinct user approve |
-| Steps not progressing past the first layer | Worker not draining `ai_execution` | Check `powernode-worker@default` status |
+| Steps not progressing past the first layer | Worker not draining `ai_execution` | Check `powernode-*-sidekiq.service` status |
 
 _Last verified: 2026-06-03_

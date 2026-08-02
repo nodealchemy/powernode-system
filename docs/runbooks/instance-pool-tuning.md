@@ -185,7 +185,7 @@ for any claimed members to finish their normal terminate, then delete.
 | Members stuck `warming` >10 min | Bootstrap failed (module pull, mTLS handshake) | Use `attribute_failure` skill; common causes: missing `Sdwan::Peer`, expired bootstrap token |
 | `NoReadyMembersError` despite 5 members in dashboard | All 5 members are still `warming` (`ready_count: 0`) | Either wait, increase `target_size`, or pre-bake a faster boot image |
 | Pool stuck `draining` | Provider VM teardown stalled, or claimed members still running | Check provider console; for a stalled teardown task cancel via `system_cancel_task` |
-| `target_size` increase doesn't replenish | Reaper job not running | Check `sudo systemctl status powernode-worker@default`; confirm the `instance_pool_replenisher` cron (`System::InstancePoolReplenisherJob`) is firing every 60 s — or force it with `system_replenish_instance_pool` |
+| `target_size` increase doesn't replenish | Reaper job not running | Check `sudo systemctl status 'powernode-*-sidekiq.service'`; confirm the `instance_pool_replenisher` cron (`System::InstancePoolReplenisherJob`) is firing every 60 s — or force it with `system_replenish_instance_pool` |
 | Members continuously cycle (warm → claim → terminate → repeat) | Claim rate exceeds replenish rate | Increase `target_size`; reduce W (pre-bake image) |
 | Pool's claim metric oscillates | Sizing too tight; reaper can't keep up after bursts | Add more headroom: `target_size += 2 × max_burst_size` |
 
@@ -199,7 +199,7 @@ observe a pool:
 - **Live counts** — `system_get_instance_pool` returns `ready_count`,
   `warming_count`, `claimed_count`, `errored_count`. A `ready_count` that
   sits at 0 while `target_size > 0` is the user-visible failure mode.
-- **Worker log** — `journalctl -u powernode-worker@default -f | grep
+- **Worker log** — `journalctl -u 'powernode-*-sidekiq.service' -f | grep
   InstancePool` shows each tick's replenish/recycle/drain activity.
 - **Underlying instance events** — individual member provision / terminate
   flows surface in `recent_events` like any other NodeInstance lifecycle

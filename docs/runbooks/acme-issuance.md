@@ -371,7 +371,7 @@ dig +short TXT _acme-challenge.api.example.com
 If empty, the adapter's `Stamp` failed silently. Check Sidekiq logs:
 
 ```bash
-journalctl -u powernode-worker@default | grep -i acme
+journalctl -u 'powernode-*-sidekiq.service' | grep -i acme
 ```
 
 **Renewal worker isn't running** — check Sidekiq cron registration:
@@ -381,7 +381,7 @@ curl -s http://localhost:4567/api/v1/sidekiq/cron | jq '.[] | select(.name | con
 # → should show acme_certificate_renewal with next_run_at populated
 ```
 
-If missing, restart `powernode-worker@default` (it registers cron entries on boot).
+If missing, restart `powernode-*-sidekiq.service` (it registers cron entries on boot).
 
 **Traefik doesn't reload after issue/renew** — file-watcher is broken or
 the file wasn't written to the right path. Verify:

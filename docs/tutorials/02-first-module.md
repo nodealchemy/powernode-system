@@ -362,7 +362,7 @@ to authenticate. Two common causes:
 
 - `POWERNODE_WEBHOOK_SECRET` doesn't match `NodeModule.webhook_secret` (regenerate via Settings → Actions → Secrets and re-paste)
 - Platform's webhook controller IP-banned the Gitea runner (check
-  `journalctl -u powernode-backend@default | grep gitea_module`)
+  `journalctl -u 'powernode-*-rails.service' | grep gitea_module`)
 
 **`cosign_verified: false`** in version row — on the default static-key path
 this means the repo's `POWERNODE_COSIGN_PRIVATE_KEY` doesn't correspond to

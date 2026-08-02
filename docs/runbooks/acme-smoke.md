@@ -110,7 +110,7 @@ LAN.
    In the resulting peer row, manually edit `endpoints_jsonb` to put a
    LAN URL at priority 1 and the WAN URL at priority 3.
 2. Accept the handshake on hub2.
-3. Trigger a heartbeat: ssh hub1, `sudo systemctl restart powernode-worker@default` (or wait 60s).
+3. Trigger a heartbeat: ssh hub1, `sudo systemctl restart 'powernode-*-sidekiq.service'` (or wait 60s).
 4. On hub2, capture on its **LAN-facing physical NIC** — the interface that
    holds hub2's LAN address (e.g. `enp1s0` / `eth0`; confirm with
    `ip -br addr | grep <hub2-lan-ip>`), *not* the SDWAN tunnel `wg-sdwan-*`.
