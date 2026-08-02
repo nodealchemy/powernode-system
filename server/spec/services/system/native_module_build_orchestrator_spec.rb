@@ -308,9 +308,31 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
   # dispatched in "dual" mode never advances NodeModule#current_version_id —
   # the fleet keeps consuming exactly what the Gitea build published.
   describe "#advance! — shadow batches (inc10 dual-run)" do
+    # Stub ONLY the registry manifest GET, mirroring
+    # module_oci_ingest_service_spec's own seam. The "real
+    # ModulePublicationProcessor" example below exists to prove the
+    # promote: false contract through the genuine publish path, and that path
+    # resolves the erofs LAYER digest over HTTP — which VCR (correctly) refuses
+    # with no cassette, so publish failed with "erofs layer resolution failed"
+    # and advance! reported succeeded: 0. That was a test-environment gap, not
+    # a product defect: stubbing the HTTP boundary keeps the processor, the
+    # layer selection and the promote decision all real.
+    let(:shadow_erofs_digest) { "sha256:#{'e0' * 32}" }
+    let(:shadow_manifest_doc) do
+      {
+        "schemaVersion" => 2,
+        "mediaType" => "application/vnd.oci.image.manifest.v1+json",
+        "layers" => [
+          { "mediaType" => "application/vnd.powernode.erofs", "digest" => shadow_erofs_digest, "size" => 140_546_048 }
+        ]
+      }
+    end
+
     before do
       System::ModuleOciIngestService.reset!
       System::ManifestFetchService.reset!
+      allow_any_instance_of(System::ModuleOciIngestService)
+        .to receive(:fetch_native_manifest).and_return(doc: shadow_manifest_doc)
     end
 
     def shadow_batch(modules:, tag: "native-abc1234")
