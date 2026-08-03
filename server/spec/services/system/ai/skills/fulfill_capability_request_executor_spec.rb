@@ -135,6 +135,115 @@ RSpec.describe System::Ai::Skills::FulfillCapabilityRequestExecutor do
     end
   end
 
+  describe "authoring gaps — 'a human must author this' is carried, never dropped" do
+    before do
+      # Discovery finds NOTHING for the request → gap_for_capability returns an
+      # author_module gap instead of a materialize gap.
+      allow_any_instance_of(System::Ai::Skills::DiscoverPackagesByIntentExecutor)
+        .to receive(:execute).and_return({ success: true, data: { results: [], confidence: nil } })
+    end
+
+    it "freezes author_module gaps into the plan and surfaces them in the payload" do
+      r = exec.execute(request: request_text)
+
+      expect(r[:success]).to be true
+      plan = r[:data][:plan]
+      expect(plan["unresolved_gaps"]).to be_present
+      gap = plan["unresolved_gaps"].first
+      expect(gap["action"]).to eq("author_module")
+      expect(gap["capability"]).to be_present
+      expect(gap["reason"]).to include("no matching package")
+      # Nothing materializable — and the executable context stays materialize-only.
+      expect(plan["materialize"]).to eq([])
+      expect(plan.dig("execution", "gaps")).to eq([])
+      expect(r[:data][:unresolved_gaps]).to eq(plan["unresolved_gaps"])
+
+      # Frozen on the durable row, so the out-of-band approver sees it.
+      fr = ::System::FulfillmentRequest.find(r[:data][:fulfillment_request_id])
+      expect(fr.plan["unresolved_gaps"]).to eq(plan["unresolved_gaps"])
+    end
+
+    it "withholds autonomous inline approval and PARKS the decision on the row" do
+      expect(::System::PackageModuleMaterializer).not_to receive(:call)
+
+      r = exec.execute(request: request_text, approved: true)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:state]).to eq("composed")
+      expect(r[:data][:executed]).to be false
+      expect(r[:data][:approval_withheld_reason]).to include("unresolved").and include("author_module")
+
+      # The trail survives beyond the return value (honest "did not silently
+      # skip"): parked on the row, visible in the payload.
+      fr = ::System::FulfillmentRequest.find(r[:data][:fulfillment_request_id])
+      park = Array(fr.parked).find { |p| p["step"] == "autonomous_approval" }
+      expect(park).to be_present
+      expect(park["reason"]).to eq(r[:data][:approval_withheld_reason])
+      expect(r[:data][:parked]).to include(park)
+    end
+
+    it "classifies a discovery OUTAGE as discovery_unavailable, not author_module" do
+      allow_any_instance_of(System::Ai::Skills::DiscoverPackagesByIntentExecutor)
+        .to receive(:execute).and_return({ success: false, error: "embedding service down" })
+
+      r = exec.execute(request: request_text, approved: true)
+
+      gap = r[:data][:plan]["unresolved_gaps"].first
+      expect(gap["action"]).to eq("discovery_unavailable")
+      expect(gap["reason"]).to include("retry")
+      expect(r[:data][:state]).to eq("composed")
+      expect(r[:data][:approval_withheld_reason]).to include("discovery_unavailable")
+    end
+
+    it "partitions a MIXED gap set: materialize rides execution, unresolved rides the plan, approval still withheld" do
+      # Keep this request orthogonal to every module too, so neither phrase is
+      # covered by reuse and BOTH go through gap resolution.
+      allow_any_instance_of(::Ai::Memory::EmbeddingService).to receive(:generate) do |_svc, text|
+        text.to_s == "memcached and quantumfoo" ? [ 1.0, 0.0 ] : [ 0.0, 1.0 ]
+      end
+      allow_any_instance_of(System::Ai::Skills::DiscoverPackagesByIntentExecutor)
+        .to receive(:execute) do |_ex, intent:, **|
+          if intent.to_s.include?("memcached")
+            { success: true,
+              data: { results: [ { name: "memcached", package_id: "pkg-mc", repository_id: repo.id } ],
+                      confidence: "high" } }
+          else
+            { success: true, data: { results: [], confidence: nil } }
+          end
+        end
+      expect(::System::PackageModuleMaterializer).not_to receive(:call)
+
+      r = exec.execute(request: "memcached and quantumfoo", approved: true)
+
+      plan = r[:data][:plan]
+      expect(plan["materialize"].map { |g| g["package"] }).to eq([ "memcached" ])
+      expect(plan.dig("execution", "gaps").map { |g| g["package"] }).to eq([ "memcached" ])
+      expect(plan["unresolved_gaps"].map { |g| g["capability"] }).to eq([ "quantumfoo" ])
+      expect(plan["unresolved_gaps"].first["action"]).to eq("author_module")
+      # One materializable gap does NOT excuse the unresolved one.
+      expect(r[:data][:state]).to eq("composed")
+      expect(r[:data][:approval_withheld_reason]).to include("1 author_module")
+    end
+
+    it "still auto-approves when every gap is materializable (no unresolved gaps)" do
+      allow_any_instance_of(System::Ai::Skills::DiscoverPackagesByIntentExecutor)
+        .to receive(:execute).and_return(
+          { success: true,
+            data: { results: [ { name: "memcached", package_id: "pkg-mc", repository_id: repo.id } ],
+                    confidence: "high" } }
+        )
+      stub_fresh_provision!
+      stub_smoke_ok!
+      allow(::System::PackageModuleMaterializer).to receive(:call).and_return(materializer_result)
+
+      r = exec.execute(request: request_text, approved: true)
+
+      expect(r[:data][:state]).to eq("ready")
+      expect(r[:data][:approval_withheld_reason]).to be_nil
+      expect(r[:data][:plan]["unresolved_gaps"]).to eq([])
+    end
+  end
+
   describe "out-of-band approval kills the TOCTOU" do
     it "the orchestrator replays the FROZEN plan — compose is NEVER re-run across the approval boundary" do
       r = exec.execute(request: request_text) # composes ONCE, freezes the plan

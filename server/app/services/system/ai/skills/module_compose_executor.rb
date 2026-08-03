@@ -234,8 +234,10 @@ module System
         end
 
         # Resolve a single uncovered capability phrase to a materialize gap via
-        # discover_packages_by_intent (falling back to an author_module gap when
-        # discovery is unavailable or finds no matching package).
+        # discover_packages_by_intent. Falls back to an author_module gap when
+        # discovery FOUND NOTHING (a human must author a module), or to a
+        # discovery_unavailable gap when discovery itself FAILED (transient
+        # infra — retryable, NOT evidence that authoring is needed).
         def gap_for_capability(capability)
           disc = DiscoverPackagesByIntentExecutor
                  .new(account: @account, agent: @agent, user: @user)
@@ -244,8 +246,8 @@ module System
           unless disc[:success]
             return {
               capability: capability,
-              action: "author_module",
-              reason: "no covering module and package discovery unavailable (#{disc[:error]})"
+              action: "discovery_unavailable",
+              reason: "package discovery unavailable (#{disc[:error]}) — retry before concluding a module must be authored"
             }
           end
 

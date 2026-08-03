@@ -11,7 +11,11 @@ module System
       #
       # WHAT THIS SKILL DOES NOW (it shrank on purpose):
       #   1. module_compose (semantic) → modules that already cover the request.
-      #   2. gap detection → the packages to materialize for the uncovered part.
+      #   2. gap detection → the packages to materialize for the uncovered part;
+      #      gaps with NO materializable package (author_module / transient
+      #      discovery_unavailable) become `unresolved_gaps` on the plan (never
+      #      dropped), block autonomous inline approval, and are parked on the
+      #      row so the trail survives.
       #   3. resolve region/type + build a consolidated approval plan, FREEZING a
       #      replayable `execution` context inside it.
       #   4. CREATE a System::FulfillmentRequest (state: composed) with the plan
@@ -74,7 +78,9 @@ module System
             lease: :object,
             leases: [ :object ],
             smoke: :object,
-            parked: [ :object ]
+            parked: [ :object ],
+            unresolved_gaps: [ :object ],
+            approval_withheld_reason: :string
           },
           requires_approval: true,
           blast_radius: :high
@@ -102,13 +108,20 @@ module System
                     .execute(description: request, platform_id: platform_id)
           return failure("module_compose failed: #{compose[:error]}") unless compose[:success]
 
-          reused = Array(compose.dig(:data, :draft_template, :modules))
-          gaps   = Array(compose.dig(:data, :gaps)).select { |g| g[:action] == "materialize" }
+          reused     = Array(compose.dig(:data, :draft_template, :modules))
+          all_gaps   = Array(compose.dig(:data, :gaps))
+          gaps       = all_gaps.select { |g| g[:action] == "materialize" }
+          # "A human must author this" (author_module) and "discovery was down"
+          # (discovery_unavailable) are conclusions, not noise: every gap the
+          # composer could not resolve to a materializable package rides the
+          # frozen plan — with its action intact — so the approver decides about
+          # the partial closure.
+          unresolved = all_gaps - gaps
 
           region = resolve_region(provider_region_id)
           type   = resolve_instance_type(provider_instance_type_id)
 
-          plan = build_plan(request:, base_os:, reused:, gaps:, count:, region:, type:, platform_id:)
+          plan = build_plan(request:, base_os:, reused:, gaps:, unresolved:, count:, region:, type:, platform_id:)
 
           # --- CREATE the durable request with the plan FROZEN ---
           fr = ::System::FulfillmentRequest.create_composed!(
@@ -125,18 +138,34 @@ module System
           # out-of-band and drive the first advance inline (no re-compose, no
           # sleep — if the build barrier isn't done it returns in `building` and
           # the sweep resumes it).
+          approval_withheld_reason = nil
           if approved
-            fr.approve!
-            ::System::FulfillmentAdvanceOrchestrator.advance!(request: fr)
-            fr.reload
+            if unresolved.any?
+              # A plan with unresolved gaps is a PARTIAL closure — autonomous
+              # callers may not accept that silently; it stays `composed` for a
+              # human decision. The message reports what the gaps actually are
+              # (authoring vs transient discovery outage), and the decision is
+              # parked on the ROW so the trail survives the return value.
+              by_action = unresolved.group_by { |g| g[:action].to_s }
+                                    .map { |a, gs| "#{gs.size} #{a}" }.join(", ")
+              reasons = unresolved.filter_map { |g| g[:reason] }.uniq.first(3).join("; ")
+              approval_withheld_reason =
+                "plan has #{unresolved.size} unresolved gap(s) (#{by_action}) — " \
+                "autonomous approval withheld; a partial closure needs a human decision. #{reasons}"
+              fr.add_park!(step: "autonomous_approval", reason: approval_withheld_reason)
+            else
+              fr.approve!
+              ::System::FulfillmentAdvanceOrchestrator.advance!(request: fr)
+              fr.reload
+            end
           end
 
-          success(result_payload(fr, reused))
+          success(result_payload(fr, reused, approval_withheld_reason:))
         end
 
         private
 
-        def result_payload(fr, reused)
+        def result_payload(fr, reused, approval_withheld_reason: nil)
           leases = fr.lease_summaries
           {
             fulfillment_request_id: fr.id,
@@ -153,7 +182,9 @@ module System
             lease: leases.first,
             leases: leases,
             smoke: fr.smoke,
-            parked: Array(fr.parked)
+            parked: Array(fr.parked),
+            unresolved_gaps: Array(fr.plan["unresolved_gaps"]),
+            approval_withheld_reason: approval_withheld_reason
           }
         end
 
@@ -162,7 +193,7 @@ module System
         # Consolidated approval payload PLUS a replayable `execution` context. The
         # execution block is what the orchestrator replays — it is the frozen plan.
         # String keys throughout so read (post-jsonb) == write.
-        def build_plan(request:, base_os:, reused:, gaps:, count:, region:, type:, platform_id:)
+        def build_plan(request:, base_os:, reused:, gaps:, unresolved:, count:, region:, type:, platform_id:)
           module_names = ([ base_os.name ] +
                           reused.map { |m| m[:name] } +
                           gaps.map { |g| "materialize:#{g[:package]}" }).compact.uniq
@@ -186,6 +217,7 @@ module System
             "instances" => { "count" => count, "max" => max_instances, "default" => DEFAULT_COUNT },
             "reused" => reused.map { |m| m[:name] },
             "materialize" => gaps.map { |g| { "package" => g[:package], "repository_id" => g[:repository_id], "reason" => g[:reason] } },
+            "unresolved_gaps" => unresolved.map { |g| { "capability" => g[:capability], "action" => g[:action], "reason" => g[:reason] } },
             "cost_estimate" => cost_estimate(region:, type:, count:),
             "lease_ttl_seconds" => lease_ttl_seconds,
             "requires_approval" => true,
