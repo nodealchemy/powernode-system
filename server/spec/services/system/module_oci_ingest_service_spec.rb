@@ -101,6 +101,81 @@ RSpec.describe System::ModuleOciIngestService do
     end
   end
 
+  # IMP-d938f4426581 — the production DEFAULT is "oras", but the mode is an ENV
+  # OVERRIDE, so POWERNODE_OCI_MODE=local exported into a production environment
+  # silently selected the fabricating LocalOciAdapter: every ingest would invent
+  # its own oci_digest/fsverity_root_hash and self-certify as signed, with no
+  # signal at the call site. Nothing downstream caught it — the fabricated digest
+  # is a well-formed 64-hex sha256 that PASSES ModuleArtifact's format validation,
+  # the placeholder cosign bundle is persisted verbatim and makes the artifact
+  # report `signed: true` (ModuleBuildBatchSerializer), and the only thing that
+  # ultimately refuses the artifact is the agent's sha256(blob) check at pull
+  # time — i.e. after the bad version is already promoted, as a fleet-wide mount
+  # failure. Both gates below are load-bearing and independent.
+  describe "production refuses the fabricating stub adapter (IMP-d938f4426581)" do
+    def in_production!
+      allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("production"))
+    end
+
+    it "refuses POWERNODE_OCI_MODE=local in production, naming the misconfiguration" do
+      in_production!
+      stub_const("ENV", ENV.to_h.merge("POWERNODE_OCI_MODE" => "local"))
+      described_class.reset!
+
+      expect { described_class.adapter }
+        .to raise_error(described_class::IngestError, /fabricates artifact identity/)
+    end
+
+    it "still selects the oras adapter in production by default" do
+      in_production!
+      stub_const("ENV", ENV.to_h.except("POWERNODE_OCI_MODE"))
+      described_class.reset!
+      expect(described_class.adapter).to be_a(described_class::OrasOciAdapter)
+    end
+
+    it "leaves dev/test selection of the local adapter unchanged" do
+      stub_const("ENV", ENV.to_h.merge("POWERNODE_OCI_MODE" => "local"))
+      described_class.reset!
+      expect(described_class.adapter).to be_a(described_class::LocalOciAdapter)
+    end
+
+    # `adapter=` is public, so a console / initializer / future third adapter can
+    # install a fabricating adapter without passing through build_adapter. The
+    # persist-time gate is what makes the poisoned state unreachable rather than
+    # merely detectable.
+    it "refuses to PERSIST stub-fabricated identity in production even when the adapter is injected" do
+      described_class.adapter = described_class::LocalOciAdapter.new
+      in_production!
+
+      result = described_class.ingest!(node_module_version: version, oci_ref: oci_ref)
+
+      expect(result.ok?).to be false
+      expect(result.error).to match(/fabricated stub artifact identity/)
+      expect(System::ModuleArtifact.where(node_module_version: version).count).to eq(0)
+      version.reload
+      expect(version.oci_digest).to be_nil
+    end
+
+    # Only the DEFAULT fabrication carries the marker — caller-supplied fixtures
+    # (and any real adapter) are untouched by the gate.
+    it "does not interfere with real-shaped descriptors supplied through the stub overrides" do
+      adapter = described_class::LocalOciAdapter.new
+      adapter.stub_manifest = {
+        per_arch_descriptors: [ {
+          architecture: "amd64", oci_digest: "sha256:#{'a' * 64}", size_bytes: 10,
+          fsverity_root_hash: "sha256:#{'b' * 64}", built_at: Time.current
+        } ]
+      }
+      adapter.stub_verification = { ok: true, bundle: '{"critical":{}}' }
+      described_class.adapter = adapter
+      in_production!
+
+      result = described_class.ingest!(node_module_version: version, oci_ref: oci_ref)
+      expect(result.ok?).to be true
+      expect(result.module_artifacts.first.oci_digest).to eq("sha256:#{'a' * 64}")
+    end
+  end
+
   # IMP-1b9ec6821c25 — ensure_binary! used string-shell `system("which #{name} …")`;
   # the rest of this adapter shells out via array-form Open3.capture3. The PATH check
   # must use the no-shell array form (no injection surface) and still raise IngestError

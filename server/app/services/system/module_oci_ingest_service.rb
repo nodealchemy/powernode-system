@@ -65,9 +65,37 @@ module System
         mode = ENV.fetch("POWERNODE_OCI_MODE", default_mode_for_env)
         case mode
         when "oras"  then OrasOciAdapter.new
-        when "local" then LocalOciAdapter.new
+        when "local" then build_local_adapter!
         else raise IngestError, "Unknown POWERNODE_OCI_MODE: #{mode.inspect}"
         end
+      end
+
+      # The production default is "oras", but the mode is an ENV OVERRIDE —
+      # so POWERNODE_OCI_MODE=local exported into a production environment
+      # silently selected LocalOciAdapter, which FABRICATES artifact identity
+      # (oci_digest / fsverity_root_hash / sizes are derived from the ref
+      # string, never from a registry) and returns ok:true from every
+      # verify_signature call. Nothing at the call site distinguished that
+      # from a real ingest: the fabricated digest is a well-formed 64-hex
+      # sha256 that satisfies ModuleArtifact's format validation, the
+      # fabricated "stub-cosign-bundle" is persisted verbatim and makes the
+      # artifact report `signed: true` to operators (ModuleBuildBatchSerializer),
+      # and every node that later pulls the blob fails the agent's
+      # sha256(blob) == oci.digest check — turning a misconfigured env var into
+      # a fleet-wide mount outage. Selecting the stub against a real registry
+      # has no legitimate use (an air-gapped install still needs REAL digests,
+      # so it wants "oras" pointed at a local mirror, not a fabricator), so
+      # this fails closed and names the misconfiguration.
+      def build_local_adapter!
+        if Rails.env.production?
+          raise IngestError,
+                "POWERNODE_OCI_MODE=local selects LocalOciAdapter, which fabricates " \
+                "artifact identity and reports every signature as verified. Refusing " \
+                "in production. Unset POWERNODE_OCI_MODE (production defaults to " \
+                "\"oras\"), or point the oras adapter at a local/mirror registry."
+        end
+
+        LocalOciAdapter.new
       end
 
       def default_mode_for_env
@@ -121,6 +149,25 @@ module System
 
       manifest     = fetched.fetch(:manifest)
       verification = fetched.fetch(:verification)
+
+      # Second, independent gate on the SAME hazard build_local_adapter! closes
+      # at selection time. `adapter=` is public, so a console, an initializer,
+      # or a future third adapter can put a fabricating adapter in place without
+      # ever going through build_adapter. Rather than pattern-matching the
+      # fabricated digest — which is indistinguishable from a real one BY DESIGN
+      # (a genuine sha256 can end in "0000" too) — LocalOciAdapter stamps its
+      # DEFAULT fabricated output with an explicit `stub: true` marker, and
+      # persisting anything carrying that marker is refused in production. The
+      # @stub_manifest/@stub_verification test overrides are deliberately NOT
+      # marked: those carry caller-supplied, real-shaped fixtures and keep
+      # working unchanged.
+      if Rails.env.production? && (manifest[:stub] || verification[:stub])
+        return failure(
+          "refusing to persist fabricated stub artifact identity in production " \
+          "(adapter #{adapter.class.name} returned stub-marked descriptors); " \
+          "no artifact recorded and no version promoted"
+        )
+      end
 
       created = []
       ::ActiveRecord::Base.transaction do
@@ -428,6 +475,12 @@ module System
 
         digest_suffix = ::Digest::SHA256.hexdigest(oci_ref)
         {
+          # Self-identifying marker: everything below is FABRICATED from the ref
+          # string, not read from a registry. ingest! refuses to persist marked
+          # output in production (see the stub gate there). Only the default
+          # fabrication is marked — @stub_manifest overrides are caller-supplied
+          # fixtures and stay unmarked.
+          stub: true,
           per_arch_descriptors: SUPPORTED_ARCHS.map.with_index do |arch, i|
             {
               architecture:       arch,
@@ -447,8 +500,12 @@ module System
       def verify_signature(_oci_ref, expected_signers: nil, issuer_regexp: nil, registry_env: {})
         return @stub_verification if @stub_verification
 
-        { ok: true, bundle: "stub-cosign-bundle", signers: expected_signers || [],
-          issuer: issuer_regexp }
+        # `stub: true` for the same reason as fetch_manifest: this is an
+        # unconditional ok:true that verified nothing, and the bundle below is
+        # a literal placeholder that would otherwise persist onto the artifact
+        # and read as a real signature downstream.
+        { ok: true, stub: true, bundle: "stub-cosign-bundle",
+          signers: expected_signers || [], issuer: issuer_regexp }
       end
     end
 
