@@ -14,6 +14,16 @@ module System
   # Same-account import is the common case (clone-by-rename); cross-
   # account imports work but require the target account to have the
   # named platform + every referenced module.
+  #
+  # Composition: the import materializes a whole template's joins in one
+  # transaction, outside the delta guard the assignment write paths run — so
+  # a bundle that composes badly would land as permanent baseline that later
+  # assignments then treat as acceptable. Error-severity conflicts therefore
+  # ride out in Result#warnings. They do NOT refuse the import: an import
+  # reproduces a template authored elsewhere, blocking would make an
+  # export/import round trip lossy, and the bundle format has no way to say
+  # "this collision is deliberate". The whole set is judged again at apply
+  # time, where it would otherwise reach real nodes.
   class TemplateImporter
     class ImportError < StandardError; end
 
@@ -83,7 +93,7 @@ module System
 
       Result.new(
         ok: true, template: template, template_modules_count: tm_count,
-        missing_modules: [], warnings: [], errors: []
+        missing_modules: [], warnings: composition_warnings(template), errors: []
       )
     rescue ImportError => e
       Result.new(ok: false, template: nil, template_modules_count: 0,
@@ -94,6 +104,20 @@ module System
     end
 
     private
+
+    # Advisory, so it runs after the commit and cannot fail an otherwise-good
+    # import — an analysis that blows up is itself the warning.
+    def composition_warnings(template)
+      verdict = ::System::TemplateCompositionAnalysis.new(@account).set_verdict(
+        template.template_modules.enabled.pluck(:node_module_id)
+      )
+      return [] unless verdict.blocked?
+
+      Rails.logger.warn("[TemplateImporter] imported #{template.name}: #{verdict.message}")
+      [ verdict.message ]
+    rescue StandardError => e
+      [ "composition analysis failed: #{e.message}" ]
+    end
 
     def validate_bundle!(bundle)
       unless SUPPORTED_FORMAT_VERSIONS.include?(bundle[:format_version].to_s)

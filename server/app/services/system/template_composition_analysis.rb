@@ -14,6 +14,14 @@ module System
   #     system_assign_module_to_template MCP action), which refuse the
   #     error-severity conflicts this analysis reports rather than leaving a
   #     disabled React button as the only enforcement.
+  #   - the other TemplateModule writers, which used to bypass that guard
+  #     entirely and so could land a conflict as permanent BASELINE — which
+  #     the delta then treats as acceptable forever after. Gitops::ApplyService
+  #     and ModuleSmokeVerifyExecutor author, so they refuse (#additions_verdict);
+  #     TemplateCloneService and TemplateImporter reproduce state that already
+  #     exists, so they report (#set_verdict). The whole set is judged once
+  #     more at apply time (TemplateExpansionService), where a poisoned
+  #     baseline would otherwise reach real nodes.
   #
   # The catalog and resolver are memoized per instance, so a write path gets its
   # before/after comparison for one catalog load rather than two.
@@ -27,9 +35,9 @@ module System
     MODULE_INCLUDES = %i[current_version category node_platform
                          module_dependencies dependencies package_module_link].freeze
 
-    # What attaching one module to a template would introduce, split by whether
-    # it blocks. `message` is prebuilt because only the analysis can resolve
-    # module ids to names.
+    # What a write would introduce (or, for #set_verdict, what a module set
+    # composes into), split by whether it blocks. `message` is prebuilt
+    # because only the analysis can resolve module ids to names.
     Verdict = Struct.new(:blocking, :warnings, :message, keyword_init: true) do
       def blocked?
         blocking.any?
@@ -69,6 +77,14 @@ module System
     end
 
     # Conflicts that attaching `node_module` to `template` would INTRODUCE.
+    def assignment_verdict(template:, node_module:)
+      additions_verdict(template: template, node_modules: [ node_module ])
+    end
+
+    # Same, for writers that attach SEVERAL modules in one shot (a smoke
+    # pairing composes base-os + target together, so neither is in the
+    # baseline when the other is judged — checking them one at a time would
+    # miss a collision between them).
     #
     # Diffed against the template's current closure deliberately: a template
     # that already composes badly has to stay editable. Judging the whole
@@ -77,21 +93,42 @@ module System
     #
     # Scoped to ENABLED joins, matching TemplateExpansionService's view of what
     # actually ships — a disabled join can't collide with anything.
-    def assignment_verdict(template:, node_module:)
+    def additions_verdict(template:, node_modules:)
       assigned_ids = template.template_modules.enabled.pluck(:node_module_id)
       baseline     = conflicts_for(assigned_ids).map { |c| conflict_key(c) }.to_set
-      introduced   = conflicts_for(assigned_ids + [ node_module.id ])
+      introduced   = conflicts_for(assigned_ids + ids_for(node_modules))
                      .reject { |c| baseline.include?(conflict_key(c)) }
 
-      blocking = introduced.reject { |c| warning?(c) }
-      Verdict.new(
-        blocking: blocking,
-        warnings: introduced.select { |c| warning?(c) },
-        message: blocking.any? ? blocking_message(blocking) : nil
-      )
+      verdict(introduced) { |blocking| blocking_message(blocking) }
+    end
+
+    # Verdict over a module set judged WHOLE, with no baseline to diff
+    # against. For writers that materialize an entire template in one shot
+    # (TemplateCloneService, TemplateImporter): there is no earlier state to
+    # charge a conflict to, so everything the resulting closure contains
+    # belongs to that write. Accepts records or ids.
+    #
+    # The diff the assignment paths apply is what makes a poisoned baseline
+    # possible in the first place — whatever lands here becomes the baseline
+    # every later assignment is then obliged to treat as acceptable.
+    def set_verdict(node_modules)
+      verdict(conflicts_for(ids_for(node_modules))) { |blocking| set_message(blocking) }
     end
 
     private
+
+    def verdict(conflicts)
+      blocking = conflicts.reject { |c| warning?(c) }
+      Verdict.new(
+        blocking: blocking,
+        warnings: conflicts.select { |c| warning?(c) },
+        message: blocking.any? ? yield(blocking) : nil
+      )
+    end
+
+    def ids_for(node_modules)
+      Array(node_modules).map { |m| m.respond_to?(:id) ? m.id : m }
+    end
 
     def conflicts_for(module_ids)
       TemplateComposerService.new(resolve(modules_for(module_ids)).modules).detect_conflicts
@@ -130,14 +167,21 @@ module System
     end
 
     def blocking_message(conflicts)
-      summaries = conflicts.map do |conflict|
+      "Module assignment refused: it would introduce #{conflicts.size} composition " \
+        "conflict#{'s' if conflicts.size > 1} — #{summarize(conflicts)}"
+    end
+
+    def set_message(conflicts)
+      "Template composition has #{conflicts.size} error-severity " \
+        "conflict#{'s' if conflicts.size > 1} — #{summarize(conflicts)}"
+    end
+
+    def summarize(conflicts)
+      conflicts.map do |conflict|
         names = module_names(conflict_module_ids(conflict))
         detail = conflict[:detail].presence || conflict[:kind]
         names.any? ? "#{conflict[:kind]} — #{detail} (modules: #{names.join(', ')})" : "#{conflict[:kind]} — #{detail}"
-      end
-
-      "Module assignment refused: it would introduce #{conflicts.size} composition " \
-        "conflict#{'s' if conflicts.size > 1} — #{summaries.join('; ')}"
+      end.join("; ")
     end
 
     def conflict_module_ids(conflict)

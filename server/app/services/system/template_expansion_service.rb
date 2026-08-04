@@ -18,10 +18,30 @@ module System
   #                                             (TemplateModule whose override governs inclusion;
   #                                              nil for modules pulled only by transitive walking)
   #   expansion.warnings, expansion.errors   → Array<String>
+  #   expansion.conflicts                    → Array<Hash> from TemplateComposerService
+  #
+  # The conflict pass is the WHOLE-SET half of the composition invariant.
+  # Every guard on a TemplateModule write path is a delta — deliberately, so a
+  # template that already composes badly stays editable — which leaves
+  # anything landed before those guards existed, or through a path that only
+  # warns (clone/import), as permanent baseline the deltas are then obliged to
+  # treat as acceptable. Expansion is the last place that baseline is still
+  # just data: TemplateApplyService turns it into NodeModuleAssignments on a
+  # real node one call later.
+  #
+  # It WARNS rather than refuses. apply! sits on the provisioning critical
+  # path (ProvisioningService, FulfillmentAdvanceOrchestrator) and on the
+  # autonomous drift-remediation path (Fleet::DecisionEngine), so failing
+  # closed would turn one poisoned template into a provisioning outage for
+  # every node on it — while the conflict is fatal at BUILD time, not at
+  # assignment materialization. Refusing here would remove the signal without
+  # preventing the damage. Only error-severity conflicts reach `warnings`;
+  # protected_spec overlaps are auto-resolved by the build pipeline and this
+  # runs on every provision and every drift tick, so it must not become noise.
   class TemplateExpansionService
     Expansion = Struct.new(
       :modules, :auto_resolved_ids, :source_template_module_for,
-      :warnings, :errors,
+      :warnings, :errors, :conflicts,
       keyword_init: true
     )
 
@@ -91,16 +111,39 @@ module System
         end
       end
 
+      conflicts = ::System::TemplateComposerService.new(result.modules).detect_conflicts
+
       Expansion.new(
         modules:                    result.modules,
         auto_resolved_ids:          auto_resolved_ids,
         source_template_module_for: source_template_module_for,
-        warnings:                   Array(result.warnings).map { |w| w.is_a?(Hash) ? w[:message] : w.to_s },
-        errors:                     Array(result.errors).map  { |e| e.is_a?(Hash) ? e[:message] : e.to_s }
+        warnings:                   Array(result.warnings).map { |w| w.is_a?(Hash) ? w[:message] : w.to_s } +
+                                    conflict_warnings(conflicts, result.modules),
+        errors:                     Array(result.errors).map  { |e| e.is_a?(Hash) ? e[:message] : e.to_s },
+        conflicts:                  conflicts
       )
     end
 
     private
+
+    # Error-severity conflicts only, rendered with the module names — the
+    # closure is already loaded here, so the names cost nothing and a bare
+    # kind is useless to whoever reads the apply result.
+    def conflict_warnings(conflicts, modules)
+      return [] if conflicts.empty?
+
+      names = modules.to_h { |m| [ m.id, m.name ] }
+      conflicts.filter_map do |conflict|
+        next if conflict[:severity].to_s == "warning"
+
+        involved = (conflict.values_at(:source_id, :target_id, :claimer_id, :other_id) +
+                    Array(conflict[:module_ids])).compact.uniq
+        labels = involved.filter_map { |id| names[id] }
+        detail = conflict[:detail].presence || conflict[:kind]
+        base = "composition conflict: #{conflict[:kind]} — #{detail}"
+        labels.any? ? "#{base} (modules: #{labels.join(', ')})" : base
+      end
+    end
 
     def default_available_modules
       ::System::NodeModule

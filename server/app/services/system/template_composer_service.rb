@@ -41,7 +41,12 @@ module System
       @modules.each do |m|
         next unless m.respond_to?(:module_dependencies)
 
-        m.module_dependencies.conflicts.each do |conflict_dep|
+        # Filtered in Ruby, not via the `conflicts` scope: a scope on a
+        # has_many re-queries even when the association is eager-loaded, and
+        # detect_conflicts now runs on the template-apply path — per
+        # provisioning and per fleet-sensor tick, not just per compose_preview
+        # — where one query per module in the closure is an N+1.
+        m.module_dependencies.select(&:conflicts?).each do |conflict_dep|
           other_id = conflict_dep.dependency_id
           next unless module_ids.include?(other_id)
 

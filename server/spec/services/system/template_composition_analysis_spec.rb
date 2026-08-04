@@ -88,6 +88,60 @@ RSpec.describe System::TemplateCompositionAnalysis do
     end
   end
 
+  # The plural form the multi-module writers need (a smoke pairing composes
+  # base-os + target together, so neither is in the baseline when the other is
+  # judged). Same diff semantics as the singular form.
+  describe "#additions_verdict" do
+    it "catches a collision BETWEEN two simultaneously-added modules" do
+      first  = node_module("pair-a", variety: "instance")
+      second = node_module("pair-b", variety: "instance")
+
+      verdict = analysis.additions_verdict(template: template, node_modules: [ first, second ])
+
+      expect(verdict).to be_blocked
+      expect(verdict.blocking.map { |c| c[:kind] }).to include("instance_variety_collision")
+    end
+
+    it "still diffs against the baseline when several are added at once" do
+      preassign(node_module("stuck-a", variety: "instance"))
+      preassign(node_module("stuck-b", variety: "instance"))
+      additions = [ node_module("ok-a", category: cat_two), node_module("ok-b", category: cat_two) ]
+
+      verdict = analysis.additions_verdict(template: template, node_modules: additions)
+
+      expect(verdict).not_to be_blocked
+    end
+  end
+
+  # No baseline to diff against — for writers that materialize a whole
+  # template in one shot (clone/import), where every conflict in the result
+  # belongs to that write because there was no earlier state.
+  describe "#set_verdict" do
+    it "reports a conflict the whole set contains, with no baseline to excuse it" do
+      first  = node_module("whole-a", variety: "instance")
+      second = node_module("whole-b", variety: "instance")
+
+      verdict = analysis.set_verdict([ first, second ])
+
+      expect(verdict).to be_blocked
+      expect(verdict.blocking.map { |c| c[:kind] }).to include("instance_variety_collision")
+      expect(verdict.message).to include(first.name).and include(second.name)
+    end
+
+    it "accepts ids as readily as records" do
+      mods = [ node_module("id-a", variety: "instance"), node_module("id-b", variety: "instance") ]
+
+      expect(analysis.set_verdict(mods.map(&:id))).to be_blocked
+    end
+
+    it "is clean for a set that composes" do
+      verdict = analysis.set_verdict([ node_module("solo") ])
+
+      expect(verdict).not_to be_blocked
+      expect(verdict.message).to be_nil
+    end
+  end
+
   describe "#preview_for" do
     it "persists nothing while resolving the closure" do
       required = node_module("dep-target", category: cat_two)

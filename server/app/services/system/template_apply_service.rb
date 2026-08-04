@@ -20,6 +20,13 @@ module System
   #
   # `dry_run` (default false) computes the plan without persisting, so
   # operator UI can preview the diff before committing.
+  #
+  # Result#warnings carries the expansion's error-severity COMPOSITION
+  # conflicts (see TemplateExpansionService) — the whole-set check that holds
+  # the invariant the per-write delta guards cannot. Apply is the last point
+  # before a poisoned template becomes assignments on a real node; it reports
+  # rather than refuses because this path is load-bearing for provisioning
+  # and for autonomous drift remediation.
   class TemplateApplyService
     Result = Struct.new(
       :ok, :created, :skipped, :purged, :warnings, :errors,
