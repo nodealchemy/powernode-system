@@ -52,6 +52,16 @@ RSpec.describe System::Fleet::Sensors::StorageAssignmentDriftSensor do
 
     expect(::System::Storage::AssignmentReconciliationService).not_to have_received(:reconcile_assignment!)
   end
+
+  # IMP-8d444c6437a3: system.storage_assignment_reconcile seeds fine but was
+  # never added to the core autonomy registry in the Engine, so
+  # AutonomyActions#update rejects any operator disposition change for it
+  # with "unknown category" — dispositions are frozen at whatever the seed
+  # chose. Mirrors the same assertion capability_gap_sensor_spec.rb makes
+  # for capability_gap_review.
+  it "registers the storage_assignment_reconcile category with the core autonomy registry" do
+    expect(Ai::InterventionPolicy.category_registered?("system.storage_assignment_reconcile")).to be true
+  end
 end
 
 # The other half of F3-07: the three sensors must actually run in the tick.

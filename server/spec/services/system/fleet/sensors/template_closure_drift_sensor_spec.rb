@@ -89,4 +89,14 @@ RSpec.describe System::Fleet::Sensors::TemplateClosureDriftSensor do
   it "is registered in FleetAutonomyService::SENSORS" do
     expect(System::Fleet::FleetAutonomyService::SENSORS).to include(described_class)
   end
+
+  # IMP-8d444c6437a3: system.template_closure_apply seeds fine but was
+  # never added to the core autonomy registry in the Engine, so
+  # AutonomyActions#update rejects any operator disposition change for it
+  # with "unknown category" — dispositions are frozen at whatever the seed
+  # chose. Mirrors the same assertion capability_gap_sensor_spec.rb makes
+  # for capability_gap_review.
+  it "registers the template_closure_apply category with the core autonomy registry" do
+    expect(Ai::InterventionPolicy.category_registered?("system.template_closure_apply")).to be true
+  end
 end

@@ -499,8 +499,20 @@ module PowernodeSystem
     # Register all action_categories the system extension owns with the core
     # AutonomyGate registry. Without this, InterventionPolicy seeds for these
     # categories would fail validation (Phase 5 — Action Category Registry).
+    #
+    # IMP-8d444c6437a3: this used to run in `config.after_initialize`, which
+    # fires exactly once at boot. `Ai::InterventionPolicy.@category_registry`
+    # is a class-level ivar set in the class body (`STATIC_CATEGORIES`) —
+    # every Zeitwerk unload/reload cycle (any dev-mode code reload) redefines
+    # the class and wipes that ivar back to core's static list, dropping
+    # every category this block ever registered until the process restarts.
+    # `config.to_prepare` fires at boot AND after every such reload (same
+    # mechanism already used for the decorators load above), so re-running
+    # this block there keeps the registry populated across reloads without
+    # touching core. `register_categories!` is idempotent (backed by a Set),
+    # so re-registering on each prepare cycle is harmless.
     initializer "powernode_system.autonomy_categories", after: :load_config_initializers do
-      config.after_initialize do
+      config.to_prepare do
         next unless defined?(::Ai::InterventionPolicy)
 
         categories = []
@@ -513,6 +525,8 @@ module PowernodeSystem
           system.fleet_rolling_upgrade system.region_expansion system.capacity_resize
           system.observation
           system.capability_gap_review
+          system.gitops_drift_remediate system.storage_assignment_reconcile
+          system.template_closure_apply
         ])
 
         # SDWAN Manager domain

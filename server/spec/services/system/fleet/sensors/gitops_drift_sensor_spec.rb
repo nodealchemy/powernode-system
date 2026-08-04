@@ -125,4 +125,14 @@ RSpec.describe System::Fleet::Sensors::GitopsDriftSensor do
       expect(sensor.sense).to be_empty
     end
   end
+
+  # IMP-8d444c6437a3: system.gitops_drift_remediate seeds fine (see
+  # system_gitops_reconciler_agent_seed_spec.rb) but was never added to the
+  # core autonomy registry in the Engine, so AutonomyActions#update rejects
+  # any operator disposition change for it with "unknown category" —
+  # dispositions are frozen at whatever the seed chose. Mirrors the same
+  # assertion capability_gap_sensor_spec.rb makes for capability_gap_review.
+  it "registers the gitops_drift_remediate category with the core autonomy registry" do
+    expect(Ai::InterventionPolicy.category_registered?("system.gitops_drift_remediate")).to be true
+  end
 end
