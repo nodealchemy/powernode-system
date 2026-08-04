@@ -216,7 +216,7 @@ module System
               "mutation_requires_approval" => mutation.requires_approval?,
               "mutation_reason" => mutation.reason
             },
-            "closure" => closure_enumeration(module_names),
+            "closure" => closure_enumeration(module_names, unresolved_count: unresolved.size),
             "instances" => { "count" => count, "max" => max_instances, "default" => DEFAULT_COUNT },
             "reused" => reused.map { |m| m[:name] },
             "materialize" => gaps.map { |g| { "package" => g[:package], "repository_id" => g[:repository_id], "reason" => g[:reason] } },
@@ -240,8 +240,14 @@ module System
         end
 
         # Bulk-op safety enumeration: "state the count N; show first 3 + last 1".
-        def closure_enumeration(names)
-          { "total" => names.size, "first" => names.first(3), "last" => names.last, "all" => names }
+        # `unresolved` rides alongside so the approver reading this block can see
+        # that gaps exist even though they never enter total/first/last/all —
+        # those four stay a pure enumeration of the names actually in the
+        # closure (base-os + reused + materialize); an unresolved capability
+        # never joins that set because nothing will be built for it.
+        def closure_enumeration(names, unresolved_count: 0)
+          { "total" => names.size, "first" => names.first(3), "last" => names.last, "all" => names,
+            "unresolved" => unresolved_count }
         end
 
         def cost_estimate(region:, type:, count:)

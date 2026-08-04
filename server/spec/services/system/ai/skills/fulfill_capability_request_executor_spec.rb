@@ -112,6 +112,7 @@ RSpec.describe System::Ai::Skills::FulfillCapabilityRequestExecutor do
       expect(fr.plan.dig("execution", "gaps").first["package"]).to eq("memcached")
       expect(fr.plan.dig("closure", "all")).to include("materialize:memcached")
       expect(fr.plan.dig("closure", "first")).to include(base_os.name)
+      expect(fr.plan.dig("closure", "unresolved")).to eq(0)
 
       # No template / instance materialized.
       expect(::System::NodeTemplate.where(account: account).count).to eq(templates_before)
@@ -157,6 +158,10 @@ RSpec.describe System::Ai::Skills::FulfillCapabilityRequestExecutor do
       expect(plan["materialize"]).to eq([])
       expect(plan.dig("execution", "gaps")).to eq([])
       expect(r[:data][:unresolved_gaps]).to eq(plan["unresolved_gaps"])
+      # The closure block is what the approver reads for bulk-op safety
+      # (total/first/last/all) — an unresolved gap is invisible there unless
+      # its count rides along too.
+      expect(plan.dig("closure", "unresolved")).to eq(plan["unresolved_gaps"].size)
 
       # Frozen on the durable row, so the out-of-band approver sees it.
       fr = ::System::FulfillmentRequest.find(r[:data][:fulfillment_request_id])
@@ -220,7 +225,9 @@ RSpec.describe System::Ai::Skills::FulfillCapabilityRequestExecutor do
       expect(plan.dig("execution", "gaps").map { |g| g["package"] }).to eq([ "memcached" ])
       expect(plan["unresolved_gaps"].map { |g| g["capability"] }).to eq([ "quantumfoo" ])
       expect(plan["unresolved_gaps"].first["action"]).to eq("author_module")
-      # One materializable gap does NOT excuse the unresolved one.
+      # One materializable gap does NOT excuse the unresolved one — and it must
+      # not make the unresolved gap disappear from the closure count either.
+      expect(plan.dig("closure", "unresolved")).to eq(1)
       expect(r[:data][:state]).to eq("composed")
       expect(r[:data][:approval_withheld_reason]).to include("1 author_module")
     end

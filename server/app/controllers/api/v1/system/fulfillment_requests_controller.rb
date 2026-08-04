@@ -74,7 +74,8 @@ module Api
             advanced: result.advanced,
             waiting: result.waiting,
             parked: result.parked,
-            error: result.error
+            error: result.error,
+            already_advancing: result.already_advancing
           }
         end
       end

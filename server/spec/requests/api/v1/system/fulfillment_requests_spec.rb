@@ -46,9 +46,10 @@ RSpec.describe "Operator API — Fulfillment Requests", type: :request do
   # The orchestrator is exercised by its own spec; here we only assert the
   # endpoint kicks exactly one advance (a real advance would try to materialize
   # modules and dispatch a build).
-  def stub_advance(state: "materializing", advanced: 1)
+  def stub_advance(state: "materializing", advanced: 1, already_advancing: false)
     result = ::System::FulfillmentAdvanceOrchestrator::Result.new(
-      "ok?": true, state: state, advanced: advanced, waiting: false, parked: [], error: nil
+      "ok?": true, state: state, advanced: advanced, waiting: false, parked: [], error: nil,
+      already_advancing: already_advancing
     )
     allow(::System::FulfillmentAdvanceOrchestrator).to receive(:advance!).and_return(result)
     result
@@ -117,6 +118,20 @@ RSpec.describe "Operator API — Fulfillment Requests", type: :request do
         advance = JSON.parse(response.body).dig("data", "advance")
         expect(advance["state"]).to eq("materializing")
         expect(advance["advanced"]).to eq(2)
+      end
+
+      # If the 60s sweep already holds the per-request advisory lock when the
+      # operator approves, advance! returns immediately with already_advancing:
+      # true and advanced: false — otherwise the operator sees "advanced: false"
+      # with no explanation for why nothing happened.
+      it "surfaces already_advancing so a lock loser is self-explaining, not silent" do
+        fr = composed_request(account: account)
+        stub_advance(state: "composed", advanced: 0, already_advancing: true)
+
+        post "/api/v1/system/fulfillment_requests/#{fr.id}/approve", headers: headers
+
+        advance = JSON.parse(response.body).dig("data", "advance")
+        expect(advance["already_advancing"]).to be(true)
       end
     end
 
