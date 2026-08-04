@@ -271,6 +271,15 @@ module PowernodeSystem
           resource :architectures, actions: %i[read create delete manage propose], grant: { admin: :all }
           resource :children, actions: %i[read spawn manage], grant: { admin: :all }
           resource :connections, actions: %i[read create update delete test], grant: { admin: :all }
+          # On-demand capability fulfillment (campaign 019f6084 inc-M). The
+          # `composed → approved` decision is the ONE human gate in the
+          # flow — the worker sweep deliberately excludes `composed`, so this is
+          # the only surface that releases a frozen plan to execute. Admin-only,
+          # mirroring every other infra-mutation resource in this block.
+          resource :fulfillment_requests, actions: %i[approve], grant: { admin: :all },
+                   descriptions: {
+                     approve: "Approve a composed capability-fulfillment request, releasing its FROZEN plan to execute"
+                   }
           resource :infra_tasks, actions: %i[read create control], grant: { admin: :all }
           resource :instances, actions: %i[read create update delete control claim], grant: { admin: :all }
           resource :modules, actions: %i[read create update delete],

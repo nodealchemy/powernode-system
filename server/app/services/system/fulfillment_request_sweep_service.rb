@@ -51,6 +51,12 @@ module System
     def advance_open!
       ::System::FulfillmentRequest.for_account(@account).advanceable.find_each do |request|
         result = ::System::FulfillmentAdvanceOrchestrator.advance!(request: request)
+        # Another advance (the operator approve endpoint, or an overlapping
+        # tick) holds this request's advisory lock. Nothing happened here, so
+        # counting it as `advanced` would overstate the tick — skip it and
+        # pick the row up next tick.
+        next if result.already_advancing
+
         @summary[:advanced] += 1
         @summary[:waiting]  += 1 if result.waiting
         @summary[:reached_ready] += 1 if request.reload.ready?

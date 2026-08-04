@@ -39,10 +39,17 @@ module System
     # without terminating), so stop rather than spin.
     MAX_STEPS_PER_TICK = 12
 
-    Result = Struct.new(:ok?, :state, :advanced, :waiting, :parked, :error, keyword_init: true)
+    Result = Struct.new(:ok?, :state, :advanced, :waiting, :parked, :error,
+                        :already_advancing, keyword_init: true)
 
     def self.advance!(request:)
       new(request: request).advance!
+    end
+
+    # Stable 63-bit signed key from the request UUID (fits a Postgres bigint).
+    # Mirrors System::PackageRepositorySyncService#advisory_lock_key.
+    def self.advisory_lock_key(request_id)
+      ::Digest::SHA256.hexdigest("fulfillment-advance:#{request_id}").to_i(16) % (2**63)
     end
 
     def initialize(request:)
@@ -50,7 +57,40 @@ module System
       @account = request.account
     end
 
+    # SERIALIZED PER REQUEST. advance! walks as far down the chain as it can in
+    # one call — materialize, dispatch a build, author a template, PROVISION
+    # CLOUD INSTANCES, smoke — which takes minutes, while
+    # System::FulfillmentRequestSweepService re-ticks every ADVANCEABLE row
+    # every 60s. Every phase guard is read-then-act (`materialized_recorded?`,
+    # `@request.template_id.present?`, ...) with no row lock, no lock_version,
+    # and no uniqueness constraint behind it, so two overlapping advances of the
+    # SAME request each read "not provisioned yet" and each provision — real
+    # duplicate cloud spend, not just wasted work.
+    #
+    # The lock lives HERE rather than in either caller because there are two
+    # independent entrants (the operator approve endpoint and the 60s sweep) and
+    # locking one excludes nothing unless the other locks on the same key.
+    #
+    # NON-BLOCKING on purpose: a loser returns `already_advancing` immediately
+    # instead of queueing behind a multi-minute provision. The sweep just skips
+    # the row and picks it up next tick — the state machine is resumable, so
+    # there is nothing to wait for. Session-level (not transaction-level) so a
+    # multi-minute advance never pins a DB transaction; released in an ensure so
+    # a mid-phase raise cannot leak it, and a dead process's session lock is
+    # dropped by Postgres automatically.
     def advance!
+      return already_advancing_result unless acquire_advance_lock!
+
+      begin
+        advance_locked!
+      ensure
+        release_advance_lock!
+      end
+    end
+
+    private
+
+    def advance_locked!
       steps = 0
       loop do
         break if @request.terminal?
@@ -70,7 +110,37 @@ module System
       result_for_state
     end
 
-    private
+    # --- per-request advance serialization (see advance!) ---
+
+    def advisory_lock_key
+      self.class.advisory_lock_key(@request.id)
+    end
+
+    # Postgres session advisory locks are re-entrant WITHIN one session, so a
+    # sequential re-entry on the same connection (same process) still proceeds —
+    # only a genuinely concurrent holder on another connection is excluded,
+    # which is exactly the sweep-vs-operator case this guards.
+    def acquire_advance_lock!
+      lock_connection.select_value("SELECT pg_try_advisory_lock(#{advisory_lock_key})")
+    end
+
+    def release_advance_lock!
+      lock_connection.select_value("SELECT pg_advisory_unlock(#{advisory_lock_key})")
+    rescue StandardError => e
+      Rails.logger.warn("[FulfillmentAdvance] advisory unlock failed for ##{@request.id}: #{e.class}: #{e.message}")
+    end
+
+    def lock_connection
+      ::System::FulfillmentRequest.connection
+    end
+
+    def already_advancing_result
+      Rails.logger.info(
+        "[FulfillmentAdvance] ##{@request.id}: another advance holds the lock — skipping duplicate"
+      )
+      Result.new(ok?: true, state: @request.state, advanced: false, waiting: false,
+                 parked: @request.parked, error: nil, already_advancing: true)
+    end
 
     def advance_one
       case @request.state

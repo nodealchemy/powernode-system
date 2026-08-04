@@ -105,6 +105,16 @@ Rails.application.routes.draw do
         # worker/webhook-gated; this is list/show only.
         resources :module_build_batches, only: %i[index show]
 
+        # Operator approval surface for on-demand capability fulfillment
+        # (campaign 019f6084 inc-M). A composed System::FulfillmentRequest waits
+        # on an out-of-band human decision, NOT on the orchestrator — the worker
+        # sweep excludes `composed` from ADVANCEABLE_STATES on purpose. Without
+        # this route an interactive request hung in `composed` forever.
+        # Approve-only: everything downstream is driven by the sweep.
+        resources :fulfillment_requests, only: [] do
+          member { post :approve }
+        end
+
         # Physical-device claim queue (operator-facing). See plan
         # wondrous-yawning-anchor.md — devices polling /node_api/claim
         # surface here for the operator to bind to a NodeInstance.

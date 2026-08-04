@@ -154,7 +154,10 @@ module System
                 "autonomous approval withheld; a partial closure needs a human decision. #{reasons}"
               fr.add_park!(step: "autonomous_approval", reason: approval_withheld_reason)
             else
-              fr.approve!
+              # No operator in this path — approve_by! records that fact (and
+              # emits the approval event) rather than leaving the decision
+              # untraceable, same as the operator endpoint.
+              fr.approve_by!(user: nil, source: "autonomous_executor")
               ::System::FulfillmentAdvanceOrchestrator.advance!(request: fr)
               fr.reload
             end

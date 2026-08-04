@@ -823,7 +823,94 @@ SKILLS_DATA = [
       The SDWAN Manager autonomy loop invokes this off the FederationPeerLivenessSensor;
       also operator-runnable.
     PROMPT
-  }
+  },
+
+  # ─────────────────────────────────────────────────────────────────────
+  # On-demand fulfillment chain (IMP-d4fc286b7ccf).
+  #
+  # These THREE executors declare `binds_to` but had no Ai::Skill row anywhere
+  # in the seed run. That is worse than three invisible skills:
+  # `system_skill_bindings_seed.rb` calls `SkillBindings.validate!` UNRESCUED
+  # before creating any binding, so ONE missing row aborts the entire bindings
+  # seed and leaves ZERO Ai::AgentSkill rows for EVERY system agent. That is
+  # what made the end-to-end "purpose → node" orchestration
+  # (fulfill_capability_request) unreachable.
+  #
+  # The other six `binds_to` executors that look missing from THIS file
+  # (provision_full_stack, deploy_app_code, attach_storage, scale_project,
+  # relocate_workload, configure_sdwan_for_project) are NOT missing — they are
+  # seeded by `system_provisioning_skills_seed.rb`, which db/seeds.rb runs
+  # immediately after this file and before the bindings seed. Do not re-add them
+  # here: both files upsert by slug, so the later provisioning seed would
+  # silently clobber a copy added here and leave two sources of truth.
+  # ─────────────────────────────────────────────────────────────────────
+  {
+    name: "Fulfill Capability Request",
+    slug: "system-fulfill-capability-request",
+    invocation_mode: "workflow_step",
+    description: "On-demand: turn a natural-language capability request into a running, leased instance. Composes reusable modules, detects gaps, and creates a DURABLE System::FulfillmentRequest with the plan FROZEN — approval is an out-of-band transition on the persisted row, never a re-composition.",
+    category: "devops",
+    subdomain: "fleet",
+    executor: "System::Ai::Skills::FulfillCapabilityRequestExecutor",
+    tags: %w[fulfillment on-demand provisioning modules lease orchestration],
+    system_prompt: <<~PROMPT.strip
+      Turn "give me a running <X>" into an actual leased instance.
+      Inputs: request (required, free-form), count (default 1, capped by
+      SiteSetting system.fulfill.max_instances), approved (default false),
+      base_os_module_name, platform_id, provider_region_id, provider_instance_type_id.
+      Returns fulfillment_request_id + state + the composed plan.
+      APPROVAL-GATED, high blast radius. The plan is FROZEN at compose time:
+      approving releases exactly those bytes (the TOCTOU fix). Interactive callers
+      leave it in `composed` and approve out-of-band via
+      POST /api/v1/system/fulfillment_requests/:id/approve; the sweep
+      (System::FulfillmentRequestSweepService) then carries it to `ready`.
+      Gaps with no materializable package become plan["unresolved_gaps"] and are
+      never dropped. On the autonomous (approved: true) path they additionally
+      block inline approval and are parked on the row; on the interactive path
+      nothing is parked — the gaps live only in plan["unresolved_gaps"], which is
+      what the operator is deciding about when they approve.
+    PROMPT
+  },
+  {
+    name: "Module Smoke Verify",
+    slug: "system-module-smoke-verify",
+    description: "Compose a newly-built module onto a pooled instance atop base-os and assert it is actually healthy (systemd unit active, manifest health endpoint answers, ldd closure complete)",
+    category: "devops",
+    subdomain: "modules",
+    executor: "System::Ai::Skills::ModuleSmokeVerifyExecutor",
+    tags: %w[modules smoke verification health builds],
+    system_prompt: <<~PROMPT.strip
+      Prove a freshly-built module actually works before trusting it.
+      Inputs: module_name OR module_id (one required), base_os_module_name,
+      template_id (optional), instance_id (optional).
+      Omit instance_id to self-acquire an ephemeral pool member (released afterward);
+      pass instance_id to verify a CALLER-OWNED instance in place — that instance is
+      never released or terminated (this is the path the fulfillment orchestrator uses
+      on its leased instance).
+      Returns ok + per-check results. Read-shape: no approval required.
+    PROMPT
+  },
+  {
+    name: "Boot Image Drift Rollout",
+    slug: "system-boot-image-drift-rollout",
+    description: "Plan a canary-first, halt-on-failure in-place boot-image upgrade across all drifted instances on a node platform, converging the fleet onto the promoted image",
+    category: "devops",
+    subdomain: "fleet",
+    executor: "System::Ai::Skills::BootImageDriftRolloutExecutor",
+    tags: %w[fleet boot-image drift rollout canary upgrades],
+    system_prompt: <<~PROMPT.strip
+      Converge a platform's fleet onto its promoted boot image after a drift signal.
+      Inputs: instance_id (required — a drifted instance; the rollout resolves its
+      platform and all drifted siblings), batch_pct (default 10),
+      max_consecutive_failures (default 1), dry_run (default false).
+      Canary-first: batch 0 is the canary. HALTS on a recent failed upgrade, an
+      in-flight upgrade, or a platform preflight blocker (no promoted UKI / no cosign
+      key) rather than dispatching a silent no-op.
+      Convergence is tick-driven — each approved batch upgrades a slice and the next
+      sensor tick re-plans the remainder.
+      APPROVAL-GATED: reboots every drifted node on the platform, batch by batch.
+    PROMPT
+  },
 ].freeze
 
 # ─────────────────────────────────────────────────────────────────────

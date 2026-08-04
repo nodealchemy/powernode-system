@@ -17,7 +17,11 @@ module System
   # aggregation over a multi-step run — it does not execute anything itself
   # (the orchestrator does). Every artifact the run creates (build batch,
   # template, instances, materialized modules) is recorded here so a failure can
-  # be rolled back cleanly and every run is auditable/resumable.
+  # be rolled back cleanly and every run is resumable. "Auditable" here means
+  # exactly two things and no more: the artifact/timestamp ladder on this row,
+  # and the `system.fulfillment_approved` FleetEvent that `approve_by!` emits
+  # (carrying the approver + a digest of the frozen plan). This subsystem writes
+  # NO AuditLog rows — do not describe it as audit-logged.
   #
   # AASM mirrors System::ModuleBuildBatch / System::CiRunnerLease: each event
   # stamps its own timestamp column via a `before` block so the single AASM
@@ -39,6 +43,7 @@ module System
     # === Associations ===
     belongs_to :account
     belongs_to :requested_by_user, class_name: "User", optional: true
+    belongs_to :approved_by_user, class_name: "User", optional: true
 
     # === Validations ===
     validates :state, presence: true, inclusion: { in: STATES }
@@ -58,7 +63,8 @@ module System
       state :expired
 
       # Out-of-band approval of the FROZEN plan (kills the TOCTOU — this is the
-      # single audited decision; the orchestrator replays plan["execution"]).
+      # single recorded decision — see approve_by!, which stamps the approver and
+      # emits the approval event; the orchestrator replays plan["execution"]).
       event :approve do
         transitions from: :composed, to: :approved
         before { self.approved_at = Time.current }
@@ -178,6 +184,27 @@ module System
       approved? && Array(parked).any? { |p| %w[budget_gate rate_limit_gate].include?(p["step"]) }
     end
 
+    # THE audited approval. Use this rather than the bare `approve!` event so the
+    # decision leaves a trail: who released the frozen plan, when, and a digest of
+    # the exact plan bytes released. `user` is nil for the autonomous executor path
+    # (`approved: true`), which `source` then distinguishes from an operator.
+    #
+    # approved_by_user_id is assigned BEFORE the transition so AASM's single
+    # transition save persists state + approved_at + approver atomically — the
+    # same idiom the `before` blocks above rely on.
+    def approve_by!(user: nil, source: "operator_ui")
+      self.approved_by_user_id = user&.id
+      approve!
+      emit_approved_event!(user: user, source: source)
+      self
+    end
+
+    # sha256 over the canonical frozen plan. Lets an auditor prove the plan that
+    # executed is the plan that was approved without storing a second copy.
+    def plan_digest
+      ::Digest::SHA256.hexdigest((plan || {}).to_json)
+    end
+
     # --- recording helpers (the orchestrator's persistence seam) ---
 
     def record_materialization!(module_ids:, module_names:, build_batch:)
@@ -234,6 +261,34 @@ module System
       end
     end
 
+    # The fulfillment subsystem wrote NO audit trail of any kind before this —
+    # no AuditLog, no FleetEvent — so a provisioning run that spent real money
+    # had no record of who authorized it. FleetEvent is the extension's
+    # operator-action trail (same seam as CiWorkersController's token-rotation
+    # event), and emit! swallows its own failures, so a broken sink can never
+    # block an approval that already committed.
+    def emit_approved_event!(user:, source:)
+      return unless defined?(::System::Fleet::EventBroadcaster)
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: account,
+        kind: "system.fulfillment_approved",
+        severity: :medium,
+        source: source,
+        payload: {
+          fulfillment_request_id: id,
+          request: request,
+          approved_by_user_id: approved_by_user_id,
+          autonomous: user.nil?,
+          plan_digest: plan_digest,
+          unresolved_gap_count: Array((plan || {})["unresolved_gaps"]).size,
+          cost_estimate: cost_estimate
+        }
+      )
+    rescue StandardError => e
+      Rails.logger.warn("[FulfillmentRequest] approved event emit failed: #{e.class}: #{e.message}")
+    end
+
     def summary
       {
         id: id, state: state, request: request,
@@ -242,6 +297,7 @@ module System
         build_batch_id: build_batch_id, template_id: template_id,
         node_instance_ids: node_instance_ids,
         expires_at: expires_at, error: error, parked: parked, smoke: smoke,
+        approved_at: approved_at, approved_by_user_id: approved_by_user_id,
         created_at: created_at
       }
     end
