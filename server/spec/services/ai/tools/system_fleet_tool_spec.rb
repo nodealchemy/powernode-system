@@ -1294,9 +1294,12 @@ RSpec.describe Ai::Tools::SystemFleetTool do
   # skipped and the peer's per-tool grant glob was the only remaining control.
   # The bypass is now two EXPLICIT signals; a bare userless call fails closed.
   describe "principal authorization (IMP-9030413bc292)" do
-    # Worker-only by design: no human-assignable role holds
-    # system.module_builds.dispatch, and the tool itself says so in
-    # WORKER_ONLY_ACTIONS — the sharpest example of a tier the old bypass skipped.
+    # Worker-only by design: system.module_builds.dispatch is granted to no
+    # role except system_worker, and the tool itself says so in
+    # WORKER_ONLY_ACTIONS — the sharpest example of a tier the old bypass
+    # skipped. That's a statement about role GRANTS, not effective access —
+    # see "system.admin short-circuits WORKER_ONLY_ACTIONS" below for the
+    # super_admin exception and why the plain admin role isn't one.
     let(:worker_only_action) { "system_dispatch_module_build_batch" }
     let(:gated_action)       { "system_create_node" }
 
@@ -1353,6 +1356,34 @@ RSpec.describe Ai::Tools::SystemFleetTool do
 
       expect(user_tool.send(:action_permitted?, "system_list_nodes")).to be true
       expect(user_tool.send(:action_permitted?, gated_action)).to be false
+    end
+
+    # IMP-36a99b8167f7 — WORKER_ONLY_ACTIONS' comment and denial message used
+    # to claim, unconditionally, that "agent/operator principals cannot
+    # invoke this action." False for a system.admin holder: has_permission?
+    # short-circuits on system.admin (app/models/user.rb) and returns true
+    # for every permission name before WORKER_ONLY_ACTIONS is ever consulted
+    # — action_permitted? doesn't special-case these actions at all, it just
+    # calls has_permission? like any other. Pinned here so a "fix" that makes
+    # this deny unconditionally (i.e. matches the old, false comment) goes
+    # red instead of silently becoming correct-per-the-comment.
+    it "still permits a system.admin holder through the worker-only exclusion" do
+      super_admin      = create(:user, :super_admin, account: account)
+      super_admin_tool = described_class.new(account: account, user: super_admin)
+
+      expect(super_admin_tool.send(:action_permitted?, worker_only_action)).to be true
+    end
+
+    # The plain admin/owner account roles are NOT system.admin holders —
+    # config/permissions.rb's ROLES hash only puts "system.admin" in
+    # super_admin's permissions array, so :admin here holds admin.access
+    # (admin-panel access) but not the grant-everything permission. They hit
+    # the same denial as any other non-worker caller.
+    it "still denies the plain admin account role — it lacks system.admin, not just the explicit grant" do
+      admin      = create(:user, :admin, account: account)
+      admin_tool = described_class.new(account: account, user: admin)
+
+      expect(admin_tool.send(:action_permitted?, worker_only_action)).to be false
     end
   end
 

@@ -1519,15 +1519,23 @@ module Ai
       end
 
       # IMP-9e01d1b48f7a — actions whose ACTION_PERMISSIONS entry is
-      # deliberately excluded from every human-assignable role (see
-      # server/config/permissions.rb's SYSTEM_PERMISSIONS comment and
-      # PowernodeSystem::Engine's "Deliberately EXCLUDED" note), granted only
-      # to the system_worker role by design to bound leaked-token blast
-      # radius. A denial here isn't a misconfiguration to fix — it's the
-      # intended shape — so the message says so instead of reading like an
-      # outage.
+      # deliberately excluded from every human-assignable role's explicit
+      # grants (see server/config/permissions.rb's SYSTEM_PERMISSIONS comment
+      # and PowernodeSystem::Engine's "Deliberately EXCLUDED" note), granted
+      # only to the system_worker role by design to bound the blast radius of
+      # a leaked NON-ADMIN token. That's a bound on explicit grants, not on
+      # effective access: User#has_permission? short-circuits on system.admin
+      # (see app/models/user.rb) and returns true for every permission name
+      # before this exclusion is ever consulted, so the super_admin role —
+      # the one role whose permissions array actually includes system.admin —
+      # still passes action_permitted? for these actions. The plain
+      # admin/owner account roles hold neither system.admin nor an explicit
+      # grant here, so they're correctly denied (verified empirically, not
+      # just by role name — see IMP-36a99b8167f7 in the spec). A denial for a
+      # non-admin caller isn't a misconfiguration to fix — it's the intended
+      # shape — so the message says so instead of reading like an outage.
       WORKER_ONLY_ACTIONS = {
-        "system_dispatch_module_build_batch" => "granted only to the system_worker role by design (leaked-token blast-radius bound); agent/operator principals cannot invoke this action"
+        "system_dispatch_module_build_batch" => "granted only to the system_worker role by design (bounds a leaked non-admin token's blast radius); ordinary agent/operator principals cannot invoke this action — a system.admin holder still can, via the has_permission? short-circuit"
       }.freeze
 
       def permission_denied_message(action)
