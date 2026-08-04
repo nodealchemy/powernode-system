@@ -319,4 +319,151 @@ RSpec.describe System::FulfillmentAdvanceOrchestrator do
       expect(::System::TemplateModule.where(id: created_join_ids)).to be_empty
     end
   end
+
+  # IMP-f3856a4f9808 — the KILL path, which is NOT the exception path fixed by
+  # IMP-a951891c251b above. A process KILL (OOM, node reboot, hard stop) between
+  # the template create and record_template! runs NO Ruby, so none of
+  # author_template!'s rescue-cleanup happens. What survives is: state=templated,
+  # template_id NIL, and an orphaned, INCOMPLETELY-ASSIGNED template holding the
+  # deterministic per-request name. The next sweep tick correctly re-enters
+  # author_template! (the blank template_id is the crash-recovery guard that keeps
+  # a half-assigned template out of provisioning) — and the create then collided
+  # with NodeTemplate's per-account name uniqueness, failing the request
+  # TERMINALLY and stranding the template forever.
+  describe "resuming after a process KILL mid-template-authoring" do
+    before do
+      stub_fresh_provision!
+      stub_smoke_ok!
+    end
+
+    # Reconstructs EXACTLY the post-kill state using the model's own transitions.
+    # Deliberately raises nothing: an exception would take the already-fixed
+    # cleanup path and prove nothing about a kill.
+    def crashed_mid_authoring(config: :own_stamp)
+      fr = approved_request
+      fr.start_materializing!
+      fr.record_materialization!(module_ids: [ memcached_module.id ],
+                                 module_names: [ "memcached" ], build_batch: complete_batch)
+      fr.start_building!
+      fr.mark_templated!
+
+      orphan = ::System::NodeTemplate.create!(
+        account: account, node_platform: platform, name: fr.execution["template_name"],
+        description: "On-demand fulfillment: #{fr.request}".truncate(280),
+        config: config == :own_stamp ? { "fulfillment_request_id" => fr.id } : config
+      )
+      # INCOMPLETE on purpose: base-os landed, memcached never did. This is the
+      # state that makes recording template_id any earlier unsafe — it would look
+      # authored and provision with a module MISSING.
+      ::System::TemplateModule.create!(node_template: orphan, node_module: base_os)
+
+      [ fr, orphan ]
+    end
+
+    it "reclaims its OWN abandoned template and drives the request through to ready" do
+      fr, orphan = crashed_mid_authoring
+
+      described_class.advance!(request: fr)
+      fr.reload
+
+      expect(fr).to be_ready
+      expect(fr.template_id).to be_present
+
+      # The half-assigned orphan is GONE, and is emphatically not what got
+      # provisioned — the crash-recovery property survives the fix.
+      expect(::System::NodeTemplate.find_by(id: orphan.id)).to be_nil
+      expect(fr.template_id).not_to eq(orphan.id)
+
+      # The template it DID provision from carries the COMPLETE closure.
+      template = ::System::NodeTemplate.find(fr.template_id)
+      expect(template.node_modules.map(&:name)).to include(base_os.name, "memcached")
+      expect(::System::NodeInstance.find(fr.node_instance_ids.first).node.node_template_id)
+        .to eq(template.id)
+    end
+
+    # `execution["template_name"]` may be OPERATOR-CHOSEN, so a name collision is
+    # not by itself evidence of an orphan. These four are the predicate's refusals:
+    # a leaked template is recoverable, a destroyed operator template is not.
+    it "refuses a same-named template carrying NO provenance stamp (an operator's)" do
+      fr, orphan = crashed_mid_authoring(config: { "boot_mode" => "uefi" })
+      orphan.update_column(:created_at, 30.days.ago)
+
+      described_class.advance!(request: fr)
+      fr.reload
+
+      expect(fr).to be_failed
+      expect(fr.error).to include("already taken")
+      expect(fr.error).to include(orphan.id)
+      # Untouched — including the config the operator set.
+      expect(::System::NodeTemplate.find_by(id: orphan.id)).to be_present
+      expect(orphan.reload.config).to eq({ "boot_mode" => "uefi" })
+      expect(orphan.node_modules.map(&:name)).to eq([ base_os.name ])
+    end
+
+    it "refuses ANOTHER request's orphan (that request may still resume onto it)" do
+      other = approved_request
+      fr, orphan = crashed_mid_authoring(config: { "fulfillment_request_id" => other.id })
+
+      described_class.advance!(request: fr)
+      fr.reload
+
+      expect(fr).to be_failed
+      expect(fr.error).to include("already taken")
+      expect(::System::NodeTemplate.find_by(id: orphan.id)).to be_present
+    end
+
+    it "refuses a stamped template that PREDATES the transition into `templated`" do
+      fr, orphan = crashed_mid_authoring
+      # A stamp that arrived some other way (operator system_update_template
+      # REPLACES config wholesale; a restore) cannot fake having been authored
+      # by the run that is currently in `templated`.
+      orphan.update_column(:created_at, fr.templated_at - 1.hour)
+
+      described_class.advance!(request: fr)
+      fr.reload
+
+      expect(fr).to be_failed
+      expect(fr.error).to include("already taken")
+      expect(::System::NodeTemplate.find_by(id: orphan.id)).to be_present
+    end
+
+    it "refuses a stamped template that has a Node running on it" do
+      fr, orphan = crashed_mid_authoring
+      create(:system_node, account: account, node_template: orphan)
+
+      described_class.advance!(request: fr)
+      fr.reload
+
+      expect(fr).to be_failed
+      expect(fr.error).to include("already taken")
+      expect(::System::NodeTemplate.find_by(id: orphan.id)).to be_present
+    end
+
+    it "refuses a stamped template that some request RECORDED (a live artifact, not an orphan)" do
+      fr, orphan = crashed_mid_authoring
+      # Belt-and-braces clause: a template recorded on a request's template_id was
+      # recorded on FULL success. Unreachable while the stamp holds, which is
+      # exactly why it needs its own coverage rather than being taken on faith.
+      approved_request.update_column(:template_id, orphan.id)
+
+      described_class.advance!(request: fr)
+      fr.reload
+
+      expect(fr).to be_failed
+      expect(fr.error).to include("already taken")
+      expect(::System::NodeTemplate.find_by(id: orphan.id)).to be_present
+    end
+
+    it "stamps every template it authors, so the next kill is recoverable too" do
+      allow(::System::PackageModuleMaterializer).to receive(:call)
+        .and_return(materializer_result(batch: complete_batch))
+
+      fr = approved_request
+      described_class.advance!(request: fr)
+      fr.reload
+
+      expect(fr).to be_ready
+      expect(::System::NodeTemplate.find(fr.template_id).config["fulfillment_request_id"]).to eq(fr.id)
+    end
+  end
 end

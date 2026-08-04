@@ -275,11 +275,18 @@ module System
       )
       resolved_platform_id = exec["platform_id"].presence || base_os.node_platform_id
 
+      reclaim_abandoned_template!(template_name)
+
       create = fleet.execute(params: {
         action: "system_create_template",
-        name: exec["template_name"].presence || "fulfill-#{@request.id}",
+        name: template_name,
         description: "On-demand fulfillment: #{@request.request}".truncate(280),
-        node_platform_id: resolved_platform_id
+        node_platform_id: resolved_platform_id,
+        # PROVENANCE STAMP, written in the SAME INSERT as the name — there is no
+        # window in which a template this method created lacks it. It is the only
+        # thing that can distinguish our own abandoned artifact from an
+        # operator's same-named template (see reclaim_abandoned_template!).
+        config: { "fulfillment_request_id" => @request.id }
       })
       raise "template create failed: #{create[:error]}" unless create[:success]
 
@@ -325,6 +332,78 @@ module System
         end
         raise e
       end
+    end
+
+    # Deterministic per request — which is what makes a re-author after a crash
+    # collide, and what makes the collision AMBIGUOUS: the operator-supplied
+    # form is not evidence of anything, the fallback is.
+    def template_name
+      execution["template_name"].presence || "fulfill-#{@request.id}"
+    end
+
+    # A process KILL — OOM, node reboot, hard stop; NOT an exception, so none of
+    # the rescue-cleanup above gets to run — between the create and
+    # record_template! leaves state=templated, template_id STILL BLANK, and an
+    # orphaned, incompletely-assigned template holding `template_name`. The next
+    # sweep tick correctly re-enters author_template! (that blank template_id is
+    # the crash-recovery guard keeping a half-assigned template out of
+    # provisioning), the create collides with NodeTemplate's per-account name
+    # uniqueness, and handle_failure fails the request TERMINALLY. Reclaiming our
+    # own abandoned artifact makes the request resumable WITHOUT weakening the
+    # guard: the incomplete template is destroyed and a fresh one authored, so a
+    # partially-assigned template is still never provisioned from.
+    #
+    # Blind destroy-by-name would be data loss — `execution["template_name"]` can
+    # be operator-chosen. Reclaim requires ALL of:
+    #
+    #   * account scope — uniqueness is `scope: :account_id`, so a collision is
+    #     always in-account. That is scoping, not evidence.
+    #   * config["fulfillment_request_id"] == THIS request's id — the stamp
+    #     author_template! writes atomically with the name.
+    #   * created_at >= templated_at — author_template! only ever runs from the
+    #     `templated` state (entered once; the transition is one-way), so
+    #     anything we authored necessarily postdates it. This is what stops a
+    #     stamp that arrived some other way — an operator's
+    #     system_update_template REPLACES config wholesale, as does a restore —
+    #     from reading as ours.
+    #   * no Nodes attached — something is running on it, so whatever else it
+    #     looks like it is not abandoned.
+    #   * unreferenced by any FulfillmentRequest.template_id — a template a run
+    #     recorded on FULL success is that run's live artifact. Redundant given
+    #     the stamp; kept because it costs one indexed existence check and the
+    #     failure it guards is silent data loss.
+    #
+    # It deliberately does NOT reclaim: an operator's template that merely shares
+    # the name, another request's orphan (that request may still resume onto it),
+    # or an orphan left by a run predating the stamp. Those FAIL LOUD naming the
+    # conflicting template — a leaked template is recoverable by an operator, a
+    # destroyed one is not. Nothing reaps unreferenced orphans yet; that is a
+    # separate sweep, not this method's job.
+    def reclaim_abandoned_template!(name)
+      existing = ::System::NodeTemplate.where(account_id: @account.id).find_by(name: name)
+      return if existing.nil?
+
+      unless reclaimable_orphan?(existing)
+        raise "template name #{name.inspect} is already taken by NodeTemplate #{existing.id}, " \
+              "which is not this request's abandoned authoring artifact — refusing to destroy it. " \
+              "Rename or remove that template, or set a different execution.template_name."
+      end
+
+      Rails.logger.warn(
+        "[FulfillmentAdvanceOrchestrator] reclaiming abandoned template #{existing.id} (#{name}) left by " \
+        "an interrupted authoring run for request #{@request.id} — re-authoring from scratch"
+      )
+      existing.destroy!
+    end
+
+    def reclaimable_orphan?(template)
+      config = template.config
+      return false unless config.is_a?(Hash) && config["fulfillment_request_id"] == @request.id
+      return false if @request.templated_at.blank? || template.created_at.blank?
+      return false if template.created_at < @request.templated_at
+      return false if template.nodes.exists?
+
+      !::System::FulfillmentRequest.where(template_id: template.id).exists?
     end
 
     # Dry-run apply on a transient node — assert the closure resolves + includes
