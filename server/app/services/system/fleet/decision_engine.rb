@@ -336,6 +336,60 @@ module System
         "system.disk_image_publication_failure_streak" => {
           skill: nil,
           action_category: "system.disk_image_publication_investigate"
+        },
+        # IMP-4019664a524b — CapabilityGapSensor. A `capability:<tag>`
+        # requirement no module on the account can satisfy. The sensor has
+        # always emitted; without an entry here every gap died in the
+        # no-binding branch as decision :skipped, which is why the platform's
+        # ONLY surfaced record of "a needed capability has no provider" never
+        # reached anyone.
+        #
+        # ROUTE, DON'T REMEDIATE. Closing a gap means AUTHORING a module,
+        # which must pass the human R1/R2/R3 reuse gate
+        # (docs/runbooks/module-authoring.md Phase 0) — automation that made
+        # module creation cheap would make module SPRAWL cheap. So: no skill
+        # (nothing to plan; the payload already names the capability, the
+        # constraint, and the requiring module) and deliberately NO
+        # REMEDIATION_APPLIERS entry — approving the review is the operator
+        # acknowledging the gap, and execute_approved! reports applied:false
+        # "no applier" rather than pretending something converged.
+        #
+        # WHY require_approval AND NOT AN OBSERVATION. The two notify-only
+        # shapes both mis-serve this signal: "system.observation" is
+        # auto_approve and reaches no operator at all, while a
+        # notify_and_proceed category would decide :proceed and hand
+        # RemediationValidator a pending outcome for a fingerprint that only
+        # clears when a human ships a module days later — scored ineffective
+        # every settle window until the F3-11 streak manufactures a false
+        # fleet.remediation_stuck escalation. :pending is never recorded by
+        # record_proceeded!, so the require_approval gate keeps the gap out of
+        # the validate arc without needing an exemption.
+        #
+        # advisory: true is the gate-side counterpart, and it is load-bearing
+        # twice over (both were live defects). It exempts the decision from the
+        # per-module consent budget — the sensor stamps the REQUIRING module's
+        # id, so a standing gap re-deciding every dedup TTL would otherwise
+        # drain that module's operator-set 24h ceiling with a no-op and push
+        # its REAL remediations down the budget-exhausted branch. And it makes
+        # the operator's answer DURABLE: dedup falls through to gate_action!'s
+        # universal signal_fingerprint key (which the sensor already scopes per
+        # module-and-requirement), but the ordinary dedup only matches while a
+        # request is pending and only suppresses a rejection for a cooldown, so
+        # an approved gap was re-minted every TTL forever. Advisory dedup
+        # matches at any age — but ONLY a request an operator actually decided
+        # (it requires an Ai::ApprovalDecision row), and an advisory request is
+        # minted with no expiry so no chain timeout can settle it in the first
+        # place. A gap therefore stands as ONE queue item until a person
+        # answers; a machine timeout can neither bury it nor count as consent.
+        #
+        # The flag is declared, never inferred: skill-less + applier-less does
+        # NOT imply advisory (cert_expiring, module_promotion_ready and the
+        # project.* bindings all act through services outside this engine), so
+        # deriving it would silently change consent semantics for them.
+        "system.capability_gap" => {
+          skill: nil,
+          action_category: "system.capability_gap_review",
+          advisory: true
         }
       }.freeze
 
@@ -434,7 +488,8 @@ module System
           binding[:action_category],
           metadata: skill_metadata_payload(signal, skill_result),
           reasoning: { summary: build_summary(signal, skill_result) },
-          force_policy: force_policy_for(signal)
+          force_policy: force_policy_for(signal),
+          advisory: advisory?(binding)
         )
 
         record_decision!(signal)
@@ -507,6 +562,14 @@ module System
       end
 
       private
+
+      # A binding that surfaces a condition without ever actuating. Opt-in per
+      # binding (never inferred — see the capability_gap entry); changes two
+      # gate behaviors in FleetAutonomyService#gate_action!: no consent-budget
+      # consumption, and a durable operator decision on the request.
+      def advisory?(binding)
+        binding[:advisory] == true
+      end
 
       # Control-plane fence skip result — uniform applied:false for an actuate
       # path asked to act on an instance owned by another control plane.
@@ -666,7 +729,11 @@ module System
             summary: "Remediation stuck: #{signal.kind} (#{signal.fingerprint}) — " \
                      "#{streak} consecutive ineffective outcomes; operator decision required"
           },
-          force_policy: "require_approval"
+          force_policy: "require_approval",
+          # Unreachable for an advisory today (its outcomes are never recorded,
+          # so the streak stays 0) — threaded anyway so the exemption can never
+          # be lost by a future path that does reach here.
+          advisory: advisory?(binding)
         )
 
         record_decision!(signal)

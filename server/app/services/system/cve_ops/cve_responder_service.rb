@@ -107,17 +107,31 @@ module System
           .pluck(:action_category)
       end
 
-      # Same shape as FleetAutonomyService#gate_action! so DecisionEngine
-      # can call either interchangeably.
-      def gate_action!(action_category, metadata: {}, reasoning: {}, temporal_context: {})
+      # Same shape as FleetAutonomyService#gate_action! so DecisionEngine can
+      # call either interchangeably — which means it must accept EVERY kwarg
+      # #decide passes, not just the ones this service acts on. It previously
+      # accepted neither, so a bound CVE signal raised ArgumentError out of an
+      # unrescued decide_all and took the whole tick down (the controller's
+      # rescue reported it as a bland ok:false).
+      #
+      # force_policy is honored: it is the F3-11 stuck-remediation override,
+      # and a proven-ineffective CVE remediation must stop auto-proceeding here
+      # exactly as it does on the fleet side. advisory is accepted and
+      # deliberately inert: it exempts a decision from the per-module consent
+      # budget and makes its approval durable, and this service has neither a
+      # consent budget nor any advisory binding.
+      def gate_action!(action_category, metadata: {}, reasoning: {}, temporal_context: {},
+                       force_policy: nil, advisory: false)
         unless permitted_actions.include?(action_category)
           Rails.logger.warn("[CveResponder] Action '#{action_category}' not in agent policies — blocked")
           return { decision: :blocked, reason: "not_permitted" }
         end
 
-        result = @policy_service.resolve(
-          action_category: action_category, agent: @agent
-        )
+        result = if force_policy
+          { policy: force_policy, source: "decision_engine_override" }
+        else
+          @policy_service.resolve(action_category: action_category, agent: @agent)
+        end
 
         case result[:policy]
         when "auto_approve"

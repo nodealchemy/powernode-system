@@ -302,7 +302,15 @@ module System
         executed
       end
 
-      def gate_action!(action_category, metadata: {}, reasoning: {}, temporal_context: {}, force_policy: nil)
+      # `advisory` marks a decision that surfaces a condition without ever
+      # actuating (DecisionEngine bindings tagged advisory: true — no skill,
+      # no REMEDIATION_APPLIERS entry). Two gate behaviors change for them,
+      # both because an advisory condition STANDS for as long as it takes a
+      # human to act, rather than resolving on a fleet tick's timescale: the
+      # per-module consent budget is not consumed (below), and an operator's
+      # decision on the request is durable (create_pending_approval).
+      def gate_action!(action_category, metadata: {}, reasoning: {}, temporal_context: {},
+                       force_policy: nil, advisory: false)
         unless permitted_actions.include?(action_category)
           Rails.logger.warn("[FleetAutonomy] Action '#{action_category}' not in agent '#{agent.name}' policies — blocked")
           return { decision: :blocked, reason: "not_permitted" }
@@ -311,21 +319,30 @@ module System
         # Per-module consent budget check — applied before policy resolution.
         # When the budget is exhausted, the action is forced through
         # require_approval regardless of policy. Module-less actions skip.
-        consent_module_id = metadata&.dig("module_id") || metadata&.dig(:module_id) ||
-                            metadata&.dig("payload", "module_id") || metadata&.dig(:payload, :module_id)
-        consent = ::System::Fleet::ConsentBudgetService.check_and_consume!(module_id: consent_module_id)
-        unless consent.allowed
-          Rails.logger.info("[FleetAutonomy] Consent budget exhausted for #{action_category}: #{consent.reason}")
-          # Force into require_approval pathway — operator must explicitly
-          # extend the budget via Module Detail UI or by approving the request.
-          request = create_pending_approval(
-            action_category: action_category,
-            metadata: metadata.merge("budget_exhaustion" => consent.reason),
-            reasoning: reasoning,
-            temporal_context: temporal_context
-          )
-          return { decision: :pending, gate: "consent_budget_exhausted",
-                   decision_record: request, budget_reason: consent.reason }
+        #
+        # IMP-4019664a524b: advisory decisions consume NOTHING. The budget is
+        # the operator's ceiling on autonomous ACTIONS taken against a module;
+        # an advisory takes none, but it re-decides every dedup TTL for as long
+        # as the condition stands (144x/day at 600s), which drained the whole
+        # 24h ceiling and pushed that module's real remediations down the
+        # budget-exhausted branch below.
+        unless advisory
+          consent_module_id = metadata&.dig("module_id") || metadata&.dig(:module_id) ||
+                              metadata&.dig("payload", "module_id") || metadata&.dig(:payload, :module_id)
+          consent = ::System::Fleet::ConsentBudgetService.check_and_consume!(module_id: consent_module_id)
+          unless consent.allowed
+            Rails.logger.info("[FleetAutonomy] Consent budget exhausted for #{action_category}: #{consent.reason}")
+            # Force into require_approval pathway — operator must explicitly
+            # extend the budget via Module Detail UI or by approving the request.
+            request = create_pending_approval(
+              action_category: action_category,
+              metadata: metadata.merge("budget_exhaustion" => consent.reason),
+              reasoning: reasoning,
+              temporal_context: temporal_context
+            )
+            return { decision: :pending, gate: "consent_budget_exhausted",
+                     decision_record: request, budget_reason: consent.reason }
+          end
         end
 
         result = if force_policy
@@ -345,7 +362,8 @@ module System
             action_category: action_category,
             metadata: metadata,
             reasoning: reasoning,
-            temporal_context: temporal_context
+            temporal_context: temporal_context,
+            advisory: advisory
           )
           { decision: :pending, gate: "require_approval", decision_record: request }
         when "block", "silent"
@@ -480,7 +498,7 @@ module System
         [ name, v.to_s ]
       end
 
-      def create_pending_approval(action_category:, metadata:, reasoning:, temporal_context:)
+      def create_pending_approval(action_category:, metadata:, reasoning:, temporal_context:, advisory: false)
         return nil unless defined?(::Ai::ApprovalRequest)
 
         request_data = {
@@ -494,6 +512,22 @@ module System
         # Specific dedup based on the action's natural key (instance/template/module/cve).
         if (key = dedup_key_for(action_category, metadata))
           name, value = key
+
+          # IMP-4019664a524b: an advisory decision is DURABLE. Both dedup paths
+          # below assume the underlying condition resolves — pending matching
+          # ends the moment a request settles, and the rejected cooldown is
+          # time-boxed — so an APPROVED advisory matched nothing and the next
+          # sense pass past the decide-cache minted a fresh request, forever.
+          # Approval is the operator acknowledging a standing condition and
+          # rejection is dismissing it; neither expires, because the condition
+          # itself outlives any window. A genuinely different condition carries
+          # a different fingerprint and still mints.
+          if advisory && (settled = settled_advisory_request(action_category, name, value))
+            Rails.logger.info("[FleetAutonomy] Skipped advisory #{action_category} for #{name}=#{value} — " \
+                              "already #{settled.status} (durable operator decision)")
+            return nil
+          end
+
           existing = pending_fleet_approvals
             .where("request_data->>'action_category' = ?", action_category)
             .where("request_data->'payload'->>? = ?", name, value)
@@ -522,15 +556,60 @@ module System
         chain = fleet_approval_chain
         return nil unless chain
 
-        chain.create_request!(
+        request = chain.create_request!(
           source_type: SOURCE_TYPE,
           source_id: action_category,
           description: (reasoning[:summary] || reasoning["summary"] || action_category).to_s.truncate(500),
           request_data: request_data
         )
+
+        # An advisory request gets NO deadline. create_request! derives
+        # expires_at from the chain's timeout_hours (4h on the fleet chain,
+        # timeout_action "reject"), which for a condition only a human can
+        # clear means an unattended gap is auto-rejected overnight by a clock —
+        # and, since a settled request stops surfacing, silently buried. nil is
+        # a first-class value here: ApprovalRequest#expired? is false for it,
+        # `scope :active` explicitly admits it, and BOTH sweeps that could
+        # settle this row filter on expires_at — ours (#expire_stale_approvals!)
+        # and core's account-wide Ai::Autonomy::ApprovalWorkflowService
+        # #expire_overdue!, driven by the AiApprovalExpiryJob cron. Clearing
+        # the column is therefore the whole fix, with no core change and no
+        # extension-specific knowledge pushed into core.
+        request.update_columns(expires_at: nil) if advisory && request&.expires_at
+        request
       rescue StandardError => e
         Rails.logger.error("[FleetAutonomy] Failed to create approval request: #{e.message}")
         nil
+      end
+
+      # IMP-4019664a524b: the settled counterpart to pending_fleet_approvals,
+      # for advisory dedup only. Unbounded in age — an operator's answer about
+      # a standing condition does not go stale the way the rejected-cooldown
+      # assumes — but NOT unbounded in provenance: the `joins(:decisions)`
+      # inner join requires an actual Ai::ApprovalDecision row, which only
+      # #record_decision! writes. ApprovalRequest#check_expiration! transitions
+      # a request straight to rejected/approved with no decision row, so a
+      # CLOCK can never masquerade as a durable operator decision and bury the
+      # gap; a timeout-rejected advisory falls through to the ordinary
+      # rejection cooldown and re-mints, staying visible. That is belt and
+      # braces with the nil expires_at above, which stops the timeout firing at
+      # all. Non-advisory actions never consult this, so recurrence still
+      # re-mints for them.
+      #
+      # Status is only excluded for "pending" — approved and rejected are the
+      # reachable settled states here; "expired"/"cancelled" require a chain
+      # timeout_action or an admin action neither of which this chain uses
+      # today, and both are safe to treat as durable if they ever appear
+      # (each implies a deliberate human/administrative disposition).
+      def settled_advisory_request(action_category, name, value)
+        ::Ai::ApprovalRequest
+          .joins(:decisions)
+          .where(account: @account, source_type: SOURCE_TYPE)
+          .where.not(status: "pending")
+          .where("request_data->>'action_category' = ?", action_category)
+          .where("request_data->'payload'->>? = ?", name, value)
+          .distinct
+          .first
       end
 
       def pending_fleet_approvals

@@ -503,6 +503,7 @@ module PowernodeSystem
           system.instance_reboot system.instance_reprovision system.instance_terminate
           system.fleet_rolling_upgrade system.region_expansion system.capacity_resize
           system.observation
+          system.capability_gap_review
         ])
 
         # SDWAN Manager domain

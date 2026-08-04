@@ -184,6 +184,16 @@ fleet_policies = {
   # per-platform via the sensor's fingerprint.
   "system.disk_image_publication_investigate" => "notify_and_proceed",
 
+  # IMP-4019664a524b — CapabilityGapSensor (in FleetAutonomyService::SENSORS,
+  # so it gates as THIS agent, same reason as the three above). require_approval
+  # is the disposition, not a placeholder: the gap's only remediation is
+  # AUTHORING a module, which must pass the human R1/R2/R3 reuse gate
+  # (docs/runbooks/module-authoring.md Phase 0), so the operator queue IS the
+  # destination. It also keeps #decide at :pending, which RemediationValidator
+  # never snapshots — a gap that stands until someone ships a module would
+  # otherwise score ineffective forever and trip a false remediation_stuck.
+  "system.capability_gap_review" => "require_approval",
+
   # Package repository ingestion. Sync is routine + reversible (just
   # refreshes cached metadata); module creation is supply-chain critical
   # (operator audits each new package entering the fleet); refresh requires

@@ -155,4 +155,45 @@ RSpec.describe System::CveOps::CveResponderService do
       expect(service.collect_signals).to eq([])
     end
   end
+
+  # R4 — this service claims "same shape as FleetAutonomyService#gate_action!
+  # so DecisionEngine can call either interchangeably", and tick! hands `self`
+  # to a real DecisionEngine. But #decide passes force_policy: on EVERY call
+  # (and advisory: since IMP-4019664a524b), so the signatures had already
+  # diverged: any bound CVE signal raised ArgumentError out of an unrescued
+  # decide_all, taking down the whole tick. The controller's rescue turned
+  # that into a bland ok:false, which is why it went unnoticed.
+  describe "DecisionEngine interchangeability" do
+    let(:service) { described_class.new(account: account, agent: agent) }
+    let(:engine)  { System::Fleet::DecisionEngine.new(autonomy_service: service) }
+
+    def decide_cve!
+      engine.decide(kind: "system.cve_critical_published", severity: :critical,
+                    payload: { "cve_id" => "CVE-2026-90001", "affected_packages" => [ "openssl" ] },
+                    fingerprint: "cve:CVE-2026-90001")
+    end
+
+    it "accepts the kwargs DecisionEngine actually passes" do
+      expect(service.method(:gate_action!).parameters.map(&:last))
+        .to include(:force_policy, :advisory)
+    end
+
+    it "decides a bound CVE signal without raising" do
+      expect { decide_cve! }.not_to raise_error
+    end
+
+    it "routes it to the cve_remediate gate rather than dying mid-tick" do
+      expect(decide_cve![:action_category]).to eq("system.cve_remediate")
+    end
+
+    it "honors a forced policy — the F3-11 stuck-remediation override must bite here too" do
+      result = service.gate_action!("system.cve_remediate",
+                                    metadata: { "cve_id" => "CVE-2026-90002" },
+                                    reasoning: { summary: "stuck" },
+                                    force_policy: "block")
+
+      expect(result[:decision]).to eq(:blocked)
+      expect(result[:gate]).to eq("block")
+    end
+  end
 end

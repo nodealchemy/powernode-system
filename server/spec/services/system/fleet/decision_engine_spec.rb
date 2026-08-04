@@ -849,6 +849,150 @@ RSpec.describe System::Fleet::DecisionEngine do
         expect(System::Task.where(account: account, command: "sync_modules").count).to eq(1)
       end
     end
+
+    # IMP-4019664a524b — CapabilityGapSensor has been emitting
+    # system.capability_gap into a SIGNAL_BINDINGS table with no entry for the
+    # kind, so every unresolved `capability:<tag>` requirement terminated in
+    # the no-binding branch as decision :skipped. The binding routes the gap
+    # to the operator and deliberately stops there: closing a gap means
+    # AUTHORING a module, which must pass the human R1/R2/R3 reuse gate
+    # (docs/runbooks/module-authoring.md Phase 0).
+    context "with a system.capability_gap signal (IMP-4019664a524b)" do
+      let(:consumer) { create(:system_node_module, account: account, name: "gap-consumer-#{SecureRandom.hex(3)}") }
+
+      def gap_signal
+        { kind: "system.capability_gap", severity: :medium,
+          payload: { "capability" => "runtime.rust", "constraint" => nil,
+                     "module_id" => consumer.id, "module_name" => consumer.name },
+          fingerprint: "capability_gap:#{consumer.id}:runtime.rust" }
+      end
+
+      before do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.capability_gap_review",
+                                       policy: "require_approval", is_active: true)
+      end
+
+      it "routes the gap to the operator review gate instead of dropping it as :skipped" do
+        d = engine.decide(gap_signal)
+
+        expect(d[:decision]).not_to eq(:skipped)
+        expect(d[:action_category]).to eq("system.capability_gap_review")
+        expect(d[:decision]).to eq(:pending)
+        expect(d[:gate]).to eq("require_approval")
+      end
+
+      it "invokes no executor — the binding carries no skill, so nothing runs pre-gate" do
+        d = engine.decide(gap_signal)
+
+        expect(d[:skill_result]).to be_nil
+        expect(described_class::SIGNAL_BINDINGS["system.capability_gap"][:skill]).to be_nil
+      end
+
+      # A gap only closes when a human authors a providing module — days, not
+      # ticks. Entering the remediation-validate arc would score the standing
+      # fingerprint ineffective forever and manufacture false
+      # fleet.remediation_stuck escalations (F3-11). require_approval keeps
+      # #decide at :pending, which record_proceeded! never snapshots.
+      it "records no RemediationOutcome for a standing gap" do
+        validator = System::Fleet::RemediationValidator.new(account: account, agent: agent)
+        signal = System::Fleet::Signal.from_hash(gap_signal)
+
+        d = engine.decide(signal)
+
+        # Discriminates: an unbound kind ALSO records nothing (it never
+        # reaches :proceed either), so the outcome assertion alone would pass
+        # against a deleted binding. The gap must have been routed first.
+        expect(d[:decision]).to eq(:pending)
+        expect(d[:action_category]).to eq("system.capability_gap_review")
+        expect { validator.record_proceeded!(decisions: [ d ], signals: [ signal ]) }
+          .not_to change { System::Fleet::RemediationOutcome.count }
+      end
+
+      # gate_action! consumes the per-module consent budget BEFORE resolving
+      # policy (fleet_autonomy_service.rb:314-316), keyed off metadata
+      # module_id — and CapabilityGapSensor stamps the REQUIRING module's id.
+      # A standing gap re-decides every dedup TTL (144x/day at 600s), so
+      # without an exemption an advisory no-op exhausts the operator's ceiling
+      # and forces that module's REAL remediations (module_drift, config_drift,
+      # promote) down the budget-exhausted require_approval branch.
+      it "consumes no per-module consent budget" do
+        consumer.update!(consent_budget_per_day: 5, consent_budget_used_count: 0,
+                         consent_budget_window_start_at: Time.current)
+
+        engine.decide(gap_signal)
+
+        expect(consumer.reload.consent_budget_used_count).to eq(0)
+      end
+
+      # End-to-end: signal -> real binding -> gate -> durable approval request.
+      # The binding and the durability rules are otherwise covered in disjoint
+      # halves (decision shape here, gate mechanics in
+      # fleet_autonomy_service_spec), so nothing proved they meet.
+      it "carries a real gap signal through the binding into one deadline-free, durable request" do
+        skip "requires Ai::ApprovalChain (business extension)" unless defined?(::Ai::ApprovalChain)
+        create(:ai_approval_chain, account: account,
+               trigger_type: "autonomy_action", name: "Fleet Autonomy Actions")
+
+        first = engine.decide(gap_signal)
+        request = first[:decision_record]
+
+        expect(first[:decision]).to eq(:pending)
+        expect(request).to be_present
+        expect(request.request_data["payload"]["signal_kind"]).to eq("system.capability_gap")
+        # No deadline: a clock must never bury a gap only a human can close.
+        expect(request.expires_at).to be_nil
+
+        # The operator answers it, and the gap stops re-asking. The dedup cache
+        # is bypassed (a fresh engine) so this exercises the approval-side
+        # durability, not the 600s decide-cache.
+        request.record_decision!(approver: create(:user, account: account), decision: "approved")
+
+        expect {
+          described_class.new(autonomy_service: service).decide(gap_signal)
+        }.not_to change(Ai::ApprovalRequest, :count)
+        expect(Ai::ApprovalRequest.count).to eq(1)
+      end
+
+      it "leaves the budget consumption of non-advisory module actions intact" do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.module_promote_to_live",
+                                       policy: "require_approval", is_active: true)
+        consumer.update!(consent_budget_per_day: 5, consent_budget_used_count: 0,
+                         consent_budget_window_start_at: Time.current)
+
+        engine.decide(kind: "system.module_promotion_ready", severity: :medium,
+                      payload: { "module_id" => consumer.id },
+                      fingerprint: "module_promotion_ready:#{consumer.id}")
+
+        expect(consumer.reload.consent_budget_used_count).to eq(1)
+      end
+
+      # Approving the review acknowledges the gap; it must not author or
+      # assign anything. The absent REMEDIATION_APPLIERS entry is the
+      # mechanism, and the execution stamp says so rather than silently
+      # reporting success.
+      it "does not auto-remediate when the operator approves the review" do
+        request = double("Ai::ApprovalRequest", id: SecureRandom.uuid,
+                         request_data: { "payload" => {
+                           "module_id" => consumer.id,
+                           "capability" => "runtime.rust",
+                           "signal_kind" => "system.capability_gap",
+                           "signal_severity" => "medium",
+                           "signal_fingerprint" => "capability_gap:#{consumer.id}:runtime.rust"
+                         } })
+
+        result = engine.execute_approved!(request)
+
+        expect(result[:applied]).to be false
+        expect(result[:reason]).to match(/no applier/)
+        expect(described_class::REMEDIATION_APPLIERS).not_to have_key("system.capability_gap")
+        # Discriminates: execute_approved! reports the same "no applier" for a
+        # kind with NO binding at all, so pin that the gap is genuinely routed
+        # and merely un-remediated, rather than unrouted.
+        expect(engine.decide(gap_signal)[:decision]).to eq(:pending)
+      end
+    end
   end
 
   # RCP v2 (campaign 019f9250, increment p0c) — INV-1: no self-management.

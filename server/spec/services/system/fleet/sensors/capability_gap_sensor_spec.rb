@@ -125,4 +125,73 @@ RSpec.describe System::Fleet::Sensors::CapabilityGapSensor do
   it "is registered in FleetAutonomyService::SENSORS" do
     expect(System::Fleet::FleetAutonomyService::SENSORS).to include(described_class)
   end
+
+  # IMP-4019664a524b: registration is only half the wiring. The sensor ran and
+  # emitted for months into a DecisionEngine with no binding for the kind, so
+  # every gap terminated as decision :skipped — indistinguishable, from the
+  # outside, from a sensor that found nothing.
+  it "binds its signal kind to the capability_gap_review gate" do
+    binding = System::Fleet::DecisionEngine::SIGNAL_BINDINGS["system.capability_gap"]
+
+    expect(binding).to be_present
+    expect(binding[:action_category]).to eq("system.capability_gap_review")
+    # Advisory by construction: no executor to invoke, no applier to run.
+    expect(binding[:skill]).to be_nil
+    expect(System::Fleet::DecisionEngine::REMEDIATION_APPLIERS).not_to have_key("system.capability_gap")
+  end
+
+  # The gate is only reachable if Fleet Autonomy actually HOLDS the policy —
+  # gate_action! blocks any action_category absent from permitted_actions
+  # ("not_permitted"), which is how a bound-but-unseeded category gets
+  # silently stranded. Mirrors the same assertion the GitOps Reconciler seed
+  # spec makes for system.gitops_drift_remediate.
+  describe "the review gate policy (seeded on Fleet Autonomy)" do
+    let!(:seed_account)  { create(:account, name: "Powernode Admin") }
+    let!(:seed_user)     { create(:user, account: seed_account, email: "admin@powernode.org") }
+    let!(:seed_provider) { create(:ai_provider, account: seed_account, provider_type: "anthropic", is_active: true) }
+    let(:fleet_agent)    { Ai::Agent.global.find_by(name: "Fleet Autonomy") }
+
+    before do
+      silence_warnings do
+        load Rails.root.join("..", "extensions", "system", "server", "db", "seeds", "fleet_autonomy_agent.rb")
+      end
+    end
+
+    it "seeds system.capability_gap_review as require_approval on Fleet Autonomy" do
+      policy = Ai::InterventionPolicy.find_by(
+        account: seed_account, ai_agent_id: fleet_agent.id, scope: "agent",
+        action_category: "system.capability_gap_review"
+      )
+
+      expect(policy).to be_present
+      # Advisory, not autonomous: the operator queue is the destination, and
+      # nothing downstream may treat approval as authorization to author.
+      expect(policy.policy).to eq("require_approval")
+    end
+
+    # Ties the SEEDED disposition to real engine behavior. Every other example
+    # builds its own InterventionPolicy row, so all of them would still pass if
+    # the seed shipped block/auto_approve — this one runs the engine against
+    # what the platform actually seeds.
+    it "resolves a real capability_gap decision to :pending through the seeded policy" do
+      service = System::Fleet::FleetAutonomyService.new(account: seed_account, agent: fleet_agent)
+      engine  = System::Fleet::DecisionEngine.new(autonomy_service: service)
+      mod     = create(:system_node_module, account: seed_account, name: "seeded-gap-#{SecureRandom.hex(3)}")
+
+      d = engine.decide(kind: "system.capability_gap", severity: :medium,
+                        payload: { "capability" => "runtime.rust", "module_id" => mod.id },
+                        fingerprint: "capability_gap:#{mod.id}:runtime.rust")
+
+      expect(d[:decision]).to eq(:pending)
+      expect(d[:gate]).to eq("require_approval")
+      expect(d[:action_category]).to eq("system.capability_gap_review")
+    end
+  end
+
+  # A category the operator cannot edit is a category whose disposition is
+  # frozen at whatever the seed chose: AutonomyActions#update rejects any
+  # action_category missing from the boot-time registry ("unknown category").
+  it "registers the review category with the core autonomy registry" do
+    expect(Ai::InterventionPolicy.category_registered?("system.capability_gap_review")).to be true
+  end
 end
