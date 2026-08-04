@@ -262,5 +262,61 @@ RSpec.describe System::FulfillmentAdvanceOrchestrator do
       # rollback recorded honestly on the row.
       expect(fr.parked.map { |p| p["step"] }).to include("rollback")
     end
+
+    # IMP-a951891c251b: author_template! creates the template, THEN loops
+    # module assignments, THEN calls @request.record_template!(template) last.
+    # rollback! only destroys the template `if @request.template_id.present?`.
+    # A real assignment failure mid-loop (not a stub — the composition-conflict
+    # refusal TemplateCompositionAnalysis added) leaves template_id nil, so
+    # rollback! skips the template and leaks it + its TemplateModule joins.
+    it "leaks NO template / template_module when the assign loop hits a real composition conflict" do
+      shared_category = create(:system_node_module_category, account: account)
+      instance_a = create(:system_node_module, account: account, node_platform: platform,
+                          category: shared_category, variety: "instance", name: "db-primary")
+      instance_b = create(:system_node_module, account: account, node_platform: platform,
+                          category: shared_category, variety: "instance", name: "db-replica")
+
+      # instance_a arrives as a reused module; instance_b is what the (mocked)
+      # materializer hands back — attaching both to the SAME template triggers
+      # the real instance_variety_collision refusal, not a stubbed raise.
+      allow(::System::PackageModuleMaterializer).to receive(:call).and_return(
+        ::System::PackageModuleMaterializer::Result.new(
+          top_level_module: instance_b, dependency_modules: [], recommends_modules: [],
+          dependencies_created: [], build_dispatches: [ { batch_id: complete_batch.id } ],
+          build_batch: complete_batch, baseline_excluded: [], base_os_requires: nil,
+          warnings: [], errors: []
+        )
+      )
+
+      # Capture join ids as they're created (base-os + instance_a assign
+      # before instance_b's conflict aborts the loop) so the post-run
+      # assertion below is evidence against those SPECIFIC rows, not just
+      # "unreachable via a template lookup" — independent of whether a
+      # template can still be found by name.
+      created_join_ids = []
+      allow(::System::TemplateModule).to receive(:create!).and_wrap_original do |original, *args, **kwargs|
+        original.call(*args, **kwargs).tap { |tm| created_join_ids << tm.id }
+      end
+
+      fr = approved_request(reused: [ { "id" => instance_a.id, "name" => instance_a.name } ])
+      tmpl_name = fr.execution["template_name"] # unique per-request (SecureRandom.hex suffix)
+      described_class.advance!(request: fr)
+      fr.reload
+
+      expect(fr).to be_failed
+      expect(fr.error).to include("assign module")
+      expect(fr.template_id).to be_nil
+      expect(created_join_ids).not_to be_empty # sanity: the loop did assign something before failing
+
+      # THE LEAK: a template authored under THIS run's unique name but never
+      # recorded on the row. Scoped by name rather than a blanket account
+      # count — Account#run_account_bootstrap seeds several default templates
+      # per account (its after_create_commit fires even inside RSpec's
+      # transactional wrapper), so a bare count is not a clean signal.
+      expect(::System::NodeTemplate.where(account: account, name: tmpl_name)).to be_empty
+      # THE STRANDED JOINS: the specific TemplateModule rows captured above,
+      # checked directly by id rather than through the template lookup.
+      expect(::System::TemplateModule.where(id: created_join_ids)).to be_empty
+    end
   end
 end

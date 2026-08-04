@@ -285,15 +285,46 @@ module System
 
       template = ::System::NodeTemplate.where(account_id: @account.id).find(create.dig(:data, :template, :id))
 
-      ([ base_os.id ] + module_ids).uniq.each do |mid|
-        assign = fleet.execute(params: {
-          action: "system_assign_module_to_template", template_id: template.id, module_id: mid
-        })
-        raise "assign module #{mid} failed: #{assign[:error]}" unless assign[:success]
-      end
+      # @request.template_id is only recorded on FULL success (below) — it is
+      # the `advance_templated` resume guard (`author_template! if
+      # @request.template_id.blank?`), so setting it any earlier would make a
+      # crash mid-loop (process killed, no exception) look "already authored"
+      # on the next tick and send an incompletely-assigned template straight
+      # into provisioning. That means the top-level rollback! (which only
+      # destroys the template `if @request.template_id.present?`) can never
+      # see this template on a mid-loop failure — so failure here must clean
+      # up after itself instead of leaking the template + its TemplateModule
+      # joins (dependent: :destroy on NodeTemplate#template_modules).
+      begin
+        ([ base_os.id ] + module_ids).uniq.each do |mid|
+          assign = fleet.execute(params: {
+            action: "system_assign_module_to_template", template_id: template.id, module_id: mid
+          })
+          raise "assign module #{mid} failed: #{assign[:error]}" unless assign[:success]
+        end
 
-      assert_closure!(template: template, base_os: base_os)
-      @request.record_template!(template)
+        assert_closure!(template: template, base_os: base_os)
+        # Inside the rescue's protection on purpose: record_template! is a bare
+        # update! that can itself raise (connection drop, statement timeout —
+        # exactly the failure class this cleanup exists for). If it raises after
+        # committing, rollback!'s `template_id.present?` check finds it and its
+        # find_by returns nil post-destroy below — no double-destroy either way.
+        @request.record_template!(template)
+      rescue StandardError => e
+        begin
+          # destroy! (not destroy): a blocked has_many :nodes, dependent:
+          # :restrict_with_error returns false rather than raising, which would
+          # skip the rescue below and leak the template SILENTLY — the opposite
+          # of this cleanup's intent.
+          template.destroy!
+        rescue StandardError => destroy_error
+          Rails.logger.warn(
+            "[FulfillmentAdvanceOrchestrator] cleanup of orphan template #{template.id} after author " \
+            "failure raised: #{destroy_error.class}: #{destroy_error.message}"
+          )
+        end
+        raise e
+      end
     end
 
     # Dry-run apply on a transient node — assert the closure resolves + includes
