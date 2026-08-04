@@ -377,4 +377,103 @@ RSpec.describe System::DependencyResolutionService do
       expect(result.errors.any? { |e| e[:type] == :conflict }).to be false
     end
   end
+
+  # === FIX B (IMP-9ab204776516) ===
+  # ManifestImportService matches a capability constraint ONCE, at import, and
+  # stores it on the edge as version_constraint. Nothing re-checked it
+  # afterwards, so a provider could be re-imported at a lower version and every
+  # later resolution kept treating the edge as satisfied.
+  #
+  # Warnings only: an out-of-constraint provider still resolves into the
+  # closure. Downgrading a live node's module set on a constraint the platform
+  # has never enforced would be a far bigger behaviour change than the drift
+  # it is reporting.
+  describe 'version constraint drift' do
+    def drift_warnings(result)
+      result.warnings.select { |w| w[:type] == :constraint_drift }
+    end
+
+    it 'warns when the provider no longer satisfies the stored constraint' do
+      provider = create(:system_node_module, account: account, name: 'pg',
+                        capabilities: [ 'database.postgres@15' ])
+      consumer = create(:system_node_module, account: account, name: 'app')
+      create(:system_module_dependency, node_module: consumer, dependency: provider,
+             required: true, version_constraint: '>= 16')
+
+      result = described_class.new([ consumer, provider ]).resolve([ consumer ])
+
+      warnings = drift_warnings(result)
+      expect(warnings.size).to eq(1)
+      expect(warnings.first[:message]).to include('pg', '>= 16')
+      # Still resolved — advisory, not exclusionary.
+      expect(result.modules).to include(provider)
+      expect(result.success?).to be true
+    end
+
+    it 'stays silent when the provider still satisfies the constraint' do
+      provider = create(:system_node_module, account: account, name: 'pg',
+                        capabilities: [ 'database.postgres@16' ])
+      consumer = create(:system_node_module, account: account, name: 'app')
+      create(:system_module_dependency, node_module: consumer, dependency: provider,
+             required: true, version_constraint: '>= 16')
+
+      result = described_class.new([ consumer, provider ]).resolve([ consumer ])
+
+      expect(drift_warnings(result)).to be_empty
+    end
+
+    # Every module-to-module pin shipped in this repo is `@^1.0`, which is npm
+    # caret syntax that Gem::Requirement cannot parse, and the platform has no
+    # module semver to compare it against anyway (NodeModuleVersion#version_number
+    # is an integer counter). Warning on these would fire on essentially every
+    # edge in the fleet while saying nothing true.
+    it 'ignores caret pins it has no way to evaluate' do
+      provider = create(:system_node_module, account: account, name: 'base',
+                        capabilities: [ 'os.userland@1.2' ])
+      consumer = create(:system_node_module, account: account, name: 'app')
+      create(:system_module_dependency, node_module: consumer, dependency: provider,
+             required: true, version_constraint: '^1.0')
+
+      result = described_class.new([ consumer, provider ]).resolve([ consumer ])
+
+      expect(drift_warnings(result)).to be_empty
+    end
+
+    it 'ignores a provider that advertises no versioned capability at all' do
+      provider = create(:system_node_module, account: account, name: 'plain',
+                        capabilities: [ 'http-server' ])
+      consumer = create(:system_node_module, account: account, name: 'app')
+      create(:system_module_dependency, node_module: consumer, dependency: provider,
+             required: true, version_constraint: '>= 16')
+
+      result = described_class.new([ consumer, provider ]).resolve([ consumer ])
+
+      expect(drift_warnings(result)).to be_empty
+    end
+
+    # A constraint on a conflicts edge reads the other way round — satisfying it
+    # is the problem — so the drift wording would be actively misleading.
+    it 'ignores conflicts edges' do
+      provider = create(:system_node_module, account: account, name: 'pg',
+                        capabilities: [ 'database.postgres@15' ])
+      consumer = create(:system_node_module, account: account, name: 'app')
+      create(:system_module_dependency, node_module: consumer, dependency: provider,
+             dependency_type: 'conflicts', required: false, version_constraint: '>= 16')
+
+      result = described_class.new([ consumer, provider ], detect_conflicts: false).resolve([ consumer ])
+
+      expect(drift_warnings(result)).to be_empty
+    end
+
+    it 'ignores edges with no stored constraint' do
+      provider = create(:system_node_module, account: account, name: 'pg',
+                        capabilities: [ 'database.postgres@15' ])
+      consumer = create(:system_node_module, account: account, name: 'app')
+      create(:system_module_dependency, node_module: consumer, dependency: provider, required: true)
+
+      result = described_class.new([ consumer, provider ]).resolve([ consumer ])
+
+      expect(drift_warnings(result)).to be_empty
+    end
+  end
 end

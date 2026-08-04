@@ -33,14 +33,52 @@ module System
     # parts. Returns nil for anything that is not a capability requirement
     # (name-based deps resolve by gitea repo elsewhere) so callers can
     # filter_map over a mixed requires list.
+    #
+    # A requirement whose constraint is malformed is also nil — it is not a
+    # usable capability requirement. That matters most for CapabilityGapSensor,
+    # which filter_maps over this method: a manifest typo must not be reported
+    # to the operator as a MISSING PROVIDER. The typo is surfaced instead by
+    # ManifestImportService, which rejects the manifest at import time.
     def self.parse_requirement_string(raw)
       raw_str = raw.to_s
       return nil unless raw_str.start_with?("capability:")
 
       tag, constraint = raw_str.sub(/\Acapability:/, "").split("@", 2)
       return nil if tag.blank?
+      return nil unless constraint_valid?(constraint)
 
       [ tag, constraint.presence ]
+    end
+
+    # The single runtime authority on whether a capability version constraint
+    # is well-formed. `requires` entries are also pattern-checked at PR time by
+    # .gitea/workflows/module-validate.yaml against
+    # modules/.schema/module-manifest.schema.json — that pattern is a coarser
+    # mirror of this rule and must stay consistent with it.
+    #
+    # Note this accepts only Gem::Requirement syntax. npm caret (`^1.0`) is NOT
+    # valid here, even though every module-to-module pin in this repo uses it:
+    # those are name-based pins, which are never parsed as requirements.
+    def self.constraint_valid?(constraint)
+      return true if constraint.blank?
+
+      !requirement_for(constraint).nil?
+    end
+
+    # Does this module advertise `tag` at a version satisfying `constraint`?
+    # Public so DependencyResolutionService can re-check a stored constraint
+    # after import without owning a second copy of the semantics below.
+    def self.satisfied_by?(node_module, tag, constraint)
+      return false if node_module.nil? || tag.blank?
+
+      if constraint.blank?
+        return Array(node_module.capabilities).any? { |cap| cap.to_s.split("@", 2).first == tag }
+      end
+
+      requirement = requirement_for(constraint)
+      return false if requirement.nil?
+
+      satisfies?(node_module, tag, requirement)
     end
 
     # PostgreSQL JSONB array containment: `capabilities ?| array[tag]`
@@ -58,12 +96,22 @@ module System
     private_class_method :candidates_for
 
     def self.parse_requirement(constraint, tag)
-      ::Gem::Requirement.new(constraint)
-    rescue ::ArgumentError
-      ::Rails.logger.warn("[CapabilityResolver] invalid version constraint #{constraint.inspect} for capability #{tag.inspect}")
-      nil
+      requirement = requirement_for(constraint)
+      if requirement.nil?
+        ::Rails.logger.warn("[CapabilityResolver] invalid version constraint #{constraint.inspect} for capability #{tag.inspect}")
+      end
+      requirement
     end
     private_class_method :parse_requirement
+
+    # Silent variant — used by the predicates, which are asking whether a
+    # constraint parses rather than reporting that it did not.
+    def self.requirement_for(constraint)
+      ::Gem::Requirement.new(constraint)
+    rescue ::ArgumentError
+      nil
+    end
+    private_class_method :requirement_for
 
     def self.satisfies?(candidate, tag, requirement)
       Array(candidate.capabilities).any? do |cap|

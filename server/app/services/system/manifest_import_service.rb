@@ -297,8 +297,42 @@ module System
       validate_users(manifest, errors)
       validate_sudoers(manifest, errors)
       validate_no_shipped_home_paths(manifest, errors)
+      validate_capability_requirements(manifest, errors)
 
       errors
+    end
+
+    # A `capability:<tag>@<constraint>` constraint is matched with
+    # Gem::Requirement. One that cannot parse used to fail into a nil provider —
+    # the SAME answer the resolver gives when nothing provides the tag — so the
+    # import reported status=unresolved and CapabilityGapSensor raised it to the
+    # operator as a MISSING PROVIDER. That sent people off to author a module
+    # when the real fix was a typo in their own manifest. It is caught here
+    # instead, as the manifest error it is.
+    #
+    # Lives in validate (not just at resolve time) so `validate_only` rejects it
+    # too — CI can catch the typo without importing anything.
+    def validate_capability_requirements(manifest, errors)
+      Array(manifest.dig("dependencies", "requires")).each do |raw|
+        error = capability_requirement_error(raw)
+        errors << error if error
+      end
+    end
+
+    # Returns the manifest error for a capability requirement, or nil when the
+    # entry is fine (or is a name-based pin, whose constraint is never parsed).
+    # Shared by validate and the resolve path so both phrase it identically.
+    def capability_requirement_error(raw)
+      raw_str = raw.to_s
+      return nil unless raw_str.start_with?("capability:")
+
+      tag, constraint = raw_str.sub(/\Acapability:/, "").split("@", 2)
+      return "dependencies.requires #{raw_str.inspect} has an empty capability tag" if tag.blank?
+      return nil if ::System::CapabilityResolver.constraint_valid?(constraint)
+
+      "dependencies.requires #{raw_str.inspect}: #{constraint.inspect} is not a valid version constraint. " \
+        "Use Gem::Requirement syntax (e.g. \">= 16\", \"~> 1.0\"); npm caret (\"^16\") is not supported " \
+        "for capability requirements."
     end
 
     # Rejects file_spec entries that ship (or glob) a path under /home.
@@ -680,9 +714,16 @@ module System
       tag, constraint = spec.split("@", 2)
       return nil if tag.blank?
 
+      # Backstops validate for the re-resolve path, which re-reads a stored
+      # manifest without re-validating it. A malformed constraint is a manifest
+      # error, not a capability gap — see validate_capability_requirements.
+      if (error = capability_requirement_error(raw_str))
+        raise ImportError, error
+      end
+
       target = resolve_capability(mod, tag, constraint)
       if target
-        upsert_dependency!(mod, target, constraint: constraint, capability_tag: tag)
+        upsert_dependency!(mod, target, constraint: constraint)
         { capability: tag, constraint: constraint, status: "resolved", dependency_id: target.id }
       else
         ::Rails.logger.info("[ManifestImportService] capability #{tag.inspect} (constraint=#{constraint.inspect}) not satisfied; deferring")
@@ -714,14 +755,15 @@ module System
       )
     end
 
-    def upsert_dependency!(mod, target, constraint: nil, capability_tag: nil)
+    # system_module_dependencies has no metadata column, so which capability
+    # tag produced a given edge is deliberately not persisted — the manifest
+    # remains the record of that. PackageModuleMaterializer stores hand-authored
+    # edges the same way, so both paths produce byte-identical rows.
+    def upsert_dependency!(mod, target, constraint: nil)
       dep = ::System::ModuleDependency.find_or_initialize_by(node_module: mod, dependency: target)
       dep.dependency_type    = "requires"
       dep.required           = true
       dep.version_constraint = constraint if constraint.present?
-      if dep.respond_to?(:metadata=) && capability_tag
-        dep.metadata = (dep.metadata || {}).merge("capability_match" => capability_tag)
-      end
       dep.save!
     end
 

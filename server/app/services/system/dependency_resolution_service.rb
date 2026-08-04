@@ -176,6 +176,8 @@ module System
           end
         end
 
+        check_constraint_drift(node_module, dep_record, dependency)
+
         if @available_module_ids.include?(dependency.id)
           resolve_module(dependency, depth + 1)
         elsif dep_record.required?
@@ -191,6 +193,57 @@ module System
       @visited.add(node_module.id)
       @resolved << node_module
       @resolution_order << { module: node_module, depth: depth, order: @resolution_order.size }
+    end
+
+    # ManifestImportService matches a `capability:<tag>@<constraint>` requirement
+    # once, at import, and records the constraint on the edge. Nothing re-read it
+    # afterwards, so a provider re-imported at a lower version left every later
+    # resolution treating the edge as satisfied. This re-checks it.
+    #
+    # Advisory only — the module still resolves into the closure. Dropping a
+    # provider from a live node's module set over a constraint the platform has
+    # never once enforced would be a far larger behaviour change than the drift
+    # being reported.
+    #
+    # Two deliberate silences, both to avoid warnings that say nothing true:
+    #
+    #   * An unparseable constraint is skipped. Every module-to-module pin in
+    #     this repo is npm caret (`@^1.0`), which Gem::Requirement rejects, and
+    #     the platform has no module semver to check it against anyway
+    #     (NodeModuleVersion#version_number is an integer counter). Warning here
+    #     would fire on nearly every edge in the fleet.
+    #   * A provider advertising no versioned capability is skipped — there is
+    #     nothing to compare, which is the normal shape of a name-pinned edge.
+    #
+    # The check is tag-blind: the edge does not record WHICH capability tag
+    # produced it (system_module_dependencies has no metadata column), so a
+    # provider counts as satisfying the constraint if any of its versioned tags
+    # does. That can miss a drift the operator would care about when a provider
+    # advertises several versioned tags; it cannot invent one.
+    def check_constraint_drift(node_module, dep_record, dependency)
+      # A constraint on a `conflicts` edge means "conflicts with these versions",
+      # the opposite reading — satisfying it is the problem, not the fix.
+      return if dep_record.conflicts?
+
+      constraint = dep_record.version_constraint
+      return if constraint.blank?
+      return unless ::System::CapabilityResolver.constraint_valid?(constraint)
+
+      versioned_tags = Array(dependency.capabilities).filter_map do |cap|
+        tag, version = cap.to_s.split("@", 2)
+        tag if version.present?
+      end.uniq
+      return if versioned_tags.empty?
+
+      return if versioned_tags.any? { |tag| ::System::CapabilityResolver.satisfied_by?(dependency, tag, constraint) }
+
+      @warnings << {
+        type: :constraint_drift,
+        module: node_module,
+        dependency: dependency,
+        message: "Dependency #{dependency.name} for #{node_module.name} no longer satisfies " \
+                 "its recorded version constraint #{constraint} (provides: #{Array(dependency.capabilities).join(', ')})"
+      }
     end
 
     def detect_cycle_path(target_module)

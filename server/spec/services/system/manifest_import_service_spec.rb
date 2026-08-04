@@ -817,14 +817,48 @@ RSpec.describe System::ManifestImportService, type: :service do
         expect(resolved[:capability]).to eq("storage.nonexistent")
       end
 
-      it "logs + returns nil-target on invalid version constraint" do
+      # === FIX C (IMP-ac345fc6c4e6) ===
+      # A malformed constraint used to resolve to nil, which is the SAME answer
+      # the resolver gives for "no module provides this tag". The import then
+      # reported status=unresolved, and CapabilityGapSensor turned that into a
+      # `system.capability_gap` signal — telling the operator the fleet was
+      # missing a provider when in fact the manifest had a typo in it. Now the
+      # manifest is rejected at import, where the author can fix it.
+      it "rejects a malformed capability constraint as a manifest error" do
         import_with_provides("pg-16", %w[database.postgres@16])
-        allow(Rails.logger).to receive(:warn)
 
         _consumer, result = import_with_requires("hub-app", [ "capability:database.postgres@!!!bogus" ])
+
+        expect(result.ok?).to be false
+        expect(result.validation_errors.join("\n")).to match(/!!!bogus.*not a valid version constraint/m)
+        # And specifically NOT reported as a capability that nobody provides.
+        expect(result.resolved_dependencies).to be_empty
+      end
+
+      # The caret form is the realistic typo: every module-to-module pin in this
+      # repo is `@^1.0`, so an author reaching for a versioned capability will
+      # reach for `@^16` — which Gem::Requirement cannot parse.
+      it "rejects a caret capability constraint" do
+        import_with_provides("pg-16", %w[database.postgres@16])
+
+        _consumer, result = import_with_requires("hub-app", [ "capability:database.postgres@^16" ])
+
+        expect(result.ok?).to be false
+        expect(result.validation_errors.join("\n")).to include("^16")
+      end
+
+      it "rejects an empty capability tag" do
+        _consumer, result = import_with_requires("hub-app", [ "capability:@>= 1" ])
+
+        expect(result.ok?).to be false
+        expect(result.validation_errors.join("\n")).to match(/empty capability tag/)
+      end
+
+      it "still reports a genuinely unsatisfied capability as unresolved, not an error" do
+        _consumer, result = import_with_requires("hub-app", [ "capability:database.postgres@>= 16" ])
+
         resolved = result.resolved_dependencies.first
         expect(resolved[:status]).to eq("unresolved")
-        expect(Rails.logger).to have_received(:warn).with(/invalid version constraint/)
       end
 
       it "ignores the consumer module itself even if it provides the capability" do

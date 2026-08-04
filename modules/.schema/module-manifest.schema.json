@@ -89,7 +89,19 @@
           "type": "array",
           "items": {
             "type": "string",
-            "description": "Form: <owner>/<module>@<version-constraint>, e.g. 'powernode/powernode-base-ruby@^1.0'."
+            "description": "A module this one requires. Two forms: a name pin '<owner>/<module>@<version-constraint>' (e.g. 'powernode/powernode-base-ruby@^1.0'), or a capability requirement 'capability:<tag>[@<constraint>]' (e.g. 'capability:os.userland', 'capability:database.postgres@>= 16'). A capability constraint is matched at import with Gem::Requirement, so it must use Gem syntax ('>= 16', '~> 1.0', '1.0') — npm caret ('^16') is NOT valid there, even though name pins conventionally use it. The runtime authority is System::CapabilityResolver.constraint_valid?; this pattern is the PR-time mirror of that rule and must stay consistent with it.",
+            "anyOf": [
+              {
+                "title": "Name pin",
+                "description": "'<owner>/<module>@<constraint>' or a bare module name. The constraint is recorded but never parsed — the platform has no module semver (NodeModuleVersion#version_number is an integer counter) — so caret syntax is accepted here.",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?(@[^@\\s][^@]*)?$"
+              },
+              {
+                "title": "Capability requirement",
+                "description": "'capability:<tag>[@<Gem::Requirement constraint>]'. Rejects caret and other non-Gem syntax, which would otherwise fail to parse at import and surface to the operator as a MISSING PROVIDER rather than as the manifest typo it is.",
+                "pattern": "^capability:[a-z0-9]+([._-][a-z0-9]+)*(@(=|!=|>=|<=|>|<|~>)?\\s*[0-9]+(\\.[0-9]+)*([.-][A-Za-z0-9]+)*)?$"
+              }
+            ]
           }
         },
         "provides": {
