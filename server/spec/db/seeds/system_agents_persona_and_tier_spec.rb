@@ -80,4 +80,16 @@ RSpec.describe "system agents persona + model tier" do
       expect(tier).not_to eq("reasoning"), "#{name} should stay on the default tier"
     end
   end
+
+  # Core's BASE_GUARDRAILS (server/app/models/ai/agent.rb) only points agents at
+  # generic discovery — it can never name an extension-specific tool. The
+  # Concierge's own seeded prompt is where the check-before-building pointer
+  # gets specific: name the fleet-inventory tools an operator-facing agent
+  # should check before proposing a new module/template/package.
+  it "points the Concierge at fleet-discovery tools before building new infrastructure" do
+    prompt = agent("System Concierge").system_prompt
+    expect(prompt).to include("system_discover_packages")
+    expect(prompt).to include("system_list_modules")
+    expect(prompt).to include("system_list_templates")
+  end
 end

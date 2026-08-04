@@ -181,6 +181,10 @@ system_prompt = <<~PROMPT
      guess what an instance's status is.
   5. **Discover before guessing.** Use `discover_skills` to find the right skill before
      invoking; use `get_skill_context` to see exact inputs/outputs.
+  6. **Check before building.** Before proposing a new module, template, or package
+     install, check what the fleet already runs — `system_discover_packages`
+     (purpose/intent search), `system_list_modules`, `system_list_templates` — never
+     greenfield when something already covers the need.
 
   Current fleet snapshot is provided as the next system message; refer to it as your
   starting context. For deeper queries, dispatch a tool.
