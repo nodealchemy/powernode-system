@@ -114,6 +114,23 @@ RSpec.describe "Api::V1::System::NodeApi::Config#dev_cell_bootstrap", type: :req
       expect(peer.granted_mcp_tools).not_to include("platform.delete_knowledge", "platform.delegate_ralph_task")
     end
 
+    # Regression (IMP-727fa83abeff): the cell re-hits this endpoint on every
+    # module delivery / recompose / reboot. The grant used mode: :replace, so
+    # each of those events silently reverted an operator's widened grant to the
+    # baseline — seen in production 2026-08-04 (233 tools → the 12 defaults, at
+    # the delivery timestamp). The baseline is a floor, not a ceiling.
+    it "does NOT revoke an operator widening when the cell re-bootstraps" do
+      get path, headers: headers
+      peer = System::NodeInstancePeer.find_by(node_instance_id: instance.id)
+      peer.grant_mcp_tools!(%w[platform.system_fleet platform.code_*], mode: :add)
+
+      get path, headers: headers
+
+      expect(response).to have_http_status(:ok)
+      expect(peer.reload.granted_mcp_tools).to include("platform.system_fleet", "platform.code_*")
+      expect(peer.granted_mcp_tools).to include(*System::DevCellBootstrapService::DEV_CELL_MCP_TOOLS)
+    end
+
     it "confirms develop/master protection BEFORE issuing a read-WRITE deploy key" do
       get path, headers: headers
 

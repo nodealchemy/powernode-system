@@ -215,4 +215,95 @@ RSpec.describe System::DevCellBootstrapService do
       expect(bundle_known_hosts).to eq("")
     end
   end
+
+  # Regression (IMP-727fa83abeff): bootstrap re-runs on EVERY dev-cell module
+  # delivery / recompose / reboot, and the MCP grant was applied with
+  # `mode: :replace` — so each of those machine-triggered events silently
+  # revoked the operator's widened grant back to the ~12-entry baseline.
+  # Observed in production 2026-08-04 09:13:36: a 233-tool operator widening
+  # reverted to exactly the defaults at the second a dev-cell module version
+  # landed (peer.updated_at == the delivery timestamp). The baseline exists so
+  # a FRESH cell is least-privilege — it is a floor, not a ceiling.
+  describe "#build_mcp grant" do
+    subject(:service) do
+      described_class.new(
+        node_instance: instance,
+        platform_base_url: "https://hub.example",
+        source_repo: "powernode/powernode-platform"
+      )
+    end
+
+    let(:account) { create(:account) }
+    let(:node_template) { create(:system_node_template, account: account) }
+    let(:node) { create(:system_node, account: account, node_template: node_template) }
+    let(:instance) { create(:system_node_instance, :running, node: node) }
+
+    # Patterns an operator widened this cell with (the shape of the production
+    # widening: broad read/introspection globs, no destroy-shaped tool — those
+    # are denied to every instance principal by the core deny overlay anyway).
+    let(:operator_widening) { %w[platform.system_fleet platform.get_system_health platform.code_*] }
+
+    before do
+      # The outer context constrains SiteSetting.get to one argument; announce!
+      # and the event broadcaster may read others.
+      allow(::SiteSetting).to receive(:get).and_call_original
+    end
+
+    def peer_for(inst)
+      ::System::NodeInstancePeer.find_by(node_instance_id: inst.id)
+    end
+
+    it "seeds the FULL baseline on a fresh peer (empty grant ⇒ least-privilege)" do
+      expect(service.send(:build_mcp)).to include(mcp_url: a_string_ending_with("/api/v1/mcp/message"))
+
+      expect(peer_for(instance).granted_mcp_tools)
+        .to contain_exactly(*described_class::DEV_CELL_MCP_TOOLS)
+    end
+
+    it "leaves an operator-widened grant intact across a re-bootstrap" do
+      service.send(:build_mcp)
+      peer = peer_for(instance)
+      peer.grant_mcp_tools!(peer.granted_mcp_tools + operator_widening, mode: :replace)
+
+      # Module delivery / recompose / reboot → bootstrap runs again.
+      service.send(:build_mcp)
+
+      granted = peer.reload.granted_mcp_tools
+      expect(granted).to include(*operator_widening)
+      expect(granted).to include(*described_class::DEV_CELL_MCP_TOOLS)
+    end
+
+    it "re-adds the baseline when a narrowed grant dropped part of it (floor)" do
+      create(:system_node_instance_peer,
+             node_instance: instance, account: account,
+             granted_mcp_tools: [ "platform.search_knowledge", *operator_widening ])
+
+      service.send(:build_mcp)
+
+      granted = peer_for(instance).granted_mcp_tools
+      expect(granted).to include(*described_class::DEV_CELL_MCP_TOOLS)
+      expect(granted).to include(*operator_widening)
+    end
+
+    it "WARNs naming the patterns the old :replace would have revoked" do
+      create(:system_node_instance_peer,
+             node_instance: instance, account: account,
+             granted_mcp_tools: operator_widening)
+      allow(Rails.logger).to receive(:warn)
+
+      service.send(:build_mcp)
+
+      expect(Rails.logger).to have_received(:warn)
+        .with(a_string_including("platform.system_fleet"))
+    end
+
+    it "stays silent when nothing beyond the baseline is granted" do
+      allow(Rails.logger).to receive(:warn)
+
+      service.send(:build_mcp)
+
+      expect(Rails.logger).not_to have_received(:warn)
+        .with(a_string_including("[DevCellBootstrap] preserving"))
+    end
+  end
 end

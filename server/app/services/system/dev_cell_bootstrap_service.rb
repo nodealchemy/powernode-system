@@ -32,8 +32,8 @@ module System
     Result = Struct.new(:ok?, :mcp, :gitea, :error, keyword_init: true)
 
     # Server-defined MCP tool grant for a dev-cell peer (NOT caller-specified;
-    # default-deny everything else). Granted in two tiers, combined into
-    # DEV_CELL_MCP_TOOLS below. All are /mcp catalog names ("platform.<action>")
+    # default-deny everything else). Applied as a FLOOR, not a ceiling — see
+    # build_mcp. Granted in two tiers, combined into DEV_CELL_MCP_TOOLS below. All are /mcp catalog names ("platform.<action>")
     # that Mcp::Principal#may_invoke? fnmatches the request tool name against —
     # verified against Ai::Tools::PlatformApiToolRegistry (registry all_tools map
     # + tool_definitions).
@@ -118,15 +118,49 @@ module System
       )
       return nil unless result.ok? && result.peer
 
-      # mode: :replace so the dev-cell peer is scoped to EXACTLY this grant
-      # (default-deny everything else) even across re-boots / prior grants.
-      result.peer.grant_mcp_tools!(DEV_CELL_MCP_TOOLS, mode: :replace)
+      # mode: :add — the baseline is a FLOOR, not a ceiling.
+      #
+      # This ran with mode: :replace, and bootstrap re-runs on EVERY dev-cell
+      # module delivery / recompose / reboot, so each of those machine-triggered
+      # events silently revoked whatever the operator had widened this cell to
+      # (observed in production 2026-08-04: a 233-tool grant reverted to these
+      # defaults at the second a module version landed). Widening is a
+      # deliberate, permission-checked operator act (system_fleet
+      # grant_instance_mcp_tools); a module delivery carries no such intent and
+      # must not undo it.
+      #
+      # Least-privilege for a FRESH cell is unchanged: a newly announced peer
+      # has an empty grant, so :add yields exactly DEV_CELL_MCP_TOOLS. And a
+      # preserved widening stays bounded by core's destructive-tool deny overlay
+      # (Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS), which denies destroy-shaped
+      # tools to every instance principal regardless of what is granted.
+      log_preserved_grant(result.peer)
+      result.peer.grant_mcp_tools!(DEV_CELL_MCP_TOOLS, mode: :add)
 
       # The MCP streamable-HTTP endpoint is /api/v1/mcp/message (routes.rb:
       # `post "message" => streamable_http#message`), NOT a bare /mcp. The
       # dev-cell mcp-proxy forwards to this URL verbatim; a bare /mcp 404s and
       # the executor can't pull/complete dev-loop tasks. (BUG-P)
       { mcp_url: "#{@platform_base_url}/api/v1/mcp/message" }
+    end
+
+    # Record what the old mode: :replace would have revoked here. The clobber
+    # was SILENT — tools vanished mid-session with no event, which is why it
+    # read for months as "the operator widening never persisted" rather than
+    # "it persisted and bootstrap dropped it". Capped: a wide grant can carry
+    # hundreds of patterns.
+    LOGGED_PRESERVED_PATTERN_LIMIT = 20
+
+    def log_preserved_grant(peer)
+      preserved = Array(peer.granted_mcp_tools).map(&:to_s) - DEV_CELL_MCP_TOOLS
+      return if preserved.empty?
+
+      shown = preserved.first(LOGGED_PRESERVED_PATTERN_LIMIT).join(", ")
+      shown += ", …" if preserved.size > LOGGED_PRESERVED_PATTERN_LIMIT
+      Rails.logger.warn(
+        "[DevCellBootstrap] preserving #{preserved.size} MCP pattern(s) granted outside the " \
+        "dev-cell baseline for instance #{@instance.id} (baseline is a floor, not a ceiling): #{shown}"
+      )
     end
 
     # ---- Gitea: per-repo deploy key + branch protection -------------------
