@@ -3097,10 +3097,22 @@ end
   end
 
   describe "system_dispatch_module_build_batch (campaign 019f5885 inc9)" do
+    def plan_result(entries, excluded: [])
+      ::System::ModuleBuildPlannerService::PlanResult.new(entries: entries, excluded: excluded)
+    end
+
+    def stub_orchestrator_dispatch(dispatched: 1)
+      allow(::System::NativeModuleBuildOrchestrator).to receive(:dispatch!).and_return(
+        System::NativeModuleBuildOrchestrator::Result.new(
+          ok?: true, dispatched: dispatched, queued: 0, succeeded: 0, retried: 0, failed: 0
+        )
+      )
+    end
+
     it "plans, creates the ModuleBuildBatch, and dispatches it via the orchestrator" do
-      allow(::System::ModuleBuildPlannerService).to receive(:plan)
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
         .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: false, source_repo: nil)
-        .and_return([ { module: "mod-a", oci_ref: "abc1234" } ])
+        .and_return(plan_result([ { module: "mod-a", oci_ref: "abc1234" } ]))
       dispatch_result = System::NativeModuleBuildOrchestrator::Result.new(
         ok?: true, dispatched: 1, queued: 0, succeeded: 0, retried: 0, failed: 0
       )
@@ -3122,8 +3134,8 @@ end
     end
 
     it "passes force_all through to the planner and an explicit trigger through to the batch" do
-      allow(::System::ModuleBuildPlannerService).to receive(:plan)
-        .with(base_sha: "b", head_sha: "h", force_all: true, source_repo: nil).and_return([])
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
+        .with(base_sha: "b", head_sha: "h", force_all: true, source_repo: nil).and_return(plan_result([]))
       allow(::System::NativeModuleBuildOrchestrator).to receive(:dispatch!).and_return(
         System::NativeModuleBuildOrchestrator::Result.new(ok?: true, dispatched: 0, queued: 0, succeeded: 0, retried: 0, failed: 0)
       )
@@ -3135,9 +3147,9 @@ end
     end
 
     it "threads source_repo through to the planner and records it on the batch (imp 019f71e2)" do
-      allow(::System::ModuleBuildPlannerService).to receive(:plan)
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
         .with(base_sha: "b", head_sha: "h", force_all: false, source_repo: "powernode/powernode-platform")
-        .and_return([ { module: "mod-a", oci_ref: "abc1234" } ])
+        .and_return(plan_result([ { module: "mod-a", oci_ref: "abc1234" } ]))
       allow(::System::NativeModuleBuildOrchestrator).to receive(:dispatch!).and_return(
         System::NativeModuleBuildOrchestrator::Result.new(ok?: true, dispatched: 1, queued: 0, succeeded: 0, retried: 0, failed: 0)
       )
@@ -3156,7 +3168,7 @@ end
     end
 
     it "surfaces a planner PlanningError as an error_result rather than raising" do
-      allow(::System::ModuleBuildPlannerService).to receive(:plan)
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
         .and_raise(::System::ModuleBuildPlannerService::PlanningError, "no active Gitea credential resolvable")
 
       result = call("system_dispatch_module_build_batch", base_sha: "b", head_sha: "h")
@@ -3208,6 +3220,57 @@ end
 
       expect(defn[:description]).to include("system.module_builds.dispatch")
       expect(defn[:description]).to include("system_worker")
+    end
+
+    # imp b9e3e05a5119 — a module the planner dropped must reach the caller.
+    it "surfaces the planner's exclusions in the dispatch result" do
+      excluded = [ {
+        module: "python3",
+        reason: "package_origin",
+        detail: "package-origin module — rebuild it with system_refresh_package_module"
+      } ]
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
+        .and_return(plan_result([ { module: "mod-a", oci_ref: "abc1234" } ], excluded: excluded))
+      stub_orchestrator_dispatch
+
+      result = call("system_dispatch_module_build_batch", base_sha: "b", head_sha: "h", force_all: true)
+
+      expect(result[:success]).to be true
+      expect(result[:data][:excluded_modules]).to eq(excluded)
+      expect(result[:data][:excluded_count]).to eq(1)
+    end
+
+    # Pins the sample cap itself: without this, deleting the cap (or changing
+    # .first(LIMIT) to .first) passes the whole suite while a force_all sweep
+    # on a package-heavy fleet dumps hundreds of entries into the response.
+    it "samples excluded_modules at the cap while excluded_count keeps the true total" do
+      excluded = (1..26).map { |i| { module: "pkg-#{i}", reason: "package_origin", detail: "…" } }
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
+        .and_return(plan_result([ { module: "mod-a", oci_ref: "abc1234" } ], excluded: excluded))
+      stub_orchestrator_dispatch
+
+      result = call("system_dispatch_module_build_batch", base_sha: "b", head_sha: "h", force_all: true)
+
+      expect(result[:data][:excluded_modules].size).to eq(25)
+      expect(result[:data][:excluded_modules].size).to eq(described_class::EXCLUDED_MODULE_SAMPLE_LIMIT)
+      expect(result[:data][:excluded_count]).to eq(26)
+    end
+
+    it "omits the exclusion keys entirely when the planner dropped nothing" do
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
+        .and_return(plan_result([ { module: "mod-a", oci_ref: "abc1234" } ]))
+      stub_orchestrator_dispatch
+
+      result = call("system_dispatch_module_build_batch", base_sha: "b", head_sha: "h")
+
+      expect(result[:data]).not_to have_key(:excluded_modules)
+      expect(result[:data]).not_to have_key(:excluded_count)
+    end
+
+    it "documents the package-origin dual build path in the action description" do
+      defn = described_class.action_definitions.fetch("system_dispatch_module_build_batch")
+
+      expect(defn[:description]).to include("system_refresh_package_module")
     end
   end
 end

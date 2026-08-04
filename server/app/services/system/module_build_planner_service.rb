@@ -36,6 +36,37 @@ module System
   class ModuleBuildPlannerService
     class PlanningError < StandardError; end
 
+    # A plan plus the module names the request named (or would have swept in
+    # under force_all) that did NOT become builds, each with a reason —
+    # imp b9e3e05a5119. #plan keeps returning the bare entries array (every
+    # pre-existing caller consumes that shape); callers that want the dropped
+    # names call .plan_with_diagnostics instead.
+    PlanResult = Struct.new(:entries, :excluded, keyword_init: true)
+
+    # Exclusion reasons (machine-readable; the accompanying :detail is prose).
+    #
+    #   package_origin — materialized by System::PackageModuleMaterializer from
+    #     an upstream apt/rpm package. It has no modules/<slug>/ tree to diff
+    #     and no manifest_yaml, so this planner can neither see it dirty nor
+    #     build it; it rebuilds through System::PackageClosureBuildBridge's own
+    #     `package`-trigger batch (System::NativeModuleBuildOrchestrator skips
+    #     the manifest step for that trigger). Correct to exclude — but it was
+    #     silent, so force_all reported a clean plan while skipping every
+    #     package-origin module in the account.
+    #   no_manifest    — a module whose manifest.yaml was never imported.
+    #   unknown_module — a modules/<slug>/ path changed but no NodeModule of
+    #     that name exists in the account (repo/DB divergence).
+    EXCLUDED_PACKAGE_ORIGIN = "package_origin"
+    EXCLUDED_NO_MANIFEST    = "no_manifest"
+    EXCLUDED_UNKNOWN_MODULE = "unknown_module"
+
+    # How many excluded modules a PlanningError names before summarizing the
+    # rest as "+N more". An account whose catalog is all package-origin would
+    # otherwise render a multi-KB error string into webhook bodies and logs.
+    # Independent of the MCP layer's own payload cap (that one bounds a JSON
+    # array, this one bounds a message).
+    EXCLUDED_MESSAGE_SAMPLE_LIMIT = 25
+
     # Mirrors scripts/ci-compute-dirty-closure.sh's ALL_TRIGGERS_REGEX
     # default. A change to any of these forces every module to rebuild.
     # (The bash script's env-var override for this regex is intentionally
@@ -77,24 +108,40 @@ module System
       # @return [Array<Hash>] [{ module: "<slug>", oci_ref: "<tag>" }, ...]
       #   sorted by module slug. Empty array = nothing to build.
       # @raise [PlanningError] the plan could not be computed (no account,
-      #   no Gitea credential, the Gitea compare API call failed, or a real
-      #   commit range yielded zero changed files) — a raised error must NOT be
+      #   no Gitea credential, the Gitea compare API call failed, a real
+      #   commit range yielded zero changed files, or the request named
+      #   modules but resolved to none) — a raised error must NOT be
       #   treated as "empty plan" by the caller; silently planning zero modules
       #   on a failed diff would be worse than surfacing the failure.
       def plan(base_sha:, head_sha:, force_all: false, source_repo: nil)
-        new.plan(base_sha: base_sha, head_sha: head_sha, force_all: force_all, source_repo: source_repo)
+        plan_with_diagnostics(base_sha: base_sha, head_sha: head_sha, force_all: force_all, source_repo: source_repo).entries
+      end
+
+      # As #plan, but returns a PlanResult carrying both the entries and the
+      # module names that were dropped, with a reason each (imp b9e3e05a5119).
+      # @return [PlanResult]
+      def plan_with_diagnostics(base_sha:, head_sha:, force_all: false, source_repo: nil)
+        new.plan_with_diagnostics(base_sha: base_sha, head_sha: head_sha, force_all: force_all, source_repo: source_repo)
       end
     end
 
     def plan(base_sha:, head_sha:, force_all: false, source_repo: nil)
+      plan_with_diagnostics(base_sha: base_sha, head_sha: head_sha, force_all: force_all, source_repo: source_repo).entries
+    end
+
+    def plan_with_diagnostics(base_sha:, head_sha:, force_all: false, source_repo: nil)
       account = resolve_account
       raise PlanningError, "no account resolvable" unless account
 
       dirty = Set.new
       catch_all = force_all
+      changed_file_count = 0
 
       unless catch_all
-        changed_paths_for(account, base_sha, head_sha, source_repo).each do |path|
+        changed_paths = changed_paths_for(account, base_sha, head_sha, source_repo)
+        changed_file_count = changed_paths.size
+
+        changed_paths.each do |path|
           if path.match?(CATCH_ALL_TRIGGER_RX)
             catch_all = true
             next
@@ -112,15 +159,133 @@ module System
       end
 
       known = known_module_names(account)
+
+      # Every name this request put on the table: under a catch-all that is
+      # the account's whole module catalog (manifest or not), otherwise the
+      # slugs the diff itself named. Whatever `known` then drops out of it is
+      # what the caller never hears about unless we say so.
+      candidates = catch_all ? all_module_names(account) : dirty.dup
       dirty = catch_all ? known.dup : (dirty & known)
 
       closure = expand_reverse_dependencies(account, dirty)
+      excluded = excluded_entries(account, candidates - known)
+
+      guard_against_empty_plan!(
+        closure: closure, catch_all: catch_all, candidates: candidates,
+        known: known, excluded: excluded, changed_file_count: changed_file_count
+      )
+
       tag = head_sha.to_s[0, 7]
 
-      closure.sort.map { |slug| { module: slug, oci_ref: tag } }
+      PlanResult.new(
+        entries: closure.sort.map { |slug| { module: slug, oci_ref: tag } },
+        excluded: excluded
+      )
     end
 
     private
+
+    # A request that NAMED modules (or asked for all of them) and resolved to
+    # zero builds is the "shipped a successful build that built nothing"
+    # signature — and nothing downstream can catch it: a 0-module batch runs
+    # System::NativeModuleBuildOrchestrator#finish_empty_batch!, which walks
+    # AASM straight through to `complete`. Fail here, the last layer that
+    # still knows what was asked for.
+    #
+    # NOT a failure: a non-empty diff that touched no module trigger path at
+    # all (docs/, README) — nothing named a module, so nothing was expected to
+    # build. That stays a legitimate no-op, as does an empty commit range.
+    def guard_against_empty_plan!(closure:, catch_all:, candidates:, known:, excluded:, changed_file_count:)
+      return unless closure.empty?
+      return unless catch_all || candidates.any?
+
+      raise PlanningError, "#{empty_plan_summary(catch_all, candidates, known, changed_file_count)} " \
+                           "(#{format_excluded(excluded)}) — refusing to report a successful build that " \
+                           "would build nothing.#{retirement_hint(excluded)}"
+    end
+
+    # A pure module-deletion push (the modules/<slug>/ tree goes away in the
+    # same push that retires the module) lands here: the slug is dirty, no
+    # NodeModule of that name is left, so the plan is empty and this guard
+    # fires. That is correct — the push genuinely has nothing to build — but
+    # the bare error reads like a defect, so say which case the reader is in.
+    # There is no ordering that avoids it: delete the row first and the slug
+    # is unknown (this path); delete the tree first and the still-registered
+    # module is planned, then fails in the builder with no source to check
+    # out. The push simply has no build to do.
+    def retirement_hint(excluded)
+      return "" unless excluded.any? { |e| e[:reason] == EXCLUDED_UNKNOWN_MODULE }
+
+      " If one of these was deliberately retired (its NodeModule deleted via system_delete_module), a push " \
+        "that only removes its modules/<slug>/ tree has nothing left to build and this failure is expected — " \
+        "no re-dispatch needed."
+    end
+
+    def empty_plan_summary(catch_all, candidates, known, changed_file_count)
+      if catch_all
+        # "0 of 0 have manifests" reads as a bug; an empty catalog is a
+        # diagnosis, so say that instead.
+        return "force_all/catch-all planned 0 modules — no modules exist in this account, so there is " \
+               "nothing to build" if candidates.empty?
+
+        "force_all/catch-all planned 0 modules — #{known.size} of #{candidates.size} module(s) in this " \
+          "account have an imported manifest_yaml"
+      else
+        "planned 0 modules for a non-empty change set — #{changed_file_count} changed file(s) named module " \
+          "path(s) [#{candidates.to_a.sort.join(', ')}], none of which intersects the #{known.size} " \
+          "buildable module(s) in this account"
+      end
+    end
+
+    def format_excluded(excluded)
+      return "no excluded modules" if excluded.empty?
+
+      shown = excluded.first(EXCLUDED_MESSAGE_SAMPLE_LIMIT).map { |e| "#{e[:module]} (#{e[:reason]})" }.join(", ")
+      overflow = excluded.size - EXCLUDED_MESSAGE_SAMPLE_LIMIT
+
+      overflow.positive? ? "#{shown}, +#{overflow} more" : shown
+    end
+
+    # Why each candidate name did not become a build. Package-origin modules
+    # are the common, CORRECT case (see EXCLUDED_PACKAGE_ORIGIN) — the point
+    # is that the caller is told, not that the exclusion is wrong.
+    def excluded_entries(account, names)
+      return [] if names.empty?
+
+      rows = ::System::NodeModule
+               .where(account: account, name: names.to_a)
+               .includes(:package_module_link)
+               .index_by(&:name)
+
+      names.to_a.sort.map do |name|
+        mod = rows[name]
+
+        if mod.nil?
+          excluded_entry(name, EXCLUDED_UNKNOWN_MODULE,
+                         "no NodeModule named \"#{name}\" in this account — modules/#{name}/ changed in the " \
+                         "diff but no module of that name is registered; either import its manifest (a new " \
+                         "module) or, if it was deliberately retired via system_delete_module, this push has " \
+                         "nothing left to build for it and the exclusion is expected")
+        elsif mod.package_sourced?
+          # package_module_link_id: system_refresh_package_module (the remedy)
+          # keys off the LINK, not the module — carry it so acting on this
+          # exclusion doesn't need a second lookup.
+          excluded_entry(name, EXCLUDED_PACKAGE_ORIGIN,
+                         "package-origin module (materialized from an upstream package, so it has neither a " \
+                         "modules/#{name}/ tree to diff nor a manifest_yaml) — it rebuilds through the " \
+                         "package-closure trigger, not this planner; use system_refresh_package_module")
+            .merge(package_module_link_id: mod.package_module_link.id)
+        else
+          excluded_entry(name, EXCLUDED_NO_MANIFEST,
+                         "no manifest_yaml imported — the planner only builds modules whose manifest has been " \
+                         "imported (System::ManifestImportService)")
+        end
+      end
+    end
+
+    def excluded_entry(name, reason, detail)
+      { module: name, reason: reason, detail: detail }
+    end
 
     # Single-account resolution — the system extension's native-build CI
     # planning is a core-mode, single-tenant concern (multi-tenancy is
@@ -133,12 +298,19 @@ module System
       ::Account.find_by(name: "Powernode") || ::Account.first
     end
 
+    # The buildable set: a module this planner can build has a manifest.yaml
+    # imported (its build inputs live under modules/<slug>/). Anything else is
+    # reported via #excluded_entries rather than silently dropped.
     def known_module_names(account)
       ::System::NodeModule
         .where(account: account)
         .where.not(manifest_yaml: [ nil, "" ])
         .pluck(:name)
         .to_set
+    end
+
+    def all_module_names(account)
+      ::System::NodeModule.where(account: account).pluck(:name).to_set
     end
 
     # BFS over System::ModuleDependency "requires" edges (dependency_id =

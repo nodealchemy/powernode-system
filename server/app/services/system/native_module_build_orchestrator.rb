@@ -188,6 +188,13 @@ module System
     # tasks to ever drive the normal per-module transitions — walk the AASM
     # chain straight through so it lands on `complete` (vacuously: zero
     # modules planned, zero failed) instead of sitting in `planning` forever.
+    #
+    # This is what makes a 0-module batch report SUCCESS, so it is only safe
+    # because System::ModuleBuildPlannerService refuses to return an empty
+    # plan for a change set that named modules (imp b9e3e05a5119) — by the
+    # time a batch gets here, empty means a genuine no-op. Any future caller
+    # that builds a batch without going through that planner owes the same
+    # guard, or it can ship a "complete" build that built nothing.
     def finish_empty_batch!
       @batch.dispatch!         if @batch.may_dispatch?
       @batch.await_signature!  if @batch.may_await_signature?
