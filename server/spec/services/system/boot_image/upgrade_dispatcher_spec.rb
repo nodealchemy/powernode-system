@@ -397,11 +397,40 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
           "uki_sha256"           => uki_sha256,
           "cosign_public_key"    => cosign_public_key_pem,
           "cosign_bundle_b64"    => cosign_bundle_b64,
-          "download_path"        => "/api/v1/system/node_api/boot_image/download",
+          "download_path"        => "/api/v1/system/node_api/boot_image/download?digest=#{uki_sha256}",
           "source"               => "fleet_rollout",
           "triggered_by_user_id" => user.id
         )
         expect(task.options["triggered_at"]).to be_present
+      end
+
+      # The node GETs download_path verbatim (agent bootupgrade.go download()),
+      # so pinning the digest INTO that path is what makes the download endpoint
+      # serve the artifact this task was pinned to. Without it a promote landing
+      # between dispatch and download rewrites the platform columns under the
+      # in-flight task and the node aborts on "UKI sha256 mismatch".
+      it "pins the download_path to the publication's digest, not the platform column" do
+        target_sha = "target-sha-pinned"
+        publication_digest = "e" * 64
+
+        setup_platform(target_sha: target_sha,
+                       uki_ref: "stale-platform-uki-ref-MUST-NOT-BE-USED", uki_sha256: "f" * 64)
+        setup_publication(target_sha: target_sha, uki_sha256: publication_digest)
+
+        allow(ENV).to receive(:[]).and_call_original
+        allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+        allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+
+        result = described_class.dispatch!(instance: instance, source: "test")
+
+        expect(result.ok?).to be true
+        download_path = result.task.options["download_path"]
+        expect(download_path).to start_with(described_class::DOWNLOAD_PATH)
+        expect(download_path).to eq("#{described_class::DOWNLOAD_PATH}?digest=#{publication_digest}")
+        expect(download_path).not_to include("f" * 64)
+        # The pinned digest and the digest the node verifies bytes against are
+        # the same value — they cannot drift apart.
+        expect(download_path).to include(result.task.options["uki_sha256"])
       end
 
       it "initializes booted_image_git_sha absent from the instance" do

@@ -14,8 +14,30 @@ module Api
         # content-addressed (/v2/<repo>/blobs/<uki_sha256>), so the registry
         # cannot return wrong bytes for a given digest, and the first request per
         # digest caches to disk for the rest of the fleet. Scoped to the calling
-        # instance's own platform — a node can only pull its platform's promoted
-        # UKI.
+        # instance's own platform — a node can only pull a UKI its own platform
+        # published.
+        #
+        # PIN SOURCE (IMP-b55869029a57): the DiskImagePublication row, never the
+        # NodePlatform.disk_image_uki_* columns. f2d0a32b unified the PLAN and
+        # DISPATCH paths onto the promoted publication; this endpoint was a third,
+        # still-divergent copy reading the columns, which made it authoritative on
+        # BYTES while UpgradeDispatcher stayed authoritative on PINS. Two
+        # consequences, both fatal on-node:
+        #
+        #   1. Any column-vs-publication skew (a partial-field promote writer)
+        #      served bytes no task was ever pinned to, so EVERY boot-image
+        #      upgrade died on "UKI sha256 mismatch" until the columns were
+        #      repaired by hand.
+        #   2. A promote landing between dispatch and download rewrote the columns
+        #      under an in-flight task, killing every upgrade in that window.
+        #
+        # (2) needs the caller to say WHICH artifact it was pinned to, hence the
+        # optional `digest` parameter. It is optional on purpose: the agent GETs
+        # `download_path` verbatim out of its task options
+        # (agent/internal/bootupgrade/bootupgrade.go download()), so the parameter
+        # is reachable by having the dispatcher write the pinned digest into that
+        # path — no agent change, no fleet rollout. Until it does, the
+        # publication-backed default already closes (1).
         class BootImageController < BaseController
           UKI_MEDIA_TYPE = "application/vnd.powernode.uki.v1"
 
@@ -24,21 +46,25 @@ module Api
             platform = current_node.node_platform
             return render_not_found("NodePlatform") if platform.nil?
 
-            uki_ref    = platform.disk_image_uki_oci_ref
-            uki_digest = platform.disk_image_uki_sha256
-            if uki_ref.blank? || uki_digest.blank?
-              return render_error("No promoted UKI artifact for this platform", :not_found)
+            publication = resolve_publication(platform)
+            if publication.nil? || publication.uki_oci_ref.blank? || publication.uki_sha256.blank?
+              return render_error(unresolved_message, :not_found)
             end
 
+            uki_digest = publication.uki_sha256
+
             path = ::System::OciBlobProxyService.new(
-              oci_ref:    uki_ref,
+              oci_ref:    publication.uki_oci_ref,
               media_type: UKI_MEDIA_TYPE,
               digest:     uki_digest,
               account:    current_account
             ).fetch_blob!
 
-            response.headers["X-Boot-Image-Digest"]  = uki_digest
-            response.headers["X-Boot-Image-Git-SHA"] = platform.disk_image_git_sha.to_s
+            response.headers["X-Boot-Image-Digest"] = uki_digest
+            # The git sha of the artifact actually SERVED, not the platform's
+            # current promotion — the agent records this as what it booted, and
+            # during a promote window those are different builds.
+            response.headers["X-Boot-Image-Git-SHA"] = publication.git_sha.to_s
             response.headers["ETag"] = %("#{uki_digest}")
             send_file(
               path,
@@ -53,6 +79,46 @@ module Api
           rescue ::System::OciBlobProxyService::PullError => e
             ::Rails.logger.error("[BootImageController#download] UKI proxy failed: #{e.message}")
             render_error("UKI blob fetch failed: #{e.message}", :bad_gateway)
+          end
+
+          private
+
+          # The UKI digest the caller was pinned to, normalized to the bare 64-hex
+          # form DiskImagePublication#uki_sha256 stores (OciBlobProxyService and
+          # the OCI spec both also write it `sha256:`-prefixed).
+          def requested_digest
+            @requested_digest ||= params[:digest].to_s.strip.delete_prefix("sha256:").downcase.presence
+          end
+
+          # Pinned request → that exact publication. Unpinned → the promoted one,
+          # resolved the SAME way UpgradeDispatcher.preflight resolves it
+          # (publications.find_by(git_sha: platform.disk_image_git_sha)) so the
+          # bytes served and the pins dispatched cannot diverge.
+          #
+          # A pinned request that resolves nothing FAILS rather than falling back
+          # to the promoted artifact: falling back is precisely the bug — handing
+          # a node bytes its task was not pinned to, which it then rejects on
+          # sha256 with no indication the platform substituted the artifact.
+          def resolve_publication(platform)
+            if requested_digest
+              # Scoped to this platform's own history (never a global digest
+              # lookup), and to rows that reached `published` — `retainable` is
+              # published + retired, and RETIRED is load-bearing here: a promote
+              # retires the row a still-in-flight task is pinned to.
+              return platform.disk_image_publications.retainable.find_by(uki_sha256: requested_digest)
+            end
+
+            return nil if platform.disk_image_git_sha.blank?
+
+            platform.disk_image_publications.find_by(git_sha: platform.disk_image_git_sha)
+          end
+
+          def unresolved_message
+            if requested_digest
+              "No UKI artifact matching digest #{requested_digest} published for this platform"
+            else
+              "No promoted UKI artifact for this platform"
+            end
           end
         end
       end

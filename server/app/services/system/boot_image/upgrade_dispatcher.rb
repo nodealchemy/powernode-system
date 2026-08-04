@@ -144,7 +144,7 @@ module System
             "uki_sha256"           => promoted_pub.uki_sha256,
             "cosign_public_key"    => cosign_pubkey,
             "cosign_bundle_b64"    => cosign_bundle,
-            "download_path"        => DOWNLOAD_PATH,
+            "download_path"        => download_path_for(promoted_pub),
             "source"               => @source,
             "triggered_by_user_id" => @initiated_by&.id,
             "triggered_at"         => Time.current.iso8601
@@ -156,6 +156,30 @@ module System
       end
 
       private
+
+      # The node GETs this path VERBATIM — it is server-authored task data, not
+      # an agent constant (agent/internal/runtime/tasks/handlers/upgrade_boot_image.go
+      # reads it with a plain string cast, and bootupgrade.go concatenates it
+      # onto the platform URL with no parsing). Pinning the digest into it is
+      # therefore how the download endpoint learns WHICH artifact this task was
+      # pinned to, with no agent change and no fleet rollout.
+      #
+      # Without the pin, the endpoint can only serve whatever is promoted at
+      # download time: a promote landing between dispatch and execution swaps the
+      # bytes under an in-flight task and the node aborts on "UKI sha256
+      # mismatch" (IMP-b55869029a57). Fail-closed on-node, but every in-flight
+      # upgrade dies during any promote window.
+      #
+      # This is the SAME digest carried in the uki_sha256 option the agent
+      # verifies the downloaded bytes against — one value, so the artifact
+      # requested and the artifact accepted cannot drift apart. The endpoint
+      # still honors an unparameterized path, which is what tasks queued before
+      # this change carry.
+      # .preflight already refused the dispatch (:no_uki_artifact) when the
+      # publication carries no uki_sha256, so the digest is present here.
+      def download_path_for(publication)
+        "#{DOWNLOAD_PATH}?digest=#{publication.uki_sha256}"
+      end
 
       # Operator-facing wording for each .preflight failure. Deliberately more
       # verbose than platform_blocker's plan-time phrasing (which is embedded in
