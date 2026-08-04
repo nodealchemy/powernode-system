@@ -27,6 +27,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | [publish-service.md](./publish-service.md) | SREs publishing internal services to their own users | An overlay backend (VIP or host) + an account TLS cert; `system.ingress.manage` | ~5 min per service |
 | [sdwan-network-setup.md](./sdwan-network-setup.md) | Network engineers, multi-tenant operators | At least one NodeInstance with publicly-reachable address | ~30 min |
 | [storage-migration.md](./storage-migration.md) | Storage / SRE operators | Source + target `ProviderVolume`, `system.storage.*` + `system.platform.scale` perms | Varies by data size |
+| [template-authoring.md](./template-authoring.md) | Template designers, SREs preparing a node type, agents driving the same flow over MCP | A `NodePlatform` on the account, the `NodeModule` rows to compose, `system.templates.*` | ~20 min per template |
 | [traefik-tcp-exposure-vs-dnat.md](./traefik-tcp-exposure-vs-dnat.md) | SREs and network operators deciding how to expose a service | None to read; some paths depend on unbuilt campaign increments (marked planned) | ~5 min decision + per-path setup time |
 | [vault-credential-restoration.md](./vault-credential-restoration.md) | Security operators handling Vault DR | Vault snapshot, Shamir unseal keys | ~30 min – 2 hours |
 | [vendored-binary-bump.md](./vendored-binary-bump.md) | Platform maintainers updating Traefik / rpi4-firmware / dracut / kernel pins | Clean working tree; for ARM-only items, Pi 4 or QEMU-aarch64 | 15–60 min per bump |
@@ -44,6 +45,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | Deciding whether a service belongs on Traefik or nftables DNAT (TCP/TLS/UDP) | [traefik-tcp-exposure-vs-dnat.md](./traefik-tcp-exposure-vs-dnat.md) |
 | Migrating a stateful component's data to another volume | [storage-migration.md](./storage-migration.md) |
 | Authoring a module | [module-authoring.md](./module-authoring.md) → [disk-image-ci.md](./disk-image-ci.md) (if base image too) |
+| Composing modules into a reusable NodeTemplate | [template-authoring.md](./template-authoring.md) (after [module-authoring.md](./module-authoring.md)) |
 | Responding to a security CVE | [cve-response.md](./cve-response.md) |
 | Building federation | [federation-setup.md](./federation-setup.md) → [federation-troubleshooting.md](./federation-troubleshooting.md) when stuck |
 | Adopting GitOps | [gitops-reconciliation.md](./gitops-reconciliation.md) |
