@@ -34,6 +34,16 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
   # The dispatcher sources the UKI pins from the PUBLICATION ROW, reached via
   # the platform's promoted git_sha (df4a2000). The publication is therefore the
   # only place uki_oci_ref/uki_sha256 can be set for these examples.
+  #
+  # status/published_at are set because this helper stands for a PROMOTED
+  # publication, and no real promote can leave those unset: all three writers of
+  # NodePlatform#disk_image_git_sha stamp published_at in the SAME transaction as
+  # the pointer flip (IMP-80bd70c04afe). Without them the helper built a row in
+  # the AASM initial state `queued` and called it promoted — so every example
+  # here, including the contract table's `healthy:` row, was arranged in a state
+  # production cannot produce. Examples needing a specific publication state
+  # still override (publish_promoted below; the never-published guard itself
+  # lives in promoted_pointer_publication_state_spec.rb).
   def setup_publication(target_sha: "target-sha", oki_ref: "oki-ref", bundle: "base64_bundle",
                         uki_ref: "uki-ref", uki_sha256: "c" * 64)
     System::DiskImagePublication.create!(
@@ -46,7 +56,9 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
       size_bytes: 1024,
       uki_oci_ref: uki_ref,
       uki_sha256: uki_sha256,
-      uki_cosign_bundle: bundle
+      uki_cosign_bundle: bundle,
+      status: "published",
+      published_at: Time.current
     )
   end
 
@@ -169,7 +181,11 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
           size_bytes: 1024,
           uki_oci_ref: "uki-ref",
           uki_sha256: "d" * 64,
-          uki_cosign_bundle: nil
+          uki_cosign_bundle: nil,
+          # Promoted rows always carry these; without them preflight stops one
+          # guard earlier at :never_published and never reaches the bundle guard.
+          status: "published",
+          published_at: Time.current
         )
 
         allow(ENV).to receive(:[]).and_call_original
@@ -638,7 +654,11 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
         size_bytes: 1024,
         uki_oci_ref: "uki-ref",
         uki_sha256: "#{'d' * 64}",
-        uki_cosign_bundle: nil
+        uki_cosign_bundle: nil,
+        # Promoted rows always carry these; without them preflight stops one
+        # guard earlier at :never_published and never reaches the bundle guard.
+        status: "published",
+        published_at: Time.current
       )
 
       allow(ENV).to receive(:[]).and_call_original

@@ -10,10 +10,10 @@ module System
     # queue an unverifiable boot image onto a node.
     #
     # Guard order (all fail closed, in .preflight): no platform → no promoted
-    # image → no publication row for the promoted sha → no standalone UKI
-    # artifact → no platform cosign public key → no UKI cosign bundle. Then:
-    # no-op when already current (unless force), and in-flight dedup (unless
-    # force).
+    # image → no publication row for the promoted sha → that row was never
+    # published → no standalone UKI artifact → no platform cosign public key →
+    # no UKI cosign bundle. Then: no-op when already current (unless force),
+    # and in-flight dedup (unless force).
     class UpgradeDispatcher
       Result = Struct.new(:upgraded, :task, :reason, :already_current, :deduplicated, :target_git_sha,
                           keyword_init: true) do
@@ -67,8 +67,30 @@ module System
           return [ nil, :no_promoted_image ]
         end
 
+        # Deliberately a bare find_by, with no filter folded into the query:
+        # (node_platform_id, git_sha) is UNIQUE, so this already returns at most
+        # one row and no added condition could select a DIFFERENT one
+        # (IMP-fdaccb8e7c74). The publication-state check below is therefore a
+        # separate question — not "which row" but "is this row fit to dispatch"
+        # — and is written as a guard on the resolved row so it stays visibly
+        # independent of row selection.
         pub = platform.disk_image_publications.find_by(git_sha: platform.disk_image_git_sha)
         return [ nil, :pointer_inconsistent ] if pub.nil?
+        # A pointer aimed at a row that never reached :published. The row is not
+        # empty — uki_oci_ref/uki_sha256/uki_cosign_bundle are written at WEBHOOK
+        # RECEIVE time (webhooks/disk_image_built_controller.rb), before any
+        # cosign or sha256 verification — so the UKI guards below sail right past
+        # an unverified build, and only publication state catches it.
+        #
+        # published_at, not status, is the discriminator: only mark_published and
+        # reactivate ever set it (disk_image_publication.rb:85, :121) and nothing
+        # clears it, while `retired` is also reachable from failed/verifying via
+        # the stuck-build cleanup. Every writer of disk_image_git_sha
+        # (DiskImagePublicationProcessor#publish!, DiskImage::PromotePublication,
+        # DiskImage::RollbackPublication) sets published_at in the SAME
+        # transaction as the pointer flip, so a legitimately promoted row can
+        # never be caught here — including transiently.
+        return [ pub, :never_published ] if pub.published_at.nil?
         return [ pub, :no_uki_artifact ] if pub.uki_oci_ref.blank? || pub.uki_sha256.blank?
 
         cosign_key = platform_cosign_public_key
@@ -91,6 +113,8 @@ module System
         when :no_promoted_image     then "platform has no promoted disk image"
         when :pointer_inconsistent
           "platform pointer inconsistent: no published record for promoted git_sha #{platform.disk_image_git_sha}"
+        when :never_published
+          "platform pointer names a publication that was never published (git_sha #{platform.disk_image_git_sha})"
         when :no_uki_artifact       then "promoted image has no standalone UKI artifact"
         when :no_cosign_key         then "platform cosign public key (POWERNODE_COSIGN_PUBLIC_KEY) not configured"
         when :no_cosign_bundle      then "promoted image has no UKI cosign signature bundle"
@@ -190,6 +214,10 @@ module System
         when :no_promoted_image then "Platform has no promoted disk image to upgrade to"
         when :pointer_inconsistent
           "Platform pointer inconsistent: no published record for promoted git_sha #{platform.disk_image_git_sha}"
+        when :never_published
+          "Platform pointer names a publication that was never published (git_sha " \
+          "#{platform.disk_image_git_sha}) — its artifacts never passed cosign/sha verification. " \
+          "Promote a published publication before upgrading."
         when :no_uki_artifact
           "Promoted image has no standalone UKI artifact (built before the in-place-upgrade CI) — " \
           "republish/promote a newer image to enable boot-image upgrades"

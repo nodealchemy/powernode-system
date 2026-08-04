@@ -40,7 +40,13 @@ RSpec.describe System::Ai::Skills::BootImageDriftRolloutExecutor do
       size_bytes: 1024,
       uki_oci_ref: "uki-ref",
       uki_sha256: "#{'c' * 64}",
-      uki_cosign_bundle: "base64_bundle"
+      uki_cosign_bundle: "base64_bundle",
+      # A healthy fixture must also be PUBLISHED: preflight refuses a pointer
+      # aimed at a row that never reached :published (IMP-80bd70c04afe), and no
+      # real promote can leave published_at nil — every writer of
+      # disk_image_git_sha stamps it in the same transaction as the pointer flip.
+      status: "published",
+      published_at: Time.current
     )
   end
 
@@ -368,7 +374,12 @@ RSpec.describe System::Ai::Skills::BootImageDriftRolloutExecutor do
           size_bytes: 1024,
           uki_oci_ref: nil,
           uki_sha256: nil,
-          uki_cosign_bundle: "base64_bundle"
+          uki_cosign_bundle: "base64_bundle",
+          # Published, so the halt below is attributable to the MISSING UKI PINS
+          # (the point of this example) and not to the earlier publication-state
+          # guard.
+          status: "published",
+          published_at: Time.current
         )
         drifted1 = create_drifted_instance(booted_sha: "old-sha-1", name: "d1")
 

@@ -1553,6 +1553,13 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # Every publication fixture below carries status/published_at because each one
+  # stands for the platform's PROMOTED row, and UpgradeDispatcher.preflight
+  # refuses a pointer aimed at a row that never reached :published
+  # (IMP-80bd70c04afe). That is not an extra precondition invented by the guard:
+  # all three writers of NodePlatform#disk_image_git_sha stamp published_at in
+  # the same transaction as the pointer flip, so a promoted row without it is a
+  # state production cannot reach.
   describe "system_upgrade_boot_image (campaign 019f505f inc 2)" do
     let(:node) { create(:system_node, account: account, node_template: template) }
     let(:instance) { create(:system_node_instance, :running, node: node) }
@@ -1615,7 +1622,9 @@ end
         size_bytes: 1024,
         uki_oci_ref: nil,
         uki_sha256: nil,
-        uki_cosign_bundle: "base64_bundle_data"
+        uki_cosign_bundle: "base64_bundle_data",
+        status: "published",
+        published_at: Time.current
       )
 
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
@@ -1658,7 +1667,9 @@ end
         size_bytes: 1024,
         uki_oci_ref: "uki-ref",
         uki_sha256: "#{'b' * 64}",
-        uki_cosign_bundle: "base64_bundle_data"
+        uki_cosign_bundle: "base64_bundle_data",
+        status: "published",
+        published_at: Time.current
       )
       # Ensure ENV is NOT set and no file path exists
       allow(ENV).to receive(:[]).and_call_original
@@ -1691,7 +1702,9 @@ end
         size_bytes: 1024,
         uki_oci_ref: "uki-ref",
         uki_sha256: "#{'c' * 64}",
-        uki_cosign_bundle: nil
+        uki_cosign_bundle: nil,
+        status: "published",
+        published_at: Time.current
       )
 
       # Bundle guard runs AFTER cosign pubkey guard, so ENV must be set
@@ -1733,7 +1746,9 @@ end
         size_bytes: 1024,
         uki_oci_ref: uki_ref,
         uki_sha256: uki_sha256,
-        uki_cosign_bundle: cosign_bundle_b64
+        uki_cosign_bundle: cosign_bundle_b64,
+        status: "published",
+        published_at: Time.current
       )
 
       allow(ENV).to receive(:[]).and_call_original
@@ -1785,7 +1800,9 @@ end
         size_bytes: 1024,
         uki_oci_ref: "uki-ref",
         uki_sha256: "#{'a' * 64}",
-        uki_cosign_bundle: "base64_bundle_data"
+        uki_cosign_bundle: "base64_bundle_data",
+        status: "published",
+        published_at: Time.current
       )
       instance.update!(booted_image_git_sha: matching_sha)
 
@@ -1818,7 +1835,9 @@ end
         size_bytes: 1024,
         uki_oci_ref: "uki-ref",
         uki_sha256: "#{'a' * 64}",
-        uki_cosign_bundle: "base64_bundle_data"
+        uki_cosign_bundle: "base64_bundle_data",
+        status: "published",
+        published_at: Time.current
       )
       instance.update!(booted_image_git_sha: matching_sha)
 
@@ -1851,7 +1870,9 @@ end
         size_bytes: 1024,
         uki_oci_ref: "uki-ref",
         uki_sha256: "#{'a' * 64}",
-        uki_cosign_bundle: "base64_bundle_data"
+        uki_cosign_bundle: "base64_bundle_data",
+        status: "published",
+        published_at: Time.current
       )
       # Create an existing in-flight pending task
       existing_task = System::Task.create!(
@@ -1891,7 +1912,9 @@ end
         size_bytes: 1024,
         uki_oci_ref: "uki-ref",
         uki_sha256: "#{'a' * 64}",
-        uki_cosign_bundle: "base64_bundle_data"
+        uki_cosign_bundle: "base64_bundle_data",
+        status: "published",
+        published_at: Time.current
       )
       existing_task = System::Task.create!(
         account: account,
@@ -1931,7 +1954,9 @@ end
         size_bytes: 1024,
         uki_oci_ref: "uki-ref",
         uki_sha256: "#{'a' * 64}",
-        uki_cosign_bundle: "base64_bundle_data"
+        uki_cosign_bundle: "base64_bundle_data",
+        status: "published",
+        published_at: Time.current
       )
       existing_task = System::Task.create!(
         account: account,
@@ -1969,7 +1994,9 @@ end
         size_bytes: 1024,
         uki_oci_ref: "uki-ref",
         uki_sha256: "#{'a' * 64}",
-        uki_cosign_bundle: "base64_bundle_data"
+        uki_cosign_bundle: "base64_bundle_data",
+        status: "published",
+        published_at: Time.current
       )
       existing_task = System::Task.create!(
         account: account,
@@ -2007,7 +2034,9 @@ end
         size_bytes: 1024,
         uki_oci_ref: "uki-ref",
         uki_sha256: "#{'a' * 64}",
-        uki_cosign_bundle: "base64_bundle_data"
+        uki_cosign_bundle: "base64_bundle_data",
+        status: "published",
+        published_at: Time.current
       )
       existing_task = System::Task.create!(
         account: account,

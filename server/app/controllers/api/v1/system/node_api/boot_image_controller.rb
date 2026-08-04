@@ -132,13 +132,38 @@ module Api
 
             return nil if platform.disk_image_git_sha.blank?
 
-            platform.disk_image_publications.find_by(git_sha: platform.disk_image_git_sha)
+            # published_at is checked here for the SAME reason the digest branch
+            # above checks it, and it is applied to BOTH the git_sha paths at
+            # once: UpgradeDispatcher.preflight carries the identical guard
+            # (IMP-80bd70c04afe). Scoping one without the other is the
+            # plan-vs-dispatch divergence campaign 019f505f exists to kill —
+            # dispatch pinning a row the download then refuses, or vice versa.
+            #
+            # Not `retainable` here, unlike the digest branch. That scope is
+            # load-bearing THERE because an in-flight task must still fetch a row
+            # a promote just retired. This branch resolves the CURRENT promotion,
+            # not a historical pin, so it needs no such allowance — and a status
+            # filter would newly refuse a retired-but-published row, which is
+            # perfectly servable: the UKI is proxied from the OCI registry by
+            # digest and never touches the soft-deleted file_object.
+            #
+            # No filter can change WHICH row this returns — (node_platform_id,
+            # git_sha) is unique — only whether a row unfit to serve is returned
+            # at all (IMP-fdaccb8e7c74).
+            platform.disk_image_publications
+                    .where.not(published_at: nil)
+                    .find_by(git_sha: platform.disk_image_git_sha)
           end
 
           def unresolved_message
             if requested_digest
               "No UKI artifact matching digest #{requested_digest} published for this platform"
             else
+              # Covers "no row for the promoted git_sha" AND "the row exists but
+              # was never published" — the node's remedy is identical either way,
+              # and the operator-facing distinction between them is drawn by
+              # UpgradeDispatcher.platform_blocker (:pointer_inconsistent vs
+              # :never_published), which is where an operator actually reads it.
               "No promoted UKI artifact for this platform"
             end
           end
