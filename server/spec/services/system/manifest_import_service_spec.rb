@@ -210,6 +210,22 @@ RSpec.describe System::ManifestImportService, type: :service do
         expect(result.ok?).to be true
         expect(result.resolved_dependencies.first[:status]).to eq("unresolved")
       end
+
+      # The stored constraint feeds DependencyResolutionService's
+      # constraint_drift advisory, which documents that it can miss a drift
+      # but never invent one. A constraint that survived its own removal from
+      # the manifest broke exactly that guarantee, so the clearing case is
+      # pinned here rather than left to the general re-import idempotency.
+      it "clears the stored constraint when a re-imported manifest drops it" do
+        with_constraint = manifest_yaml.sub("requires: []", "requires: [\"powernode/system-base@>= 1.0\"]")
+        described_class.import!(node_module: mod, yaml: with_constraint)
+        edge = System::ModuleDependency.find_by!(node_module: mod, dependency: base_module)
+        expect(edge.version_constraint).to eq(">= 1.0")
+
+        without_constraint = manifest_yaml.sub("requires: []", "requires: [\"powernode/system-base\"]")
+        described_class.import!(node_module: mod, yaml: without_constraint)
+        expect(edge.reload.version_constraint).to be_nil
+      end
     end
 
     context "reresolve_dependencies! (campaign 019f6084 two-pass fix)" do
@@ -881,6 +897,30 @@ RSpec.describe System::ManifestImportService, type: :service do
         result = described_class.import!(node_module: target, yaml: yaml)
         resolved = result.resolved_dependencies.first
         expect(resolved[:status]).to eq("unresolved")
+      end
+    end
+
+    describe "constraint clearing on re-import" do
+      it "clears a capability-derived constraint when the manifest drops the @<constraint>" do
+        provider = import_with_provides("drop-provider", %w[database.postgres@16])
+        consumer, = import_with_requires("drop-consumer", [ "capability:database.postgres@>= 16" ])
+
+        edge = System::ModuleDependency.find_by!(node_module: consumer, dependency: provider)
+        expect(edge.version_constraint).to eq(">= 16")
+
+        described_class.import!(node_module: consumer, yaml: <<~YAML)
+          schema_version: 1
+          name: drop-consumer
+          display_name: "Test consumer"
+          description: "Requires fixture."
+          license: "MIT"
+          dependencies:
+            requires:
+              - capability:database.postgres
+            provides: []
+        YAML
+
+        expect(edge.reload.version_constraint).to be_nil
       end
     end
 

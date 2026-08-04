@@ -759,11 +759,32 @@ module System
     # tag produced a given edge is deliberately not persisted — the manifest
     # remains the record of that. PackageModuleMaterializer stores hand-authored
     # edges the same way, so both paths produce byte-identical rows.
+    #
+    # Every field is assigned unconditionally, constraint included: `= x if
+    # x.present?` made a dropped constraint un-droppable, so a re-import of a
+    # manifest that had removed its `@<constraint>` left the OLD value stored
+    # forever. That mattered because DependencyResolutionService#check_
+    # constraint_drift warns off exactly this column — a stale value let the
+    # advisory report drift against a constraint the current manifest no longer
+    # declares, which is the one thing that check documents it cannot do.
+    # Both call sites (resolve_name_requirement / resolve_capability_
+    # requirement) derive `constraint` by splitting the manifest entry itself,
+    # so nil here always means "this requirement declares no constraint" and
+    # never "the caller didn't bother" — there is no call site that establishes
+    # an edge without also carrying the constraint it wants stored.
+    #
+    # Note the row is keyed on (node_module, dependency) only, so two manifest
+    # requirements resolving to the SAME provider (e.g. a bare name pin plus a
+    # versioned `capability:` entry) share one row and the last one in manifest
+    # order wins — as it already did for dependency_type and required. The
+    # stored constraint is therefore always one the current manifest declares
+    # against that provider, but not necessarily the only one; see the drift
+    # check's own comment for what that costs it.
     def upsert_dependency!(mod, target, constraint: nil)
       dep = ::System::ModuleDependency.find_or_initialize_by(node_module: mod, dependency: target)
       dep.dependency_type    = "requires"
       dep.required           = true
-      dep.version_constraint = constraint if constraint.present?
+      dep.version_constraint = constraint.presence
       dep.save!
     end
 

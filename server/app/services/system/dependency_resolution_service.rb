@@ -220,6 +220,22 @@ module System
     # provider counts as satisfying the constraint if any of its versioned tags
     # does. That can miss a drift the operator would care about when a provider
     # advertises several versioned tags; it cannot invent one.
+    #
+    # It is also requirement-blind, for a related reason: the edge is
+    # keyed on (node_module, dependency) alone — not on dependency_type, which
+    # ManifestImportService hardcodes to "requires" for every requirement it
+    # resolves. Two DIFFERENT requirements that land on the same provider (a
+    # bare name pin plus `capability:<tag>@<constraint>`, say) therefore share
+    # one row, and the last one in manifest order supplies the constraint this
+    # check reads. So at most ONE constraint per (consumer, provider) pair is
+    # ever verified, even when the manifest declares several.
+    #
+    # That is still a missed drift and not an invented one. Whatever is stored
+    # got there by resolving a requirement of node_module against this exact
+    # dependency, and the importer assigns the column unconditionally, so it is
+    # always a constraint the CURRENT manifest declares against this provider —
+    # never a leftover from an earlier import. Both properties are load-bearing;
+    # see upsert_dependency! for why the assignment is not conditional.
     def check_constraint_drift(node_module, dep_record, dependency)
       # A constraint on a `conflicts` edge means "conflicts with these versions",
       # the opposite reading — satisfying it is the problem, not the fix.
