@@ -162,4 +162,59 @@ RSpec.describe "Operator API — Node Templates import", type: :request do
       end
     end
   end
+
+  # === Composition advisories (IMP-a2f8441f5f62) ===
+  # An import materializes a whole template's joins in one transaction,
+  # outside the delta guard the assignment write paths run — so a bundle that
+  # composes badly lands as permanent baseline that later assignments are then
+  # obliged to treat as acceptable. TemplateImporter reports that rather than
+  # refusing (blocking would make an export/import round trip lossy); the HTTP
+  # surface has to carry the report or the signal dies at the service boundary.
+  describe "POST /api/v1/system/node_templates/import — composition advisories" do
+    let!(:inst_a) do
+      create(:system_node_module, account: account, node_platform: platform,
+             category: category, variety: "instance",
+             name: "import-inst-a-#{SecureRandom.hex(3)}")
+    end
+    let!(:inst_b) do
+      create(:system_node_module, account: account, node_platform: platform,
+             category: category, variety: "instance",
+             name: "import-inst-b-#{SecureRandom.hex(3)}")
+    end
+
+    it "surfaces the conflict under warnings, naming the modules involved" do
+      bundle = bundle_with(
+        template_name: "colliding-import-#{SecureRandom.hex(3)}",
+        modules: [
+          { module_name: inst_a.name, module_variety: inst_a.variety, priority: 10, enabled: true, config: {} },
+          { module_name: inst_b.name, module_variety: inst_b.variety, priority: 20, enabled: true, config: {} }
+        ]
+      )
+
+      post "/api/v1/system/node_templates/import",
+           params: { bundle: bundle }.to_json, headers: headers
+
+      # Reported, NOT refused — the template still imports.
+      expect(response).to have_http_status(:created)
+      body = JSON.parse(response.body)
+      expect(body.dig("data", "template_modules_count")).to eq(2)
+
+      warnings = body.dig("data", "warnings")
+      expect(warnings).to be_an(Array).and be_present
+      expect(warnings.join(" ")).to include(inst_a.name).and include(inst_b.name)
+    end
+
+    it "omits the warnings key on a clean import, leaving the payload unchanged" do
+      bundle = bundle_with(
+        template_name: "clean-import-#{SecureRandom.hex(3)}",
+        modules: [ { module_name: mod_a.name, module_variety: mod_a.variety, priority: 5, enabled: true, config: {} } ]
+      )
+
+      post "/api/v1/system/node_templates/import",
+           params: { bundle: bundle }.to_json, headers: headers
+
+      expect(response).to have_http_status(:created)
+      expect(JSON.parse(response.body)["data"]).not_to have_key("warnings")
+    end
+  end
 end

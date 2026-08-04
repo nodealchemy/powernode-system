@@ -20,7 +20,9 @@ module System
     # If the resource has been touched between proposal creation and
     # apply (manually via MCP or another GitOps run), the apply is rejected
     # with a stale-conflict error. Operator must re-sync to get a fresh
-    # proposal reflecting current reality.
+    # proposal reflecting current reality. An assignment that would introduce
+    # an error-severity COMPOSITION conflict is rejected the same way — see
+    # #apply_assignment.
     #
     # v1 scope: handles template/module/assignment/pool/platform kinds.
     # Create + update are applied; destroys stay conservative (a destroy is
@@ -39,6 +41,7 @@ module System
 
       class StaleConflictError < StandardError; end
       class UnsupportedDiffError < StandardError; end
+      class CompositionConflictError < StandardError; end
 
       def self.apply!(proposal:)
         new(proposal: proposal).apply!
@@ -66,6 +69,8 @@ module System
         end
       rescue StaleConflictError => e
         Result.new(ok?: false, error: e.message, stale_conflict: true)
+      rescue CompositionConflictError => e
+        Result.new(ok?: false, error: e.message)
       rescue UnsupportedDiffError => e
         Result.new(ok?: false, error: e.message)
       rescue ::ActiveRecord::RecordInvalid => e
@@ -171,7 +176,25 @@ module System
           raise StaleConflictError, "template #{template_name.inspect} not found" unless tmpl
           raise StaleConflictError, "module #{module_name.inspect} not found" unless mod
 
-          join = ::System::TemplateModule.find_or_create_by!(node_template: tmpl, node_module: mod)
+          existing = ::System::TemplateModule.find_by(node_template: tmpl, node_module: mod)
+          return Result.new(ok?: true, applied_action: "created assignment", resource_id: existing.id) if existing
+
+          # GitOps apply is AUTHORING — fleet.yaml is the desired state and the
+          # operator approved this line — so an error-severity conflict is
+          # refused rather than warned about, the same way a stale conflict is.
+          # It rejects exactly the one line that breaks composition, leaving
+          # the rest of the repository applied and the fix where it belongs.
+          # Delta semantics as everywhere else: a template that already
+          # collides still accepts unrelated fleet.yaml lines, or one bad line
+          # would wedge the whole repository. The existence check above runs
+          # first so a re-applied line stays the no-op find_or_create_by! made
+          # it, even on a template that has since started colliding.
+          verdict = ::System::TemplateCompositionAnalysis
+                    .new(@proposal.account)
+                    .assignment_verdict(template: tmpl, node_module: mod)
+          raise CompositionConflictError, verdict.message if verdict.blocked?
+
+          join = ::System::TemplateModule.create!(node_template: tmpl, node_module: mod)
           Result.new(ok?: true, applied_action: "created assignment", resource_id: join.id)
         when "destroy"
           # Assignments are safer to destroy via GitOps than templates/modules

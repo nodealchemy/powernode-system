@@ -100,4 +100,60 @@ RSpec.describe "Operator API — Node Templates clone", type: :request do
       expect(response).to have_http_status(:forbidden)
     end
   end
+
+  # === Composition advisories (IMP-a2f8441f5f62) ===
+  # A clone copies the source's joins wholesale, which is how a composition
+  # conflict travels — and because the guard on the assignment write paths is
+  # a DELTA, whatever a clone lands becomes permanent baseline that later
+  # assignments treat as acceptable. TemplateCloneService reports rather than
+  # refusing (forking a broken template is how an operator gets a copy to
+  # repair); the HTTP surface has to carry that report.
+  describe "POST /api/v1/system/node_templates/:id/clone — composition advisories" do
+    let(:inst_a) do
+      create(:system_node_module, account: account, node_platform: platform,
+             category: category, variety: "instance",
+             name: "clone-inst-a-#{SecureRandom.hex(3)}")
+    end
+    let(:inst_b) do
+      create(:system_node_module, account: account, node_platform: platform,
+             category: category, variety: "instance",
+             name: "clone-inst-b-#{SecureRandom.hex(3)}")
+    end
+
+    it "surfaces the cloned composition's conflict under warnings, naming the modules" do
+      ::System::TemplateModule.create!(node_template: source_template, node_module: inst_a)
+      ::System::TemplateModule.create!(node_template: source_template, node_module: inst_b)
+
+      post "/api/v1/system/node_templates/#{source_template.id}/clone", headers: headers
+
+      # Reported, NOT refused — the clone still lands.
+      expect(response).to have_http_status(:created)
+      body = JSON.parse(response.body)
+      expect(body.dig("data", "node_template", "name")).to eq("base-web-copy")
+
+      warnings = body.dig("data", "warnings")
+      expect(warnings).to be_an(Array).and be_present
+      expect(warnings.join(" ")).to include(inst_a.name).and include(inst_b.name)
+    end
+
+    it "carries the structured conflicts alongside the message" do
+      ::System::TemplateModule.create!(node_template: source_template, node_module: inst_a)
+      ::System::TemplateModule.create!(node_template: source_template, node_module: inst_b)
+
+      post "/api/v1/system/node_templates/#{source_template.id}/clone", headers: headers
+
+      conflicts = JSON.parse(response.body).dig("data", "composition_conflicts")
+      expect(conflicts).to be_an(Array).and be_present
+      expect(conflicts.map { |c| c["kind"] }).to include("instance_variety_collision")
+    end
+
+    it "omits both keys on a clean clone, leaving the payload unchanged" do
+      post "/api/v1/system/node_templates/#{source_template.id}/clone", headers: headers
+
+      expect(response).to have_http_status(:created)
+      data = JSON.parse(response.body)["data"]
+      expect(data).not_to have_key("warnings")
+      expect(data).not_to have_key("composition_conflicts")
+    end
+  end
 end

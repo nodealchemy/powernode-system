@@ -225,12 +225,15 @@ Rails.application.routes.draw do
           # TemplateModule join surface, handled by TemplateModulesController:
           #   GET    /node_templates/:node_template_id/modules        → index
           #   POST   /node_templates/:node_template_id/modules        → create
+          #   PATCH  /node_templates/:node_template_id/modules/:id    → update
           #   DELETE /node_templates/:node_template_id/modules/:id    → destroy
-          # The member :id for destroy is the NODE_MODULE id (matches create's
-          # node_module_id and the MCP unassign action). URLs are identical to
-          # the former NodeTemplatesController member modules/assign_module
-          # routes — frontend unchanged.
-          resources :modules, only: %i[index create destroy], controller: "template_modules"
+          # The member :id for update/destroy is the NODE_MODULE id (matches
+          # create's node_module_id and the MCP unassign action). The
+          # create/destroy URLs are identical to the former
+          # NodeTemplatesController member modules/assign_module routes —
+          # frontend unchanged. #update is the non-destructive removal:
+          # enabled=false keeps the join, DELETE orphans derived assignments.
+          resources :modules, only: %i[index create update destroy], controller: "template_modules"
           collection do
             # The action lives on this same NodeTemplatesController. Earlier
             # versions pointed at a non-existent `templates` controller,

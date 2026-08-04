@@ -202,6 +202,100 @@ RSpec.describe System::Ai::Skills::ModuleSmokeVerifyExecutor do
       end
     end
 
+    # compose_pairing! writes TemplateModule joins outside the assignment-path
+    # guard. On the fulfill path (explicit template_id) those joins PERSIST and
+    # become the new template's permanent baseline; on the pool path they are
+    # transient but still queue a sync_modules Task against a live shared
+    # template. Either way the pairing is authoring, and a pairing that
+    # introduces an error-severity conflict has no valid smoke result to give.
+    context "composition guard" do
+      let(:other_category) { create(:system_node_module_category, account: account, name: "other-#{SecureRandom.hex(3)}") }
+
+      before do
+        allow(::System::ModuleSmokeProbe).to receive(:run).and_return(
+          System::ModuleSmokeProbe::Result.new(ok?: true, checks: [])
+        )
+      end
+
+      it "refuses a pairing that would introduce an error-severity conflict" do
+        target_module.update!(variety: "instance")
+        base_os_module.update!(variety: "instance")
+
+        result = exec.execute(module_name: target_module.name)
+
+        expect(result[:success]).to be false
+        expect(result[:error]).to match(/instance_variety_collision/)
+      end
+
+      it "leaves no half-composed pairing behind when it refuses" do
+        target_module.update!(variety: "instance")
+        base_os_module.update!(variety: "instance")
+
+        exec.execute(module_name: target_module.name)
+
+        expect(System::TemplateModule.where(node_template: template)).not_to exist
+        expect(System::Task.where(operable: instance, command: "sync_modules")).not_to exist
+      end
+
+      # Delta semantics, as everywhere else: a template that already collides
+      # must still be smokeable, or one bad pool template blocks every smoke
+      # that lands on it.
+      it "smokes onto a template that already collides, when the pairing adds nothing new" do
+        System::TemplateModule.create!(
+          node_template: template,
+          node_module: create(:system_node_module, account: account, node_platform: platform,
+                              category: other_category, variety: "instance", name: "stuck-a")
+        )
+        System::TemplateModule.create!(
+          node_template: template,
+          node_module: create(:system_node_module, account: account, node_platform: platform,
+                              category: other_category, variety: "instance", name: "stuck-b")
+        )
+
+        result = exec.execute(module_name: target_module.name)
+
+        expect(result[:success]).to be true
+      end
+
+      it "does not charge the pairing for a module the template already carries" do
+        # base-os is already assigned as an instance-variety module; the smoke
+        # re-requests it, which compose_pairing! skips. Nothing is introduced,
+        # so nothing may be refused.
+        base_os_module.update!(variety: "instance")
+        System::TemplateModule.create!(node_template: template, node_module: base_os_module)
+
+        result = exec.execute(module_name: target_module.name)
+
+        expect(result[:success]).to be true
+      end
+    end
+
+    # base_os_module_name defaults to the same name as the module being
+    # smoke-verified when the caller is smoking a base-os build itself — so
+    # node_module and base_os_module resolve to the SAME TemplateModule
+    # target. compose_pairing! must dedupe that pair instead of trying to
+    # create the same (template, node_module) join twice.
+    context "smoking the base-os module itself (base == target)" do
+      before do
+        allow(::System::ModuleSmokeProbe).to receive(:run).and_return(
+          System::ModuleSmokeProbe::Result.new(ok?: true, checks: [])
+        )
+      end
+
+      it "composes a single pairing and succeeds instead of raising a duplicate-join error" do
+        result = exec.execute(module_name: base_os_module.name)
+
+        expect(result[:success]).to be true
+        expect(result[:data][:ok]).to be true
+      end
+
+      it "does not leak the join behind on the pool path (dedup keeps ensure-teardown reachable)" do
+        exec.execute(module_name: base_os_module.name)
+
+        expect(System::TemplateModule.where(node_template: template, node_module: base_os_module)).not_to exist
+      end
+    end
+
     context "pool release" do
       it "releases a claimed pooled instance back to its pool" do
         pool = System::InstancePool.create!(

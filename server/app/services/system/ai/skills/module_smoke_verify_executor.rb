@@ -24,6 +24,11 @@ module System
       class ModuleSmokeVerifyExecutor < BaseSkillExecutor
         DEFAULT_BASE_OS_MODULE_NAME = "base-os-ubuntu-noble"
 
+        # Raised when the pairing this executor is about to compose would
+        # introduce an error-severity composition conflict. See
+        # #compose_pairing!.
+        class CompositionConflictError < StandardError; end
+
         skill_descriptor(
           name: "module_smoke_verify",
           description: "Compose a newly-built module onto a pooled instance atop base-os and assert it's healthy " \
@@ -140,6 +145,8 @@ module System
           end
         rescue ActiveRecord::RecordInvalid => e
           failure("compose failed: #{e.message}")
+        rescue CompositionConflictError => e
+          failure(e.message)
         end
 
         # template_id, when given, is trusted as already-composed (caller's
@@ -159,13 +166,44 @@ module System
         # TemplateModule rows it CREATED (so a transient smoke can tear exactly
         # those down); pre-existing pairings are left in the return empty, so a
         # dedicated template that already carries both modules is a no-op.
+        #
+        # Refuses a pairing that would introduce an error-severity composition
+        # conflict. This is authoring: on the fulfill path (explicit
+        # template_id) the joins PERSIST and become the new template's
+        # permanent baseline, which the delta guard on the assignment paths
+        # then treats as acceptable forever after; on the pool path they are
+        # transient but still queue a sync_modules Task against a live shared
+        # template. Either way a conflicting pairing composes something the
+        # build cannot produce, so the probe would be reporting on the wrong
+        # artifact. Both modules are judged TOGETHER — checked one at a time,
+        # a collision between the pair itself would slip through, since
+        # neither is in the other's baseline.
         def compose_pairing!(template:, node_module:, base_os_module:, instance:)
-          created = []
-          [ base_os_module, node_module ].each do |node_mod|
-            existing = ::System::TemplateModule.find_by(node_template: template, node_module: node_mod)
-            next if existing
+          # .uniq: smoking a base-os build pairs it with itself by default
+          # (module_name == base_os_module_name), so base_os_module and
+          # node_module resolve to the same record — without this the pair
+          # would be created twice and the second create! would raise on the
+          # (node_template, node_module) uniqueness constraint.
+          pending = [ base_os_module, node_module ].uniq.reject do |node_mod|
+            ::System::TemplateModule.exists?(node_template: template, node_module: node_mod)
+          end
 
-            created << ::System::TemplateModule.create!(node_template: template, node_module: node_mod)
+          if pending.any?
+            verdict = ::System::TemplateCompositionAnalysis
+                      .new(@account)
+                      .additions_verdict(template: template, node_modules: pending)
+            raise CompositionConflictError, verdict.message if verdict.blocked?
+          end
+
+          # Transactional: a create! failing partway through (e.g. a
+          # concurrent widening racing this one) must not leave an earlier
+          # join committed with no way back to the caller's ensure-teardown —
+          # compose_pairing! raises before returning, so `created_pairings`
+          # in run_smoke never gets assigned on that path.
+          created = ::System::TemplateModule.transaction do
+            pending.map do |node_mod|
+              ::System::TemplateModule.create!(node_template: template, node_module: node_mod)
+            end
           end
 
           if created.any?

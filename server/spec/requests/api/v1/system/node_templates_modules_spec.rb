@@ -7,15 +7,17 @@ require "rails_helper"
 #
 #   GET    /api/v1/system/node_templates/:node_template_id/modules        → index
 #   POST   /api/v1/system/node_templates/:node_template_id/modules        → create
+#   PATCH  /api/v1/system/node_templates/:node_template_id/modules/:id    → update
 #   DELETE /api/v1/system/node_templates/:node_template_id/modules/:id    → destroy
 #
-# create/destroy mirror the MCP `system_assign_module_to_template` /
-# `unassign_module_from_template` actions (both key off the node_module id),
-# giving the Visual Template Composer + TemplateDetailModal a REST path —
-# previously TemplateModule mutation was MCP-only. Cross-account modules 404
-# (resolved within the current account); duplicates 422 (model uniqueness on
-# node_template_id/node_module_id). The member :id for destroy is the
-# NODE_MODULE id, not the join row's own id.
+# create/update/destroy mirror the MCP `system_assign_module_to_template` /
+# `system_update_template_module` / `unassign_module_from_template` actions
+# (all key off the node_module id), giving the Visual Template Composer +
+# TemplateDetailModal a REST path — previously TemplateModule mutation was
+# MCP-only. Cross-account modules 404 (resolved within the current account);
+# duplicates 422 (model uniqueness on node_template_id/node_module_id). The
+# member :id for update/destroy is the NODE_MODULE id, not the join row's
+# own id.
 RSpec.describe "Operator API — Node Template modules", type: :request do
   let(:account) { create(:account) }
   let(:other_account) { create(:account) }
@@ -253,6 +255,139 @@ RSpec.describe "Operator API — Node Template modules", type: :request do
       delete "/api/v1/system/node_templates/#{template.id}/modules/#{node_module.id}", headers: viewer_headers
 
       expect(response).to have_http_status(:forbidden)
+    end
+  end
+
+  # === Join attributes (IMP-5c340c72ff9a) ===
+  # create took only node_module_id, and there was no update path at all — so
+  # priority, enabled, config and recommends_override were unreachable from
+  # every write API. That made the documented-correct removal (disable, never
+  # destroy) inexpressible, leaving the destructive DELETE as the only way to
+  # take a module out of a template.
+  describe "join attributes on POST .../modules" do
+    it "persists priority, enabled, config and recommends_override" do
+      post "/api/v1/system/node_templates/#{template.id}/modules",
+           params: { node_module_id: node_module.id, priority: 40, enabled: false,
+                     config: { "port" => 8080 },
+                     recommends_override: { "excluded" => [ "docs" ] } }.to_json,
+           headers: headers
+
+      expect(response).to have_http_status(:created)
+      join = ::System::TemplateModule.find(JSON.parse(response.body).dig("data", "template_module", "id"))
+      expect(join.priority).to eq(40)
+      expect(join.enabled).to be false
+      expect(join.config["port"]).to eq(8080)
+      expect(join.recommends_override["excluded"]).to eq([ "docs" ])
+    end
+  end
+
+  describe "PATCH /api/v1/system/node_templates/:node_template_id/modules/:id" do
+    let(:other_category) do
+      create(:system_node_module_category, account: account, name: "patch-cat-#{SecureRandom.hex(3)}")
+    end
+
+    def composition_module(name, category: other_category, variety: "subscription")
+      create(:system_node_module, account: account, node_platform: platform,
+             category: category, variety: variety, name: "#{name}-#{SecureRandom.hex(3)}")
+    end
+
+    def assign(node_module, **body)
+      post "/api/v1/system/node_templates/#{template.id}/modules",
+           params: { node_module_id: node_module.id }.merge(body).to_json, headers: headers
+    end
+
+    def patch_join(node_module, **body)
+      patch "/api/v1/system/node_templates/#{template.id}/modules/#{node_module.id}",
+            params: body.to_json, headers: headers
+    end
+
+    it "disables a join without destroying it" do
+      join = ::System::TemplateModule.create!(node_template: template, node_module: node_module)
+
+      expect do
+        patch_join(node_module, enabled: false)
+      end.not_to change { template.template_modules.count }
+
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "template_module", "enabled")).to be false
+      expect(join.reload.enabled).to be false
+    end
+
+    it "updates priority, config and recommends_override" do
+      join = ::System::TemplateModule.create!(node_template: template, node_module: node_module)
+
+      patch_join(node_module, priority: 7, config: { "threads" => 4 },
+                              recommends_override: { "included" => [ "extras" ] })
+
+      expect(response).to have_http_status(:ok)
+      join.reload
+      expect(join.priority).to eq(7)
+      expect(join.config["threads"]).to eq(4)
+      expect(join.recommends_override["included"]).to eq([ "extras" ])
+    end
+
+    it "404s when the module is not assigned to the template" do
+      patch_join(node_module, enabled: false)
+
+      expect(response).to have_http_status(:not_found)
+    end
+
+    it "403s when the user lacks system.templates.update" do
+      ::System::TemplateModule.create!(node_template: template, node_module: node_module)
+      viewer = user_with_permissions("system.templates.read", account: account)
+      viewer_headers = auth_headers_for(viewer).merge("Content-Type" => "application/json")
+
+      patch "/api/v1/system/node_templates/#{template.id}/modules/#{node_module.id}",
+            params: { enabled: false }.to_json, headers: viewer_headers
+
+      expect(response).to have_http_status(:forbidden)
+    end
+
+    # A disabled join never ships (TemplateExpansionService is enabled-only),
+    # so it cannot collide — but enabling one is the moment it starts shipping,
+    # and the guard has to run there instead.
+    it "accepts a disabled assignment that would collide if it were enabled" do
+      first  = composition_module("rest-dis-first", variety: "instance")
+      second = composition_module("rest-dis-second", variety: "instance")
+      assign(first)
+      expect(response).to have_http_status(:created)
+
+      assign(second, enabled: false)
+
+      expect(response).to have_http_status(:created)
+      expect(::System::TemplateModule.find_by(node_template: template, node_module: second).enabled).to be false
+    end
+
+    it "422s enabling a join that would introduce a conflict, and leaves it disabled" do
+      first  = composition_module("rest-en-first", variety: "instance")
+      second = composition_module("rest-en-second", variety: "instance")
+      assign(first)
+      assign(second, enabled: false)
+      expect(response).to have_http_status(:created)
+
+      patch_join(second, enabled: true)
+
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(JSON.parse(response.body)["error"]).to include(first.name).and include(second.name)
+      expect(::System::TemplateModule.find_by(node_template: template, node_module: second).enabled).to be false
+    end
+
+    # `enabled` is cast via ActiveModel::Type::Boolean before the conflict
+    # guard above ever sees it, so a JSON body that sends the STRING "true"
+    # (rather than the boolean) must be refused identically — never treated
+    # as truthy because it's a non-empty string.
+    it "422s enabling a join that would introduce a conflict when enabled arrives as the string 'true'" do
+      first  = composition_module("rest-cast-first", variety: "instance")
+      second = composition_module("rest-cast-second", variety: "instance")
+      assign(first)
+      assign(second, enabled: false)
+      expect(response).to have_http_status(:created)
+
+      patch_join(second, enabled: "true")
+
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(JSON.parse(response.body)["error"]).to include(first.name).and include(second.name)
+      expect(::System::TemplateModule.find_by(node_template: template, node_module: second).enabled).to be false
     end
   end
 end

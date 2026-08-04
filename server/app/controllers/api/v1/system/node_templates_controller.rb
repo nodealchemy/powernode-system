@@ -109,11 +109,19 @@ module Api
           )
 
           if result.ok?
-            render_success(
+            payload = {
               node_template: serialize_template(result.template),
-              template_modules_count: result.template_modules_count,
-              status: :created
-            )
+              template_modules_count: result.template_modules_count
+            }
+            # An import materializes a whole template's joins outside the delta
+            # guard the assignment paths run, so a bundle that composes badly
+            # lands as permanent baseline. TemplateImporter reports rather than
+            # refusing; dropping the report here would put the signal in the
+            # log and nowhere the caller can see it. Same `warnings` key and
+            # absent-when-empty rule the assign path uses — a clean import's
+            # payload is unchanged.
+            payload[:warnings] = result.warnings if result.warnings.present?
+            render_success(**payload, status: :created)
           elsif result.missing_modules.any?
             render_error(
               result.errors.first || "missing modules",
@@ -132,10 +140,22 @@ module Api
         def clone
           require_permission("system.templates.create")
 
-          new_template = ::System::TemplateCloneService.new(@template).clone!(
-            new_name: params[:name].presence
-          )
-          render_success(node_template: serialize_template(new_template), status: :created)
+          service = ::System::TemplateCloneService.new(@template)
+          new_template = service.clone!(new_name: params[:name].presence)
+
+          payload = { node_template: serialize_template(new_template) }
+          # A clone copies the source's joins wholesale, so a composition
+          # conflict travels with it — and since the assignment guard is a
+          # DELTA, what a clone lands becomes baseline that later assignments
+          # must treat as acceptable. The service reports rather than refusing,
+          # so the report has to leave the process here. `warnings` matches the
+          # assign path's key and absent-when-empty rule; composition_conflicts
+          # carries the structured detail the message is built from, which the
+          # importer has no equivalent of.
+          payload[:warnings] = [ service.composition_warning ] if service.composition_warning.present?
+          payload[:composition_conflicts] = service.composition_conflicts if service.composition_conflicts.present?
+
+          render_success(**payload, status: :created)
         rescue ::System::TemplateCloneService::CloneError => e
           render_error(e.message, status: :unprocessable_content)
         end
