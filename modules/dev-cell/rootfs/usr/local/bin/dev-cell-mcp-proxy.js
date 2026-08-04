@@ -22,7 +22,10 @@
 //     empirically (a real `claude` MCP call captured server-side) which
 //     headers the streamable-HTTP transport actually sends: accept,
 //     accept-encoding, content-type, content-length, mcp-protocol-version,
-//     mcp-session-id. Everything else — notably authorization/cookie/
+//     mcp-session-id — plus mcp-method and mcp-name, REQUIRED by MCP
+//     protocol revision 2026-07-28 (the platform server rejects their
+//     absence with JSON-RPC -32020 at HTTP 400 once a client negotiates
+//     that revision). Everything else — notably authorization/cookie/
 //     x-forwarded-* — is dropped rather than blindly relayed upstream.
 //   * headersTimeout bounds slowloris-style header-dribbling; a generous
 //     (not Node's 5-minute default) requestTimeout bounds the whole
@@ -74,11 +77,20 @@ const REQUEST_TIMEOUT_MS = parseInt(process.env.DEV_CELL_MCP_PROXY_REQUEST_TIMEO
 const ALLOWED_METHODS = new Set(['GET', 'POST', 'DELETE']);
 const ALLOWED_PATH = '/mcp';
 
-// Verified empirically (captured server-side headers from a real `claude`
-// MCP call through this exact transport) — everything NOT in this list is
-// dropped, notably authorization/cookie/x-forwarded-*/user-agent, none of
-// which the transport needs and none of which this purely-local proxy
-// should blindly relay upstream on a client's say-so.
+// Base set verified empirically (captured server-side headers from a real
+// `claude` MCP call through this exact transport) — everything NOT in this
+// list is dropped, notably authorization/cookie/x-forwarded-*/user-agent,
+// none of which the transport needs and none of which this purely-local
+// proxy should blindly relay upstream on a client's say-so.
+//
+// mcp-method and mcp-name are NOT from that capture — they are REQUIRED by
+// MCP protocol revision 2026-07-28: mcp-method on every Streamable HTTP
+// POST, mcp-name additionally on tools/call, resources/read, and
+// prompts/get. The platform server on develop enforces this once a client
+// negotiates 2026-07-28, rejecting the absence with JSON-RPC -32020 at HTTP
+// 400. They were added here AHEAD of the client-side protocol bump, so a
+// future capture-based trim of this list MUST keep them even if a capture
+// taken before that bump doesn't show them being sent.
 const FORWARDED_HEADERS = new Set([
   'accept',
   'accept-encoding',
@@ -86,6 +98,8 @@ const FORWARDED_HEADERS = new Set([
   'content-length',
   'mcp-protocol-version',
   'mcp-session-id',
+  'mcp-method',
+  'mcp-name',
 ]);
 
 function log(msg) {
