@@ -80,6 +80,10 @@ module Ai
         "system_refresh_instance_modules" => "system.node_instances.manage",
         "system_upgrade_boot_image"     => "system.node_instances.manage",
         "system_assign_module_to_template" => "system.modules.update",
+        # Deliberately the same grant as assign/unassign: disabling a join is
+        # the non-destructive alternative to unassigning it, so anyone who can
+        # do the destructive removal must be able to reach the safe one.
+        "system_update_template_module" => "system.modules.update",
         "system_provision_instance"     => "system.instances.create",
         "system_terminate_instance"     => "system.instances.control",
         "system_destroy_instance"       => "system.instances.control",
@@ -317,23 +321,28 @@ module Ai
             parameters: { template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to delete (account-scoped)" } }
           },
           "system_create_template" => {
-            description: "Create a new NodeTemplate for the current account. Binds to a NodePlatform via node_platform_id (required by the model). Lets the model validate (name presence + per-account uniqueness).",
+            description: "Create a new NodeTemplate for the current account. Binds to a NodePlatform via node_platform_id, which the model requires — omitting it fails the create. Lets the model validate the rest (name presence + per-account uniqueness).",
             parameters: {
               name: { type: "string", required: true, description: "Display name for the new template (must be unique within the account)" },
               description: { type: "string", required: false, description: "Free-text description for the template" },
               enabled: { type: "boolean", required: false, description: "Whether the template is enabled (selectable for new nodes)" },
               public: { type: "boolean", required: false, description: "Whether the template is shared/public rather than account-private" },
-              node_platform_id: { type: "string", required: false, description: "UUID of the NodePlatform the template binds to" },
+              node_platform_id: { type: "string", required: true, description: "UUID of the NodePlatform the template binds to (System::NodeTemplate belongs_to :node_platform, and the column is NOT NULL)" },
               admin_user: { type: "string", required: false, description: "Default admin username provisioned on instances built from this template" },
               config: { type: "object", required: false, description: "Arbitrary template config hash" }
             }
           },
           "system_update_template" => {
-            description: "Update mutable NodeTemplate fields: name, description.",
+            description: "Update mutable NodeTemplate fields. Accepts everything system_create_template accepts, so nothing set at create time is stranded: name, description, enabled, public, node_platform_id, admin_user, config. `config` REPLACES the stored hash rather than merging into it — read the current value with system_get_template first if you mean to add a key. Omitted fields are left untouched.",
             parameters: {
               template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to update (account-scoped)" },
               name: { type: "string", required: false, description: "New display name for the template" },
-              description: { type: "string", required: false, description: "New free-text description for the template" }
+              description: { type: "string", required: false, description: "New free-text description for the template" },
+              enabled: { type: "boolean", required: false, description: "Whether the template is enabled (selectable for new nodes)" },
+              public: { type: "boolean", required: false, description: "Whether the template is shared/public rather than account-private" },
+              node_platform_id: { type: "string", required: false, description: "UUID of a NodePlatform to retarget the template to" },
+              admin_user: { type: "string", required: false, description: "Default admin username provisioned on instances built from this template" },
+              config: { type: "object", required: false, description: "Template config hash (init_script, boot_mode, sdwan_network_id, …) — REPLACES the stored hash" }
             }
           },
           "system_delete_module" => {
@@ -524,6 +533,28 @@ module Ai
                          "Irreversible. Does NOT call the provider to destroy a live VM — pair with system_terminate_instance for that.",
             parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance registry row to hard-destroy (ghost rows only)" } }
           },
+          # IMP-b2f80e6d1c65 — operator ops hold (2026-07-27 incident response:
+          # a start raced offline /persist maintenance on ops-hub 30s after
+          # stop, truncating a blob under a dual mount). Blocks start/reboot/
+          # terminate at the InstanceControlService choke point, pushed to the
+          # provider where it can enforce. A LEASE, not a boolean — expiry
+          # alerts but never auto-releases.
+          "system_instance_hold" => {
+            description: "Place an operator ops hold on a NodeInstance: blocks start/reboot/terminate while offline work happens on its disks, and enforces the block at the provider where supported. Records who placed it and why — an unattributed hold is indistinguishable from a bug later. Expiry alerts but never auto-releases; system_stop_instance and force do not override it.",
+            parameters: {
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to hold" },
+              reason: { type: "string", required: true, description: "Why the hold is being placed, recorded on the instance for the next operator" },
+              ttl_hours: { type: "number", required: false, description: "Advisory lease length in hours before the hold is reported expired (default 4)" }
+            }
+          },
+          "system_instance_release_hold" => {
+            description: "Release an operator ops hold placed by system_instance_hold, clearing the platform-side flag and any provider-side enforcement.",
+            parameters: { instance_id: { type: "string", required: true, description: "UUID of the held NodeInstance to release" } }
+          },
+          "system_instance_hold_status" => {
+            description: "Verify a NodeInstance's ops hold by reading provider state directly — never by attempting a start, which on a broken hold would start the very instance the operator needed stopped. Reports drift between what the platform recorded and what the provider actually enforces.",
+            parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to check" } }
+          },
 
           # === Templates ===
           "system_list_templates" => {
@@ -537,10 +568,25 @@ module Ai
             parameters: { template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to fetch (account-scoped)" } }
           },
           "system_assign_module_to_template" => {
-            description: "Bind a NodeModule to a NodeTemplate (creates a TemplateModule join). Refuses the assignment when it would introduce an error-severity composition conflict (declared Conflicts: relation, or a second instance-variety module in one category) and names the modules involved; soft protected_spec overlaps come back under `warnings` without blocking. Preview first with system_compose_preview_template.",
+            description: "Bind a NodeModule to a NodeTemplate (creates a TemplateModule join). Refuses the assignment when it would introduce an error-severity composition conflict (declared Conflicts: relation, or a second instance-variety module in one category) and names the modules involved; soft protected_spec overlaps come back under `warnings` without blocking. Assigning with enabled=false skips the conflict check, because a disabled join is not expanded onto any instance — enabling it later (system_update_template_module) is what runs the check. Preview first with system_compose_preview_template.",
             parameters: {
               template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to bind the module to" },
-              module_id: { type: "string", required: true, description: "UUID of the NodeModule to assign to the template" }
+              module_id: { type: "string", required: true, description: "UUID of the NodeModule to assign to the template" },
+              priority: { type: "number", required: false, description: "Compose order for this module within the template (higher first; default 0)" },
+              enabled: { type: "boolean", required: false, description: "Whether the join ships (default true). false stages the assignment without expanding it onto instances — and skips the conflict check, since a disabled join cannot collide." },
+              config: { type: "object", required: false, description: "Per-template config overlay, deep-merged over the module's own config at expansion time" },
+              recommends_override: { type: "object", required: false, description: "Recommends resolution for this join: { replace: [...] } to set the exact list, or { included: [...], excluded: [...] } to adjust the module's defaults" }
+            }
+          },
+          "system_update_template_module" => {
+            description: "Update an EXISTING TemplateModule join in place: priority, enabled, config, recommends_override. This is the non-destructive way to take a module out of a template — set enabled=false rather than unassigning, because destroying the join nullifies source_template_module_id on every derived NodeModuleAssignment and permanently orphans them. Enabling a disabled join runs the same composition-conflict check as system_assign_module_to_template and refuses when it would introduce an error-severity conflict. Omitted fields are left untouched; `config` and `recommends_override` REPLACE the stored hash rather than merging into it.",
+            parameters: {
+              template_id: { type: "string", required: true, description: "UUID of the NodeTemplate holding the join (account-scoped)" },
+              module_id: { type: "string", required: true, description: "UUID of the assigned NodeModule — the join is addressed by (template, module), matching system_assign_module_to_template" },
+              priority: { type: "number", required: false, description: "New compose order for this module within the template (higher first)" },
+              enabled: { type: "boolean", required: false, description: "false disables the join without destroying it (preserving priority/config and derived assignments); true re-enables it, subject to the conflict check" },
+              config: { type: "object", required: false, description: "Per-template config overlay — REPLACES the stored hash" },
+              recommends_override: { type: "object", required: false, description: "Recommends resolution ({ replace: [...] } or { included: [...], excluded: [...] }) — REPLACES the stored hash" }
             }
           },
           "system_compose_preview_template" => {
@@ -632,6 +678,25 @@ module Ai
             parameters: {
               version_a_id: { type: "string", required: true, description: "UUID of the first NodeModuleVersion (baseline) to compare" },
               version_b_id: { type: "string", required: true, description: "UUID of the second NodeModuleVersion (candidate) to compare" }
+            }
+          },
+
+          # === Module publish diagnostics (IMP-b2f80e6d1c65 — 2026-07-27
+          # incident: a one-off module held the canonical OCI repo binding, the
+          # resolver matched the binding ahead of the name, and
+          # ManifestImportService then refused the mismatch — a chain visible
+          # nowhere until it produced a 422) ===
+          "system_module_publish_target" => {
+            description: "Preview where a CI publish for a module slug would land and whether the platform would accept it, without publishing anything. Resolves by name (the same rule ManifestImportService enforces) and flags when a DIFFERENT module holds the target OCI repo binding — drift to clear or rebind, not necessarily a blocker. Read-only: never runs the resolver's auto-create branch.",
+            parameters: {
+              module_name: { type: "string", required: true, description: "Module slug as CI would publish it" },
+              gitea_repo: { type: "string", required: false, description: "OCI repo full name to check for a foreign binding; defaults to powernode/<module_name>" }
+            }
+          },
+          "system_module_publication_integrity" => {
+            description: "Detect artifacts that reached the OCI registry but were never recorded on the platform — a build that pushed + cosign-signed successfully, then failed to notify (bad token, wrong API base, unreachable platform, 422). Compares registry tags against recorded NodeModuleVersions. NOT a staleness sweep: source age is never consulted, so a module whose newest build predates its newest commit is normal and not reported. Omit module_name to check every module the platform believes CI publishes for (has a gitea_repo_full_name binding).",
+            parameters: {
+              module_name: { type: "string", required: false, description: "Restrict the check to a single module by name; omit to check all modules with a repo binding" }
             }
           },
 
@@ -1304,6 +1369,7 @@ module Ai
         when "system_list_templates"           then list_templates(params)
         when "system_get_template"             then get_template(params)
         when "system_assign_module_to_template" then assign_module_to_template(params)
+        when "system_update_template_module"   then update_template_module(params)
         when "system_compose_preview_template" then compose_preview_template(params)
         when "system_list_modules"             then list_modules(params)
         when "system_get_module"               then get_module(params)
@@ -1534,6 +1600,39 @@ module Ai
       end
 
       def create_template(params)
+        # node_platform_id is not optional — System::NodeTemplate belongs_to
+        # :node_platform and the column is NOT NULL. Caught here rather than
+        # left to the model so the message names the PARAMETER the caller
+        # passed; the model's own "Node platform must exist" reads like a
+        # bad id when the real problem is an absent argument.
+        if params[:node_platform_id].blank?
+          return error_result("Template create failed: node_platform_id is required — " \
+                              "every NodeTemplate binds to a NodePlatform")
+        end
+
+        template = account_templates.build(template_attrs(params))
+        template.save!
+        success_result(template: serialize_template(template))
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("Template create failed: #{e.record.errors.full_messages.join(', ')}")
+      end
+
+      # Accepts the same fields as create — anything set at create time stays
+      # correctable. Previously only name/description landed here, so a
+      # template created with the wrong config, admin_user, platform or
+      # public flag could not be fixed over MCP at all.
+      def update_template(params)
+        template = account_templates.find(params[:template_id])
+        template.update!(template_attrs(params))
+        success_result(template: serialize_template(template))
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("Template update failed: #{e.record.errors.full_messages.join(', ')}")
+      end
+
+      # Mirrors NodeTemplatesController#template_params. Absent keys are
+      # dropped rather than nil-assigned, so an update touches only what the
+      # caller named; booleans test for nil so `false` is a real value.
+      def template_attrs(params)
         attrs = {}
         attrs[:name]             = params[:name]             if params[:name].present?
         attrs[:description]      = params[:description]      if params[:description].present?
@@ -1542,21 +1641,7 @@ module Ai
         attrs[:node_platform_id] = params[:node_platform_id] if params[:node_platform_id].present?
         attrs[:admin_user]       = params[:admin_user]       if params[:admin_user].present?
         attrs[:config]           = params[:config]           if params[:config].is_a?(Hash)
-
-        template = account_templates.build(attrs)
-        template.save!
-        success_result(template: serialize_template(template))
-      rescue ActiveRecord::RecordInvalid => e
-        error_result("Template create failed: #{e.record.errors.full_messages.join(', ')}")
-      end
-
-      def update_template(params)
-        template = account_templates.find(params[:template_id])
-        attrs = {}
-        attrs[:name] = params[:name] if params[:name].present?
-        attrs[:description] = params[:description] if params[:description].present?
-        template.update!(attrs)
-        success_result(template: serialize_template(template))
+        attrs
       end
 
       def delete_module(params)
@@ -2080,16 +2165,93 @@ module Ai
       def assign_module_to_template(params)
         template = account_templates.find(params[:template_id])
         node_module = account_modules.find(params[:module_id])
+        attrs = template_module_attrs(params)
 
-        verdict = ::System::TemplateCompositionAnalysis
-                  .new(@account)
-                  .assignment_verdict(template: template, node_module: node_module)
-        return error_result(verdict.message) if verdict.blocked?
+        # A join assigned disabled is not expanded onto anything
+        # (TemplateExpansionService is enabled-only, and assignment_verdict's
+        # own baseline already ignores disabled joins), so there is nothing for
+        # it to conflict with. Enabling it is the moment it starts shipping,
+        # and update_template_module runs the check there.
+        verdict = ships?(attrs) ? assignment_verdict(template, node_module) : nil
+        return error_result(verdict.message) if verdict&.blocked?
 
-        join = ::System::TemplateModule.create!(node_template: template, node_module: node_module)
+        join = ::System::TemplateModule.create!(
+          attrs.merge(node_template: template, node_module: node_module)
+        )
         payload = { assigned: true, template_module_id: join.id }
-        payload[:warnings] = verdict.warnings if verdict.warnings.any?
+        payload[:warnings] = verdict.warnings if verdict&.warnings&.any?
         success_result(payload)
+      end
+
+      # In-place edit of an existing join, addressed by (template, module) like
+      # every other TemplateModule action. This is the reachable form of the
+      # documented-correct removal: enabled=false keeps the row, so
+      # source_template_module_id on the derived NodeModuleAssignments survives
+      # — unassigning nullifies it and orphans them permanently.
+      def update_template_module(params)
+        template = account_templates.find(params[:template_id])
+        node_module = account_modules.find(params[:module_id])
+        join = ::System::TemplateModule.find_by(node_template: template, node_module: node_module)
+        unless join
+          return error_result("Module '#{node_module.name}' is not assigned to template " \
+                              "'#{template.name}' — assign it first with system_assign_module_to_template")
+        end
+
+        attrs = template_module_attrs(params)
+        return error_result("nothing to update — pass at least one of priority, enabled, config, recommends_override") if attrs.empty?
+
+        # Only a join that is BECOMING enabled needs the guard: it is the
+        # transition that puts the module into what the template ships.
+        # Disabling, or editing priority/config on a join whose enabled flag is
+        # unchanged, alters no module membership and so introduces no conflict.
+        if attrs[:enabled] == true && !join.enabled
+          verdict = assignment_verdict(template, node_module)
+          return error_result(verdict.message) if verdict.blocked?
+        end
+
+        join.update!(attrs)
+        success_result(updated: true, template_module: serialize_template_module(join))
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("Template module update failed: #{e.record.errors.full_messages.join(', ')}")
+      end
+
+      # Absent keys are dropped rather than nil-assigned, so an update touches
+      # only what the caller named. `enabled` is cast here rather than left to
+      # the model: the conflict guard branches on it BEFORE the write, so a
+      # string "true" that AR would happily cast to true must not read as
+      # "not literally true, skip the check".
+      def template_module_attrs(params)
+        attrs = {}
+        attrs[:priority]            = params[:priority].to_i       unless params[:priority].nil?
+        attrs[:config]              = params[:config]              if params[:config].is_a?(Hash)
+        attrs[:recommends_override] = params[:recommends_override] if params[:recommends_override].is_a?(Hash)
+
+        enabled = ::ActiveModel::Type::Boolean.new.cast(params[:enabled])
+        attrs[:enabled] = enabled unless enabled.nil?
+        attrs
+      end
+
+      # TemplateModule.enabled defaults to true, so an unspecified flag ships.
+      def ships?(attrs)
+        attrs.fetch(:enabled, true)
+      end
+
+      def assignment_verdict(template, node_module)
+        ::System::TemplateCompositionAnalysis
+          .new(@account)
+          .assignment_verdict(template: template, node_module: node_module)
+      end
+
+      def serialize_template_module(join)
+        {
+          id: join.id,
+          node_template_id: join.node_template_id,
+          node_module_id: join.node_module_id,
+          enabled: join.enabled,
+          priority: join.priority,
+          config: join.config,
+          recommends_override: join.recommends_override
+        }
       end
 
       # Read-only design-time analysis — the same projection
@@ -3282,9 +3444,24 @@ module Ai
         }
       end
 
+      # Carries every field system_update_template can set, so an agent told to
+      # "read the current config before replacing it" can actually do that —
+      # the write surface used to be wider than anything the read surface
+      # returned. Each assigned module reports its JOIN state too: a caller
+      # cannot decide what to disable without seeing what is enabled.
       def serialize_template_full(t)
+        joins = t.template_modules.includes(:node_module).order(priority: :desc)
         serialize_template(t).merge(
-          modules: t.node_modules.map { |m| { id: m.id, name: m.name, variety: m.variety } },
+          description: t.description,
+          public: t.public,
+          admin_user: t.admin_user,
+          config: t.config,
+          modules: joins.filter_map { |tm|
+            next unless tm.node_module
+
+            { id: tm.node_module_id, name: tm.node_module.name, variety: tm.node_module.variety,
+              template_module_id: tm.id, enabled: tm.enabled, priority: tm.priority }
+          },
           node_count: t.nodes.count
         )
       end

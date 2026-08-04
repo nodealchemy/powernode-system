@@ -47,6 +47,29 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(progress[:parameters][:id][:required]).to be true
       expect(progress[:parameters].keys).to include(:status, :bytes_copied, :bytes_total, :bytes_verified, :note)
     end
+
+    # IMP-b2f80e6d1c65 — same shape as the F8-05 gap above: these 5 actions
+    # had ACTION_PERMISSIONS + a dispatch branch but no PlatformApiToolRegistry
+    # key and no action_definitions entry, so they were reachable only by
+    # smuggling the action into another tool's name (closed by e6c3e6e4d).
+    it "documents the ops-hold + publish-target action contracts (IMP-b2f80e6d1c65)" do
+      defs = described_class.action_definitions
+
+      hold = defs.fetch("system_instance_hold")
+      expect(hold[:parameters][:instance_id][:required]).to be true
+      expect(hold[:parameters][:reason][:required]).to be true
+      expect(hold[:parameters].keys).to include(:ttl_hours)
+
+      expect(defs.fetch("system_instance_release_hold")[:parameters][:instance_id][:required]).to be true
+      expect(defs.fetch("system_instance_hold_status")[:parameters][:instance_id][:required]).to be true
+
+      target = defs.fetch("system_module_publish_target")
+      expect(target[:parameters][:module_name][:required]).to be true
+      expect(target[:parameters].keys).to include(:gitea_repo)
+
+      integrity = defs.fetch("system_module_publication_integrity")
+      expect(integrity[:parameters][:module_name][:required]).to be false
+    end
   end
 
   # Audit F4-13 — the explicit instance_id path skipped the liveness + GPU
@@ -751,6 +774,259 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     it "system_create_template returns an error when the model fails validation" do
       r = call("system_create_template", name: template.name, node_platform_id: platform_record.id)
       expect(r[:success]).to be false
+    end
+  end
+
+  # === Template write surface (IMP-5c340c72ff9a) ===
+  # The declared schema disagreed with the model on node_platform_id, and
+  # system_update_template accepted only name + description — so config,
+  # enabled, public and admin_user were settable at create time and unfixable
+  # afterwards over MCP.
+  describe "Template write surface" do
+    describe "system_create_template — node_platform_id" do
+      it "declares node_platform_id required, matching the model's belongs_to" do
+        parameters = described_class.action_definitions["system_create_template"][:parameters]
+        expect(parameters[:node_platform_id][:required]).to be true
+      end
+
+      it "refuses a create without node_platform_id and names the missing parameter" do
+        # Materialize the account first: its bootstrap seeds a default template
+        # catalog on first reference, which would otherwise land inside the
+        # delta below and read as "the refused create persisted something".
+        tool
+        result = nil
+
+        expect do
+          result = call("system_create_template", name: "no-platform-#{SecureRandom.hex(3)}")
+        end.not_to change { System::NodeTemplate.count }
+
+        expect(result[:success]).to be false
+        expect(result[:error]).to match(/node_platform_id/i)
+      end
+    end
+
+    describe "system_update_template — mutable fields" do
+      it "documents every field the model treats as mutable" do
+        parameters = described_class.action_definitions["system_update_template"][:parameters]
+        expect(parameters.keys)
+          .to include(:name, :description, :enabled, :public, :node_platform_id, :admin_user, :config)
+      end
+
+      it "round-trips config, enabled, public, admin_user and node_platform_id" do
+        retarget = create(:system_node_platform, account: account)
+
+        result = call("system_update_template", template_id: template.id,
+                                                description: "retuned",
+                                                enabled: false, public: true, admin_user: "ops",
+                                                node_platform_id: retarget.id,
+                                                config: { "init_script" => "bootstrap.sh",
+                                                          "boot_mode" => "uefi" })
+
+        expect(result[:success]).to be true
+        template.reload
+        expect(template.description).to eq("retuned")
+        expect(template.enabled).to be false
+        expect(template.public).to be true
+        expect(template.admin_user).to eq("ops")
+        expect(template.node_platform_id).to eq(retarget.id)
+        expect(template.config["init_script"]).to eq("bootstrap.sh")
+        expect(template.config["boot_mode"]).to eq("uefi")
+      end
+
+      it "returns an error result rather than raising when the update is invalid" do
+        clash = create(:system_node_template, account: account, node_platform: platform_record,
+                                              name: "clash-#{SecureRandom.hex(3)}")
+
+        result = call("system_update_template", template_id: template.id, name: clash.name)
+
+        expect(result[:success]).to be false
+        expect(result[:error]).to match(/update failed/i)
+      end
+    end
+  end
+
+  # === TemplateModule join attributes (IMP-5c340c72ff9a) ===
+  # priority, enabled, config and recommends_override were unreachable from
+  # every write API, which made the documented-correct removal (disable, never
+  # destroy — destroying nullifies source_template_module_id and orphans
+  # derived assignments) literally inexpressible.
+  describe "TemplateModule join attributes" do
+    let(:join_cat_a) { create(:system_node_module_category, account: account, name: "join-a-#{SecureRandom.hex(3)}") }
+    let(:join_cat_b) { create(:system_node_module_category, account: account, name: "join-b-#{SecureRandom.hex(3)}") }
+
+    def join_module(name, category: join_cat_a, variety: "subscription")
+      create(:system_node_module, account: account, node_platform: platform_record,
+             category: category, variety: variety, name: "#{name}-#{SecureRandom.hex(3)}")
+    end
+
+    def assign(node_module, **rest)
+      call("system_assign_module_to_template",
+           template_id: template.id, module_id: node_module.id, **rest)
+    end
+
+    def update_join(node_module, **rest)
+      call("system_update_template_module",
+           template_id: template.id, module_id: node_module.id, **rest)
+    end
+
+    it "documents the join attributes on both the assign and update actions" do
+      defs = described_class.action_definitions
+
+      assign_params = defs.fetch("system_assign_module_to_template")[:parameters]
+      expect(assign_params.keys).to include(:priority, :enabled, :config, :recommends_override)
+
+      update_params = defs.fetch("system_update_template_module")[:parameters]
+      expect(update_params[:template_id][:required]).to be true
+      expect(update_params[:module_id][:required]).to be true
+      expect(update_params.keys).to include(:priority, :enabled, :config, :recommends_override)
+    end
+
+    it "gates the update action on the same permission as assign/unassign" do
+      expect(described_class::ACTION_PERMISSIONS["system_update_template_module"])
+        .to eq(described_class::ACTION_PERMISSIONS["system_assign_module_to_template"])
+    end
+
+    it "persists priority, enabled, config and recommends_override at assign time" do
+      mod = join_module("attrs")
+
+      result = assign(mod, priority: 40, enabled: false, config: { "port" => 8080 },
+                           recommends_override: { "excluded" => [ "docs" ] })
+
+      expect(result[:success]).to be true
+      join = System::TemplateModule.find(result.dig(:data, :template_module_id))
+      expect(join.priority).to eq(40)
+      expect(join.enabled).to be false
+      expect(join.config["port"]).to eq(8080)
+      expect(join.recommends_override["excluded"]).to eq([ "docs" ])
+    end
+
+    it "updates priority, config and recommends_override on an existing join" do
+      mod = join_module("update-attrs")
+      expect(assign(mod)[:success]).to be true
+
+      result = update_join(mod, priority: 7, config: { "threads" => 4 },
+                                recommends_override: { "included" => [ "extras" ] })
+
+      expect(result[:success]).to be true
+      join = System::TemplateModule.find_by!(node_template: template, node_module: mod)
+      expect(join.priority).to eq(7)
+      expect(join.config["threads"]).to eq(4)
+      expect(join.recommends_override["included"]).to eq([ "extras" ])
+    end
+
+    it "disables a join without destroying it — the documented-correct removal" do
+      mod = join_module("soft-remove")
+      expect(assign(mod)[:success]).to be true
+      join = System::TemplateModule.find_by!(node_template: template, node_module: mod)
+
+      result = nil
+      expect do
+        result = update_join(mod, enabled: false)
+      end.not_to change { System::TemplateModule.where(node_template: template).count }
+
+      expect(result[:success]).to be true
+      expect(join.reload.enabled).to be false
+      expect(result.dig(:data, :template_module, :enabled)).to be false
+    end
+
+    it "404s the update when the module is not assigned to the template" do
+      result = update_join(join_module("never-assigned"), enabled: false)
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to match(/not assigned|no assignment/i)
+    end
+
+    # === Conflict-guard integrity ===
+    # TemplateExpansionService only ships ENABLED joins, so a disabled join
+    # cannot collide with anything — and enabling one is the moment it starts
+    # shipping, which is where the guard has to run.
+    it "accepts a disabled assignment that would collide if it were enabled" do
+      first  = join_module("dis-first", variety: "instance")
+      second = join_module("dis-second", variety: "instance")
+      expect(assign(first)[:success]).to be true
+
+      result = assign(second, enabled: false)
+
+      expect(result[:success]).to be true
+      expect(System::TemplateModule.find_by(node_template: template, node_module: second).enabled).to be false
+    end
+
+    it "runs the conflict guard when a disabled join is enabled, and leaves it disabled" do
+      first  = join_module("enable-first", variety: "instance")
+      second = join_module("enable-second", variety: "instance")
+      expect(assign(first)[:success]).to be true
+      expect(assign(second, enabled: false)[:success]).to be true
+
+      result = update_join(second, enabled: true)
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include(first.name).and include(second.name)
+      expect(System::TemplateModule.find_by(node_template: template, node_module: second).enabled).to be false
+    end
+
+    it "drops a disabled join out of the conflict baseline for later assignments" do
+      first  = join_module("baseline-first", variety: "instance")
+      second = join_module("baseline-second", variety: "instance")
+      expect(assign(first)[:success]).to be true
+      expect(assign(second)[:success]).to be false
+
+      expect(update_join(first, enabled: false)[:success]).to be true
+
+      expect(assign(second)[:success]).to be true
+    end
+
+    it "still refuses an ENABLED assignment that collides — the guard is not bypassed" do
+      first  = join_module("guard-first", variety: "instance")
+      second = join_module("guard-second", variety: "instance")
+      expect(assign(first)[:success]).to be true
+
+      result = nil
+      expect do
+        result = assign(second, priority: 10, config: { "x" => 1 })
+      end.not_to change { System::TemplateModule.where(node_template: template).count }
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include(first.name).and include(second.name)
+    end
+
+    it "re-enables a join that introduces no conflict" do
+      mod = join_module("reenable")
+      expect(assign(mod, enabled: false)[:success]).to be true
+
+      result = update_join(mod, enabled: true)
+
+      expect(result[:success]).to be true
+      expect(System::TemplateModule.find_by(node_template: template, node_module: mod).enabled).to be true
+    end
+
+    # === String-boolean cast integrity ===
+    # `enabled` is cast via ActiveModel::Type::Boolean before the conflict
+    # guard above ever sees it, so a caller that sends the STRING "true"/
+    # "false" (a common shape for MCP clients that stringify params) must be
+    # normalized identically to a real boolean — never treated as truthy
+    # because it's a non-empty string.
+    it "refuses enabling a conflicting join when enabled arrives as the string 'true'" do
+      first  = join_module("cast-true-first", variety: "instance")
+      second = join_module("cast-true-second", variety: "instance")
+      expect(assign(first)[:success]).to be true
+      expect(assign(second, enabled: false)[:success]).to be true
+
+      result = update_join(second, enabled: "true")
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include(first.name).and include(second.name)
+      expect(System::TemplateModule.find_by(node_template: template, node_module: second).enabled).to be false
+    end
+
+    it "stages a disabled join when enabled arrives as the string 'false'" do
+      first  = join_module("cast-false-first", variety: "instance")
+      second = join_module("cast-false-second", variety: "instance")
+      expect(assign(first)[:success]).to be true
+
+      result = assign(second, enabled: "false")
+
+      expect(result[:success]).to be true
+      expect(System::TemplateModule.find_by(node_template: template, node_module: second).enabled).to be false
     end
   end
 
@@ -2865,7 +3141,12 @@ end
   end
 
   describe "Missing-features slice 11a — federation acceptance (via SdwanTool)" do
-    let(:sdwan_tool) { ::Ai::Tools::SdwanTool.new(account: account) }
+    # In-process system caller, same as this file's own `tool` let above and
+    # sdwan_tool_spec.rb's file-wide `tool` let — see IMP-54bf2643f542's
+    # fail-closed ladder (SdwanTool#action_permitted?: internal? then
+    # instance_authorized? then @user.nil? => false). A bare userless
+    # construction stopped being an implicit bypass; declare it explicitly.
+    let(:sdwan_tool) { ::Ai::Tools::SdwanTool.new(account: account, internal: true) }
     let!(:proposed_peer) do
       ::System::FederationPeer.create!(
         account: account, status: "proposed",
@@ -2908,7 +3189,9 @@ end
   end
 
   describe "Missing-features slice 11b — token round-trip handshake" do
-    let(:sdwan_tool) { ::Ai::Tools::SdwanTool.new(account: account) }
+    # Same in-process-caller declaration as slice 11a above — see that let's
+    # comment for the IMP-54bf2643f542 fail-closed ladder this satisfies.
+    let(:sdwan_tool) { ::Ai::Tools::SdwanTool.new(account: account, internal: true) }
 
     describe "propose with generate_token" do
       it "returns a one-time plaintext token + stores only the digest" do
