@@ -100,6 +100,32 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
         expect(result.reason).to match(/republish/)
       end
 
+      it "raises on an unhandled preflight failure rather than returning an ok? result with no task" do
+        # A 7th guard symbol wired into .preflight but not into
+        # dispatch_failure_message would otherwise produce err(nil) — and
+        # Result#ok? is `reason.nil?`, so that reads as SUCCESS to every caller
+        # (system_fleet_tool then calls .id on a nil task). Fail loud instead.
+        allow(described_class).to receive(:preflight).and_return([ nil, :some_future_guard ])
+
+        expect { described_class.dispatch!(instance: instance, source: "test") }
+          .to raise_error(ArgumentError, /unhandled preflight failure/)
+      end
+
+      it "returns err when the promoted publication has a UKI ref but no uki_sha256" do
+        # BOTH halves of the pin are required: the node content-addresses the
+        # blob by digest, so a ref without a digest is not dispatchable. No
+        # other fixture builds this shape, which left the sha half of the guard
+        # unpinned (IMP-4452cb88e195).
+        setup_platform
+        setup_publication(uki_sha256: nil)
+
+        result = described_class.dispatch!(instance: instance, source: "test")
+
+        expect(result.ok?).to be false
+        expect(result.reason).to match(/no standalone UKI artifact/)
+        expect(result.task).to be_nil
+      end
+
       it "returns err when the platform pointer names a git_sha with no published record" do
         # Pointer-consistency guard: disk_image_git_sha advanced but no matching
         # publication row exists, so the (uki, bundle) pair cannot be resolved
@@ -394,6 +420,25 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
         expect(result.upgraded).to be true
         expect(result.task).to be_present
       end
+
+      it "ships the cosign key it VALIDATED, not a second read of it" do
+        # platform_cosign_public_key is effectful: it can read
+        # POWERNODE_COSIGN_PUBLIC_KEY_FILE off disk and rescues StandardError to
+        # nil. Validating one read and shipping a different read lets a file
+        # rotated/unlinked between the two calls queue a task carrying a nil key
+        # — the check and the use must be the same bytes, and one read per
+        # dispatch (not two per batched instance).
+        setup_platform
+        setup_publication
+        allow(described_class).to receive(:platform_cosign_public_key)
+          .and_return(cosign_public_key_pem, nil)
+
+        result = described_class.dispatch!(instance: instance, source: "test")
+
+        expect(result.ok?).to be true
+        expect(result.task.options["cosign_public_key"]).to eq(cosign_public_key_pem)
+        expect(described_class).to have_received(:platform_cosign_public_key).once
+      end
     end
 
     describe "#platform_cosign_public_key" do
@@ -496,17 +541,49 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
       expect(blocker).to match(/no promoted disk image/)
     end
 
-    it "returns reason when disk_image_uki_oci_ref is blank" do
+    it "returns reason when the promoted publication has no standalone UKI artifact" do
+      # Blank on the publication, populated on the platform: the blocker reads
+      # the same publication row .dispatch! pins from, so leaving the columns set
+      # proves it is not falling back to them (IMP-4452cb88e195).
       target_sha = "target-sha"
-      platform_record.update!(
-        disk_image_git_sha: target_sha,
-        disk_image_oci_ref: "ref",
-        disk_image_uki_oci_ref: nil
-      )
+      setup_platform(target_sha: target_sha)
+      setup_publication(target_sha: target_sha, uki_ref: nil, uki_sha256: nil)
 
       blocker = described_class.platform_blocker(platform_record)
 
       expect(blocker).to match(/no standalone UKI artifact/)
+    end
+
+    it "raises on an unhandled preflight failure rather than planning green" do
+      # A 7th guard symbol wired into .preflight but not into this case would
+      # otherwise fall through to nil — indistinguishable from "no blocker", so
+      # the rollout would plan GREEN and dispatch nothing. That is the exact bug
+      # class this whole task exists to close (IMP-4452cb88e195). Fail loud.
+      allow(described_class).to receive(:preflight).and_return([ nil, :some_future_guard ])
+
+      expect { described_class.platform_blocker(platform_record) }
+        .to raise_error(ArgumentError, /unhandled preflight failure/)
+    end
+
+    it "returns reason when the promoted publication has a UKI ref but no uki_sha256" do
+      setup_platform
+      setup_publication(uki_sha256: nil)
+
+      blocker = described_class.platform_blocker(platform_record)
+
+      expect(blocker).to match(/no standalone UKI artifact/)
+    end
+
+    it "returns reason when the platform pointer names a git_sha with no published record" do
+      # A plan must halt with the honest pointer-inconsistency reason here. It
+      # previously reported a missing cosign bundle — the blocker resolved no
+      # publication and blamed the last guard it happened to reach.
+      setup_platform(target_sha: "promoted-but-unpublished")
+
+      blocker = described_class.platform_blocker(platform_record)
+
+      expect(blocker).to match(/pointer inconsistent/i)
+      expect(blocker).to include("promoted-but-unpublished")
     end
 
     it "returns reason when cosign public key is unset" do
@@ -525,6 +602,8 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
     it "returns reason when uki_cosign_bundle is missing" do
       target_sha = "target-sha"
       setup_platform(target_sha: target_sha)
+      # UKI pins present so the artifact guard passes and we reach the bundle
+      # guard — the point of this example.
       System::DiskImagePublication.create!(
         account: account,
         node_platform: platform_record,
@@ -533,6 +612,8 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
         oci_ref: "oki-ref",
         sha256: "#{'c' * 64}",
         size_bytes: 1024,
+        uki_oci_ref: "uki-ref",
+        uki_sha256: "#{'d' * 64}",
         uki_cosign_bundle: nil
       )
 
@@ -543,6 +624,93 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
       blocker = described_class.platform_blocker(platform_record)
 
       expect(blocker).to match(/cosign signature bundle/)
+    end
+  end
+
+  # IMP-4452cb88e195 — .platform_blocker (plan time) and #dispatch! (act time)
+  # are two views of ONE guard chain. Parallel per-condition examples on each
+  # side cannot catch the two drifting apart: that is exactly how the 019f505f
+  # pin-source move, which updated only #dispatch!, shipped a blocker that
+  # planned GREEN while every dispatch refused. These rows assert the
+  # BICONDITIONAL — a nil blocker if and only if the dispatch proceeds — so a
+  # future divergence fails here regardless of how either side words its reason,
+  # and regardless of whether anyone remembers to add a matching example on the
+  # other side.
+  describe "blocker/dispatch contract" do
+    before do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+      # Keep every row on the dispatch path: an already_current short-circuit
+      # returns ok? with no task, which would muddy the task-count assertion.
+      instance.update!(booted_image_git_sha: nil)
+    end
+
+    {
+      no_promoted_image: {
+        dispatchable: false,
+        arrange: lambda {
+          platform_record.update!(disk_image_git_sha: nil, disk_image_oci_ref: "ref")
+        }
+      },
+      pointer_inconsistent: {
+        dispatchable: false,
+        arrange: lambda {
+          setup_platform(target_sha: "promoted-but-unpublished")
+        }
+      },
+      no_uki_ref: {
+        dispatchable: false,
+        arrange: lambda {
+          setup_platform
+          setup_publication(uki_ref: nil)
+        }
+      },
+      # The half the original blocker chain never checked at all.
+      no_uki_sha: {
+        dispatchable: false,
+        arrange: lambda {
+          setup_platform
+          setup_publication(uki_sha256: nil)
+        }
+      },
+      no_cosign_key: {
+        dispatchable: false,
+        arrange: lambda {
+          setup_platform
+          setup_publication
+          allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(nil)
+        }
+      },
+      no_cosign_bundle: {
+        dispatchable: false,
+        arrange: lambda {
+          setup_platform
+          setup_publication(bundle: nil)
+        }
+      },
+      healthy: {
+        dispatchable: true,
+        arrange: lambda {
+          setup_platform
+          setup_publication
+        }
+      }
+    }.each do |state, row|
+      it "agrees on #{state}: the blocker is nil if and only if the dispatch proceeds" do
+        instance_exec(&row[:arrange])
+
+        blocked = described_class.platform_blocker(platform_record)
+        result  = described_class.dispatch!(instance: instance, source: "contract")
+
+        # The row is arranged as intended...
+        expect(result.ok?).to eq(row[:dispatchable])
+        # ...and THE CONTRACT: the plan-time verdict equals the act-time verdict.
+        expect(blocked.nil?).to eq(result.ok?),
+                                -> { "blocker=#{blocked.inspect} dispatch_reason=#{result.reason.inspect}" }
+        expect(System::Task.where(operable: instance, command: "upgrade_boot_image").count)
+          .to eq(row[:dispatchable] ? 1 : 0)
+      end
     end
   end
 end

@@ -1291,12 +1291,27 @@ end
       expect(r[:error]).to include("no promoted disk image")
     end
 
-    it "errors when the platform has no standalone UKI artifact (disk_image_uki_oci_ref blank)" do
+    it "errors when the promoted publication has no standalone UKI artifact" do
+      # Blank on the publication, populated on the platform: the dispatcher pins
+      # the UKI from the promoted publication row, so the platform columns are
+      # left set here to prove it does not fall back to them (df4a2000).
       platform_record.update!(
         disk_image_git_sha: "sha-abc",
         disk_image_oci_ref: "ref-xyz",
-        disk_image_uki_oci_ref: nil,
-        disk_image_uki_sha256: nil
+        disk_image_uki_oci_ref: "stale-platform-uki-ref",
+        disk_image_uki_sha256: "sha256:uki"
+      )
+      System::DiskImagePublication.create!(
+        account: account,
+        node_platform: platform_record,
+        git_sha: "sha-abc",
+        arch: "amd64",
+        oci_ref: "ref-xyz",
+        sha256: "#{'a' * 64}",
+        size_bytes: 1024,
+        uki_oci_ref: nil,
+        uki_sha256: nil,
+        uki_cosign_bundle: "base64_bundle_data"
       )
 
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
@@ -1306,12 +1321,44 @@ end
       expect(r[:error]).to include("republish")
     end
 
+    it "errors when the platform pointer names a git_sha with no published record" do
+      # Pointer-consistency guard: the promoted sha resolves to no publication,
+      # so the (uki, bundle) pair cannot be sourced self-consistently.
+      platform_record.update!(
+        disk_image_git_sha: "promoted-but-unpublished",
+        disk_image_oci_ref: "ref-xyz",
+        disk_image_uki_oci_ref: "uki-ref",
+        disk_image_uki_sha256: "sha256:uki"
+      )
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/pointer inconsistent/i)
+      expect(r[:error]).to include("promoted-but-unpublished")
+      expect(::System::Task.where(operable: instance, command: "upgrade_boot_image").count).to eq(0)
+    end
+
     it "fails closed with security error when cosign public key is not configured (ENV unset)" do
       platform_record.update!(
         disk_image_git_sha: "sha-abc",
         disk_image_oci_ref: "ref-xyz",
         disk_image_uki_oci_ref: "uki-ref",
         disk_image_uki_sha256: "sha256:uki"
+      )
+      # UKI pins live on the publication row — present here so the chain reaches
+      # the cosign-key guard, which is the point of this example.
+      System::DiskImagePublication.create!(
+        account: account,
+        node_platform: platform_record,
+        git_sha: "sha-abc",
+        arch: "amd64",
+        oci_ref: "ref-xyz",
+        sha256: "#{'a' * 64}",
+        size_bytes: 1024,
+        uki_oci_ref: "uki-ref",
+        uki_sha256: "#{'b' * 64}",
+        uki_cosign_bundle: "base64_bundle_data"
       )
       # Ensure ENV is NOT set and no file path exists
       allow(ENV).to receive(:[]).and_call_original
@@ -1334,7 +1381,8 @@ end
         disk_image_uki_oci_ref: "uki-ref",
         disk_image_uki_sha256: "sha256:uki"
       )
-      # Create a publication but without uki_cosign_bundle (nil)
+      # Create a publication but without uki_cosign_bundle (nil). UKI pins are
+      # present so the artifact guard passes and we reach the bundle guard.
       System::DiskImagePublication.create!(
         account: account,
         node_platform: platform_record,
@@ -1343,6 +1391,8 @@ end
         oci_ref: "test-oci-ref",
         sha256: "#{'b' * 64}",
         size_bytes: 1024,
+        uki_oci_ref: "uki-ref",
+        uki_sha256: "#{'c' * 64}",
         uki_cosign_bundle: nil
       )
 
@@ -1362,17 +1412,21 @@ end
       target_sha = "target-sha-xyz"
       oci_ref = "ghcr.io/nodealchemy/system/boot-uki:0.1.0"
       uki_ref = "ghcr.io/nodealchemy/system/boot-uki-standalone:0.1.0"
-      uki_sha256 = "sha256:uki_abc"
+      uki_sha256 = "e" * 64
       cosign_bundle_b64 = "LS0tLS1CRUdJTiBQR1AgU0lHTkVEIE1FU1NBR0UtLS0tLQo="  # base64 encoded
 
+      # The platform columns carry DIVERGENT values on purpose: the task must be
+      # pinned from the publication row, so a regression to reading
+      # NodePlatform.disk_image_uki_* fails these assertions loudly instead of
+      # passing on values that happen to agree (df4a2000).
       platform_record.update!(
         disk_image_git_sha: target_sha,
         disk_image_oci_ref: oci_ref,
-        disk_image_uki_oci_ref: uki_ref,
-        disk_image_uki_sha256: uki_sha256
+        disk_image_uki_oci_ref: "stale-platform-uki-ref-MUST-NOT-BE-USED",
+        disk_image_uki_sha256: "sha256:stale"
       )
 
-      # Create the promoted publication with cosign bundle
+      # Create the promoted publication with the UKI pins + cosign bundle
       pub = System::DiskImagePublication.create!(
         account: account,
         node_platform: platform_record,
@@ -1381,6 +1435,8 @@ end
         oci_ref: oci_ref,
         sha256: "#{'a' * 64}",
         size_bytes: 1024,
+        uki_oci_ref: uki_ref,
+        uki_sha256: uki_sha256,
         uki_cosign_bundle: cosign_bundle_b64
       )
 
@@ -1430,6 +1486,8 @@ end
         oci_ref: "test-oci-ref",
         sha256: "#{'c' * 64}",
         size_bytes: 1024,
+        uki_oci_ref: "uki-ref",
+        uki_sha256: "#{'a' * 64}",
         uki_cosign_bundle: "base64_bundle_data"
       )
       instance.update!(booted_image_git_sha: matching_sha)
@@ -1463,6 +1521,8 @@ end
         oci_ref: "test-oci-ref",
         sha256: "#{'d' * 64}",
         size_bytes: 1024,
+        uki_oci_ref: "uki-ref",
+        uki_sha256: "#{'a' * 64}",
         uki_cosign_bundle: "base64_bundle_data"
       )
       instance.update!(booted_image_git_sha: matching_sha)
@@ -1496,6 +1556,8 @@ end
         oci_ref: "test-oci-ref",
         sha256: "#{'e' * 64}",
         size_bytes: 1024,
+        uki_oci_ref: "uki-ref",
+        uki_sha256: "#{'a' * 64}",
         uki_cosign_bundle: "base64_bundle_data"
       )
       # Create an existing in-flight pending task
@@ -1536,6 +1598,8 @@ end
         oci_ref: "test-oci-ref",
         sha256: "#{'e' * 64}",
         size_bytes: 1024,
+        uki_oci_ref: "uki-ref",
+        uki_sha256: "#{'a' * 64}",
         uki_cosign_bundle: "base64_bundle_data"
       )
       existing_task = System::Task.create!(
@@ -1576,6 +1640,8 @@ end
         oci_ref: "test-oci-ref",
         sha256: "#{'f' * 64}",
         size_bytes: 1024,
+        uki_oci_ref: "uki-ref",
+        uki_sha256: "#{'a' * 64}",
         uki_cosign_bundle: "base64_bundle_data"
       )
       existing_task = System::Task.create!(
@@ -1614,6 +1680,8 @@ end
         oci_ref: "test-oci-ref",
         sha256: "#{'0' * 64}",
         size_bytes: 1024,
+        uki_oci_ref: "uki-ref",
+        uki_sha256: "#{'a' * 64}",
         uki_cosign_bundle: "base64_bundle_data"
       )
       existing_task = System::Task.create!(
@@ -1652,6 +1720,8 @@ end
         oci_ref: "test-oci-ref",
         sha256: "#{'1' * 64}",
         size_bytes: 1024,
+        uki_oci_ref: "uki-ref",
+        uki_sha256: "#{'a' * 64}",
         uki_cosign_bundle: "base64_bundle_data"
       )
       existing_task = System::Task.create!(

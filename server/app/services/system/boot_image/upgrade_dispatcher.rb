@@ -9,10 +9,11 @@ module System
     # UKI verifiability guards live in exactly ONE place — no caller can ever
     # queue an unverifiable boot image onto a node.
     #
-    # Guard order (all fail closed): no platform → no promoted image → no
-    # standalone UKI artifact → no platform cosign public key → no UKI cosign
-    # bundle. Then: no-op when already current (unless force), and in-flight
-    # dedup (unless force).
+    # Guard order (all fail closed, in .preflight): no platform → no promoted
+    # image → no publication row for the promoted sha → no standalone UKI
+    # artifact → no platform cosign public key → no UKI cosign bundle. Then:
+    # no-op when already current (unless force), and in-flight dedup (unless
+    # force).
     class UpgradeDispatcher
       Result = Struct.new(:upgraded, :task, :reason, :already_current, :deduplicated, :target_git_sha,
                           keyword_init: true) do
@@ -42,22 +43,62 @@ module System
         nil
       end
 
+      # The instance-independent guard chain, evaluated in exactly ONE place so
+      # the PLAN-time blocker and the DISPATCH-time guards can never diverge:
+      # 019f505f moved the UKI pin source to the promoted publication row in
+      # #dispatch! but left platform_blocker reading the NodePlatform
+      # disk_image_uki_* columns, so a platform whose columns were populated but
+      # whose publication row carried no UKI pins planned GREEN and then
+      # dispatched ZERO tasks (IMP-4452cb88e195).
+      #
+      # Returns [promoted_publication, failure_symbol, cosign_public_key];
+      # failure_symbol is nil when a dispatch could proceed. The publication is
+      # also nil for the failures found before it resolves.
+      #
+      # The cosign key is handed back rather than re-read by the caller because
+      # platform_cosign_public_key is EFFECTFUL — it can read
+      # POWERNODE_COSIGN_PUBLIC_KEY_FILE off disk and rescues StandardError to
+      # nil — so validating one read and shipping another could queue a task
+      # carrying a nil key if the file rotates in between. Check and use must be
+      # the same bytes.
+      def self.preflight(platform)
+        return [ nil, :no_platform ] if platform.nil?
+        if platform.disk_image_git_sha.blank? || platform.disk_image_oci_ref.blank?
+          return [ nil, :no_promoted_image ]
+        end
+
+        pub = platform.disk_image_publications.find_by(git_sha: platform.disk_image_git_sha)
+        return [ nil, :pointer_inconsistent ] if pub.nil?
+        return [ pub, :no_uki_artifact ] if pub.uki_oci_ref.blank? || pub.uki_sha256.blank?
+
+        cosign_key = platform_cosign_public_key
+        return [ pub, :no_cosign_key ] if cosign_key.blank?
+        return [ pub, :no_cosign_bundle ] if pub.uki_cosign_bundle.blank?
+
+        [ pub, nil, cosign_key ]
+      end
+
       # Instance-independent reasons a platform can't be upgraded right now, or
       # nil when a dispatch could proceed. The rollout executor calls this at PLAN
       # time so a plan surfaces "cannot dispatch: no cosign bundle" instead of a
       # green plan that would silently no-op on approval.
       def self.platform_blocker(platform)
-        return "no resolvable node platform" if platform.nil?
-        if platform.disk_image_git_sha.blank? || platform.disk_image_oci_ref.blank?
-          return "platform has no promoted disk image"
+        _pub, failure = preflight(platform)
+        return nil if failure.nil?
+
+        case failure
+        when :no_platform           then "no resolvable node platform"
+        when :no_promoted_image     then "platform has no promoted disk image"
+        when :pointer_inconsistent
+          "platform pointer inconsistent: no published record for promoted git_sha #{platform.disk_image_git_sha}"
+        when :no_uki_artifact       then "promoted image has no standalone UKI artifact"
+        when :no_cosign_key         then "platform cosign public key (POWERNODE_COSIGN_PUBLIC_KEY) not configured"
+        when :no_cosign_bundle      then "promoted image has no UKI cosign signature bundle"
+          # A new .preflight symbol reaching here would fall through to nil,
+          # which is indistinguishable from "not blocked" — the rollout would
+          # plan GREEN and dispatch nothing. Fail loud instead.
+        else raise ArgumentError, "unhandled preflight failure: #{failure.inspect}"
         end
-        return "promoted image has no standalone UKI artifact" if platform.disk_image_uki_oci_ref.blank?
-        return "platform cosign public key (POWERNODE_COSIGN_PUBLIC_KEY) not configured" if platform_cosign_public_key.blank?
-
-        pub = platform.disk_image_publications.find_by(git_sha: platform.disk_image_git_sha)
-        return "promoted image has no UKI cosign signature bundle" if pub&.uki_cosign_bundle.blank?
-
-        nil
       end
 
       def initialize(instance:, source:, initiated_by: nil, force: false)
@@ -69,35 +110,19 @@ module System
 
       def dispatch!
         platform = @instance.node&.node_platform
-        return err("Instance has no resolvable node platform") if platform.nil?
-
-        target_sha = platform.disk_image_git_sha
-        if target_sha.blank? || platform.disk_image_oci_ref.blank?
-          return err("Platform has no promoted disk image to upgrade to")
-        end
-        # Source the UKI pins + cosign bundle from the promoted PUBLICATION ROW
+        # The UKI pins + cosign bundle come from the promoted PUBLICATION ROW
         # (single source of truth), NOT the NodePlatform.disk_image_uki_* columns:
         # a partial-field promote writer can leave those columns stale relative to
         # disk_image_git_sha, smearing a mismatched (uki, bundle) pair into the
-        # task → cosign verify fails on-node (campaign 019f505f). Keying off the
-        # publication matching target_sha keeps the dispatch self-consistent.
-        promoted_pub = platform.disk_image_publications.find_by(git_sha: target_sha)
-        if promoted_pub.nil?
-          return err("Platform pointer inconsistent: no published record for promoted git_sha #{target_sha}")
-        end
-        if promoted_pub.uki_oci_ref.blank? || promoted_pub.uki_sha256.blank?
-          return err("Promoted image has no standalone UKI artifact (built before the in-place-upgrade CI) — " \
-                     "republish/promote a newer image to enable boot-image upgrades")
-        end
-        cosign_pubkey = self.class.platform_cosign_public_key
-        if cosign_pubkey.blank?
-          return err("Refusing boot-image upgrade: the platform cosign public key " \
-                     "(POWERNODE_COSIGN_PUBLIC_KEY / _FILE) is not configured — the node could not verify the pulled UKI")
-        end
+        # task → cosign verify fails on-node (campaign 019f505f). .preflight
+        # resolves the publication matching the promoted sha and runs the guard
+        # chain the plan-time blocker shares, so a dispatch is self-consistent
+        # with the plan that authorized it.
+        promoted_pub, failure, cosign_pubkey = self.class.preflight(platform)
+        return err(dispatch_failure_message(failure, platform)) if failure
+
+        target_sha    = platform.disk_image_git_sha
         cosign_bundle = promoted_pub.uki_cosign_bundle
-        if cosign_bundle.blank?
-          return err("Promoted image has no UKI cosign signature bundle — cannot dispatch an unverifiable boot-image upgrade")
-        end
 
         if !@force && @instance.booted_image_git_sha.present? && @instance.booted_image_git_sha == target_sha
           return Result.new(upgraded: false, already_current: true, target_git_sha: target_sha)
@@ -131,6 +156,30 @@ module System
       end
 
       private
+
+      # Operator-facing wording for each .preflight failure. Deliberately more
+      # verbose than platform_blocker's plan-time phrasing (which is embedded in
+      # a halt_reason) — same conditions, different audience.
+      def dispatch_failure_message(failure, platform)
+        case failure
+        when :no_platform       then "Instance has no resolvable node platform"
+        when :no_promoted_image then "Platform has no promoted disk image to upgrade to"
+        when :pointer_inconsistent
+          "Platform pointer inconsistent: no published record for promoted git_sha #{platform.disk_image_git_sha}"
+        when :no_uki_artifact
+          "Promoted image has no standalone UKI artifact (built before the in-place-upgrade CI) — " \
+          "republish/promote a newer image to enable boot-image upgrades"
+        when :no_cosign_key
+          "Refusing boot-image upgrade: the platform cosign public key " \
+          "(POWERNODE_COSIGN_PUBLIC_KEY / _FILE) is not configured — the node could not verify the pulled UKI"
+        when :no_cosign_bundle
+          "Promoted image has no UKI cosign signature bundle — cannot dispatch an unverifiable boot-image upgrade"
+          # Falling through to nil here would produce err(nil), and Result#ok?
+          # is `reason.nil?` — so an unhandled guard would read as SUCCESS to
+          # every caller, which then dereferences a nil task. Fail loud instead.
+        else raise ArgumentError, "unhandled preflight failure: #{failure.inspect}"
+        end
+      end
 
       def in_flight_task
         ::System::Task

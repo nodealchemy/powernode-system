@@ -28,6 +28,10 @@ RSpec.describe System::Ai::Skills::BootImageDriftRolloutExecutor do
       disk_image_uki_sha256: "sha256:uki"
     )
 
+    # The dispatcher AND the plan-time blocker both source the UKI pins from the
+    # promoted publication row, not the platform columns above (df4a2000 +
+    # IMP-4452cb88e195) — so a healthy platform fixture has to carry
+    # uki_oci_ref/uki_sha256 here or every dispatch fails the UKI-artifact guard.
     System::DiskImagePublication.create!(
       account: account,
       node_platform: platform_record,
@@ -36,6 +40,8 @@ RSpec.describe System::Ai::Skills::BootImageDriftRolloutExecutor do
       oci_ref: "oki-ref",
       sha256: "#{'a' * 64}",
       size_bytes: 1024,
+      uki_oci_ref: "uki-ref",
+      uki_sha256: "#{'c' * 64}",
       uki_cosign_bundle: "base64_bundle"
     )
   end
@@ -335,6 +341,67 @@ RSpec.describe System::Ai::Skills::BootImageDriftRolloutExecutor do
         d = r[:data]
         expect(d[:halted]).to be true
         expect(d[:halt_reason]).to match(/cosign public key/)
+        expect(d[:dispatched_task_ids]).to be_empty
+      end
+    end
+
+    # IMP-4452cb88e195 — the plan-time blocker and the dispatch-time guards MUST
+    # read the same pin source (the promoted publication row). While the blocker
+    # still read the NodePlatform.disk_image_uki_* columns, a platform whose
+    # columns were populated but whose publication row carried no UKI pins
+    # planned GREEN (halted:false) and then dispatched ZERO tasks on approval —
+    # the exact silent no-op the plan-time preflight exists to prevent.
+    describe "plan/dispatch pin-source consistency" do
+      it "halts instead of planning green and dispatching nothing when the publication carries no UKI pins" do
+        target_sha = "target-sha"
+        # Platform columns fully populated: a partial-field promote writer left
+        # them naming a UKI the promoted publication row does not carry.
+        platform_record.update!(
+          disk_image_git_sha: target_sha,
+          disk_image_oci_ref: "oki-ref",
+          disk_image_uki_oci_ref: "stale-platform-uki-ref",
+          disk_image_uki_sha256: "sha256:stale"
+        )
+        System::DiskImagePublication.create!(
+          account: account,
+          node_platform: platform_record,
+          git_sha: target_sha,
+          arch: "amd64",
+          oci_ref: "oki-ref",
+          sha256: "#{'a' * 64}",
+          size_bytes: 1024,
+          uki_oci_ref: nil,
+          uki_sha256: nil,
+          uki_cosign_bundle: "base64_bundle"
+        )
+        drifted1 = create_drifted_instance(booted_sha: "old-sha-1", name: "d1")
+
+        r = executor.execute(instance_id: drifted1.id, dry_run: false)
+
+        expect(r[:success]).to be true
+        d = r[:data]
+        expect(d[:halted]).to be true
+        expect(d[:halt_reason]).to match(/standalone UKI artifact/)
+        expect(d[:dispatched_task_ids]).to be_empty
+        expect(System::Task.where(command: "upgrade_boot_image").count).to eq(0)
+      end
+
+      it "halts with a pointer-inconsistency reason when the promoted git_sha has no publication row" do
+        platform_record.update!(
+          disk_image_git_sha: "promoted-but-unpublished",
+          disk_image_oci_ref: "oki-ref",
+          disk_image_uki_oci_ref: "uki-ref",
+          disk_image_uki_sha256: "sha256:uki"
+        )
+        drifted1 = create_drifted_instance(booted_sha: "old-sha-1", name: "d1")
+
+        r = executor.execute(instance_id: drifted1.id, dry_run: false)
+
+        expect(r[:success]).to be true
+        d = r[:data]
+        expect(d[:halted]).to be true
+        expect(d[:halt_reason]).to match(/pointer inconsistent/i)
+        expect(d[:halt_reason]).to include("promoted-but-unpublished")
         expect(d[:dispatched_task_ids]).to be_empty
       end
     end
