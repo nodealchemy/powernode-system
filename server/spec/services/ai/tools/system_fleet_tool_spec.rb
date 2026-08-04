@@ -1171,6 +1171,225 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # === Template blast radius (IMP-4d76a6b76146) ===
+  # TemplateApprovalPolicy classifies a template mutation by how much LIVE fleet
+  # it reaches, but its only callers were fulfill_capability_request (which
+  # always passes template: nil) and TemplateClosureDriftSensor (which sees the
+  # damage a tick later). A direct join mutation over MCP consulted it nowhere,
+  # so an assignment onto a template carrying running instances propagated on
+  # the next apply with no classification recorded anywhere.
+  #
+  # The gate RECORDS rather than refuses — see record_template_blast_radius for
+  # the full reasoning. These examples pin both halves of that: the record is
+  # made when there is live fleet, and NOTHING changes when there isn't.
+  describe "Template mutation blast radius" do
+    let(:br_category) { create(:system_node_module_category, account: account, name: "br-cat-#{SecureRandom.hex(3)}") }
+
+    def br_module(name)
+      create(:system_node_module, account: account, node_platform: platform_record,
+             category: br_category, variety: "subscription", name: "#{name}-#{SecureRandom.hex(3)}")
+    end
+
+    def live_node!(count = 1)
+      count.times do
+        node = create(:system_node, account: account, node_template: template)
+        create(:system_node_instance, :running, node: node)
+      end
+    end
+
+    def events
+      System::FleetEvent.where(account: account, kind: "system.template_mutation")
+    end
+
+    context "when the template carries live fleet" do
+      before { live_node! }
+
+      it "lets the assignment through but reports the blast radius it will reach on next apply" do
+        mod = br_module("live-assign")
+
+        result = call("system_assign_module_to_template", template_id: template.id, module_id: mod.id)
+
+        expect(result[:success]).to be true
+        expect(System::TemplateModule.where(node_template: template, node_module: mod)).to exist
+        radius = result.dig(:data, :blast_radius)
+        expect(radius[:requires_approval]).to be true
+        expect(radius[:provisioned_node_count]).to eq(1)
+        expect(radius[:reason]).to match(/propagates to live fleet/)
+      end
+
+      it "records a durable FleetEvent naming the template, the module and the count" do
+        mod = br_module("live-event")
+
+        expect do
+          call("system_assign_module_to_template", template_id: template.id, module_id: mod.id)
+        end.to change { events.count }.by(1)
+
+        event = events.order(:created_at).last
+        expect(event.severity).to eq("medium")
+        expect(event.node_module_id).to eq(mod.id)
+        expect(event.correlation_id).to eq("template_mutation:#{template.id}")
+        expect(event.payload["change"]).to eq("module_assigned")
+        expect(event.payload["template_id"]).to eq(template.id)
+        expect(event.payload["node_module_name"]).to eq(mod.name)
+        expect(event.payload["provisioned_node_count"]).to eq(1)
+      end
+
+      it "counts every live node on the template, not just the first" do
+        live_node!(2)
+        mod = br_module("live-count")
+
+        result = call("system_assign_module_to_template", template_id: template.id, module_id: mod.id)
+
+        expect(result.dig(:data, :blast_radius, :provisioned_node_count)).to eq(3)
+      end
+
+      # The conflict guard and the blast-radius record are DIFFERENT checks: a
+      # refused assignment never reaches the write, so it reaches no fleet and
+      # leaves no mutation record either.
+      it "records nothing when the composition-conflict guard refuses the assignment" do
+        first  = br_module("conflict-first")
+        second = create(:system_node_module, account: account, node_platform: platform_record,
+                        category: br_category, variety: "instance", name: "conf-inst-a-#{SecureRandom.hex(3)}")
+        third  = create(:system_node_module, account: account, node_platform: platform_record,
+                        category: br_category, variety: "instance", name: "conf-inst-b-#{SecureRandom.hex(3)}")
+        expect(call("system_assign_module_to_template", template_id: template.id, module_id: first.id)[:success]).to be true
+        expect(call("system_assign_module_to_template", template_id: template.id, module_id: second.id)[:success]).to be true
+
+        result = nil
+        expect do
+          result = call("system_assign_module_to_template", template_id: template.id, module_id: third.id)
+        end.not_to change { events.where("payload->>'node_module_name' = ?", third.name).count }
+
+        expect(result[:success]).to be false
+      end
+
+      # A disabled join is not expanded onto any instance, so it reaches no live
+      # node — the same reasoning that lets it skip the conflict check.
+      it "stays silent for an assignment that does not ship" do
+        mod = br_module("disabled-assign")
+
+        result = nil
+        expect do
+          result = call("system_assign_module_to_template",
+                        template_id: template.id, module_id: mod.id, enabled: false)
+        end.not_to change { events.count }
+
+        expect(result[:success]).to be true
+        expect(result[:data]).not_to have_key(:blast_radius)
+      end
+
+      it "records DISABLING a shipping join — it takes the module off live fleet" do
+        mod = br_module("disable-join")
+        call("system_assign_module_to_template", template_id: template.id, module_id: mod.id)
+
+        result = nil
+        expect do
+          result = call("system_update_template_module",
+                        template_id: template.id, module_id: mod.id, enabled: false)
+        end.to change { events.count }.by(1)
+
+        expect(result.dig(:data, :blast_radius, :requires_approval)).to be true
+        expect(events.order(:created_at).last.payload["change"]).to eq("module_disabled")
+      end
+
+      it "records ENABLING a staged join" do
+        mod = br_module("enable-join")
+        call("system_assign_module_to_template", template_id: template.id, module_id: mod.id, enabled: false)
+
+        expect do
+          call("system_update_template_module", template_id: template.id, module_id: mod.id, enabled: true)
+        end.to change { events.count }.by(1)
+
+        expect(events.order(:created_at).last.payload["change"]).to eq("module_enabled")
+      end
+
+      it "stays silent for an edit to a join that neither shipped before nor ships after" do
+        mod = br_module("inert-edit")
+        call("system_assign_module_to_template", template_id: template.id, module_id: mod.id, enabled: false)
+
+        result = nil
+        expect do
+          result = call("system_update_template_module",
+                        template_id: template.id, module_id: mod.id, priority: 90)
+        end.not_to change { events.count }
+
+        expect(result[:success]).to be true
+        expect(result[:data]).not_to have_key(:blast_radius)
+      end
+
+      it "records the unassignment of a shipping join — the most destructive join mutation" do
+        mod = br_module("unassign-live")
+        call("system_assign_module_to_template", template_id: template.id, module_id: mod.id)
+
+        result = nil
+        expect do
+          result = call("system_unassign_module_from_template", template_id: template.id, module_id: mod.id)
+        end.to change { events.count }.by(1)
+
+        expect(result.dig(:data, :blast_radius, :provisioned_node_count)).to eq(1)
+        expect(events.order(:created_at).last.payload["change"]).to eq("module_unassigned")
+      end
+
+      it "stays silent unassigning a join that was never shipping" do
+        mod = br_module("unassign-disabled")
+        call("system_assign_module_to_template", template_id: template.id, module_id: mod.id, enabled: false)
+
+        result = nil
+        expect do
+          result = call("system_unassign_module_from_template", template_id: template.id, module_id: mod.id)
+        end.not_to change { events.count }
+
+        expect(result[:success]).to be true
+        expect(result[:data]).not_to have_key(:blast_radius)
+      end
+
+      # One correlation_id per template is the only template mutation history
+      # that exists today — system_inspect_correlation walks it in emission
+      # order. Template versioning proper is a separate piece of work.
+      it "files every mutation on one template under a single correlation_id" do
+        first  = br_module("corr-first")
+        second = br_module("corr-second")
+        call("system_assign_module_to_template", template_id: template.id, module_id: first.id)
+        call("system_assign_module_to_template", template_id: template.id, module_id: second.id)
+        call("system_unassign_module_from_template", template_id: template.id, module_id: first.id)
+
+        chain = events.where(correlation_id: "template_mutation:#{template.id}").order(:created_at)
+        expect(chain.count).to eq(3)
+        expect(chain.map { |e| e.payload["change"] })
+          .to eq(%w[module_assigned module_assigned module_unassigned])
+      end
+    end
+
+    context "when the template carries no live fleet" do
+      it "leaves the assign payload byte-for-byte unchanged and records nothing" do
+        mod = br_module("no-fleet-assign")
+
+        result = nil
+        expect do
+          result = call("system_assign_module_to_template", template_id: template.id, module_id: mod.id)
+        end.not_to change { System::FleetEvent.where(account: account).count }
+
+        expect(result[:data].keys).to match_array(%i[assigned template_module_id])
+      end
+
+      # A node with only a TERMINATED instance is not live fleet — the tool must
+      # agree with TemplateApprovalPolicy's own LIVE_INSTANCE_SCOPE rather than
+      # deriving a second opinion about what "provisioned" means.
+      it "does not count a node whose only instance is terminated" do
+        node = create(:system_node, account: account, node_template: template)
+        create(:system_node_instance, node: node, status: "terminated")
+        mod = br_module("terminated-only")
+
+        result = nil
+        expect do
+          result = call("system_assign_module_to_template", template_id: template.id, module_id: mod.id)
+        end.not_to change { System::FleetEvent.where(account: account).count }
+
+        expect(result[:data]).not_to have_key(:blast_radius)
+      end
+    end
+  end
+
   describe "Modules + Versions" do
     let!(:mod) do
       create(:system_node_module,

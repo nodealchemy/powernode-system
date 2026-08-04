@@ -568,7 +568,7 @@ module Ai
             parameters: { template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to fetch (account-scoped)" } }
           },
           "system_assign_module_to_template" => {
-            description: "Bind a NodeModule to a NodeTemplate (creates a TemplateModule join). Refuses the assignment when it would introduce an error-severity composition conflict (declared Conflicts: relation, or a second instance-variety module in one category) and names the modules involved; soft protected_spec overlaps come back under `warnings` without blocking. Assigning with enabled=false skips the conflict check, because a disabled join is not expanded onto any instance — enabling it later (system_update_template_module) is what runs the check. Preview first with system_compose_preview_template.",
+            description: "Bind a NodeModule to a NodeTemplate (creates a TemplateModule join). Refuses the assignment when it would introduce an error-severity composition conflict (declared Conflicts: relation, or a second instance-variety module in one category) and names the modules involved; soft protected_spec overlaps come back under `warnings` without blocking. Assigning with enabled=false skips the conflict check, because a disabled join is not expanded onto any instance — enabling it later (system_update_template_module) is what runs the check. Separately, when the target template already carries LIVE nodes the assignment still succeeds but reports its blast radius under `blast_radius` (provisioned_node_count + reason) and records a `system.template_mutation` FleetEvent, because the change reaches those nodes on the template's next apply. Preview first with system_compose_preview_template.",
             parameters: {
               template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to bind the module to" },
               module_id: { type: "string", required: true, description: "UUID of the NodeModule to assign to the template" },
@@ -579,7 +579,7 @@ module Ai
             }
           },
           "system_update_template_module" => {
-            description: "Update an EXISTING TemplateModule join in place: priority, enabled, config, recommends_override. This is the non-destructive way to take a module out of a template — set enabled=false rather than unassigning, because destroying the join nullifies source_template_module_id on every derived NodeModuleAssignment and permanently orphans them. Enabling a disabled join runs the same composition-conflict check as system_assign_module_to_template and refuses when it would introduce an error-severity conflict. Omitted fields are left untouched; `config` and `recommends_override` REPLACE the stored hash rather than merging into it.",
+            description: "Update an EXISTING TemplateModule join in place: priority, enabled, config, recommends_override. This is the non-destructive way to take a module out of a template — set enabled=false rather than unassigning, because destroying the join nullifies source_template_module_id on every derived NodeModuleAssignment and permanently orphans them. Enabling a disabled join runs the same composition-conflict check as system_assign_module_to_template and refuses when it would introduce an error-severity conflict. Any edit to a join that ships (before or after the edit) on a template with live nodes reports `blast_radius` and records a `system.template_mutation` FleetEvent — disabling included, since that takes the module off live fleet. Omitted fields are left untouched; `config` and `recommends_override` REPLACE the stored hash rather than merging into it.",
             parameters: {
               template_id: { type: "string", required: true, description: "UUID of the NodeTemplate holding the join (account-scoped)" },
               module_id: { type: "string", required: true, description: "UUID of the assigned NodeModule — the join is addressed by (template, module), matching system_assign_module_to_template" },
@@ -1076,7 +1076,7 @@ module Ai
             parameters: { cve_id: { type: "string", required: true, description: "Canonical CVE id (e.g. CVE-2026-12345) of the global Cve row to delete" } }
           },
           "system_unassign_module_from_template" => {
-            description: "Remove a NodeModule from a NodeTemplate (destroys the TemplateModule join). Inverse of system_assign_module_to_template. Idempotent — returns success even when the join doesn't exist.",
+            description: "Remove a NodeModule from a NodeTemplate (destroys the TemplateModule join). Inverse of system_assign_module_to_template. Idempotent — returns success even when the join doesn't exist. Removing a SHIPPING join from a template with live nodes reports `blast_radius` and records a `system.template_mutation` FleetEvent — it takes the module off every node on the template on next apply. Prefer system_update_template_module with enabled=false: destroying the join nullifies source_template_module_id on derived assignments and orphans them.",
             parameters: {
               template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to remove the module from" },
               module_id:   { type: "string", required: true, description: "UUID of the NodeModule to unassign from the template" }
@@ -2188,6 +2188,12 @@ module Ai
         )
         payload = { assigned: true, template_module_id: join.id }
         payload[:warnings] = verdict.warnings if verdict&.warnings&.any?
+        # SEPARATE question from the conflict verdict above — see
+        # record_template_blast_radius. A join that does not ship reaches no
+        # live node, so it carries no blast radius to record either.
+        if ships?(attrs) && (radius = record_template_blast_radius(template, node_module, "module_assigned"))
+          payload[:blast_radius] = radius
+        end
         success_result(payload)
       end
 
@@ -2217,8 +2223,25 @@ module Ai
           return error_result(verdict.message) if verdict.blocked?
         end
 
+        shipped_before = join.enabled
         join.update!(attrs)
-        success_result(updated: true, template_module: serialize_template_module(join))
+        payload = { updated: true, template_module: serialize_template_module(join) }
+        # Blast radius covers more transitions than the conflict guard above:
+        # DISABLING a shipping join takes a module off live fleet, which the
+        # conflict check correctly ignores (it introduces no conflict) but which
+        # is exactly the kind of change an operator should see recorded. Editing
+        # priority/config on a join that already ships changes what the next
+        # apply materializes too. Only an edit that neither shipped before nor
+        # ships after is inert.
+        if shipped_before || join.enabled
+          change = if shipped_before && !join.enabled then "module_disabled"
+          elsif !shipped_before && join.enabled then "module_enabled"
+          else "join_updated"
+          end
+          radius = record_template_blast_radius(template, node_module, change)
+          payload[:blast_radius] = radius if radius
+        end
+        success_result(payload)
       rescue ActiveRecord::RecordInvalid => e
         error_result("Template module update failed: #{e.record.errors.full_messages.join(', ')}")
       end
@@ -2248,6 +2271,70 @@ module Ai
         ::System::TemplateCompositionAnalysis
           .new(@account)
           .assignment_verdict(template: template, node_module: node_module)
+      end
+
+      # IMP-4d76a6b76146 — blast-radius classification on the template WRITE
+      # path. A DIFFERENT concern from assignment_verdict above, deliberately
+      # kept as a separate check: that one asks "can this template BUILD?" and
+      # refuses an error-severity answer; this one asks "what LIVE FLEET does
+      # this template already carry?" — a question with no wrong answer, only a
+      # consequential one.
+      #
+      # Why the write and not the apply. TemplateApplyService is per-NODE and
+      # sits on the provisioning path (ProvisioningService materializes a brand
+      # new node's assignments through it), so a template-wide check there would
+      # fire on every legitimate provision of the 11th node onto a 10-node
+      # template. Apply also cannot distinguish a reviewed closure from an
+      # unreviewed one — that needs template history, which does not exist yet —
+      # so it would gate every apply on every established template forever. The
+      # autonomous apply arm is already gated: TemplateClosureDriftSensor
+      # computes this same classification and DecisionEngine#force_policy_for
+      # forces require_approval off it. The WRITE is what had no classification
+      # at all.
+      #
+      # Why it records instead of refusing. TemplateApprovalPolicy is documented
+      # as "a classification a caller consults, not a hard raise", and a raw
+      # SystemFleetTool action has no approve-and-proceed door to offer — the
+      # definitions' `requires_approval` flag is DESCRIPTIVE ONLY (improvement
+      # 019f34a3). A refusal would dead-end the COMMON case (an established
+      # template has live nodes by definition), and the way around a dead end is
+      # the REST join endpoints, which are watched even less. So the mutation
+      # proceeds and leaves a record: on the payload for the caller, and as a
+      # FleetEvent for everyone who was not in the room.
+      #
+      # Returns nil — and adds NOTHING to the payload — when blast radius is
+      # zero, so a mutation on a template with no live fleet is byte-for-byte
+      # what it was before. The events share
+      # `correlation_id: "template_mutation:<template_id>"`, so
+      # system_inspect_correlation walks one template's mutation history in
+      # emission order.
+      def record_template_blast_radius(template, node_module, change)
+        classification = ::System::Ai::Skills::TemplateApprovalPolicy.for(template: template)
+        return nil unless classification.requires_approval?
+
+        radius = {
+          requires_approval: true,
+          provisioned_node_count: classification.provisioned_node_count,
+          reason: classification.reason
+        }
+
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: @account,
+          kind: "system.template_mutation",
+          severity: :medium,
+          source: "system_fleet_tool",
+          correlation_id: "template_mutation:#{template.id}",
+          node_module_id: node_module.id,
+          payload: radius.merge(
+            change: change,
+            template_id: template.id,
+            template_name: template.name,
+            node_module_name: node_module.name,
+            initiated_by: @user&.id || "system"
+          )
+        )
+
+        radius
       end
 
       def serialize_template_module(join)
@@ -3877,14 +3964,22 @@ module Ai
         end
 
         join_id = join.id
+        shipped = join.enabled
         join.destroy!
 
-        success_result(
+        payload = {
           unassigned: true,
           template_module_id: join_id,
           template_id: template.id,
           module_id: node_module.id
-        )
+        }
+        # Removing a SHIPPING join is the highest-blast-radius join mutation
+        # there is — it takes a module off every node on the template. Gating
+        # only the assign would have left the more destructive door open.
+        if shipped && (radius = record_template_blast_radius(template, node_module, "module_unassigned"))
+          payload[:blast_radius] = radius
+        end
+        success_result(payload)
       end
 
       # Enable/disable a NodeModuleAssignment — mirrors the
