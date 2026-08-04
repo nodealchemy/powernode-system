@@ -156,6 +156,23 @@ RSpec.describe System::ModuleOciIngestService do
       expect(version.oci_digest).to be_nil
     end
 
+    # DEVELOPMENT is the env that actually detonated (2026-07-16): the dev
+    # backend re-ingested a native build through this stub and the fabricated
+    # versions were promoted to fleet `current`, leaving base-os +
+    # hub-frontend unpullable and ops-hub one reboot from initramfs. A
+    # production-only gate would not have caught that, so the gate is
+    # "outside test", not "in production".
+    it "refuses to PERSIST stub-fabricated identity in development too" do
+      described_class.adapter = described_class::LocalOciAdapter.new
+      allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
+
+      result = described_class.ingest!(node_module_version: version, oci_ref: oci_ref)
+
+      expect(result.ok?).to be false
+      expect(result.error).to match(/fabricated stub artifact identity/)
+      expect(System::ModuleArtifact.where(node_module_version: version).count).to eq(0)
+    end
+
     # Only the DEFAULT fabrication carries the marker — caller-supplied fixtures
     # (and any real adapter) are untouched by the gate.
     it "does not interfere with real-shaped descriptors supplied through the stub overrides" do

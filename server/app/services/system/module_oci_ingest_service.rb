@@ -157,15 +157,26 @@ module System
       # fabricated digest — which is indistinguishable from a real one BY DESIGN
       # (a genuine sha256 can end in "0000" too) — LocalOciAdapter stamps its
       # DEFAULT fabricated output with an explicit `stub: true` marker, and
-      # persisting anything carrying that marker is refused in production. The
-      # @stub_manifest/@stub_verification test overrides are deliberately NOT
-      # marked: those carry caller-supplied, real-shaped fixtures and keep
-      # working unchanged.
-      if Rails.env.production? && (manifest[:stub] || verification[:stub])
+      # persisting anything carrying that marker is refused outside TEST. The
+      # @stub_manifest/@stub_verification overrides are deliberately NOT marked:
+      # those carry caller-supplied, real-shaped fixtures and keep working
+      # unchanged, which is also the escape hatch if a dev flow genuinely needs
+      # a recorded artifact.
+      #
+      # Outside TEST rather than merely outside production, because DEVELOPMENT
+      # is the environment that actually detonated: on 2026-07-16 the dev backend
+      # (RAILS_ENV=development) re-ingested a native build through this stub,
+      # fabricated the artifact metadata, and the poisoned versions were promoted
+      # to fleet `current` — leaving base-os and hub-frontend unpullable
+      # (sha256(blob) never matches a fabricated digest), wedging the
+      # ci-native-builders pool and putting ops-hub one reboot from bricking to
+      # initramfs. A fabricated artifact row has no legitimate purpose OUTSIDE a
+      # spec run, so test is the only env where recording one is safe.
+      if !Rails.env.test? && (manifest[:stub] || verification[:stub])
         return failure(
-          "refusing to persist fabricated stub artifact identity in production " \
-          "(adapter #{adapter.class.name} returned stub-marked descriptors); " \
-          "no artifact recorded and no version promoted"
+          "refusing to persist fabricated stub artifact identity in " \
+          "#{Rails.env} (adapter #{adapter.class.name} returned stub-marked " \
+          "descriptors); no artifact recorded and no version promoted"
         )
       end
 
