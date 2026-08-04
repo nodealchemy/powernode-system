@@ -50,6 +50,16 @@ module System
     PRIORITY_CATEGORY_MULTIPLIER = (Rails.application.config.try(:system_module_priority_category_multiplier) || 1000).freeze
     PRIORITY_PLACES = (Rails.application.config.try(:system_module_priority_places) || 7).freeze
 
+    # Longest description we feed the embedder. Mirrors System::Package —
+    # text-embedding-3-small caps at 8191 tokens, and the purpose signal in a
+    # module description is in the opening paragraph plus the structured fields.
+    EMBEDDING_DESCRIPTION_LIMIT = 2000
+
+    # Enables `.nearest_neighbors(:embedding, vec, distance: "cosine")` via the
+    # `neighbor` gem. Populated by System::CatalogEmbeddingBackfillService and
+    # consumed by System::CatalogDiscoveryService (the reuse-first gate).
+    has_neighbors :embedding
+
     # === Associations ===
     belongs_to :account
     belongs_to :node_platform, class_name: "System::NodePlatform", optional: true
@@ -190,6 +200,20 @@ module System
     scope :operator_authored,   -> { where(auto_generated: false) }
     scope :package_sourced,     -> { joins(:package_module_link) }
 
+    # === Embedding scopes ===
+    scope :with_embedding,    -> { where.not(embedding: nil) }
+    scope :without_embedding, -> { where(embedding: nil) }
+    # Rows whose stored vector no longer reflects the row: never embedded, or
+    # edited after the embedding was generated. This is what makes the backfill
+    # a reconciler rather than a one-shot — re-running it picks up both new and
+    # modified modules. Nothing enqueues an embed on save today, so a periodic
+    # pass over this scope IS the freshness mechanism.
+    scope :embedding_stale, -> {
+      where("system_node_modules.embedding IS NULL " \
+            "OR system_node_modules.embedding_generated_at IS NULL " \
+            "OR system_node_modules.embedding_generated_at < system_node_modules.updated_at")
+    }
+
     # Finds modules whose upstream package provides a given capability —
     # either as the package's own name (e.g. "python3") or via the
     # package's `provides` JSONB array (e.g. a package that provides
@@ -252,6 +276,37 @@ module System
     # touched when the caller wants the upstream package details.
     def package_sourced?
       package_module_link.present?
+    end
+
+    # Composed once, here, so a re-embed campaign feeds the embedder identical
+    # input for an unchanged row (same contract as System::Package#embedding_text).
+    #
+    # Composition: name + variety + description + category + capabilities.
+    # Those five are the fields that carry PURPOSE. Deliberately excluded:
+    # node_platform / architecture (a compatibility constraint, not a purpose —
+    # and already available as a structured filter, so folding it in would only
+    # blur the vector), and the rsync glob specs (paths, not meaning).
+    # `capabilities` is the denormalized `manifest.dependencies.provides` list,
+    # which is the closest thing the catalog has to a machine-readable "what
+    # this module is for".
+    #
+    # Callers iterating many modules should preload :category — this reads it.
+    def embedding_text
+      caps = Array(capabilities).map(&:to_s).reject(&:empty?)
+      <<~TEXT.strip
+        #{name} (#{variety} module)
+
+        #{description.to_s.truncate(EMBEDDING_DESCRIPTION_LIMIT)}
+
+        Category: #{category&.name}
+        Capabilities: #{caps.join(', ')}
+      TEXT
+    end
+
+    # Virtual attribute set by pgvector's nearest_neighbors scope. Mirrors
+    # System::Package / Ai::KnowledgeGraphNode.
+    def neighbor_distance
+      self[:neighbor_distance]
     end
 
     # Per-module inbound-webhook signing secret, DERIVED (never stored) from

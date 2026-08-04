@@ -54,6 +54,11 @@ module Ai
         "system_list_modules"           => "system.modules.read",
         "system_get_module"             => "system.modules.read",
         "system_list_module_versions"   => "system.modules.read",
+        # IMP-67aea0728774 — semantic catalog discovery (the reuse-first gate).
+        # Read-only ranking over the same rows list_modules/list_templates
+        # already expose, so each takes the permission of its list counterpart.
+        "system_discover_modules"       => "system.modules.read",
+        "system_discover_templates"     => "system.nodes.read",
         "system_module_publish_target"  => "system.modules.read",
         "system_module_publication_integrity" => "system.modules.read",
         "system_instance_hold_status"   => "system.instances.read",
@@ -522,18 +527,26 @@ module Ai
 
           # === Templates ===
           "system_list_templates" => {
-            description: "List node templates for the current account",
-            parameters: {}
+            description: "List node templates for the current account, optionally narrowed by a name/description substring. For a purpose-based search ('something that serves web traffic') use system_discover_templates instead — this one is a literal filter.",
+            parameters: {
+              q: { type: "string", required: false, description: "Case-insensitive substring matched against template name OR description" }
+            }
           },
           "system_get_template" => {
             description: "Fetch a template with its assigned modules",
             parameters: { template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to fetch (account-scoped)" } }
           },
           "system_assign_module_to_template" => {
-            description: "Bind a NodeModule to a NodeTemplate (creates a TemplateModule join)",
+            description: "Bind a NodeModule to a NodeTemplate (creates a TemplateModule join). Refuses the assignment when it would introduce an error-severity composition conflict (declared Conflicts: relation, or a second instance-variety module in one category) and names the modules involved; soft protected_spec overlaps come back under `warnings` without blocking. Preview first with system_compose_preview_template.",
             parameters: {
               template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to bind the module to" },
               module_id: { type: "string", required: true, description: "UUID of the NodeModule to assign to the template" }
+            }
+          },
+          "system_compose_preview_template" => {
+            description: "Design-time composition preview for a set of NodeModules — the same analysis the Visual Template Composer shows. Resolves the full dependency closure (explicit picks PLUS transitive requires/recommends) and returns the serialized modules, detected conflicts, footprint estimate, dependency graph, and resolver warnings/errors. Read-only: persists NOTHING, creates no template. Use it before system_create_template + system_assign_module_to_template to see conflicts the assignment path would refuse.",
+            parameters: {
+              module_ids: { type: "array", required: true, description: "UUIDs of the NodeModules to compose (account-scoped). The operator's explicit picks — dependencies are resolved automatically and flagged auto_resolved in the response." }
             }
           },
 
@@ -549,6 +562,27 @@ module Ai
           "system_list_module_versions" => {
             description: "List versions of a module (newest first)",
             parameters: { module_id: { type: "string", required: true, description: "UUID of the NodeModule whose versions to list" } }
+          },
+
+          # === Catalog discovery (IMP-67aea0728774) ===
+          "system_discover_modules" => {
+            description: "Reuse-first module discovery — describe a PURPOSE ('reverse proxy with TLS', 'metrics scraper') and get existing modules ranked by semantic similarity, with a confidence bucket. Run this BEFORE authoring a new module (the module-authoring runbook's reuse gate). Use system_list_modules instead when you already know the name or just want to browse by variety. Ranking is pure vector similarity over persisted embeddings — there is no keyword fallback, so an unavailable embedding provider fails loudly rather than returning misleading matches. The `coverage` field reports how much of the searched catalog is actually embedded: an empty result with unembedded > 0 means NOT INDEXED, not 'nothing exists' (run rake system:catalog:backfill_embeddings).",
+            parameters: {
+              intent: { type: "string", required: true, description: "Free-text description of the capability/purpose the module should serve" },
+              top_k: { type: "integer", required: false, description: "Max results to return (1-#{::System::CatalogDiscoveryService::MAX_TOP_K}, default #{::System::CatalogDiscoveryService::DEFAULT_TOP_K})" },
+              variety: { type: "string", required: false, description: "Restrict to a module variety: config | instance | subscription" },
+              platform_id: { type: "string", required: false, description: "Restrict to modules for a specific NodePlatform" },
+              include_disabled: { type: "boolean", required: false, description: "Include disabled modules in the search (default false)" }
+            }
+          },
+          "system_discover_templates" => {
+            description: "Reuse-first template discovery — describe a WORKLOAD ('public web serving stack', 'nightly batch runner') and get existing NodeTemplates ranked by semantic similarity, with a confidence bucket. A template's embedding folds in its assigned modules' names and descriptions, so the match reflects what the template actually composes, not just its name. Same no-keyword-fallback and `coverage` semantics as system_discover_modules.",
+            parameters: {
+              intent: { type: "string", required: true, description: "Free-text description of the workload the template should serve" },
+              top_k: { type: "integer", required: false, description: "Max results to return (1-#{::System::CatalogDiscoveryService::MAX_TOP_K}, default #{::System::CatalogDiscoveryService::DEFAULT_TOP_K})" },
+              platform_id: { type: "string", required: false, description: "Restrict to templates for a specific NodePlatform" },
+              include_disabled: { type: "boolean", required: false, description: "Include disabled templates in the search (default false)" }
+            }
           },
           "system_promote_module_version" => {
             description: "Promote a NodeModuleVersion through its lifecycle (staging|blessed|live|retired)",
@@ -1267,12 +1301,15 @@ module Ai
         when "system_stop_instance"            then control_instance(params, "stop")
         when "system_reboot_instance"          then control_instance(params, "reboot")
         when "system_destroy_instance"         then destroy_instance(params)
-        when "system_list_templates"           then list_templates
+        when "system_list_templates"           then list_templates(params)
         when "system_get_template"             then get_template(params)
         when "system_assign_module_to_template" then assign_module_to_template(params)
+        when "system_compose_preview_template" then compose_preview_template(params)
         when "system_list_modules"             then list_modules(params)
         when "system_get_module"               then get_module(params)
         when "system_list_module_versions"     then list_module_versions(params)
+        when "system_discover_modules"         then discover_modules(params)
+        when "system_discover_templates"       then discover_templates(params)
         when "system_promote_module_version"   then promote_module_version(params)
         when "system_drift_report"             then drift_report(params)
         when "system_list_tasks"               then list_tasks(params)
@@ -2011,8 +2048,18 @@ module Ai
 
       # === Templates ===
 
-      def list_templates
+      # `q` narrows on name OR description. Previously this action took no
+      # parameters at all, so an agent looking for one template had to pull the
+      # whole catalog and filter client-side.
+      def list_templates(params = {})
         templates = account_templates.order(name: :asc)
+        if (q = params[:q].to_s.strip).present?
+          like = "%#{::ActiveRecord::Base.sanitize_sql_like(q)}%"
+          templates = templates.where(
+            "system_node_templates.name ILIKE :like OR system_node_templates.description ILIKE :like",
+            like: like
+          )
+        end
         success_result(
           templates: templates.map { |t| serialize_template(t) },
           count: templates.size
@@ -2024,11 +2071,40 @@ module Ai
         success_result(template: serialize_template_full(template))
       end
 
+      # Conflict detection used to run ONLY in compose_preview, so nothing on
+      # this path stopped an agent from composing a template that cannot build.
+      # It now runs the same analysis over the module set the assignment would
+      # produce: error-severity conflicts refuse the write and name the modules
+      # involved, warnings ride the success payload. A clean assignment's
+      # payload is unchanged.
       def assign_module_to_template(params)
         template = account_templates.find(params[:template_id])
         node_module = account_modules.find(params[:module_id])
+
+        verdict = ::System::TemplateCompositionAnalysis
+                  .new(@account)
+                  .assignment_verdict(template: template, node_module: node_module)
+        return error_result(verdict.message) if verdict.blocked?
+
         join = ::System::TemplateModule.create!(node_template: template, node_module: node_module)
-        success_result(assigned: true, template_module_id: join.id)
+        payload = { assigned: true, template_module_id: join.id }
+        payload[:warnings] = verdict.warnings if verdict.warnings.any?
+        success_result(payload)
+      end
+
+      # Read-only design-time analysis — the same projection
+      # NodeTemplatesController#compose_preview renders for the Visual Template
+      # Composer, so an agent designing a template sees the conflicts, footprint
+      # and dependency graph an operator does. Persists nothing.
+      def compose_preview_template(params)
+        ids = Array(params[:module_ids])
+        return error_result("module_ids: required") if ids.empty?
+
+        analysis = ::System::TemplateCompositionAnalysis.new(@account)
+        requested = analysis.modules_for(ids)
+        return error_result("no matching modules") if requested.empty?
+
+        success_result(analysis.preview_for(requested))
       end
 
       # === Modules ===
@@ -2056,6 +2132,56 @@ module Ai
           versions: versions.map { |v| serialize_version(v) },
           count: versions.size
         )
+      end
+
+      # === Catalog discovery (IMP-67aea0728774) ===
+      #
+      # Both actions delegate ranking to System::CatalogDiscoveryService so the
+      # policy (cosine-only, no lexical fallback, shared confidence buckets)
+      # lives in one place and a future REST surface reuses it — the same reason
+      # PackageSearchService exists behind system_search_packages.
+
+      def discover_modules(params)
+        result = ::System::CatalogDiscoveryService.discover_modules(
+          account:          @account,
+          intent:           params[:intent],
+          top_k:            params[:top_k] || ::System::CatalogDiscoveryService::DEFAULT_TOP_K,
+          variety:          params[:variety],
+          platform_id:      params[:platform_id],
+          include_disabled: ::ActiveModel::Type::Boolean.new.cast(params[:include_disabled])
+        )
+
+        intent = params[:intent].to_s.strip
+        success_result(
+          intent:     intent,
+          results:    result.records.map { |m| serialize_module_match(m, intent) },
+          seed_count: result.seed_count,
+          confidence: result.confidence,
+          coverage:   result.coverage
+        )
+      rescue ArgumentError, ::System::CatalogDiscoveryService::EmbeddingUnavailable => e
+        error_result(e.message)
+      end
+
+      def discover_templates(params)
+        result = ::System::CatalogDiscoveryService.discover_templates(
+          account:          @account,
+          intent:           params[:intent],
+          top_k:            params[:top_k] || ::System::CatalogDiscoveryService::DEFAULT_TOP_K,
+          platform_id:      params[:platform_id],
+          include_disabled: ::ActiveModel::Type::Boolean.new.cast(params[:include_disabled])
+        )
+
+        intent = params[:intent].to_s.strip
+        success_result(
+          intent:     intent,
+          results:    result.records.map { |t| serialize_template_match(t, intent) },
+          seed_count: result.seed_count,
+          confidence: result.confidence,
+          coverage:   result.coverage
+        )
+      rescue ArgumentError, ::System::CatalogDiscoveryService::EmbeddingUnavailable => e
+        error_result(e.message)
       end
 
       def promote_module_version(params)
@@ -3177,6 +3303,42 @@ module Ai
           gitea_repo_full_name: m.gitea_repo_full_name,
           cosign_identity_regexp: m.cosign_identity_regexp,
           cosign_issuer_regexp: m.cosign_issuer_regexp
+        }
+      end
+
+      # Discovery match payloads. Shaped like discover_packages_by_intent's
+      # results (id / name / similarity / reason) so an agent reading both
+      # surfaces parses one shape, plus the fields that let it act on the hit
+      # without a follow-up system_get_module call.
+      def serialize_module_match(m, intent)
+        similarity = ::System::CatalogDiscoveryService.similarity_for(m)
+        caps = Array(m.capabilities).map(&:to_s).reject(&:empty?).first(3)
+        reason = "Semantic match for '#{intent}' (similarity #{similarity})"
+        reason += " — provides #{caps.join(', ')}" if caps.any?
+
+        {
+          module_id:   m.id,
+          name:        m.name,
+          variety:     m.variety,
+          description: m.description.to_s.truncate(240).presence,
+          category_id: m.category_id,
+          enabled:     m.enabled,
+          similarity:  similarity,
+          reason:      reason
+        }
+      end
+
+      def serialize_template_match(t, intent)
+        similarity = ::System::CatalogDiscoveryService.similarity_for(t)
+        {
+          template_id:  t.id,
+          name:         t.name,
+          description:  t.description.to_s.truncate(240).presence,
+          platform_id:  t.node_platform_id,
+          enabled:      t.enabled,
+          module_count: t.node_modules.count,
+          similarity:   similarity,
+          reason:       "Semantic match for '#{intent}' (similarity #{similarity})"
         }
       end
 

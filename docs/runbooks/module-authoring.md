@@ -13,6 +13,25 @@ was cut to one. Module sprawl is a real cost: every module is a manifest, a
 build arm, a publish, a template assignment, a version to bump, and another
 entry in every composing node's LKG manifest. Answer this BEFORE Phase 1.
 
+**First, check whether the capability already exists.** Search the catalog by
+PURPOSE, not by guessed name — the MCP actions `system_discover_modules` and
+`system_discover_templates` rank existing modules/templates by semantic
+similarity to a free-text intent ("reverse proxy with TLS", "metrics
+scraper"):
+
+```
+system_discover_modules   intent="reverse proxy terminating TLS"
+system_discover_templates intent="public web serving stack"
+```
+
+Read the `coverage` field in the response before trusting an empty result. It
+reports how much of the searched catalog actually carries an embedding; if
+`unembedded` is non-zero, an empty result means **not indexed**, not "nothing
+exists" — run `rails system:catalog:backfill_embeddings` (and
+`rails system:catalog:embedding_coverage` to confirm) before concluding the
+capability is missing. Ranking is vector-only with no keyword fallback, so an
+unavailable embedding provider fails loudly rather than returning noise.
+
 **A new module must satisfy at least one of:**
 
 - **R1 — Two or more real consumers today**, or a hard
@@ -120,15 +139,57 @@ protected_spec:
   - "/etc/nginx/conf.d/00-security.conf"
 
 # Other modules this one requires/provides. Resolved transitively by
-# DependencyResolutionService. `requires` form: <owner>/<module>@<constraint>.
+# DependencyResolutionService. Two `requires` forms — see below.
 dependencies:
   requires:
-    - "powernode/system-base@^1.0"
+    - "powernode/system-base@^1.0"      # name pin
     - "powernode/security-hardening@^1.0"
     - "powernode/chrony@^1.0"           # NTP for cert validation
+    - "capability:database.postgres@>= 16"  # capability requirement
   provides:
     - "http-server"
+    - "http-server@1.26"                # versioned — see below
 ```
+
+### The two `requires` forms
+
+**Name pin** — `<owner>/<module>@<constraint>`, or a bare module name. Binds to one
+specific module by its Gitea repo (`gitea_repo_full_name`) or name. The constraint is
+recorded on the dependency edge but is **not** enforced: the platform has no module
+semver to check it against (`NodeModuleVersion#version_number` is an integer counter,
+not a semver string). That is why every pin in this repo is the conventional `@^1.0`.
+
+**Capability requirement** — `capability:<tag>[@<constraint>]`. Says *what you need*
+rather than *who provides it*: the importer picks the highest-priority module on the
+account whose `provides` advertises `<tag>`. Any future module providing that tag
+satisfies the requirement, with no manifest edit here.
+
+```yaml
+requires:
+  - "capability:os.userland"               # any provider of the tag
+  - "capability:database.postgres@>= 16"   # provider must advertise a satisfying version
+```
+
+Rules worth knowing before you write one:
+
+- **The constraint is `Gem::Requirement` syntax** — `>= 16`, `~> 1.0`, `1.0`. The npm
+  caret form (`^16`) is **not** valid here, even though name pins use it by convention.
+  A malformed constraint is now rejected at import with a manifest error; it is also
+  rejected at PR time by [`module-validate.yaml`](../../.gitea/workflows/module-validate.yaml)
+  against [`module-manifest.schema.json`](../../modules/.schema/module-manifest.schema.json).
+  (Historically it was silently reported to the operator as a *missing provider*,
+  which sent people off to author a module that already existed.)
+- **A bare `provides` tag does not satisfy a versioned requirement.** If you want to
+  answer `capability:http-server@>= 1.26`, advertise `http-server@1.26`, not
+  `http-server`. This is deliberate: it forces providers to state their version rather
+  than being matched optimistically.
+- **Unsatisfied capabilities are not a build failure.** The import defers them, and
+  `CapabilityGapSensor` reports the standing gap to the operator each tick. It clears
+  itself when a provider publishes.
+- **Drift is advisory.** The constraint is matched once at import; if the provider is
+  later re-imported at a version that no longer satisfies it,
+  `DependencyResolutionService` emits a `:constraint_drift` warning but still resolves
+  the module into the closure.
 
 **Field semantics:**
 
@@ -137,7 +198,8 @@ dependencies:
 - `file_spec` — **flat array of rsync-style glob strings** identifying paths this module owns. The artifact ships these.
 - `mask` — paths to EXCLUDE from this module's blob at build time. Local-only — does NOT affect neighbor modules' blobs.
 - `protected_spec` — files this module owns that NO neighbor module may ship. The build pipeline folds these into every neighbor's effective_mask in both priority directions, so a sensitive lower-module file (e.g. `/etc/shadow` from system-base) cannot be overridden by a service module's overlay layer.
-- `dependencies.requires` — modules pulled in transitively. Form is `<owner>/<module>@<version-constraint>`.
+- `dependencies.requires` — modules pulled in transitively. Either a name pin (`<owner>/<module>@<version-constraint>`) or a capability requirement (`capability:<tag>[@<constraint>]`) — see [The two `requires` forms](#the-two-requires-forms) above.
+- `dependencies.provides` — capability tags this module advertises, bare (`http-server`) or versioned (`http-server@1.26`). Denormalized into the `capabilities` column at import so capability requirements can be resolved without scanning every manifest. Only the versioned form can satisfy a versioned requirement.
 
 **Important — these are NOT in the manifest:** `category`, `variety`, `cosign_identity_regexp`, `cosign_issuer_regexp` live on the platform-side `NodeModule` DB row (set at registration time via the operator UI at `/app/system/modules/new`, or as the `category_id:` argument to `system_create_module_from_package`). They are not validated by the manifest schema. The `NodeModuleCategory` a module belongs to is a **platform-side DB row** selected at registration — the seeded slugs (`system-base`, `network-overlay`, `container-runtimes`, `security-hardening`, `userland`) are operator-facing taxonomy on that row, never a manifest field. `variety` accepts `subscription` (turn it on; always present once assigned — e.g. nginx, k3s-server), `config` (modifies another module's config without rebuilding it — e.g. `daemon-json-override` for slice 10), or `instance` (per-NodeInstance customisation — higher `effective_priority` than `subscription`).
 

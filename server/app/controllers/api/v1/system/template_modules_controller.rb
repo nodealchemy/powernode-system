@@ -47,6 +47,15 @@ module Api
         # itself — attaching a module changes the template's composition).
         # The module is resolved within the current account, so cross-account
         # references 404 rather than leak existence.
+        #
+        # Runs the same TemplateComposerService analysis compose_preview shows
+        # the operator, over the module set the assignment would produce.
+        # Conflict detection used to run ONLY in compose_preview, so the sole
+        # thing standing between an operator and a template that cannot build
+        # was a disabled button in the React composer — anything reaching this
+        # endpoint directly wrote straight through. Hard conflicts now 422;
+        # soft ones (protected_spec overlap, which the build pipeline
+        # auto-resolves) ride the success payload under `warnings`.
         def create
           require_permission("system.templates.update")
 
@@ -56,18 +65,25 @@ module Api
           node_module = @account.system_node_modules.find_by(id: module_id)
           return render_not_found("Node Module") unless node_module
 
+          verdict = ::System::TemplateCompositionAnalysis
+                    .new(@account)
+                    .assignment_verdict(template: @template, node_module: node_module)
+          return render_error(verdict.message, status: :unprocessable_content) if verdict.blocked?
+
           join = ::System::TemplateModule.new(node_template: @template, node_module: node_module)
           if join.save
-            render_success(
+            payload = {
               template_module: {
                 id: join.id,
                 node_template_id: join.node_template_id,
                 node_module_id: join.node_module_id,
                 enabled: join.enabled,
                 priority: join.priority
-              },
-              status: :created
-            )
+              }
+            }
+            # Only when non-empty — a clean assignment's payload is unchanged.
+            payload[:warnings] = verdict.warnings if verdict.warnings.any?
+            render_success(**payload, status: :created)
           else
             render_validation_error(join)
           end

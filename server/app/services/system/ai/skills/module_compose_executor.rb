@@ -136,9 +136,35 @@ module System
         end
 
         # Semantic ranker: embeds each candidate's `name + description` on the
-        # fly (NodeModule stores no persisted embedding) and scores it against
-        # the pre-computed description embedding. Modules below the similarity
-        # floor are dropped — the capabilities they'd cover surface as gaps.
+        # fly and scores it against the pre-computed description embedding.
+        # Modules below the similarity floor are dropped — the capabilities
+        # they'd cover surface as gaps.
+        #
+        # NodeModule DOES carry a persisted `embedding` column as of
+        # IMP-67aea0728774, and this ranker deliberately does NOT use it yet.
+        # Three reasons, strongest first:
+        #
+        #   1. Catalogs are partially embedded BY CONSTRUCTION — nothing
+        #      enqueues an embed on save, so only what the backfill has reached
+        #      carries a vector. A persisted-only ranker would make every
+        #      unembedded module INVISIBLE here, and this executor converts
+        #      "no module covers it" into a package gap — so an unindexed
+        #      module would be silently re-materialized from a package. That is
+        #      the exact false negative the discovery feature exists to
+        #      prevent, inverted.
+        #   2. The persisted vector covers a RICHER text than this one
+        #      (embedding_text = name + variety + description + category +
+        #      capabilities, vs `name + description` here), so similarity
+        #      magnitudes differ — and the floor below is a configured value
+        #      (`system.module_compose.min_similarity`, default 0.5) calibrated
+        #      against the thin text. Swapping without re-tuning silently
+        #      changes which modules count as "covering".
+        #   3. Mixing both sources in one ranking compares two incompatible
+        #      scales within a single sorted list.
+        #
+        # Safe sequencing when this is picked up: land an on-save embed (or get
+        # coverage to 100% and keep it there), re-tune the floor against the
+        # persisted text, then switch — not before.
         def semantic_rank(candidates, description, tokens, query_vec)
           floor = min_similarity
           descriptions = load_descriptions(candidates)

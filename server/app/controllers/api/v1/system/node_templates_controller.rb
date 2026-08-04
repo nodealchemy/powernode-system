@@ -65,34 +65,17 @@ module Api
           ids = Array(params[:module_ids])
           return render_error("module_ids: required", status: :unprocessable_content) if ids.empty?
 
-          requested = @account.system_node_modules
-                              .where(id: ids)
-                              .includes(:current_version, :category, :node_platform,
-                                        :module_dependencies, :dependencies, :package_module_link)
+          # The closure walk, conflict detection, footprint and graph all live
+          # in TemplateCompositionAnalysis so this response, the
+          # system_compose_preview_template MCP action, and the assignment
+          # write paths cannot drift apart. The payload includes BOTH the
+          # operator's explicit picks AND the transitive requires/recommends
+          # pulled in by closure expansion.
+          analysis = ::System::TemplateCompositionAnalysis.new(@account)
+          requested = analysis.modules_for(ids)
           return render_error("no matching modules", status: :not_found) if requested.empty?
 
-          # Walk ModuleDependency edges to compute the full closure. This is
-          # the new behavior: the response includes BOTH the operator's
-          # explicit picks AND the transitive requires/recommends pulled
-          # in by closure expansion.
-          resolver = ::System::DependencyResolutionService.new(
-            @account.system_node_modules.enabled
-              .includes(:module_dependencies, :dependencies, :package_module_link).to_a
-          )
-          resolution = resolver.resolve(requested.to_a)
-
-          all_modules = resolution.modules
-          explicit_ids = requested.map(&:id).to_set
-          composer = ::System::TemplateComposerService.new(all_modules)
-
-          render_success(
-            modules: composer.serialize_modules(explicit_ids: explicit_ids),
-            conflicts: composer.detect_conflicts,
-            footprint: composer.footprint,
-            dependency_graph: composer.dependency_graph(explicit_ids: explicit_ids),
-            warnings: Array(resolution.warnings).map { |w| w.is_a?(Hash) ? w[:message] : w.to_s },
-            errors:   Array(resolution.errors).map  { |e| e.is_a?(Hash) ? e[:message] : e.to_s }
-          )
+          render_success(**analysis.preview_for(requested))
         end
 
         # POST /api/v1/system/node_templates/import

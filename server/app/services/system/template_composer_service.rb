@@ -59,12 +59,14 @@ module System
 
       # Hard conflict: two instance-variety modules in the same category.
       # Only one instance can ship per category; the second would silently
-      # collide at build time.
+      # collide at build time. Carries an explicit severity like the other two
+      # kinds — the write paths partition on it (TemplateCompositionAnalysis).
       @modules.group_by(&:category_id).each do |cat_id, ms|
         instance_variety = ms.select { |m| m.variety == "instance" }
         if instance_variety.size > 1
           conflicts << {
             kind: "instance_variety_collision",
+            severity: "error",
             category_id: cat_id,
             module_ids: instance_variety.map(&:id),
             detail: "Only one instance-variety module per category is allowed"

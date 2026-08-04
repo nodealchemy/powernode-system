@@ -119,6 +119,83 @@ RSpec.describe "Operator API — Node Template modules", type: :request do
 
       expect(response).to have_http_status(:forbidden)
     end
+
+    it "leaves a clean assignment's payload unchanged — no conflict keys" do
+      post "/api/v1/system/node_templates/#{template.id}/modules",
+           params: { node_module_id: node_module.id }.to_json, headers: headers
+
+      expect(response).to have_http_status(:created)
+      expect(JSON.parse(response.body)["data"].keys).to contain_exactly("template_module")
+    end
+  end
+
+  # === Composition-conflict enforcement (IMP-20b3eb50da30) ===
+  # Conflict detection used to run ONLY in compose_preview, so the sole thing
+  # standing between an operator and a template that cannot build was a
+  # disabled button in the React composer. The write path now runs the same
+  # TemplateComposerService analysis over the resulting module set: hard
+  # conflicts refuse the assignment, soft ones ride the success payload.
+  describe "POST .../modules — composition conflicts" do
+    let(:other_category) do
+      create(:system_node_module_category, account: account, name: "conflict-cat-#{SecureRandom.hex(3)}")
+    end
+
+    def composition_module(name, category: other_category, variety: "subscription")
+      create(:system_node_module, account: account, node_platform: platform,
+             category: category, variety: variety, name: "#{name}-#{SecureRandom.hex(3)}")
+    end
+
+    def assign(node_module)
+      post "/api/v1/system/node_templates/#{template.id}/modules",
+           params: { node_module_id: node_module.id }.to_json, headers: headers
+    end
+
+    it "422s and creates nothing when the assignment collides on instance variety" do
+      first  = composition_module("inst-first", variety: "instance")
+      second = composition_module("inst-second", variety: "instance")
+      assign(first)
+      expect(response).to have_http_status(:created)
+
+      expect { assign(second) }.not_to change { template.template_modules.count }
+
+      expect(response).to have_http_status(:unprocessable_content)
+      error = JSON.parse(response.body)["error"]
+      expect(error).to include(first.name).and include(second.name)
+      expect(::System::TemplateModule.find_by(node_template: template, node_module: second)).to be_nil
+    end
+
+    it "422s when the incoming module declares a Conflicts: relation on an assigned one" do
+      installed = composition_module("conf-installed")
+      incoming  = composition_module("conf-incoming")
+      create(:system_module_dependency, node_module: incoming, dependency: installed,
+             dependency_type: "conflicts", required: false)
+      assign(installed)
+      expect(response).to have_http_status(:created)
+
+      expect { assign(incoming) }.not_to change { template.template_modules.count }
+
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(JSON.parse(response.body)["error"]).to include(incoming.name).and include(installed.name)
+    end
+
+    it "creates the join and returns warnings for a protected_spec overlap" do
+      claimer = composition_module("warn-claimer")
+      claimer.update!(protected_spec: "/etc/shadow")
+      broad = composition_module("warn-broad")
+      broad.update!(file_spec: "/etc/**")
+      assign(claimer)
+      expect(response).to have_http_status(:created)
+
+      expect { assign(broad) }.to change { template.template_modules.count }.by(1)
+
+      expect(response).to have_http_status(:created)
+      body = JSON.parse(response.body)
+      expect(body["success"]).to be true
+      warning = body.dig("data", "warnings")&.first
+      expect(warning).to be_present
+      expect(warning["kind"]).to eq("protected_spec_overlap")
+      expect(warning["severity"]).to eq("warning")
+    end
   end
 
   describe "GET /api/v1/system/node_templates/:node_template_id/modules" do
