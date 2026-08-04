@@ -3179,12 +3179,35 @@ end
       expect(result[:error]).to include("permission denied")
     end
 
+    # IMP-9e01d1b48f7a — this permission is deliberately excluded from every
+    # human-assignable role (admin/manager), so a denial here reads as a bug
+    # to an agent/operator unless the error says so. Assert the message is
+    # self-diagnosing: names the required permission AND states the
+    # worker-only restriction, not just a generic "permission denied".
+    it "explains the worker-only restriction in the permission-denied message" do
+      user = create(:user, account: account, permissions: [])
+      gated_tool = described_class.new(account: account, user: user)
+
+      result = gated_tool.execute(params: { action: "system_dispatch_module_build_batch", base_sha: "b", head_sha: "h" })
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include("system.module_builds.dispatch")
+      expect(result[:error]).to include("system_worker")
+    end
+
     it "documents the action's parameter contract" do
       defn = described_class.action_definitions.fetch("system_dispatch_module_build_batch")
 
       expect(defn[:parameters][:base_sha][:required]).to be true
       expect(defn[:parameters][:head_sha][:required]).to be true
       expect(defn[:parameters].keys).to include(:force_all, :trigger, :source_repo)
+    end
+
+    it "documents the worker-only permission requirement in the action description" do
+      defn = described_class.action_definitions.fetch("system_dispatch_module_build_batch")
+
+      expect(defn[:description]).to include("system.module_builds.dispatch")
+      expect(defn[:description]).to include("system_worker")
     end
   end
 end

@@ -14,6 +14,10 @@ module Ai
       # mutating actions to higher levels.
       REQUIRED_PERMISSION = "system.nodes.read"
 
+      # How many of a build plan's excluded modules #dispatch_module_build_batch
+      # samples into its result; excluded_count always carries the true total.
+      EXCLUDED_MODULE_SAMPLE_LIMIT = 25
+
       # Per-action permission map. Aligned with the platform's seeded
       # `system.<resource>.<action>` naming (per
       # extensions/system/server/db/migrate/20260429120000_seed_system_extension_permissions_and_flags.rb).
@@ -1074,7 +1078,7 @@ module Ai
             parameters: {}
           },
           "system_dispatch_module_build_batch" => {
-            description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks).",
+            description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks). This planner builds ONLY manifest-backed platform modules (those with a modules/<slug>/ tree); package-origin modules materialized from an upstream apt/rpm package build through a separate package-closure trigger and are never planned here even with force_all — the result lists any it dropped under excluded_modules[] (with a reason each) plus excluded_count, and system_refresh_package_module is how you rebuild those. Requires system.module_builds.dispatch, which core grants only to the system_worker role by design (leaked-token blast-radius bound) — agent and operator principals cannot invoke this action.",
             parameters: {
               base_sha: { type: "string", required: true, description: "Pre-push commit SHA (diff base) the planner compares from" },
               head_sha: { type: "string", required: true, description: "Post-push commit SHA (diff head); also the source of each build's short tag" },
@@ -1220,7 +1224,7 @@ module Ai
       protected
 
       def call(params)
-        return error_result("permission denied: #{required_perm_for(params[:action])} required") unless action_permitted?(params[:action])
+        return error_result(permission_denied_message(params[:action])) unless action_permitted?(params[:action])
 
         case params[:action]
         when "system_list_nodes"               then list_nodes(params)
@@ -1384,6 +1388,24 @@ module Ai
         return true unless @user.respond_to?(:has_permission?)
 
         @user.has_permission?(required_perm_for(action))
+      end
+
+      # IMP-9e01d1b48f7a — actions whose ACTION_PERMISSIONS entry is
+      # deliberately excluded from every human-assignable role (see
+      # server/config/permissions.rb's SYSTEM_PERMISSIONS comment and
+      # PowernodeSystem::Engine's "Deliberately EXCLUDED" note), granted only
+      # to the system_worker role by design to bound leaked-token blast
+      # radius. A denial here isn't a misconfiguration to fix — it's the
+      # intended shape — so the message says so instead of reading like an
+      # outage.
+      WORKER_ONLY_ACTIONS = {
+        "system_dispatch_module_build_batch" => "granted only to the system_worker role by design (leaked-token blast-radius bound); agent/operator principals cannot invoke this action"
+      }.freeze
+
+      def permission_denied_message(action)
+        base = "permission denied: #{required_perm_for(action)} required"
+        note = WORKER_ONLY_ACTIONS[action]
+        note ? "#{base} — #{note}" : base
       end
 
       # === Nodes ===
@@ -3847,23 +3869,36 @@ module Ai
 
         source_repo = params[:source_repo].presence
 
-        plan = ::System::ModuleBuildPlannerService.plan(
+        planned = ::System::ModuleBuildPlannerService.plan_with_diagnostics(
           base_sha: base_sha, head_sha: head_sha, force_all: params[:force_all] == true,
           source_repo: source_repo
         )
 
         batch = ::System::ModuleBuildBatch.create_for(
-          account: @account, plan: plan, trigger: params[:trigger].presence || "manual",
+          account: @account, plan: planned.entries, trigger: params[:trigger].presence || "manual",
           base_sha: base_sha, head_sha: head_sha, source_repo: source_repo
         )
 
         dispatch_summary = ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)
 
-        success_result(
+        payload = {
           module_build_batch: serialize_module_build_batch(batch.reload),
           dispatched: dispatch_summary.dispatched,
           queued: dispatch_summary.queued
-        )
+        }
+
+        # imp b9e3e05a5119: modules the planner named but did not build (most
+        # often package-origin ones, which build via the package-closure
+        # trigger instead) — omitted entirely when nothing was dropped, so a
+        # clean plan's payload is unchanged. Sampled: a force_all sweep on a
+        # fleet carrying package closures can drop hundreds of names, and
+        # excluded_count carries the true total.
+        if planned.excluded.any?
+          payload[:excluded_modules] = planned.excluded.first(EXCLUDED_MODULE_SAMPLE_LIMIT)
+          payload[:excluded_count]   = planned.excluded.size
+        end
+
+        success_result(payload)
       rescue ::System::ModuleBuildPlannerService::PlanningError => e
         error_result(e.message)
       end
