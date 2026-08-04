@@ -56,7 +56,7 @@ flowchart TD
         BUILD["ukify builds the UKI"]
         SIGN["cosign sign-blob --key COSIGN_PRIVATE_KEY<br/>(static key)"]
         PUSH["oras push → $platform-uki:$git_sha<br/>media type application/vnd.powernode.uki.v1"]
-        REC["publication/platform record:<br/>disk_image_uki_oci_ref, uki_sha256, uki_cosign_bundle"]
+        REC["publication record:<br/>uki_oci_ref, uki_sha256, uki_cosign_bundle"]
     end
 
     subgraph Agent["powernode-agent (polls node_api)"]
@@ -123,10 +123,10 @@ before any task is created:
 2. **No promoted image** — `platform.disk_image_git_sha` or
    `disk_image_oci_ref` is blank (nothing has been promoted for this
    platform yet — see [`DISK_IMAGE_CI.md`](./DISK_IMAGE_CI.md)).
-3. **No standalone UKI artifact** — `platform.disk_image_uki_oci_ref` is
-   blank. This happens when the promoted image predates the in-place-upgrade
-   CI changes (increment 2): only the amd64 UEFI build currently pushes a
-   standalone UKI (see [§3](#3-uki-artifact--ci-publish)).
+3. **No standalone UKI artifact** — the promoted publication's `uki_oci_ref`
+   (or `uki_sha256`) is blank. This happens when the promoted image predates
+   the in-place-upgrade CI changes (increment 2): only the amd64 UEFI build
+   currently pushes a standalone UKI (see [§3](#3-uki-artifact--ci-publish)).
 4. **No cosign public key** — `platform_cosign_public_key` (below) returns
    `nil`. The comment in the source is explicit about why this fails closed:
    *"a malicious UKI is full node compromise."*
@@ -175,8 +175,8 @@ task = ::System::Task.create!(
   initiated_by: @user,
   options: {
     "target_git_sha"    => target_sha,
-    "uki_oci_ref"        => platform.disk_image_uki_oci_ref,
-    "uki_sha256"         => platform.disk_image_uki_sha256,
+    "uki_oci_ref"        => publication.uki_oci_ref,
+    "uki_sha256"         => publication.uki_sha256,
     "cosign_public_key"  => cosign_pubkey,
     "cosign_bundle_b64"  => cosign_bundle,
     "download_path"      => "/api/v1/system/node_api/boot_image/download",
@@ -433,11 +433,10 @@ Before `system_upgrade_boot_image` can succeed on any instance:
    - `/usr/bin/cosign`, staged by the base-os `stage-cosign` Makefile
      target — older images predate this and have no cosign binary, so the
      agent's verify step fails closed (§4).
-   - The promoted publication's standalone UKI fields
-     (`disk_image_uki_oci_ref`, `disk_image_uki_sha256`,
-     `uki_cosign_bundle`) — only populated when the amd64 UEFI CI job's UKI
-     push step ran (§3). Promoting an older publication without these
-     leaves guard 3 (§1) failing for every instance on that platform.
+   - The promoted publication's standalone UKI fields (`uki_oci_ref`,
+     `uki_sha256`, `uki_cosign_bundle`) — only populated when the amd64 UEFI
+     CI job's UKI push step ran (§3). Promoting an older publication without
+     these leaves guard 3 (§1) failing for every instance on that platform.
 
 Both are platform-side/CI-side prerequisites, not per-instance — once
 satisfied for a `NodePlatform`, every instance on it becomes eligible.
@@ -473,7 +472,7 @@ back. Each refusal names its own remedy:
   currently pushes a standalone UKI artifact (§3); the arm64 UEFI and rpi4
   jobs still publish full disk images but no parallel UKI ref. In-place
   upgrade is therefore **amd64-only** until that gap is closed — an arm64
-  platform will always fail guard 3 (§1) (`disk_image_uki_oci_ref` blank).
+  platform will always fail guard 3 (§1) (publication `uki_oci_ref` blank).
 - **The CLI `upgrade-boot-image` subcommand is a manual/debug path.**
   `agent/cmd/powernode-agent/commands.go`'s `upgradeBootImageCmd` drives the
   same `bootupgrade.Apply` by hand (explicit flags for target sha, UKI
@@ -494,8 +493,9 @@ back. Each refusal names its own remedy:
 - `extensions/system/server/app/services/system/disk_image_publication_processor.rb`
 - `extensions/system/server/app/services/system/executors/disk_image/promote_publication.rb`
 - `extensions/system/server/app/models/system/task.rb` (`upgrade_boot_image` in `COMMANDS`)
-- `extensions/system/server/app/models/system/node_platform.rb` (`disk_image_uki_oci_ref`, `disk_image_uki_sha256`)
+- `extensions/system/server/app/models/system/disk_image_publication.rb` (`uki_oci_ref`, `uki_sha256` — the single source of truth for the pins)
 - `extensions/system/server/db/migrate/20260711110000_add_uki_artifact_to_disk_images.rb`
+- `extensions/system/server/db/migrate/20260804140000_drop_uki_mirror_columns_from_node_platforms.rb` (dropped the write-only NodePlatform mirror)
 - `extensions/system/server/db/migrate/20260711120000_add_uki_cosign_bundle_to_publications.rb`
 
 **Worker:**
@@ -523,7 +523,7 @@ back. Each refusal names its own remedy:
   (§4) both depend on it.
 - [`DISK_IMAGE_CI.md`](./DISK_IMAGE_CI.md) — the build → publish → promote
   pipeline that produces `NodePlatform.disk_image_git_sha` and (as of this
-  increment) `disk_image_uki_oci_ref`/`disk_image_uki_sha256`.
+  increment) the publication's `uki_oci_ref`/`uki_sha256`.
 - [`DISK_IMAGE_MANAGER_AGENT.md`](./DISK_IMAGE_MANAGER_AGENT.md) — the
   autonomy surface that promotes/rolls back the images this upgrade path
   targets.

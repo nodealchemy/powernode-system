@@ -83,9 +83,7 @@ RSpec.describe System::Fleet::DecisionEngine do
       it "invokes the boot_image_drift_rollout executor and gates as require_approval" do
         platform.update!(
           disk_image_git_sha: "promoted-sha",
-          disk_image_oci_ref: "oci-ref",
-          disk_image_uki_oci_ref: "uki-ref",
-          disk_image_uki_sha256: "sha256:uki"
+          disk_image_oci_ref: "oci-ref"
         )
         System::DiskImagePublication.create!(
           account: account,

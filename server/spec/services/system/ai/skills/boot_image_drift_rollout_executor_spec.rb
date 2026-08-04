@@ -23,14 +23,12 @@ RSpec.describe System::Ai::Skills::BootImageDriftRolloutExecutor do
   def setup_platform(target_sha: "target-sha")
     platform_record.update!(
       disk_image_git_sha: target_sha,
-      disk_image_oci_ref: "oki-ref",
-      disk_image_uki_oci_ref: "uki-ref",
-      disk_image_uki_sha256: "sha256:uki"
+      disk_image_oci_ref: "oki-ref"
     )
 
     # The dispatcher AND the plan-time blocker both source the UKI pins from the
-    # promoted publication row, not the platform columns above (df4a2000 +
-    # IMP-4452cb88e195) — so a healthy platform fixture has to carry
+    # promoted publication row, reached via the platform's git_sha pointer above
+    # (df4a2000 + IMP-4452cb88e195) — so a healthy platform fixture has to carry
     # uki_oci_ref/uki_sha256 here or every dispatch fails the UKI-artifact guard.
     System::DiskImagePublication.create!(
       account: account,
@@ -347,20 +345,18 @@ RSpec.describe System::Ai::Skills::BootImageDriftRolloutExecutor do
 
     # IMP-4452cb88e195 — the plan-time blocker and the dispatch-time guards MUST
     # read the same pin source (the promoted publication row). While the blocker
-    # still read the NodePlatform.disk_image_uki_* columns, a platform whose
-    # columns were populated but whose publication row carried no UKI pins
-    # planned GREEN (halted:false) and then dispatched ZERO tasks on approval —
-    # the exact silent no-op the plan-time preflight exists to prevent.
+    # read a separate mirror of the pins on NodePlatform, a platform whose mirror
+    # was populated but whose publication row carried no UKI pins planned GREEN
+    # (halted:false) and then dispatched ZERO tasks on approval — the exact
+    # silent no-op the plan-time preflight exists to prevent. The mirror is gone
+    # (IMP-dbd848ce393c); this pins the behaviour that outlived it.
     describe "plan/dispatch pin-source consistency" do
       it "halts instead of planning green and dispatching nothing when the publication carries no UKI pins" do
         target_sha = "target-sha"
-        # Platform columns fully populated: a partial-field promote writer left
-        # them naming a UKI the promoted publication row does not carry.
+        # A fully-promoted platform pointer whose publication row carries no UKI.
         platform_record.update!(
           disk_image_git_sha: target_sha,
-          disk_image_oci_ref: "oki-ref",
-          disk_image_uki_oci_ref: "stale-platform-uki-ref",
-          disk_image_uki_sha256: "sha256:stale"
+          disk_image_oci_ref: "oki-ref"
         )
         System::DiskImagePublication.create!(
           account: account,
@@ -389,9 +385,7 @@ RSpec.describe System::Ai::Skills::BootImageDriftRolloutExecutor do
       it "halts with a pointer-inconsistency reason when the promoted git_sha has no publication row" do
         platform_record.update!(
           disk_image_git_sha: "promoted-but-unpublished",
-          disk_image_oci_ref: "oki-ref",
-          disk_image_uki_oci_ref: "uki-ref",
-          disk_image_uki_sha256: "sha256:uki"
+          disk_image_oci_ref: "oki-ref"
         )
         drifted1 = create_drifted_instance(booted_sha: "old-sha-1", name: "d1")
 

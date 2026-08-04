@@ -21,21 +21,19 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
     "-----END PUBLIC KEY-----"
   end
 
-  def setup_platform(target_sha: "target-sha", oki_ref: "oki-ref", uki_ref: "uki-ref", uki_sha256: "c" * 64)
+  # The platform carries only the boot POINTER (which git_sha is promoted). It
+  # has no UKI fields to set — those live solely on the publication row
+  # (IMP-dbd848ce393c).
+  def setup_platform(target_sha: "target-sha", oki_ref: "oki-ref")
     platform_record.update!(
       disk_image_git_sha: target_sha,
-      disk_image_oci_ref: oki_ref,
-      disk_image_uki_oci_ref: uki_ref,
-      disk_image_uki_sha256: uki_sha256
+      disk_image_oci_ref: oki_ref
     )
   end
 
-  # The dispatcher sources the UKI pins from the PUBLICATION ROW, not from the
-  # NodePlatform.disk_image_uki_* columns (df4a2000): a partial-field promote can
-  # leave those columns stale relative to disk_image_git_sha and smear a
-  # mismatched (uki, bundle) pair into the task. So the publication is what has
-  # to carry uki_oci_ref/uki_sha256 here — setting them only on the platform
-  # exercises nothing the dispatcher reads.
+  # The dispatcher sources the UKI pins from the PUBLICATION ROW, reached via
+  # the platform's promoted git_sha (df4a2000). The publication is therefore the
+  # only place uki_oci_ref/uki_sha256 can be set for these examples.
   def setup_publication(target_sha: "target-sha", oki_ref: "oki-ref", bundle: "base64_bundle",
                         uki_ref: "uki-ref", uki_sha256: "c" * 64)
     System::DiskImagePublication.create!(
@@ -87,9 +85,9 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
       end
 
       it "returns err when the promoted PUBLICATION has no standalone UKI artifact" do
-        # Blank on the publication, NOT the platform: the platform columns are
-        # deliberately left populated here so this fails only if the dispatcher
-        # is reading the publication row, which is the invariant df4a2000 added.
+        # Blank on the publication — the only place the pins live — so the guard
+        # must fire. The invariant df4a2000 added: the dispatcher reads the
+        # publication row, never a copy on the platform.
         setup_platform
         setup_publication(uki_ref: nil, uki_sha256: nil)
 
@@ -360,13 +358,11 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
         uki_sha256 = "e" * 64
         cosign_bundle_b64 = "LS0tLS1CRUdJTiBQR1AgU0lHTkVEIE1FU1NBR0UtLS0tLQo="
 
-        # The platform columns are seeded with DIVERGENT values on purpose. The
-        # dispatch must carry the publication row's pins; if it ever regresses to
-        # reading NodePlatform.disk_image_uki_* (the stale-pointer smear df4a2000
-        # fixed), these assertions fail loudly instead of silently passing on
+        # The dispatch must carry the publication row's pins. uki_ref/uki_sha256
+        # below are distinct from every other value in play, so a regression that
+        # sourced them from anywhere else fails loudly instead of passing on
         # values that happen to agree.
-        setup_platform(target_sha: target_sha, oki_ref: oki_ref,
-                       uki_ref: "stale-platform-uki-ref-MUST-NOT-BE-USED", uki_sha256: "f" * 64)
+        setup_platform(target_sha: target_sha, oki_ref: oki_ref)
         setup_publication(target_sha: target_sha, oki_ref: oki_ref, bundle: cosign_bundle_b64,
                           uki_ref: uki_ref, uki_sha256: uki_sha256)
 
@@ -407,14 +403,13 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
       # The node GETs download_path verbatim (agent bootupgrade.go download()),
       # so pinning the digest INTO that path is what makes the download endpoint
       # serve the artifact this task was pinned to. Without it a promote landing
-      # between dispatch and download rewrites the platform columns under the
+      # between dispatch and download moves the platform's boot pointer under the
       # in-flight task and the node aborts on "UKI sha256 mismatch".
-      it "pins the download_path to the publication's digest, not the platform column" do
+      it "pins the download_path to the publication's digest" do
         target_sha = "target-sha-pinned"
         publication_digest = "e" * 64
 
-        setup_platform(target_sha: target_sha,
-                       uki_ref: "stale-platform-uki-ref-MUST-NOT-BE-USED", uki_sha256: "f" * 64)
+        setup_platform(target_sha: target_sha)
         setup_publication(target_sha: target_sha, uki_sha256: publication_digest)
 
         allow(ENV).to receive(:[]).and_call_original
@@ -829,8 +824,7 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
       allow(ENV).to receive(:[]).and_call_original
       allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
       allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
-      setup_platform(target_sha: promoted_sha,
-                     uki_ref: "stale-platform-uki-ref-MUST-NOT-BE-USED", uki_sha256: "f" * 64)
+      setup_platform(target_sha: promoted_sha)
       # Keep the example on the dispatch path — an already_current short-circuit
       # returns ok? with no task to inspect.
       instance.update!(booted_image_git_sha: nil)

@@ -28,11 +28,6 @@ module System
               disk_image_size_bytes:         pub.size_bytes,
               disk_image_oci_ref:            pub.oci_ref,
               disk_image_git_sha:            pub.git_sha,
-              # Standalone UKI artifact for in-place upgrades (campaign 019f505f
-              # inc 2). Null on publications built before the UKI-publishing CI —
-              # the in-place upgrade action fails closed when it's absent.
-              disk_image_uki_oci_ref:        pub.uki_oci_ref,
-              disk_image_uki_sha256:         pub.uki_sha256,
               disk_image_publication_status: "published",
               disk_image_publication_error:  nil
             )

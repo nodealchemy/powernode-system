@@ -38,14 +38,14 @@ RSpec.describe "Api::V1::System::NodeApi::BootImage#download", type: :request do
     { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{instance.id}")) }
   end
 
-  # Promoted publication A + platform columns pointing at it — the healthy,
+  # Promoted publication A + platform pointer naming it — the healthy,
   # consistent state every context starts from unless it deliberately skews one.
+  # The UKI pins are deliberately absent: they live only on the publication row
+  # (IMP-dbd848ce393c), which is what resolve_publication reads.
   def promote!(publication)
     publication.node_platform.update!(
-      disk_image_git_sha:     publication.git_sha,
-      disk_image_oci_ref:     publication.oci_ref,
-      disk_image_uki_oci_ref: publication.uki_oci_ref,
-      disk_image_uki_sha256:  publication.uki_sha256
+      disk_image_git_sha: publication.git_sha,
+      disk_image_oci_ref: publication.oci_ref
     )
   end
 
@@ -194,10 +194,13 @@ RSpec.describe "Api::V1::System::NodeApi::BootImage#download", type: :request do
       end
     end
 
-    # The stronger corollary: the dispatcher pins from the publication row, so a
-    # partial-field promote writer that leaves the columns behind breaks EVERY
-    # boot-image upgrade on-node until someone repairs the columns.
-    context "when the platform columns are stale relative to the promoted publication" do
+    # An unpinned download resolves the PROMOTED publication by git_sha
+    # (resolve_publication), not "the newest row on this platform". A platform
+    # accumulates published publications it never promoted — every CI build
+    # lands one — so an implementation that ordered by recency would hand a node
+    # an artifact nothing ever promoted. The unpromoted row here is created
+    # second on purpose, so recency and promotion disagree.
+    context "when the platform has a published publication it never promoted" do
       let!(:publication) do
         create(:system_disk_image_publication, :published,
                account: account, node_platform: platform,
@@ -206,16 +209,20 @@ RSpec.describe "Api::V1::System::NodeApi::BootImage#download", type: :request do
                uki_sha256: digest_a)
       end
 
-      before do
-        node_template.update!(node_platform: platform)
-        platform.update!(
-          disk_image_git_sha:     "sha-current",
-          disk_image_uki_oci_ref: "ghcr.io/nodealchemy/system/uki:stale",
-          disk_image_uki_sha256:  digest_b
-        )
+      let!(:never_promoted) do
+        create(:system_disk_image_publication, :published,
+               account: account, node_platform: platform,
+               git_sha: "sha-newer",
+               uki_oci_ref: "ghcr.io/nodealchemy/system/uki:newer",
+               uki_sha256: digest_b)
       end
 
-      it "serves the publication's pins, not the stale columns" do
+      before do
+        node_template.update!(node_platform: platform)
+        platform.update!(disk_image_git_sha: "sha-current")
+      end
+
+      it "serves the promoted publication, not the newer unpromoted one" do
         temp_file = stub_blob("uki-current-bytes")
 
         get "/api/v1/system/node_api/boot_image/download", headers: headers, as: :octet_stream
@@ -225,20 +232,7 @@ RSpec.describe "Api::V1::System::NodeApi::BootImage#download", type: :request do
           hash_including(oci_ref: "ghcr.io/nodealchemy/system/uki:current", digest: digest_a)
         )
         expect(response.headers["X-Boot-Image-Digest"]).to eq(digest_a)
-
-        temp_file.close
-      end
-
-      it "serves the publication even when the UKI columns were never written" do
-        platform.update!(disk_image_uki_oci_ref: nil, disk_image_uki_sha256: nil)
-        temp_file = stub_blob("uki-current-bytes")
-
-        get "/api/v1/system/node_api/boot_image/download", headers: headers, as: :octet_stream
-
-        expect(response).to have_http_status(:ok)
-        expect(::System::OciBlobProxyService).to have_received(:new).with(
-          hash_including(oci_ref: "ghcr.io/nodealchemy/system/uki:current", digest: digest_a)
-        )
+        expect(response.headers["X-Boot-Image-Git-SHA"]).to eq("sha-current")
 
         temp_file.close
       end
@@ -400,14 +394,10 @@ RSpec.describe "Api::V1::System::NodeApi::BootImage#download", type: :request do
     context "when the promoted git_sha has no publication row" do
       before do
         node_template.update!(node_platform: platform)
-        platform.update!(
-          disk_image_git_sha:     "sha-with-no-row",
-          disk_image_uki_oci_ref: "ghcr.io/nodealchemy/system/uki:v1.0.0",
-          disk_image_uki_sha256:  digest_a
-        )
+        platform.update!(disk_image_git_sha: "sha-with-no-row")
       end
 
-      it "returns 404 instead of serving the orphaned columns" do
+      it "returns 404 rather than serving some other artifact" do
         allow(::System::OciBlobProxyService).to receive(:new)
 
         get "/api/v1/system/node_api/boot_image/download", headers: headers, as: :json

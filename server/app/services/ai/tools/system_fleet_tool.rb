@@ -4026,11 +4026,16 @@ module Ai
 
         platform = publication.node_platform
         # Route through the executor so ALL image pointers update atomically +
-        # consistently (file_object, sha256, size_bytes, oci_ref, git_sha,
-        # uki_oci_ref, uki_sha256). A partial update here (only oci_ref+git_sha)
-        # leaves the uki_* pointers stale relative to git_sha, which silently
-        # breaks in-place boot-image upgrades: the node downloads one image's UKI
-        # but cosign-verifies it against another image's bundle (campaign 019f505f).
+        # consistently (file_object, sha256, size_bytes, oci_ref, git_sha), and
+        # so the prior publication is retired in the same transaction. A partial
+        # update here would leave the platform naming one image by git_sha and
+        # another by file_object.
+        #
+        # The UKI pins are deliberately NOT part of this set: they live only on
+        # the publication row, which every reader resolves through git_sha
+        # (IMP-dbd848ce393c). Mirroring them onto the platform is what used to
+        # let a stale pin smear a mismatched (uki, bundle) pair into an upgrade
+        # task — see spec/services/system/boot_image/uki_pin_single_source_spec.rb.
         ::System::Executors::DiskImage::PromotePublication.execute(
           { "publication_id" => publication.id }, deferred_operation: nil
         )

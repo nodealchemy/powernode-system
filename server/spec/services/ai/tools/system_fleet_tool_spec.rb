@@ -1599,14 +1599,11 @@ end
     end
 
     it "errors when the promoted publication has no standalone UKI artifact" do
-      # Blank on the publication, populated on the platform: the dispatcher pins
-      # the UKI from the promoted publication row, so the platform columns are
-      # left set here to prove it does not fall back to them (df4a2000).
+      # Blank on the publication — the only place the UKI pins live — so the
+      # dispatcher's UKI guard must fire (df4a2000).
       platform_record.update!(
         disk_image_git_sha: "sha-abc",
-        disk_image_oci_ref: "ref-xyz",
-        disk_image_uki_oci_ref: "stale-platform-uki-ref",
-        disk_image_uki_sha256: "sha256:uki"
+        disk_image_oci_ref: "ref-xyz"
       )
       System::DiskImagePublication.create!(
         account: account,
@@ -1633,9 +1630,7 @@ end
       # so the (uki, bundle) pair cannot be sourced self-consistently.
       platform_record.update!(
         disk_image_git_sha: "promoted-but-unpublished",
-        disk_image_oci_ref: "ref-xyz",
-        disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki"
+        disk_image_oci_ref: "ref-xyz"
       )
 
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
@@ -1649,9 +1644,7 @@ end
     it "fails closed with security error when cosign public key is not configured (ENV unset)" do
       platform_record.update!(
         disk_image_git_sha: "sha-abc",
-        disk_image_oci_ref: "ref-xyz",
-        disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki"
+        disk_image_oci_ref: "ref-xyz"
       )
       # UKI pins live on the publication row — present here so the chain reaches
       # the cosign-key guard, which is the point of this example.
@@ -1684,9 +1677,7 @@ end
       target_sha = "target-no-bundle"
       platform_record.update!(
         disk_image_git_sha: target_sha,
-        disk_image_oci_ref: "ref-xyz",
-        disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki"
+        disk_image_oci_ref: "ref-xyz"
       )
       # Create a publication but without uki_cosign_bundle (nil). UKI pins are
       # present so the artifact guard passes and we reach the bundle guard.
@@ -1722,15 +1713,13 @@ end
       uki_sha256 = "e" * 64
       cosign_bundle_b64 = "LS0tLS1CRUdJTiBQR1AgU0lHTkVEIE1FU1NBR0UtLS0tLQo="  # base64 encoded
 
-      # The platform columns carry DIVERGENT values on purpose: the task must be
-      # pinned from the publication row, so a regression to reading
-      # NodePlatform.disk_image_uki_* fails these assertions loudly instead of
-      # passing on values that happen to agree (df4a2000).
+      # The task must be pinned from the publication row. uki_ref/uki_sha256 are
+      # distinct from every other value in play, so a regression that sourced the
+      # pins from anywhere else fails these assertions loudly instead of passing
+      # on values that happen to agree (df4a2000).
       platform_record.update!(
         disk_image_git_sha: target_sha,
-        disk_image_oci_ref: oci_ref,
-        disk_image_uki_oci_ref: "stale-platform-uki-ref-MUST-NOT-BE-USED",
-        disk_image_uki_sha256: "sha256:stale"
+        disk_image_oci_ref: oci_ref
       )
 
       # Create the promoted publication with the UKI pins + cosign bundle
@@ -1783,9 +1772,7 @@ end
       matching_sha = "shared-sha-abc123"
       platform_record.update!(
         disk_image_git_sha: matching_sha,
-        disk_image_oci_ref: "ref",
-        disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki"
+        disk_image_oci_ref: "ref"
       )
       # Create the published artifact with bundle (needed to pass all guards)
       System::DiskImagePublication.create!(
@@ -1818,9 +1805,7 @@ end
       matching_sha = "shared-sha-abc123"
       platform_record.update!(
         disk_image_git_sha: matching_sha,
-        disk_image_oci_ref: "ref",
-        disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki"
+        disk_image_oci_ref: "ref"
       )
       # Create the published artifact with bundle
       System::DiskImagePublication.create!(
@@ -1853,9 +1838,7 @@ end
       target_sha = "target-sha"
       platform_record.update!(
         disk_image_git_sha: target_sha,
-        disk_image_oci_ref: "ref",
-        disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki"
+        disk_image_oci_ref: "ref"
       )
       # Create the published artifact with bundle
       System::DiskImagePublication.create!(
@@ -1895,9 +1878,7 @@ end
       target_sha = "target-sha"
       platform_record.update!(
         disk_image_git_sha: target_sha,
-        disk_image_oci_ref: "ref",
-        disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki"
+        disk_image_oci_ref: "ref"
       )
       # Create the published artifact with bundle
       System::DiskImagePublication.create!(
@@ -1937,9 +1918,7 @@ end
       target_sha = "target-sha"
       platform_record.update!(
         disk_image_git_sha: target_sha,
-        disk_image_oci_ref: "ref",
-        disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki"
+        disk_image_oci_ref: "ref"
       )
       # Create the published artifact with bundle
       System::DiskImagePublication.create!(
@@ -1977,9 +1956,7 @@ end
       target_sha = "target-sha"
       platform_record.update!(
         disk_image_git_sha: target_sha,
-        disk_image_oci_ref: "ref",
-        disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki"
+        disk_image_oci_ref: "ref"
       )
       # Create the published artifact with bundle
       System::DiskImagePublication.create!(
@@ -2017,9 +1994,7 @@ end
       target_sha = "target-sha"
       platform_record.update!(
         disk_image_git_sha: target_sha,
-        disk_image_oci_ref: "ref",
-        disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki"
+        disk_image_oci_ref: "ref"
       )
       # Create the published artifact with bundle
       System::DiskImagePublication.create!(
