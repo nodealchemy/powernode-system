@@ -32,7 +32,7 @@ carve_waivers:    [<glob>, ...]  # build-tooling only — see "Content Specs" be
 
 # Module-to-module dependencies
 dependencies:
-  requires:   [<repo>@<version-constraint>, ...]
+  requires:   [<repo>@<version-constraint> | capability:<tag>[@<constraint>], ...]
   provides:   [<capability-tag>, ...]
 
 # Lifecycle hooks (legacy — prefer `services:` for new modules)
@@ -173,6 +173,7 @@ dependencies:
   requires:
     - powernode/powernode-base-ubuntu@^1.0
     - powernode/postgres-primary@^1.0
+    - "capability:database.postgres@>= 16"   # capability requirement — see below
   provides:
     - rails-runtime
     - http.port:3000
@@ -180,8 +181,41 @@ dependencies:
 
 | Subkey | Format | Description |
 |---|---|---|
-| `requires` | `<gitea-org/repo>@<version-constraint>` | Modules this depends on. Constraint syntax: `^1.0` (compatible), `~1.2` (patch-compatible), `=1.2.3` (exact), `*` (any). |
+| `requires` | Either a **name pin** `<gitea-org/repo>@<version-constraint>`, or a **capability requirement** `capability:<tag>[@<constraint>]` | Modules this depends on. See "The two `requires` forms" below. |
 | `provides` | abstract capability tags | What this module exposes that other modules can target. Often used with naming conventions like `http.port:80`, `database:postgres`, `runtime:rails`. |
+
+### The two `requires` forms
+
+**Name pin** — `<owner>/<module>@<constraint>`, or a bare module name. Binds to
+one specific module by its Gitea repo (`gitea_repo_full_name`) or name.
+Constraint syntax: `^1.0` (compatible), `~1.2` (patch-compatible), `=1.2.3`
+(exact), `*` (any). The constraint is recorded on the dependency edge but is
+**not** enforced — the platform has no module semver to check it against
+(`NodeModuleVersion#version_number` is an integer counter, not a semver
+string).
+
+**Capability requirement** — `capability:<tag>[@<constraint>]`. Says *what you
+need* rather than *who provides it*: the importer picks the highest-priority
+module on the account whose `provides` advertises `<tag>`. Any future module
+providing that tag satisfies the requirement, with no manifest edit here. The
+constraint (when present) is **`Gem::Requirement` syntax** — `>= 16`, `~> 1.0`,
+`1.0` — not the npm caret form name pins use by convention. A bare `provides`
+tag does not satisfy a versioned requirement: to answer
+`capability:http-server@>= 1.26`, a provider must advertise `http-server@1.26`,
+not bare `http-server`.
+
+```yaml
+requires:
+  - "capability:os.userland"               # any provider of the tag
+  - "capability:database.postgres@>= 16"   # provider must advertise a satisfying version
+```
+
+Unsatisfied capabilities are not a build failure — the import defers them and
+`CapabilityGapSensor` reports the standing gap to the operator each tick,
+clearing itself when a provider publishes. Full syntax rules and gotchas (drift
+handling, malformed-constraint rejection) live in the module-authoring
+runbook's [The two `requires` forms](./runbooks/module-authoring.md#the-two-requires-forms)
+section — this doc mirrors the summary; that one is authoritative.
 
 When `module_compose` is invoked, the composer walks the dependency graph and rejects compositions where multiple modules provide the same capability (e.g., two modules both providing `http.port:80` on the same node).
 
@@ -637,4 +671,4 @@ For the full `services:` validation rules (name uniqueness, restart_policy enum,
 - `templates/module-repo/manifest.yaml` — canonical authoring-time template
 - `templates/module-repo/Containerfile` — the build context that consumes `build.ubuntu_digest` + `build.apt_snapshot`
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-08-04_

@@ -123,7 +123,12 @@ protected_spec:
   - "/etc/redis/redis.conf"
 
 # Module dependencies — resolved transitively by DependencyResolutionService.
-# `requires` form is "<owner>/<module>@<version-constraint>".
+# Two `requires` forms: a name pin "<owner>/<module>@<version-constraint>"
+# (used below), which binds to one specific module by repo or name; or a
+# capability requirement "capability:<tag>[@<constraint>]" (e.g.
+# "capability:database.postgres@>= 16"), which binds to whichever module on
+# the account advertises that tag — see the module-authoring runbook's
+# "The two `requires` forms" section for the full syntax + gotchas.
 dependencies:
   requires:
     - "powernode/runtime-ruby@^1.0"
@@ -177,24 +182,31 @@ empty.
 
 ## Step 4 — Validate the manifest locally
 
-Validate against the platform's compatibility check (no upload) with the
-`system_validate_module_manifest` MCP action — it catches schema violations
-and `protected_spec` collisions with existing modules in your account before
-you push:
+Schema-validate against the JSON schema first — this works offline, before
+the module is even registered on the platform:
+
+```bash
+yq -o=json '.' manifest.yaml > /tmp/manifest.json
+npx --yes ajv-cli@5 validate \
+  -s <path-to-checkout>/modules/.schema/module-manifest.schema.json \
+  -d /tmp/manifest.json \
+  --spec=draft2020 --all-errors
+```
+
+This is the same check [`module-validate.yaml`](../../.gitea/workflows/module-validate.yaml)
+runs at PR time — running it locally first just fails faster.
+
+Once the module is registered (Step 5 below gives you its `module_id`), validate
+subsequent manifest revisions against the platform's compatibility check — it
+additionally catches `protected_spec` collisions with existing modules in your
+account:
 
 ```javascript
 platform.system_validate_module_manifest({
-  manifest_yaml: "<contents of manifest.yaml>",
-  category_slug: "userland"
+  module_id: "<the NodeModule id from Step 5>",
+  manifest_yaml: "<contents of manifest.yaml>"
 })
-// → { valid: true, warnings: [...], conflicts: [...] }
-```
-
-Or run the builder's offline dry-run, which reports the same schema/glob issues
-without contacting the platform:
-
-```bash
-docker run --rm -v "$PWD:/work:ro" ghcr.io/powernode/module-builder:latest --dry-run
+// → { valid: true, validation_errors: [] } | { valid: false, error: "...", validation_errors: [...] }
 ```
 
 **Expected outcome:** either check reports schema violations, glob-spec
@@ -397,4 +409,4 @@ non-pool NodeInstance.
 - **[`MODULE_MANIFEST_COMPLETE_SCHEMA.md`](../MODULE_MANIFEST_COMPLETE_SCHEMA.md)** —
   every manifest field explained.
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-08-04_

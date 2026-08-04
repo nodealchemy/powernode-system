@@ -243,32 +243,42 @@ rootfs/
 
 The platform's authority on file paths trumps your repo: if a higher-priority module owns `/etc/nginx/nginx.conf` via its `protected_spec`, your `file_spec` for it is silently dropped during composition.
 
-## Phase 4 — Local test (dry-run build) ✅
+## Phase 4 — Local test (manifest validation) ✅
 
-Test the manifest locally before pushing:
+There is no local build dry-run — the two-stage `buildah bud` → `mkcomposefs`
+pipeline (Phase 5) only runs in Gitea Actions. (An earlier `docker run
+ghcr.io/powernode/module-builder:latest --dry-run` flow described here has
+been retired; that image is not built or published by this pipeline.) Two
+real local/pre-push checks exist instead:
+
+**Schema-validate against the JSON schema** (works before the module is even
+registered — no `NodeModule` row required):
 
 ```bash
 # From your module-repo working tree
-docker run --rm \
-  -v $PWD:/work:ro \
-  -v $PWD/dist:/work/dist \
-  ghcr.io/powernode/module-builder:latest \
-  --dry-run
-
-# → outputs:
-#   /work/dist/manifest.json     (parsed manifest)
-#   /work/dist/file-list.txt     (files that would be included)
-#   /work/dist/package-list.txt  (packages that would be installed)
+yq -o=json '.' manifest.yaml > /tmp/manifest.json
+npx --yes ajv-cli@5 validate \
+  -s <path-to-checkout>/modules/.schema/module-manifest.schema.json \
+  -d /tmp/manifest.json \
+  --spec=draft2020 --all-errors
 ```
 
-**Verify against the platform's compatibility check** (no upload):
+This is exactly what [`module-validate.yaml`](../../.gitea/workflows/module-validate.yaml)
+runs at PR time — running it locally first just fails faster. Catches typos
+(`fil_spec:` vs `file_spec:`), missing required fields, bad enum values, and
+malformed `capability:<tag>[@<constraint>]` constraints.
+
+**Verify against the platform's compatibility check** (no upload, but
+requires an *existing* `NodeModule` — register the module first via the
+operator UI at `/app/system/modules/new` or `system_create_module_from_package`,
+then use this to validate subsequent manifest revisions against it):
 
 ```javascript
 platform.system_validate_module_manifest({
-  manifest_yaml: "<contents of manifest.yaml>",
-  category_slug: "userland"
+  module_id: "<existing NodeModule id — manifest name must match its name>",
+  manifest_yaml: "<contents of manifest.yaml>"
 })
-// → { valid: true, warnings: [...], conflicts: [...] }
+// → { valid: true, validation_errors: [] } | { valid: false, error: "...", validation_errors: [...] }
 ```
 
 This catches `protected_spec` collisions with existing modules in your account before you push.
@@ -441,7 +451,7 @@ The `mask` directive is a deliberate escape hatch — use sparingly; it inverts 
 
 When an operator chats "I need a new module for X" / "compose a template for nginx + TLS":
 
-1. Use `module_compose` skill — keyword-matches existing modules + drafts a Template
+1. Use `module_compose` skill — semantically ranks existing modules (embedding cosine, keyword fallback) + drafts a Template
 2. If a custom module is needed, surface this runbook + the `templates/module-repo/` skeleton
 3. For assignment workflows, use `system_assign_module_to_template` with `request_confirmation`
 
@@ -454,4 +464,4 @@ When an operator chats "I need a new module for X" / "compose a template for ngi
 - [`runbooks/cve-response.md`](./cve-response.md) — module updates triggered by CVE response
 - [`DISK_IMAGE_CI.md`](../DISK_IMAGE_CI.md) — companion pipeline for base disk images (vs. modules)
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-08-04_
