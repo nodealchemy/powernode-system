@@ -19,6 +19,15 @@ module System
   class PackageModuleMaterializer
     class NamingConflictError < StandardError; end
 
+    # Relative strength of a dependency edge. Only `requires` and `recommends`
+    # are comparable, and they are the only two the resolver emits: Depends is
+    # unconditional while Recommends is "install unless the operator opts out",
+    # so where both exist the hard edge is the whole fact. `conflicts` and
+    # `provides` are deliberately absent — they are DIFFERENT assertions about
+    # a pair, not weaker ones, and `upsert_dependency_edge!` refuses to
+    # overwrite them rather than ranking them.
+    EDGE_STRENGTH = { "recommends" => 1, "requires" => 2 }.freeze
+
     Result = Struct.new(
       :top_level_module, :dependency_modules, :recommends_modules,
       :dependencies_created, :build_dispatches, :warnings, :errors,
@@ -161,8 +170,18 @@ module System
           recommends_module_names.add(pkg.name) if recommends_chosen.include?(pkg.name)
         end
 
-        # Phase 2: create ModuleDependency edges from resolver edges
-        unique_edges = Set.new
+        # Phase 2: create ModuleDependency edges from resolver edges.
+        #
+        # One pair carries exactly ONE edge. `system_module_dependencies` is
+        # unique on (node_module_id, dependency_id) at both the model
+        # validation and the DB index, and that is the correct shape: apt's
+        # Depends strictly subsumes Recommends, so a package that reaches the
+        # same target through both fields (directly, or through an
+        # alternatives/Provides group that resolves to the same package) states
+        # one fact, not two. Keying the in-memory dedupe on dep_type as well
+        # used to let both edges through, and the second one aborted the whole
+        # materialization with RecordInvalid.
+        collapsed = {}
         arch_results.values.each do |r|
           r.edges.each do |edge|
             from_mod = created_modules[edge.from_package.name]
@@ -170,20 +189,25 @@ module System
             next unless from_mod && to_mod
             next if from_mod.id == to_mod.id
 
-            key = [ from_mod.id, to_mod.id, edge.dep_type ]
-            next if unique_edges.include?(key)
+            key = [ from_mod.id, to_mod.id ]
+            kept = collapsed[key]
+            # Strongest type wins regardless of arch iteration order; `>=`
+            # then keeps the first-seen edge among equals, preserving the
+            # previous first-wins choice of version_constraint.
+            next if kept && edge_strength(kept.last.dep_type) >= edge_strength(edge.dep_type)
 
-            unique_edges.add(key)
-            dep = ::System::ModuleDependency.find_or_create_by!(
-              node_module_id: from_mod.id,
-              dependency_id:  to_mod.id,
-              dependency_type: edge.dep_type
-            ) do |d|
-              d.required          = (edge.dep_type == "requires")
-              d.version_constraint = edge.constraint
-            end
-            dependencies_created << dep
+            collapsed[key] = [ from_mod, to_mod, edge ]
           end
+        end
+
+        collapsed.each_value do |from_mod, to_mod, edge|
+          dependencies_created << upsert_dependency_edge!(
+            from_mod:   from_mod,
+            to_mod:     to_mod,
+            dep_type:   edge.dep_type,
+            constraint: edge.constraint,
+            warnings:   warnings
+          )
         end
 
         # Phase 2.5: synthetic base-os requires edge (§4.3.1). Replaces the
@@ -194,7 +218,7 @@ module System
         # module to the base-os module (system_module_dependencies has no
         # metadata column, so capability_match is not persisted for hand-
         # authored os.userland edges either — this is byte-identical).
-        base_os_requires = maybe_create_base_os_edge!(created_modules[@package_name])
+        base_os_requires = maybe_create_base_os_edge!(created_modules[@package_name], warnings: warnings)
         dependencies_created << base_os_requires if base_os_requires
       end
 
@@ -318,18 +342,68 @@ module System
     # when exclusion is active (a base-os module was resolved) — never when
     # include_baseline: true, and never self-referential (a materialized
     # package is never base-os itself). Idempotent.
-    def maybe_create_base_os_edge!(top_module)
+    def maybe_create_base_os_edge!(top_module, warnings:)
       return nil if @include_baseline
       return nil unless top_module && @base_os_module
       return nil if top_module.id == @base_os_module.id
 
-      ::System::ModuleDependency.find_or_create_by!(
-        node_module_id:  top_module.id,
-        dependency_id:   @base_os_module.id,
-        dependency_type: "requires"
-      ) do |d|
-        d.required = true
+      upsert_dependency_edge!(
+        from_mod:   top_module,
+        to_mod:     @base_os_module,
+        dep_type:   "requires",
+        constraint: nil,
+        warnings:   warnings
+      )
+    end
+
+    def edge_strength(dep_type)
+      EDGE_STRENGTH.fetch(dep_type, 0)
+    end
+
+    # Idempotent edge upsert keyed on the PAIR — which is what
+    # System::ModuleDependency is actually unique on. Keying the finder on
+    # dependency_type too used to miss a stored row of a different type, fall
+    # through to `create`, and abort materialization with RecordInvalid (e.g.
+    # upstream promoted a Recommends to a Depends and a refresh replayed the
+    # persisted recommends selection).
+    #
+    # Strengthen-only: a stored `recommends` is upgraded to `requires`, never
+    # the reverse. A Depends edge is derived from package metadata and holds
+    # unconditionally; a recommends edge exists only because THIS call's
+    # recommends_selected asked for it, so its absence from a later closure is
+    # not evidence that the relationship weakened.
+    def upsert_dependency_edge!(from_mod:, to_mod:, dep_type:, constraint:, warnings:)
+      dep = ::System::ModuleDependency.find_or_initialize_by(
+        node_module_id: from_mod.id,
+        dependency_id:  to_mod.id
+      )
+
+      if dep.new_record?
+        dep.dependency_type    = dep_type
+        dep.required           = (dep_type == "requires")
+        dep.version_constraint = constraint
+        dep.save!
+        return dep
       end
+
+      stored_strength = edge_strength(dep.dependency_type)
+      if stored_strength.zero?
+        # An operator-authored `conflicts`/`provides` edge asserts something a
+        # package-derived edge has no standing to silently overwrite. Surface
+        # the contradiction instead of clobbering it (or crashing on it).
+        warnings << "Kept the existing `#{dep.dependency_type}` edge #{from_mod.name} → " \
+                    "#{to_mod.name}; package metadata says `#{dep_type}`"
+        return dep
+      end
+
+      if edge_strength(dep_type) > stored_strength
+        dep.update!(
+          dependency_type:    dep_type,
+          required:           (dep_type == "requires"),
+          version_constraint: constraint
+        )
+      end
+      dep
     end
 
     # Routes the closure build. Returns [build_dispatches, build_batch].

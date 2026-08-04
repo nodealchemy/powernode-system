@@ -164,6 +164,110 @@ RSpec.describe System::PackageModuleMaterializer do
       end
     end
 
+    # IMP-709545f4f4e3: the in-memory dedupe keyed on (from, to, dep_type)
+    # while the row is unique on (from, to) at both the model validation and
+    # the DB index — so a pair reachable as BOTH a Depends and a Recommends
+    # aborted the whole materialization with RecordInvalid.
+    context "when one pair is reachable as both a Depends and a Recommends" do
+      let(:dual_pkg) { "libdual-#{suffix}" }
+
+      def materialize(selected)
+        described_class.call(
+          repository: repo, package_name: top_pkg, architectures: [ "amd64" ],
+          account: account, requested_by_user: user,
+          recommends_selected: selected, dispatch_build: false
+        )
+      end
+
+      def edges_between(from_name, to_suffix)
+        from = System::NodeModule.find_by(account: account, name: from_name)
+        System::ModuleDependency.where(node_module_id: from.id)
+                                .includes(:dependency)
+                                .select { |d| d.dependency.name.end_with?("--#{to_suffix}") }
+      end
+
+      it "collapses to one `requires` edge instead of raising" do
+        create(:system_package, package_repository: repo, name: dual_pkg)
+        System::Package.find_by(package_repository: repo, name: top_pkg).update!(
+          depends:    [ [ { "name" => dual_pkg, "op" => nil, "version" => nil } ] ],
+          recommends: [ [ { "name" => dual_pkg, "op" => nil, "version" => nil } ] ]
+        )
+
+        result = materialize([ dual_pkg ])
+        expect(result.errors).to be_empty
+
+        edges = edges_between(top_pkg, dual_pkg)
+        expect(edges.size).to eq(1)
+        expect(edges.first.dependency_type).to eq("requires")
+        expect(edges.first.required).to be(true)
+      end
+
+      it "collapses when the Recommends resolves to the Depends target via Provides" do
+        cap = "virtcap-#{suffix}"
+        create(:system_package, package_repository: repo, name: dual_pkg, provides_caps: [ cap ])
+        System::Package.find_by(package_repository: repo, name: top_pkg).update!(
+          depends:    [ [ { "name" => dual_pkg, "op" => nil, "version" => nil } ] ],
+          recommends: [ [ { "name" => cap, "op" => nil, "version" => nil } ] ]
+        )
+
+        result = materialize([ dual_pkg ])
+        expect(result.errors).to be_empty
+        expect(edges_between(top_pkg, dual_pkg).map(&:dependency_type)).to eq([ "requires" ])
+      end
+
+      it "upgrades a persisted `recommends` row when upstream promotes it to a Depends" do
+        create(:system_package, package_repository: repo, name: dual_pkg)
+        pkg = System::Package.find_by(package_repository: repo, name: top_pkg)
+        pkg.update!(recommends: [ [ { "name" => dual_pkg, "op" => nil, "version" => nil } ] ])
+        materialize([ dual_pkg ])
+        expect(edges_between(top_pkg, dual_pkg).map(&:dependency_type)).to eq([ "recommends" ])
+
+        pkg.update!(
+          depends:    pkg.depends + [ [ { "name" => dual_pkg, "op" => nil, "version" => nil } ] ],
+          recommends: []
+        )
+        result = materialize([ dual_pkg ])
+        expect(result.errors).to be_empty
+
+        edges = edges_between(top_pkg, dual_pkg)
+        expect(edges.size).to eq(1)
+        expect(edges.first.dependency_type).to eq("requires")
+        expect(edges.first.required).to be(true)
+      end
+
+      it "never downgrades a persisted `requires` row back to `recommends`" do
+        create(:system_package, package_repository: repo, name: dual_pkg)
+        pkg = System::Package.find_by(package_repository: repo, name: top_pkg)
+        pkg.update!(depends: pkg.depends + [ [ { "name" => dual_pkg, "op" => nil, "version" => nil } ] ])
+        materialize([])
+
+        pkg.update!(
+          depends:    [ [ { "name" => mid_pkg, "op" => nil, "version" => nil } ] ],
+          recommends: [ [ { "name" => dual_pkg, "op" => nil, "version" => nil } ] ]
+        )
+        materialize([ dual_pkg ])
+
+        expect(edges_between(top_pkg, dual_pkg).map(&:dependency_type)).to eq([ "requires" ])
+      end
+
+      it "keeps an operator-authored `conflicts` edge and warns rather than clobbering it" do
+        create(:system_package, package_repository: repo, name: dual_pkg)
+        pkg = System::Package.find_by(package_repository: repo, name: top_pkg)
+        pkg.update!(depends: pkg.depends + [ [ { "name" => dual_pkg, "op" => nil, "version" => nil } ] ])
+
+        # First pass creates the modules so the operator edge can be authored
+        # against the same rows the second pass will resolve.
+        materialize([])
+        edge = edges_between(top_pkg, dual_pkg).first
+        edge.update_columns(dependency_type: "conflicts", required: false)
+
+        result = materialize([])
+        expect(result.errors).to be_empty
+        expect(result.warnings).to include(a_string_matching(/Kept the existing `conflicts` edge/))
+        expect(edges_between(top_pkg, dual_pkg).map(&:dependency_type)).to eq([ "conflicts" ])
+      end
+    end
+
     context "with a shared repository" do
       let(:shared_repo) { create(:system_package_repository, :shared) }
       let!(:other_account_user) { create(:user, account: create(:account)) }
