@@ -11,7 +11,10 @@ require "rails_helper"
 # handed only to VaultCredentialProvider#store_credential (which is stubbed).
 RSpec.describe Ai::Tools::SystemAcmeTool do
   let(:account) { create(:account) }
-  let(:tool)    { described_class.new(account: account) }
+  # In-process caller: declares itself with `internal: true`. A bare userless
+  # construction no longer bypasses the per-action map — see "principal
+  # authorization (IMP-54bf2643f542)".
+  let(:tool)    { described_class.new(account: account, internal: true) }
 
   def call(action, **rest)
     tool.execute(params: { action: action }.merge(rest))
@@ -268,6 +271,60 @@ RSpec.describe Ai::Tools::SystemAcmeTool do
       r = described_class.new(account: account, user: user)
             .execute(params: { action: "system_acme_get_certificate", certificate_id: cert.id })
       expect(r[:success]).to be true
+    end
+  end
+
+  # IMP-54bf2643f542 — action_permitted? used to read `@user.nil?` as
+  # "internal/system caller" and return true (the comment on that line said so
+  # outright). That premise (MCP callers always carry a user) predates instance
+  # principals: an mTLS node cert authenticates with NO user, so every
+  # per-action permission here was skipped and the peer's per-tool grant glob
+  # was the only remaining control. Sibling of the SystemFleetTool fix
+  # (IMP-9030413bc292): the bypass is now two EXPLICIT signals and a bare
+  # userless call fails closed.
+  describe "principal authorization (IMP-54bf2643f542)" do
+    let(:gated_action) { "system_acme_revoke_certificate" }
+
+    it "denies a bare userless call — no user, no internal flag, no instance grant" do
+      bare = described_class.new(account: account, user: nil)
+
+      expect(bare.send(:action_permitted?, gated_action)).to be false
+    end
+
+    it "surfaces the denial as an error_result rather than executing the action" do
+      cert = create(:system_acme_certificate, :valid, account: account)
+      bare = described_class.new(account: account, user: nil)
+
+      result = bare.execute(params: { action: gated_action, certificate_id: cert.id })
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include("permission denied")
+      expect(cert.reload.status).not_to eq("revoked")
+    end
+
+    it "preserves the internal/system bypass when declared explicitly" do
+      internal = described_class.new(account: account, user: nil, internal: true)
+
+      expect(internal.send(:action_permitted?, gated_action)).to be true
+    end
+
+    # Behaviour preservation for the live instance principal: the streamable
+    # controller grant-gates the specific tool name via Mcp::Principal#may_invoke?
+    # before dispatch, and the registrar marks the call. That marking — not the
+    # nil user — is what carries it through here.
+    it "still permits a grant-gated MCP instance principal" do
+      instance_call = described_class.new(account: account, user: nil)
+      instance_call.instance_authorized = true
+
+      expect(instance_call.send(:action_permitted?, gated_action)).to be true
+    end
+
+    it "keeps enforcing per-action permissions for a user principal" do
+      reader = create(:user, account: account, permissions: %w[system.acme.read])
+      user_tool = described_class.new(account: account, user: reader)
+
+      expect(user_tool.send(:action_permitted?, "system_acme_get_certificate")).to be true
+      expect(user_tool.send(:action_permitted?, gated_action)).to be false
     end
   end
 end

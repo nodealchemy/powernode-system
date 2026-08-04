@@ -12,7 +12,9 @@ RSpec.describe Ai::Tools::SystemArchitectureCatalogTool do
   include PermissionTestHelpers
 
   let(:account) { create(:account) }
-  let(:tool_internal) { described_class.new(account: account) } # internal bypass — no @user
+  # Internal bypass — declared explicitly, not inferred from a nil @user
+  # (see "principal authorization (IMP-54bf2643f542)").
+  let(:tool_internal) { described_class.new(account: account, internal: true) }
   let(:read_user)    { user_with_permissions("system.architectures.read", account: account) }
   let(:propose_user) { user_with_permissions("system.architectures.read", "system.architectures.propose", account: account) }
   let(:manage_user)  { user_with_permissions("system.architectures.read", "system.architectures.manage", account: account) }
@@ -270,6 +272,56 @@ RSpec.describe Ai::Tools::SystemArchitectureCatalogTool do
       expect(proposal.proposed_changes["resource"]).to eq("system.node_architecture")
       expect(proposal.proposed_changes["attributes"]["name"]).to eq("proposed_arch")
       expect(proposal.description).to match(/Justification: Three operators/)
+    end
+  end
+
+  # IMP-54bf2643f542 — action_permitted? used to read `@user.nil?` as
+  # "internal/system caller" and return true. That premise (MCP callers always
+  # carry a user) predates instance principals: an mTLS node cert authenticates
+  # with NO user, so every per-action permission here was skipped and the
+  # peer's per-tool grant glob was the only remaining control. Sibling of the
+  # SystemFleetTool fix (IMP-9030413bc292): the bypass is now two EXPLICIT
+  # signals and a bare userless call fails closed.
+  describe "principal authorization (IMP-54bf2643f542)" do
+    let(:gated_action) { "system_create_architecture" }
+
+    it "denies a bare userless call — no user, no internal flag, no instance grant" do
+      bare = described_class.new(account: account, user: nil)
+
+      expect(bare.send(:action_permitted?, gated_action)).to be false
+    end
+
+    it "surfaces the denial as an error_result rather than executing the action" do
+      bare = described_class.new(account: account, user: nil)
+
+      expect { @result = bare.execute(params: { action: gated_action, name: "bare_arch", display_name: "Bare" }) }
+        .not_to change(::System::NodeArchitecture, :count)
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to include("permission denied")
+    end
+
+    it "preserves the internal/system bypass when declared explicitly" do
+      internal = described_class.new(account: account, user: nil, internal: true)
+
+      expect(internal.send(:action_permitted?, gated_action)).to be true
+    end
+
+    # Behaviour preservation for the live instance principal: the streamable
+    # controller grant-gates the specific tool name via Mcp::Principal#may_invoke?
+    # before dispatch, and the registrar marks the call. That marking — not the
+    # nil user — is what carries it through here.
+    it "still permits a grant-gated MCP instance principal" do
+      instance_call = described_class.new(account: account, user: nil)
+      instance_call.instance_authorized = true
+
+      expect(instance_call.send(:action_permitted?, gated_action)).to be true
+    end
+
+    it "keeps enforcing per-action permissions for a user principal" do
+      user_tool = described_class.new(account: account, user: read_user)
+
+      expect(user_tool.send(:action_permitted?, "system_list_architectures")).to be true
+      expect(user_tool.send(:action_permitted?, gated_action)).to be false
     end
   end
 end

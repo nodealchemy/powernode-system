@@ -403,12 +403,33 @@ module Ai
               .slice(*declared)
       end
 
+      # === Permission gating ===
+      # Two bypasses, both EXPLICIT (IMP-54bf2643f542, sibling of the
+      # SystemFleetTool fix IMP-9030413bc292 — its ladder carries the full note):
+      #
+      #   internal?            in-process system callers (autonomy reconcilers,
+      #                        skill executors running without a user) that
+      #                        opted in with `internal: true`.
+      #   instance_authorized? an MCP instance principal (mTLS node cert, no
+      #                        User) whose specific tool name already cleared
+      #                        Mcp::Principal#may_invoke? — that per-tool grant
+      #                        stands in for authorization. It is NAME-scoped
+      #                        while this tool runs the action the caller
+      #                        supplies, so treat it as provenance, not a fence.
+      #
+      # This used to be one implicit `@user.nil?` bypass, whose premise — that
+      # MCP callers always carry a user — predates instance principals and is
+      # false for them, so an instance skipped this map entirely. A nil user
+      # with neither flag now fails CLOSED — which also stops the routed
+      # executor (built below with `user: @user`) from being reached at all.
       def required_perm_for(action)
         ACTION_PERMISSIONS[action] || REQUIRED_PERMISSION
       end
 
       def action_permitted?(action)
-        return true if @user.nil?
+        return true if internal?
+        return true if instance_authorized?
+        return false if @user.nil?
         return true unless @user.respond_to?(:has_permission?)
 
         @user.has_permission?(required_perm_for(action))
