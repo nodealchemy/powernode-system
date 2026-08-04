@@ -742,4 +742,217 @@ RSpec.describe System::BootImage::UpgradeDispatcher do
       end
     end
   end
+
+  # The task carries a (uki_oci_ref, uki_sha256, cosign_bundle) TRIPLE the node
+  # treats as ONE unit: it pulls the ref, checks the downloaded bytes against
+  # the digest, then cosign-verifies those bytes against the bundle. The three
+  # are only meaningful together — a bundle from build A over build B's UKI
+  # fails verification on every node it reaches, which is fail-closed but is
+  # also a fleet-wide dead rollout. df4a2000 moved the pin source to the
+  # promoted publication row to prevent exactly that smear.
+  #
+  # Every other example in this file arranges a SINGLE publication row, so
+  # "the promoted row", "the newest row", "the first row" and "the only row"
+  # are the same record and nothing distinguishes them: sourcing the cosign
+  # bundle from the platform's newest publication instead of the promoted one
+  # passes the whole file. These rows surround the promoted row with DECOYS on
+  # every axis a wrong lookup could order by — newer, older, insertion/PK
+  # order, and another platform — so the triple is pinned to one specific row
+  # rather than to lookups that merely happen to agree when there is nothing
+  # to disagree with.
+  describe "publication-row pinning" do
+    let(:promoted_sha)    { "promoted-sha" }
+    let(:promoted_ref)    { "promoted-uki-ref" }
+    let(:promoted_digest) { "a" * 64 }
+    let(:promoted_bundle) { "PROMOTED-BUNDLE-B64" }
+
+    # The SAME promoted git_sha on a DIFFERENT platform. Legal and routine, not
+    # a corner case: the unique index is (node_platform_id, git_sha), and one
+    # commit normally publishes to several platforms (amd64 + arm64) — asserted
+    # directly in spec/models/system/disk_image_publication_spec.rb. So git_sha
+    # alone does NOT identify a row, and dropping the platform scoping from the
+    # lookup yields a triple that is internally self-consistent (ref, digest,
+    # bundle and download_path all from that one wrong row) and therefore
+    # passes cosign verify on-node. Unlike a mismatched-pair smear, nothing
+    # downstream catches it — the node installs a wrong-platform UKI.
+    let(:other_platform) { create(:system_node_platform, account: account) }
+
+    def publish_cross_platform_decoy
+      System::DiskImagePublication.create!(
+        account: account, node_platform: other_platform,
+        git_sha: promoted_sha, arch: "arm64", oci_ref: "other-platform-oci-ref",
+        sha256: "9" * 64, size_bytes: 4096,
+        uki_oci_ref: "OTHER-PLATFORM-UKI-REF-MUST-NOT-BE-USED", uki_sha256: "1" * 64,
+        uki_cosign_bundle: "OTHER-PLATFORM-BUNDLE-MUST-NOT-BE-USED",
+        status: "published", published_at: 3.hours.ago, created_at: 3.hours.ago
+      )
+    end
+
+    # The build the promote SUPERSEDED — same platform, older than the promoted
+    # row, so a recency-ordered lookup taking the oldest row lands here.
+    def publish_older_decoy
+      System::DiskImagePublication.create!(
+        account: account, node_platform: platform_record,
+        git_sha: "older-superseded-sha", arch: "amd64", oci_ref: "older-oci-ref",
+        sha256: "8" * 64, size_bytes: 1024,
+        uki_oci_ref: "OLDER-UKI-REF-MUST-NOT-BE-USED", uki_sha256: "2" * 64,
+        uki_cosign_bundle: "OLDER-BUNDLE-MUST-NOT-BE-USED",
+        status: "published", published_at: 4.hours.ago, created_at: 4.hours.ago
+      )
+    end
+
+    # A LATER build for a DIFFERENT git_sha, already published — the reachable
+    # shape any time CI publishes ahead of the operator's promote. Published
+    # and newest, so a lookup ordered by recency lands here whether or not it
+    # also filters on status.
+    def publish_newer_decoy
+      System::DiskImagePublication.create!(
+        account: account, node_platform: platform_record,
+        git_sha: "newer-unpromoted-sha", arch: "amd64", oci_ref: "newer-oci-ref",
+        sha256: "b" * 64, size_bytes: 2048,
+        uki_oci_ref: "NEWER-UKI-REF-MUST-NOT-BE-USED", uki_sha256: "e" * 64,
+        uki_cosign_bundle: "NEWER-BUNDLE-MUST-NOT-BE-USED",
+        status: "published", published_at: Time.current
+      )
+    end
+
+    # The promoted row, backdated so it sits BETWEEN the older and newer decoys
+    # and is inserted LAST — so it is neither the newest, the oldest, nor the
+    # first by insertion/PK order (ids are UUIDv7, which tracks insert time).
+    def publish_promoted(bundle: promoted_bundle, uki_ref: promoted_ref, uki_sha256: promoted_digest)
+      setup_publication(target_sha: promoted_sha, uki_ref: uki_ref,
+                        uki_sha256: uki_sha256, bundle: bundle)
+        .tap { |pub| pub.update!(status: "published", published_at: 2.hours.ago, created_at: 2.hours.ago) }
+    end
+
+    before do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+      setup_platform(target_sha: promoted_sha,
+                     uki_ref: "stale-platform-uki-ref-MUST-NOT-BE-USED", uki_sha256: "f" * 64)
+      # Keep the example on the dispatch path — an already_current short-circuit
+      # returns ok? with no task to inspect.
+      instance.update!(booted_image_git_sha: nil)
+
+      # Inserted here, BEFORE each example creates the promoted row, so the
+      # promoted row is last by insertion order and no lookup can reach it by
+      # accident. Order among the decoys is deliberate: the cross-platform one
+      # is first overall, so a lookup that drops the platform scoping AND takes
+      # the first row finds it.
+      @cross_platform_decoy = publish_cross_platform_decoy
+      @older_decoy          = publish_older_decoy
+      @newer_decoy          = publish_newer_decoy
+    end
+
+    it "pins all three UKI options to the promoted row, never to a decoy" do
+      promoted = publish_promoted
+
+      result = described_class.dispatch!(instance: instance, source: "test")
+
+      expect(result.ok?).to be true
+      opts = result.task.options
+      expect(opts).to include(
+        "target_git_sha"    => promoted_sha,
+        "uki_oci_ref"       => promoted_ref,
+        "uki_sha256"        => promoted_digest,
+        "cosign_bundle_b64" => promoted_bundle
+      )
+      expect(opts["download_path"]).to eq("#{described_class::DOWNLOAD_PATH}?digest=#{promoted_digest}")
+
+      [ @cross_platform_decoy, @older_decoy, @newer_decoy ].each do |decoy|
+        expect(opts.values).not_to include(decoy.uki_oci_ref)
+        expect(opts.values).not_to include(decoy.uki_sha256)
+        expect(opts.values).not_to include(decoy.uki_cosign_bundle)
+      end
+
+      # Row IDENTITY, not value equality: whichever row the shipped digest
+      # belongs to, the ref and the bundle must be THAT row's. Asserted this way
+      # so a future re-split of the three lookups fails here no matter which of
+      # them drifts, and no matter what the decoy's values happen to be.
+      pinned = System::DiskImagePublication.find_by!(uki_sha256: opts["uki_sha256"])
+      expect(pinned.id).to eq(promoted.id)
+      expect(pinned).to have_attributes(
+        git_sha:           opts["target_git_sha"],
+        uki_oci_ref:       opts["uki_oci_ref"],
+        uki_cosign_bundle: opts["cosign_bundle_b64"]
+      )
+      # git_sha does not identify a row on its own — the pinned row must also
+      # belong to THIS instance's platform. Not redundant with the git_sha
+      # assertion above: the cross-platform decoy matches on git_sha too.
+      expect(pinned.node_platform_id).to eq(platform_record.id)
+    end
+
+    it "refuses when the PROMOTED row has no bundle even though a decoy does" do
+      # The fail-closed bundle guard has to be evaluated against the row the
+      # pins come from. A guard reading the newest row would pass here and let
+      # the dispatch queue a task with a nil cosign_bundle_b64 — an
+      # unverifiable boot image, which is the one thing this class exists to
+      # make impossible.
+      publish_promoted(bundle: nil)
+
+      result = described_class.dispatch!(instance: instance, source: "test")
+
+      expect(result.ok?).to be false
+      expect(result.reason).to match(/no UKI cosign signature bundle/)
+      expect(result.task).to be_nil
+      expect(System::Task.where(operable: instance, command: "upgrade_boot_image").count).to eq(0)
+      # Guard and pin read one row, so the plan-time blocker must refuse too.
+      expect(described_class.platform_blocker(platform_record)).to match(/cosign signature bundle/)
+    end
+
+    it "refuses when the PROMOTED row has no UKI pins even though a decoy does" do
+      # Same class as the bundle guard above, one guard earlier. Every other
+      # example of :no_uki_artifact arranges a single row, so a guard evaluated
+      # against the newest row passes them all — and then the dispatch queues a
+      # task with a nil uki_oci_ref/uki_sha256 and a "?digest=" download_path,
+      # violating the precondition download_path_for documents. Fail-closed
+      # on-node, but it defeats the dispatch-time refusal this guard exists for.
+      publish_promoted(uki_sha256: nil)
+
+      result = described_class.dispatch!(instance: instance, source: "test")
+
+      expect(result.ok?).to be false
+      expect(result.reason).to match(/no standalone UKI artifact/)
+      expect(result.task).to be_nil
+      expect(System::Task.where(operable: instance, command: "upgrade_boot_image").count).to eq(0)
+      expect(described_class.platform_blocker(platform_record)).to match(/no standalone UKI artifact/)
+    end
+
+    # WHY .preflight can resolve the promoted row with a bare
+    # find_by(git_sha:), with no status or recency scoping: within ONE platform
+    # at most one publication exists per git_sha, so "the row for the promoted
+    # sha" is already unambiguous and an unordered find_by cannot return an
+    # arbitrary one of several. That is a per-PLATFORM guarantee only, which is
+    # exactly why the lookup must stay scoped to the platform association.
+    # Asserted at the DATABASE level, not just the model validation — the
+    # validation races between processes and is bypassed by the very
+    # save!(validate: false) path used here, and it is the unique index that
+    # actually makes the pinned triple well-defined. If that index is ever
+    # dropped, this fails here rather than turning the boot-image pins into a
+    # coin flip in production.
+    it "permits one git_sha across platforms but not twice on one platform" do
+      publish_promoted
+
+      # The cross-platform row from the before hook shares the promoted git_sha
+      # and is perfectly valid — the ambiguity the scoping resolves.
+      expect(System::DiskImagePublication.where(git_sha: promoted_sha).count).to eq(2)
+
+      duplicate = System::DiskImagePublication.new(
+        account: account, node_platform: platform_record,
+        git_sha: promoted_sha, arch: "amd64", oci_ref: "duplicate-oci-ref",
+        sha256: "c" * 64, size_bytes: 512,
+        uki_oci_ref: "duplicate-uki-ref", uki_sha256: "d" * 64, uki_cosign_bundle: "DUPLICATE-BUNDLE"
+      )
+
+      expect(duplicate).not_to be_valid
+      # requires_new so the constraint violation rolls back to a SAVEPOINT and
+      # leaves the surrounding test transaction usable.
+      expect {
+        System::DiskImagePublication.transaction(requires_new: true) { duplicate.save!(validate: false) }
+      }.to raise_error(ActiveRecord::RecordNotUnique)
+
+      expect(platform_record.disk_image_publications.where(git_sha: promoted_sha).count).to eq(1)
+    end
+  end
 end
