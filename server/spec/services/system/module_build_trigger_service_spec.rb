@@ -9,10 +9,18 @@ require "rails_helper"
 RSpec.describe System::ModuleBuildTriggerService do
   let!(:account) { create(:account, name: "Powernode") }
 
-  def stub_plan(modules:, source_repo: nil)
-    allow(::System::ModuleBuildPlannerService).to receive(:plan)
+  # imp b9e3e05a5119 (observability follow-up) — the trigger service now
+  # calls .plan_with_diagnostics (not the bare .plan) so it can thread
+  # excluded modules through to its Result and the persisted batch.
+  def stub_plan(modules:, source_repo: nil, excluded: [])
+    allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
       .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: false, source_repo: source_repo)
-      .and_return(modules.map { |m| { module: m, oci_ref: "headsha1" } })
+      .and_return(
+        ::System::ModuleBuildPlannerService::PlanResult.new(
+          entries: modules.map { |m| { module: m, oci_ref: "headsha1" } },
+          excluded: excluded
+        )
+      )
   end
 
   def stub_dispatch!(dispatched: 1)
@@ -25,7 +33,12 @@ RSpec.describe System::ModuleBuildTriggerService do
 
   describe "gitea mode (default) — full no-op" do
     it "never calls the planner or the orchestrator" do
+      # Both expectations: production calls .plan_with_diagnostics directly
+      # (not the bare .plan) as of the b9e3e05a5119 follow-up, so asserting
+      # only :plan would never fire and silently stop enforcing this example's
+      # headline claim.
       expect(::System::ModuleBuildPlannerService).not_to receive(:plan)
+      expect(::System::ModuleBuildPlannerService).not_to receive(:plan_with_diagnostics)
       expect(::System::NativeModuleBuildOrchestrator).not_to receive(:dispatch!)
 
       result = described_class.trigger!(base_sha: "base0000", head_sha: "headsha1234567")
@@ -98,7 +111,7 @@ RSpec.describe System::ModuleBuildTriggerService do
   describe "error handling" do
     it "surfaces a planner PlanningError as a failure result rather than raising, in dual mode" do
       SiteSetting.set("system.module_builds.mode", "dual")
-      allow(::System::ModuleBuildPlannerService).to receive(:plan)
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
         .and_raise(::System::ModuleBuildPlannerService::PlanningError, "no active Gitea credential resolvable")
 
       result = described_class.trigger!(base_sha: "base0000", head_sha: "headsha1234567")
@@ -122,14 +135,14 @@ RSpec.describe System::ModuleBuildTriggerService do
   describe "force_all passthrough" do
     it "forwards force_all: true to the planner" do
       SiteSetting.set("system.module_builds.mode", "native")
-      allow(::System::ModuleBuildPlannerService).to receive(:plan)
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
         .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: true, source_repo: nil)
-        .and_return([])
+        .and_return(::System::ModuleBuildPlannerService::PlanResult.new(entries: [], excluded: []))
       stub_dispatch!(dispatched: 0)
 
       described_class.trigger!(base_sha: "base0000", head_sha: "headsha1234567", force_all: true)
 
-      expect(::System::ModuleBuildPlannerService).to have_received(:plan)
+      expect(::System::ModuleBuildPlannerService).to have_received(:plan_with_diagnostics)
         .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: true, source_repo: nil)
     end
   end
@@ -144,9 +157,60 @@ RSpec.describe System::ModuleBuildTriggerService do
         base_sha: "base0000", head_sha: "headsha1234567", source_repo: "powernode/powernode-platform"
       )
 
-      expect(::System::ModuleBuildPlannerService).to have_received(:plan)
+      expect(::System::ModuleBuildPlannerService).to have_received(:plan_with_diagnostics)
         .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: false, source_repo: "powernode/powernode-platform")
       expect(result.batch.metadata["source_repo"]).to eq("powernode/powernode-platform")
+    end
+  end
+
+  # imp b9e3e05a5119 (observability follow-up) — System::ModuleBuildTriggerService
+  # had no field for planner exclusions on its Result, so a shadow/native push
+  # build silently omitted package-origin modules from what an operator could
+  # see. Same gap as the MCP dispatch path (fixed in ModuleBuildBatch.create_for),
+  # one layer over: this is the caller that must actually thread it through.
+  describe "exclusions (imp b9e3e05a5119 follow-up)" do
+    it "threads the planner's excluded list through to the Result and persists it on the batch (native mode)" do
+      SiteSetting.set("system.module_builds.mode", "native")
+      excluded = [
+        { module: "python3", reason: "package_origin", detail: "package-origin module...",
+          package_module_link_id: "link-1" }
+      ]
+      stub_plan(modules: %w[mod-a], excluded: excluded)
+      stub_dispatch!
+
+      result = described_class.trigger!(base_sha: "base0000", head_sha: "headsha1234567")
+
+      expect(result.excluded).to eq(excluded)
+      expect(result.batch.metadata["excluded"]).to contain_exactly(
+        { "module" => "python3", "reason" => "package_origin", "detail" => "package-origin module...",
+          "package_module_link_id" => "link-1" }
+      )
+      expect(result.batch.metadata["excluded_count"]).to eq(1)
+    end
+
+    it "threads exclusions through in dual mode too, without touching their reasons" do
+      SiteSetting.set("system.module_builds.mode", "dual")
+      excluded = [ { module: "python3", reason: "package_origin", detail: "package-origin module...",
+                     package_module_link_id: "link-1" } ]
+      stub_plan(modules: %w[mod-a], excluded: excluded)
+      stub_dispatch!
+
+      result = described_class.trigger!(base_sha: "base0000", head_sha: "headsha1234567")
+
+      expect(result.excluded).to eq(excluded)
+      expect(result.batch.metadata["excluded_count"]).to eq(1)
+    end
+
+    it "carries an empty excluded list through cleanly, adding no metadata key" do
+      SiteSetting.set("system.module_builds.mode", "native")
+      stub_plan(modules: %w[mod-a])
+      stub_dispatch!
+
+      result = described_class.trigger!(base_sha: "base0000", head_sha: "headsha1234567")
+
+      expect(result.excluded).to eq([])
+      expect(result.batch.metadata).not_to have_key("excluded")
+      expect(result.batch.metadata).not_to have_key("excluded_count")
     end
   end
 end

@@ -216,6 +216,46 @@ RSpec.describe System::ModuleBuildBatch, type: :model do
       expect(batch.planned_count).to eq(2)
     end
 
+    # imp b9e3e05a5119 (observability follow-up) — planner exclusions
+    # (package_origin/no_manifest/unknown_module) reached the MCP dispatch
+    # caller but were never persisted onto the batch itself, so an operator
+    # inspecting a batch afterwards couldn't see what the plan dropped. This
+    # is the natural home: additive metadata, same backward-compat pattern as
+    # source_repo above (present only when the caller supplies exclusions).
+    it "persists excluded modules + their count in metadata when supplied, and omits both otherwise" do
+      excluded = [
+        { module: "python3", reason: "package_origin",
+          detail: "package-origin module (materialized from an upstream package)",
+          package_module_link_id: "link-1" },
+        { module: "ghost-mod", reason: "unknown_module", detail: "no NodeModule named \"ghost-mod\"" }
+      ]
+
+      with_excluded = described_class.create_for(account: account, plan: plan, trigger: "manual",
+                                                   base_sha: "a", head_sha: "b", excluded: excluded)
+      without = described_class.create_for(account: account, plan: plan, trigger: "manual", base_sha: "a", head_sha: "b")
+
+      expect(with_excluded.metadata["excluded"]).to contain_exactly(
+        { "module" => "python3", "reason" => "package_origin",
+          "detail" => "package-origin module (materialized from an upstream package)",
+          "package_module_link_id" => "link-1" },
+        { "module" => "ghost-mod", "reason" => "unknown_module", "detail" => "no NodeModule named \"ghost-mod\"" }
+      )
+      expect(with_excluded.metadata["excluded_count"]).to eq(2)
+      expect(without.metadata).not_to have_key("excluded")
+      expect(without.metadata).not_to have_key("excluded_count")
+    end
+
+    it "samples excluded metadata at a bounded limit, preserving the true count in excluded_count" do
+      limit = described_class::EXCLUDED_METADATA_SAMPLE_LIMIT
+      excluded = (1..(limit + 5)).map { |i| { module: "mod-#{i}", reason: "no_manifest", detail: "d#{i}" } }
+
+      batch = described_class.create_for(account: account, plan: plan, trigger: "manual",
+                                          base_sha: "a", head_sha: "b", excluded: excluded)
+
+      expect(batch.metadata["excluded"].size).to eq(limit)
+      expect(batch.metadata["excluded_count"]).to eq(limit + 5)
+    end
+
     # Campaign 019f5885 inc10 — dual-run shadow mode.
     it "defaults shadow to false, preserving every pre-inc10 caller" do
       batch = described_class.create_for(account: account, plan: plan, trigger: "manual", base_sha: "a", head_sha: "b")

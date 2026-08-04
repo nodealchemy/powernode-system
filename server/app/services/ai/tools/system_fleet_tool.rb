@@ -3901,7 +3901,7 @@ module Ai
 
         batch = ::System::ModuleBuildBatch.create_for(
           account: @account, plan: planned.entries, trigger: params[:trigger].presence || "manual",
-          base_sha: base_sha, head_sha: head_sha, source_repo: source_repo
+          base_sha: base_sha, head_sha: head_sha, source_repo: source_repo, excluded: planned.excluded
         )
 
         dispatch_summary = ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)

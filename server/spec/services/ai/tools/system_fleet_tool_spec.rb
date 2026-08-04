@@ -1464,7 +1464,10 @@ end
       expect(task.options["uki_sha256"]).to eq(uki_sha256)
       expect(task.options["cosign_public_key"]).to eq(cosign_public_key_pem)
       expect(task.options["cosign_bundle_b64"]).to eq(cosign_bundle_b64)
-      expect(task.options["download_path"]).to eq("/api/v1/system/node_api/boot_image/download")
+      # Digest-pinned so the download endpoint serves the artifact THIS task was
+      # pinned to even if a promote lands mid-flight (IMP-b55869029a57).
+      expect(task.options["download_path"])
+        .to eq("/api/v1/system/node_api/boot_image/download?digest=#{uki_sha256}")
       # Old identity/issuer regexp fields should NOT be present
       expect(task.options).not_to include("cosign_identity_regexp", "cosign_issuer_regexp")
     end
@@ -3521,6 +3524,32 @@ end
       expect(result[:success]).to be true
       expect(result[:data][:excluded_modules]).to eq(excluded)
       expect(result[:data][:excluded_count]).to eq(1)
+    end
+
+    # imp b9e3e05a5119 follow-up (Fable review) — surfacing exclusions in the
+    # synchronous dispatch response is not the same as persisting them: an
+    # operator inspecting the batch later (not the dispatch call's own
+    # response) must still be able to see what the plan dropped.
+    it "persists the planner's exclusions onto the created batch's metadata, not just the response payload" do
+      excluded = [ {
+        module: "python3",
+        reason: "package_origin",
+        detail: "package-origin module — rebuild it with system_refresh_package_module",
+        package_module_link_id: "link-1"
+      } ]
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
+        .and_return(plan_result([ { module: "mod-a", oci_ref: "abc1234" } ], excluded: excluded))
+      stub_orchestrator_dispatch
+
+      call("system_dispatch_module_build_batch", base_sha: "b", head_sha: "h", force_all: true)
+
+      batch = System::ModuleBuildBatch.last
+      expect(batch.metadata["excluded"]).to contain_exactly(
+        { "module" => "python3", "reason" => "package_origin",
+          "detail" => "package-origin module — rebuild it with system_refresh_package_module",
+          "package_module_link_id" => "link-1" }
+      )
+      expect(batch.metadata["excluded_count"]).to eq(1)
     end
 
     # Pins the sample cap itself: without this, deleting the cap (or changing

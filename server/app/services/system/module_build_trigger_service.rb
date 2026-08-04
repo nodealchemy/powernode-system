@@ -31,7 +31,13 @@ module System
   # a batch shape — the webhook controller stays a thin auth+parse wrapper,
   # and this service is unit-testable without any HTTP/HMAC machinery.
   class ModuleBuildTriggerService
-    Result = Struct.new(:ok?, :mode, :dispatched, :shadow, :batch, :error, keyword_init: true)
+    # excluded: (imp b9e3e05a5119 observability follow-up) the planner's
+    # excluded entries for this dispatch — same shape ModuleBuildPlannerService
+    # ::PlanResult#excluded and ModuleBuildBatch.create_for's excluded: carry
+    # (package_origin/no_manifest/unknown_module, each with :module/:reason
+    # /:detail). nil for the gitea no-op branch (no plan was ever computed)
+    # and for a failure result; [] for a dispatch that excluded nothing.
+    Result = Struct.new(:ok?, :mode, :dispatched, :shadow, :batch, :excluded, :error, keyword_init: true)
 
     NATIVE_TAG_PREFIX = "native-"
 
@@ -74,19 +80,20 @@ module System
     private
 
     def dispatch_batch(mode:, base_sha:, head_sha:, force_all:, shadow:, source_repo:)
-      plan = ::System::ModuleBuildPlannerService.plan(
+      planned = ::System::ModuleBuildPlannerService.plan_with_diagnostics(
         base_sha: base_sha, head_sha: head_sha, force_all: force_all, source_repo: source_repo
       )
-      plan = shadow ? plan.map { |p| { module: p[:module], oci_ref: "#{NATIVE_TAG_PREFIX}#{p[:oci_ref]}" } } : plan
+      plan = shadow ? planned.entries.map { |p| { module: p[:module], oci_ref: "#{NATIVE_TAG_PREFIX}#{p[:oci_ref]}" } } : planned.entries
 
       batch = ::System::ModuleBuildBatch.create_for(
         account: @account, plan: plan, trigger: "push",
-        base_sha: base_sha, head_sha: head_sha, shadow: shadow, source_repo: source_repo
+        base_sha: base_sha, head_sha: head_sha, shadow: shadow, source_repo: source_repo,
+        excluded: planned.excluded
       )
 
       ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)
 
-      Result.new(ok?: true, mode: mode, dispatched: true, shadow: shadow, batch: batch.reload)
+      Result.new(ok?: true, mode: mode, dispatched: true, shadow: shadow, batch: batch.reload, excluded: planned.excluded)
     end
 
     def failure(message, mode: nil)

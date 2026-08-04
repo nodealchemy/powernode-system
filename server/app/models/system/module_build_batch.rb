@@ -33,6 +33,15 @@ module System
     # exists) and its per-module build context lives in metadata["package_context"].
     TRIGGERS = %w[push manual cve package].freeze
 
+    # How many of a create_for excluded: list's entries get written into
+    # metadata["excluded"] verbatim; metadata["excluded_count"] always carries
+    # the true total. Mirrors Ai::Tools::SystemFleetTool::EXCLUDED_MODULE_SAMPLE_LIMIT
+    # (25) — same concern (a force_all sweep on a fleet carrying hundreds of
+    # package-origin modules shouldn't balloon a JSONB column), duplicated
+    # rather than shared because the two live in different layers (MCP
+    # response payload vs. persisted record).
+    EXCLUDED_METADATA_SAMPLE_LIMIT = 25
+
     # === Associations ===
     belongs_to :account
 
@@ -120,10 +129,24 @@ module System
     # against (nil → the default manifest repo). Recorded in metadata for audit
     # so an operator can see which repo a build's change set came from — a core
     # build diffs powernode-platform, a module build the manifest repo.
-    def self.create_for(account:, plan:, trigger:, base_sha:, head_sha:, shadow: false, source_repo: nil)
+    # excluded: (imp b9e3e05a5119 observability follow-up) the module names a
+    # System::ModuleBuildPlannerService::PlanResult named but did not plan
+    # (package_origin/no_manifest/unknown_module, each with a :detail and, for
+    # package_origin, a :package_module_link_id — see that service). Recorded
+    # in metadata so an operator inspecting the batch afterwards can see what
+    # the plan dropped, not just what a caller happened to report at dispatch
+    # time. Sampled at EXCLUDED_METADATA_SAMPLE_LIMIT; excluded_count is
+    # always the true total. Omitted entirely when empty (default []), same
+    # backward-compat posture as source_repo above.
+    def self.create_for(account:, plan:, trigger:, base_sha:, head_sha:, shadow: false, source_repo: nil, excluded: [])
       plan_array = Array(plan)
+      excluded_array = Array(excluded)
       metadata = { "plan" => plan_array.map { |p| plan_entry_metadata(p) } }
       metadata["source_repo"] = source_repo.to_s if source_repo.present?
+      if excluded_array.any?
+        metadata["excluded"] = excluded_array.first(EXCLUDED_METADATA_SAMPLE_LIMIT).map { |e| excluded_entry_metadata(e) }
+        metadata["excluded_count"] = excluded_array.size
+      end
       create!(
         account: account,
         trigger: trigger,
@@ -153,6 +176,19 @@ module System
       row
     end
     private_class_method :plan_entry_metadata
+
+    # Stringifies a System::ModuleBuildPlannerService excluded-entry hash
+    # (module:/reason:/detail:, plus package_module_link_id: for
+    # package_origin only) for JSONB storage. package_module_link_id is
+    # included only when the source entry carries one, mirroring
+    # plan_entry_metadata's treatment of the optional architecture: key.
+    def self.excluded_entry_metadata(entry)
+      row = { "module" => entry[:module].to_s, "reason" => entry[:reason].to_s, "detail" => entry[:detail].to_s }
+      link_id = entry[:package_module_link_id]
+      row["package_module_link_id"] = link_id.to_s if link_id.present?
+      row
+    end
+    private_class_method :excluded_entry_metadata
 
     # === Instance methods ===
 
