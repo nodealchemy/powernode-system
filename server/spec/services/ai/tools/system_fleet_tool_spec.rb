@@ -10,7 +10,10 @@ RSpec.describe Ai::Tools::SystemFleetTool do
   let(:platform_record) { create(:system_node_platform, account: account) }
   let(:category) { create(:system_node_module_category, account: account) }
   let(:template) { create(:system_node_template, account: account, node_platform: platform_record) }
-  let(:tool)     { described_class.new(account: account) }
+  # Behaviour specs below exercise the tool as an in-process system caller, so
+  # they declare that with `internal: true`. A bare userless construction is no
+  # longer a permission bypass — see "principal authorization (IMP-9030413bc292)".
+  let(:tool)     { described_class.new(account: account, internal: true) }
 
   def call(action, **rest)
     tool.execute(params: { action: action }.merge(rest))
@@ -751,6 +754,147 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # === Template composition analysis (IMP-20b3eb50da30) ===
+  # compose_preview — the design-time conflict/footprint/graph analysis — was
+  # REST-only, so an agent composing a template could not see what the operator
+  # UI sees. The MCP action mirrors NodeTemplatesController#compose_preview and
+  # persists nothing; the assignment write path now refuses the error-severity
+  # conflicts that analysis reports instead of leaving a disabled React button
+  # as the only enforcement.
+  describe "Template composition analysis" do
+    let(:cat_a) { create(:system_node_module_category, account: account, name: "cat-a-#{SecureRandom.hex(3)}") }
+    let(:cat_b) { create(:system_node_module_category, account: account, name: "cat-b-#{SecureRandom.hex(3)}") }
+
+    # Names that won't collide with the account bootstrap's default catalog.
+    def composition_module(name, category: cat_a, variety: "subscription")
+      create(:system_node_module, account: account, node_platform: platform_record,
+             category: category, variety: variety, name: "#{name}-#{SecureRandom.hex(3)}")
+    end
+
+    describe "system_compose_preview_template" do
+      it "returns modules, conflicts, footprint, dependency_graph, warnings and errors" do
+        a = composition_module("preview-a")
+        b = composition_module("preview-b", category: cat_b)
+
+        r = call("system_compose_preview_template", module_ids: [ a.id, b.id ])
+
+        expect(r[:success]).to be true
+        expect(r[:data].keys).to include(:modules, :conflicts, :footprint, :dependency_graph, :warnings, :errors)
+        expect(r.dig(:data, :modules).map { |m| m[:id] }).to match_array([ a.id, b.id ])
+        expect(r.dig(:data, :footprint, :module_count)).to eq(2)
+        expect(r.dig(:data, :dependency_graph, :nodes).map { |n| n[:id] }).to match_array([ a.id, b.id ])
+      end
+
+      it "persists nothing" do
+        a = composition_module("inert-a", variety: "instance")
+        b = composition_module("inert-b", variety: "instance")
+
+        expect do
+          call("system_compose_preview_template", module_ids: [ a.id, b.id ])
+        end.not_to change { [ System::TemplateModule.count, System::NodeTemplate.count, System::NodeModule.count ] }
+      end
+
+      it "reports an instance-variety collision at error severity" do
+        a = composition_module("coll-a", variety: "instance")
+        b = composition_module("coll-b", variety: "instance")
+
+        r = call("system_compose_preview_template", module_ids: [ a.id, b.id ])
+
+        collision = r.dig(:data, :conflicts).find { |c| c[:kind] == "instance_variety_collision" }
+        expect(collision).to be_present
+        expect(collision[:severity]).to eq("error")
+      end
+
+      it "errors when module_ids is empty" do
+        r = call("system_compose_preview_template", module_ids: [])
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(/module_ids/i)
+      end
+
+      it "errors when no module matches, so a foreign id leaks no existence" do
+        foreign = create(:system_node_module, account: create(:account))
+
+        r = call("system_compose_preview_template", module_ids: [ foreign.id ])
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(/no matching modules/i)
+      end
+
+      it "is gated on system.templates.read — it reads, it never writes" do
+        expect(described_class::ACTION_PERMISSIONS["system_compose_preview_template"])
+          .to eq("system.templates.read")
+      end
+
+      it "is documented in action_definitions so its contract is discoverable" do
+        definition = described_class.action_definitions["system_compose_preview_template"]
+        expect(definition).to be_present
+        expect(definition[:parameters][:module_ids][:required]).to be true
+      end
+    end
+
+    describe "system_assign_module_to_template conflict enforcement" do
+      def assign(node_module)
+        call("system_assign_module_to_template", template_id: template.id, module_id: node_module.id)
+      end
+
+      it "blocks an instance-variety collision and names both modules" do
+        first  = composition_module("inst-first", variety: "instance")
+        second = composition_module("inst-second", variety: "instance")
+        expect(assign(first)[:success]).to be true
+
+        result = nil
+        expect do
+          result = assign(second)
+        end.not_to change { System::TemplateModule.where(node_template: template).count }
+
+        expect(result[:success]).to be false
+        expect(result[:error]).to include(first.name).and include(second.name)
+        expect(result[:error]).to match(/instance-variety|instance_variety/i)
+      end
+
+      it "blocks a declared Conflicts: relation against an already-assigned module" do
+        installed = composition_module("conf-installed")
+        incoming  = composition_module("conf-incoming", category: cat_b)
+        create(:system_module_dependency, node_module: incoming, dependency: installed,
+               dependency_type: "conflicts", required: false)
+        expect(assign(installed)[:success]).to be true
+
+        result = nil
+        expect do
+          result = assign(incoming)
+        end.not_to change { System::TemplateModule.where(node_template: template).count }
+
+        expect(result[:success]).to be false
+        expect(result[:error]).to include(incoming.name).and include(installed.name)
+      end
+
+      it "returns protected_spec warnings alongside a successful assignment" do
+        claimer = composition_module("warn-claimer")
+        claimer.update!(protected_spec: "/etc/shadow")
+        broad = composition_module("warn-broad", category: cat_b)
+        broad.update!(file_spec: "/etc/**")
+        expect(assign(claimer)[:success]).to be true
+
+        result = assign(broad)
+
+        expect(result[:success]).to be true
+        expect(System::TemplateModule.where(node_template: template, node_module: broad)).to exist
+        warning = Array(result.dig(:data, :warnings)).first
+        expect(warning[:kind]).to eq("protected_spec_overlap")
+        expect(warning[:severity]).to eq("warning")
+      end
+
+      it "leaves a clean assignment's payload byte-for-byte unchanged" do
+        mod = composition_module("clean")
+
+        result = assign(mod)
+
+        expect(result[:success]).to be true
+        expect(result[:data].keys).to match_array(%i[assigned template_module_id])
+      end
+    end
+  end
+
   describe "Modules + Versions" do
     let!(:mod) do
       create(:system_node_module,
@@ -864,6 +1008,75 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         holder_tool = described_class.new(account: account, user: holder)
         expect(holder_tool.send(:action_permitted?, action)).to be true
       end
+    end
+  end
+
+  # IMP-9030413bc292 — action_permitted? used to read `@user.nil?` as
+  # "internal/system caller" and return true. That premise (MCP callers always
+  # carry a user) predates instance principals: an mTLS node cert authenticates
+  # with NO user, so every per-action permission in ACTION_PERMISSIONS was
+  # skipped and the peer's per-tool grant glob was the only remaining control.
+  # The bypass is now two EXPLICIT signals; a bare userless call fails closed.
+  describe "principal authorization (IMP-9030413bc292)" do
+    # Worker-only by design: no human-assignable role holds
+    # system.module_builds.dispatch, and the tool itself says so in
+    # WORKER_ONLY_ACTIONS — the sharpest example of a tier the old bypass skipped.
+    let(:worker_only_action) { "system_dispatch_module_build_batch" }
+    let(:gated_action)       { "system_create_node" }
+
+    it "denies a bare userless call — no user, no internal flag, no instance grant" do
+      bare = described_class.new(account: account, user: nil)
+
+      expect(bare.send(:action_permitted?, gated_action)).to be false
+      expect(bare.send(:action_permitted?, worker_only_action)).to be false
+    end
+
+    it "surfaces the denial as an error_result rather than executing the action" do
+      bare = described_class.new(account: account, user: nil)
+
+      expect { @result = bare.execute(params: { action: gated_action, template_id: template.id, name: "bare" }) }
+        .not_to change(::System::Node, :count)
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to include("permission denied")
+    end
+
+    it "preserves the documented internal/system bypass when declared explicitly" do
+      internal = described_class.new(account: account, user: nil, internal: true)
+
+      expect(internal.send(:action_permitted?, gated_action)).to be true
+      expect(internal.send(:action_permitted?, worker_only_action)).to be true
+    end
+
+    # Behaviour preservation for the live dev-cell instance principal: the
+    # streamable controller grant-gates the specific tool name via
+    # Mcp::Principal#may_invoke? BEFORE dispatch, and the registrar marks the
+    # call. That marking — not the nil user — is what carries it through here.
+    it "still permits a grant-gated MCP instance principal" do
+      instance_call = described_class.new(account: account, user: nil)
+      instance_call.instance_authorized = true
+
+      expect(instance_call.send(:action_permitted?, gated_action)).to be true
+      expect(instance_call.send(:action_permitted?, worker_only_action)).to be true
+    end
+
+    it "executes a granted action for a grant-gated instance principal exactly as before" do
+      instance_call = described_class.new(account: account, user: nil)
+      instance_call.instance_authorized = true
+
+      result = instance_call.execute(params: {
+        action: gated_action, template_id: template.id, name: "instance-created"
+      })
+
+      expect(result[:success]).to be true
+      expect(result.dig(:data, :node, :name)).to eq("instance-created")
+    end
+
+    it "keeps enforcing per-action permissions for a user principal" do
+      unprivileged = create(:user, account: account, permissions: %w[system.nodes.read])
+      user_tool = described_class.new(account: account, user: unprivileged)
+
+      expect(user_tool.send(:action_permitted?, "system_list_nodes")).to be true
+      expect(user_tool.send(:action_permitted?, gated_action)).to be false
     end
   end
 

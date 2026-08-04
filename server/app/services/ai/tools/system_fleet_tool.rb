@@ -22,7 +22,8 @@ module Ai
       # `system.<resource>.<action>` naming (per
       # extensions/system/server/db/migrate/20260429120000_seed_system_extension_permissions_and_flags.rb).
       # Internal callers (system services, autonomy reconcilers) bypass
-      # this check by passing user: nil to .new.
+      # this check by passing `internal: true` to .new — passing user: nil
+      # alone is NOT a bypass (IMP-9030413bc292).
       ACTION_PERMISSIONS = {
         # Read
         "system_list_nodes"             => "system.nodes.read",
@@ -43,6 +44,13 @@ module Ai
         "system_list_isolation_tiers" => "system.node_instances.read",
         "system_list_templates"         => "system.nodes.read",
         "system_get_template"           => "system.nodes.read",
+        # IMP-20b3eb50da30 — design-time composition analysis. Reads a module
+        # set and reports conflicts/footprint/graph; persists nothing. REST's
+        # compose_preview is gated on templates.UPDATE only because it was
+        # grouped with the composer's save flow, so this takes the permission
+        # matching what it actually does. Same admin grant either way
+        # (engine.rb `resource :templates`), so nothing widens.
+        "system_compose_preview_template" => "system.templates.read",
         "system_list_modules"           => "system.modules.read",
         "system_get_module"             => "system.modules.read",
         "system_list_module_versions"   => "system.modules.read",
@@ -1376,15 +1384,32 @@ module Ai
       private
 
       # === Permission gating ===
-      # Internal callers (autonomy services, system runtime) call .new with
-      # user: nil and bypass per-action checks. MCP-invoked callers always
-      # carry @user from the dispatch layer.
+      # Two bypasses, both EXPLICIT (IMP-9030413bc292):
+      #
+      #   internal?            in-process system callers (autonomy reconcilers,
+      #                        skill executors running without a user) that
+      #                        opted in with `internal: true`.
+      #   instance_authorized? an MCP instance principal (mTLS node cert, no
+      #                        User) whose specific tool name already cleared
+      #                        Mcp::Principal#may_invoke? — for those the
+      #                        per-tool grant stands in for authorization. It is
+      #                        NAME-scoped, though, and this tool runs the action
+      #                        the caller supplies, so it does not bound WHICH
+      #                        action runs. Treat it as provenance, not a fence.
+      #
+      # This used to be one implicit `@user.nil?` bypass, whose premise — that
+      # MCP callers always carry a user — predates instance principals and is
+      # false for them, so an instance skipped this map entirely (see the same
+      # note in core Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS). A nil user
+      # with neither flag now fails CLOSED rather than being read as internal.
       def required_perm_for(action)
         ACTION_PERMISSIONS[action] || REQUIRED_PERMISSION
       end
 
       def action_permitted?(action)
-        return true if @user.nil? # internal/system bypass
+        return true if internal?
+        return true if instance_authorized?
+        return false if @user.nil?
         return true unless @user.respond_to?(:has_permission?)
 
         @user.has_permission?(required_perm_for(action))

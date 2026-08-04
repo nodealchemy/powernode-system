@@ -142,8 +142,15 @@ module System
         # Standardized tool construction. Replaces the 40 sites that built
         # `::Ai::Tools::SomeTool.new(account: @account, agent: @agent, user: @user)`
         # inline. Pass the tool class; the helper handles the 3-arg constructor.
+        #
+        # A userless executor IS an in-process system caller — autonomy
+        # reconcilers build executors with `user: nil` (System::Fleet::
+        # DecisionEngine) — so it declares that with `internal: true` instead of
+        # leaving the tool to infer it from the nil user. The inference was the
+        # bug: an MCP instance principal also arrives with no user, and inherited
+        # the same bypass. (IMP-9030413bc292)
         def tool(tool_class)
-          tool_class.new(account: @account, agent: @agent, user: @user)
+          tool_class.new(account: @account, agent: @agent, user: @user, internal: @user.nil?)
         end
 
         def audit_log_start(inputs)

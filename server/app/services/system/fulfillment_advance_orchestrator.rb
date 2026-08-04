@@ -264,7 +264,15 @@ module System
       reused_ids = Array(exec["reused_modules"]).map { |m| m["id"] }.compact
       module_ids = (reused_ids + Array(@request.materialized_module_ids)).uniq
 
-      fleet = ::Ai::Tools::SystemFleetTool.new(account: @account, agent: nil, user: effective_user)
+      # `effective_user` is best-effort ATTRIBUTION (requester, else any account
+      # user), not authorization — an autonomous advance can legitimately run
+      # with none. When it resolves to nobody this is an in-process system
+      # caller and says so; the tool no longer reads a nil user as "internal",
+      # since MCP instance principals also arrive userless. (IMP-9030413bc292)
+      attributed_user = effective_user
+      fleet = ::Ai::Tools::SystemFleetTool.new(
+        account: @account, agent: nil, user: attributed_user, internal: attributed_user.nil?
+      )
       resolved_platform_id = exec["platform_id"].presence || base_os.node_platform_id
 
       create = fleet.execute(params: {

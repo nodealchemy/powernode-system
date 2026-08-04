@@ -148,11 +148,15 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
   describe "#tool helper" do
     let(:tool_klass) do
       Class.new do
-        attr_reader :account, :agent, :user
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent   = agent
-          @user    = user
+        attr_reader :account, :agent, :user, :internal
+        # Mirrors Ai::Tools::BaseTool#initialize, `internal:` included — the
+        # helper declares a userless executor as an in-process system caller
+        # rather than leaving the tool to infer it. (IMP-9030413bc292)
+        def initialize(account:, agent: nil, user: nil, internal: false)
+          @account  = account
+          @agent    = agent
+          @user     = user
+          @internal = internal
         end
       end
     end
@@ -164,7 +168,7 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
                          inputs: {}, outputs: {})
         define_method(:perform) do
           built = tool(tk)
-          success(account_id: built.account.id)
+          success(account_id: built.account.id, internal: built.internal, user_id: built.user&.id)
         end
       end
     end
@@ -173,6 +177,23 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
       result = concrete.new(account: account).execute
       expect(result[:success]).to be true
       expect(result[:data][:account_id]).to eq(account.id)
+    end
+
+    # IMP-9030413bc292 — a userless executor IS an in-process system caller
+    # (System::Fleet::DecisionEngine builds autonomy executors with user: nil),
+    # so it says so explicitly instead of relying on the tool reading `user.nil?`
+    # as "internal" — an inference that also swept in MCP instance principals.
+    it "declares a userless executor's tool calls as internal" do
+      result = concrete.new(account: account).execute
+      expect(result[:data][:internal]).to be true
+    end
+
+    it "does not mark a user-bearing executor's tool calls as internal" do
+      user = create(:user, account: account)
+      result = concrete.new(account: account, user: user).execute
+
+      expect(result[:data][:internal]).to be false
+      expect(result[:data][:user_id]).to eq(user.id)
     end
   end
 
