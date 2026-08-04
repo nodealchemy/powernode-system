@@ -46,6 +46,15 @@ module Api
             platform = current_node.node_platform
             return render_not_found("NodePlatform") if platform.nil?
 
+            # A caller that sent the parameter but left it empty has a broken
+            # pin — most likely the dispatcher serialized `?digest=` from a nil.
+            # Treating that as "unpinned" would silently reinstate the
+            # promote-window race the parameter exists to close, so refuse it
+            # loudly instead of guessing.
+            if params.key?(:digest) && requested_digest.nil?
+              return render_error("digest parameter was supplied but empty", :bad_request)
+            end
+
             publication = resolve_publication(platform)
             if publication.nil? || publication.uki_oci_ref.blank? || publication.uki_sha256.blank?
               return render_error(unresolved_message, :not_found)
@@ -101,11 +110,24 @@ module Api
           # sha256 with no indication the platform substituted the artifact.
           def resolve_publication(platform)
             if requested_digest
-              # Scoped to this platform's own history (never a global digest
-              # lookup), and to rows that reached `published` — `retainable` is
-              # published + retired, and RETIRED is load-bearing here: a promote
-              # retires the row a still-in-flight task is pinned to.
-              return platform.disk_image_publications.retainable.find_by(uki_sha256: requested_digest)
+              # Scoped to THIS platform's own history — not the account's, not
+              # globally. A same-account sibling platform is a different arch or
+              # a different image line, so serving across platforms hands a node
+              # a UKI it cannot boot.
+              #
+              # `retainable` is published + retired, and RETIRED is load-bearing:
+              # a promote retires the very row an in-flight task is pinned to.
+              # But retired does NOT imply "was ever published" — the `retire`
+              # AASM event also transitions from FAILED and VERIFYING
+              # (disk_image_publication.rb) so DiskImageRetentionService#retire_stuck!
+              # can clean up abandoned CI runs. That laundering path would make a
+              # build which FAILED cosign/sha verification at ingest resolvable
+              # by digest. published_at is the discriminator: only mark_published
+              # and reactivate ever set it, never the failed/verifying → retired
+              # path.
+              return platform.disk_image_publications
+                             .retainable.where.not(published_at: nil)
+                             .find_by(uki_sha256: requested_digest)
             end
 
             return nil if platform.disk_image_git_sha.blank?

@@ -269,7 +269,7 @@ RSpec.describe "Api::V1::System::NodeApi::BootImage#download", type: :request do
         expect(::System::OciBlobProxyService).not_to have_received(:new)
       end
 
-      it "404s for a digest belonging to another platform's publication" do
+      it "404s for a digest belonging to another account's platform" do
         other_account  = create(:account)
         other_platform = create(:system_node_platform, account: other_account)
         create(:system_disk_image_publication, :published,
@@ -284,10 +284,36 @@ RSpec.describe "Api::V1::System::NodeApi::BootImage#download", type: :request do
             params: { digest: digest_b }, headers: headers
 
         expect(response).to have_http_status(:not_found)
+        # Message-pinned: a bare 404 here is indistinguishable from a routing
+        # 404, which is how an earlier version of this spec passed without ever
+        # reaching the controller.
+        expect(JSON.parse(response.body)["error"]).to include("No UKI artifact matching digest")
         expect(::System::OciBlobProxyService).not_to have_received(:new)
       end
 
-      it "404s for a digest whose publication never reached published" do
+      # Same ACCOUNT, different PLATFORM — a sibling platform is a different
+      # arch or image line, so serving across platforms hands a node a UKI it
+      # cannot boot. An account-scoped lookup passes every cross-ACCOUNT test
+      # and fails only this one.
+      it "404s for a digest published by a sibling platform in the same account" do
+        sibling_platform = create(:system_node_platform, account: account)
+        create(:system_disk_image_publication, :published,
+               account: account, node_platform: sibling_platform,
+               git_sha: "sha-sibling",
+               uki_oci_ref: "ghcr.io/nodealchemy/system/uki:sibling",
+               uki_sha256: digest_b)
+
+        allow(::System::OciBlobProxyService).to receive(:new)
+
+        get "/api/v1/system/node_api/boot_image/download",
+            params: { digest: digest_b }, headers: headers
+
+        expect(response).to have_http_status(:not_found)
+        expect(JSON.parse(response.body)["error"]).to include("No UKI artifact matching digest")
+        expect(::System::OciBlobProxyService).not_to have_received(:new)
+      end
+
+      it "404s for a digest whose publication failed verification" do
         create(:system_disk_image_publication, :failed,
                account: account, node_platform: platform,
                git_sha: "sha-failed",
@@ -300,6 +326,47 @@ RSpec.describe "Api::V1::System::NodeApi::BootImage#download", type: :request do
             params: { digest: digest_b }, headers: headers
 
         expect(response).to have_http_status(:not_found)
+        expect(JSON.parse(response.body)["error"]).to include("No UKI artifact matching digest")
+        expect(::System::OciBlobProxyService).not_to have_received(:new)
+      end
+
+      # The laundering path: `retire` transitions from FAILED as well as
+      # published (DiskImageRetentionService#retire_stuck! cleans up abandoned CI
+      # runs), so a build that failed cosign/sha verification at ingest can end
+      # up status=retired. Status alone cannot tell it apart from a legitimately
+      # promoted-then-retired image; published_at can, because only
+      # mark_published and reactivate ever set it.
+      it "404s for a failed publication laundered into retired by the reaper" do
+        laundered = create(:system_disk_image_publication, :failed,
+                           account: account, node_platform: platform,
+                           git_sha: "sha-laundered",
+                           uki_oci_ref: "ghcr.io/nodealchemy/system/uki:laundered",
+                           uki_sha256: digest_b)
+        laundered.retire
+        laundered.save!
+        expect(laundered.reload).to have_attributes(status: "retired", published_at: nil)
+
+        allow(::System::OciBlobProxyService).to receive(:new)
+
+        get "/api/v1/system/node_api/boot_image/download",
+            params: { digest: digest_b }, headers: headers
+
+        expect(response).to have_http_status(:not_found)
+        expect(JSON.parse(response.body)["error"]).to include("No UKI artifact matching digest")
+        expect(::System::OciBlobProxyService).not_to have_received(:new)
+      end
+
+      it "400s when the digest parameter is supplied but empty" do
+        allow(::System::OciBlobProxyService).to receive(:new)
+
+        get "/api/v1/system/node_api/boot_image/download",
+            params: { digest: "" }, headers: headers
+
+        # NOT a silent fall-through to the promoted artifact: that would
+        # reinstate the promote-window race a pin-serialization bug is trying
+        # to cause.
+        expect(response).to have_http_status(:bad_request)
+        expect(JSON.parse(response.body)["error"]).to include("supplied but empty")
         expect(::System::OciBlobProxyService).not_to have_received(:new)
       end
     end
