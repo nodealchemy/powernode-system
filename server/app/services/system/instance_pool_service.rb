@@ -173,6 +173,21 @@ module System
         # fresh key via rotate-on-bootstrap.)
         revoke_dev_cell_deploy_key!(instance)
 
+        # IMP-71c852bffc37: same hazard as the deploy-key revoke above, one
+        # control short. AgentPeeringService.announce! find_or_initializes the
+        # peer keyed on node_instance_id, so a reused instance's re-announcement
+        # lands on the SAME NodeInstancePeer row — any MCP tool-name glob
+        # widening granted to the prior consumer (system_grant_instance_mcp_tools,
+        # or an operator/agent action) would otherwise survive verbatim into the
+        # next acquirer. Clear to [] rather than restoring some pool-defined
+        # baseline: no such baseline concept exists today, and the next
+        # enrollment (e.g. AgentFleetMissionService#enroll_member!) already
+        # grants whatever that specific mission needs. Fail-closed: a cleared
+        # grant means the reacquired instance can act on nothing until
+        # re-granted (recoverable), never that it can act beyond what its new
+        # acquirer expects (not recoverable).
+        reset_granted_mcp_tools!(instance, pool: pool)
+
         # pool_warming_started_at doubles as the ready-TTL anchor in
         # recycle_stale_members! (F2-05) — without restarting it, a member
         # older than ready_ttl is stale-recycled on the next reaper tick
@@ -929,6 +944,49 @@ module System
     rescue StandardError => e
       Rails.logger.warn(
         "[InstancePoolService] dev-cell deploy-key revoke failed (instance=#{instance&.id}): #{e.class}: #{e.message}"
+      )
+    end
+
+    # Best-effort + guarded reset of a member's granted_mcp_tools on the
+    # reuse-without-reset release path (IMP-71c852bffc37) — see the call site
+    # comment for why this must clear rather than restore a baseline. No-op
+    # for an instance that never announced as a peer, and no-op (no write) if
+    # the grant is already empty.
+    #
+    # A reset failure must never block the member returning to the pool (same
+    # best-effort discipline as the deploy-key revoke beside it) — but unlike
+    # that revoke, a swallowed failure here means the instance goes back into
+    # circulation STILL carrying the widened grant, i.e. the original defect
+    # with extra steps. So this must never be silent: error-level log (not
+    # warn) plus a high-severity FleetEvent, the same "loud, never raise"
+    # shape #abandon_errored_member! uses for its own can't-block-but-can't-
+    # hide failure below.
+    def reset_granted_mcp_tools!(instance, pool:)
+      peer = ::System::NodeInstancePeer.find_by(node_instance_id: instance.id)
+      return unless peer
+      return if Array(peer.granted_mcp_tools).empty?
+
+      peer.grant_mcp_tools!([], mode: :replace)
+    rescue StandardError => e
+      Rails.logger.error(
+        "[InstancePoolService] granted_mcp_tools reset FAILED (instance=#{instance&.id} " \
+        "pool='#{pool&.name}') — the member is returning to the pool STILL CARRYING its prior " \
+        "acquirer's MCP tool grant; operator review required: #{e.class}: #{e.message}"
+      )
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: pool&.account || instance&.account,
+        kind: "system.pool.mcp_grant_reset_failed",
+        severity: :high,
+        payload: {
+          pool_id: pool&.id,
+          pool_name: pool&.name,
+          instance_id: instance&.id,
+          error_class: e.class.name,
+          error_message: e.message
+        },
+        source: "instance_pool_service",
+        node_instance_id: instance&.id
       )
     end
 
