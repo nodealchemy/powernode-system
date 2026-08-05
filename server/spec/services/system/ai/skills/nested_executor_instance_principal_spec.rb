@@ -157,11 +157,18 @@ RSpec.describe "instance principal → nested skill executor → tool" do
   # only durable one is that no tool constructs a skill executor except through
   # Ai::Tools::BaseTool#build_skill_executor. An eighth site fails HERE.
   describe "no tool builds a skill executor outside the funnel" do
+    # BOTH tool trees. Scanning only the extension tree would leave the
+    # invariant unenforced for half the tool surface — a core tool could
+    # reopen the bypass and this guard would never see it. `base_tool.rb` is
+    # excluded because it DEFINES the funnel: the construction inside
+    # #build_skill_executor is the one legitimate direct call.
     let(:tool_sources) do
-      Dir[Rails.root.join("../extensions/system/server/app/services/ai/tools/**/*.rb")]
+      (Dir[Rails.root.join("../extensions/system/server/app/services/ai/tools/**/*.rb")] +
+        Dir[Rails.root.join("app/services/ai/tools/**/*.rb")])
+        .reject { |path| path.end_with?("/base_tool.rb") }
     end
 
-    it "finds every extension tool routing through build_skill_executor" do
+    it "finds every core and extension tool routing through build_skill_executor" do
       expect(tool_sources).not_to be_empty
 
       offenders = tool_sources.flat_map do |path|
