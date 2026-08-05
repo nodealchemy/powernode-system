@@ -12,7 +12,7 @@ RSpec.describe "GET /api/v1/system/network/topology", type: :request do
   let(:account) { create(:account) }
 
   it "returns the topology for a user with sdwan.networks.read" do
-    user = user_with_permissions("sdwan.networks.read", account: account)
+    user = user_with_permissions("system.sdwan.networks.read", account: account)
 
     get "/api/v1/system/network/topology", headers: auth_headers_for(user)
 

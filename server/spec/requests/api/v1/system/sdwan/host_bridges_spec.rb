@@ -4,7 +4,7 @@ require "rails_helper"
 
 # Phase O6 of the OVS+OVN dual-profile networking roadmap.
 RSpec.describe "Api::V1::System::Sdwan::HostBridges", type: :request do
-  let(:user)    { user_with_permissions("sdwan.host_bridges.read") }
+  let(:user)    { user_with_permissions("system.sdwan.host_bridges.read") }
   let(:account) { user.account }
   let(:headers) { auth_headers_for(user) }
 
@@ -83,7 +83,7 @@ RSpec.describe "Api::V1::System::Sdwan::HostBridges", type: :request do
     end
 
     it "rejects without the read permission" do
-      no_perm_user = user_with_permissions("sdwan.networks.read")
+      no_perm_user = user_with_permissions("system.sdwan.networks.read")
       get "/api/v1/system/sdwan/host_bridges", headers: auth_headers_for(no_perm_user)
       expect(response).to have_http_status(:forbidden)
     end
@@ -115,7 +115,7 @@ RSpec.describe "Api::V1::System::Sdwan::HostBridges", type: :request do
   end
 
   describe "DELETE /api/v1/system/sdwan/host_bridges/:id" do
-    let(:manager) { user_with_permissions("sdwan.host_bridges.read", "sdwan.host_bridges.manage", account: account) }
+    let(:manager) { user_with_permissions("system.sdwan.host_bridges.read", "system.sdwan.host_bridges.manage", account: account) }
     let(:manager_headers) { auth_headers_for(manager) }
 
     it "force-removes the bridge (state → removed) and returns deleted=true" do

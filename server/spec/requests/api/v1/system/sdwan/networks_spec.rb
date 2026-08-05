@@ -3,7 +3,7 @@
 require "rails_helper"
 
 RSpec.describe "Api::V1::System::Sdwan::Networks", type: :request do
-  let(:user) { user_with_permissions("sdwan.networks.read", "sdwan.networks.manage", "sdwan.peers.read") }
+  let(:user) { user_with_permissions("system.sdwan.networks.read", "system.sdwan.networks.manage", "system.sdwan.peers.read") }
   let(:account) { user.account }
   let(:headers) { auth_headers_for(user) }
 

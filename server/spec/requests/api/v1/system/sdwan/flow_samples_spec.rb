@@ -4,8 +4,8 @@ require "rails_helper"
 
 # Phase O6 follow-up of the OVS+OVN dual-profile networking roadmap.
 RSpec.describe "Api::V1::System::Sdwan::FlowSamples", type: :request do
-  let(:reader)  { user_with_permissions("sdwan.ipfix.read") }
-  let(:writer)  { user_with_permissions("sdwan.ipfix.ingest") }
+  let(:reader)  { user_with_permissions("system.sdwan.ipfix.read") }
+  let(:writer)  { user_with_permissions("system.sdwan.ipfix.ingest") }
   let(:account) { reader.account }
 
   let(:read_headers)   { auth_headers_for(reader) }
@@ -42,7 +42,7 @@ RSpec.describe "Api::V1::System::Sdwan::FlowSamples", type: :request do
     it "ingests a batch and returns the count" do
       # Reader needs the writer permission too — model the dual-permission
       # setup by giving the reader the ingest permission inline.
-      writer_user = user_with_permissions("sdwan.ipfix.ingest")
+      writer_user = user_with_permissions("system.sdwan.ipfix.ingest")
       collector_for_writer = ::Sdwan::IpfixCollector.create!(
         account_id: writer_user.account.id, name: "writer-c",
         host: "10.0.0.1", port: 4739, sampling_rate: 1, state: "active"
@@ -59,7 +59,7 @@ RSpec.describe "Api::V1::System::Sdwan::FlowSamples", type: :request do
     end
 
     it "returns rejected records without aborting the batch" do
-      writer_user = user_with_permissions("sdwan.ipfix.ingest")
+      writer_user = user_with_permissions("system.sdwan.ipfix.ingest")
       collector_for_writer = ::Sdwan::IpfixCollector.create!(
         account_id: writer_user.account.id, name: "writer-c",
         host: "10.0.0.1", port: 4739, sampling_rate: 1, state: "active"
@@ -82,7 +82,7 @@ RSpec.describe "Api::V1::System::Sdwan::FlowSamples", type: :request do
     end
 
     it "rejects without sdwan.ipfix.ingest permission" do
-      no_perm = user_with_permissions("sdwan.ipfix.read", account: account)
+      no_perm = user_with_permissions("system.sdwan.ipfix.read", account: account)
       post "/api/v1/system/sdwan/ipfix_collectors/#{collector.id}/flow_samples",
            params: valid_payload.to_json,
            headers: auth_headers_for(no_perm).merge("Content-Type" => "application/json")
@@ -90,7 +90,7 @@ RSpec.describe "Api::V1::System::Sdwan::FlowSamples", type: :request do
     end
 
     it "returns 404 for a collector in another account" do
-      writer_user = user_with_permissions("sdwan.ipfix.ingest")
+      writer_user = user_with_permissions("system.sdwan.ipfix.ingest")
       other = create(:account)
       stranger = ::Sdwan::IpfixCollector.create!(
         account_id: other.id, name: "stranger", host: "10.0.0.1", port: 4739,
@@ -135,7 +135,7 @@ RSpec.describe "Api::V1::System::Sdwan::FlowSamples", type: :request do
     end
 
     it "rejects without sdwan.ipfix.read permission" do
-      no_perm = user_with_permissions("sdwan.networks.read", account: account)
+      no_perm = user_with_permissions("system.sdwan.networks.read", account: account)
       get "/api/v1/system/sdwan/ipfix_collectors/#{collector.id}/flow_samples",
           headers: auth_headers_for(no_perm)
       expect(response).to have_http_status(:forbidden)

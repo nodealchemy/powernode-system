@@ -4,7 +4,7 @@ require "rails_helper"
 
 # Phase O6 of the OVS+OVN dual-profile networking roadmap.
 RSpec.describe "Api::V1::System::Sdwan::OvnDeployments", type: :request do
-  let(:user)    { user_with_permissions("sdwan.ovn.read") }
+  let(:user)    { user_with_permissions("system.sdwan.ovn.read") }
   let(:account) { user.account }
   let(:headers) { auth_headers_for(user) }
 
@@ -57,7 +57,7 @@ RSpec.describe "Api::V1::System::Sdwan::OvnDeployments", type: :request do
     end
 
     it "rejects without the read permission" do
-      no_perm_user = user_with_permissions("sdwan.networks.read")
+      no_perm_user = user_with_permissions("system.sdwan.networks.read")
       get "/api/v1/system/sdwan/ovn_deployments", headers: auth_headers_for(no_perm_user)
       expect(response).to have_http_status(:forbidden)
     end

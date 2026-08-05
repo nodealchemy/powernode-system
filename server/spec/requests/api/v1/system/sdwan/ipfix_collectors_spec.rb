@@ -4,7 +4,7 @@ require "rails_helper"
 
 # Phase O6 of the OVS+OVN dual-profile networking roadmap.
 RSpec.describe "Api::V1::System::Sdwan::IpfixCollectors", type: :request do
-  let(:user)    { user_with_permissions("sdwan.ipfix.read") }
+  let(:user)    { user_with_permissions("system.sdwan.ipfix.read") }
   let(:account) { user.account }
   let(:headers) { auth_headers_for(user) }
 
@@ -77,7 +77,7 @@ RSpec.describe "Api::V1::System::Sdwan::IpfixCollectors", type: :request do
     end
 
     it "rejects without the read permission" do
-      no_perm_user = user_with_permissions("sdwan.networks.read")
+      no_perm_user = user_with_permissions("system.sdwan.networks.read")
       get "/api/v1/system/sdwan/ipfix_collectors", headers: auth_headers_for(no_perm_user)
       expect(response).to have_http_status(:forbidden)
     end
@@ -111,7 +111,7 @@ RSpec.describe "Api::V1::System::Sdwan::IpfixCollectors", type: :request do
   end
 
   describe "PATCH /api/v1/system/sdwan/ipfix_collectors/:id" do
-    let(:manager) { user_with_permissions("sdwan.ipfix.read", "sdwan.ipfix.manage", account: account) }
+    let(:manager) { user_with_permissions("system.sdwan.ipfix.read", "system.sdwan.ipfix.manage", account: account) }
     let(:manager_headers) { auth_headers_for(manager) }
     let!(:collector) do
       ::Sdwan::IpfixCollector.create!(
@@ -154,7 +154,7 @@ RSpec.describe "Api::V1::System::Sdwan::IpfixCollectors", type: :request do
   end
 
   describe "DELETE /api/v1/system/sdwan/ipfix_collectors/:id" do
-    let(:manager) { user_with_permissions("sdwan.ipfix.read", "sdwan.ipfix.manage", account: account) }
+    let(:manager) { user_with_permissions("system.sdwan.ipfix.read", "system.sdwan.ipfix.manage", account: account) }
     let(:manager_headers) { auth_headers_for(manager) }
 
     it "destroys the collector + cascades to its flow_samples" do
