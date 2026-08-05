@@ -99,9 +99,11 @@ module System
         else
           auto_resolved_ids.add(mod.id)
           # Trace which explicit module(s) pulled this transitive in.
-          # We pick the first explicit ancestor we find in the dependency
-          # graph; ties are resolved by template-module priority (highest
-          # first) for deterministic source attribution.
+          # We pick the nearest explicit ancestor(s) in the dependency
+          # graph (BFS by `dependents`, i.e. reverse edges); when more than
+          # one explicit ancestor is equally near, ties are resolved by
+          # template-module priority (highest first), then by module name,
+          # for deterministic source attribution.
           ancestor_tm = find_originating_template_module(
             from: mod,
             explicit_module_ids: explicit_ids,
@@ -146,9 +148,13 @@ module System
     end
 
     def default_available_modules
+      # :dependents is preloaded alongside the forward edges because
+      # find_originating_template_module walks it (reverse edges) for
+      # every transitive module in the closure — without this the walk
+      # issues one query per node visited.
       ::System::NodeModule
         .enabled
-        .includes(:module_dependencies, :dependencies, :package_module_link)
+        .includes(:module_dependencies, :dependencies, :package_module_link, :dependents)
     end
 
     # For transitive modules (not directly in template), follow the
@@ -163,25 +169,40 @@ module System
       Array(link.recommends_chosen).include?(candidate_pkg_name)
     end
 
-    # Walk back from `from` through `dependents` (reverse edges) until we
-    # find a module that's in `explicit_module_ids`. Returns the
-    # TemplateModule pointing at that explicit module, or nil if no
-    # explicit ancestor exists (shouldn't happen — closure must have an
-    # explicit root — but defensive).
+    # Walk back from `from` through `dependents` (reverse edges), one BFS
+    # level at a time, until a level contains at least one module that's in
+    # `explicit_module_ids`. Returns the TemplateModule for the winning
+    # explicit ancestor, or nil if no explicit ancestor exists (shouldn't
+    # happen — closure must have an explicit root — but defensive).
+    #
+    # A level can contain more than one explicit ancestor (the same
+    # transitive module pulled in by two different explicit sources at
+    # equal distance) — see the module-level comment. Ties are broken by
+    # template-module priority (highest first), then module name, matching
+    # DependencyResolutionService#order_by_priority's `[-priority, name]`
+    # convention so attribution ordering reads the same way resolution
+    # ordering does elsewhere in this service.
     def find_originating_template_module(from:, explicit_module_ids:, tm_by_module_id:)
-      visited = Set.new
-      queue = [ from ]
-      while (current = queue.shift)
-        next if visited.include?(current.id)
+      visited = Set.new([ from.id ])
+      frontier = [ from ]
 
-        visited.add(current.id)
-        current.dependents.each do |parent|
-          return tm_by_module_id[parent.id] if explicit_module_ids.include?(parent.id)
+      until frontier.empty?
+        next_frontier = frontier.flat_map(&:dependents).uniq(&:id).reject { |m| visited.include?(m.id) }
+        next_frontier.each { |m| visited.add(m.id) }
 
-          queue << parent
-        end
+        explicit_here = next_frontier.select { |m| explicit_module_ids.include?(m.id) }
+        return winning_template_module(explicit_here, tm_by_module_id) if explicit_here.any?
+
+        frontier = next_frontier
       end
       nil
+    end
+
+    # Deterministic winner among explicit ancestors tied at the same BFS
+    # distance: highest template-module priority, then module name ascending.
+    def winning_template_module(candidates, tm_by_module_id)
+      candidates.min_by { |m| [ -tm_by_module_id[m.id].priority, m.name.to_s ] }
+                .then { |m| tm_by_module_id[m.id] }
     end
   end
 end

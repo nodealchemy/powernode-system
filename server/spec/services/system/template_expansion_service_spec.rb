@@ -104,5 +104,30 @@ RSpec.describe System::TemplateExpansionService do
       # Transitive deps are sourced back to the TM that pulled them in
       expect(expansion.source_template_module_for[transitive_id]&.id).to eq(tms.first.id)
     end
+
+    it "case 6: a transitive module reachable from two explicit sources is attributed " \
+       "to the higher-priority source, deterministically" do
+      shared_mod = create(:system_node_module, account: account, name: "shared-lib-#{suffix}")
+      low_mod    = create(:system_node_module, account: account, name: "low-priority-source-#{suffix}")
+      high_mod   = create(:system_node_module, account: account, name: "high-priority-source-#{suffix}")
+
+      # low_mod's edge is created FIRST (lower row id), high_mod's edge
+      # SECOND — so an unordered walk of shared_mod.dependents returns
+      # low_mod before high_mod. If attribution followed that incidental
+      # order instead of the documented priority tie-break, low_mod would
+      # win despite its lower priority.
+      create(:system_module_dependency, node_module: low_mod, dependency: shared_mod,
+                                         dependency_type: "requires", required: true)
+      create(:system_module_dependency, node_module: high_mod, dependency: shared_mod,
+                                         dependency_type: "requires", required: true)
+
+      tm_low  = create(:system_template_module, node_template: template, node_module: low_mod, priority: 10)
+      tm_high = create(:system_template_module, node_template: template, node_module: high_mod, priority: 90)
+
+      expansion = described_class.new(template_modules: [ tm_low, tm_high ]).expand
+
+      expect(expansion.modules.map(&:name)).to include(shared_mod.name)
+      expect(expansion.source_template_module_for[shared_mod.id]&.id).to eq(tm_high.id)
+    end
   end
 end
