@@ -430,9 +430,8 @@ module Ai
       # Intent-based discovery — thin wrapper over the skill executor so
       # direct skill invocation and MCP invocation return identical shapes.
       def discover_packages(params)
-        executor = ::System::Ai::Skills::DiscoverPackagesByIntentExecutor.new(
-          account: @user&.account, agent: @agent, user: @user
-        )
+        executor = build_skill_executor(::System::Ai::Skills::DiscoverPackagesByIntentExecutor,
+                                        account: @user&.account)
         result = executor.execute(
           intent:         params[:intent],
           repository_ids: Array(params[:repository_ids]).compact_blank,
@@ -550,9 +549,8 @@ module Ai
       # ranking + rationale logic in one place (the executor) so direct
       # skill invocation and MCP invocation return identical shapes.
       def suggest_architectures_for_fleet(params)
-        executor = ::System::Ai::Skills::SuggestArchitecturesForFleetExecutor.new(
-          account: @user&.account, agent: @agent, user: @user
-        )
+        executor = build_skill_executor(::System::Ai::Skills::SuggestArchitecturesForFleetExecutor,
+                                        account: @user&.account)
         result = executor.execute(
           repository_id:   params[:repository_id],
           max_suggestions: params[:max_suggestions] || ::System::Ai::Skills::SuggestArchitecturesForFleetExecutor::DEFAULT_MAX_SUGGESTIONS

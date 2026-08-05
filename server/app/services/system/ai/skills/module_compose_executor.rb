@@ -265,9 +265,8 @@ module System
         # discovery_unavailable gap when discovery itself FAILED (transient
         # infra — retryable, NOT evidence that authoring is needed).
         def gap_for_capability(capability)
-          disc = DiscoverPackagesByIntentExecutor
-                 .new(account: @account, agent: @agent, user: @user)
-                 .execute(intent: capability)
+          disc = executor(DiscoverPackagesByIntentExecutor)
+                   .execute(intent: capability)
 
           unless disc[:success]
             return {

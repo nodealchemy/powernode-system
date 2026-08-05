@@ -279,8 +279,7 @@ module System
                      certificate_status: existing.status, step: "reuse_certificate" }
           end
 
-          result = AcmeCertificateProvisionExecutor
-                     .new(account: @account, agent: @agent, user: @user)
+          result = executor(AcmeCertificateProvisionExecutor)
                      .execute(
                        common_name: hostname,
                        issuer: issuer,
@@ -305,8 +304,7 @@ module System
 
         # ── Step 4 helper: reverse-proxy regen for the issued cert ───────
         def regenerate_reverse_proxy(certificate_id:)
-          result = ReverseProxyComposeExecutor
-                     .new(account: @account, agent: @agent, user: @user)
+          result = executor(ReverseProxyComposeExecutor)
                      .execute(certificate_id: certificate_id)
           return { success: false, error: result[:error] } unless result[:success]
 

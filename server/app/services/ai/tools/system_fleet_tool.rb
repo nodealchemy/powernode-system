@@ -2707,9 +2707,7 @@ module Ai
       # `platform_deployment_wizard` ChatCard kind so the frontend
       # renders the form inline rather than showing the JSON envelope.
       def deploy_platform(params)
-        executor = ::System::Ai::Skills::PlatformDeployExecutor.new(
-          account: @account, agent: @agent, user: @user
-        )
+        executor = build_skill_executor(::System::Ai::Skills::PlatformDeployExecutor)
         # Pass through every relevant param; nil/blank get filtered by the executor
         execute_args = {
           mode: params[:mode].presence,
@@ -3159,9 +3157,7 @@ module Ai
         op = params[:op].presence || params[:maintenance_action].presence
         return error_result("op is required (cert_status | cert_rotate | drift_check | health_check)") if op.blank?
 
-        executor = ::System::Ai::Skills::PlatformMaintenanceExecutor.new(
-          account: @account, agent: @agent, user: @user
-        )
+        executor = build_skill_executor(::System::Ai::Skills::PlatformMaintenanceExecutor)
         result = executor.execute(
           action: op.to_s,
           certificate_id: params[:certificate_id],
@@ -3176,9 +3172,7 @@ module Ai
         op = params[:op].presence || params[:resilience_action].presence
         return error_result("op is required (drain_instance | scale | failover_check)") if op.blank?
 
-        executor = ::System::Ai::Skills::PlatformResilienceExecutor.new(
-          account: @account, agent: @agent, user: @user
-        )
+        executor = build_skill_executor(::System::Ai::Skills::PlatformResilienceExecutor)
         result = executor.execute(
           action: op.to_s,
           instance_id: params[:instance_id],
@@ -3350,9 +3344,7 @@ module Ai
       # === Runbook generation ===
 
       def runbook_generate(params)
-        executor = ::System::Ai::Skills::RunbookGenerateExecutor.new(
-          account: @account, agent: @agent, user: @user
-        )
+        executor = build_skill_executor(::System::Ai::Skills::RunbookGenerateExecutor)
         result = executor.execute(
           template_id: params[:template_id],
           persist_as_page: params[:persist_as_page] || false
@@ -3364,9 +3356,7 @@ module Ai
       # === CVE remediation runbook (Phase 10.7) ===
 
       def cve_runbook_generate(params)
-        executor = ::System::Ai::Skills::CveRunbookGenerateExecutor.new(
-          account: @account, agent: @agent, user: @user
-        )
+        executor = build_skill_executor(::System::Ai::Skills::CveRunbookGenerateExecutor)
         result = executor.execute(
           cve_id: params[:cve_id],
           persist_as_page: params[:persist_as_page] || false
@@ -3378,9 +3368,7 @@ module Ai
       # === CVE triage ===
 
       def cve_triage(params)
-        executor = ::System::Ai::Skills::CveResponseExecutor.new(
-          account: @account, agent: @agent, user: @user
-        )
+        executor = build_skill_executor(::System::Ai::Skills::CveResponseExecutor)
         result = executor.execute(
           cve_id: params[:cve_id],
           severity: params[:severity],
@@ -3413,9 +3401,7 @@ module Ai
       # === Attribution — failure causation ===
 
       def attribute_failure(params)
-        executor = ::System::Ai::Skills::AttributeFailureExecutor.new(
-          account: @account, agent: @agent, user: @user
-        )
+        executor = build_skill_executor(::System::Ai::Skills::AttributeFailureExecutor)
         result = executor.execute(
           instance_id: params[:instance_id],
           lookback_hours: params[:lookback_hours] || 24

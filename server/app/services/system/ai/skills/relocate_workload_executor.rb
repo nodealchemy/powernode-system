@@ -214,9 +214,7 @@ module System
         def provision_target!(template_id:, count:, to_region_id:,
                               provider_instance_type_id:, network_id:, with_storage_gb:,
                               failures:, planned_actions:)
-          inner = ::System::Ai::Skills::ProvisionFullStackExecutor.new(
-            account: @account, agent: @agent, user: @user
-          )
+          inner = executor(::System::Ai::Skills::ProvisionFullStackExecutor)
           result = inner.execute(
             template_id: template_id, count: count,
             provider_region_id: to_region_id,

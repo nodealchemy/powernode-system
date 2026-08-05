@@ -1327,8 +1327,14 @@ module Ai
       # are dropped so the executor's own keyword defaults (e.g. dry_run:
       # false, routing_protocol: "static") and required-input validation
       # apply — passing explicit nils would clobber those defaults.
+      #
+      # The instance provenance travels with the call. Forwarding `user:` alone
+      # dropped it — an instance principal has no User, so the executor read the
+      # nil user as "in-process reconciler" and handed every tool it nests the
+      # internal bypass, out of reach of the name grant and the destructive deny
+      # overlay that authorized THIS call. (IMP-0e6b216de843)
       def run_skill_executor(executor_class, **inputs)
-        executor = executor_class.new(account: @account, agent: @agent, user: @user)
+        executor = build_skill_executor(executor_class)
         result = executor.execute(**inputs.compact)
         result[:success] ? success_result(result[:data]) : error_result(result[:error])
       end

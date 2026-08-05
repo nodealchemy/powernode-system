@@ -162,15 +162,15 @@ module System
         # orchestrator can run on the same account/agent/user context
         # without sharing mutable state between sub-skill invocations.
         def bridge_executor
-          @bridge_executor ||= SdwanHostBridgeComposeExecutor.new(account: @account, agent: @agent, user: @user)
+          @bridge_executor ||= executor(SdwanHostBridgeComposeExecutor)
         end
 
         def ovn_executor
-          @ovn_executor ||= SdwanOvnComposeTopologyExecutor.new(account: @account, agent: @agent, user: @user)
+          @ovn_executor ||= executor(SdwanOvnComposeTopologyExecutor)
         end
 
         def ipfix_executor
-          @ipfix_executor ||= SdwanIpfixCollectorComposeExecutor.new(account: @account, agent: @agent, user: @user)
+          @ipfix_executor ||= executor(SdwanIpfixCollectorComposeExecutor)
         end
 
         # AI tool-call payloads arrive as string-keyed hashes from the MCP

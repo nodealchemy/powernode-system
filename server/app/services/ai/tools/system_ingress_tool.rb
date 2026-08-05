@@ -384,10 +384,15 @@ module Ai
         }
       end
 
+      # The instance provenance travels with the call. Forwarding `user:` alone
+      # dropped it — an instance principal has no User, so the executor read the
+      # nil user as "in-process reconciler" and handed every tool it nests the
+      # internal bypass, out of reach of the name grant and the destructive deny
+      # overlay that authorized THIS call. (IMP-0e6b216de843)
       def run_executor(action, params)
         klass = ACTION_EXECUTORS.fetch(action).constantize
         inputs = executor_inputs(klass, params).merge(ACTION_EXECUTOR_OVERRIDES.fetch(action, {}))
-        klass.new(account: @account, agent: @agent, user: @user).execute(**inputs)
+        build_skill_executor(klass).execute(**inputs)
       end
 
       # Strip the routing-only :action key and forward only the params the

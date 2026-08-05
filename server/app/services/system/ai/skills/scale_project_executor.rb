@@ -150,9 +150,7 @@ module System
         # both delegate to the same primitive and re-shape the result.
         def run_provision(strategy:, count:, template_id:, provider_region_id:,
                           provider_instance_type_id:, network_id:, with_storage_gb:, dry_run:)
-          inner = ::System::Ai::Skills::ProvisionFullStackExecutor.new(
-            account: @account, agent: @agent, user: @user
-          )
+          inner = executor(::System::Ai::Skills::ProvisionFullStackExecutor)
           inner_result = inner.execute(
             template_id: template_id,
             count: count,
@@ -205,9 +203,7 @@ module System
             )
           end
 
-          inner = ::System::Ai::Skills::RollingModuleUpgradeExecutor.new(
-            account: @account, agent: @agent, user: @user
-          )
+          inner = executor(::System::Ai::Skills::RollingModuleUpgradeExecutor)
           inner_result = inner.execute(
             template_id: template_id, module_id: module_id,
             target_version_id: target_version_id

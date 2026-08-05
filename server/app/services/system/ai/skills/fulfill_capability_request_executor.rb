@@ -103,9 +103,8 @@ module System
           return failure("base-os module not found: #{base_os_module_name}") unless base_os
 
           # --- compose (read-only) ---
-          compose = ModuleComposeExecutor
-                    .new(account: @account, agent: @agent, user: @user)
-                    .execute(description: request, platform_id: platform_id)
+          compose = executor(ModuleComposeExecutor)
+                      .execute(description: request, platform_id: platform_id)
           return failure("module_compose failed: #{compose[:error]}") unless compose[:success]
 
           reused     = Array(compose.dig(:data, :draft_template, :modules))

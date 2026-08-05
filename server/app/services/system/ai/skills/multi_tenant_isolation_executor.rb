@@ -501,13 +501,11 @@ module System
         # one instance (the apply-acl rollback reads no per-instance state,
         # but reusing the same @account/@agent/@user wiring is correct).
         def ovn_compose_executor
-          @ovn_compose_executor ||=
-            SdwanOvnComposeTopologyExecutor.new(account: @account, agent: @agent, user: @user)
+          @ovn_compose_executor ||= executor(SdwanOvnComposeTopologyExecutor)
         end
 
         def ovn_acl_executor
-          @ovn_acl_executor ||=
-            SdwanOvnApplyAclExecutor.new(account: @account, agent: @agent, user: @user)
+          @ovn_acl_executor ||= executor(SdwanOvnApplyAclExecutor)
         end
 
         # Sdwan::Executors::CreateNetwork derives its account from

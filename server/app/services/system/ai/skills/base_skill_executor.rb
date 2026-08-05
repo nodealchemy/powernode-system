@@ -86,12 +86,29 @@ module System
 
         attr_reader :account, :agent, :user
 
+        # The MCP INSTANCE provenance, injected post-construction by whatever
+        # routed here — SdwanTool#run_skill_executor and SystemIngressTool
+        # #run_executor set it; a reconciler leaves it alone. Both forwarded
+        # only `user:`, and an instance principal (mTLS node cert) has no User,
+        # so at `#tool` below it was indistinguishable from an autonomy
+        # reconciler and inherited the reconciler's in-process bypass for every
+        # tool the executor nests. (IMP-0e6b216de843)
+        #
+        # Writers rather than constructor keywords, mirroring the same pair on
+        # Ai::Tools::BaseTool (set by McpPlatformToolRegistrar): every call site
+        # guards on the instance case, so `.new` and the reconciler/user paths
+        # stay byte-for-byte unchanged across all 54 executors.
+        attr_writer :instance_authorized
+        attr_accessor :node_instance
+
         def initialize(account:, agent: nil, user: nil)
           raise ArgumentError, "account is required" if account.nil?
 
           @account = account
           @agent   = agent
           @user    = user
+          @instance_authorized = false
+          @node_instance = nil
         end
 
         # Public entry point. Validates required inputs against the descriptor,
@@ -139,18 +156,62 @@ module System
           { success: false, error: msg }
         end
 
+        # True when this executor is running on behalf of a grant-gated MCP
+        # instance principal rather than an in-process caller.
+        def instance_authorized?
+          @instance_authorized == true
+        end
+
+        # A userless executor is a trusted in-process system caller — autonomy
+        # reconcilers build executors with `user: nil` (System::Fleet::
+        # DecisionEngine) and mean exactly that — UNLESS it is serving an
+        # instance principal, which arrives with no user either. Only that
+        # second case was invisible here, which is why `@user.nil?` alone was
+        # the wrong test. (IMP-0e6b216de843)
+        def internal_caller?
+          @user.nil? && !instance_authorized?
+        end
+
         # Standardized tool construction. Replaces the 40 sites that built
         # `::Ai::Tools::SomeTool.new(account: @account, agent: @agent, user: @user)`
-        # inline. Pass the tool class; the helper handles the 3-arg constructor.
+        # inline. Pass the tool class; the helper handles the constructor.
         #
-        # A userless executor IS an in-process system caller — autonomy
-        # reconcilers build executors with `user: nil` (System::Fleet::
-        # DecisionEngine) — so it declares that with `internal: true` instead of
-        # leaving the tool to infer it from the nil user. The inference was the
-        # bug: an MCP instance principal also arrives with no user, and inherited
-        # the same bypass. (IMP-9030413bc292)
+        # This is the single funnel for every executor-nested tool, so it is
+        # where the caller's identity has to be told truthfully:
+        #
+        #   reconciler  -> `internal: true`, the documented in-process bypass.
+        #   instance    -> NOT internal; marked `instance_authorized` instead.
+        #
+        # The mark is provenance, not a wider bypass — it is what re-arms
+        # Mcp::Principal's destructive deny overlay against the action this
+        # nested tool is about to run (Ai::Tools::BaseTool#execute). Under the
+        # old `internal: @user.nil?` an instance got the reconciler's bypass and
+        # the nested tool name was never checked against the overlay at all.
+        # (IMP-9030413bc292 closed the first hop; IMP-0e6b216de843 this one.)
         def tool(tool_class)
-          tool_class.new(account: @account, agent: @agent, user: @user, internal: @user.nil?)
+          built = tool_class.new(account: @account, agent: @agent, user: @user,
+                                 internal: internal_caller?)
+          mark_instance_provenance(built)
+        end
+
+        # Build a peer/child executor carrying THIS executor's caller context.
+        # Composers that nest other executors must not drop the instance
+        # provenance one hop further down — that re-creates the same bypass
+        # inside the child. (IMP-0e6b216de843)
+        def executor(executor_class, **overrides)
+          mark_instance_provenance(
+            executor_class.new(account: @account, agent: @agent, user: @user, **overrides)
+          )
+        end
+
+        # Guarded: touches nothing unless this executor is itself serving an
+        # instance principal, so reconciler and user calls are unchanged.
+        def mark_instance_provenance(target)
+          return target unless instance_authorized?
+
+          target.instance_authorized = true
+          target.node_instance = @node_instance if @node_instance
+          target
         end
 
         def audit_log_start(inputs)

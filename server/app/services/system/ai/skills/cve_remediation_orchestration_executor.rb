@@ -65,9 +65,7 @@ module System
           severity_norm = (severity || cve.severity).to_s.downcase
           packages = cve.normalized_affected_packages
 
-          triage_executor = ::System::Ai::Skills::CveResponseExecutor.new(
-            account: @account, agent: @agent, user: @user
-          )
+          triage_executor = executor(::System::Ai::Skills::CveResponseExecutor)
           triage = triage_executor.execute(
             cve_id: cve_id,
             severity: severity_norm,
@@ -112,9 +110,7 @@ module System
         def dispatch_refreshes(module_ids)
           return [] if module_ids.empty?
 
-          refresh_executor = ::System::Ai::Skills::PackageModuleRefreshExecutor.new(
-            account: @account, agent: @agent, user: @user
-          )
+          refresh_executor = executor(::System::Ai::Skills::PackageModuleRefreshExecutor)
 
           links = ::System::PackageModuleLink
             .joins(:node_module)
@@ -134,9 +130,7 @@ module System
         def plan_rolling_upgrades(module_ids)
           return [] if module_ids.empty?
 
-          rolling_executor = ::System::Ai::Skills::RollingModuleUpgradeExecutor.new(
-            account: @account, agent: @agent, user: @user
-          )
+          rolling_executor = executor(::System::Ai::Skills::RollingModuleUpgradeExecutor)
 
           plans = []
           ::System::NodeModule
