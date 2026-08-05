@@ -31,4 +31,19 @@ RSpec.describe System::Ai::Skills::TemplateApprovalPolicy do
     expect(c.provisioned_node_count).to eq(1)
     expect(c.reason).to match(/propagates to live fleet/)
   end
+
+  # IMP-f27deedae6fc: `rebooting` is a live, non-terminated NodeInstance
+  # status (see System::NodeInstance::STATUSES) — a fleet mid-reboot is
+  # exactly the moment a template mutation must NOT be auto-approved.
+  # LIVE_INSTANCE_SCOPE omitted it, so a fleet whose only instances were
+  # rebooting looked like "no provisioned nodes" and skipped the gate.
+  it "REQUIRES approval for an existing template whose only provisioned node is rebooting" do
+    node = create(:system_node, account: account, node_template: template)
+    create(:system_node_instance, node: node, status: "rebooting")
+
+    c = described_class.for(template: template)
+    expect(c.requires_approval?).to be true
+    expect(c.provisioned_node_count).to eq(1)
+    expect(c.reason).to match(/propagates to live fleet/)
+  end
 end

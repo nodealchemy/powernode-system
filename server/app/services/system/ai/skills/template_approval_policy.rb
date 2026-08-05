@@ -35,7 +35,10 @@ module System
 
         # A node counts as "provisioned" when it carries a non-terminated
         # NodeInstance — i.e., live fleet a manifest change would reach.
-        LIVE_INSTANCE_SCOPE = { system_node_instances: { status: %w[pending provisioning starting running stopping stopped error] } }.freeze
+        # `rebooting` is included deliberately: it's a live, non-terminated
+        # status (System::NodeInstance::STATUSES) and reboots are exactly
+        # when a fleet is mid-upgrade — the worst moment to skip approval.
+        LIVE_INSTANCE_SCOPE = { system_node_instances: { status: %w[pending provisioning starting running stopping stopped rebooting error] } }.freeze
 
         def self.for(template:)
           new(template: template).classify
