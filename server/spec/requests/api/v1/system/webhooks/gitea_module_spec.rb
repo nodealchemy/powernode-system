@@ -569,12 +569,42 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
     # dogfood box with only a Gitea provider credential connected (no hand-set
     # POWERNODE_OCI_REGISTRY) got a guaranteed-unreachable oci_ref.
     describe "OCI registry host resolution (module supply-chain config)" do
+      # TWO different env vars, easy to confuse, and both have to go:
+      #   POWERNODE_OCI_REGISTRY   — build_oci_ref's own final fallback
+      #   POWERNODE_REGISTRY_HOST  — tier 2 INSIDE DiskImageRegistryConfig
+      #                              #registry_host, which sits between the
+      #                              AdminSetting override and the Gitea
+      #                              provider credential.
+      # Clearing only the first (as this block used to) leaves tier 2 able to
+      # shadow the provider credential on any box that exports it, which would
+      # make the credential example below pass without ever consulting a
+      # credential.
       around do |example|
-        original = ENV["POWERNODE_OCI_REGISTRY"]
+        original_oci  = ENV["POWERNODE_OCI_REGISTRY"]
+        original_host = ENV["POWERNODE_REGISTRY_HOST"]
         ENV.delete("POWERNODE_OCI_REGISTRY")
+        ENV.delete("POWERNODE_REGISTRY_HOST")
         example.run
       ensure
-        ENV["POWERNODE_OCI_REGISTRY"] = original
+        ENV["POWERNODE_OCI_REGISTRY"]  = original_oci
+        ENV["POWERNODE_REGISTRY_HOST"] = original_host
+      end
+
+      # Neutralizes the ONE network boundary on the ingest path, and nothing
+      # else: with_registry_docker_config shells out to a real `oras login`
+      # against the resolved host whenever DiskImageRegistryConfig.configured?
+      # is true. A fixture that supplies a Gitea credential satisfies
+      # `configured?` trivially, so without this the example below stopped
+      # being a test of host derivation and became a test of whether a
+      # PRODUCTION registry answers an unauthenticated CI bot — it failed with
+      # a live 401 from git.powernode.org and recorded no artifact at all,
+      # which is why `oci_ref` came back nil rather than wrong.
+      #
+      # Host resolution, build_oci_ref and the ingest itself all still run for
+      # real; only the login shell-out is replaced.
+      def stub_registry_login!
+        allow_any_instance_of(::System::ModuleOciIngestService)
+          .to receive(:with_registry_docker_config) { |_receiver, _account, &blk| blk.call({}) }
       end
 
       it "builds the ingested oci_ref from the platform-configured registry host, not the placeholder" do
@@ -592,10 +622,47 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
         expect(oci_ref).not_to start_with("registry.example.com/")
       end
 
-      it "derives the host from a connected Gitea provider credential when no AdminSetting override is set" do
+      # Tier 2. Nothing exercised it before: deleting the ENV clause from
+      # #registry_host failed no example in this file, because the only two
+      # examples here set an AdminSetting (tier 1 short-circuits) or a provider
+      # credential (tier 3). An unpinned middle tier is how a precedence change
+      # lands silently, so both the tier itself and its position are asserted.
+      it "falls back to POWERNODE_REGISTRY_HOST when no AdminSetting override is set" do
         gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
         create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
                external_username: "ci-bot")
+        ENV["POWERNODE_REGISTRY_HOST"] = "env-registry.example.net"
+
+        # Beats the provider credential below it...
+        expect(System::DiskImageRegistryConfig.registry_host(account: account))
+          .to eq("env-registry.example.net")
+
+        # ...and loses to the AdminSetting override above it.
+        AdminSetting.set(System::DiskImageRegistryConfig::HOST_SETTING_KEY, "admin.powernode.org")
+        expect(System::DiskImageRegistryConfig.registry_host(account: account))
+          .to eq("admin.powernode.org")
+      end
+
+      # Tier 3 of DiskImageRegistryConfig#registry_host: no AdminSetting, no
+      # ENV, only a connected Gitea provider credential. Asserted at the
+      # resolver directly as well as end-to-end, so a failure says WHICH of the
+      # two broke — a round trip alone cannot tell "the host resolved wrong"
+      # apart from "the ingest never got far enough to record anything".
+      it "resolves the host from a connected Gitea provider credential when no AdminSetting override is set" do
+        gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+        create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
+               external_username: "ci-bot")
+
+        expect(AdminSetting.get(System::DiskImageRegistryConfig::HOST_SETTING_KEY)).to be_blank
+        expect(System::DiskImageRegistryConfig.registry_host(account: account))
+          .to eq("git.powernode.org")
+      end
+
+      it "derives the ingested oci_ref from a connected Gitea provider credential" do
+        gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+        create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
+               external_username: "ci-bot")
+        stub_registry_login!
 
         body = push_payload.to_json
         post "/api/v1/system/webhooks/gitea/module",
@@ -606,6 +673,7 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
         version = node_module.versions.order(:version_number).last
         oci_ref = version.artifacts.dig(System::NodeModuleVersion::PRIMARY_ARTIFACT_FORMAT, "oci_ref")
         expect(oci_ref).to start_with("git.powernode.org/")
+        expect(oci_ref).not_to start_with("registry.example.com/")
       end
     end
   end
