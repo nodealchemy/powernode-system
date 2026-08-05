@@ -3,6 +3,37 @@
 require "rails_helper"
 
 RSpec.describe System::CveOps::VersionMatcher do
+  # Hygiene, NOT a fix for the known flake below. DebVersionComparator memoizes
+  # `dpkg --compare-versions` in a PROCESS-WIDE class-level cache that nothing
+  # resets between examples (`reset_cache!` had no caller anywhere in the
+  # suite), and several specs in this tree stub Open3 broadly. A cache that
+  # outlives an example has no business deciding a later one's result, so it is
+  # cleared here regardless.
+  before { System::CveOps::DebVersionComparator.reset_cache! }
+
+  # KNOWN ORDER-DEPENDENT FLAKE — 6 rows in this file fail in a FULL-suite run
+  # and pass in every isolation I tried (this file alone; the whole cve_ops
+  # directory; after the Open3-stubbing ingest specs). Adding the cache reset
+  # above did NOT fix them, so the deb cache is ruled out.
+  #
+  # What is known:
+  #   - The failing rows span FOUR comparators (semver, deb, rpm, pypi), so no
+  #     single comparator's state explains it.
+  #   - Every failing row expects `true` and gets `false`. `false` is also what
+  #     VersionMatcher's `rescue StandardError` returns — but that rescue logs a
+  #     warn, and a 33MB test.log contains ZERO VersionMatcher entries, so the
+  #     rescue never fired. The comparators genuinely returned false.
+  #   - The rows are literal table data and SemverComparator is pure Ruby with
+  #     no config, ENV, cache or DB, so the computation is deterministic given
+  #     its inputs.
+  #   - Nothing in the spec tree redefines, reopens or stubs the comparators.
+  #
+  # That combination is not yet explained. The next step is `rspec --bisect`
+  # over the full CI matrix to find the minimal reproducing pair; it is bounded
+  # work but takes hours, so it is deliberately left as its own task rather
+  # than guessed at. Do NOT "fix" these rows by relaxing the expectations —
+  # they assert correct ecosystem semantics and pass in isolation.
+
   describe ".vulnerable?" do
     # Table-driven tests grouped by ecosystem. Each row exercises one
     # representative case: range bounds, edge values, ecosystem-specific
