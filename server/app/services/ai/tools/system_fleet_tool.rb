@@ -1845,6 +1845,12 @@ module Ai
 
         result = ::System::InferenceDeploymentService.deploy!(
           account: @account, instance: instance,
+          # Carry this call's INSTANCE provenance across the service seam. The
+          # service builds a skill executor, which is a hop the tool-side
+          # funnel (#build_skill_executor) cannot reach from here — without
+          # this the executor reads its nil user as a trusted in-process caller.
+          # (IMP-c2e3e5d3cff0)
+          instance_authorized: instance_authorized?, node_instance: node_instance,
           model: params[:model].presence,
           endpoint_override: params[:endpoint_override].presence,
           sdwan_network_id: params[:sdwan_network_id].presence,

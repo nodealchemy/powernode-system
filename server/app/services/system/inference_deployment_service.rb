@@ -30,12 +30,26 @@ module System
       :endpoint, :model, :offering_id, :provider_active, keyword_init: true
     )
 
-    def self.deploy!(account:, **kwargs)
-      new(account: account).deploy!(**kwargs)
+    # `instance_authorized:` / `node_instance:` carry the MCP caller's INSTANCE
+    # provenance across this service seam. A tool hands its executors that
+    # provenance through Ai::Tools::BaseTool#build_skill_executor, but a tool
+    # that calls a plain service instead puts the executor construction one
+    # layer out, where that funnel cannot reach — and `deploy!(account:)` had
+    # no way to carry a caller at all. Without it #compose_offering's executor
+    # sees a nil user, BaseSkillExecutor#internal_caller? reads that as a
+    # trusted in-process caller, and every tool it nests is built
+    # `internal: true` — the bypass IMP-0e6b216de843 closed, reopened through a
+    # service. Both default to the reconciler/operator shape, so every existing
+    # caller is unchanged. (IMP-c2e3e5d3cff0)
+    def self.deploy!(account:, instance_authorized: false, node_instance: nil, **kwargs)
+      new(account: account, instance_authorized: instance_authorized,
+          node_instance: node_instance).deploy!(**kwargs)
     end
 
-    def initialize(account:)
+    def initialize(account:, instance_authorized: false, node_instance: nil)
       @account = account
+      @instance_authorized = instance_authorized
+      @node_instance = node_instance
     end
 
     # @param instance [System::NodeInstance] the GPU node to host inference
@@ -116,7 +130,21 @@ module System
       peer_id = instance.try(:sdwan_peer_id)
       return nil if peer_id.blank?
 
-      result = ::System::Ai::Skills::ServiceDiscoveryComposerExecutor.new(account: account).perform(
+      # #execute, not #perform: #perform is PROTECTED on every
+      # BaseSkillExecutor subclass, so calling it from here raised NoMethodError
+      # on every deploy — swallowed by the rescue below into a warn, which is
+      # why this publication silently never happened. #execute is the public
+      # entry point and brackets the run with input validation and the audit
+      # log that #perform skips. (IMP-c2e3e5d3cff0)
+      composer = ::System::Ai::Skills::ServiceDiscoveryComposerExecutor.new(account: account)
+      # Guarded exactly like BaseTool#mark_instance_provenance: an operator or
+      # reconciler call touches nothing and stays byte-for-byte unchanged.
+      if @instance_authorized
+        composer.instance_authorized = true
+        composer.node_instance = @node_instance if @node_instance
+      end
+
+      result = composer.execute(
         service_name: "ollama-#{instance.name}",
         service_slug: "ollama-#{instance.id.to_s.delete('-')[0, 12]}",
         sdwan_network_id: sdwan_network_id, backend_peer_id: peer_id,
