@@ -154,15 +154,26 @@ module Ai
         "system_platform_resilience"    => "system.platform.scale",
 
         # Audit + AI skills surfaces
-        "system_compliance_snapshot"    => "system.fleet.autonomy",
+        # ComplianceSnapshotService#snapshot! is a PURE READ — it only collects
+        # and returns a Hash; its own class comment says the CALLER persists the
+        # document via add_document, so the bang means "raises on bad args", not
+        # "mutates". Operator-facing audit evidence, not an autonomy decision.
+        # (IMP-7ad2c4f02f55)
+        "system_compliance_snapshot"    => "system.fleet.read",
         "system_runbook_generate"       => "system.modules.read",
         "system_cve_runbook_generate"   => "system.modules.read",
         "system_cve_triage"             => "system.modules.read",
 
-        # Observability + attribution
-        "system_recent_signals"         => "system.fleet.autonomy",
+        # Observability + attribution.
+        # Both read System::FleetEvent scoped to @account and decide nothing, so
+        # they carry the operator-facing fleet permission rather than the
+        # system_worker-scoped system.fleet.autonomy. These are the MCP twins of
+        # the HTTP /fleet/signals and /fleet/boot_replay endpoints moved to
+        # system.fleet.read in 428f84ce — the same operator was being answered
+        # over HTTP and refused over MCP. (IMP-7ad2c4f02f55)
+        "system_recent_signals"         => "system.fleet.read",
         "system_attribute_failure"      => "system.node_instances.read",
-        "system_inspect_correlation"    => "system.fleet.autonomy",
+        "system_inspect_correlation"    => "system.fleet.read",
 
         # === Slice 7 — instance pools ===
         # Read paths fall under node_instances.read; mutate paths under instances.create/control.
