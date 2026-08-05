@@ -101,7 +101,7 @@ display_name: "Redis 7.4"
 description: "Redis 7.4 with TLS + persistence"
 license: "BSD-3-Clause"
 
-# Packages installed in the Containerfile builder stage via mmdebstrap.
+# Packages installed into the rootfs by the builder stage (mmdebstrap).
 package_spec:
   - redis-server
   - redis-tools

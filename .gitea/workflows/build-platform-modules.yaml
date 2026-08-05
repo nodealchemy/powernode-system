@@ -10,12 +10,18 @@
 # fan-out across all modules) has been removed.
 #
 # Two-stage build per module:
-#   Stage 1 (builder): templates/module-repo/Containerfile + apt-install
-#                      from manifest.yaml's package_spec; layered with
-#                      this module's rootfs/.
+#   Stage 1 (builder): scripts/module-build/stage1-rootfs.sh — mmdebstrap
+#                      bootstraps a fat rootfs from manifest.yaml's
+#                      package_spec, layered with this module's rootfs/.
+#                      (mmdebstrap replaced buildah here; see the note on
+#                      the toolchain install step below.)
 #   Stage 2 (composer): rsync filter from file_spec + mask + protected_spec,
-#                       mkcomposefs, fs-verity merkle root, cosign sign,
+#                       mkfs.erofs, fs-verity merkle root, cosign sign,
 #                       oras push.
+#
+# templates/module-repo/Containerfile is NOT used by this workflow — it is
+# the third-party per-repo path (templates/module-repo/.gitea/workflows/
+# build.yaml).
 #
 # Third-party modules use the per-repo workflow at
 # templates/module-repo/.gitea/workflows/build.yaml.

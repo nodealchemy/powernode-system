@@ -73,4 +73,57 @@ RSpec.describe "module-authoring docs stale keyless-signing references" do
       "#{violations.join("\n")}"
     )
   end
+
+  # ---------------------------------------------------------------------------
+  # SECOND AXIS — the BUILD ARCHITECTURE (IMP-b57eaf3017f2).
+  #
+  # These same two documents were found stale a second time, independently of
+  # signing: they described a buildah/mkcomposefs pipeline built from a
+  # `ghcr.io/powernode/module-builder` base image. None of that is what runs.
+  # The platform pipeline is mmdebstrap + mkfs.erofs:
+  #   .gitea/workflows/build-platform-modules.yaml:85-90 — "mmdebstrap replaces
+  #     buildah for the rootfs build step" (buildah needed CLONE_NEWUSER, which
+  #     the Gitea Actions container cannot grant)
+  #   :228 Stage 1 → scripts/module-build/stage1-rootfs.sh (mmdebstrap)
+  #   :256 Stage 2 → rsync filter + mkfs.erofs + fs-verity
+  # and templates/module-repo/Containerfile — the THIRD-PARTY per-repo path —
+  # is `FROM docker.io/library/ubuntu@${UBUNTU_DIGEST}` with apt, not a
+  # powernode-published builder image with an entrypoint.
+  #
+  # Deliberately a second example rather than more entries in the map above:
+  # the two axes fail with different explanations, and a third axis should be
+  # added here rather than as a third spec file.
+  #
+  # SCOPED TO THE DOCS ONLY, NOT the workflow. build-platform-modules.yaml
+  # names buildah legitimately — in the comment explaining why it was
+  # abandoned — and forbidding a word that is needed to explain its own
+  # absence would make the guard unmaintainable.
+  forbidden_build = {
+    /buildah/ => "still names buildah; the rootfs step is mmdebstrap (see the workflow's own :85-90 note)",
+    /mkcomposefs/ => "still names mkcomposefs; Stage 2 runs mkfs.erofs",
+    %r{ghcr\.io/powernode/module-builder} => "still points at a powernode-published builder image that does not exist",
+    %r{/usr/local/bin/build-module} => "still shows a build-module entrypoint; the builder image has no entrypoint"
+  }
+
+  it "does not describe the module build as buildah/mkcomposefs from a published builder image" do
+    violations = []
+
+    target_docs.sort.each do |md_path|
+      rel = md_path.delete_prefix("#{ext_root}/")
+
+      File.read(md_path).each_line.with_index do |line, idx|
+        forbidden_build.each do |pattern, desc|
+          violations << "#{rel}:#{idx + 1} — #{desc}" if line.match?(pattern)
+        end
+      end
+    end
+
+    expect(violations).to(
+      be_empty,
+      "Module-authoring docs still describe a build architecture the pipeline does " \
+      "not use (it is mmdebstrap + mkfs.erofs — see " \
+      ".gitea/workflows/build-platform-modules.yaml:85-90, :228, :256):\n" \
+      "#{violations.join("\n")}"
+    )
+  end
 end

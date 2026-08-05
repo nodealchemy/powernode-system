@@ -79,7 +79,7 @@ file belongs in a base-os build.
 | **Module variety** | `subscription` (always-on) / `config` (overrides another module's config) / `instance` (per-instance customization) | enum on `NodeModule` |
 | **NodeModuleVersion** | A specific build of a module. State column is `promotion_state`: `built → staging → blessed → live`, with `retired` as the terminal/rollback state | `NodeModuleVersion` |
 | **manifest.yaml** | Authoring-time spec describing module identity + composition rules | YAML at the root of module-repo |
-| **package_spec** | Debian packages installed via `mmdebstrap` in the Containerfile builder stage | YAML field |
+| **package_spec** | Debian packages installed into the module's rootfs by the builder stage (`mmdebstrap` for platform modules, apt in the Containerfile for third-party repos) | YAML field |
 | **file_spec** | rsync-glob patterns determining which files from the rootfs/ tree end up in the module artifact | YAML field |
 | **protected_spec** | Files this module owns — overrides from higher-priority modules are forbidden | YAML field |
 | **dependency_spec** | Other modules this one requires (resolved by `DependencyResolutionService`) | YAML field |
@@ -93,7 +93,7 @@ The canonical layout lives at [`templates/module-repo/`](../../templates/module-
 ```
 my-module/
 ├── manifest.yaml                  # the spec (this runbook focuses on it)
-├── Containerfile                  # builder image (mmdebstrap → rootfs)
+├── Containerfile                  # builder image, third-party path (apt → rootfs)
 ├── rootfs/                        # files copied into the module artifact
 │   └── etc/
 │       └── nginx/
@@ -118,7 +118,7 @@ display_name: "nginx 1.26 with TLS hardening"
 description: "nginx 1.26 with TLS hardening + /healthz endpoint"
 license: "BSD-2-Clause"
 
-# Packages installed in the Containerfile builder stage via mmdebstrap.
+# Packages installed into the rootfs by the builder stage (mmdebstrap).
 # These end up in /var/lib/dpkg/status of the resulting rootfs.
 package_spec:
   - nginx
@@ -194,7 +194,7 @@ Rules worth knowing before you write one:
 **Field semantics:**
 
 - `name` — globally unique within the account (platform appends a hash to disambiguate across accounts). The manifest's `name` is the stable identifier; downstream tooling looks up the `NodeModule` row by it.
-- `package_spec` — apt packages installed in the Containerfile builder. Applied via mmdebstrap to the rootfs.
+- `package_spec` — apt packages installed by the builder stage. Applied via mmdebstrap to the platform rootfs (Phase 5 Stage 1).
 - `file_spec` — **flat array of rsync-style glob strings** identifying paths this module owns. The artifact ships these.
 - `mask` — paths to EXCLUDE from this module's blob at build time. Local-only — does NOT affect neighbor modules' blobs.
 - `protected_spec` — files this module owns that NO neighbor module may ship. The build pipeline folds these into every neighbor's effective_mask in both priority directions, so a sensitive lower-module file (e.g. `/etc/shadow` from system-base) cannot be overridden by a service module's overlay layer.
@@ -207,27 +207,24 @@ For the authoritative shape see `extensions/system/templates/module-repo/manifes
 
 ## Phase 3 — Author Containerfile + rootfs ✅
 
-The Containerfile produces the *builder* image — the stage that runs mmdebstrap, drops files into a clean rootfs, and emits the module artifact.
+The Containerfile produces the *builder* image for the **third-party per-repo build** (`templates/module-repo/.gitea/workflows/build.yaml`): it installs `package_spec` with apt and layers your `rootfs/` on top. The composer stage then carves the module out of that image. (Platform modules under `modules/*/` take a different Stage 1 — see Phase 5.)
 
 ```dockerfile
 # templates/module-repo/Containerfile
-FROM ghcr.io/powernode/module-builder:latest AS builder
+ARG UBUNTU_DIGEST=sha256:cdb5fd928fced577cfecf12c8966e830fcdf42ee481fb0b91904eeddc2fe5eff
+FROM docker.io/library/ubuntu@${UBUNTU_DIGEST}
 
-WORKDIR /work
+# Packages from the dispatched package_spec — the composer stage writes the
+# spec to /workspace/package_spec.txt before invoking the build.
+COPY package_spec.txt /tmp/package_spec.txt
+RUN xargs -a /tmp/package_spec.txt apt-get install -y --no-install-recommends
 
-# Copy your manifest and rootfs tree
-COPY manifest.yaml ./
-COPY rootfs/ ./rootfs/
-
-# The base image's entrypoint reads manifest.yaml and:
-#   1. Runs mmdebstrap with package_spec → /work/build/rootfs/
-#   2. rsync-copies your rootfs/ tree on top per file_spec rules
-#   3. mkfs.erofs → erofs digest
-#   4. Emits the artifact at /work/dist/module.tar
-ENTRYPOINT ["/usr/local/bin/build-module"]
+# Your rootfs/ tree lands at the filesystem ROOT, on top of the package
+# install — this is how a module overrides its package's defaults.
+COPY rootfs/ /
 ```
 
-The base image `ghcr.io/powernode/module-builder` provides a hermetic build environment with mmdebstrap, mkfs.erofs (erofs-utils), and `cosign`. Don't deviate from it unless you need a custom debian release.
+The base is `docker.io/library/ubuntu` pinned to an immutable **digest**, not a floating tag (SLSA L3+ reproducibility); override with `--build-arg UBUNTU_DIGEST=sha256:...` to rebuild against an older base. There is no entrypoint and no artifact emitted here: the builder image *is* the input to the composer stage, which rsyncs out only what `file_spec` matches.
 
 **rootfs/ tree:**
 
@@ -245,11 +242,11 @@ The platform's authority on file paths trumps your repo: if a higher-priority mo
 
 ## Phase 4 — Local test (manifest validation) ✅
 
-There is no local build dry-run — the two-stage `buildah bud` → `mkcomposefs`
-pipeline (Phase 5) only runs in Gitea Actions. (An earlier `docker run
-ghcr.io/powernode/module-builder:latest --dry-run` flow described here has
-been retired; that image is not built or published by this pipeline.) Two
-real local/pre-push checks exist instead:
+There is no local build dry-run — the two-stage mmdebstrap → `mkfs.erofs`
+pipeline (Phase 5) only runs in Gitea Actions. (An earlier local `--dry-run`
+flow against a published builder image was described here and has been
+retired; no such image is built or published by this pipeline.) Two real
+local/pre-push checks exist instead:
 
 **Schema-validate against the JSON schema** (works before the module is even
 registered — no `NodeModule` row required):
@@ -298,11 +295,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build module artifact
         run: |
-          # Canonical workflow uses buildah + mkfs.erofs, not docker build.
+          # Canonical workflow bootstraps a rootfs directly, not docker build.
           # See templates/module-repo/.gitea/workflows/build.yaml for the
-          # authoritative two-stage pipeline (buildah bud → rsync filter →
+          # authoritative two-stage pipeline (rootfs bootstrap → rsync filter →
           # mkfs.erofs → fs-verity → syft + grype → cosign sign → oras push).
-          buildah bud --layers --tag module-builder:${{ github.sha }} .
+          bash scripts/module-build/stage1-rootfs.sh --module my-nginx
           # ... composer stage runs mkfs.erofs + emits the artifact bundle ...
 
       - name: Push to OCI registry
