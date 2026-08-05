@@ -99,4 +99,155 @@ RSpec.describe System::FulfillmentRequestSweepService do
       expect(::System::ProvisioningService).not_to have_received(:terminate_instance)
     end
   end
+
+  # An authoring artifact left by a process KILL between NodeTemplate.create and
+  # record_template! (no exception ran, so none of the orchestrator's
+  # rescue-cleanup did either). FulfillmentAdvanceOrchestrator#
+  # reclaim_abandoned_template! reclaims one for a request that can still resume
+  # onto it — but that path is NAME-COLLISION triggered and fires only from the
+  # owning request's own next author_template!. When the owner is TERMINAL or
+  # gone, nothing re-enters that path and the artifact is unreachable forever:
+  # the orchestrator says so itself ("Nothing reaps unreferenced orphans yet;
+  # that is a separate sweep, not this method's job"). This is that sweep.
+  describe "#reap_orphan_templates! (authoring artifacts no request can reclaim)" do
+    def stamped_template(request_id, created_at: 1.hour.ago, name: nil)
+      tmpl = create(:system_node_template, account: account, node_platform: platform,
+                    name: name || "fulfill-orphan-#{SecureRandom.hex(3)}")
+      tmpl.update_columns(config: { "fulfillment_request_id" => request_id }, created_at: created_at)
+      tmpl
+    end
+
+    def terminal_request(state: "failed", templated_at: 3.hours.ago)
+      fr = composed
+      fr.update_columns(state: state, templated_at: templated_at)
+      fr
+    end
+
+    def exists?(tmpl)
+      ::System::NodeTemplate.where(id: tmpl.id).exists?
+    end
+
+    it "reaps an orphan whose owning request failed terminally" do
+      orphan = stamped_template(terminal_request.id)
+
+      described_class.run!(account: account)
+
+      expect(exists?(orphan)).to be(false)
+    end
+
+    it "reaps an orphan whose owning request no longer exists" do
+      fr = terminal_request
+      orphan = stamped_template(fr.id)
+      fr.delete
+
+      described_class.run!(account: account)
+
+      expect(exists?(orphan)).to be(false)
+    end
+
+    it "counts what it reaped so a tick that cleans up says so" do
+      stamped_template(terminal_request.id)
+
+      expect(described_class.run!(account: account)[:orphan_templates_reaped]).to eq(1)
+    end
+
+    # ---- guards: everything below must SURVIVE the sweep ----
+
+    # The self-heal's case, not the reaper's. An advanceable request may still
+    # resume onto its own artifact, and reaping it would race that resume.
+    it "leaves an orphan whose owning request is still advanceable" do
+      fr = composed
+      fr.update_columns(state: "templated", templated_at: 3.hours.ago)
+      orphan = stamped_template(fr.id)
+
+      # Hold the request advanceable across the tick. Unstubbed, advance_open!
+      # runs FIRST and carries it to `ready` — at which point the stamped
+      # artifact really is unreclaimable and reaping it is correct. That is the
+      # advancer's effect, not the reaper's decision, and this example is about
+      # the reaper's decision.
+      allow(::System::FulfillmentAdvanceOrchestrator).to receive(:advance!)
+        .and_return(instance_double("Result", already_advancing: true))
+
+      described_class.run!(account: account)
+
+      expect(exists?(orphan)).to be(true)
+    end
+
+    # A run predating the stamp, or any operator template. Unstamped means
+    # unidentifiable, and unidentifiable must never mean reapable.
+    it "leaves a template carrying no fulfillment stamp at all" do
+      plain = create(:system_node_template, account: account, node_platform: platform)
+      # Aged PAST the grace period on purpose, so the stamp clause is the only
+      # thing protecting it. Left at `created_at = now` this example passes
+      # even with the stamp requirement removed entirely — it was the grace
+      # period doing the work, and the clause it claims to pin went untested.
+      plain.update_columns(created_at: 1.hour.ago)
+
+      described_class.run!(account: account)
+
+      expect(exists?(plain)).to be(true)
+    end
+
+    # Same anti-forgery clause reclaim_abandoned_template! uses: an operator's
+    # system_update_template REPLACES config wholesale, so a stamp that predates
+    # the request's own templated_at did not come from that request's authoring.
+    it "leaves a stamped template that predates its request's templated_at" do
+      fr = terminal_request(templated_at: 1.hour.ago)
+      forged = stamped_template(fr.id, created_at: 5.hours.ago)
+
+      described_class.run!(account: account)
+
+      expect(exists?(forged)).to be(true)
+    end
+
+    it "leaves a stamped template that has nodes attached" do
+      orphan = stamped_template(terminal_request.id)
+      create(:system_node, account: account, node_template: orphan)
+
+      summary = described_class.run!(account: account)
+
+      expect(exists?(orphan)).to be(true)
+      # Asserted on the COUNTERS too, not just survival: `has_many :nodes,
+      # dependent: :restrict_with_error` would refuse the destroy anyway, so a
+      # reaper that skipped this check would still leave the row — but it would
+      # do so by raising into the rescue. Survival alone cannot tell "declined"
+      # from "tried and was stopped by the database".
+      expect(summary[:orphan_templates_reaped]).to eq(0)
+      expect(summary[:errored]).to eq(0)
+    end
+
+    it "leaves a template a request recorded as its live artifact" do
+      fr = terminal_request
+      recorded = stamped_template(fr.id)
+      fr.update_columns(template_id: recorded.id)
+
+      described_class.run!(account: account)
+
+      expect(exists?(recorded)).to be(true)
+    end
+
+    # A template authored seconds ago by a run whose owner went terminal
+    # mid-flight in another process: the reaper does not hold the orchestrator's
+    # per-request advisory lock, so age is the only thing separating a dead
+    # artifact from one still being assembled.
+    it "leaves a stamped orphan younger than the grace period" do
+      fresh = stamped_template(terminal_request.id, created_at: 1.minute.ago)
+
+      described_class.run!(account: account)
+
+      expect(exists?(fresh)).to be(true)
+    end
+
+    it "never reaps another account's orphan" do
+      other = create(:account)
+      fr = terminal_request
+      foreign = create(:system_node_template, account: other,
+                       node_platform: create(:system_node_platform, account: other))
+      foreign.update_columns(config: { "fulfillment_request_id" => fr.id }, created_at: 1.hour.ago)
+
+      described_class.run!(account: account)
+
+      expect(exists?(foreign)).to be(true)
+    end
+  end
 end
