@@ -167,7 +167,7 @@ const renderPage = (initialPath = '/app/system/operations/fleet') =>
 
 // All visible permissions by default; override per test as needed.
 const ALL_PERMISSIONS = [
-  'system.fleet.autonomy',
+  'system.fleet.read',
   'system.tasks.read',
   'system.gitops.read',
   'system.cve.read',
@@ -303,9 +303,9 @@ describe('OperationsHubPage', () => {
   // Permission gating — tab visibility
   // ---------------------------------------------------------------------------
 
-  it('hides Fleet tab when system.fleet.autonomy permission is absent', () => {
+  it('hides Fleet tab when system.fleet.read permission is absent', () => {
     mockHasPermission.mockImplementation(
-      (perm: string) => perm !== 'system.fleet.autonomy' && ALL_PERMISSIONS.includes(perm),
+      (perm: string) => perm !== 'system.fleet.read' && ALL_PERMISSIONS.includes(perm),
     );
     renderPage('/app/system/operations/tasks');
     expect(screen.queryByRole('link', { name: 'Fleet' })).not.toBeInTheDocument();

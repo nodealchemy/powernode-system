@@ -18,7 +18,7 @@ interface BootReplayModalProps {
  * operators reach this from the Fleet Dashboard's event detail panel
  * (and any future entry points) without leaving their context.
  *
- * Permission gate: system.fleet.autonomy (mirrors the prior page's
+ * Permission gate: system.fleet.read (mirrors the prior page's
  * gate). Operators without the permission see a clear refusal rather
  * than an empty modal.
  */
@@ -43,10 +43,10 @@ export const BootReplayModal: FC<BootReplayModalProps> = ({
       size="6xl"
     >
       <div className="min-h-[60vh]">
-        {!hasPermission('system.fleet.autonomy') ? (
+        {!hasPermission('system.fleet.read') ? (
           <div className="p-6 text-sm text-theme-tertiary">
             You don&apos;t have permission to view boot replays.
-            Required: <code>system.fleet.autonomy</code>
+            Required: <code>system.fleet.read</code>
           </div>
         ) : (
           <BootReplayTimeline instanceId={instanceId} correlationId={correlationId} />

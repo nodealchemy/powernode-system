@@ -24,7 +24,7 @@ import { SystemSettingsPanel } from '@system/features/system/components/settings
 type TabKey = 'fleet' | 'tasks' | 'gitops' | 'cve' | 'agent-peers' | 'ci-workers' | 'ci-webhooks' | 'module-builds';
 
 const TABS: { key: TabKey; label: string; permission: string }[] = [
-  { key: 'fleet', label: 'Fleet', permission: 'system.fleet.autonomy' },
+  { key: 'fleet', label: 'Fleet', permission: 'system.fleet.read' },
   { key: 'tasks', label: 'Tasks', permission: 'system.tasks.read' },
   { key: 'gitops', label: 'GitOps', permission: 'system.gitops.read' },
   { key: 'cve', label: 'CVE', permission: 'system.cve.read' },

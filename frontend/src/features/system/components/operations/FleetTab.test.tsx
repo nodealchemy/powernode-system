@@ -169,14 +169,14 @@ describe('FleetTab', () => {
     mockPost.mockResolvedValue(signalsResponse([]));
   });
 
-  it('renders the permission-denied message when system.fleet.autonomy is absent', () => {
+  it('renders the permission-denied message when system.fleet.read is absent', () => {
     mockHasPermission = jest.fn(() => false);
     renderFleetTab();
 
     expect(
       screen.getByText(/You don.t have permission to view the fleet dashboard/),
     ).toBeInTheDocument();
-    expect(screen.getByText('system.fleet.autonomy')).toBeInTheDocument();
+    expect(screen.getByText('system.fleet.read')).toBeInTheDocument();
   });
 
   it('does NOT render the denied message when the permission is present', async () => {
@@ -188,14 +188,14 @@ describe('FleetTab', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('gates on the exact permission string "system.fleet.autonomy"', () => {
-    mockHasPermission = jest.fn((perm: string) => perm === 'system.fleet.autonomy');
+  it('gates on the exact permission string "system.fleet.read"', () => {
+    mockHasPermission = jest.fn((perm: string) => perm === 'system.fleet.read');
     renderFleetTab();
     // FleetDashboardPage header should render (not the denied message)
     expect(
       screen.queryByText(/You don.t have permission to view the fleet dashboard/),
     ).not.toBeInTheDocument();
-    expect(mockHasPermission).toHaveBeenCalledWith('system.fleet.autonomy');
+    expect(mockHasPermission).toHaveBeenCalledWith('system.fleet.read');
   });
 });
 

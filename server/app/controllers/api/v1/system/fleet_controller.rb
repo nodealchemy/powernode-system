@@ -30,7 +30,17 @@ module Api
         #
         # Params: { instance_id, correlation_id?, limit? }
         def boot_replay
-          require_permission("system.fleet.autonomy")
+          # system.fleet.read, not system.fleet.autonomy. This reads FleetEvents
+          # for the operator's own account; it makes no autonomy decision, and
+          # the catalog scopes system.fleet.autonomy to the system_worker role
+          # (powernode_system/engine.rb:190-191). Gating an operator dashboard
+          # on a worker permission meant only super_admin reached it — via the
+          # system.admin grant-all rule, not because the gate was right.
+          # system.fleet.read ("View fleet / concierge state", grant: admin) is
+          # the operator-facing fleet permission that already exists for
+          # exactly this, and is what the sibling operator endpoint
+          # concierge_controller.rb:27 already uses. (IMP-27a8654e7c04)
+          require_permission("system.fleet.read")
 
           unless params[:instance_id].present?
             return render_error("instance_id required", status: :unprocessable_content)
@@ -72,7 +82,9 @@ module Api
         # POST /api/v1/system/fleet/signals
         # Body: { limit?, kind?, correlation_id?, since? }
         def signals
-          require_permission("system.fleet.autonomy")
+          # Same reclassification as #boot_replay above: reads this account's
+          # FleetEvents, decides nothing. (IMP-27a8654e7c04)
+          require_permission("system.fleet.read")
 
           scope = ::System::FleetEvent.where(account: current_user.account).recent
           scope = scope.by_correlation(params[:correlation_id]) if params[:correlation_id].present?

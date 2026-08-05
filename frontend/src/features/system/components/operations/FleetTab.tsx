@@ -7,11 +7,11 @@ import { FleetDashboardPage as FleetDashboardComponent } from '@system/features/
 export const FleetTab: React.FC = () => {
   const { hasPermission } = usePermissions();
 
-  if (!hasPermission('system.fleet.autonomy')) {
+  if (!hasPermission('system.fleet.read')) {
     return (
       <div className="p-6 text-sm text-theme-secondary">
         You don&apos;t have permission to view the fleet dashboard.
-        Required: <code>system.fleet.autonomy</code>
+        Required: <code>system.fleet.read</code>
       </div>
     );
   }

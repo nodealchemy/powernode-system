@@ -80,23 +80,23 @@ describe('BootReplayModal', () => {
 
   // ── Permission gate ──────────────────────────────────────────────────────────
 
-  it('checks the system.fleet.autonomy permission', () => {
+  it('checks the system.fleet.read permission', () => {
     renderModal();
-    expect(mockHasPermission).toHaveBeenCalledWith('system.fleet.autonomy');
+    expect(mockHasPermission).toHaveBeenCalledWith('system.fleet.read');
   });
 
-  it('shows permission-denied message when operator lacks system.fleet.autonomy', () => {
+  it('shows permission-denied message when operator lacks system.fleet.read', () => {
     mockHasPermission.mockReturnValue(false);
     renderModal();
 
     expect(
       screen.getByText(/You don't have permission to view boot replays\./),
     ).toBeInTheDocument();
-    expect(screen.getByText('system.fleet.autonomy')).toBeInTheDocument();
+    expect(screen.getByText('system.fleet.read')).toBeInTheDocument();
     expect(screen.queryByTestId('boot-replay-timeline')).not.toBeInTheDocument();
   });
 
-  it('shows the timeline when operator has system.fleet.autonomy', () => {
+  it('shows the timeline when operator has system.fleet.read', () => {
     mockHasPermission.mockReturnValue(true);
     renderModal();
 

@@ -9,7 +9,13 @@ require "rails_helper"
 RSpec.describe "GET /api/v1/system/fleet/boot_replay", type: :request do
   let(:account) { create(:account) }
   let(:other_account) { create(:account) }
-  let(:user) { user_with_permissions("system.fleet.autonomy", account: account) }
+  # IMP-27a8654e7c04: boot_replay is gated on system.fleet.read, the
+  # operator-facing fleet permission, not the system_worker-scoped
+  # system.fleet.autonomy it used to name. This actor is incidental to what the
+  # file tests — event filtering, ordering and account scoping — so only the
+  # permission it holds changed; no assertion did. Which principals can reach
+  # this endpoint is pinned in fleet_endpoint_authorization_spec.rb.
+  let(:user) { user_with_permissions("system.fleet.read", account: account) }
   let(:headers) { auth_headers_for(user).merge("Content-Type" => "application/json") }
 
   let(:node) { create(:system_node, account: account) }
