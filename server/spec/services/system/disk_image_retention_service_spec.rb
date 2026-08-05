@@ -234,6 +234,47 @@ RSpec.describe System::DiskImageRetentionService do
       expect(good.reload.status).to eq("retired")
       expect(bad.reload.status).to eq("failed")
     end
+
+    # IMP-c3f186e56d5b — retire_stuck! (above) is a REAL reachability path
+    # onto a state DiskImagePublication#promotable? cannot currently
+    # distinguish from a genuinely published-then-retired row: a
+    # direct-upload publication that failed cosign/sha verification can
+    # carry a non-nil file_object_id (uploaded BEFORE verification — see
+    # DiskImagePublicationProcessor#direct_upload_mode?), and retire!
+    # (called by retire_stuck!) soft-deletes the blob but does NOT nil
+    # file_object_id — it is load-bearing that it doesn't: reactivate
+    # restores the soft-deleted blob via FileObject#restore!. The row ends
+    # up status=retired, file_object_id present, published_at nil —
+    # indistinguishable from a healthy retired row by promotable?'s current
+    # two checks (file_object_id present? && status in [published, retired]).
+    #
+    # Driven end-to-end through the REAL retention sweep (nested in THIS
+    # describe block so it can reuse `stuck!` — not a hand-built retired
+    # row): exactly the coverage gap the task calls out — "no spec drives
+    # retire_stuck! into promotable? today".
+    describe "promotable? laundering (IMP-c3f186e56d5b)" do
+      it "produces a row that reads as promotable even though it was never published" do
+        unverified_upload = create(:file_object, account: account, filename: "unverified.img",
+                                    file_size: 4096, content_type: "application/octet-stream",
+                                    checksum_sha256: "5" * 64)
+        never_published = stuck!(status: "failed", created_days_ago: 10)
+        never_published.update_columns(file_object_id: unverified_upload.id)
+
+        result = described_class.retire_stuck!(account: account, grace_days: 7)
+
+        expect(result.retired_count).to eq(1)
+        never_published.reload
+        expect(never_published.status).to eq("retired")
+        expect(never_published.file_object_id).to eq(unverified_upload.id)
+        expect(never_published.published_at).to be_nil # never legitimately published
+
+        # THE DEFECT: promotable? cannot tell this apart from a row that was
+        # genuinely published and later retired — it reads TRUE here, which
+        # is wrong. PromotePublication/RollbackPublication would happily
+        # point the platform's boot pointer at an unverified build.
+        expect(never_published.promotable?).to be false
+      end
+    end
   end
 
   describe ".sweep_account!" do

@@ -272,39 +272,56 @@ module System
     # True when it is safe for PromotePublication/RollbackPublication to
     # point the platform's boot pointer at this row.
     #
-    # Does NOT check published_at today — it doesn't need to, since
-    # file_object_id + status already fully discriminate the states this
-    # predicate cares about. But UpgradeDispatcher.preflight's sibling guard
-    # DOES key off published_at directly (`:never_published` — see that
-    # file), and any future change here that also keys off it (tracked
-    # separately, IMP-c3f186e56d5b: a retired row laundered through
-    # retire_stuck! with a leftover file_object_id still passes this
-    # predicate today) is only sound because BOTH `mark_published` and
-    # `reactivate`'s timestamp writes are transition-scoped `after`
-    # callbacks, not event-level `before` — see those two events above.
-    # Before that fix, published_at could be stamped on a row whose
-    # transition guard FAILED (mark_published on a :verifying row with no
-    # file_object_id; reactivate on a :retired row with no file_object_id),
-    # which would have made it useless as a signal for exactly the
-    # extension IMP-c3f186e56d5b wants to make.
+    # IMP-c3f186e56d5b: this closes a DIVERGENCE, not a novel guard.
+    # BootImageController#resolve_publication already refuses this exact
+    # state on both its lookup paths — `.retainable.where.not(published_at:
+    # nil)` — specifically because `retired` is also reachable from
+    # failed/verifying via DiskImageRetentionService#retire_stuck!, which
+    # would otherwise make an unverified build resolvable
+    # (boot_image_controller.rb:118-129). UpgradeDispatcher.preflight
+    # carries the identical guard for the same reason (IMP-80bd70c04afe).
+    # promotable? — the promote/rollback path — was the one site that did
+    # not, so a laundered row was refused at serve time and at dispatch
+    # time but still accepted at promote/rollback time: the exact
+    # plan-vs-dispatch (here, promote-vs-serve) divergence campaign
+    # 019f505f exists to eliminate.
     #
-    # Two independent checks, both required:
+    # Adding published_at here is only sound as of IMP-6d2dd4533bd7: both
+    # `mark_published` and `reactivate` used to stamp it via an event-level
+    # `before`, which aasm fires BEFORE the transition guard is checked —
+    # so a guard-failing transition could forge a published_at that would
+    # have defeated this exact check. Verified by tracing the full
+    # transition graph: no path lets a row carry published_at while in
+    # :failed (mark_failed's from-list is %i[queued awaiting_upload
+    # verifying], none of which can have gone through a successful
+    # mark_published/reactivate), so published_at present + status failed
+    # is structurally unreachable — published_at is sound here now.
+    #
+    # Three independent checks, all required:
     #   - status is :published or :retired — the two states this executor
     #     pair actually operates on (retired rows get reactivated back to
-    #     published in the same transaction).
+    #     published in the same transaction). Excludes :purged (see below).
     #   - file_object_id is present — the artifact bytes actually exist.
+    #   - published_at is present — this row actually completed a
+    #     mark_published/reactivate transition at some point; excludes a
+    #     retire_stuck!-laundered row (status=retired, file_object_id
+    #     present from a direct-upload that never passed verification,
+    #     published_at nil because it never legitimately published).
     #
-    # Neither check alone is sufficient. `published_at` looks like the
-    # obvious single-field discriminator (only mark_published/reactivate
-    # ever set it, nothing clears it) but purge! nils file_object_id and
-    # flips status → :purged while leaving published_at (and the uki_*
-    # pins) untouched — a purged row still reads as "was published" by
-    # that field alone. And status alone isn't enough either: a
-    # direct-upload publication can carry a non-nil file_object_id while
-    # still :verifying (uploaded, not yet cosign/sha verified) — see
-    # DiskImagePublicationProcessor#direct_upload_mode?.
+    # No single check is sufficient. `published_at` alone looks like the
+    # obvious discriminator (only mark_published/reactivate ever set it,
+    # nothing clears it) but purge! nils file_object_id and flips status →
+    # :purged while leaving published_at (and the uki_* pins) untouched —
+    # a purged row still reads as "was published" by that field alone, so
+    # the status check still matters. And status+file_object_id alone is
+    # the laundering gap this fix closes: a direct-upload publication can
+    # carry a non-nil file_object_id while still :verifying (uploaded, not
+    # yet cosign/sha verified — see
+    # DiskImagePublicationProcessor#direct_upload_mode?), and that same
+    # unverified file_object_id survives an unattended retire_stuck! sweep
+    # into :retired.
     def promotable?
-      file_object_id.present? && status.in?(%w[published retired])
+      file_object_id.present? && status.in?(%w[published retired]) && published_at.present?
     end
   end
 end

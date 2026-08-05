@@ -82,11 +82,18 @@ RSpec.describe "Api::V1::System::DiskImagePublications", type: :request do
       )
       file_object = create(:file_object, account: account, deleted_at: 2.days.ago,
                                           deleted_by: create(:user))
+      # published_at is required here (IMP-c3f186e56d5b): promotable? now
+      # requires it as one of three independent conditions, closing a gap
+      # where a row could reach :retired without ever having been through a
+      # real publish. This fixture builds the row directly off the AASM
+      # graph (same as that gap), so it must supply published_at itself to
+      # keep modeling a legitimately-published-then-retired row rather than
+      # the laundered shape the fix targets.
       target = System::DiskImagePublication.create!(
         account: account, node_platform: platform, file_object: file_object,
         git_sha: SecureRandom.hex(20), sha256: SecureRandom.hex(32),
         size_bytes: 1024, oci_ref: "registry.test/foo:bar",
-        arch: "arm64", status: "retired", retired_at: 1.day.ago
+        arch: "arm64", status: "retired", published_at: 2.days.ago, retired_at: 1.day.ago
       )
 
       post "/api/v1/system/node_platforms/#{platform.id}/rollback_disk_image",
