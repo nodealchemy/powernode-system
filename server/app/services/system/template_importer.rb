@@ -19,7 +19,9 @@ module System
   # transaction, outside the delta guard the assignment write paths run — so
   # a bundle that composes badly would land as permanent baseline that later
   # assignments then treat as acceptable. Error-severity conflicts therefore
-  # ride out in Result#warnings. They do NOT refuse the import: an import
+  # ride out in Result#composition_report, each entry stating its own severity
+  # so the caller can tell them from the advisory ones travelling beside them.
+  # They do NOT refuse the import: an import
   # reproduces a template authored elsewhere, blocking would make an
   # export/import round trip lossy, and the bundle format has no way to say
   # "this collision is deliberate". The whole set is judged again at apply
@@ -27,8 +29,13 @@ module System
   class TemplateImporter
     class ImportError < StandardError; end
 
+    # `composition_report` rather than `warnings`: what rides here is the
+    # WHOLE verdict, blocking entries included, and calling that "warnings"
+    # is what made a blocking verdict indistinguishable from an advisory one
+    # (IMP-493db0e5c398). Entries are severity-typed — see
+    # TemplateCompositionAnalysis::Verdict#report_entries.
     Result = Struct.new(
-      :ok, :template, :template_modules_count, :missing_modules, :warnings, :errors,
+      :ok, :template, :template_modules_count, :missing_modules, :composition_report, :errors,
       keyword_init: true
     ) do
       alias_method :ok?, :ok
@@ -58,7 +65,7 @@ module System
       if missing.any?
         return Result.new(
           ok: false, template: nil, template_modules_count: 0,
-          missing_modules: missing, warnings: [],
+          missing_modules: missing, composition_report: [],
           errors: [ "missing modules in target account: #{missing.size}" ]
         )
       end
@@ -93,30 +100,39 @@ module System
 
       Result.new(
         ok: true, template: template, template_modules_count: tm_count,
-        missing_modules: [], warnings: composition_warnings(template), errors: []
+        missing_modules: [], composition_report: composition_report(template), errors: []
       )
     rescue ImportError => e
       Result.new(ok: false, template: nil, template_modules_count: 0,
-                 missing_modules: [], warnings: [], errors: [ e.message ])
+                 missing_modules: [], composition_report: [], errors: [ e.message ])
     rescue ActiveRecord::RecordInvalid => e
       Result.new(ok: false, template: nil, template_modules_count: 0,
-                 missing_modules: [], warnings: [], errors: [ e.message ])
+                 missing_modules: [], composition_report: [], errors: [ e.message ])
     end
 
     private
 
-    # Advisory, so it runs after the commit and cannot fail an otherwise-good
-    # import — an analysis that blows up is itself the warning.
-    def composition_warnings(template)
+    # Reported, never enforced, so it runs after the commit and cannot fail an
+    # otherwise-good import — an analysis that blows up is itself part of the
+    # report.
+    #
+    # Returns severity-typed entries rather than the prebuilt message string it
+    # used to return: the message alone said nothing about whether the caller
+    # was holding a blocking verdict or an advisory one (IMP-493db0e5c398). The
+    # message is still logged, where it is the useful form.
+    def composition_report(template)
       verdict = ::System::TemplateCompositionAnalysis.new(@account).set_verdict(
         template.template_modules.enabled.pluck(:node_module_id)
       )
-      return [] unless verdict.blocked?
-
-      Rails.logger.warn("[TemplateImporter] imported #{template.name}: #{verdict.message}")
-      [ verdict.message ]
+      Rails.logger.warn("[TemplateImporter] imported #{template.name}: #{verdict.message}") if verdict.blocked?
+      verdict.report_entries
     rescue StandardError => e
-      [ "composition analysis failed: #{e.message}" ]
+      # Fail closed, matching TemplateCompositionAnalysis#warning?: an analysis
+      # that could not run has not cleared anything, so it reports at blocking
+      # severity rather than as an advisory a caller may ignore.
+      [ { severity: ::System::TemplateCompositionAnalysis::BLOCKING_SEVERITY,
+          kind: "composition_analysis_failed",
+          detail: "composition analysis failed: #{e.message}" } ]
     end
 
     def validate_bundle!(bundle)

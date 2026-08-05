@@ -31,6 +31,15 @@ module System
     # assignment instead of sliding through unnoticed.
     WARNING_SEVERITY = "warning"
 
+    # Severity stamped on the entries that DO block. The three conflict kinds
+    # TemplateComposerService#detect_conflicts emits each declare their own
+    # `severity`, but the fail-closed rule in #warning? means a kind added
+    # later WITHOUT one still lands in `blocking` — and would then report a nil
+    # severity, leaving a caller exactly as unable to classify it as the
+    # untyped `warnings` key this replaces. #report_entries therefore stamps
+    # the severity rather than passing the declared value through.
+    BLOCKING_SEVERITY = "error"
+
     # Eager-loads every association TemplateComposerService reaches for.
     MODULE_INCLUDES = %i[current_version category node_platform
                          module_dependencies dependencies package_module_link].freeze
@@ -41,6 +50,30 @@ module System
     Verdict = Struct.new(:blocking, :warnings, :message, keyword_init: true) do
       def blocked?
         blocking.any?
+      end
+
+      # Self-describing projection for the surfaces that REPORT a verdict
+      # instead of enforcing it (TemplateCloneService, TemplateImporter).
+      #
+      # Those two used to hand their caller `[verdict.message]` — a bare String
+      # — under a key named `warnings`, the same key the ENFORCING surfaces use
+      # for genuinely advisory conflicts. One key, opposite contracts: a caller
+      # holding the payload could not tell a blocking verdict it must act on
+      # from an advisory one it may ignore (IMP-493db0e5c398).
+      #
+      # Every entry states its OWN severity, so one classifier works on any
+      # surface's payload without knowing which surface produced it. Making the
+      # element TYPE uniform without carrying severity would keep the trap.
+      #
+      # Both halves are included deliberately. The reporting surfaces used to
+      # drop `warnings` entirely (message is nil unless something blocks), so a
+      # key called `warnings` was the one place actual warnings never appeared;
+      # emitting only the blocking half would also make `severity` a constant
+      # and the classification vacuous. Enforcement is untouched either way —
+      # these entries are a report, not a verdict the surface acts on.
+      def report_entries
+        blocking.map { |c| c.merge(severity: BLOCKING_SEVERITY) } +
+          warnings.map { |c| c.merge(severity: WARNING_SEVERITY) }
       end
     end
 

@@ -117,10 +117,15 @@ module Api
             # guard the assignment paths run, so a bundle that composes badly
             # lands as permanent baseline. TemplateImporter reports rather than
             # refusing; dropping the report here would put the signal in the
-            # log and nowhere the caller can see it. Same `warnings` key and
-            # absent-when-empty rule the assign path uses — a clean import's
-            # payload is unchanged.
-            payload[:warnings] = result.warnings if result.warnings.present?
+            # log and nowhere the caller can see it.
+            #
+            # `composition_report`, NOT the assign path's `warnings` key: this
+            # surface reports blocking verdicts it does not enforce, and naming
+            # them "warnings" made them indistinguishable from the advisory
+            # conflicts the assign path puts under that key (IMP-493db0e5c398).
+            # Each entry states its own severity. Absent when empty, so a clean
+            # import's payload is unchanged.
+            payload[:composition_report] = result.composition_report if result.composition_report.present?
             render_success(**payload, status: :created)
           elsif result.missing_modules.any?
             render_error(
@@ -148,12 +153,16 @@ module Api
           # conflict travels with it — and since the assignment guard is a
           # DELTA, what a clone lands becomes baseline that later assignments
           # must treat as acceptable. The service reports rather than refusing,
-          # so the report has to leave the process here. `warnings` matches the
-          # assign path's key and absent-when-empty rule; composition_conflicts
-          # carries the structured detail the message is built from, which the
-          # importer has no equivalent of.
-          payload[:warnings] = [ service.composition_warning ] if service.composition_warning.present?
-          payload[:composition_conflicts] = service.composition_conflicts if service.composition_conflicts.present?
+          # so the report has to leave the process here.
+          #
+          # `composition_report`, NOT the assign path's `warnings` key: this
+          # surface reports blocking verdicts it does not enforce, and naming
+          # them "warnings" made them indistinguishable from the advisory
+          # conflicts the assign path puts under that key (IMP-493db0e5c398).
+          # Each entry states its own severity, and carries the structured
+          # detail the old `composition_conflicts` key held. Absent when empty,
+          # so a clean clone's payload is unchanged.
+          payload[:composition_report] = service.composition_report if service.composition_report.present?
 
           render_success(**payload, status: :created)
         rescue ::System::TemplateCloneService::CloneError => e

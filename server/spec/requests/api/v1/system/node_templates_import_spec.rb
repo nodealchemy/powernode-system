@@ -182,7 +182,7 @@ RSpec.describe "Operator API — Node Templates import", type: :request do
              name: "import-inst-b-#{SecureRandom.hex(3)}")
     end
 
-    it "surfaces the conflict under warnings, naming the modules involved" do
+    it "surfaces the conflict under composition_report, severity-typed" do
       bundle = bundle_with(
         template_name: "colliding-import-#{SecureRandom.hex(3)}",
         modules: [
@@ -199,12 +199,20 @@ RSpec.describe "Operator API — Node Templates import", type: :request do
       body = JSON.parse(response.body)
       expect(body.dig("data", "template_modules_count")).to eq(2)
 
-      warnings = body.dig("data", "warnings")
-      expect(warnings).to be_an(Array).and be_present
-      expect(warnings.join(" ")).to include(inst_a.name).and include(inst_b.name)
+      # `composition_report`, not `warnings`: this surface REPORTS a blocking
+      # verdict it does not enforce, and the assign paths use `warnings` for
+      # genuinely advisory conflicts. Each entry states its own severity so a
+      # caller can tell the two apart (IMP-493db0e5c398).
+      report = body.dig("data", "composition_report")
+      expect(report).to be_an(Array).and be_present
+      blocking = report.select { |e| e["severity"] == "error" }
+      expect(blocking.map { |e| e["kind"] }).to include("instance_variety_collision")
+      expect(blocking.map { |e| e["module_ids"] }.flatten)
+        .to include(inst_a.id).and include(inst_b.id)
+      expect(body.dig("data", "warnings")).to be_nil
     end
 
-    it "omits the warnings key on a clean import, leaving the payload unchanged" do
+    it "omits the composition_report key on a clean import, leaving the payload unchanged" do
       bundle = bundle_with(
         template_name: "clean-import-#{SecureRandom.hex(3)}",
         modules: [ { module_name: mod_a.name, module_variety: mod_a.variety, priority: 5, enabled: true, config: {} } ]
@@ -214,7 +222,9 @@ RSpec.describe "Operator API — Node Templates import", type: :request do
            params: { bundle: bundle }.to_json, headers: headers
 
       expect(response).to have_http_status(:created)
-      expect(JSON.parse(response.body)["data"]).not_to have_key("warnings")
+      data = JSON.parse(response.body)["data"]
+      expect(data).not_to have_key("composition_report")
+      expect(data).not_to have_key("warnings")
     end
   end
 end

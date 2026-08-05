@@ -120,7 +120,7 @@ RSpec.describe "Operator API — Node Templates clone", type: :request do
              name: "clone-inst-b-#{SecureRandom.hex(3)}")
     end
 
-    it "surfaces the cloned composition's conflict under warnings, naming the modules" do
+    it "surfaces the cloned composition's conflict under composition_report, severity-typed" do
       ::System::TemplateModule.create!(node_template: source_template, node_module: inst_a)
       ::System::TemplateModule.create!(node_template: source_template, node_module: inst_b)
 
@@ -131,29 +131,36 @@ RSpec.describe "Operator API — Node Templates clone", type: :request do
       body = JSON.parse(response.body)
       expect(body.dig("data", "node_template", "name")).to eq("base-web-copy")
 
-      warnings = body.dig("data", "warnings")
-      expect(warnings).to be_an(Array).and be_present
-      expect(warnings.join(" ")).to include(inst_a.name).and include(inst_b.name)
+      # `composition_report`, not `warnings`: this surface REPORTS a blocking
+      # verdict it does not enforce, and the assign paths use `warnings` for
+      # genuinely advisory conflicts. Each entry states its own severity so a
+      # caller can tell the two apart (IMP-493db0e5c398).
+      report = body.dig("data", "composition_report")
+      expect(report).to be_an(Array).and be_present
+      blocking = report.select { |e| e["severity"] == "error" }
+      expect(blocking.map { |e| e["module_ids"] }.flatten)
+        .to include(inst_a.id).and include(inst_b.id)
+      expect(body.dig("data", "warnings")).to be_nil
     end
 
-    it "carries the structured conflicts alongside the message" do
+    it "carries the structured conflicts under the same key" do
       ::System::TemplateModule.create!(node_template: source_template, node_module: inst_a)
       ::System::TemplateModule.create!(node_template: source_template, node_module: inst_b)
 
       post "/api/v1/system/node_templates/#{source_template.id}/clone", headers: headers
 
-      conflicts = JSON.parse(response.body).dig("data", "composition_conflicts")
-      expect(conflicts).to be_an(Array).and be_present
-      expect(conflicts.map { |c| c["kind"] }).to include("instance_variety_collision")
+      report = JSON.parse(response.body).dig("data", "composition_report")
+      expect(report).to be_an(Array).and be_present
+      expect(report.map { |e| e["kind"] }).to include("instance_variety_collision")
     end
 
-    it "omits both keys on a clean clone, leaving the payload unchanged" do
+    it "omits the key on a clean clone, leaving the payload unchanged" do
       post "/api/v1/system/node_templates/#{source_template.id}/clone", headers: headers
 
       expect(response).to have_http_status(:created)
       data = JSON.parse(response.body)["data"]
+      expect(data).not_to have_key("composition_report")
       expect(data).not_to have_key("warnings")
-      expect(data).not_to have_key("composition_conflicts")
     end
   end
 end

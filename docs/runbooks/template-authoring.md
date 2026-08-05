@@ -260,23 +260,40 @@ a write that materializes an entire template in one shot has no earlier state to
 charge a conflict to, so everything the resulting closure contains belongs to
 that write (`set_verdict`).
 
-- **`TemplateImporter`** puts error-severity conflicts in `Result#warnings`
-  ([`template_importer.rb:108-120`](../../server/app/services/system/template_importer.rb)),
-  and the controller forwards them under `warnings` on the 201
-  ([`node_templates_controller.rb:116-124`](../../server/app/controllers/api/v1/system/node_templates_controller.rb)).
+- **`TemplateImporter`** puts the verdict in `Result#composition_report`
+  ([`template_importer.rb`](../../server/app/services/system/template_importer.rb)),
+  and the controller forwards it under `composition_report` on the 201
+  ([`node_templates_controller.rb`](../../server/app/controllers/api/v1/system/node_templates_controller.rb)).
   It does not refuse: an import reproduces a template authored elsewhere,
   blocking would make an export/import round trip lossy, and the bundle format
   has no way to say "this collision is deliberate".
-- **`TemplateCloneService`** exposes `#composition_warning` (the prebuilt
-  message) and `#composition_conflicts` (the structured detail the importer has
-  no equivalent of). The clone controller returns them as `warnings` and
-  `composition_conflicts` ([`node_templates_controller.rb:146-157`](../../server/app/controllers/api/v1/system/node_templates_controller.rb)).
+- **`TemplateCloneService`** exposes `#composition_report` (the severity-typed
+  entries) and `#composition_message` (the prebuilt human summary, which is also
+  what gets logged). The clone controller returns the report under
+  `composition_report` ([`node_templates_controller.rb`](../../server/app/controllers/api/v1/system/node_templates_controller.rb)).
   Forking a broken template is exactly how an operator gets a copy to repair, so
   refusing would remove the repair path.
 
+**`composition_report`, not `warnings`** (IMP-493db0e5c398). These two surfaces
+report a **blocking** verdict they deliberately do not enforce, while the
+assignment write paths use `warnings` for conflicts that are genuinely advisory.
+One key meaning both left a caller unable to tell which it held. Every entry in
+`composition_report` now states its own `severity` (`"error"` | `"warning"`), so
+one classifier works on any surface's payload:
+
+```ruby
+blocking = payload["composition_report"].select { |e| e["severity"] == "error" }
+```
+
+Severity is **stamped from the partition**, not copied from what the conflict
+kind declared — a kind added later without a severity is treated as blocking
+(the same fail-closed rule as `TemplateCompositionAnalysis#warning?`) and says
+so, rather than reporting a nil a caller cannot branch on.
+
 Both analyses run **after** the commit and cannot fail the write — an analysis
-that raises reports itself as `"composition analysis failed: …"` rather than
-500-ing an otherwise-good import.
+that raises reports itself as a `composition_analysis_failed` entry at **error**
+severity (fail closed: an analysis that could not run has cleared nothing)
+rather than 500-ing an otherwise-good import.
 
 Because clone and import bypass the delta guard, whatever they land becomes the
 **baseline every later assignment is obliged to treat as acceptable**. If you

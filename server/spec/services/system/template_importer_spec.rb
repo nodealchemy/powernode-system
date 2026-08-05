@@ -38,7 +38,7 @@ RSpec.describe System::TemplateImporter do
 
       expect(result).to be_ok
       expect(result.template_modules_count).to eq(1)
-      expect(result.warnings).to be_empty
+      expect(result.composition_report).to be_empty
     end
 
     context "when the bundle composes badly" do
@@ -52,15 +52,21 @@ RSpec.describe System::TemplateImporter do
         expect(result.template_modules_count).to eq(2)
       end
 
-      it "surfaces the conflict in the Result's warnings, naming the modules" do
+      # Severity-typed, so a caller can tell this BLOCKING verdict — reported,
+      # not enforced — from the advisory conflicts that ride the same list.
+      # It used to arrive as a bare message String under a key called
+      # `warnings` (IMP-493db0e5c398).
+      it "surfaces the conflict in the Result's composition_report, naming the modules" do
         result = importer.import!(bundle: bundle_for([ first, second ]))
 
-        expect(result.warnings.join(" ")).to include("instance_variety_collision")
-          .and include(first.name).and include(second.name)
+        blocking = result.composition_report.select { |e| e[:severity] == "error" }
+        expect(blocking.map { |e| e[:kind] }).to include("instance_variety_collision")
+        expect(blocking.map { |e| e[:module_ids] }.flatten)
+          .to include(first.id).and include(second.id)
       end
     end
 
-    it "warns about nothing when a disabled join is the only would-be collision" do
+    it "reports nothing when a disabled join is the only would-be collision" do
       bundle = bundle_for([ node_module("live-inst", variety: "instance"),
                             node_module("dark-inst", variety: "instance") ])
       bundle[:modules][1][:enabled] = false
@@ -68,7 +74,33 @@ RSpec.describe System::TemplateImporter do
       result = importer.import!(bundle: bundle)
 
       expect(result).to be_ok
-      expect(result.warnings).to be_empty
+      expect(result.composition_report).to be_empty
+    end
+
+    # The analysis is reported here, never enforced, so it must not make a
+    # working import fail.
+    it "imports anyway when the analysis itself blows up" do
+      allow_any_instance_of(::System::TemplateCompositionAnalysis)
+        .to receive(:set_verdict).and_raise(StandardError, "kaboom")
+
+      result = importer.import!(bundle: bundle_for([ node_module("solo") ]))
+
+      expect(result).to be_ok
+      expect(result.template_modules_count).to eq(1)
+    end
+
+    # Fail closed, matching TemplateCompositionAnalysis#warning?: an analysis
+    # that could not run has cleared nothing, so it must not report as an
+    # advisory the caller may ignore.
+    it "reports an analysis failure at BLOCKING severity, not as an advisory" do
+      allow_any_instance_of(::System::TemplateCompositionAnalysis)
+        .to receive(:set_verdict).and_raise(StandardError, "kaboom")
+
+      result = importer.import!(bundle: bundle_for([ node_module("solo") ]))
+
+      expect(result.composition_report.map { |e| e[:severity] }).to eq([ "error" ])
+      expect(result.composition_report.map { |e| e[:kind] }).to eq([ "composition_analysis_failed" ])
+      expect(result.composition_report.first[:detail]).to include("kaboom")
     end
 
     it "leaves the existing refusal paths alone" do

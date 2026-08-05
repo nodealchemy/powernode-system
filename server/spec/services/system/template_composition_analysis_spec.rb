@@ -160,4 +160,85 @@ RSpec.describe System::TemplateCompositionAnalysis do
       expect(payload[:modules].find { |m| m[:id] == dependent.id }[:auto_resolved]).to be false
     end
   end
+
+  # IMP-493db0e5c398 — the projection the REPORTING surfaces (TemplateImporter,
+  # TemplateCloneService) hand their callers instead of a bare message String.
+  # Driven directly rather than through a fixture because the load-bearing case
+  # — a conflict kind that declares NO severity — cannot be built from the
+  # catalog: all three kinds TemplateComposerService#detect_conflicts emits
+  # declare one today. That is exactly the case the stamping exists for, so it
+  # has to be constructed.
+  describe "Verdict#report_entries" do
+    def verdict_for(blocking: [], warnings: [])
+      described_class::Verdict.new(blocking: blocking, warnings: warnings, message: "m")
+    end
+
+    it "stamps the blocking half at error severity" do
+      entries = verdict_for(blocking: [ { kind: "instance_variety_collision", severity: "error" } ]).report_entries
+
+      expect(entries.map { |e| e[:severity] }).to eq([ "error" ])
+    end
+
+    it "stamps the advisory half at warning severity" do
+      entries = verdict_for(warnings: [ { kind: "protected_spec_overlap", severity: "warning" } ]).report_entries
+
+      expect(entries.map { |e| e[:severity] }).to eq([ "warning" ])
+    end
+
+    # #warning? partitions on `severity.to_s`, so a kind declaring a SYMBOL
+    # severity lands in the advisory half carrying `:warning`. Passing the
+    # declared value through instead of stamping would hand an in-process
+    # caller a Symbol where every other entry carries a String, and
+    # `entry[:severity] == "warning"` would silently be false.
+    it "normalizes a symbol severity on the advisory half to a String" do
+      entries = verdict_for(warnings: [ { kind: "protected_spec_overlap", severity: :warning } ]).report_entries
+
+      expect(entries.map { |e| e[:severity] }).to eq([ "warning" ])
+    end
+
+    # The fail-closed rule in #warning? puts a severity-less conflict kind into
+    # `blocking`. If report_entries passed the declared value through instead of
+    # stamping, that entry would report severity nil — leaving the caller
+    # exactly as unable to classify it as the untyped `warnings` key this
+    # replaces, while every surface still looked correct.
+    it "stamps error severity on a blocking conflict that declares none" do
+      entries = verdict_for(blocking: [ { kind: "future_kind_with_no_severity" } ]).report_entries
+
+      expect(entries.map { |e| e[:severity] }).to eq([ "error" ])
+      expect(entries.first[:kind]).to eq("future_kind_with_no_severity")
+    end
+
+    # A blocking conflict that mislabels ITSELF as a warning must still report
+    # as blocking: the verdict already partitioned it, and the partition is
+    # what the caller is being told about.
+    it "reports a conflict the partition placed in blocking at error severity, whatever it declared" do
+      entries = verdict_for(blocking: [ { kind: "mislabelled", severity: "warning" } ]).report_entries
+
+      expect(entries.map { |e| e[:severity] }).to eq([ "error" ])
+    end
+
+    it "carries both halves in one list, each distinguishable by its own severity" do
+      entries = verdict_for(
+        blocking: [ { kind: "instance_variety_collision", severity: "error" } ],
+        warnings: [ { kind: "protected_spec_overlap", severity: "warning" } ]
+      ).report_entries
+
+      expect(entries.size).to eq(2)
+      expect(entries.select { |e| e[:severity] == "error" }.map { |e| e[:kind] })
+        .to eq([ "instance_variety_collision" ])
+      expect(entries.select { |e| e[:severity] == "warning" }.map { |e| e[:kind] })
+        .to eq([ "protected_spec_overlap" ])
+    end
+
+    it "reports nothing for a clean verdict" do
+      expect(verdict_for.report_entries).to be_empty
+    end
+
+    it "leaves the caller's conflict hashes unmutated" do
+      conflict = { kind: "instance_variety_collision", severity: "error" }
+      verdict_for(blocking: [ conflict ]).report_entries
+
+      expect(conflict).to eq({ kind: "instance_variety_collision", severity: "error" })
+    end
+  end
 end

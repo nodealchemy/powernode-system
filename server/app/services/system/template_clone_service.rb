@@ -19,7 +19,7 @@ module System
   # write paths is a DELTA, whatever a clone lands becomes permanent baseline
   # that later assignments are then obliged to treat as acceptable. So the
   # clone runs TemplateCompositionAnalysis over the result and REPORTS it
-  # (#composition_conflicts / #composition_warning, plus a log line) rather
+  # (#composition_report / #composition_message, plus a log line) rather
   # than refusing: a clone reproduces state that already exists, and forking
   # a broken template is exactly how an operator gets a copy to repair. The
   # same conflicts are judged again at apply time, where they would otherwise
@@ -29,14 +29,22 @@ module System
 
     attr_reader :source_template
 
-    # Populated by #clone! — the error-severity conflicts the cloned template
-    # composes into, and a prebuilt message naming the modules. Empty/nil
-    # after a clean clone.
-    attr_reader :composition_conflicts, :composition_warning
+    # Populated by #clone! — every conflict the cloned template composes into,
+    # each entry stating its own severity, plus a prebuilt message naming the
+    # modules. Empty/nil after a clean clone.
+    #
+    # `composition_report`, not `composition_conflicts`/`composition_warning`:
+    # what rides here includes BLOCKING entries, and the old pair reached the
+    # HTTP surface under a key named `warnings` — the same key the enforcing
+    # assignment paths use for genuinely advisory conflicts, so a caller could
+    # not tell a verdict it must act on from one it may ignore
+    # (IMP-493db0e5c398). #composition_message keeps the human summary, which
+    # is still what gets logged.
+    attr_reader :composition_report, :composition_message
 
     def initialize(source_template)
       @source_template = source_template
-      @composition_conflicts = []
+      @composition_report = []
     end
 
     # Returns the new NodeTemplate.
@@ -75,16 +83,22 @@ module System
       verdict = ::System::TemplateCompositionAnalysis.new(source_template.account).set_verdict(
         cloned.template_modules.enabled.pluck(:node_module_id)
       )
-      @composition_conflicts = verdict.blocking
-      @composition_warning = verdict.message
+      @composition_report = verdict.report_entries
+      @composition_message = verdict.message
       return unless verdict.blocked?
 
       Rails.logger.warn(
         "[TemplateCloneService] cloned #{source_template.name} → #{cloned.name}: #{verdict.message}"
       )
     rescue StandardError => e
-      @composition_warning = "composition analysis failed: #{e.message}"
-      Rails.logger.warn("[TemplateCloneService] #{@composition_warning}")
+      @composition_message = "composition analysis failed: #{e.message}"
+      # Fail closed, matching TemplateCompositionAnalysis#warning?: an analysis
+      # that could not run has cleared nothing, so it reports at blocking
+      # severity rather than as an advisory a caller may ignore.
+      @composition_report = [ { severity: ::System::TemplateCompositionAnalysis::BLOCKING_SEVERITY,
+                                kind: "composition_analysis_failed",
+                                detail: @composition_message } ]
+      Rails.logger.warn("[TemplateCloneService] #{@composition_message}")
     end
 
     def build_template_clone(account, new_name)
