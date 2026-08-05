@@ -106,6 +106,43 @@ RSpec.describe "promoted-pointer publication state guard" do
     expect(System::DiskImagePublication.where.not(published_at: nil)).not_to include(pub)
   end
 
+  # IMP-6d2dd4533bd7 — a laundered row (above) is EXACTLY the row a
+  # guard-failing `reactivate` reaches for: retired, no file_object. Before
+  # this fix, an attempted reactivate on it (guard fails — no
+  # file_object_id) still forged published_at via an event-level `before`
+  # that aasm 5.5.2 fires before the guard is checked (see
+  # disk_image_publication.rb's `reactivate` event for the full trace). That
+  # forged published_at would have sailed straight past preflight's
+  # :never_published discriminator — the whole reason this file exists.
+  it "still refuses :never_published after a guard-failing reactivate is attempted on the laundered row" do
+    pub = System::DiskImagePublication.create!(
+      account: account, node_platform: platform,
+      git_sha: "laundered-reactivate-sha", arch: "amd64",
+      oci_ref: "registry.example.com/disk:laundered-reactivate",
+      sha256: "6" * 64, size_bytes: 1024,
+      uki_oci_ref: "registry.example.com/uki:laundered-reactivate", uki_sha256: "5" * 64,
+      uki_cosign_bundle: "LAUNDERED-BUNDLE"
+    )
+    pub.start_verifying!
+    pub.mark_failed!("cosign verify failed")
+    pub.retire!
+    expect(pub.reload).to have_attributes(status: "retired", published_at: nil, file_object_id: nil)
+
+    # The call-and-discard idiom PromotePublication/RollbackPublication use —
+    # attempted here directly against the model to isolate the AASM
+    # behavior from those executors (which additionally refuse this row via
+    # promotable? before ever reaching reactivate; this proves the
+    # model-level invariant holds independent of that outer guard).
+    pub.reactivate
+    pub.save!
+    expect(pub.reload).to have_attributes(status: "retired", published_at: nil)
+
+    platform.update!(disk_image_git_sha: pub.git_sha, disk_image_oci_ref: pub.oci_ref)
+
+    _resolved, failure = System::BootImage::UpgradeDispatcher.preflight(platform)
+    expect(failure).to eq(:never_published)
+  end
+
   describe "UpgradeDispatcher.preflight" do
     let(:instance) { create(:system_node_instance, :running, node: node) }
 

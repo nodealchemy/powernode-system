@@ -81,8 +81,21 @@ module System
       event :mark_published do
         transitions from: :verifying, to: :published do
           guard { file_object_id.present? }
+          # Transition-scoped `after`, NOT an event-level `before`
+          # (IMP-6d2dd4533bd7) — identical shape and identical reasoning to
+          # `reactivate` below: aasm 5.5.2 fires an event-level `before`
+          # UNCONDITIONALLY, before the guard is checked (see `reactivate`'s
+          # comment for the full trace through the gem source), so a
+          # guard-failing mark_published (a :verifying row with no
+          # file_object_id — e.g. a replayed webhook, or ingest failure
+          # racing a save) would have stamped published_at/verified_at on
+          # the in-memory object regardless, and
+          # DiskImagePublicationProcessor#publish! calls
+          # `publication.mark_published!` with its return value discarded,
+          # inside a transaction that persists `publication` via other
+          # writes in the same transaction.
+          after { self.published_at = Time.current; self.verified_at ||= Time.current }
         end
-        before { self.published_at = Time.current; self.verified_at ||= Time.current }
       end
 
       event :mark_failed do
@@ -117,8 +130,32 @@ module System
       event :reactivate do
         transitions from: :retired, to: :published do
           guard { file_object_id.present? }
+          # Transition-scoped `after`, NOT an event-level `before` (IMP-6d2dd4533bd7).
+          # Verified against aasm 5.5.2's actual source, not its docs:
+          # aasm.rb#aasm_fire_event calls fire_default_callbacks — which fires
+          # the event-level :before — UNCONDITIONALLY at line 102, BEFORE
+          # event.may_fire? (the guard check) runs at line 104. So an
+          # event-level `before` here would stamp published_at on the
+          # in-memory object even when the guard fails, and the
+          # call-and-discard idiom (`pub.reactivate; pub.save!`, used by
+          # both PromotePublication and RollbackPublication) would persist
+          # that stamp on a row that never actually left :retired.
+          #
+          # A transition-level `after` only fires from Transition#execute,
+          # which event.rb's `_fire` calls exclusively inside the branch
+          # where `transition.allowed?(obj)` — the guard — already returned
+          # true. So this genuinely cannot apply unless the transition does.
+          # (aasm 5.5.2's Transition DSL only recognizes :on_transition,
+          # :guard, :after, :success — there is no transition-scoped
+          # :before to move this to instead.)
+          #
+          # promotable? and UpgradeDispatcher.preflight both depend on
+          # published_at being unforgeable by a failed transition — this is
+          # the one place that invariant is actually enforced. See
+          # promotable?'s comment below and preflight's :never_published
+          # guard (boot_image/upgrade_dispatcher.rb).
+          after { self.published_at = Time.current; self.retired_at = nil }
         end
-        before { self.published_at = Time.current; self.retired_at = nil }
       end
     end
 
@@ -199,6 +236,22 @@ module System
 
     # True when it is safe for PromotePublication/RollbackPublication to
     # point the platform's boot pointer at this row.
+    #
+    # Does NOT check published_at today — it doesn't need to, since
+    # file_object_id + status already fully discriminate the states this
+    # predicate cares about. But UpgradeDispatcher.preflight's sibling guard
+    # DOES key off published_at directly (`:never_published` — see that
+    # file), and any future change here that also keys off it (tracked
+    # separately, IMP-c3f186e56d5b: a retired row laundered through
+    # retire_stuck! with a leftover file_object_id still passes this
+    # predicate today) is only sound because BOTH `mark_published` and
+    # `reactivate`'s timestamp writes are transition-scoped `after`
+    # callbacks, not event-level `before` — see those two events above.
+    # Before that fix, published_at could be stamped on a row whose
+    # transition guard FAILED (mark_published on a :verifying row with no
+    # file_object_id; reactivate on a :retired row with no file_object_id),
+    # which would have made it useless as a signal for exactly the
+    # extension IMP-c3f186e56d5b wants to make.
     #
     # Two independent checks, both required:
     #   - status is :published or :retired — the two states this executor

@@ -62,11 +62,45 @@ RSpec.describe System::DiskImagePublication, type: :model do
       expect(pub.aasm.from_state).to eq(:verifying)
     end
 
+    # IMP-6d2dd4533bd7 (mark_published shares reactivate's shape). The test
+    # above never checked published_at/verified_at nor persisted — it would
+    # not have caught this. Same mechanism as reactivate: aasm 5.5.2 fires an
+    # event-level `before` UNCONDITIONALLY, before the guard is evaluated
+    # (aasm.rb#aasm_fire_event: fire_default_callbacks at line 102 runs
+    # before event.may_fire? at line 104), so an event-level `before` here
+    # stamped published_at/verified_at on the in-memory object even when
+    # `guard { file_object_id.present? }` failed — and
+    # DiskImagePublicationProcessor#publish! calls `publication.mark_published!`
+    # bare, return value discarded, inside a transaction that DOES persist
+    # publication via other writes in the same transaction.
+    it "does not stamp published_at/verified_at when mark_published's guard fails" do
+      pub.start_verifying!
+      pub.mark_published # no file_object yet — guard fails
+      pub.save!
+
+      expect(pub.reload).to be_verifying # transition refused, whiny_transitions:false
+      expect(pub.published_at).to be_nil # the forgeable-timestamp trap
+      expect(pub.verified_at).to be_nil
+    end
+
     it "verifying → published succeeds when file_object_id is set" do
       published = create(:system_disk_image_publication, :published, account: account, node_platform: platform)
       expect(published).to be_published
       expect(published.published_at).to be_present
       expect(published.verified_at).to be_present
+    end
+
+    it "mark_published stamps published_at and verified_at on a legitimate transition, " \
+       "preserving verified_at's ||= (does not clobber an earlier verification timestamp)" do
+      pub.start_verifying!
+      earlier_verified_at = 1.hour.ago
+      pub.update_columns(verified_at: earlier_verified_at, file_object_id: create(:file_object, account: account).id)
+
+      pub.mark_published!
+
+      expect(pub.reload).to be_published
+      expect(pub.published_at).to be_present
+      expect(pub.verified_at).to be_within(1.second).of(earlier_verified_at) # ||= preserved it
     end
 
     it "verifying → failed with error message" do
@@ -174,6 +208,77 @@ RSpec.describe System::DiskImagePublication, type: :model do
 
       published.mark_published
       expect(published).to be_retired # transition refused, whiny_transitions:false
+    end
+
+    # IMP-6d2dd4533bd7 — a guard-failing reactivate must not forge
+    # published_at. aasm 5.5.2 fires an event-level `before` UNCONDITIONALLY,
+    # before the transition guard is even evaluated (verified against the
+    # gem source, aasm.rb#aasm_fire_event: fire_default_callbacks at line
+    # 102 runs before event.may_fire? at line 104) — so writing the
+    # published_at/retired_at update as an event-level `before` (as this
+    # code used to) stamped published_at on the in-memory object even when
+    # `guard { file_object_id.present? }` failed. The call-and-discard idiom
+    # both PromotePublication and RollbackPublication use
+    # (`pub.reactivate; pub.save!`, return value never checked) then
+    # persisted that forged timestamp on a row that never actually left
+    # :retired.
+    #
+    # This matters beyond internal consistency: UpgradeDispatcher.preflight
+    # treats published_at as THE discriminator for "was this row ever
+    # legitimately published" (its own comment: "only mark_published and
+    # reactivate ever set it ... and nothing clears it"). A forged
+    # published_at on a never-published row sails straight past that guard
+    # — see the "still refuses" preflight spec in
+    # promoted_pointer_publication_state_spec.rb for the dispatch-level
+    # consequence.
+    it "does not stamp published_at when reactivate's guard fails (retired row, no file_object)" do
+      # NOTE: the :retired factory trait sets published_at (it represents a
+      # row that genuinely WAS published, then retired) — using it here
+      # would make the "stays nil" assertion vacuous. Build the row the way
+      # DiskImageRetentionService#retire_stuck! actually produces a retired
+      # row that never had a file_object and never went through
+      # mark_published: :failed -> retire (not reactivate). That is the
+      # real, reachable "never-published, retired, no artifact" shape.
+      failed = create(:system_disk_image_publication, :failed, account: account, node_platform: platform)
+      failed.retire!
+      failed.reload
+      expect(failed).to be_retired
+      expect(failed.file_object_id).to be_nil
+      expect(failed.published_at).to be_nil
+      retired_at_before = failed.retired_at
+      expect(retired_at_before).to be_present
+
+      failed.reactivate
+      failed.save!
+
+      expect(failed.reload).to be_retired # transition refused, whiny_transitions:false
+      expect(failed.published_at).to be_nil # the forgeable-timestamp trap
+      expect(failed.retired_at).to eq(retired_at_before) # untouched, not cleared
+    end
+  end
+
+  # White-box guard against the DSL silently dropping the fix: the
+  # does-not-stamp specs above would ALSO pass if `after` were misspelled,
+  # nested wrong, or otherwise never registered — a missing callback and a
+  # correctly-gated one are behaviorally identical on the refusal path. This
+  # asserts directly on the built AASM::Core::Transition/Event objects that
+  # the write actually lives where it's supposed to (IMP-6d2dd4533bd7).
+  describe "reactivate/mark_published timestamp writes are transition-scoped, not event-level" do
+    def transition_to_published(event_name)
+      event = described_class.aasm.events.find { |e| e.name == event_name }
+      event.transitions.find { |t| Array(t.to).include?(:published) }
+    end
+
+    it "registers the published_at write as the transition's :after" do
+      expect(transition_to_published(:mark_published).options[:after]).to be_present
+      expect(transition_to_published(:reactivate).options[:after]).to be_present
+    end
+
+    it "carries no event-level :before anymore — the construct that fires before the guard" do
+      mp_event = described_class.aasm.events.find { |e| e.name == :mark_published }
+      reactivate_event = described_class.aasm.events.find { |e| e.name == :reactivate }
+      expect(mp_event.options[:before]).to be_nil
+      expect(reactivate_event.options[:before]).to be_nil
     end
   end
 

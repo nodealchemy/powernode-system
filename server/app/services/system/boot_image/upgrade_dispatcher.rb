@@ -83,13 +83,28 @@ module System
         # an unverified build, and only publication state catches it.
         #
         # published_at, not status, is the discriminator: only mark_published and
-        # reactivate ever set it (disk_image_publication.rb:85, :121) and nothing
-        # clears it, while `retired` is also reachable from failed/verifying via
-        # the stuck-build cleanup. Every writer of disk_image_git_sha
-        # (DiskImagePublicationProcessor#publish!, DiskImage::PromotePublication,
-        # DiskImage::RollbackPublication) sets published_at in the SAME
-        # transaction as the pointer flip, so a legitimately promoted row can
-        # never be caught here — including transiently.
+        # reactivate ever set it (disk_image_publication.rb, events `mark_published`
+        # and `reactivate`) and nothing clears it, while `retired` is also
+        # reachable from failed/verifying via the stuck-build cleanup. Every
+        # writer of disk_image_git_sha (DiskImagePublicationProcessor#publish!,
+        # DiskImage::PromotePublication, DiskImage::RollbackPublication) sets
+        # published_at in the SAME transaction as the pointer flip, so a
+        # legitimately promoted row can never be caught here — including
+        # transiently.
+        #
+        # This guard is ONLY sound because published_at cannot be set by a
+        # transition whose guard failed (IMP-6d2dd4533bd7). Both
+        # `mark_published` and `reactivate` used to stamp it via an
+        # event-level `before`, which aasm 5.5.2 fires BEFORE the guard is
+        # checked — so a guard-failing mark_published (a :verifying row with
+        # no file_object_id) or reactivate (a :retired row with no
+        # file_object_id) could forge a published_at that would sail
+        # straight past this check. The fix moved both writes to a
+        # transition-scoped `after`, which only fires once the guard has
+        # already passed — see the `mark_published` and `reactivate` events
+        # in disk_image_publication.rb for the full trace through the
+        # aasm source. Do not weaken this discriminator without re-verifying
+        # that invariant still holds.
         return [ pub, :never_published ] if pub.published_at.nil?
         # purge! nils file_object_id and hard-deletes the disk-image bytes but
         # (see DiskImagePublication#purge!) leaves published_at untouched —
