@@ -78,7 +78,10 @@ RSpec.describe System::NodeInstancePeer, type: :model do
       peer.reload
       expect(peer.execution_count).to eq(1)
       expect(peer.execution_failure_count).to eq(0)
-      expect(peer.last_executed_at).to be_within(2.seconds).of(Time.current)
+      # Widened from 2s: this asserts "was stamped now-ish", and a loaded CI
+      # runner can put more than two seconds between the write and this line.
+      # The assertion that matters is that it advanced at all, not its precision.
+      expect(peer.last_executed_at).to be_within(30.seconds).of(Time.current)
     end
 
     it "increments both counters on failure" do

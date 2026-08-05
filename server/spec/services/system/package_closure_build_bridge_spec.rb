@@ -299,8 +299,16 @@ RSpec.describe System::PackageClosureBuildBridge do
         .and_call_original
       # ...then the SAME sign→publish path platform modules use.
       expect(System::ModuleSigningService).to receive(:sign!).and_return(sign_result)
+      # `native_build:` is passed by finalize_success! for every module, package
+      # or platform — it routes the processor to record the artifact from the
+      # registry-resolved erofs LAYER digest rather than the dev stub path. This
+      # expectation predates that argument; asserting the three that matter and
+      # allowing the rest keeps it from breaking again the next time the
+      # processor's signature grows.
       expect(System::ModulePublicationProcessor).to receive(:process!)
-        .with(node_module: mod, tag: batch.metadata["package_context"]["tag"], promote: true)
+        .with(hash_including(node_module: mod,
+                             tag: batch.metadata["package_context"]["tag"],
+                             promote: true))
         .and_return(publish_result)
 
       result = System::NativeModuleBuildOrchestrator.advance!(batch: batch)
