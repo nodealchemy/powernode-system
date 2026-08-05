@@ -18,6 +18,14 @@ module Ai
       # samples into its result; excluded_count always carries the true total.
       EXCLUDED_MODULE_SAMPLE_LIMIT = 25
 
+      # Params on which THIS tool routes an inner action of its own, rather than
+      # on :action. The lifecycle-skill wrappers (#platform_maintenance,
+      # #platform_resilience) cannot use :action — the MCP dispatcher owns that
+      # key for the tool name itself — so they discriminate on `op:`, with a
+      # per-skill alias. See #effective_action_name for why the deny overlay has
+      # to know them. (IMP-e89d83547bad)
+      INNER_ACTION_KEYS = %i[op maintenance_action resilience_action].freeze
+
       # Per-action permission map. Aligned with the platform's seeded
       # `system.<resource>.<action>` naming (per
       # extensions/system/server/db/migrate/20260429120000_seed_system_extension_permissions_and_flags.rb).
@@ -1329,6 +1337,56 @@ module Ai
       end
 
       protected
+
+      # SECURITY (IMP-e89d83547bad): give the instance deny overlay the name of
+      # the work that ACTUALLY runs when this tool routes on its own key.
+      #
+      # An instance principal is authorized by TOOL NAME, and three separate
+      # fences read the same :action key to keep the executed action pinned to
+      # that name: Mcp::Principal#may_invoke? (first hop), McpPlatformTool
+      # Registrar#enforce_action_scope! (pins params[:action]) and
+      # Ai::Tools::BaseTool#enforce_instance_deny_overlay! (re-arms at every
+      # hop, via BaseTool#effective_action_name, which reads params[:action]).
+      #
+      # This tool's two lifecycle-skill wrappers route on INNER_ACTION_KEYS
+      # instead, so :action stays equal to the granted tool name and every one
+      # of those fences saw only a benign composer:
+      #
+      #   system_platform_resilience  + op: "drain_instance"  -> *drain_*
+      #   system_platform_maintenance + op: "cert_rotate"     -> *rotate*
+      #
+      # Both are names DESTRUCTIVE_TOOL_PATTERNS refuses unconditionally, and
+      # neither executor nests a tool — PlatformResilienceExecutor and
+      # PlatformMaintenanceExecutor mutate models/services directly — so the
+      # nested-depth re-arm can never reach them. A FIRST-HOP gap, and the
+      # unattributed destroy the overlay exists to stop: drain_instance stamps
+      # config["drain_initiated_by_user_id"] = @user&.id, nil for an instance.
+      #
+      # Extension-local by construction. Core must never learn an extension's
+      # param names (core NEVER depends on an extension), so the tool that
+      # invented the key is the thing that must declare it.
+      #
+      # Returns the destroy-shaped inner op when there is one — so the refusal
+      # names the work that would have run — and otherwise defers to the
+      # default, leaving every other action's check byte-for-byte unchanged.
+      # Checked for EVERY action, not just the two wrappers: a third one added
+      # the same way is covered the day it ships, not the day someone
+      # remembers. Costs nothing — the caller runs only for an instance
+      # principal, and a benign op is simply not destroy-shaped.
+      def effective_action_name(params)
+        destructive_inner_action(params) || super
+      end
+
+      def destructive_inner_action(params)
+        return nil unless params.is_a?(Hash)
+
+        INNER_ACTION_KEYS.each do |key|
+          value = (params[key] || params[key.to_s]).to_s
+          next if value.empty?
+          return value if ::Mcp::Principal.destructive_tool?(value)
+        end
+        nil
+      end
 
       def call(params)
         return error_result(permission_denied_message(params[:action])) unless action_permitted?(params[:action])
