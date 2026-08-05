@@ -421,14 +421,31 @@ module PowernodeSystem
         #   providers, ...) — manager doesn't get infra-mutation rights
         #   anywhere else in this file either.
         #
-        #   Deliberately EXCLUDED: system.platforms.publish_disk_image and
-        #   system.module_builds.dispatch. Both are worker/webhook-only by
-        #   explicit design (see the core permissions.rb comments beside each)
-        #   — publish_disk_image is authorized exclusively via
-        #   authorize_worker_permission!/@current_ci_worker.has_permission? in
-        #   the WorkerApi:: and DiskImageRegistryConfig controllers, never via
-        #   require_permission against a User. Granting them to admin/manager
-        #   would widen a deliberately narrow leaked-token blast radius.
+        #   Deliberately EXCLUDED from these role grants:
+        #   system.platforms.publish_disk_image and
+        #   system.module_builds.dispatch. The WorkerApi:: and
+        #   DiskImageRegistryConfig controllers gate them on
+        #   authorize_worker_permission! / @current_ci_worker.has_permission?
+        #   — a CiWorker principal, not a User — so no OPERATOR endpoint
+        #   checks either name against current_user.
+        #
+        #   That is a bound on explicit GRANTS, not on effective access, and
+        #   it does NOT put the permission out of a User's reach.
+        #   User#has_permission? short-circuits on system.admin
+        #   (app/models/user.rb:138-144): it returns true for EVERY permission
+        #   name before any exclusion here is consulted, so a system.admin
+        #   holder satisfies both of these regardless of this list. Same
+        #   mechanism, stated the same way, as SystemFleetTool's
+        #   WORKER_ONLY_ACTIONS note.
+        #
+        #   Nor is the User-facing path hypothetical:
+        #   Ai::Tools::DiskImageOperatorTool declares REQUIRED_PERMISSION =
+        #   "system.platforms.publish_disk_image" and is registered live
+        #   (platform_api_tool_registry.rb:358-360), where BaseTool.permitted?
+        #   resolves it through User#has_permission?. Its provision_ci_worker
+        #   action mints a CI-worker token carrying that very permission.
+        #   So the exclusion bounds what a leaked NON-ADMIN token can reach —
+        #   not what an admin can reach.
         # ---------------------------------------------------------------
         ::Permissions.register_role_permissions("admin", %w[
           system.ci_workers.read
