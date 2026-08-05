@@ -2941,7 +2941,17 @@ end
     end
 
     describe "system_set_default_disk_image_publication" do
-      let!(:published) { create(:system_disk_image_publication, account: account, node_platform: platform_record_for_pubs, status: "published", oci_ref: "registry.example.com/test:abc", git_sha: "test-sha-promoted") }
+      # NOTE: uses the :published TRAIT (not a bare status: "published"
+      # override) so this row carries a real file_object — a "published"
+      # row can never legitimately exist without one (mark_published /
+      # reactivate both guard on file_object_id.present?). A bare status
+      # override without a file_object is exactly the impossible state
+      # IMP-70f3109e693a's promotable? guard now (correctly) refuses to
+      # promote — that guard tripped here before this fixture was fixed.
+      let!(:published) do
+        create(:system_disk_image_publication, :published, account: account, node_platform: platform_record_for_pubs,
+                                                             oci_ref: "registry.example.com/test:abc", git_sha: "test-sha-promoted")
+      end
 
       it "copies oci_ref + git_sha onto the parent NodePlatform" do
         r = call("system_set_default_disk_image_publication", publication_id: published.id)

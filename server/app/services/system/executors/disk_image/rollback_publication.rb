@@ -4,10 +4,27 @@ module System
   module Executors
     module DiskImage
       class RollbackPublication < ::System::Executors::Base
+        # Refused rather than silently no-op'd — see PromotePublication::
+        # UnpromotablePublicationError and DiskImagePublication#promotable?.
+        # This executor is also reachable from an approved DeferredOperation
+        # minted before the target was purged (approval can land long after
+        # the request), so the guard belongs here — re-checked at the moment
+        # of mutation — not only in the callers that pre-check at request time
+        # (DiskImagePublicationsController#rollback, SystemFleetTool#revert_
+        # disk_image).
+        class UnpromotablePublicationError < StandardError; end
+
         protected
 
         def perform
           target = ::System::DiskImagePublication.find(params[:target_publication_id])
+          unless target.promotable?
+            raise UnpromotablePublicationError,
+                  "cannot roll back to publication #{target.id}: status=#{target.status} " \
+                  "file_object_id=#{target.file_object_id.inspect} (must be published or " \
+                  "retired with a live artifact)"
+          end
+
           platform = if params[:platform_id]
                        ::System::NodePlatform.find(params[:platform_id])
           else

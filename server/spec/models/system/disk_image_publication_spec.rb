@@ -238,4 +238,67 @@ RSpec.describe System::DiskImagePublication, type: :model do
       expect(retired.active?).to be false
     end
   end
+
+  # Guards PromotePublication / RollbackPublication's boot-pointer write.
+  # Two independent halves — every example below is chosen to isolate ONE
+  # half so a mutant dropping either check in isolation still fails (a
+  # purged row alone fails BOTH halves at once and can't prove that).
+  describe "#promotable?" do
+    it "true for published with its artifact present" do
+      pub = create(:system_disk_image_publication, :published, account: account, node_platform: platform)
+      expect(pub.promotable?).to be true
+    end
+
+    it "true for retired with its artifact present" do
+      fo = create(:file_object, account: account)
+      pub = create(:system_disk_image_publication, :retired, account: account, node_platform: platform, file_object: fo)
+      expect(pub.promotable?).to be true
+    end
+
+    it "false for queued (no artifact, wrong status)" do
+      pub = create(:system_disk_image_publication, account: account, node_platform: platform)
+      expect(pub.promotable?).to be false
+    end
+
+    it "false for awaiting_upload (no artifact, wrong status)" do
+      pub = create(:system_disk_image_publication, :awaiting_upload, account: account, node_platform: platform)
+      expect(pub.promotable?).to be false
+    end
+
+    it "false for failed (no artifact, wrong status)" do
+      pub = create(:system_disk_image_publication, :failed, account: account, node_platform: platform)
+      expect(pub.promotable?).to be false
+    end
+
+    it "false for purged — published_at is stale (purge! leaves it set) and file_object_id is nil " \
+       "(purge! hard-deletes it), status flips to purged" do
+      fake_storage_service = instance_double(::FileStorageService, delete_file: true)
+      allow(::FileStorageService).to receive(:new).and_return(fake_storage_service)
+      retired = create(:system_disk_image_publication, :retired, account: account, node_platform: platform)
+      retired.purge!
+      expect(retired.published_at).to be_present # the published_at-only-guard trap
+      expect(retired.promotable?).to be false
+    end
+
+    it "false for retired with NO artifact — status passes, artifact fails. Produced by " \
+       "DiskImageRetentionService#retire_stuck! retiring a :failed/:verifying CI run that " \
+       "never got a file_object; also the row SystemFleetTool#previous_disk_image_publication " \
+       "auto-selects (\"newest retired\") when no publication_id is given." do
+      stuck = create(:system_disk_image_publication, :failed, account: account, node_platform: platform,
+                                                                created_at: 30.days.ago)
+      stuck.retire!
+      expect(stuck.reload.status).to eq("retired")
+      expect(stuck.file_object_id).to be_nil
+      expect(stuck.promotable?).to be false
+    end
+
+    it "false for :verifying with an artifact already uploaded but NOT yet cosign/sha verified " \
+       "(direct-upload mode, DiskImagePublicationProcessor#direct_upload_mode?) — artifact " \
+       "passes, status fails" do
+      fo = create(:file_object, account: account)
+      pub = create(:system_disk_image_publication, :verifying, account: account, node_platform: platform,
+                                                                 oci_ref: nil, file_object: fo)
+      expect(pub.promotable?).to be false
+    end
+  end
 end

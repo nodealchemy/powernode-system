@@ -178,5 +178,27 @@ module System
     def active?
       published? && node_platform.disk_image_file_object_id == file_object_id
     end
+
+    # True when it is safe for PromotePublication/RollbackPublication to
+    # point the platform's boot pointer at this row.
+    #
+    # Two independent checks, both required:
+    #   - status is :published or :retired — the two states this executor
+    #     pair actually operates on (retired rows get reactivated back to
+    #     published in the same transaction).
+    #   - file_object_id is present — the artifact bytes actually exist.
+    #
+    # Neither check alone is sufficient. `published_at` looks like the
+    # obvious single-field discriminator (only mark_published/reactivate
+    # ever set it, nothing clears it) but purge! nils file_object_id and
+    # flips status → :purged while leaving published_at (and the uki_*
+    # pins) untouched — a purged row still reads as "was published" by
+    # that field alone. And status alone isn't enough either: a
+    # direct-upload publication can carry a non-nil file_object_id while
+    # still :verifying (uploaded, not yet cosign/sha verified) — see
+    # DiskImagePublicationProcessor#direct_upload_mode?.
+    def promotable?
+      file_object_id.present? && status.in?(%w[published retired])
+    end
   end
 end
