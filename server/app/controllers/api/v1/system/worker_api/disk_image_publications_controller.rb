@@ -116,7 +116,8 @@ module Api
               firmware_ref:           params[:firmware_ref],
               payload:                params.to_unsafe_h.except(:controller, :action),
               triggered_by_worker_id: current_worker.id,
-              status:                 "awaiting_upload"
+              status:                 "awaiting_upload",
+              **stale_artifact_provenance_reset
             )
             publication.save!
 
@@ -189,6 +190,83 @@ module Api
               summary = per_platform.transform_values { |r| { retired: r.retired_count, purged: r.purged_count } }
               render_success(data: { account_id: current_worker.account_id, per_platform: summary, stuck_retired: stuck.retired_count })
             end
+          end
+
+          private
+
+          # IMP-c3f186e56d5b (source fix). find_or_initialize_by(node_platform,
+          # git_sha) in #initiate reuses an EXISTING row whenever the same
+          # git_sha is re-submitted for direct upload — legitimate, e.g. a
+          # rebuilt CI run. The `publication.published?` guard only refuses
+          # reuse while the row is CURRENTLY published; a row that was
+          # published then later retired (rollback, or the reaper) is fair
+          # game, and its status then resets BACKWARD to "awaiting_upload"
+          # — off the normal AASM graph; no transition reaches
+          # :awaiting_upload from :retired.
+          #
+          # #initiate's file_object_id is reassigned to a brand-new,
+          # UNVERIFIED upload. Every OTHER column that describes that OLD
+          # artifact or its lifecycle must reset with it, or it survives as
+          # a stale claim about bytes this row no longer points at.
+          # promotable? (disk_image_publication.rb), BootImageController's
+          # two lookup branches, and UpgradeDispatcher.preflight all read
+          # published_at (and preflight + the digest branch also read the
+          # uki_* pins) as evidence this row's CURRENT artifact was
+          # verified — that was never true for these columns; they only
+          # ever proved the ROW was published at some point, which is a
+          # different claim once the row's file_object_id can change under
+          # it.
+          #
+          # Row IDENTITY (account, node_platform, git_sha, created_at,
+          # attempt_count) is untouched — this is still the same
+          # publication-history entry, and attempt_count is a monotonic
+          # counter incremented elsewhere (DiskImagePublicationProcessor),
+          # not artifact provenance.
+          def stale_artifact_provenance_reset
+            {
+              # THE column IMP-c3f186e56d5b was filed against: the
+              # discriminator promotable?, preflight, and both
+              # BootImageController branches all key off.
+              published_at:        nil,
+              # Set alongside published_at by mark_published; same claim,
+              # same staleness.
+              verified_at:         nil,
+              # Describes when the OLD artifact was retired — meaningless
+              # for a row now back in :awaiting_upload for a new one.
+              retired_at:          nil,
+              # Defensive: find_or_initialize_by has no status filter, so a
+              # :purged row (bytes hard-deleted) is technically reusable
+              # too. Its purged_at must not survive to a re-live row.
+              purged_at:           nil,
+              # Describes why the OLD verification attempt failed;
+              # irrelevant to (and misleading about) the new one.
+              error_message:       nil,
+              # OCI-registry UKI pins for the OLD build. Left in place,
+              # boot_image_controller.rb's digest branch
+              # (`find_by(uki_sha256: requested_digest)`) could resolve an
+              # in-flight node's request to the OLD, verified digest while
+              # this row's actual bytes (file_object_id) are the NEW,
+              # unverified upload — serving correct-looking bytes for the
+              # wrong, unverified row.
+              uki_oci_ref:         nil,
+              uki_sha256:          nil,
+              uki_cosign_bundle:   nil,
+              # Cosign attestation/signature bundles over the OLD .img
+              # bytes — do not describe the new file_object_id.
+              attestation_bundle:  nil,
+              cosign_bundle:       nil,
+              # Boot-pointer lineage from the OLD publish event (what the
+              # platform pointed at immediately before THAT promote). Not
+              # meaningful for an artifact that was never promoted.
+              prior_file_object_id: nil,
+              # Source OCI artifact ref from a PRIOR OCI-pull-mode publish.
+              # DiskImagePublicationProcessor#direct_upload_mode? requires
+              # oci_ref.blank? to route this row through the direct-upload
+              # ingest adapter — a stale oci_ref here would misroute this
+              # row's verification through the OCI-pull adapter instead, a
+              # functional bug layered on top of the trust one.
+              oci_ref:             nil
+            }
           end
         end
       end
