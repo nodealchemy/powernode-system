@@ -2259,6 +2259,12 @@ module Ai
           payload[:blast_radius] = radius
         end
         success_result(payload)
+      rescue ArgumentError => e
+        # A raised exception from a tool surfaces as a raw protocol error, not
+        # a refusal the caller can read — so a malformed `priority` comes back
+        # as a clean error_result here, the same shape every other bad-input
+        # path in this tool uses. (IMP-280a5abf09dc)
+        error_result(e.message)
       end
 
       # In-place edit of an existing join, addressed by (template, module) like
@@ -2308,6 +2314,8 @@ module Ai
         success_result(payload)
       rescue ActiveRecord::RecordInvalid => e
         error_result("Template module update failed: #{e.record.errors.full_messages.join(', ')}")
+      rescue ArgumentError => e
+        error_result(e.message)
       end
 
       # Absent keys are dropped rather than nil-assigned, so an update touches
@@ -2317,7 +2325,10 @@ module Ai
       # "not literally true, skip the check".
       def template_module_attrs(params)
         attrs = {}
-        attrs[:priority]            = params[:priority].to_i       unless params[:priority].nil?
+        # Raises ArgumentError on a non-integer; both callers turn that into an
+        # error_result. See System::TemplateModule.coerce_priority! for why nil
+        # is left alone rather than read as 0.
+        attrs[:priority]            = ::System::TemplateModule.coerce_priority!(params[:priority]) unless params[:priority].nil?
         attrs[:config]              = params[:config]              if params[:config].is_a?(Hash)
         attrs[:recommends_override] = params[:recommends_override] if params[:recommends_override].is_a?(Hash)
 

@@ -389,5 +389,57 @@ RSpec.describe "Operator API — Node Template modules", type: :request do
       expect(JSON.parse(response.body)["error"]).to include(first.name).and include(second.name)
       expect(::System::TemplateModule.find_by(node_template: template, node_module: second).enabled).to be false
     end
+
+    # `params[:priority].to_i` failed two ways: a Hash/Array has no #to_i, so
+    # malformed JSON raised NoMethodError and surfaced as a 500 with a stack
+    # trace instead of a validation message; and "abc".to_i is 0 SILENTLY,
+    # which is worse — priority orders modules within a composition and 0 is
+    # the lowest, so a typo quietly changed which module wins a conflict.
+    # The MCP twin of these assertions lives in
+    # spec/services/ai/tools/system_fleet_priority_coercion_spec.rb; that
+    # surface refuses with an error_result, this one with a 422.
+    describe "priority coercion" do
+      it "422s on a non-scalar priority instead of 500ing" do
+        join = ::System::TemplateModule.create!(node_template: template, node_module: node_module,
+                                                priority: 42)
+
+        patch_join(node_module, priority: { "n" => 1 })
+
+        expect(response).to have_http_status(:unprocessable_content)
+        expect(JSON.parse(response.body)["error"]).to include("priority must be an integer")
+        expect(join.reload.priority).to eq(42)
+      end
+
+      it "422s on a non-integer string instead of silently writing 0" do
+        join = ::System::TemplateModule.create!(node_template: template, node_module: node_module,
+                                                priority: 42)
+
+        patch_join(node_module, priority: "abc")
+
+        expect(response).to have_http_status(:unprocessable_content)
+        expect(join.reload.priority).to eq(42)
+      end
+
+      it "accepts an integer-looking string, which HTTP clients legitimately send" do
+        join = ::System::TemplateModule.create!(node_template: template, node_module: node_module,
+                                                priority: 42)
+
+        patch_join(node_module, priority: "7")
+
+        expect(response).to have_http_status(:ok)
+        expect(join.reload.priority).to eq(7)
+      end
+
+      it "422s on a bad priority at CREATE too, writing no join row" do
+        fresh = create(:system_node_module, account: account, node_platform: platform,
+                       category: category, variety: "subscription",
+                       name: "prio-create-#{SecureRandom.hex(3)}")
+
+        assign(fresh, priority: "abc")
+
+        expect(response).to have_http_status(:unprocessable_content)
+        expect(::System::TemplateModule.find_by(node_template: template, node_module: fresh)).to be_nil
+      end
+    end
   end
 end

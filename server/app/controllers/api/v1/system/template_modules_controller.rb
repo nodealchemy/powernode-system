@@ -72,7 +72,11 @@ module Api
           node_module = @account.system_node_modules.find_by(id: module_id)
           return render_not_found("Node Module") unless node_module
 
-          attrs = join_params
+          begin
+            attrs = join_params
+          rescue ArgumentError => e
+            return render_error(e.message, status: :unprocessable_content)
+          end
           # A disabled join is not expanded onto anything, so it collides with
           # nothing — same enabled-only scoping TemplateExpansionService and
           # assignment_verdict's own baseline use. #update runs the check when
@@ -108,7 +112,11 @@ module Api
           join = @template.template_modules.find_by(node_module_id: params[:id])
           return render_not_found("Template Module assignment") unless join
 
-          attrs = join_params
+          begin
+            attrs = join_params
+          rescue ArgumentError => e
+            return render_error(e.message, status: :unprocessable_content)
+          end
           if attrs.empty?
             return render_error("nothing to update — pass at least one of priority, enabled, config, recommends_override",
                                 status: :unprocessable_content)
@@ -164,7 +172,10 @@ module Api
         # "not literally true, skip the check".
         def join_params
           attrs = {}
-          attrs[:priority] = params[:priority].to_i unless params[:priority].nil?
+          # Raises ArgumentError on a non-integer; both callers turn that into a
+          # 422 rather than letting it escape as a 500. See
+          # System::TemplateModule.coerce_priority! for why nil is left alone.
+          attrs[:priority] = ::System::TemplateModule.coerce_priority!(params[:priority]) unless params[:priority].nil?
 
           config = hash_param(:config)
           attrs[:config] = config if config
