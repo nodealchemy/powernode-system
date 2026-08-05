@@ -183,8 +183,43 @@ module System
     def purge!(deleted_by_user: nil)
       fo = file_object
       if fo
-        if fo.id == node_platform.disk_image_file_object_id
-          raise "cannot purge #{id}: file_object #{fo.id} is the platform's active disk image"
+        # Check EVERY platform pointing at these bytes, not just this row's own
+        # (IMP-f0aad29b3344). The sweep below is deliberately unscoped — no
+        # account, platform or status filter — and is followed by a PERMANENT
+        # byte delete, so a guard that consults only self.node_platform is
+        # narrower than the destruction it authorises. If one FileObject were
+        # ever shared, purging platform A's retired row would pass this check
+        # (A's pointer is elsewhere), nil out platform B's PUBLISHED row's
+        # pointer, and hard-delete B's live boot image — with B's own
+        # active-image check never consulted.
+        #
+        # WIDEN THE GUARD, DO NOT NARROW THE SWEEP. The reflex is backwards:
+        # the sweep is CORRECT. Once the bytes are permanently gone, every
+        # reference to them must be nil'd, cross-account included — a dangling
+        # pointer to deleted bytes is strictly worse than a nil one. The defect
+        # is the narrow guard, not the wide sweep. Cross-account for the same
+        # reason: the deletion is cross-account, so the check must be.
+        #
+        # NOT REACHABLE TODAY, and this is insurance rather than a live fix:
+        # nothing looks a FileObject up by digest (zero find_by/where on
+        # checksum_sha256 in either app tree), every writer of
+        # file_object_id takes a freshly minted upload
+        # (DiskImagePublicationProcessor#upload_to_storage!, and worker_api's
+        # signed_upload_url which mints one per call), and there is no
+        # copy/clone path. But file_objects.checksum_sha256 carries a
+        # NON-UNIQUE index with no reader — exactly what a "reuse the existing
+        # blob" optimisation gets built on, and that optimisation would arm
+        # this with no other change here.
+        #
+        # Deliberately NOT also refusing on a merely-published sibling
+        # (`where(file_object_id: fo.id, status: "published")`): that would
+        # change purge semantics for a case that cannot arise today, to protect
+        # an unreachable one. The platform-pointer check is the boot-critical
+        # one. Considered and declined.
+        active_for = ::System::NodePlatform.where(disk_image_file_object_id: fo.id)
+        if active_for.exists?
+          raise "cannot purge #{id}: file_object #{fo.id} is the active disk image " \
+                "for platform(s) #{active_for.pluck(:id).join(', ')}"
         end
 
         ::ApplicationRecord.transaction do
