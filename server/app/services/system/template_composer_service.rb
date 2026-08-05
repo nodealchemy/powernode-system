@@ -136,11 +136,20 @@ module System
       explicit = explicit_ids.to_set
       ids = @modules.map(&:id).to_set
 
-      # Layer 1: parent_module hierarchy (config/instance dependant children)
+      # Layer 1: parent_module hierarchy (config/instance dependant children).
+      #
+      # The CHILD is the dependent, so it is the source: node_module.rb
+      # documents parent_module as "the subscription-variety base whose
+      # deployment this child overrides", and a dependant child's `file_spec`
+      # delegates to `parent.dependency_spec` — the child cannot build without
+      # it. This used to emit parent → child while layer 2 below emits
+      # dependent → dependency, so one flat `edges` array carried two opposite
+      # conventions for `source` and a consumer asking "what does X depend on"
+      # got one of the layers backwards. (IMP-fa81fd1939b6)
       parent_edges = @modules.filter_map do |m|
         next unless m.respond_to?(:parent_module_id) && m.parent_module_id && ids.include?(m.parent_module_id)
 
-        { source: m.parent_module_id, target: m.id, type: "depends_on" }
+        { source: m.id, target: m.parent_module_id, type: "depends_on" }
       end
 
       # Layer 2: ModuleDependency edges (requires/recommends from the new
