@@ -191,15 +191,37 @@ RSpec.describe "promoted-pointer publication state guard" do
     end
   end
 
-  # The broken-writer state is not hypothetical: in-tree code reaches it. The
-  # rollback controller gates on purged? and file_object_id.present? — its own
-  # error text asks "was it ever published?" but it never checks. A
-  # direct-upload publication carries file_object_id from /initiate, BEFORE
-  # verification, so a build that FAILED cosign/sha verification passes both
-  # gates, and RollbackPublication only reactivates a row that is `retired` —
-  # a `failed` row falls straight through to the pointer flip.
+  # UPDATED by IMP-70f3109e693a (DiskImagePublication#promotable?, guarding
+  # PromotePublication/RollbackPublication): this used to document that
+  # in-tree code reached the broken-writer state via RollbackPublication — a
+  # `failed`-status direct-upload row (file_object_id present, never
+  # published) fell straight through to the pointer flip because
+  # RollbackPublication only special-cased `retired?`. promotable? requires
+  # status to be `published` OR `retired`, and `failed` is neither, so this
+  # SPECIFIC path is now closed and the test below asserts that instead of
+  # the old defect.
+  #
+  # It is NOT a full closure of the broken-writer state, only of this one
+  # reachability path — promotable? does not check published_at, so a
+  # LAUNDERED row (failed/verifying → retired via
+  # DiskImageRetentionService#retire_stuck!, carrying a leftover
+  # unverified file_object_id) still has status "retired" + file_object_id
+  # present and would still pass promotable?, still reachable via
+  # RollbackPublication/PromotePublication. That gap is real, distinct from
+  # both this test and IMP-6c366751ddbd, and is flagged separately rather
+  # than fixed here (out of scope for both).
   describe "reachability of the broken-writer state" do
-    it "lands the pointer on a never-published row via RollbackPublication" do
+    it "no longer lands the pointer on a never-published row via RollbackPublication " \
+       "(closed by promotable?: status=failed is not in %w[published retired])" do
+      active = System::DiskImagePublication.create!(
+        account: account, node_platform: platform,
+        git_sha: "active-sha", arch: "amd64", oci_ref: "registry.example.com/disk:active",
+        sha256: "1" * 64, size_bytes: 4096
+      )
+      active.update_columns(status: "published", published_at: Time.current)
+      platform.update!(disk_image_git_sha: "active-sha", disk_image_oci_ref: active.oci_ref,
+                        disk_image_file_object_id: active.file_object_id)
+
       file_object = create(:file_object, account: account, filename: "x.img",
                                          file_size: 4096, content_type: "application/octet-stream",
                                          checksum_sha256: "9" * 64)
@@ -212,13 +234,101 @@ RSpec.describe "promoted-pointer publication state guard" do
       )
       failed.update_columns(status: "failed", error_message: "cosign verify failed")
 
-      System::Executors::DiskImage::RollbackPublication.execute(
-        { "target_publication_id" => failed.id, "platform_id" => platform.id },
-        deferred_operation: nil
-      )
+      expect {
+        System::Executors::DiskImage::RollbackPublication.execute(
+          { "target_publication_id" => failed.id, "platform_id" => platform.id },
+          deferred_operation: nil
+        )
+      }.to raise_error(System::Executors::DiskImage::RollbackPublication::UnpromotablePublicationError)
 
-      expect(platform.reload.disk_image_git_sha).to eq("failed-direct-upload-sha")
+      expect(platform.reload.disk_image_git_sha).to eq("active-sha")
       expect(failed.reload.published_at).to be_nil
+    end
+  end
+
+  # IMP-6c366751ddbd — a THIRD state the existing guards above are blind to.
+  # purge! (disk_image_publication.rb) nils file_object_id and hard-deletes
+  # the disk-image bytes, flipping status -> :purged, but (before this fix)
+  # left published_at AND the uki_* pins untouched:
+  #
+  #   - published_at survives purge — nothing clears it (same fact the
+  #     header comment above already relies on), so :never_published cannot
+  #     tell a purged row from a healthy one.
+  #   - uki_oci_ref / uki_sha256 / uki_cosign_bundle are a SEPARATE artifact
+  #     class from file_object_id: they're OCI-registry-hosted, served via
+  #     OciBlobProxyService, and purge! (pre-fix) never touched them at all
+  #     — so :no_uki_artifact cannot tell a purged row from a healthy one
+  #     either.
+  #
+  # A purged row is therefore NOT the "laundered" case above (it doesn't
+  # share `retired`'s status — purged is its own terminal state) and is not
+  # merely a data hygiene concern: it is a THIRD gap in the guard chain, on
+  # top of the two published_at already closes.
+  #
+  # Reachable the same way this file's other scenarios are reachable: the
+  # platform pointer naming a row is a fact about the platform's OWN
+  # columns, independent of what that row's CURRENT status is — see the
+  # class-level "column-vs-publication skew" comment (IMP-b55869029a57 /
+  # campaign 019f505f) this file's header already leans on for why that
+  # divergence is documented as reachable, not hypothetical, in this exact
+  # codebase.
+  describe "purged-row reachability (IMP-6c366751ddbd)" do
+    def build_purged_promoted_row
+      fo = create(:file_object, account: account)
+      pub = System::DiskImagePublication.create!(
+        account: account, node_platform: platform,
+        git_sha: "purged-sha", arch: "amd64", oci_ref: "registry.example.com/disk:purged",
+        sha256: "8" * 64, size_bytes: 4096, file_object: fo,
+        uki_oci_ref: "registry.example.com/uki:purged", uki_sha256: "9" * 64,
+        uki_cosign_bundle: "PURGED-BUNDLE"
+      )
+      pub.update_columns(status: "retired", retired_at: 30.days.ago, published_at: 30.days.ago)
+
+      fake_storage = instance_double(::FileStorageService, delete_file: true)
+      allow(::FileStorageService).to receive(:new).and_return(fake_storage)
+      pub.purge!
+      pub.reload
+      expect(pub).to be_purged
+      expect(pub.file_object_id).to be_nil
+      expect(pub.published_at).to be_present # the published_at trap
+
+      # The platform's own pointer naming this now-purged row.
+      platform.update!(disk_image_git_sha: pub.git_sha, disk_image_oci_ref: pub.oci_ref)
+      pub
+    end
+
+    describe "UpgradeDispatcher.preflight" do
+      let(:instance) { create(:system_node_instance, :running, node: node) }
+
+      before do
+        allow(ENV).to receive(:[]).and_call_original
+        allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----")
+        allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+        instance.update!(booted_image_git_sha: nil)
+      end
+
+      it "refuses to dispatch from a purged promoted row, with the reason named by value, " \
+         "and the pointer left unchanged" do
+        pub = build_purged_promoted_row
+
+        # preflight's own failure symbol, asserted by VALUE — not just "some error".
+        resolved_pub, failure = System::BootImage::UpgradeDispatcher.preflight(platform)
+        expect(resolved_pub&.id).to eq(pub.id)
+        expect(failure).to eq(:publication_purged)
+
+        result = System::BootImage::UpgradeDispatcher.dispatch!(instance: instance, source: "test")
+
+        expect(result.ok?).to be false
+        expect(result.reason).to match(/purged/i)
+        expect(result.task).to be_nil
+        expect(System::Task.where(operable: instance, command: "upgrade_boot_image").count).to eq(0)
+      end
+
+      it "blocks the PLAN too, so plan and dispatch cannot diverge" do
+        build_purged_promoted_row
+
+        expect(System::BootImage::UpgradeDispatcher.platform_blocker(platform)).to match(/purged/i)
+      end
     end
   end
 

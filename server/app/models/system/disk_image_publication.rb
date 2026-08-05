@@ -159,6 +159,24 @@ module System
         ::FileStorageService.new(account)
                             .delete_file(fo, permanent: true, deleted_by_user: deleted_by_user)
       end
+      # The UKI pins are a SEPARATE artifact from file_object — OCI-registry-
+      # hosted, served via OciBlobProxyService, never touched by the
+      # FileStorageService hard-delete above. Left in place they read as
+      # "this row still has a servable UKI" to any reader that checks only
+      # published_at / uki_* presence and not status — which is exactly what
+      # UpgradeDispatcher.preflight did (IMP-6c366751ddbd): a purged row kept
+      # planning GREEN because published_at and the uki_* pins both survive
+      # purge untouched. preflight itself now also refuses on `purged?`
+      # directly (the actual fix — it does not depend on these being nil),
+      # but clearing them here is defense in depth for every OTHER current
+      # or future reader of these columns that doesn't separately check
+      # status (e.g. BootImageController#resolve_publication's unparameterized
+      # fallback branch has the identical published_at-only gap). Does NOT
+      # retroactively repair rows purged before this shipped — no backfill
+      # migration accompanies this change.
+      self.uki_oci_ref = nil
+      self.uki_sha256 = nil
+      self.uki_cosign_bundle = nil
       purge
       save!
     end

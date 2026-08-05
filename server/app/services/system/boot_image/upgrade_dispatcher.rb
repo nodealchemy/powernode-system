@@ -91,6 +91,17 @@ module System
         # transaction as the pointer flip, so a legitimately promoted row can
         # never be caught here — including transiently.
         return [ pub, :never_published ] if pub.published_at.nil?
+        # purge! nils file_object_id and hard-deletes the disk-image bytes but
+        # (see DiskImagePublication#purge!) leaves published_at untouched —
+        # nothing clears it, ever — so the guard above cannot tell a purged
+        # row from a healthy one. Deliberately NOT reusing #promotable? here:
+        # that guards file_object_id (the disk image), a DIFFERENT artifact
+        # from the UKI this dispatcher actually serves (OCI-registry-hosted,
+        # via OciBlobProxyService, independent of file_object) — and
+        # promoted_pointer_publication_state_spec.rb already establishes that
+        # a `retired` row must stay dispatchable for exactly that reason.
+        # `purged` is the one status genuinely new-invalid here.
+        return [ pub, :publication_purged ] if pub.purged?
         return [ pub, :no_uki_artifact ] if pub.uki_oci_ref.blank? || pub.uki_sha256.blank?
 
         cosign_key = platform_cosign_public_key
@@ -115,6 +126,9 @@ module System
           "platform pointer inconsistent: no published record for promoted git_sha #{platform.disk_image_git_sha}"
         when :never_published
           "platform pointer names a publication that was never published (git_sha #{platform.disk_image_git_sha})"
+        when :publication_purged
+          "platform pointer names a publication that has been purged (git_sha #{platform.disk_image_git_sha}) — " \
+          "its retention grace window expired and the platform no longer stands behind this build"
         when :no_uki_artifact       then "promoted image has no standalone UKI artifact"
         when :no_cosign_key         then "platform cosign public key (POWERNODE_COSIGN_PUBLIC_KEY) not configured"
         when :no_cosign_bundle      then "promoted image has no UKI cosign signature bundle"
@@ -218,6 +232,10 @@ module System
           "Platform pointer names a publication that was never published (git_sha " \
           "#{platform.disk_image_git_sha}) — its artifacts never passed cosign/sha verification. " \
           "Promote a published publication before upgrading."
+        when :publication_purged
+          "Platform pointer names a publication that has been purged (git_sha " \
+          "#{platform.disk_image_git_sha}) — its retention grace window expired and the platform " \
+          "no longer stands behind this build. Promote a current publication before upgrading."
         when :no_uki_artifact
           "Promoted image has no standalone UKI artifact (built before the in-place-upgrade CI) — " \
           "republish/promote a newer image to enable boot-image upgrades"
