@@ -36,7 +36,7 @@ module System
   class ModuleBuildParityService
     Result = Struct.new(:ok?, :error, :results, keyword_init: true)
     ModuleResult = Struct.new(:module, :status, :identical, :gitea_ref, :native_ref,
-                              :diff_summary, :error, keyword_init: true)
+                              :diff_summary, :error, :stub, keyword_init: true)
 
     class ParityError < StandardError; end
 
@@ -70,9 +70,30 @@ module System
         mode = ENV.fetch("POWERNODE_PARITY_MODE", default_mode_for_env)
         case mode
         when "oras"  then OrasParityAdapter.new
-        when "local" then LocalParityAdapter.new
+        when "local" then build_local_adapter!
         else raise ParityError, "Unknown POWERNODE_PARITY_MODE: #{mode.inspect}"
         end
+      end
+
+      # Selection-time gate. The production default is "oras", but the mode is
+      # an ENV OVERRIDE, so POWERNODE_PARITY_MODE=local exported into a
+      # production environment silently selected LocalParityAdapter — which
+      # returns `identical: true` UNCONDITIONALLY without contacting a
+      # registry. That verdict is written into batch.metadata["parity"], the
+      # record operators read to decide whether a native build matches the
+      # Gitea-authoritative artifact, so a fabricated PASS is indistinguishable
+      # from a real one at the call site. Fails closed and names the
+      # misconfiguration. (IMP-b260339283bb; mirrors ModuleOciIngestService
+      # #build_local_adapter!, 54cf1fdc.)
+      def build_local_adapter!
+        if Rails.env.production?
+          raise ParityError,
+                "POWERNODE_PARITY_MODE=local selects LocalParityAdapter, which fabricates " \
+                "a passing parity verdict without contacting a registry. Refusing in " \
+                "production. Unset POWERNODE_PARITY_MODE (production defaults to \"oras\")."
+        end
+
+        LocalParityAdapter.new
       end
 
       def default_mode_for_env
@@ -89,6 +110,35 @@ module System
       return failure("batch is not a shadow batch") unless @batch.shadow?
 
       results = module_slugs.map { |slug| compare_module(slug) }
+
+      # Persist-time gate, independent of the selection-time one in
+      # build_local_adapter!. `adapter=` is public, so a console, an
+      # initializer, or a future third adapter can put a fabricating adapter in
+      # place without ever going through build_adapter. Rather than
+      # pattern-matching the verdict — a fabricated "identical" is
+      # indistinguishable from a real one BY DESIGN — LocalParityAdapter stamps
+      # its DEFAULT output with `stub: true` and persisting anything carrying
+      # that marker is refused.
+      #
+      # OUTSIDE TEST, not merely outside production. DEVELOPMENT is the
+      # environment that actually detonated: on 2026-07-16 a dev backend
+      # (RAILS_ENV=development, where local IS the default adapter) ran a native
+      # build through a stub, and the fabricated result was promoted into a real
+      # artifact chain — base-os and hub-frontend unpullable, the
+      # ci-native-builders pool wedged. A `unless Rails.env.production?` guard
+      # would have PERMITTED exactly that incident. A fabricated parity verdict
+      # has no legitimate purpose outside a spec run, so test is the only
+      # environment where recording one is safe. Refused before persist_results!
+      # so no partial metadata is written. (IMP-b260339283bb)
+      if !Rails.env.test? && (stubbed = results.find(&:stub))
+        return failure(
+          "refusing to persist fabricated stub parity results in #{Rails.env} " \
+          "(adapter #{self.class.adapter.class.name} returned a stub-marked verdict " \
+          "for '#{stubbed.module}' without contacting a registry); " \
+          "no parity metadata recorded"
+        )
+      end
+
       persist_results!(results)
 
       Result.new(ok?: true, results: results)
@@ -118,8 +168,10 @@ module System
       elsif diff[:identical]
         emit_event("system.module_build_parity_ok", severity: :low, module: slug,
                     gitea_ref: gitea_ref, native_ref: native_ref)
+        # Carry the adapter's stub marker onto the result so compare! can refuse
+        # the whole batch before writing any of it. (IMP-b260339283bb)
         ModuleResult.new(module: slug, status: "ok", identical: true,
-                          gitea_ref: gitea_ref, native_ref: native_ref)
+                          gitea_ref: gitea_ref, native_ref: native_ref, stub: diff[:stub])
       else
         summary = { "added" => diff[:added], "removed" => diff[:removed], "changed" => diff[:changed] }
         emit_event("system.module_build_parity_failed", severity: :high, module: slug,
@@ -236,7 +288,14 @@ module System
       end
 
       def diff(ref_a:, ref_b:, registry_credentials: nil)
-        @overrides[[ ref_a, ref_b ]] || { identical: true, added: [], removed: [], changed: [] }
+        # The DEFAULT is a fabricated PASS — `identical: true` without ever
+        # contacting a registry. Marked `stub: true` so compare! can refuse to
+        # persist it outside test. A caller-supplied stub! override is
+        # deliberately NOT marked: those carry real-shaped fixtures and keep
+        # working unchanged, which is also the escape hatch if a dev flow
+        # genuinely needs a recorded comparison. (IMP-b260339283bb)
+        @overrides[[ ref_a, ref_b ]] ||
+          { identical: true, added: [], removed: [], changed: [], stub: true }
       end
     end
 

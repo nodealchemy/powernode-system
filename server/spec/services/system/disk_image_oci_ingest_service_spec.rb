@@ -250,4 +250,125 @@ RSpec.describe System::DiskImageOciIngestService do
       expect(captured.last).not_to include("--key")
     end
   end
+
+  # IMP-b260339283bb — the same unguarded stub-adapter override that detonated
+  # on 2026-07-16, on this service's SEPARATE call path.
+  #
+  # NOTE THE DIFFERENCE FROM THE SIBLING. LocalDiskImageAdapter does NOT
+  # fabricate artifact identity the way LocalOciAdapter does: it verifies
+  # sha256(bytes) == expected_sha256 for real. Its hazard is narrower but the
+  # same class — it skips cosign verification ENTIRELY, and returns
+  # attestation_bundle_b64 built from the CALLER'S OWN expected_payload_json
+  # echoed back. DiskImagePublicationProcessor (:166-171) then persists that as
+  # the publication's attestation_bundle and promotes the image onto the
+  # NodePlatform. So an unsigned image whose bytes happen to match a
+  # caller-supplied digest is recorded as if its attestation had been verified.
+  # The gate MECHANISM mirrors the sibling exactly; only the wording differs,
+  # because "fabricated identity" would be an inaccurate description here.
+  #
+  # WHICH ENVIRONMENTS THE PERSIST GATE ADMITS: test, and ONLY test. It refuses
+  # in development, staging, production and any custom env. Deliberately NOT
+  # "outside production" — 2026-07-16 detonated in DEVELOPMENT, where local IS
+  # the default adapter, so a production-scoped guard would have permitted the
+  # very incident it exists to prevent.
+  describe "refuses the unverified stub adapter outside test (IMP-b260339283bb)" do
+    def in_env!(name)
+      allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new(name))
+    end
+
+    # A REAL file whose digest matches, so the adapter reaches its success path
+    # and the only thing missing is cosign verification — the exact shape of
+    # the hazard.
+    let(:image_bytes) { "not-a-real-disk-image" }
+    let(:image_file) do
+      f = Tempfile.new([ "disk-image", ".img" ])
+      f.write(image_bytes)
+      f.flush
+      f
+    end
+    let(:publication) do
+      create(:system_disk_image_publication, account: account, node_platform: platform,
+             oci_ref: "local://#{image_file.path}",
+             sha256: Digest::SHA256.hexdigest(image_bytes))
+    end
+
+    after { image_file.close! }
+
+    describe "adapter selection" do
+      before { described_class.reset! }
+
+      it "refuses POWERNODE_DISK_IMAGE_INGEST_MODE=local in production, naming the misconfiguration" do
+        in_env!("production")
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_DISK_IMAGE_INGEST_MODE" => "local"))
+
+        expect { described_class.adapter }
+          .to raise_error(described_class::IngestError, /cosign|unverified/i)
+      end
+
+      it "still selects the oras adapter in production by default" do
+        in_env!("production")
+        stub_const("ENV", ENV.to_h.except("POWERNODE_DISK_IMAGE_INGEST_MODE"))
+
+        expect(described_class.adapter).to be_a(described_class::OrasDiskImageAdapter)
+      end
+
+      # Selection stays permissive outside production, or every dev flow and
+      # every spec breaks. The persist gate is what catches development.
+      it "still selects the local adapter outside production" do
+        in_env!("development")
+        stub_const("ENV", ENV.to_h.except("POWERNODE_DISK_IMAGE_INGEST_MODE"))
+
+        expect(described_class.adapter).to be_a(described_class::LocalDiskImageAdapter)
+      end
+    end
+
+    describe "returning a verified-looking result" do
+      before { described_class.adapter = described_class::LocalDiskImageAdapter.new }
+
+      it "refuses in production even when the adapter is injected directly" do
+        in_env!("production")
+
+        result = described_class.verify_and_pull!(publication: publication)
+
+        expect(result.ok?).to be false
+        expect(result.error).to match(/unverified stub/i)
+      end
+
+      # THE 2026-07-16 LESSON. A `unless Rails.env.production?` guard would
+      # permit exactly this.
+      it "refuses in DEVELOPMENT too — the environment that actually detonated" do
+        in_env!("development")
+
+        result = described_class.verify_and_pull!(publication: publication)
+
+        expect(result.ok?).to be false
+        expect(result.error).to match(/unverified stub/i)
+      end
+
+      it "names the environment and the adapter in the refusal" do
+        in_env!("staging")
+
+        result = described_class.verify_and_pull!(publication: publication)
+
+        expect(result.error).to include("staging")
+        expect(result.error).to include("LocalDiskImageAdapter")
+      end
+
+      it "carries no attestation bundle back to the caller when it refuses" do
+        in_env!("development")
+
+        result = described_class.verify_and_pull!(publication: publication)
+
+        expect(result.attestation_bundle_b64).to be_nil
+        expect(result.local_path).to be_nil
+      end
+
+      it "returns ok in test, where an unverified pull is harmless" do
+        result = described_class.verify_and_pull!(publication: publication)
+
+        expect(result.ok?).to be true
+        expect(result.local_path).to eq(image_file.path)
+      end
+    end
+  end
 end

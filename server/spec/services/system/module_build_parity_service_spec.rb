@@ -189,9 +189,141 @@ RSpec.describe System::ModuleBuildParityService do
   end
 
   describe System::ModuleBuildParityService::LocalParityAdapter do
-    it "returns an identical result by default when nothing is stubbed" do
+    # IMP-b260339283bb: the default output now carries `stub: true`. It always
+    # WAS a fabricated verdict — an unconditional "identical" without touching
+    # a registry — the marker just makes that legible to the persist gate.
+    # Asserting the marker rather than dropping the example, because "the
+    # default is a pass" is exactly the property that makes the gate necessary.
+    it "returns an identical result by default when nothing is stubbed, marked as a stub" do
       adapter = described_class.new
-      expect(adapter.diff(ref_a: "a", ref_b: "b")).to eq(identical: true, added: [], removed: [], changed: [])
+      expect(adapter.diff(ref_a: "a", ref_b: "b"))
+        .to eq(identical: true, added: [], removed: [], changed: [], stub: true)
+    end
+
+    it "leaves a caller-supplied stub! override unmarked" do
+      adapter = described_class.new
+      adapter.stub!(ref_a: "a", ref_b: "b", result: { identical: false, added: %w[x], removed: [], changed: [] })
+
+      expect(adapter.diff(ref_a: "a", ref_b: "b")).not_to have_key(:stub)
+    end
+  end
+
+  # IMP-b260339283bb — the same unguarded stub-adapter override that detonated
+  # on 2026-07-16, on this service's call path.
+  #
+  # LocalParityAdapter#diff returns `identical: true` UNCONDITIONALLY without
+  # contacting a registry: a fabricated PASS. compare! then writes that verdict
+  # into batch.metadata["parity"], which is the record operators read to decide
+  # whether a native build matches the Gitea-authoritative artifact. Selection
+  # is an ENV override (POWERNODE_PARITY_MODE) with no environment guard, and
+  # `adapter=` is public.
+  #
+  # WHICH ENVIRONMENTS THE PERSIST GATE ADMITS: test, and ONLY test. It refuses
+  # in development, staging, production and any custom env. Deliberately NOT
+  # "outside production" — the 2026-07-16 detonation was in DEVELOPMENT
+  # (RAILS_ENV=development, where local IS the default adapter), so a
+  # production-scoped guard would have permitted the exact incident it exists
+  # to prevent. A fabricated parity verdict has no legitimate purpose outside a
+  # spec run.
+  describe "refuses the fabricating stub adapter outside test (IMP-b260339283bb)" do
+    def in_env!(name)
+      allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new(name))
+    end
+
+    let(:mod) { create_module("mod-parity") }
+    let(:batch) { shadow_batch(modules: [ mod ]) }
+
+    # ── Selection-time gate (mirrors 54cf1fdc) ────────────────────────────
+    describe "adapter selection" do
+      before { System::ModuleBuildParityService.reset! }
+
+      it "refuses POWERNODE_PARITY_MODE=local in production, naming the misconfiguration" do
+        in_env!("production")
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_PARITY_MODE" => "local"))
+
+        expect { System::ModuleBuildParityService.adapter }
+          .to raise_error(System::ModuleBuildParityService::ParityError, /fabricat/i)
+      end
+
+      it "still selects the oras adapter in production by default" do
+        in_env!("production")
+        stub_const("ENV", ENV.to_h.except("POWERNODE_PARITY_MODE"))
+
+        expect(System::ModuleBuildParityService.adapter)
+          .to be_a(System::ModuleBuildParityService::OrasParityAdapter)
+      end
+
+      # Selection must stay permissive outside production or every dev flow and
+      # every spec breaks. The persist gate is what catches development.
+      it "still selects the local adapter outside production" do
+        in_env!("development")
+        stub_const("ENV", ENV.to_h.except("POWERNODE_PARITY_MODE"))
+
+        expect(System::ModuleBuildParityService.adapter)
+          .to be_a(System::ModuleBuildParityService::LocalParityAdapter)
+      end
+    end
+
+    # ── Persist-time gate (mirrors ba116eac — the one that matters) ───────
+    describe "persisting a fabricated verdict" do
+      it "refuses in production even when the adapter is injected directly" do
+        in_env!("production")
+
+        result = System::ModuleBuildParityService.compare!(batch: batch)
+
+        expect(result.ok?).to be false
+        expect(result.error).to match(/fabricated stub parity/i)
+      end
+
+      # THE 2026-07-16 LESSON. A `unless Rails.env.production?` guard would
+      # permit exactly this.
+      it "refuses in DEVELOPMENT too — the environment that actually detonated" do
+        in_env!("development")
+
+        result = System::ModuleBuildParityService.compare!(batch: batch)
+
+        expect(result.ok?).to be false
+        expect(result.error).to match(/fabricated stub parity/i)
+      end
+
+      it "writes no parity metadata when it refuses" do
+        in_env!("development")
+
+        System::ModuleBuildParityService.compare!(batch: batch)
+
+        expect(batch.reload.metadata).not_to have_key("parity")
+      end
+
+      it "names the environment and the adapter in the refusal" do
+        in_env!("staging")
+
+        result = System::ModuleBuildParityService.compare!(batch: batch)
+
+        expect(result.error).to include("staging")
+        expect(result.error).to include("LocalParityAdapter")
+      end
+
+      # The escape hatch, exactly as the shipped sibling kept it: a
+      # caller-supplied fixture is real-shaped and carries no marker, so a dev
+      # flow that genuinely needs a recorded comparison still works.
+      it "still records a caller-supplied stub! override outside test" do
+        in_env!("development")
+        gitea_ref, native_ref = refs_for(mod)
+        local_adapter.stub!(ref_a: gitea_ref, ref_b: native_ref,
+                            result: { identical: true, added: [], removed: [], changed: [] })
+
+        result = System::ModuleBuildParityService.compare!(batch: batch)
+
+        expect(result.ok?).to be true
+        expect(batch.reload.metadata["parity"][mod.name]["status"]).to eq("ok")
+      end
+
+      it "records normally in test, where a fabricated verdict is harmless" do
+        result = System::ModuleBuildParityService.compare!(batch: batch)
+
+        expect(result.ok?).to be true
+        expect(batch.reload.metadata["parity"][mod.name]["status"]).to eq("ok")
+      end
     end
   end
 end

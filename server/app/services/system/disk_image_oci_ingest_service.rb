@@ -27,7 +27,7 @@ module System
   # Plan: docs/plans/wondrous-yawning-anchor.md (Phase 2 — Chunk 2).
   class DiskImageOciIngestService
     Result = Struct.new(:ok?, :error, :local_path, :cosign_bundle_b64,
-                        :attestation_bundle_b64, keyword_init: true)
+                        :attestation_bundle_b64, :stub, keyword_init: true)
 
     class IngestError < StandardError; end
 
@@ -54,9 +54,27 @@ module System
         mode = ENV.fetch("POWERNODE_DISK_IMAGE_INGEST_MODE", default_mode_for_env)
         case mode
         when "oras"  then OrasDiskImageAdapter.new
-        when "local" then LocalDiskImageAdapter.new
+        when "local" then build_local_adapter!
         else raise IngestError, "Unknown POWERNODE_DISK_IMAGE_INGEST_MODE: #{mode.inspect}"
         end
+      end
+
+      # Selection-time gate. The production default is "oras", but the mode is
+      # an ENV OVERRIDE, so POWERNODE_DISK_IMAGE_INGEST_MODE=local exported into
+      # a production environment silently selected LocalDiskImageAdapter, which
+      # performs NO cosign verification at all. Fails closed and names the
+      # misconfiguration. (IMP-b260339283bb; mirrors ModuleOciIngestService
+      # #build_local_adapter!, 54cf1fdc.)
+      def build_local_adapter!
+        if Rails.env.production?
+          raise IngestError,
+                "POWERNODE_DISK_IMAGE_INGEST_MODE=local selects LocalDiskImageAdapter, " \
+                "which skips cosign verification entirely and returns an unverified " \
+                "attestation. Refusing in production. Unset " \
+                "POWERNODE_DISK_IMAGE_INGEST_MODE (production defaults to \"oras\")."
+        end
+
+        LocalDiskImageAdapter.new
       end
 
       def default_mode_for_env
@@ -85,7 +103,7 @@ module System
                        "(set cosign_identity_regexp + cosign_issuer_regexp, or configure trusted public keys for key-signed images)")
       end
 
-      adapter.verify_and_pull!(
+      result = adapter.verify_and_pull!(
         oci_ref:               publication.oci_ref,
         expected_sha256:       publication.sha256,
         identity_regexp:       platform.cosign_identity_regexp,
@@ -94,6 +112,40 @@ module System
         expected_payload_json: build_payload_predicate(publication),
         registry_credentials:  registry_credentials_for(publication.account)
       )
+
+      # Persist-time gate, independent of the selection-time one in
+      # build_local_adapter!. `adapter=` is public, so a console, an
+      # initializer, or a future third adapter can put an unverifying adapter in
+      # place without ever going through build_adapter.
+      #
+      # WHAT THIS ACTUALLY PREVENTS, and it is not merely "a stub ran":
+      # LocalDiskImageAdapter does verify sha256(bytes) == expected_sha256 for
+      # real, so the bytes are what the caller asked for. What it skips is
+      # cosign — no signature check, no attestation check — and it returns
+      # attestation_bundle_b64 built from the CALLER'S OWN expected_payload_json
+      # echoed straight back. DiskImagePublicationProcessor#publish! then
+      # persists that as publication.attestation_bundle and, in the same
+      # transaction, flips node_platform.disk_image_file_object_id. The image
+      # therefore ships carrying an attestation that attests to nothing but the
+      # caller's own claim about it — a supply-chain integrity gap, not just a
+      # dev convenience. Whoever reads that bundle later cannot tell it from a
+      # cosign-verified one.
+      #
+      # OUTSIDE TEST, not merely outside production. DEVELOPMENT is where this
+      # class of failure actually detonated (2026-07-16), and local IS the
+      # default adapter there, so a `unless Rails.env.production?` guard would
+      # have permitted exactly the incident it is meant to prevent.
+      # (IMP-b260339283bb)
+      if !Rails.env.test? && result.respond_to?(:stub) && result.stub
+        return failure(
+          "refusing an unverified stub disk-image ingest in #{Rails.env} " \
+          "(adapter #{adapter.class.name} skipped cosign verification and returned " \
+          "the caller's own expected payload as the attestation bundle, which " \
+          "attests to nothing); no image published and no platform pointer moved"
+        )
+      end
+
+      result
     end
 
     private
@@ -257,7 +309,14 @@ module System
           ok?: true,
           local_path: path,
           cosign_bundle_b64: nil,
-          attestation_bundle_b64: Base64.strict_encode64(expected_payload_json.to_json)
+          # NOTE this is the CALLER'S OWN expected payload echoed back, not a
+          # verified attestation — nothing here checked a signature. Marked
+          # `stub: true` so verify_and_pull! refuses to hand it to the processor
+          # outside test, where it would be persisted as the publication's
+          # attestation_bundle and promoted onto the NodePlatform.
+          # (IMP-b260339283bb)
+          attestation_bundle_b64: Base64.strict_encode64(expected_payload_json.to_json),
+          stub: true
         )
       end
 
