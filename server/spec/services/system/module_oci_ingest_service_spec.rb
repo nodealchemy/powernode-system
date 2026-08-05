@@ -704,3 +704,127 @@ RSpec.describe System::ModuleOciIngestService, "registry auth on ingest!" do
     expect(result.error.to_s).to match(/registry login/)
   end
 end
+
+# IMP-44b2b8e873fa — the registry login shell-out must be UNREACHABLE from the
+# test environment.
+#
+# with_registry_docker_config shells out to a real `oras login <host>` whenever
+# DiskImageRegistryConfig.configured? is true. `configured?` answers "is a
+# registry configured" — a PRODUCTION concern — and a spec fixture satisfies it
+# trivially: creating a Gitea provider credential makes registry_user resolve
+# from external_username and registry_token from access_token. So any spec that
+# set up a credential and triggered an ingest performed a live authenticated
+# request against the platform's real registry. That is how
+# IMP-a69cd0443492's example failed: a 401 from git.powernode.org, ingest
+# failed closed, no artifact recorded.
+#
+# The control is asserted on the EXECUTOR (Open3.capture3), not on the absence
+# of an error message. A guard that silently stops working produces exactly the
+# same "no error" as a guard that works.
+#
+# NOTE: this block deliberately does NOT stub with_registry_docker_config. The
+# sibling "registry auth on ingest!" block above stubs it wholesale, which is
+# precisely why the hazard stayed invisible in this file.
+RSpec.describe System::ModuleOciIngestService, "registry login is unreachable from the test env (IMP-44b2b8e873fa)" do
+  before { described_class.reset! }
+  after  { described_class.reset! }
+
+  let(:account) { create(:account) }
+  let(:node_module) { create(:system_node_module, account: account) }
+  let(:version) { create(:system_node_module_version, node_module: node_module) }
+  let(:oci_ref) { "git.powernode.org/powernode/mod:abc1234" }
+
+  def status_double(ok, code: 0)
+    instance_double(Process::Status, success?: ok, exitstatus: code)
+  end
+
+  # The exact fixture shape that used to trigger a live login: a connected
+  # Gitea provider credential and nothing else.
+  before do
+    gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+    create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
+           external_username: "ci-bot")
+  end
+
+  it "the fixture really does reach the state that triggers a login (guard would be vacuous otherwise)" do
+    expect(System::DiskImageRegistryConfig.configured?(account: account)).to be(true)
+    expect(System::DiskImageRegistryConfig.registry_host(account: account)).to eq("git.powernode.org")
+  end
+
+  it "never shells out during an ingest, however configured the registry looks" do
+    expect(Open3).not_to receive(:capture3)
+
+    described_class.new.ingest!(node_module_version: version, oci_ref: oci_ref)
+  end
+
+  it "never shells out during a native ingest either" do
+    expect(Open3).not_to receive(:capture3)
+
+    described_class.new.ingest_native!(
+      node_module_version: version, oci_ref: oci_ref, account: account,
+      fsverity_root: "fsv-deadbeef", architecture: "amd64"
+    )
+  end
+
+  # THE AXIS. The guard keys on TEST, not on production. Writing it as
+  # `unless Rails.env.production?` would pass every example above while
+  # silently disabling registry auth in DEVELOPMENT too — a second
+  # production-scoped check masquerading as the fix.
+  # Everything the helper consults is pinned EXCEPT the environment predicate,
+  # because Rails.env.test? cannot simply be flipped here:
+  # Devops::GitProviderCredential keys its own encryption on it
+  # (git_provider_credential.rb:197 — "test_key" vs the real key service), so
+  # flipping the predicate makes the fixture's access_token undecryptable,
+  # registry_token nil and `configured?` false. The login would then be skipped
+  # for a reason that has nothing to do with this guard, and the example would
+  # pass while proving nothing.
+  #
+  # Measured, not assumed: configured? is true in the test env and false the
+  # moment test? is stubbed false. Hence the pins below.
+  it "still logs in when the environment is not test — the guard keys on TEST, not on production" do
+    allow(::System::DiskImageRegistryConfig).to receive(:configured?).and_return(true)
+    allow(::System::DiskImageRegistryConfig).to receive(:registry_host).and_return("git.powernode.org")
+    allow(::System::DiskImageRegistryConfig).to receive(:registry_user).and_return("ci-bot")
+    allow(::System::DiskImageRegistryConfig).to receive(:registry_token).and_return("tok")
+    allow(Rails.env).to receive(:test?).and_return(false)
+
+    expect(Open3).to receive(:capture3)
+      .with(hash_including("DOCKER_CONFIG"), "oras", "login", "git.powernode.org", any_args)
+      .and_return([ "", "", status_double(true) ])
+
+    described_class.new.ingest!(node_module_version: version, oci_ref: oci_ref)
+  end
+
+  # The two pre-existing fall-throughs below the new guard. In the test
+  # environment the guard short-circuits before either can run, so nothing
+  # reached them and both survived mutation until these were added — the same
+  # unreachability that makes the guard correct also hides what is under it.
+  # The resolvers are pinned NON-blank on purpose. Without them this example
+  # passed even with the configured? check deleted: stubbing test? false also
+  # stops the fixture's access_token decrypting, so registry_token came back
+  # nil and the blank check below caught what configured? was supposed to. The
+  # example proved nothing until the pins made the mutant reach the executor.
+  it "does not log in when the registry is unconfigured, even outside test" do
+    allow(::System::DiskImageRegistryConfig).to receive(:configured?).and_return(false)
+    allow(::System::DiskImageRegistryConfig).to receive(:registry_host).and_return("git.powernode.org")
+    allow(::System::DiskImageRegistryConfig).to receive(:registry_user).and_return("ci-bot")
+    allow(::System::DiskImageRegistryConfig).to receive(:registry_token).and_return("tok")
+    allow(Rails.env).to receive(:test?).and_return(false)
+
+    expect(Open3).not_to receive(:capture3)
+
+    described_class.new.ingest!(node_module_version: version, oci_ref: oci_ref)
+  end
+
+  it "does not log in when a resolved credential is blank, even outside test" do
+    allow(::System::DiskImageRegistryConfig).to receive(:configured?).and_return(true)
+    allow(::System::DiskImageRegistryConfig).to receive(:registry_host).and_return("git.powernode.org")
+    allow(::System::DiskImageRegistryConfig).to receive(:registry_user).and_return("ci-bot")
+    allow(::System::DiskImageRegistryConfig).to receive(:registry_token).and_return("")
+    allow(Rails.env).to receive(:test?).and_return(false)
+
+    expect(Open3).not_to receive(:capture3)
+
+    described_class.new.ingest!(node_module_version: version, oci_ref: oci_ref)
+  end
+end

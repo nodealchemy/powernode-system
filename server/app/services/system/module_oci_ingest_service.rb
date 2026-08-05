@@ -443,6 +443,27 @@ module System
     # this service. A login FAILURE returns {error:} (fail-closed) so R6 never
     # records an artifact whose signature it could not fetch to verify.
     def with_registry_docker_config(account)
+      # The suite must never authenticate against a real registry. This shells
+      # out to `oras login <host>`, and a SUBPROCESS is the one network
+      # boundary WebMock cannot intercept — rails_helper's `webmock/rspec`
+      # blocks Net::HTTP everywhere (including this service's own native
+      # manifest GET), so every other outbound path in this file is already
+      # unreachable from a spec. This one escaped, and nothing below it was
+      # environment-scoped.
+      #
+      # Keyed on TEST, deliberately not on production. `configured?` already
+      # answers a production question ("is a registry configured") and a spec
+      # fixture satisfies it trivially: a Gitea provider credential makes
+      # registry_user resolve from external_username and registry_token from
+      # access_token. Adding a second production-scoped check would leave the
+      # suite exactly where it was. Writing it `unless Rails.env.production?`
+      # would also silently disable registry auth in DEVELOPMENT, which is a
+      # real environment that should still log in.
+      #
+      # Yields the same empty env as the unconfigured path, so an ingest spec
+      # exercises everything except the shell-out (IMP-44b2b8e873fa).
+      return yield({}) if Rails.env.test?
+
       return yield({}) unless account && ::System::DiskImageRegistryConfig.configured?(account: account)
 
       host  = ::System::DiskImageRegistryConfig.registry_host(account: account)

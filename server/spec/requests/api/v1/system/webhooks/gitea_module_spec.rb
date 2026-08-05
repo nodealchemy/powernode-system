@@ -590,22 +590,13 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
         ENV["POWERNODE_REGISTRY_HOST"] = original_host
       end
 
-      # Neutralizes the ONE network boundary on the ingest path, and nothing
-      # else: with_registry_docker_config shells out to a real `oras login`
-      # against the resolved host whenever DiskImageRegistryConfig.configured?
-      # is true. A fixture that supplies a Gitea credential satisfies
-      # `configured?` trivially, so without this the example below stopped
-      # being a test of host derivation and became a test of whether a
-      # PRODUCTION registry answers an unauthenticated CI bot — it failed with
-      # a live 401 from git.powernode.org and recorded no artifact at all,
-      # which is why `oci_ref` came back nil rather than wrong.
-      #
-      # Host resolution, build_oci_ref and the ingest itself all still run for
-      # real; only the login shell-out is replaced.
-      def stub_registry_login!
-        allow_any_instance_of(::System::ModuleOciIngestService)
-          .to receive(:with_registry_docker_config) { |_receiver, _account, &blk| blk.call({}) }
-      end
+      # The live `oras login` this block used to trip is now refused at the
+      # service (ModuleOciIngestService#with_registry_docker_config, keyed on
+      # Rails.env.test? — IMP-44b2b8e873fa), so the local stub that used to sit
+      # here is gone. Keeping both would hide a regression in the real control
+      # behind the local one: this block would stay green even if the service
+      # guard were removed. The control itself is asserted on the executor in
+      # spec/services/system/module_oci_ingest_service_spec.rb.
 
       it "builds the ingested oci_ref from the platform-configured registry host, not the placeholder" do
         AdminSetting.set(System::DiskImageRegistryConfig::HOST_SETTING_KEY, "git.powernode.org")
@@ -662,7 +653,6 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
         gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
         create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
                external_username: "ci-bot")
-        stub_registry_login!
 
         body = push_payload.to_json
         post "/api/v1/system/webhooks/gitea/module",
