@@ -4,7 +4,7 @@ Powernode's system extension. Node lifecycle, modules, SDWAN, fleet autonomy, co
 
 This file is the index for AI sessions touching `extensions/system/`. Each domain points at its operator guide + critical source files.
 
-## Capability Domains (11)
+## Capability Domains (12)
 
 | Domain | Operator Guide | Key Source Files |
 |---|---|---|
@@ -81,7 +81,7 @@ The full action catalog regenerates via `cd server && bundle exec rails mcp:gene
 
 ### When adding a new capability
 
-1. Always check existing skill executors before writing a new orchestration. 49 already cover most fleet/SDWAN/runtime/topology workflows. See `docs/SKILL_EXECUTORS.md`.
+1. Always check existing skill executors before writing a new orchestration. 53 already cover most fleet/SDWAN/runtime/topology workflows. See `docs/SKILL_EXECUTORS.md`.
 2. New skills must have BOTH an executor at `app/services/system/ai/skills/<name>_executor.rb` AND an `Ai::Skill` record (seeded via `db/seeds/system_skills_seed.rb`).
 3. New autonomy actions must have a `system.<action>` intervention policy entry in either `fleet_autonomy_agent.rb` or `system_runtime_manager_agent.rb`.
 4. Cross-account safety: use `find_or_create_by` with `account: account` scoping. The KG seeds + skill seeds follow this pattern.
@@ -113,11 +113,11 @@ This is a git submodule. Per root CLAUDE.md:
 - `docs/CONTAINER_RUNTIMES.md` — Phase 1 Docker + Phase 2 K3s operator guide + troubleshooting
 - `docs/CLAUDE_TMUX_MODULE.md` — claude-tmux NodeModule: managed Claude Code CLI in a systemd-supervised tmux session, Vault-backed credential injection at boot, operator runbook
 - `docs/USE_CASE_MATRIX.md` — what works / what doesn't / what to expect for 10 NodeInstance container use cases (READ FIRST when designing a deployment)
-- `docs/SKILL_EXECUTORS.md` — 49 executor reference; `docs/SKILL_EXECUTOR_CATALOG.md` is the auto-generated catalog (regenerate via `rails system:skills:generate_catalog` — never hand-edit)
+- `docs/SKILL_EXECUTORS.md` — 53 executor reference; `docs/SKILL_EXECUTOR_CATALOG.md` is the auto-generated catalog (regenerate via `rails system:skills:generate_catalog` — never hand-edit)
 - `docs/CONCIERGE_PROVISIONING_GUIDE.md` — operator guide for running a provisioning mission through the System Concierge (phase pipeline, inline approval card, monitoring)
 - `docs/INGRESS_TLS_GUIDE.md` — operator guide for ingress/TLS (Ingress page Routes + Expose-Service wizard, the VIP→port-map→ACME→Traefik expose lifecycle, DNS-01 credentials, staging-vs-prod issuers, split-brain DNS troubleshooting)
 - `docs/MISSION_COMPOSITION_ARCHITECTURE.md` — two composition paths (deterministic vs. LLM-general), hybrid routing, cross-step data flow, and the shared runner + approval gate
-- `docs/FLEET_SENSORS.md` — 20 fleet sensors (tick-registered) + 2 CVE sensors reference + intervention policy table (split per-agent post 2026-05-10)
+- `docs/FLEET_SENSORS.md` — 24 fleet sensors (tick-registered) + 2 CVE sensors reference + intervention policy table (split per-agent post 2026-05-10)
 - `docs/DISK_IMAGE_CI.md` — webhook + CI worker workflow
 - `docs/MCP_API_REFERENCE.md` — `system_*` / `system_sdwan_*` / `kubernetes_*` / `docker_*` MCP tool actions
 - `docs/agent-peering.md` — NodeInstance-as-Agent pattern

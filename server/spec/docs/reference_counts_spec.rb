@@ -2,22 +2,30 @@
 
 require "spec_helper"
 
-# Drift guard for the two hand-maintained counts that repeatedly went stale
-# in SKILL_EXECUTORS.md / FLEET_SENSORS.md (IMP-c5d4a8e61e55 "round 2" — they
-# had already been corrected once before and drifted again). Derives the real
-# counts from disk and from the source they describe, and cross-checks them
-# against the numbers the two docs state in prose. A future drift (someone
-# adds/removes an executor or a sensor, or registers/unregisters one, without
-# updating the doc) fails THIS spec instead of rotting silently until the
-# next manual audit.
+# Drift guard for the hand-maintained counts that repeatedly went stale
+# in SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md (IMP-c5d4a8e61e55
+# "round 2" — they had already been corrected once before and drifted again;
+# IMP-1463ab389e0c extended this to CLAUDE.md after it was found
+# self-contradicting on the executor count — 54 in one place, 49 in two
+# others, ground truth 53 — while nothing guarded it: CLAUDE.md is the file
+# most likely to be read by an AI session at load time, and it was the one
+# file nothing checked). Derives the real counts from disk and from the
+# source they describe, and cross-checks them against the numbers the docs
+# state in prose. A future drift (someone adds/removes an executor or a
+# sensor, or registers/unregisters one, without updating the doc) fails THIS
+# spec instead of rotting silently until the next manual audit.
 #
 # What it catches: the total *_executor.rb file count, the concrete
 # (binds_to-declaring) executor count, the total fleet/sensors/ file count,
 # the count of sensors actually registered in FleetAutonomyService::SENSORS,
 # the exact (ordered) list of sensor class names named in the doc's
-# inventory sentence, and the Fleet Autonomy "(N policies)" heading count
+# inventory sentence, the Fleet Autonomy "(N policies)" heading count
 # against the actual key count of the `fleet_policies` hash literal seeded
-# in db/seeds/fleet_autonomy_agent.rb.
+# in db/seeds/fleet_autonomy_agent.rb, CLAUDE.md's three separate citations
+# of the executor count (the table cell's total-files/concrete-classes pair,
+# the "already cover" convention line, and the Related Docs line), CLAUDE.md's
+# Capability Domains header count against its own table's actual row count,
+# and CLAUDE.md's Related Docs citation of the fleet-sensor count.
 #
 # What it does NOT catch: prose rewording elsewhere in either doc, a count
 # that's wrong in the same way in both the doc and this spec's own regexes,
@@ -34,7 +42,7 @@ require "spec_helper"
 # precedents for a doc/config-vs-code consistency guard: both are scoped to
 # a narrower artifact (a shell script's behavior, a JSON schema's pattern)
 # and neither is about prose figures in a markdown reference doc.
-RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md counts vs. reality" do
+RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. reality" do
   ext_root     = File.expand_path("../../..", __dir__)
   skills_dir   = File.join(ext_root, "server/app/services/system/ai/skills")
   sensors_dir  = File.join(ext_root, "server/app/services/system/fleet/sensors")
@@ -92,6 +100,29 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md counts vs. reality" do
 
   let(:executors_doc_text) { File.read(executors_doc_path) }
   let(:sensors_doc_text)   { File.read(sensors_doc_path) }
+
+  claude_md_path = File.join(ext_root, "CLAUDE.md")
+  let(:claude_md_text) { File.read(claude_md_path) }
+
+  # The "## Capability Domains (N)" table is CLAUDE.md's own content — no
+  # external source to derive N from, so ground truth is the table's own row
+  # count (total `|`-prefixed lines minus the header row and the `|---|`
+  # separator row). Raises with a clear message if the table shape changes
+  # enough that this stops making sense, rather than silently comparing a
+  # nonsense count.
+  let(:capability_domains_row_count) do
+    block = claude_md_text[/## Capability Domains \(\d+\)(.*?)\n##/m, 1]
+    unless block
+      raise "could not locate the Capability Domains table in #{claude_md_path} — " \
+            "has the heading or the section after it changed? update this spec's regex."
+    end
+    pipe_lines = block.lines.select { |l| l.start_with?("|") }
+    unless pipe_lines.size >= 2 && pipe_lines[0].include?("Domain") && pipe_lines[1].match?(/^\|[\s-]+\|/)
+      raise "Capability Domains table in #{claude_md_path} doesn't look like a standard " \
+            "header+separator+rows markdown table anymore — update this spec's row-counting logic."
+    end
+    pipe_lines.size - 2
+  end
 
   def doc_number(doc_text, pattern, label, doc_path)
     match = doc_text.match(pattern)
@@ -173,5 +204,83 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md counts vs. reality" do
     expect(stated).to eq(seeded_policy_keys.size),
       "FLEET_SENSORS.md claims Fleet Autonomy has #{stated} policies; " \
       "#{policy_seed_path}'s fleet_policies hash actually has #{seeded_policy_keys.size} keys"
+  end
+
+  # ==========================================================================
+  # IMP-1463ab389e0c: CLAUDE.md is the file most likely to be read by an AI
+  # session at load time, and it cited the skill-executor count THREE times
+  # with two different (both wrong) numbers, plus its own Capability Domains
+  # table header and its Related Docs citation of the sensor count had also
+  # drifted — and nothing guarded any of it. These five checks close that gap.
+  # ==========================================================================
+
+  # NOTE: unlike the checks below, this pair was ALREADY correct on disk when
+  # found (54 total `*_executor.rb` files, 53 of them declaring `binds_to` —
+  # both true) — the finding that flagged it turned out to be the one that
+  # was wrong, not the doc. Left as-is; guarded here so it can't drift later.
+  it "CLAUDE.md's skill-executor table cell states the total *_executor.rb file count correctly" do
+    stated = doc_number(
+      claude_md_text,
+      /(\d+) executor classes, \d+ with `binds_to`/,
+      "CLAUDE.md skill-executor table-cell total file count", claude_md_path
+    )
+    expect(stated).to eq(executor_files.size),
+      "CLAUDE.md's Capability Domains table cell claims #{stated} executor classes; " \
+      "#{skills_dir} actually has #{executor_files.size} `*_executor.rb` files"
+  end
+
+  it "CLAUDE.md's skill-executor table cell states the concrete (binds_to) count correctly" do
+    stated = doc_number(
+      claude_md_text,
+      /\d+ executor classes, (\d+) with `binds_to`/,
+      "CLAUDE.md skill-executor table-cell concrete count", claude_md_path
+    )
+    expect(stated).to eq(concrete_executor_files.size),
+      "CLAUDE.md's Capability Domains table cell claims #{stated} executors with `binds_to`; " \
+      "#{skills_dir} actually has #{concrete_executor_files.size} concrete executors"
+  end
+
+  it "CLAUDE.md's 'skill executors already cover' convention line matches disk" do
+    stated = doc_number(
+      claude_md_text,
+      %r{(\d+) already cover most fleet/SDWAN/runtime/topology workflows},
+      "CLAUDE.md 'already cover' executor count", claude_md_path
+    )
+    expect(stated).to eq(concrete_executor_files.size),
+      "CLAUDE.md's conventions section claims #{stated} skill executors already cover most workflows; " \
+      "#{skills_dir} actually has #{concrete_executor_files.size} concrete executors"
+  end
+
+  it "CLAUDE.md's Related Docs citation of SKILL_EXECUTORS.md's executor count matches disk" do
+    stated = doc_number(
+      claude_md_text,
+      /SKILL_EXECUTORS\.md`\s*—\s*(\d+) executor reference/,
+      "CLAUDE.md Related Docs SKILL_EXECUTORS.md citation", claude_md_path
+    )
+    expect(stated).to eq(concrete_executor_files.size),
+      "CLAUDE.md's Related Docs line claims SKILL_EXECUTORS.md is a #{stated}-executor reference; " \
+      "#{skills_dir} actually has #{concrete_executor_files.size} concrete executors"
+  end
+
+  it "CLAUDE.md's Related Docs citation of FLEET_SENSORS.md's registered-sensor count matches reality" do
+    stated = doc_number(
+      claude_md_text,
+      /(\d+) fleet sensors \(tick-registered\)/,
+      "CLAUDE.md Related Docs FLEET_SENSORS.md citation", claude_md_path
+    )
+    expect(stated).to eq(registered_sensor_names.size),
+      "CLAUDE.md's Related Docs line claims #{stated} tick-registered fleet sensors; " \
+      "FleetAutonomyService::SENSORS actually has #{registered_sensor_names.size}"
+  end
+
+  it "CLAUDE.md's Capability Domains header count matches its own table's row count" do
+    stated = doc_number(
+      claude_md_text,
+      /## Capability Domains \((\d+)\)/,
+      "CLAUDE.md Capability Domains header count", claude_md_path
+    )
+    expect(stated).to eq(capability_domains_row_count),
+      "CLAUDE.md's '## Capability Domains (#{stated})' header doesn't match its own table, " \
+      "which actually has #{capability_domains_row_count} rows"
   end
 end
