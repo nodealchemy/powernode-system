@@ -11,28 +11,18 @@ RSpec.describe System::CveOps::VersionMatcher do
   # cleared here regardless.
   before { System::CveOps::DebVersionComparator.reset_cache! }
 
-  # KNOWN ORDER-DEPENDENT FLAKE — 6 rows in this file fail in a FULL-suite run
-  # and pass in every isolation I tried (this file alone; the whole cve_ops
-  # directory; after the Open3-stubbing ingest specs). Adding the cache reset
-  # above did NOT fix them, so the deb cache is ruled out.
-  #
-  # What is known:
-  #   - The failing rows span FOUR comparators (semver, deb, rpm, pypi), so no
-  #     single comparator's state explains it.
-  #   - Every failing row expects `true` and gets `false`. `false` is also what
-  #     VersionMatcher's `rescue StandardError` returns — but that rescue logs a
-  #     warn, and a 33MB test.log contains ZERO VersionMatcher entries, so the
-  #     rescue never fired. The comparators genuinely returned false.
-  #   - The rows are literal table data and SemverComparator is pure Ruby with
-  #     no config, ENV, cache or DB, so the computation is deterministic given
-  #     its inputs.
-  #   - Nothing in the spec tree redefines, reopens or stubs the comparators.
-  #
-  # That combination is not yet explained. The next step is `rspec --bisect`
-  # over the full CI matrix to find the minimal reproducing pair; it is bounded
-  # work but takes hours, so it is deliberately left as its own task rather
-  # than guessed at. Do NOT "fix" these rows by relaxing the expectations —
-  # they assert correct ecosystem semantics and pass in isolation.
+  # RESOLVED: six rows here used to fail in a full-suite run and pass in every
+  # isolation. Cause was a DUPLICATE definition of System::CveOps::VersionMatcher
+  # at extensions/system/server/lib/system/cve_ops/version_matcher.rb — a naive
+  # numeric-tuple matcher that dropped pre-release/epoch/tilde/post semantics.
+  # It was Zeitwerk-SHADOWED (app/services precedes lib/ on the autoload path)
+  # so production never saw it, but spec/lib/.../version_matcher_spec.rb
+  # `require`d it by absolute path, bypassing Zeitwerk and REOPENING the class
+  # — clobbering .vulnerable? for every example in the process. RSpec loads all
+  # spec files before running any example, so command-line order was irrelevant:
+  # merely INCLUDING that spec file was the trigger, and the CI matrix includes
+  # spec/lib while none of the isolations did. Both files are deleted; their
+  # unique nil-input coverage is ported into the edge-case block below.
 
   describe ".vulnerable?" do
     # Table-driven tests grouped by ecosystem. Each row exercises one
@@ -98,6 +88,20 @@ RSpec.describe System::CveOps::VersionMatcher do
       it "returns true for an empty constraint (match-anything semantics)" do
         result = described_class.vulnerable?(version: "1.0.0", constraint: "", ecosystem: "gem")
         expect(result).to be true
+      end
+
+      # nil, not "" — a distinct path (parse_constraint takes constraint.to_s;
+      # vulnerable? takes version.to_s.strip). Ported from the deleted
+      # spec/lib/system/cve_ops/version_matcher_spec.rb, which was the only
+      # coverage of the nil cases and is removed in this commit.
+      it "returns true for a nil constraint" do
+        result = described_class.vulnerable?(version: "1.0.0", constraint: nil, ecosystem: "gem")
+        expect(result).to be true
+      end
+
+      it "returns false for a nil version when the constraint is non-blank" do
+        result = described_class.vulnerable?(version: nil, constraint: ">=1.0.0", ecosystem: "gem")
+        expect(result).to be false
       end
 
       it "returns false for a malformed constraint (graceful degradation)" do

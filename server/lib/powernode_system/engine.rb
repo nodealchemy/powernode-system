@@ -33,9 +33,20 @@ module PowernodeSystem
         app.config.autoload_paths << path.to_s if path.exist?
       end
 
-      # `lib/` for pure helpers that don't fit the app/ Zeitwerk conventions
-      # (e.g., System::CveOps::VersionMatcher — a stateless table-driven
-      # version-range matcher). Comprehensive stabilization sweep P4.
+      # `lib/` for pure helpers that don't fit the app/ Zeitwerk conventions.
+      # Currently that is Powernode::Bootstrap (lib/powernode/bootstrap.rb).
+      #
+      # This comment used to cite System::CveOps::VersionMatcher as the reason
+      # the root exists. That file was a DUPLICATE of the real matcher in
+      # app/services/system/cve_ops/ and has been deleted: app/services precedes
+      # lib/ on the autoload path, so the lib copy was permanently shadowed —
+      # inert for autoload AND eager-load, and reachable only by an explicit
+      # `require`, which is exactly how a spec silently swapped the naive
+      # implementation into every example in the process.
+      #
+      # Note before adding anything here: a class under lib/ that DUPLICATES a
+      # name under app/ will never load in production and will look fine until
+      # something requires it directly.
       lib_path = engine_root.join("lib")
       app.config.autoload_paths << lib_path.to_s if lib_path.exist?
     end
