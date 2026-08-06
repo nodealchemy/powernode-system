@@ -22,7 +22,7 @@ module System
     #   "<=2.0.0"         — less-than-or-equal
     #   ">1.0.0"          — strict greater-than
     #   ">=1.0.0"         — greater-than-or-equal
-    #   "=1.2.3", "1.2.3" — exact match
+    #   "=1.2.3", "==1.2.3", "1.2.3" — exact match (== is PEP 440's canonical form)
     #   ">=1.0.0,<2.0.0"  — AND (all ranges must hold)
     #   "*", ""           — match everything
     class VersionMatcher
@@ -57,11 +57,15 @@ module System
         false
       end
 
-      RANGE_REGEX = /\A\s*(<=|>=|<|>|=)?\s*(.+?)\s*\z/
+      # `==` (PEP 440's canonical equality) must precede `=` in the
+      # alternation — with `=` first, "==1.0.0" parsed as op "=" against
+      # version "=1.0.0", whose leading segment Integer-rescued to 0 and
+      # produced a silently wrong exposure verdict. (IMP-4487d0c048b9)
+      RANGE_REGEX = /\A\s*(<=|>=|==|<|>|=)?\s*(.+?)\s*\z/
 
       # Map string operators to semantic symbol names (avoiding `:<` etc.
       # which are syntactically awkward in Ruby case-when statements).
-      OP_SYMBOLS = { "<" => :lt, "<=" => :le, ">" => :gt, ">=" => :ge, "=" => :eq }.freeze
+      OP_SYMBOLS = { "<" => :lt, "<=" => :le, ">" => :gt, ">=" => :ge, "=" => :eq, "==" => :eq }.freeze
 
       def self.parse_constraint(raw)
         return [] if raw.empty? || raw.strip == "*"
@@ -73,6 +77,15 @@ module System
           match = segment.match(RANGE_REGEX)
           op = OP_SYMBOLS.fetch(match[1] || "=")
           ver = match[2].strip
+          # A version that still leads with an operator character means the
+          # constraint used a form this grammar does not support (~=, !=,
+          # ===, ...). Raising here reaches vulnerable?'s rescue, which logs
+          # and returns false — a visible skip instead of comparing against
+          # a corrupted version string and answering wrongly in silence.
+          if ver.start_with?("=", "<", ">", "!", "~")
+            raise ArgumentError, "unsupported operator in constraint segment #{segment.inspect}"
+          end
+
           [ op, ver ] unless ver.empty?
         end
       end

@@ -138,4 +138,24 @@ RSpec.describe System::CveOps::VersionMatcher do
       expect(described_class.parse_constraint("1.2.3")).to eq([ [ :eq, "1.2.3" ] ])
     end
   end
+
+  # IMP-4487d0c048b9 — RANGE_REGEX matched the FIRST `=` of PEP 440's `==` as
+  # the operator and kept the second inside the version string, so "==1.0.0"
+  # compared against "=1.0.0", whose leading segment Integer-rescued to 0: a
+  # silently wrong CVE exposure verdict for canonical pypi constraints.
+  describe "PEP 440 == operator" do
+    it "parses ==x.y.z with a clean version string" do
+      expect(described_class.parse_constraint("==1.0.0")).to eq([ [ :eq, "1.0.0" ] ])
+    end
+
+    it "evaluates canonical pypi equality constraints correctly" do
+      expect(described_class.vulnerable?(version: "1.0.0", constraint: "==1.0.0", ecosystem: "pypi")).to be true
+      expect(described_class.vulnerable?(version: "1.0.1", constraint: "==1.0.0", ecosystem: "pypi")).to be false
+    end
+
+    it "refuses an unsupported operator loudly — logged false, never a silent wrong answer" do
+      expect(Rails.logger).to receive(:warn).with(/unsupported operator/).at_least(:once)
+      expect(described_class.vulnerable?(version: "1.0.0", constraint: "~=1.0", ecosystem: "pypi")).to be false
+    end
+  end
 end
