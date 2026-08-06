@@ -118,13 +118,37 @@ if [ -d "$TOOLS_DIR" ]; then
   registered_ext=$(mktemp)
   trap 'rm -f "$known_actions" "$found_actions" "$missing_actions" "$dispatched" "$registered_ext"' EXIT
 
-  # Actions each extension tool claims: `when "..."` dispatch branches plus
-  # the `"..." =>` keys (ACTION_PERMISSIONS + action_definitions).
+  # Actions each extension tool claims: `when "..."` dispatch branches, the
+  # `"..." =>` keys (ACTION_PERMISSIONS + action_definitions), and the
+  # `name: "..."` a SINGLE-ACTION tool declares in self.definition.
+  #
+  # That third source is load-bearing. A tool exposing exactly one action has no
+  # `when` branch to dispatch on and no ACTION_PERMISSIONS map to key — its only
+  # declaration is definition[:name]. Without this line such a tool reads as
+  # "registered but never dispatched", i.e. a dead registry entry with no
+  # handler, which is the opposite of the truth: SystemBlastRadiusTool
+  # implements #call and works. This pass exists to catch a REAL absent handler
+  # (audit F8-01), and a false positive here trains people to ignore it.
   {
     grep -rhE '^[[:space:]]*when "(system_|kubernetes_|docker_)' "$TOOLS_DIR"/*.rb 2>/dev/null \
       | grep -oE '"(system_|kubernetes_|docker_)[a-z_]+"'
     grep -rhE '^[[:space:]]*"(system_|kubernetes_|docker_)[a-z_]+"[[:space:]]*=>' "$TOOLS_DIR"/*.rb 2>/dev/null \
       | grep -oE '^[[:space:]]*"(system_|kubernetes_|docker_)[a-z_]+"'
+    # Single-action tools ONLY, decided per file. A MULTI-action tool's
+    # definition[:name] is the TOOL name (e.g. "system_fleet"), which is not an
+    # action and is not in the registry — harvesting it unconditionally invents
+    # six phantom "dispatched but unregistered" entries. So take `name:` only
+    # from files that declare no `when` branch AND no `"..." =>` key, which is
+    # exactly what makes a tool single-action.
+    for f in "$TOOLS_DIR"/*.rb; do
+      [ -f "$f" ] || continue
+      if grep -qE '^[[:space:]]*when "(system_|kubernetes_|docker_)' "$f" 2>/dev/null; then continue; fi
+      if grep -qE '^[[:space:]]*"(system_|kubernetes_|docker_)[a-z_]+"[[:space:]]*=>' "$f" 2>/dev/null; then continue; fi
+      # Parameter schemas also use `name:`, but as `name: { type: "string" }` —
+      # a brace, not a string — so requiring the quote excludes them.
+      grep -hE '^[[:space:]]*name:[[:space:]]*"(system_|kubernetes_|docker_)[a-z_]+"' "$f" 2>/dev/null \
+        | grep -oE '"(system_|kubernetes_|docker_)[a-z_]+"'
+    done
   } | tr -d ' "' | sort -u > "$dispatched"
 
   # Registry entries mapped to one of the extension's tool classes.
