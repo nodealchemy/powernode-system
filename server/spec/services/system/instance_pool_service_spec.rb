@@ -42,6 +42,54 @@ RSpec.describe System::InstancePoolService, type: :service do
            last_heartbeat_at: last_heartbeat_at)
   end
 
+  # IMP-71c852bffc37 / offer 019fcc59 — the reuse-without-reset release path
+  # returns a member to service WITHOUT terminating, and AgentPeeringService
+  # re-announces onto the SAME NodeInstancePeer row, so an MCP tool-name
+  # widening granted to the prior acquirer would otherwise survive verbatim
+  # into the next one. The reset exists; these pin it, because an implemented-
+  # but-untested control is not a foundation for the instance-principal
+  # authorization decision that depends on how much a grant is worth.
+  describe "#release! on a reuse-without-reset pool" do
+    let(:reuse_pool) do
+      pool.update!(metadata: { "reuse_without_reset" => true })
+      pool
+    end
+
+    def released_member_with_grant(grant)
+      instance = seed_pool_member(state: "claimed", acquired_at: 5.minutes.ago)
+      create(:system_node_instance_peer, node_instance: instance,
+                                         granted_mcp_tools: grant)
+      described_class.release!(instance: instance, pool: reuse_pool)
+      System::NodeInstancePeer.find_by(node_instance_id: instance.id)
+    end
+
+    it "clears a prior acquirer's MCP tool grant" do
+      peer = released_member_with_grant([ "system_*", "docker_*" ])
+      expect(Array(peer.granted_mcp_tools)).to be_empty
+    end
+
+    it "returns the member to ready so the clear is not a side effect of failure" do
+      instance = seed_pool_member(state: "claimed", acquired_at: 5.minutes.ago)
+      create(:system_node_instance_peer, node_instance: instance,
+                                         granted_mcp_tools: [ "system_*" ])
+
+      expect(described_class.release!(instance: instance, pool: reuse_pool)).to eq("reused")
+      expect(instance.reload.pool_state).to eq("ready")
+    end
+
+    it "never lets a reset failure block the member returning to the pool, and never fails silently" do
+      instance = seed_pool_member(state: "claimed", acquired_at: 5.minutes.ago)
+      create(:system_node_instance_peer, node_instance: instance,
+                                         granted_mcp_tools: [ "system_*" ])
+      allow_any_instance_of(System::NodeInstancePeer)
+        .to receive(:grant_mcp_tools!).and_raise(StandardError, "vault down")
+      expect(Rails.logger).to receive(:error).with(/granted_mcp_tools reset FAILED/).at_least(:once)
+
+      expect { described_class.release!(instance: instance, pool: reuse_pool) }.not_to raise_error
+      expect(instance.reload.pool_state).to eq("ready")
+    end
+  end
+
   describe ".acquire!" do
     context "when pool has ready members" do
       let!(:older) { seed_pool_member(state: "ready", warming_started_at: 5.minutes.ago) }
