@@ -406,4 +406,63 @@ RSpec.describe System::DiskImagePublication, type: :model do
       expect(pub.promotable?).to be false
     end
   end
+
+  # IMP-9d95e4c202f5 — aasm fires an EVENT-LEVEL `before` unconditionally,
+  # before from-state matching, and whiny_transitions:false makes the
+  # non-matching call a silent no-op — so retire/purge/mark_failed stamped
+  # timestamps and error text on rows whose status never changed. Same shape
+  # IMP-6d2dd4533bd7 fixed for mark_published/reactivate.
+  describe "no-op event calls stamp nothing" do
+    it "retire on a purged row leaves retired_at untouched" do
+      pub = create(:system_disk_image_publication, status: "purged")
+      pub.retire
+      expect(pub.status).to eq("purged")
+      expect(pub.retired_at).to be_nil
+    end
+
+    it "purge on a published row leaves purged_at untouched" do
+      pub = create(:system_disk_image_publication, status: "published")
+      pub.purge
+      expect(pub.status).to eq("published")
+      expect(pub.purged_at).to be_nil
+    end
+
+    it "mark_failed on a published row records no error message" do
+      pub = create(:system_disk_image_publication, status: "published")
+      pub.mark_failed("boom")
+      expect(pub.status).to eq("published")
+      expect(pub.error_message).to be_nil
+    end
+
+    it "retire from published still stamps retired_at" do
+      pub = create(:system_disk_image_publication, status: "published")
+      pub.retire
+      expect(pub.status).to eq("retired")
+      expect(pub.retired_at).to be_present
+    end
+
+    it "purge from retired still stamps purged_at" do
+      pub = create(:system_disk_image_publication, status: "retired", retired_at: 10.days.ago)
+      pub.purge
+      expect(pub.status).to eq("purged")
+      expect(pub.purged_at).to be_present
+    end
+
+    it "mark_failed from verifying still records the error argument" do
+      pub = create(:system_disk_image_publication, status: "verifying")
+      pub.mark_failed("cosign verify failed")
+      expect(pub.status).to eq("failed")
+      expect(pub.error_message).to eq("cosign verify failed")
+    end
+
+    # Closes the CLASS, not just the instances: a fifth event with an
+    # event-level `before` reintroduces the defect wholesale.
+    it "declares no event-level before callbacks on any event" do
+      offenders = described_class.aasm.events.select do |event|
+        event.options[:before].present?
+      end.map(&:name)
+      expect(offenders).to be_empty,
+        "events with event-level before callbacks (fire before from-state matching): #{offenders.inspect}"
+    end
+  end
 end

@@ -109,8 +109,14 @@ module System
       end
 
       event :mark_failed do
-        transitions from: %i[queued awaiting_upload verifying], to: :failed
-        before { |error| self.error_message = error.to_s if error }
+        # Transition-scoped `after` for the same reason as `mark_published`
+        # above (IMP-9d95e4c202f5): an event-level `before` fires before
+        # from-state matching, so mark_failed on e.g. a published row wrote
+        # error_message while the status stayed put. The event argument
+        # reaches a transition-scoped `after` unchanged.
+        transitions from: %i[queued awaiting_upload verifying], to: :failed do
+          after { |error| self.error_message = error.to_s if error }
+        end
       end
 
       event :retire do
@@ -120,13 +126,17 @@ module System
         # published → retired reaper path. Same terminal state either way; a
         # retired row still carries its history and flows into the existing
         # purgeable scope once its own grace window elapses.
-        transitions from: %i[published failed verifying], to: :retired
-        before { self.retired_at = Time.current }
+        # Transition-scoped `after` (IMP-9d95e4c202f5) — see `mark_published`.
+        transitions from: %i[published failed verifying], to: :retired do
+          after { self.retired_at = Time.current }
+        end
       end
 
       event :purge do
-        transitions from: :retired, to: :purged
-        before { self.purged_at = Time.current }
+        # Transition-scoped `after` (IMP-9d95e4c202f5) — see `mark_published`.
+        transitions from: :retired, to: :purged do
+          after { self.purged_at = Time.current }
+        end
       end
 
       # Dedicated event for RollbackPublication/PromotePublication reactivating
