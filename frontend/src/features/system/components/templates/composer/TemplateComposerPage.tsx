@@ -10,19 +10,20 @@ import type {
   TemplateComposeConflict,
 } from '@system/features/system/services/api/templatesApi';
 import { SaveTemplateModal } from './SaveTemplateModal';
+import { DependencyGraphPanel } from './DependencyGraphPanel';
 
 // Visual Template Composer (Golden Eclipse plan M-FE-1).
 // Split-view layout:
 //   - Left: ModuleCatalogPanel (search + add to composition)
 //   - Right: ComposerCanvas (priority-ordered stack)
-//   - Bottom: ConflictPanel + footprint summary
+//   - Bottom: ConflictPanel + footprint summary + DependencyGraphPanel
 //
 // Compose-preview round-trips through POST /system/node_templates/compose_preview
 // every time the composition changes. The backend computes conflicts and
 // dependency graph; the frontend just renders.
 //
 // Future hooks: drag-and-drop reordering of priority via ComposerCanvas
-// rows, dependency-graph visualization (react-flow), save-as-template
+// rows (today reordering is the up/down buttons), save-as-template
 // modal that feeds the same module_ids into POST /node_templates.
 export function TemplateComposerPage(): React.JSX.Element {
   const { addNotification } = useNotifications();
@@ -114,6 +115,8 @@ export function TemplateComposerPage(): React.JSX.Element {
 
   const conflicts = preview?.conflicts ?? [];
   const footprint = preview?.footprint;
+  const dependencyGraph = preview?.dependency_graph;
+  const hasDependencyGraph = (dependencyGraph?.nodes?.length ?? 0) > 0;
 
   return (
     <div className="flex flex-col h-full bg-theme-background text-theme-foreground">
@@ -121,8 +124,9 @@ export function TemplateComposerPage(): React.JSX.Element {
         <div>
           <h1 className="text-xl font-semibold">Template Composer</h1>
           <p className="text-sm text-theme-tertiary mt-1">
-            Drag modules from the catalog into the composition. Conflicts and footprint
-            estimate update live as you compose.
+            Add modules from the catalog to the composition, then reorder them with the
+            up/down controls. Conflicts, footprint estimate, and the dependency graph
+            update live as you compose.
           </p>
         </div>
         <Button
@@ -226,10 +230,15 @@ export function TemplateComposerPage(): React.JSX.Element {
         </section>
       </div>
 
-      {/* Conflicts + Footprint footer panel */}
-      <footer className="border-t border-theme bg-theme-surface px-6 py-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-        <ConflictPanel conflicts={conflicts} />
-        <FootprintPanel footprint={footprint} />
+      {/* Conflicts + Footprint + Dependency graph footer panel */}
+      <footer className="border-t border-theme bg-theme-surface px-6 py-4 space-y-4 overflow-y-auto">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <ConflictPanel conflicts={conflicts} />
+          <FootprintPanel footprint={footprint} />
+        </div>
+        {hasDependencyGraph && (
+          <DependencyGraphPanel graph={dependencyGraph} previewing={previewing} />
+        )}
       </footer>
     </div>
   );
