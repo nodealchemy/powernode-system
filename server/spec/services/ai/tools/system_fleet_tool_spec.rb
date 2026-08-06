@@ -1445,6 +1445,45 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # IMP-244e1127d759 — system_module_diff had zero coverage. The diff MATH is
+  # covered by module_diff_service_spec; what lives ONLY in this handler is
+  # the account-scoping join on both version lookups (the code that stops a
+  # caller diffing another tenant's versions) and the response envelope,
+  # including mount_changes, which nothing asserted anywhere.
+  describe "system_module_diff" do
+    let(:diff_mod) do
+      create(:system_node_module, account: account, node_platform: platform_record,
+             category: category, name: "diffable")
+    end
+    let(:ver_a) do
+      System::NodeModuleVersion.create!(node_module: diff_mod, version_number: 1,
+                                        mask: [], file_spec: [], package_spec: [], config: {})
+    end
+    let(:ver_b) do
+      System::NodeModuleVersion.create!(node_module: diff_mod, version_number: 2,
+                                        mask: [], file_spec: [], package_spec: [], config: {})
+    end
+
+    it "returns the full six-field envelope, mount_changes included" do
+      r = call("system_module_diff", version_a_id: ver_a.id, version_b_id: ver_b.id)
+      expect(r[:success]).to be true
+      expect(r[:data].keys).to include(:unchanged, :fingerprint_a, :fingerprint_b,
+                                       :file_changes, :package_changes, :mount_changes)
+    end
+
+    it "cannot diff another account's module versions" do
+      other_account = create(:account)
+      other_mod = create(:system_node_module, account: other_account)
+      other_ver = System::NodeModuleVersion.create!(node_module: other_mod, version_number: 1,
+                                                    mask: [], file_spec: [], package_spec: [], config: {})
+      r = call("system_module_diff", version_a_id: ver_a.id, version_b_id: other_ver.id)
+      expect(r[:success]).to be false
+      # The scoped .find misses and the call-level RecordNotFound rescue turns
+      # it into a clean envelope — the isolation, not a raw crash.
+      expect(r[:error]).to match(/couldn't find|not found/i)
+    end
+  end
+
   # IMP-0cea3952202c — AI-first parity: an agent could DELETE a module it had
   # no way to author or repair, system.modules.create was registered but
   # referenced by no MCP action, and mark_canary had no inverse.
