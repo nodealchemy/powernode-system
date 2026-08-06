@@ -798,6 +798,43 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(System::NodeTemplate.exists?(other_account_template.id)).to be true
     end
 
+    # IMP-259f180d9af6 — clone is the primitive that completes the reuse-first
+    # loop: system_discover_templates finds a near-match and, without this, the
+    # agent had to rebuild it create_template + N assigns.
+    it "system_clone_template copies the source and its module joins" do
+      mod = create(:system_node_module, account: account, node_platform: platform_record,
+                   category: category, name: "cloneable-mod")
+      System::TemplateModule.create!(node_template: template, node_module: mod, enabled: true)
+
+      r = call("system_clone_template", template_id: template.id, name: "cloned-template")
+      expect(r[:success]).to be true
+      clone = System::NodeTemplate.find(r.dig(:data, :template, :id))
+      expect(clone.name).to eq("cloned-template")
+      expect(clone.id).not_to eq(template.id)
+      expect(clone.node_modules).to include(mod)
+      expect(clone.account_id).to eq(account.id)
+    end
+
+    it "system_clone_template defaults the name when none is given" do
+      r = call("system_clone_template", template_id: template.id)
+      expect(r[:success]).to be true
+      expect(r.dig(:data, :template, :name)).to eq("#{template.name}-copy")
+    end
+
+    it "system_clone_template surfaces the composition report rather than hiding it" do
+      # The report rides the payload only when non-empty; a clean clone must
+      # not invent the key.
+      r = call("system_clone_template", template_id: template.id, name: "clean-clone")
+      expect(r[:success]).to be true
+      expect(r[:data]).not_to have_key(:composition_report)
+    end
+
+    it "system_clone_template does not reach another account's template" do
+      r = call("system_clone_template", template_id: other_account_template.id, name: "nope")
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/couldn't find|not found/i)
+    end
+
     it "system_list_templates is account-scoped" do
       template_id = template.id # force lazy let creation before the call
       r = call("system_list_templates")

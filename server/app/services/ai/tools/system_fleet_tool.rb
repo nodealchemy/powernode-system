@@ -90,6 +90,9 @@ module Ai
         "system_update_node"            => "system.nodes.update",
         "system_delete_node"            => "system.nodes.delete",
         "system_create_template"        => "system.templates.create",
+        # Clone CREATES a template, so it takes the create grant like REST's
+        # clone action — not templates.read, despite reading a source.
+        "system_clone_template"         => "system.templates.create",
         "system_delete_template"        => "system.templates.delete",
         "system_update_template"        => "system.templates.update",
         "system_update_instance"        => "system.instances.update",
@@ -360,6 +363,13 @@ module Ai
           "system_delete_template" => {
             description: "Delete a NodeTemplate. Restricted: errors if any Node uses this template (System::NodeTemplate has dependent::restrict_with_error on nodes).",
             parameters: { template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to delete (account-scoped)" } }
+          },
+          "system_clone_template" => {
+            description: "Clone a NodeTemplate, copying its module assignments wholesale. The reuse-first move after system_discover_templates finds a near-match: clone, then adjust with system_assign_module_to_template / system_update_template_module rather than rebuilding from scratch. A clone copies conflicts too, so any composition problem is returned under `composition_report` (each entry states its own severity) — the clone still succeeds, and that report is the baseline later assignments must accept.",
+            parameters: {
+              template_id: { type: "string", required: true, description: "UUID of the source NodeTemplate to clone (account-scoped)" },
+              name: { type: "string", required: false, description: "Name for the new template (defaults to '<source name>-copy')" }
+            }
           },
           "system_create_template" => {
             description: "Create a new NodeTemplate for the current account. Binds to a NodePlatform via node_platform_id, which the model requires — omitting it fails the create. Lets the model validate the rest (name presence + per-account uniqueness).",
@@ -1487,6 +1497,7 @@ module Ai
         when "system_update_node"              then update_node(params)
         when "system_delete_node"              then delete_node(params)
         when "system_create_template"          then create_template(params)
+        when "system_clone_template"           then clone_template(params)
         when "system_delete_template"          then delete_template(params)
         when "system_update_template"          then update_template(params)
         when "system_create_module"            then create_module(params)
@@ -1761,6 +1772,27 @@ module Ai
         success_result(deleted: true, node_id: params[:node_id], name: name, instances_cascaded: instance_count)
       rescue ActiveRecord::InvalidForeignKey => e
         error_result("FK blocks destroy — destroy underlying NodeInstances first via system_destroy_instance: #{e.message}")
+      end
+
+      # IMP-259f180d9af6 — the primitive that completes the reuse-first loop:
+      # system_discover_templates finds a near-match and, without clone, the
+      # agent had to rebuild it with create_template + N assignments.
+      # composition_report rides the payload ONLY when non-empty, matching
+      # node_templates_controller#clone: a clone copies joins wholesale, so a
+      # conflict travels with it and becomes the baseline later assignments
+      # must accept — the service reports rather than refusing, and that
+      # report must not stop here (IMP-493db0e5c398 names why it is not
+      # called "warnings").
+      def clone_template(params)
+        source = account_templates.find(params[:template_id])
+        service = ::System::TemplateCloneService.new(source)
+        clone = service.clone!(new_name: params[:name].presence)
+
+        payload = { template: serialize_template(clone) }
+        payload[:composition_report] = service.composition_report if service.composition_report.present?
+        success_result(payload)
+      rescue ::System::TemplateCloneService::CloneError => e
+        error_result("Template clone failed: #{e.message}")
       end
 
       def delete_template(params)
