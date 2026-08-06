@@ -127,7 +127,13 @@ module Api
               signed_upload_url: upload[:upload_url],
               upload_expires_at: upload[:upload_expires_at]
             })
-          rescue ::FileStorageService::NotSupportedError => e
+          rescue ::FileStorageService::NotSupportedError,
+                 ::FileStorageService::StorageNotFoundError => e
+            # StorageNotFoundError raises from FileStorageService#initialize
+            # when the account has no storage configuration — same operator
+            # remedy as NotSupportedError, so same 422 (a 500 here would make
+            # Sidekiq retry a call that can never succeed until an operator
+            # configures storage).
             render_error(e.message, 422)
           end
 
@@ -193,6 +199,21 @@ module Api
           end
 
           private
+
+          # Storage object name for a direct-upload artifact. Delegates to the
+          # model's single authority so both publication modes (OCI pull via
+          # DiskImagePublicationProcessor, direct upload here) store the same
+          # build under the same key. The arch default mirrors the
+          # assign_attributes default below. (IMP-c3007fd19bf3: this method
+          # was called since 0fb034c6 but never defined — every #initiate
+          # 500'd with NameError.)
+          def direct_upload_filename(platform, git_sha, arch)
+            ::System::DiskImagePublication.storage_filename_for(
+              platform_name: platform.name,
+              git_sha:       git_sha,
+              arch:          arch.presence || "arm64"
+            )
+          end
 
           # IMP-c3f186e56d5b (source fix). find_or_initialize_by(node_platform,
           # git_sha) in #initiate reuses an EXISTING row whenever the same

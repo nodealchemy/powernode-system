@@ -30,6 +30,16 @@ module System
   #
   # Plan: docs/plans/wondrous-yawning-anchor.md (Phase 2 — Chunk 1).
   class DiskImagePublication < BaseRecord
+    # One authoritative artifact object name for BOTH publication modes.
+    # The OCI-pull processor and the direct-upload initiate endpoint must
+    # store under the same name, or the same (platform, git_sha, arch) build
+    # lands at two different storage keys depending on how it arrived.
+    # (IMP-c3007fd19bf3 — the direct-upload side previously called a helper
+    # that was never defined anywhere.)
+    def self.storage_filename_for(platform_name:, git_sha:, arch:)
+      "#{platform_name}-#{git_sha.to_s[0..15]}-#{arch}.img"
+    end
+
     include AASM
 
     self.table_name = "system_disk_image_publications"

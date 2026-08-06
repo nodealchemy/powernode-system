@@ -150,7 +150,11 @@ module System
     end
 
     def storage_filename(publication)
-      "#{publication.node_platform.name}-#{publication.git_sha[0..15]}-#{publication.arch}.img"
+      ::System::DiskImagePublication.storage_filename_for(
+        platform_name: publication.node_platform.name,
+        git_sha:       publication.git_sha,
+        arch:          publication.arch
+      )
     end
 
     # Atomic: publication state + platform pointer flip in one transaction.

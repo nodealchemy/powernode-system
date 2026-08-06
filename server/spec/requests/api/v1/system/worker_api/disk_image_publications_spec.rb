@@ -112,21 +112,13 @@ RSpec.describe "Worker API: disk_image_publications", type: :request do
     before do
       allow(::FileStorageService).to receive(:new).and_return(storage)
       allow(storage).to receive(:storage_supports_direct_upload?).and_return(true)
-      # PRE-EXISTING, UNRELATED bug found while writing this spec:
-      # `direct_upload_filename` (called at disk_image_publications_
-      # controller.rb ~102) is not defined anywhere in the codebase —
-      # `grep -rn "def direct_upload_filename"` across both server/ and
-      # extensions/ returns zero hits. POST /initiate 500s on every
-      # invocation today (confirmed: this describe block's tests all 500'd
-      # before this stub was added, with no relation to the fix under
-      # test). Out of scope for IMP-c3f186e56d5b — reported separately,
-      # not fixed here. Defined (not `allow(...).to receive`, since
-      # verify_partial_doubles refuses to stub a genuinely-undefined
-      # method) so these tests exercise the provenance-reset logic in
-      # isolation from that orthogonal, already-broken path.
-      ::Api::V1::System::WorkerApi::DiskImagePublicationsController.class_eval do
-        define_method(:direct_upload_filename) { |*_args| "stub-filename.img" }
-      end
+      # direct_upload_filename was undefined when this block was written
+      # (every #initiate 500'd; a class_eval stub stood in here). It is now
+      # implemented for real (IMP-c3007fd19bf3 — delegates to
+      # DiskImagePublication.storage_filename_for), so these examples run
+      # through the genuine helper. The old class_eval stub also leaked
+      # process-wide and would have overridden the real method for every
+      # later-running example in the file.
     end
 
     def stub_signed_upload_url!(file_object_id:)
@@ -281,6 +273,81 @@ RSpec.describe "Worker API: disk_image_publications", type: :request do
       expect(stuck.reload.status).to eq("retired")
       data = JSON.parse(response.body)["data"]
       expect(data["stuck_retired"]).to eq(1)
+    end
+  end
+
+  # IMP-c3007fd19bf3 — #initiate had ZERO coverage, which is how
+  # direct_upload_filename shipped as a call to a method that was never
+  # defined anywhere: every POST 500'd with NameError before validation.
+  describe "POST /initiate" do
+    let(:git_sha) { "cafebabe12345678deadbeef00112233" }
+    let(:initiate_params) do
+      {
+        platform_name: platform.name,
+        sha256: "a" * 64,
+        size_bytes: 4096,
+        git_sha: git_sha,
+        arch: "arm64"
+      }
+    end
+
+    let(:storage) { instance_double(::FileStorageService, storage_supports_direct_upload?: true) }
+
+    before do
+      # FileStorageService#initialize raises StorageNotFoundError for an
+      # account with no storage configuration, so the constructor itself must
+      # be stubbed — any_instance stubs never get the chance.
+      allow(::FileStorageService).to receive(:new).and_return(storage)
+    end
+
+    it "creates an awaiting_upload publication and returns the signed URL, naming the artifact identically to the OCI path" do
+      # A real row: publications carry an FK to file_objects, so a made-up
+      # UUID fails the save with a foreign-key violation (rendered as 422).
+      file_object_id = create(:file_object, account: account).id
+      expect(storage).to receive(:signed_upload_url) do |**kw|
+        # Both publication modes MUST store under the same canonical object
+        # name — the model class method is the single authority.
+        expect(kw[:filename]).to eq(
+          ::System::DiskImagePublication.storage_filename_for(
+            platform_name: platform.name, git_sha: git_sha, arch: "arm64"
+          )
+        )
+        expect(kw[:expected_sha256]).to eq("a" * 64)
+        { file_object_id: file_object_id,
+          upload_url: "https://storage.example/presigned",
+          upload_expires_at: 1.hour.from_now }
+      end
+
+      post "/api/v1/system/worker_api/disk_image_publications/initiate",
+           params: initiate_params.to_json, headers: headers
+
+      expect(response).to have_http_status(:ok)
+      data = JSON.parse(response.body)["data"]
+      expect(data["signed_upload_url"]).to eq("https://storage.example/presigned")
+      pub = ::System::DiskImagePublication.find(data["publication_id"])
+      expect(pub.status).to eq("awaiting_upload")
+      expect(pub.file_object_id).to eq(file_object_id)
+      expect(pub.triggered_by_worker_id).to eq(worker.id)
+    end
+
+    it "422 (not 500) when the account has no storage configuration at all" do
+      allow(::FileStorageService).to receive(:new)
+        .and_raise(::FileStorageService::StorageNotFoundError, "No storage configuration found")
+
+      post "/api/v1/system/worker_api/disk_image_publications/initiate",
+           params: initiate_params.to_json, headers: headers
+
+      expect(response).to have_http_status(:unprocessable_entity)
+    end
+
+    it "422 when the platform has no cosign trust policy (direct upload requires publisher pinning)" do
+      platform.update!(cosign_identity_regexp: nil, cosign_issuer_regexp: nil)
+
+      post "/api/v1/system/worker_api/disk_image_publications/initiate",
+           params: initiate_params.to_json, headers: headers
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response.body).to include("cosign trust policy")
     end
   end
 end
