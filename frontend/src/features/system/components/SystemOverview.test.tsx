@@ -1,14 +1,18 @@
 import React, { createRef } from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { SystemOverview, SystemOverviewHandle } from './SystemOverview';
 
 // =============================================================================
 // Mocks
 //
-// The component calls systemApi.getOverviewStats() and systemApi.getRecentActivity(5)
-// — both of which fan out to apiClient.get internally. We mock systemApi
-// directly (the facade) so we can control each method's resolved value.
+// The Fleet-Command overview reads four lanes:
+//   systemApi.getOverviewStats()      — the only lane allowed to fail the page
+//   systemApi.getRecentActivity(5)    — soft
+//   cveApi.list({ state: 'open' })    — soft (needs system.cve.read)
+//   GET /system/instance_pools        — soft (pool readiness)
+// plus the embedded <FleetTopology>, which reports a snapshot the strip
+// derives boot-image drift from.
 // =============================================================================
 
 const mockGetOverviewStats = jest.fn();
@@ -21,7 +25,49 @@ jest.mock('@system/features/system/services/systemApi', () => ({
   },
 }));
 
-// useNavigate — we capture the mock so we can assert navigation calls.
+const mockCveList = jest.fn();
+
+jest.mock('@system/features/system/services/api/cveApi', () => ({
+  cveApi: {
+    list: (...args: unknown[]) => mockCveList(...args),
+  },
+}));
+
+const mockApiGet = jest.fn();
+
+jest.mock('@/shared/services/apiClient', () => ({
+  apiClient: {
+    get: (...args: unknown[]) => mockApiGet(...args),
+  },
+}));
+
+// FleetTopology is exercised by its own suite (and pulls @xyflow/react +
+// its stylesheet). Here we only care that the overview embeds it and folds
+// the snapshot it reports into the drift signal.
+let mockSnapshot: unknown = null;
+
+jest.mock('./topology/FleetTopology', () => {
+  const ReactLib = jest.requireActual<typeof import('react')>('react');
+  return {
+    FleetTopology: ({
+      refreshKey,
+      onSnapshot,
+    }: {
+      refreshKey?: number;
+      onSnapshot?: (snapshot: unknown) => void;
+    }) => {
+      ReactLib.useEffect(() => {
+        if (mockSnapshot) onSnapshot?.(mockSnapshot);
+      }, [onSnapshot, refreshKey]);
+      return ReactLib.createElement('div', {
+        'data-testid': 'fleet-topology',
+        'data-refresh-key': String(refreshKey),
+      });
+    },
+  };
+});
+
+// useNavigate — captured so we can assert the canonical hub paths.
 const mockNavigate = jest.fn();
 jest.mock('react-router-dom', () => ({
   ...jest.requireActual('react-router-dom'),
@@ -46,7 +92,7 @@ const baseStats = {
   },
   operations: { total: 10, pending: 2, running: 1, completed: 6, failed: 1 },
   puppet: { modules: 4, resources: 12, assignments: 3 },
-  volumes: { total: 0, total_size_gb: 0 },
+  volumes: { total: 2, total_size_gb: 120 },
   networks: { total: 0 },
 };
 
@@ -110,18 +156,51 @@ const recentActivities = [
     initiated_by: 'ops-bot',
     timestamp: '2026-05-01T10:00:00Z',
   },
-  {
-    id: 'task-4',
-    type: 'operation' as const,
-    action: 'schedule_upgrade',
-    description: 'Upgrade pending',
-    status: 'pending',
-    entity_name: 'Module',
-    entity_id: 'mod-2',
-    initiated_by: undefined,
-    timestamp: '2026-05-01T09:00:00Z',
-  },
 ];
+
+/** Two drifted instances across two nodes; one clean instance. */
+const snapshotWithDrift = {
+  groups: [],
+  networks: [],
+  memberships: [],
+  truncatedNodeCount: 0,
+  totalNodeCount: 2,
+  nodes: [
+    {
+      node: { id: 'n1' },
+      groupId: 'g1',
+      modules: [],
+      hiddenInstanceCount: 0,
+      instancesLoaded: true,
+      instances: [
+        { id: 'i1', boot_image_drifted: true },
+        { id: 'i2', boot_image_drifted: false },
+      ],
+    },
+    {
+      node: { id: 'n2' },
+      groupId: 'g1',
+      modules: [],
+      hiddenInstanceCount: 0,
+      instancesLoaded: true,
+      instances: [{ id: 'i3', boot_image_drifted: true }],
+    },
+  ],
+};
+
+const snapshotClean = {
+  ...snapshotWithDrift,
+  nodes: [
+    {
+      ...snapshotWithDrift.nodes[0],
+      instances: [{ id: 'i1', boot_image_drifted: false }],
+    },
+  ],
+};
+
+const poolsEnvelope = (pools: Array<{ ready_count: number; target_size: number }>) => ({
+  data: { success: true, data: { pools } },
+});
 
 // =============================================================================
 // Helpers
@@ -136,12 +215,36 @@ const renderComponent = (props: { className?: string } = {}) =>
 
 const renderWithRef = () => {
   const ref = createRef<SystemOverviewHandle>();
-  const { rerender } = render(
+  render(
     <BrowserRouter>
       <SystemOverview ref={ref} />
     </BrowserRouter>,
   );
-  return { ref, rerender };
+  return { ref };
+};
+
+/** Status-strip cells, in render order: instances, drift, CVE, pools. */
+const signals = () => screen.getAllByTestId('fleet-signal');
+
+/** Inventory tiles, in render order. */
+const INVENTORY = {
+  nodes: 0,
+  modules: 1,
+  templates: 2,
+  providers: 3,
+  platforms: 4,
+  puppet: 5,
+  operations: 6,
+  volumes: 7,
+} as const;
+
+const tile = (index: number) => screen.getAllByTestId('stat-tile')[index];
+
+const happyPath = () => {
+  mockGetOverviewStats.mockResolvedValue(baseStats);
+  mockGetRecentActivity.mockResolvedValue([]);
+  mockCveList.mockResolvedValue({ cve_exposures: [], meta: { total_count: 3 } });
+  mockApiGet.mockResolvedValue(poolsEnvelope([{ ready_count: 4, target_size: 6 }]));
 };
 
 // =============================================================================
@@ -152,35 +255,36 @@ describe('SystemOverview', () => {
   beforeEach(() => {
     mockGetOverviewStats.mockReset();
     mockGetRecentActivity.mockReset();
+    mockCveList.mockReset();
+    mockApiGet.mockReset();
     mockNavigate.mockReset();
+    mockSnapshot = null;
   });
 
   // ---------------------------------------------------------------------------
-  // Loading state
+  // Loading + error
   // ---------------------------------------------------------------------------
 
   describe('loading state', () => {
-    it('renders 8 skeleton cards while data is loading', () => {
-      // Never resolve — keep perpetual loading state
+    it('renders skeletons while the primary stats lane is in flight', () => {
       mockGetOverviewStats.mockReturnValue(new Promise(() => {}));
       mockGetRecentActivity.mockReturnValue(new Promise(() => {}));
+      mockCveList.mockReturnValue(new Promise(() => {}));
+      mockApiGet.mockReturnValue(new Promise(() => {}));
 
       renderComponent();
 
-      // The loading skeleton renders 8 cards with animate-pulse
-      const pulseElements = document.querySelectorAll('.animate-pulse');
-      expect(pulseElements.length).toBe(8);
+      expect(document.querySelectorAll('.animate-pulse').length).toBeGreaterThan(0);
+      expect(screen.queryByTestId('fleet-topology')).not.toBeInTheDocument();
     });
   });
 
-  // ---------------------------------------------------------------------------
-  // Error state
-  // ---------------------------------------------------------------------------
-
   describe('error state', () => {
-    it('shows error message when API call fails', async () => {
+    it('shows the error message when the stats aggregate fails', async () => {
       mockGetOverviewStats.mockRejectedValue(new Error('Network timeout'));
       mockGetRecentActivity.mockResolvedValue([]);
+      mockCveList.mockResolvedValue({ cve_exposures: [], meta: { total_count: 0 } });
+      mockApiGet.mockResolvedValue(poolsEnvelope([]));
 
       renderComponent();
 
@@ -190,207 +294,313 @@ describe('SystemOverview', () => {
       expect(screen.getByText('Network timeout')).toBeInTheDocument();
     });
 
-    it('shows a generic error message for non-Error rejections', async () => {
+    it('shows a generic message for non-Error rejections', async () => {
       mockGetOverviewStats.mockRejectedValue('string error');
       mockGetRecentActivity.mockResolvedValue([]);
+      mockCveList.mockResolvedValue({ cve_exposures: [], meta: { total_count: 0 } });
+      mockApiGet.mockResolvedValue(poolsEnvelope([]));
 
       renderComponent();
 
       await waitFor(() =>
-        expect(screen.getByText('Failed to Load System Data')).toBeInTheDocument(),
+        expect(screen.getByText('Failed to load system data')).toBeInTheDocument(),
       );
-      expect(screen.getByText('Failed to load system data')).toBeInTheDocument();
     });
 
-    it('shows a Retry button that triggers a reload', async () => {
+    it('retries the load when Retry is clicked', async () => {
       mockGetOverviewStats
         .mockRejectedValueOnce(new Error('Temporary failure'))
         .mockResolvedValueOnce(baseStats);
       mockGetRecentActivity.mockResolvedValue([]);
+      mockCveList.mockResolvedValue({ cve_exposures: [], meta: { total_count: 0 } });
+      mockApiGet.mockResolvedValue(poolsEnvelope([]));
 
       renderComponent();
 
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument(),
       );
-
-      // Click retry — second call succeeds
       fireEvent.click(screen.getByRole('button', { name: /retry/i }));
 
-      await waitFor(() =>
-        expect(screen.getByText('System Overview')).toBeInTheDocument(),
-      );
+      await waitFor(() => expect(screen.getByTestId('fleet-topology')).toBeInTheDocument());
       expect(mockGetOverviewStats).toHaveBeenCalledTimes(2);
     });
   });
 
   // ---------------------------------------------------------------------------
-  // Successful render — primary metric cards
+  // Status strip
   // ---------------------------------------------------------------------------
 
-  describe('primary metric cards', () => {
-    beforeEach(() => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([]);
+  describe('status strip', () => {
+    it('renders four signals: instances, drift, CVE, pool readiness', async () => {
+      happyPath();
+      renderComponent();
+
+      await waitFor(() => expect(signals()).toHaveLength(4));
+      expect(within(signals()[0]).getByText('Instances')).toBeInTheDocument();
+      expect(within(signals()[1]).getByText('Boot image drift')).toBeInTheDocument();
+      expect(within(signals()[2]).getByText('Open CVE exposures')).toBeInTheDocument();
+      expect(within(signals()[3]).getByText('Pool readiness')).toBeInTheDocument();
     });
 
-    it('renders the "System Overview" section heading', async () => {
+    it('shows running instances over the fleet total', async () => {
+      happyPath();
       renderComponent();
+
+      await waitFor(() => expect(signals()).toHaveLength(4));
+      expect(within(signals()[0]).getByText('7')).toBeInTheDocument();
+      expect(within(signals()[0]).getByText('/ 10')).toBeInTheDocument();
+      expect(within(signals()[0]).getByText(/3 not running/)).toBeInTheDocument();
+    });
+
+    it('derives the drift count from the fleet topology snapshot', async () => {
+      happyPath();
+      mockSnapshot = snapshotWithDrift;
+      renderComponent();
+
+      await waitFor(() => expect(within(signals()[1]).getByText('2')).toBeInTheDocument());
+    });
+
+    it('reports zero drift when every graphed instance is on its published image', async () => {
+      happyPath();
+      mockSnapshot = snapshotClean;
+      renderComponent();
+
       await waitFor(() =>
-        expect(screen.getByText('System Overview')).toBeInTheDocument(),
+        expect(
+          within(signals()[1]).getByText(/Every graphed instance on its published image/),
+        ).toBeInTheDocument(),
       );
     });
 
-    it('renders Nodes metric card with correct value and description', async () => {
+    it('renders an em-dash for drift until the graph reports', async () => {
+      happyPath(); // mockSnapshot stays null — the graph never reports
       renderComponent();
-      await waitFor(() => expect(screen.getByText('Nodes')).toBeInTheDocument());
 
-      // value = 4, description = "3 enabled, 1 disabled"
-      const nodesSection = screen.getByText('Nodes').closest('div');
-      expect(nodesSection).toBeTruthy();
-      expect(screen.getByText('3 enabled, 1 disabled')).toBeInTheDocument();
+      await waitFor(() => expect(signals()).toHaveLength(4));
+      expect(within(signals()[1]).getByText('—')).toBeInTheDocument();
+      expect(within(signals()[1]).getByText('Waiting on the fleet graph')).toBeInTheDocument();
     });
 
-    it('renders Templates metric card with public/private breakdown', async () => {
+    it('shows the open CVE exposure count from the paginated meta', async () => {
+      happyPath();
       renderComponent();
-      // "Templates" appears in both MetricCard and the Quick Actions button —
-      // we only need to confirm the description rendered
-      await waitFor(() =>
-        expect(screen.getByText('1 public, 1 private')).toBeInTheDocument(),
-      );
-      // The heading appears at least once (MetricCard h3)
-      expect(screen.getAllByText('Templates').length).toBeGreaterThan(0);
+
+      await waitFor(() => expect(within(signals()[2]).getByText('3')).toBeInTheDocument());
+      expect(mockCveList).toHaveBeenCalledWith({ state: 'open', per_page: 1 });
     });
 
-    it('renders Providers metric card with enabled count', async () => {
+    it('shows aggregate pool readiness with the warm percentage', async () => {
+      happyPath();
       renderComponent();
-      // Providers description — "2 enabled" appears in the metric card description
-      await waitFor(() =>
-        expect(screen.getAllByText('2 enabled').length).toBeGreaterThan(0),
-      );
-      // Heading appears at least once
-      expect(screen.getAllByText('Providers').length).toBeGreaterThan(0);
+
+      await waitFor(() => expect(within(signals()[3]).getByText('4')).toBeInTheDocument());
+      expect(within(signals()[3]).getByText('/ 6')).toBeInTheDocument();
+      expect(within(signals()[3]).getByText(/1 active pool · 67% warm/)).toBeInTheDocument();
     });
 
-    it('renders Modules metric card with enabled count', async () => {
-      renderComponent();
-      await waitFor(() =>
-        expect(screen.getAllByText('Modules').length).toBeGreaterThan(0),
+    it('sums readiness across every active pool', async () => {
+      happyPath();
+      mockApiGet.mockResolvedValue(
+        poolsEnvelope([
+          { ready_count: 2, target_size: 4 },
+          { ready_count: 3, target_size: 4 },
+        ]),
       );
-      // "5 enabled" is the modules enabled count
-      expect(screen.getByText('5 enabled')).toBeInTheDocument();
+      renderComponent();
+
+      await waitFor(() => expect(within(signals()[3]).getByText('5')).toBeInTheDocument());
+      expect(within(signals()[3]).getByText('/ 8')).toBeInTheDocument();
+      expect(within(signals()[3]).getByText(/2 active pools/)).toBeInTheDocument();
+    });
+
+    it('navigates to the canonical hub path for each signal', async () => {
+      happyPath();
+      renderComponent();
+
+      await waitFor(() => expect(signals()).toHaveLength(4));
+
+      fireEvent.click(signals()[0]);
+      expect(mockNavigate).toHaveBeenCalledWith('/app/system/compute/nodes');
+      fireEvent.click(signals()[1]);
+      expect(mockNavigate).toHaveBeenCalledWith('/app/system/operations/fleet');
+      fireEvent.click(signals()[2]);
+      expect(mockNavigate).toHaveBeenCalledWith('/app/system/operations/cve');
+      fireEvent.click(signals()[3]);
+      expect(mockNavigate).toHaveBeenCalledWith('/app/system/instance-pools');
     });
   });
 
   // ---------------------------------------------------------------------------
-  // Secondary metric cards
+  // Fail-soft lanes
   // ---------------------------------------------------------------------------
 
-  describe('secondary metric cards', () => {
-    beforeEach(() => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([]);
+  describe('fail-soft lanes', () => {
+    it('keeps the page when the CVE lane 403s, showing an em-dash', async () => {
+      happyPath();
+      mockCveList.mockRejectedValue(new Error('Forbidden'));
+
+      renderComponent();
+
+      await waitFor(() => expect(signals()).toHaveLength(4));
+      expect(within(signals()[2]).getByText('—')).toBeInTheDocument();
+      expect(within(signals()[2]).getByText(/needs system\.cve\.read/)).toBeInTheDocument();
+      // Fleet picture survives
+      expect(screen.getByTestId('fleet-topology')).toBeInTheDocument();
     });
 
-    it('renders Platforms metric card', async () => {
+    it('keeps the page when the pool lane fails, showing an em-dash', async () => {
+      happyPath();
+      mockApiGet.mockRejectedValue(new Error('boom'));
+
       renderComponent();
-      await waitFor(() =>
-        expect(screen.getByText('Platforms')).toBeInTheDocument(),
-      );
+
+      await waitFor(() => expect(signals()).toHaveLength(4));
+      expect(within(signals()[3]).getByText('—')).toBeInTheDocument();
+      expect(within(signals()[3]).getByText(/pools could not be read/)).toBeInTheDocument();
     });
 
-    it('renders Puppet Modules metric card with resources description', async () => {
+    it('keeps the page when the recent-activity lane fails', async () => {
+      happyPath();
+      mockGetRecentActivity.mockRejectedValue(new Error('boom'));
+
       renderComponent();
-      await waitFor(() =>
-        expect(screen.getByText('Puppet Modules')).toBeInTheDocument(),
-      );
-      expect(screen.getByText('12 resources')).toBeInTheDocument();
+
+      await waitFor(() => expect(screen.getByText('No recent activity')).toBeInTheDocument());
+      expect(screen.getByTestId('fleet-topology')).toBeInTheDocument();
     });
 
-    it('renders Operations metric card with running count', async () => {
+    it('reports "No active pools" rather than a zero-warm warning when none exist', async () => {
+      happyPath();
+      mockApiGet.mockResolvedValue(poolsEnvelope([]));
+
       renderComponent();
-      await waitFor(() =>
-        expect(screen.getAllByText('Operations').length).toBeGreaterThan(0),
-      );
-      // "1 running" appears in the MetricCard description
-      expect(screen.getByText('1 running')).toBeInTheDocument();
+
+      await waitFor(() => expect(within(signals()[3]).getByText('No active pools')).toBeInTheDocument());
     });
   });
 
   // ---------------------------------------------------------------------------
-  // Operations Status card
+  // Embedded fleet topology
   // ---------------------------------------------------------------------------
 
-  describe('Operations Status card', () => {
-    beforeEach(() => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([]);
+  describe('fleet topology centrepiece', () => {
+    it('embeds FleetTopology under a "Fleet" heading', async () => {
+      happyPath();
+      renderComponent();
+
+      await waitFor(() => expect(screen.getByTestId('fleet-topology')).toBeInTheDocument());
+      expect(screen.getByText('Fleet')).toBeInTheDocument();
     });
 
-    it('shows pending, running, completed, and failed counts', async () => {
+    it('links out to the standalone topology page', async () => {
+      happyPath();
       renderComponent();
-      await waitFor(() =>
-        expect(screen.getByText('Operations Status')).toBeInTheDocument(),
-      );
 
-      expect(screen.getByText('Pending')).toBeInTheDocument();
-      expect(screen.getByText('Running')).toBeInTheDocument();
-      expect(screen.getByText('Completed')).toBeInTheDocument();
-      expect(screen.getByText('Failed')).toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /full view/i })).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /full view/i }));
+      expect(mockNavigate).toHaveBeenCalledWith('/app/system/topology');
     });
 
-    it('navigates to tasks page when "View All" is clicked', async () => {
-      renderComponent();
-      await waitFor(() =>
-        expect(screen.getByText('Operations Status')).toBeInTheDocument(),
-      );
+    it('bumps the topology refreshKey on an imperative refresh', async () => {
+      happyPath();
+      const { ref } = renderWithRef();
 
-      // Operations Status card's View All button
-      const viewAllButtons = screen.getAllByRole('button', { name: /view all/i });
-      fireEvent.click(viewAllButtons[0]);
-      expect(mockNavigate).toHaveBeenCalledWith('/app/system/tasks');
+      await waitFor(() => expect(screen.getByTestId('fleet-topology')).toBeInTheDocument());
+      const initial = screen.getByTestId('fleet-topology').getAttribute('data-refresh-key');
+
+      await ref.current?.refresh();
+
+      await waitFor(() =>
+        expect(screen.getByTestId('fleet-topology').getAttribute('data-refresh-key')).not.toBe(
+          initial,
+        ),
+      );
     });
   });
 
   // ---------------------------------------------------------------------------
-  // Module Distribution card
+  // Inventory tiles (shared chart kit)
   // ---------------------------------------------------------------------------
 
-  describe('Module Distribution card', () => {
-    beforeEach(() => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([]);
+  describe('inventory tiles', () => {
+    beforeEach(happyPath);
+
+    it('renders eight StatTiles from the shared chart kit', async () => {
+      renderComponent();
+      await waitFor(() => expect(screen.getAllByTestId('stat-tile')).toHaveLength(8));
     });
 
-    it('shows Config, Instance, Subscription module counts', async () => {
+    it('renders the Nodes tile with an enabled/total meter', async () => {
       renderComponent();
-      await waitFor(() =>
-        expect(screen.getByText('Module Distribution')).toBeInTheDocument(),
-      );
+      await waitFor(() => expect(screen.getAllByTestId('stat-tile').length).toBeGreaterThan(0));
 
-      expect(screen.getByText('Config Modules')).toBeInTheDocument();
-      expect(screen.getByText('Instance Modules')).toBeInTheDocument();
-      expect(screen.getByText('Subscription Modules')).toBeInTheDocument();
+      const nodes = tile(INVENTORY.nodes);
+      expect(within(nodes).getByText('Nodes')).toBeInTheDocument();
+      expect(within(nodes).getByTestId('stat-tile-value')).toHaveTextContent('4');
+      expect(within(nodes).getByText('3 enabled · 1 disabled')).toBeInTheDocument();
+      expect(within(nodes).getByTestId('meter-bar')).toBeInTheDocument();
     });
 
-    it('shows Puppet Assignments row', async () => {
+    it('renders the Modules tile with its variety breakdown', async () => {
       renderComponent();
-      await waitFor(() =>
-        expect(screen.getByText('Puppet Assignments')).toBeInTheDocument(),
-      );
+      await waitFor(() => expect(screen.getAllByTestId('stat-tile').length).toBeGreaterThan(0));
+
+      const modules = tile(INVENTORY.modules);
+      expect(within(modules).getByText('Modules')).toBeInTheDocument();
+      expect(
+        within(modules).getByText('3 config · 2 instance · 1 subscription'),
+      ).toBeInTheDocument();
     });
 
-    it('navigates to modules page when "Manage" is clicked', async () => {
+    it('folds provider types into the Providers tile', async () => {
       renderComponent();
-      await waitFor(() =>
-        expect(screen.getByText('Module Distribution')).toBeInTheDocument(),
-      );
+      await waitFor(() => expect(screen.getAllByTestId('stat-tile').length).toBeGreaterThan(0));
 
-      // Find the "Manage" button within the Module Distribution card
-      const manageButtons = screen.getAllByRole('button', { name: /manage/i });
-      // The Manage button should navigate to /app/system/modules
-      fireEvent.click(manageButtons[0]);
-      expect(mockNavigate).toHaveBeenCalledWith('/app/system/modules');
+      expect(
+        within(tile(INVENTORY.providers)).getByText('5 regions · proxmox, aws'),
+      ).toBeInTheDocument();
+    });
+
+    it('falls back to enabled/regions when no provider types are configured', async () => {
+      mockGetOverviewStats.mockResolvedValue({
+        ...baseStats,
+        providers: { ...baseStats.providers, types: [] },
+      });
+      renderComponent();
+      await waitFor(() => expect(screen.getAllByTestId('stat-tile').length).toBeGreaterThan(0));
+
+      expect(
+        within(tile(INVENTORY.providers)).getByText('2 enabled · 5 regions'),
+      ).toBeInTheDocument();
+    });
+
+    it('renders the Operations tile with a pending/running/failed breakdown', async () => {
+      renderComponent();
+      await waitFor(() => expect(screen.getAllByTestId('stat-tile').length).toBeGreaterThan(0));
+
+      expect(
+        within(tile(INVENTORY.operations)).getByText('2 pending · 1 running · 1 failed'),
+      ).toBeInTheDocument();
+    });
+
+    it.each<[keyof typeof INVENTORY, string]>([
+      ['nodes', '/app/system/compute/nodes'],
+      ['modules', '/app/system/catalog/modules'],
+      ['templates', '/app/system/catalog/templates'],
+      ['providers', '/app/system/compute/providers'],
+      ['platforms', '/app/system/catalog/platforms'],
+      ['puppet', '/app/system/catalog/puppet-modules'],
+      ['operations', '/app/system/operations/tasks'],
+      ['volumes', '/app/system/compute/volumes'],
+    ])('navigates the %s tile to its canonical hub path', async (key, path) => {
+      renderComponent();
+      await waitFor(() => expect(screen.getAllByTestId('stat-tile')).toHaveLength(8));
+
+      fireEvent.click(tile(INVENTORY[key]));
+      expect(mockNavigate).toHaveBeenCalledWith(path);
     });
   });
 
@@ -399,529 +609,201 @@ describe('SystemOverview', () => {
   // ---------------------------------------------------------------------------
 
   describe('SDWAN section', () => {
-    it('renders SDWAN section when stats have non-zero sdwan values', async () => {
-      mockGetOverviewStats.mockResolvedValue(statsWithSdwan);
+    beforeEach(() => {
       mockGetRecentActivity.mockResolvedValue([]);
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(screen.getByText('SDWAN')).toBeInTheDocument(),
-      );
-      expect(screen.getByText('SDWAN Networks')).toBeInTheDocument();
-      expect(screen.getByText('Host Bridges')).toBeInTheDocument();
-      expect(screen.getByText('OVN Deployments')).toBeInTheDocument();
-      expect(screen.getByText('IPFIX Collectors')).toBeInTheDocument();
+      mockCveList.mockResolvedValue({ cve_exposures: [], meta: { total_count: 0 } });
+      mockApiGet.mockResolvedValue(poolsEnvelope([]));
     });
 
-    it('does not render SDWAN section when all sdwan counts are zero', async () => {
+    it('renders SDWAN tiles when any SDWAN count is non-zero', async () => {
+      mockGetOverviewStats.mockResolvedValue(statsWithSdwan);
+      renderComponent();
+
+      await waitFor(() => expect(screen.getByText('SDWAN')).toBeInTheDocument());
+      expect(screen.getByText('SDWAN networks')).toBeInTheDocument();
+      expect(screen.getByText('Host bridges')).toBeInTheDocument();
+      expect(screen.getByText('2 Linux · 1 OVS')).toBeInTheDocument();
+    });
+
+    it('hides the section when every SDWAN count is zero', async () => {
       mockGetOverviewStats.mockResolvedValue(statsWithSdwanZero);
-      mockGetRecentActivity.mockResolvedValue([]);
-
       renderComponent();
 
-      await waitFor(() =>
-        expect(screen.getByText('System Overview')).toBeInTheDocument(),
-      );
+      await waitFor(() => expect(screen.getByTestId('fleet-topology')).toBeInTheDocument());
       expect(screen.queryByText('SDWAN')).not.toBeInTheDocument();
     });
 
-    it('does not render SDWAN section when sdwan block is absent', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats); // no sdwan key
-      mockGetRecentActivity.mockResolvedValue([]);
-
+    it('hides the section when the sdwan block is absent', async () => {
+      mockGetOverviewStats.mockResolvedValue(baseStats);
       renderComponent();
 
-      await waitFor(() =>
-        expect(screen.getByText('System Overview')).toBeInTheDocument(),
-      );
+      await waitFor(() => expect(screen.getByTestId('fleet-topology')).toBeInTheDocument());
       expect(screen.queryByText('SDWAN')).not.toBeInTheDocument();
     });
 
-    it('renders "Open SDWAN" button that navigates to SDWAN page', async () => {
+    it('navigates to the SDWAN hub from the section button', async () => {
       mockGetOverviewStats.mockResolvedValue(statsWithSdwan);
-      mockGetRecentActivity.mockResolvedValue([]);
-
       renderComponent();
 
       await waitFor(() =>
         expect(screen.getByRole('button', { name: /open sdwan/i })).toBeInTheDocument(),
       );
-
       fireEvent.click(screen.getByRole('button', { name: /open sdwan/i }));
       expect(mockNavigate).toHaveBeenCalledWith('/app/system/sdwan');
     });
 
-    it('shows host bridges kind breakdown in description', async () => {
+    it('navigates to the SDWAN networks tab from its tile', async () => {
       mockGetOverviewStats.mockResolvedValue(statsWithSdwan);
-      mockGetRecentActivity.mockResolvedValue([]);
-
       renderComponent();
 
-      await waitFor(() =>
-        expect(screen.getByText('2 Linux, 1 OVS')).toBeInTheDocument(),
-      );
-    });
-
-    it('shows "Heavyweight profile only" when OVN deployments is 0 but other SDWAN has values', async () => {
-      const statsWithSdwanNoOvn = {
-        ...baseStats,
-        sdwan: {
-          networks: 2,
-          host_bridges: 1,
-          bridges_by_kind: { linux: 1, ovs: 0 },
-          ovn_deployments: 0,
-          ovn_active: 0,
-          ipfix_collectors: 1,
-          ipfix_active: 1,
-        },
-      };
-      mockGetOverviewStats.mockResolvedValue(statsWithSdwanNoOvn);
-      mockGetRecentActivity.mockResolvedValue([]);
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(screen.getByText('Heavyweight profile only')).toBeInTheDocument(),
-      );
-    });
-
-    it('shows "Flow telemetry export" when IPFIX collectors is 0 but other SDWAN has values', async () => {
-      const statsWithSdwanNoIpfix = {
-        ...baseStats,
-        sdwan: {
-          networks: 2,
-          host_bridges: 1,
-          bridges_by_kind: { linux: 1, ovs: 0 },
-          ovn_deployments: 1,
-          ovn_active: 1,
-          ipfix_collectors: 0,
-          ipfix_active: 0,
-        },
-      };
-      mockGetOverviewStats.mockResolvedValue(statsWithSdwanNoIpfix);
-      mockGetRecentActivity.mockResolvedValue([]);
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(screen.getByText('Flow telemetry export')).toBeInTheDocument(),
-      );
-    });
-
-    it('navigates to SDWAN networks when SDWAN Networks card is clicked', async () => {
-      mockGetOverviewStats.mockResolvedValue(statsWithSdwan);
-      mockGetRecentActivity.mockResolvedValue([]);
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(screen.getByText('SDWAN Networks')).toBeInTheDocument(),
-      );
-
-      // Click the SDWAN Networks metric card
-      fireEvent.click(screen.getByText('SDWAN Networks').closest('[class*="cursor-pointer"]') || screen.getByText('SDWAN Networks'));
-      await waitFor(() =>
-        expect(mockNavigate).toHaveBeenCalledWith('/app/system/sdwan/networks'),
-      );
+      await waitFor(() => expect(screen.getByText('SDWAN networks')).toBeInTheDocument());
+      // SDWAN tiles follow the eight inventory tiles.
+      fireEvent.click(screen.getAllByTestId('stat-tile')[8]);
+      expect(mockNavigate).toHaveBeenCalledWith('/app/system/sdwan/networks');
     });
   });
 
   // ---------------------------------------------------------------------------
-  // Recent Activity section
+  // Quick actions
   // ---------------------------------------------------------------------------
 
-  describe('Recent Activity section', () => {
-    it('renders "No recent activity" when activity list is empty', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([]);
+  describe('quick actions', () => {
+    beforeEach(happyPath);
 
+    it.each([
+      ['Nodes', '/app/system/compute/nodes'],
+      ['Catalog', '/app/system/catalog/modules'],
+      ['Templates', '/app/system/catalog/templates'],
+      ['Operations', '/app/system/operations/tasks'],
+      ['Fleet signals', '/app/system/operations/fleet'],
+      ['Topology', '/app/system/topology'],
+    ])('routes the "%s" action to %s', async (label, path) => {
+      renderComponent();
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: label })).toBeInTheDocument(),
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: label }));
+      expect(mockNavigate).toHaveBeenCalledWith(path);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Recent activity
+  // ---------------------------------------------------------------------------
+
+  describe('recent activity', () => {
+    it('renders the empty state when there is nothing recent', async () => {
+      happyPath();
       renderComponent();
 
-      await waitFor(() =>
-        expect(screen.getByText('No recent activity')).toBeInTheDocument(),
-      );
+      await waitFor(() => expect(screen.getByText('No recent activity')).toBeInTheDocument());
     });
 
-    it('renders activity items with action, description, and timestamp', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
+    it('renders each activity with its action, timestamp and status badge', async () => {
+      happyPath();
       mockGetRecentActivity.mockResolvedValue(recentActivities);
-
       renderComponent();
 
-      await waitFor(() =>
-        expect(screen.getByText('provision_node')).toBeInTheDocument(),
-      );
-      expect(screen.getByText('Provisioning node alpha')).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByText('provision_node')).toBeInTheDocument());
       expect(screen.getByText('deploy_module')).toBeInTheDocument();
-      expect(screen.getByText('Deploying base-config')).toBeInTheDocument();
-    });
-
-    it('shows "by <initiator>" for activities with an initiator', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue(recentActivities);
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(screen.getByText(/by admin/)).toBeInTheDocument(),
-      );
-      expect(screen.getByText(/by ops-bot/)).toBeInTheDocument();
-    });
-
-    it('shows status badge on activity items that have a status', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue(recentActivities);
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(screen.getByText('provision_node')).toBeInTheDocument(),
-      );
-      // Status badges — one per activity that has a status field
-      expect(screen.getAllByText('complete').length).toBeGreaterThan(0);
-      expect(screen.getAllByText('running').length).toBeGreaterThan(0);
-      expect(screen.getAllByText('failed').length).toBeGreaterThan(0);
-      expect(screen.getAllByText('pending').length).toBeGreaterThan(0);
-    });
-
-    it('navigates to tasks page when an activity item is clicked', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([recentActivities[0]]);
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(screen.getByText('provision_node')).toBeInTheDocument(),
-      );
-
-      fireEvent.click(screen.getByText('provision_node'));
-      expect(mockNavigate).toHaveBeenCalledWith('/app/system/tasks');
-    });
-
-    it('requests activity with limit=5', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([]);
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(mockGetRecentActivity).toHaveBeenCalledWith(5),
-      );
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Provider Types section
-  // ---------------------------------------------------------------------------
-
-  describe('Provider Types section', () => {
-    it('renders configured provider type badges when types list is non-empty', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats); // types: ['proxmox', 'aws']
-      mockGetRecentActivity.mockResolvedValue([]);
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(screen.getByText('Configured Provider Types')).toBeInTheDocument(),
-      );
-      expect(screen.getByText('proxmox')).toBeInTheDocument();
-      expect(screen.getByText('aws')).toBeInTheDocument();
-    });
-
-    it('does not render provider types section when types list is empty', async () => {
-      const statsNoTypes = {
-        ...baseStats,
-        providers: { ...baseStats.providers, types: [] },
-      };
-      mockGetOverviewStats.mockResolvedValue(statsNoTypes);
-      mockGetRecentActivity.mockResolvedValue([]);
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(screen.getByText('System Overview')).toBeInTheDocument(),
-      );
-      expect(screen.queryByText('Configured Provider Types')).not.toBeInTheDocument();
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Quick Actions section
-  // ---------------------------------------------------------------------------
-
-  describe('Quick Actions section', () => {
-    beforeEach(() => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([]);
-    });
-
-    it('renders all six quick action buttons', async () => {
-      renderComponent();
-      await waitFor(() =>
-        expect(screen.getByText('Quick Actions')).toBeInTheDocument(),
-      );
-
-      expect(screen.getByRole('button', { name: /manage nodes/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /templates/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /providers/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /modules/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /puppet/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /operations/i })).toBeInTheDocument();
-    });
-
-    it('navigates to /app/system/nodes when "Manage Nodes" is clicked', async () => {
-      renderComponent();
-      await waitFor(() =>
-        expect(screen.getByRole('button', { name: /manage nodes/i })).toBeInTheDocument(),
-      );
-
-      fireEvent.click(screen.getByRole('button', { name: /manage nodes/i }));
-      expect(mockNavigate).toHaveBeenCalledWith('/app/system/nodes');
-    });
-
-    it('navigates to /app/system/templates when "Templates" quick action is clicked', async () => {
-      renderComponent();
-      await waitFor(() =>
-        expect(screen.getByRole('button', { name: /^templates$/i })).toBeInTheDocument(),
-      );
-
-      fireEvent.click(screen.getByRole('button', { name: /^templates$/i }));
-      expect(mockNavigate).toHaveBeenCalledWith('/app/system/templates');
-    });
-
-    it('navigates to /app/system/providers when "Providers" quick action is clicked', async () => {
-      renderComponent();
-      await waitFor(() =>
-        expect(screen.getByRole('button', { name: /^providers$/i })).toBeInTheDocument(),
-      );
-
-      fireEvent.click(screen.getByRole('button', { name: /^providers$/i }));
-      expect(mockNavigate).toHaveBeenCalledWith('/app/system/providers');
-    });
-
-    it('navigates to /app/system/puppet when "Puppet" quick action is clicked', async () => {
-      renderComponent();
-      await waitFor(() =>
-        expect(screen.getByRole('button', { name: /^puppet$/i })).toBeInTheDocument(),
-      );
-
-      fireEvent.click(screen.getByRole('button', { name: /^puppet$/i }));
-      expect(mockNavigate).toHaveBeenCalledWith('/app/system/puppet');
-    });
-
-    it('navigates to /app/system/tasks when "Operations" quick action is clicked', async () => {
-      renderComponent();
-      await waitFor(() =>
-        expect(screen.getByRole('button', { name: /^operations$/i })).toBeInTheDocument(),
-      );
-
-      fireEvent.click(screen.getByRole('button', { name: /^operations$/i }));
-      expect(mockNavigate).toHaveBeenCalledWith('/app/system/tasks');
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Navigation from metric cards
-  // ---------------------------------------------------------------------------
-
-  describe('metric card navigation', () => {
-    beforeEach(() => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([]);
-    });
-
-    it('navigates to nodes page when Nodes metric card is clicked', async () => {
-      renderComponent();
-      await waitFor(() =>
-        expect(screen.getByText('Nodes')).toBeInTheDocument(),
-      );
-
-      // MetricCard renders as a clickable div; find by the title text
-      fireEvent.click(screen.getByText('Nodes'));
-      await waitFor(() =>
-        expect(mockNavigate).toHaveBeenCalledWith('/app/system/nodes'),
-      );
-    });
-
-    it('navigates to templates page when Templates metric card is clicked', async () => {
-      renderComponent();
-      // Wait for the content to load — use the description text which is unique
-      await waitFor(() =>
-        expect(screen.getByText('1 public, 1 private')).toBeInTheDocument(),
-      );
-
-      // "Templates" appears both as MetricCard heading and Quick Action button.
-      // The MetricCard heading is an h3; click the first occurrence.
-      const templatesHeadings = screen.getAllByText('Templates');
-      fireEvent.click(templatesHeadings[0]);
-      await waitFor(() =>
-        expect(mockNavigate).toHaveBeenCalledWith('/app/system/templates'),
-      );
-    });
-
-    it('navigates to puppet page when Puppet Modules metric card is clicked', async () => {
-      renderComponent();
-      await waitFor(() =>
-        expect(screen.getByText('Puppet Modules')).toBeInTheDocument(),
-      );
-
-      fireEvent.click(screen.getByText('Puppet Modules'));
-      await waitFor(() =>
-        expect(mockNavigate).toHaveBeenCalledWith('/app/system/puppet'),
-      );
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // API calls — getOverviewStats + getRecentActivity called on mount
-  // ---------------------------------------------------------------------------
-
-  describe('API calls', () => {
-    it('calls getOverviewStats and getRecentActivity(5) on mount', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([]);
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(mockGetOverviewStats).toHaveBeenCalledTimes(1),
-      );
-      expect(mockGetRecentActivity).toHaveBeenCalledWith(5);
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Imperative ref — refresh()
-  // ---------------------------------------------------------------------------
-
-  describe('imperative ref refresh()', () => {
-    it('exposes a refresh method via forwardRef that re-fetches data', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([]);
-
-      const { ref } = renderWithRef();
-
-      // Wait for initial load
-      await waitFor(() =>
-        expect(mockGetOverviewStats).toHaveBeenCalledTimes(1),
-      );
-
-      // Call refresh imperatively
-      await ref.current?.refresh();
-
-      expect(mockGetOverviewStats).toHaveBeenCalledTimes(2);
-      expect(mockGetRecentActivity).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // className prop
-  // ---------------------------------------------------------------------------
-
-  describe('className prop', () => {
-    it('applies custom className in the loading state', () => {
-      mockGetOverviewStats.mockReturnValue(new Promise(() => {}));
-      mockGetRecentActivity.mockReturnValue(new Promise(() => {}));
-
-      const { container } = render(
-        <BrowserRouter>
-          <SystemOverview className="custom-test-class" />
-        </BrowserRouter>,
-      );
-
-      expect(container.querySelector('.custom-test-class')).toBeInTheDocument();
-    });
-
-    it('applies custom className in the success state', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([]);
-
-      const { container } = render(
-        <BrowserRouter>
-          <SystemOverview className="custom-test-class" />
-        </BrowserRouter>,
-      );
-
-      await waitFor(() =>
-        expect(screen.getByText('System Overview')).toBeInTheDocument(),
-      );
-      expect(container.querySelector('.custom-test-class')).toBeInTheDocument();
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Status color / icon logic — getStatusColor
-  // ---------------------------------------------------------------------------
-
-  describe('activity status display', () => {
-    it('renders "complete" status activities with correct badge', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([recentActivities[0]]); // status: complete
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(screen.getByText('provision_node')).toBeInTheDocument(),
-      );
+      expect(screen.getByText('sync_puppet')).toBeInTheDocument();
       expect(screen.getByText('complete')).toBeInTheDocument();
-    });
-
-    it('renders "failed" status activities with correct badge', async () => {
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([recentActivities[2]]); // status: failed
-
-      renderComponent();
-
-      await waitFor(() =>
-        expect(screen.getByText('sync_puppet')).toBeInTheDocument(),
-      );
+      expect(screen.getByText('running')).toBeInTheDocument();
       expect(screen.getByText('failed')).toBeInTheDocument();
+      expect(screen.getByText(/admin/)).toBeInTheDocument();
     });
 
-    it('does not show status badge for activities without a status', async () => {
-      const noStatusActivity = {
-        ...recentActivities[0],
-        id: 'no-status',
-        status: undefined,
-      };
-      mockGetOverviewStats.mockResolvedValue(baseStats);
-      mockGetRecentActivity.mockResolvedValue([noStatusActivity]);
-
+    it('requests exactly five activity rows', async () => {
+      happyPath();
       renderComponent();
 
-      await waitFor(() =>
-        expect(screen.getByText('provision_node')).toBeInTheDocument(),
-      );
-      // No badge rendered — the status span is gated on `activity.status`
+      await waitFor(() => expect(mockGetRecentActivity).toHaveBeenCalledWith(5));
+    });
+
+    it('navigates to the tasks tab when an activity row is clicked', async () => {
+      happyPath();
+      mockGetRecentActivity.mockResolvedValue([recentActivities[0]]);
+      renderComponent();
+
+      await waitFor(() => expect(screen.getByText('provision_node')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('provision_node'));
+      expect(mockNavigate).toHaveBeenCalledWith('/app/system/operations/tasks');
+    });
+
+    it('omits the badge for an activity with no status', async () => {
+      happyPath();
+      mockGetRecentActivity.mockResolvedValue([
+        { ...recentActivities[0], id: 'no-status', status: undefined },
+      ]);
+      renderComponent();
+
+      await waitFor(() => expect(screen.getByText('provision_node')).toBeInTheDocument());
       expect(screen.queryByText('undefined')).not.toBeInTheDocument();
     });
   });
 
   // ---------------------------------------------------------------------------
-  // Null guard — returns null when stats is null after load finishes
+  // Imperative ref + className
   // ---------------------------------------------------------------------------
 
-  it('renders nothing (null) when stats is null after successful load', async () => {
-    // When getOverviewStats resolves to null, setStats(null) is called and
-    // setLoading(false) is called. Since !stats is truthy, the component
-    // returns null — meaning no System Overview heading appears.
+  describe('imperative ref refresh()', () => {
+    it('re-fetches every lane', async () => {
+      happyPath();
+      const { ref } = renderWithRef();
+
+      await waitFor(() => expect(mockGetOverviewStats).toHaveBeenCalledTimes(1));
+
+      await ref.current?.refresh();
+
+      expect(mockGetOverviewStats).toHaveBeenCalledTimes(2);
+      expect(mockGetRecentActivity).toHaveBeenCalledTimes(2);
+      expect(mockCveList).toHaveBeenCalledTimes(2);
+      expect(mockApiGet).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('className prop', () => {
+    it('applies the custom className while loading', () => {
+      mockGetOverviewStats.mockReturnValue(new Promise(() => {}));
+      mockGetRecentActivity.mockReturnValue(new Promise(() => {}));
+      mockCveList.mockReturnValue(new Promise(() => {}));
+      mockApiGet.mockReturnValue(new Promise(() => {}));
+
+      const { container } = render(
+        <BrowserRouter>
+          <SystemOverview className="custom-test-class" />
+        </BrowserRouter>,
+      );
+
+      expect(container.querySelector('.custom-test-class')).toBeInTheDocument();
+    });
+
+    it('applies the custom className once loaded', async () => {
+      happyPath();
+      const { container } = render(
+        <BrowserRouter>
+          <SystemOverview className="custom-test-class" />
+        </BrowserRouter>,
+      );
+
+      await waitFor(() => expect(screen.getByTestId('fleet-topology')).toBeInTheDocument());
+      expect(container.querySelector('.custom-test-class')).toBeInTheDocument();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Null guard
+  // ---------------------------------------------------------------------------
+
+  it('renders nothing when the stats aggregate resolves null', async () => {
+    happyPath();
     mockGetOverviewStats.mockResolvedValue(null as unknown as typeof baseStats);
-    mockGetRecentActivity.mockResolvedValue([]);
 
     renderComponent();
 
-    // Wait for the API call to complete
-    await waitFor(() =>
-      expect(mockGetOverviewStats).toHaveBeenCalledTimes(1),
-    );
-
-    // After load completes with null stats, neither loading skeleton nor
-    // the "System Overview" heading should exist. The component returns null.
-    await waitFor(() =>
-      expect(screen.queryByText('System Overview')).not.toBeInTheDocument(),
-    );
-    // No error state either
+    await waitFor(() => expect(mockGetOverviewStats).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByTestId('fleet-topology')).not.toBeInTheDocument());
     expect(screen.queryByText('Failed to Load System Data')).not.toBeInTheDocument();
   });
 });
