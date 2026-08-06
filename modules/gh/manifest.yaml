@@ -1,0 +1,84 @@
+schema_version: 1
+
+name: gh
+display_name: "GitHub CLI (gh)"
+description: >
+  Ships the GitHub CLI (github.com/cli/cli, MIT) as a single fully-static Go
+  binary at /usr/local/bin/gh. gh has no apt package, so it is fetched from its
+  pinned upstream GitHub release and sha256-verified at CI build time (see the
+  gh case in scripts/module-build/stage15.sh Stage 1.5), the same hermetic
+  pattern as gitleaks/act_runner/oras/cosign. Only the binary ships — the
+  bundled man pages and shell completions in the release tarball are dropped.
+  Added to the dev-cell stack so an agent (or operator) on a dev-cell can open
+  and manage GitHub pull requests reproducibly from the node template rather
+  than relying on an ad-hoc per-user install. Reusable standalone — any fleet
+  instance can carry this module for GitHub API / PR workflows.
+license: MIT
+category: build-dev
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+
+# The gh binary is written directly into /tmp/fat by the Stage 1.5 gh case
+# (curl + sha256 verify + tar extract of the nested bin/gh) — it is NOT
+# apt-derivable, so --mode deb-payload structurally can't verify it (it never
+# appears in the apt-resolved candidate set the tool diffs against — the same
+# "Fidelity blind spots" situation gitleaks/claude-tmux document). Declared
+# here so stage2-carve.sh's real fat-root carve keeps it. Single entry: gh is a
+# static Go binary with no shared-library companions.
+file_spec:
+  - "/usr/local/bin/gh"
+
+# No apt closure to waive (package_spec is empty — see below).
+carve_waivers: []
+
+# gh ships only its own binary — no other module's paths.
+protected_spec: []
+
+# Empty on purpose: gh is a single fully-static Go binary (CGO disabled
+# upstream — verified `statically linked, not a dynamic executable`), so it
+# links no glibc and needs no apt-installed dependencies. The binary is staged
+# by the Stage 1.5 gh case regardless of package_spec (same as gitleaks), and
+# base-os-ubuntu-noble already provides ca-certificates for TLS to GitHub.
+package_spec: []
+
+dependencies:
+  requires:
+    # Base layer only. Deliberately NO capability:os.userland edge (contrast
+    # claude-tmux / gitea-act-runner, whose payloads dynamically link base-os's
+    # glibc): gh is a fully-static binary with no runtime library dependency,
+    # so it carries no glibc closure guarantee to assert. Same as gitleaks.
+    - powernode/powernode-system-base@^1.0
+  provides:
+    - dev.gh
+
+reboot_required: false
+
+security:
+  # Runtime posture: gh is a GitHub API/CLI client and MUST reach GitHub at
+  # runtime (contrast gitleaks, which is offline). The agent unions every
+  # desired module's egress_allow into one node-wide nftables default-deny
+  # chain, so these hosts must be declared or `gh` calls fail closed
+  # (ECONNREFUSED) exactly like the claude-tmux api.anthropic.com case.
+  # CAVEAT (same as claude-tmux): entries resolve to A/AAAA at install time and
+  # re-resolve only on cert-rotate (~67 days); GitHub sits behind a CDN whose
+  # addresses rotate, so a stale-IP symptom can recur — the durable fix is
+  # DNS-aware egress, with a reconcile/cert-rotate as the interim unstick.
+  capabilities: []
+  egress_allow:
+    - github.com
+    - api.github.com
+  privileged: false
+  user_namespace: true
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"
+  # gh release fetched + sha256-verified in Stage 1.5 (see the gh case in
+  # scripts/module-build/stage15.sh). Bump this alongside the pinned amd64 /
+  # arm64 sha256 in that step. Values from the release's gh_<ver>_checksums.txt.
+  gh_version: "2.97.0"

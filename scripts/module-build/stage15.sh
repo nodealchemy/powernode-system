@@ -1388,6 +1388,50 @@ case "$MODULE" in
       echo "[stage-1.5] skipping gitleaks version exec check for ARCH=${ARCH:-amd64} (cross-arch binary) — sha256 already verified above"
     fi
     ;;
+
+  gh)
+    # gh (GitHub CLI) has no apt package — fetch the pinned upstream release
+    # tarball and verify its sha256, same hermetic pattern as the gitleaks /
+    # act_runner / oras / cosign fetches elsewhere in this stage. gh is a
+    # fully-static Go binary (verified `statically linked`), so it needs no
+    # *.so companions — the single /usr/local/bin/gh entry in the manifest
+    # file_spec is the module's entire payload. Unlike gitleaks (flat tarball),
+    # gh's release tarball NESTS the binary at gh_<ver>_linux_<arch>/bin/gh.
+    GH_VERSION=$(jq -r '.build.gh_version // "2.97.0"' /tmp/manifest.json)
+
+    # Pinned sha256 for gh_${GH_VERSION}_linux_<arch>.tar.gz
+    # (github.com/cli/cli/releases). Bump both alongside build.gh_version on any
+    # version change — values come from the release's gh_<ver>_checksums.txt.
+    case "${ARCH:-amd64}" in
+      amd64) GH_ARCH=amd64; GH_SHA256=a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112 ;;
+      arm64) GH_ARCH=arm64; GH_SHA256=73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5 ;;
+      *) echo "[stage-1.5] FATAL: no pinned gh sha256 for ARCH=${ARCH:-amd64}"; exit 1 ;;
+    esac
+
+    curl -fsSL \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" \
+      -o /tmp/gh.tar.gz
+    echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c -
+
+    mkdir -p /tmp/fat/usr/local/bin
+    # Nested layout: extract ONLY the binary, dropping the bundled man pages and
+    # shell completions the tarball also carries.
+    tar -xzf /tmp/gh.tar.gz -C /tmp/fat/usr/local/bin --strip-components=2 \
+      "gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh"
+    chmod 0755 /tmp/fat/usr/local/bin/gh
+    rm -f /tmp/gh.tar.gz
+
+    # Verify what actually shipped. Only exec on an amd64 runner (the only ARCH
+    # built today) — a cross-arch fetch has its integrity confirmed by the
+    # sha256sum -c above and can't be exec'd on this runner anyway.
+    if [ "${ARCH:-amd64}" = "amd64" ]; then
+      GH_OUT=$(/tmp/fat/usr/local/bin/gh --version 2>&1 || true)
+      echo "[stage-1.5] gh: $GH_OUT"
+      echo "$GH_OUT" | grep -q "${GH_VERSION}" || { echo "[stage-1.5] FATAL: expected gh ${GH_VERSION}, got: $GH_OUT"; exit 1; }
+    else
+      echo "[stage-1.5] skipping gh version exec check for ARCH=${ARCH:-amd64} (cross-arch binary) — sha256 already verified above"
+    fi
+    ;;
 esac
 
 echo "=== /tmp/fat top-level layout after stage 1.5 ==="
