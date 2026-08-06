@@ -46,6 +46,44 @@ RSpec.describe System::ModuleOciIngestService do
       expect(System::ModuleArtifact.where(node_module_version: version).count).to eq(2)
     end
 
+    # IMP-cb947a942fbd — the artifact row is reused across a REBUILD of the
+    # same (version, arch), and every content-identity field is reset with it.
+    # The SBOM columns were not, because they are written by a separate async
+    # webhook — so a rebuild left a package list describing the PREVIOUS bytes
+    # attached to the new ones. ExposureCalculator treats a populated SBOM as
+    # authoritative (keyword stub otherwise), so a package ADDED by the
+    # rebuild was invisible to CVE matching: a missed vulnerability, not noise.
+    it "clears SBOM data when the artifact bytes change, so exposure never reads a previous build's packages" do
+      described_class.ingest!(node_module_version: version, oci_ref: oci_ref)
+      artifact = System::ModuleArtifact.find_by!(node_module_version: version, architecture: "amd64")
+      artifact.update!(sbom_packages_count: 42,
+                       sbom_packages_data: [ { "name" => "openssl", "version" => "3.0.0" } ],
+                       sbom_packages_synced_at: 1.hour.ago)
+      old_digest = artifact.oci_digest
+
+      described_class.ingest!(node_module_version: version, oci_ref: "#{oci_ref}-rebuilt")
+
+      artifact.reload
+      expect(artifact.oci_digest).not_to eq(old_digest), "precondition: the rebuild must change the bytes"
+      expect(artifact.sbom_packages_count).to eq(0)
+      expect(artifact.sbom_packages_data).to be_blank
+      expect(artifact.sbom_packages_synced_at).to be_nil
+    end
+
+    it "keeps SBOM data when a re-ingest yields identical bytes" do
+      described_class.ingest!(node_module_version: version, oci_ref: oci_ref)
+      artifact = System::ModuleArtifact.find_by!(node_module_version: version, architecture: "amd64")
+      artifact.update!(sbom_packages_count: 7,
+                       sbom_packages_data: [ { "name" => "curl", "version" => "8.0.0" } ],
+                       sbom_packages_synced_at: 1.hour.ago)
+
+      described_class.ingest!(node_module_version: version, oci_ref: oci_ref)
+
+      artifact.reload
+      expect(artifact.sbom_packages_count).to eq(7)
+      expect(artifact.sbom_packages_synced_at).to be_present
+    end
+
     it "fails clearly when oci_ref is blank" do
       result = described_class.ingest!(node_module_version: version, oci_ref: "")
       expect(result.ok?).to be false
@@ -575,6 +613,32 @@ RSpec.describe System::ModuleOciIngestService do
       # NOT the LocalOciAdapter stub shape (…"0000" digest / "fsv-…" fsverity).
       expect(artifact.oci_digest).not_to end_with("0000")
       expect(artifact.fsverity_root_hash).not_to start_with("fsv-")
+    end
+
+    # IMP-cb947a942fbd — the native push shares the row-reuse shape, so it
+    # gets the same guard. Here the digest is UNCHANGED across the two calls
+    # (same stubbed manifest), which pins the other half of the rule: a
+    # re-ingest of identical bytes must keep a good SBOM rather than forcing
+    # exposure calculation back to keyword matching.
+    it "keeps SBOM data when a native re-ingest yields the same blob digest" do
+      described_class.ingest_native!(
+        node_module_version: version, oci_ref: native_ref,
+        account: account, fsverity_root: agent_fsverity
+      )
+      artifact = System::ModuleArtifact.find_by!(node_module_version: version, architecture: "amd64")
+      artifact.update!(sbom_packages_count: 5,
+                       sbom_packages_data: [ { "name" => "zlib", "version" => "1.3" } ],
+                       sbom_packages_synced_at: 1.hour.ago)
+
+      described_class.ingest_native!(
+        node_module_version: version, oci_ref: native_ref,
+        account: account, fsverity_root: agent_fsverity
+      )
+
+      artifact.reload
+      expect(artifact.oci_digest).to eq(erofs_digest)
+      expect(artifact.sbom_packages_count).to eq(5)
+      expect(artifact.sbom_packages_synced_at).to be_present
     end
 
     it "denormalizes the erofs blob digest onto the NodeModuleVersion column" do

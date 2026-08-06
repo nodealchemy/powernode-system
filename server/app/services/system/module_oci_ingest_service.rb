@@ -204,6 +204,7 @@ module System
             vex_uri:             arch_desc[:vex_uri],
             built_at:            arch_desc.fetch(:built_at, Time.current)
           )
+          reset_stale_sbom!(artifact)
           artifact.save!
           created << artifact
         end
@@ -309,6 +310,7 @@ module System
           cosign_bundle:      nil,
           built_at:           Time.current
         )
+        reset_stale_sbom!(artifact)
         artifact.save!
         created << artifact
 
@@ -338,6 +340,31 @@ module System
 
     def native_arch(architecture)
       SUPPORTED_ARCHS.include?(architecture) ? architecture : "amd64"
+    end
+
+    # IMP-cb947a942fbd — a ModuleArtifact row is keyed on (version, arch), so a
+    # REBUILD of the same version reuses it and every content-identity field is
+    # reassigned above. The SBOM columns are written by a separate async path
+    # (webhooks/module_sbom_controller#ingest_sbom!), so they survived — leaving
+    # a package list describing the PREVIOUS bytes attached to the new ones.
+    # CveOps::ExposureCalculator treats a populated SBOM as authoritative and
+    # only falls back to a keyword stub when the count is zero, so the stale
+    # list was trusted MORE than no list: a package added by the rebuild became
+    # invisible to CVE matching. That direction is a missed vulnerability, not
+    # noise, which is why this clears rather than merely flags.
+    #
+    # Keyed on the digest actually changing: a re-ingest of identical bytes
+    # (the idempotent path) must NOT discard a good SBOM and force the caller
+    # back to keyword matching until the webhook re-syncs.
+    def reset_stale_sbom!(artifact)
+      return if artifact.new_record?
+      return unless artifact.oci_digest_changed?
+
+      artifact.assign_attributes(
+        sbom_packages_count: 0,
+        sbom_packages_data: nil,
+        sbom_packages_synced_at: nil
+      )
     end
 
     # OCI Accept covering both single-arch image manifests (the native case)
