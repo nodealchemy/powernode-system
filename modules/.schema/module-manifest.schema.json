@@ -427,6 +427,16 @@
           "type": "string",
           "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
         },
+        "go_version": {
+          "description": "Pinned Go toolchain version (runtime-go module). Bump alongside the per-arch tarball checksums in the runtime-go case of scripts/module-build/stage15.sh.",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "claude_code_version": {
+          "description": "Pinned Claude Code CLI version installed by the claude-tmux module (read at scripts/module-build/stage15.sh's claude-tmux case). The script's jq fallback silently unpins when this key is absent — declare it here rather than deleting it from a manifest.",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
         "ubuntu_digest": {
           "description": "Pinned Ubuntu base image digest. Format: sha256:<64-hex>, or null to inherit Containerfile default.",
           "oneOf": [
