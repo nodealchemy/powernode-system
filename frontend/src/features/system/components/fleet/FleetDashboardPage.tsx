@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Activity, AlertTriangle, Clock, Cpu, GitBranch, Package, PlayCircle } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
+import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { wsManager } from '@/shared/services/WebSocketManager';
 import { useAuth } from '@/shared/hooks/useAuth';
@@ -306,9 +307,33 @@ export function FleetDashboardPage(): React.JSX.Element {
                     {selectedEvent.correlation_id && (
                       <div>correlation_id: <code className="font-mono">{selectedEvent.correlation_id}</code></div>
                     )}
-                    {selectedEvent.node_id && <div>node_id: <code className="font-mono">{selectedEvent.node_id}</code></div>}
-                    {selectedEvent.node_instance_id && <div>instance_id: <code className="font-mono">{selectedEvent.node_instance_id}</code></div>}
-                    {selectedEvent.node_module_id && <div>module_id: <code className="font-mono">{selectedEvent.node_module_id}</code></div>}
+                    {selectedEvent.node_id && (
+                      <div>
+                        node_id:{' '}
+                        <EntityLink type="node" id={selectedEvent.node_id} label={selectedEvent.node_id} className="font-mono" />
+                      </div>
+                    )}
+                    {selectedEvent.node_instance_id && (
+                      <div>
+                        instance_id:{' '}
+                        {selectedEvent.node_id ? (
+                          <EntityLink
+                            type="node_instance"
+                            id={`${selectedEvent.node_id}:${selectedEvent.node_instance_id}`}
+                            label={selectedEvent.node_instance_id}
+                            className="font-mono"
+                          />
+                        ) : (
+                          <code className="font-mono">{selectedEvent.node_instance_id}</code>
+                        )}
+                      </div>
+                    )}
+                    {selectedEvent.node_module_id && (
+                      <div>
+                        module_id:{' '}
+                        <EntityLink type="node_module" id={selectedEvent.node_module_id} label={selectedEvent.node_module_id} className="font-mono" />
+                      </div>
+                    )}
                   </div>
                   {selectedEvent.payload && Object.keys(selectedEvent.payload).length > 0 && (
                     <details className="text-xs" open>

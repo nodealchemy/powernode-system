@@ -53,6 +53,17 @@ jest.mock('@/shared/hooks/useAuth', () => ({
   useAuth: () => ({ currentUser: { account: { id: 'acct-test' } } }),
 }));
 
+// EntityLink pulls in usePermissions (redux useSelector), which needs a
+// <Provider> this suite doesn't set up. Stub it down to its label, matching
+// the mock convention used across the extension's other EntityLink-consuming
+// tests (e.g. VolumeList.test.tsx) — the id/type wiring is exercised by
+// EntityLink's own test suite, not the callers'.
+jest.mock('@/shared/components/entity', () => ({
+  EntityLink: ({ label }: { label?: React.ReactNode }) => (
+    <span data-testid="entity-link">{label}</span>
+  ),
+}));
+
 jest.mock('@/shared/services/WebSocketManager', () => ({
   wsManager: {
     subscribe: (...args: unknown[]) => mockWsSubscribe(...args),

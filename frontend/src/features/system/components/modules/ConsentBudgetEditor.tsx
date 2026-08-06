@@ -1,9 +1,15 @@
 import React, { useState } from 'react';
 import { Save, RotateCcw } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
+import { MeterBar, type ChartTone } from '@/shared/components/charts';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemNodeModule } from '@system/features/system/types/system.types';
+
+// A module approaching its daily consent ceiling deserves a warning tone
+// before it actually exhausts (operators want to catch it before every
+// subsequent decision gets forced through require_approval).
+const APPROACHING_CEILING_FRACTION = 0.8;
 
 interface Props {
   module: SystemNodeModule & {
@@ -33,6 +39,13 @@ export const ConsentBudgetEditor: React.FC<Props> = ({ module, onUpdated }) => {
   const max = module.consent_budget_per_day ?? null;
   const remaining = max != null ? Math.max(0, max - used) : null;
   const windowStart = module.consent_budget_window_start_at;
+
+  // Meter tone: exhausted reads as an error (every subsequent decision is
+  // about to be forced through require_approval), approaching the ceiling
+  // reads as a warning, otherwise the neutral primary tone.
+  const usageFraction = max != null && max > 0 ? used / max : 0;
+  const meterTone: ChartTone =
+    max == null ? 'primary' : used >= max ? 'error' : usageFraction >= APPROACHING_CEILING_FRACTION ? 'warning' : 'primary';
 
   const handleSave = async (): Promise<void> => {
     setSaving(true);
@@ -96,6 +109,17 @@ export const ConsentBudgetEditor: React.FC<Props> = ({ module, onUpdated }) => {
           </div>
         </div>
       </div>
+
+      {max != null && (
+        <div className="mb-3">
+          <MeterBar
+            value={used}
+            max={max}
+            tone={meterTone}
+            ariaLabel={`Consent budget used: ${used} of ${max} for the current window`}
+          />
+        </div>
+      )}
 
       {windowStart && (
         <div className="text-xs text-theme-tertiary mb-3">
