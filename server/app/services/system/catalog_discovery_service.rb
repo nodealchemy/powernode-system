@@ -28,8 +28,20 @@ module System
     DEFAULT_TOP_K = 10
     MAX_TOP_K     = 50
 
-    # Pull this many neighbors before the top_k cap so structured filters have
-    # headroom to whittle without an empty-result blackout.
+    # Pull this many neighbors before truncating to top_k.
+    #
+    # This is NOT filter headroom — every structured filter (variety,
+    # platform, enabled) is applied to the scope BEFORE nearest_neighbors
+    # runs, so nothing whittles the result set afterward and an over-fetch
+    # could not rescue an empty page. (The comment here claimed otherwise
+    # until IMP-a9adf9ea4399.)
+    #
+    # What it actually buys is `seed_count`: how many ranked candidates
+    # existed beyond the page returned, capped at top_k * this factor. That
+    # is the signal a caller uses to decide whether to re-ask with a larger
+    # top_k — "10 results, seed_count 30" means the catalog had more to say.
+    # Keep the two in sync: changing this factor changes what seed_count can
+    # report, which is documented on the system_discover_* MCP actions.
     SEMANTIC_OVERSCORE_FACTOR = 3
 
     # Confidence buckets keyed off the TOP match's cosine distance — same

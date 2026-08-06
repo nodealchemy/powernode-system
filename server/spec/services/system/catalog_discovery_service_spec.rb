@@ -206,4 +206,29 @@ RSpec.describe System::CatalogDiscoveryService do
       expect(result.coverage[:unembedded]).to eq(total - 2)
     end
   end
+
+  # IMP-a9adf9ea4399 — the 3x over-fetch was documented as headroom for
+  # structured filters to whittle post-search, which no code does: every
+  # filter is applied to the scope BEFORE nearest_neighbors runs. The fetch
+  # is not useless though — it is what makes seed_count a "there is more
+  # beyond top_k" signal rather than a restatement of the page size. These
+  # pin that real meaning so the comments and the payload agree.
+  describe "seed_count semantics" do
+    before do
+      5.times { |i| embed!(create(:system_node_module, account: account, name: "mod-#{i}"), near_vec) }
+    end
+
+    it "reports more candidates than the page when the catalog has them" do
+      result = described_class.discover_modules(account: account, intent: "anything", top_k: 2)
+
+      expect(result.records.size).to eq(2)
+      expect(result.seed_count).to be > result.records.size
+    end
+
+    it "never exceeds the over-fetch bound" do
+      result = described_class.discover_modules(account: account, intent: "anything", top_k: 2)
+
+      expect(result.seed_count).to be <= 2 * described_class::SEMANTIC_OVERSCORE_FACTOR
+    end
+  end
 end

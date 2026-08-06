@@ -21,9 +21,17 @@ module System
         MAX_TOP_K     = 50
 
         # Pull this many vector neighbors before applying the top_k cap.
-        # Higher factors give the structured filters more headroom — if
-        # the user adds an arch filter that excludes most candidates, we
-        # still have alternates to surface.
+        #
+        # NOT filter headroom: repository/kind/arch/license filters are all
+        # applied to the scope BEFORE nearest_neighbors runs (see
+        # #candidate_scope), so nothing whittles the results afterward and a
+        # wider window cannot rescue an over-filtered page. The comment here
+        # claimed otherwise until IMP-a9adf9ea4399.
+        #
+        # What it buys is `seed_count` — how many ranked candidates existed
+        # beyond the returned page, capped at top_k * this factor — the
+        # signal a caller uses to decide whether to re-ask with a larger
+        # top_k. Mirrors System::CatalogDiscoveryService, deliberately.
         SEMANTIC_OVERSCORE_FACTOR = 3
 
         # Confidence buckets keyed off the TOP match's cosine distance.
@@ -80,8 +88,8 @@ module System
             license:        license
           )
 
-          # Pull a wider neighbor window then top_k after — gives the user's
-          # filters room to whittle without empty-result blackouts.
+          # Wider neighbor window, then truncate — the extra rows are counted
+          # into seed_count, not filtered (see SEMANTIC_OVERSCORE_FACTOR).
           candidates = scope.with_embedding
                             .nearest_neighbors(:embedding, embedding, distance: "cosine")
                             .first(top_k * SEMANTIC_OVERSCORE_FACTOR)

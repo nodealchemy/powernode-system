@@ -6,6 +6,20 @@ require "rails_helper"
 # authoring runbook demands: "does a module/template for purpose X already
 # exist?". Lives in its own spec file so it does not collide with the concurrent
 # edits to system_fleet_tool_spec.rb.
+# IMP-a9adf9ea4399 — seed_count rides both discovery payloads but neither
+# schema explained it, so an agent reading "seed_count: 30" beside 10 results
+# had no way to know it means "more matches exist beyond your top_k" rather
+# than something about the page it received.
+RSpec.describe "system_discover_* schema documents seed_count" do
+  it "explains seed_count in both discovery descriptions" do
+    defs = Ai::Tools::SystemFleetTool.action_definitions
+    %w[system_discover_modules system_discover_templates].each do |action|
+      expect(defs.dig(action, :description)).to match(/seed_count/),
+        "#{action} returns seed_count but never says what it means"
+    end
+  end
+end
+
 RSpec.describe Ai::Tools::SystemFleetTool, "catalog discovery" do
   let(:account)  { create(:account) }
   let(:platform_record) { create(:system_node_platform, account: account) }
@@ -40,7 +54,11 @@ RSpec.describe Ai::Tools::SystemFleetTool, "catalog discovery" do
 
     it "gates both actions on catalog read permissions" do
       expect(described_class::ACTION_PERMISSIONS["system_discover_modules"]).to eq("system.modules.read")
-      expect(described_class::ACTION_PERMISSIONS["system_discover_templates"]).to eq("system.nodes.read")
+      # templates.read, not nodes.read: IMP-767c0448b8b9 moved every template
+      # surface onto the templates family (the catalog registers it, and REST
+      # gates template reads there). Each discovery action still takes the
+      # permission of its list counterpart — the counterpart moved too.
+      expect(described_class::ACTION_PERMISSIONS["system_discover_templates"]).to eq("system.templates.read")
     end
 
     it "is routed to SystemFleetTool by the core registry" do
