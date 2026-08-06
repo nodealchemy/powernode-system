@@ -718,6 +718,31 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(r.dig(:data, :node, :name)).to eq("fleet-node-1")
     end
 
+    # IMP-a5dcb7cfca0a — create takes the same surface as REST create
+    # (node_params minus ssh key material), mirroring the F8-07 slice update
+    # already has. Before this, an agent had to create then immediately
+    # update to set any of these.
+    it "system_create_node accepts the full REST create surface" do
+      r = call("system_create_node", name: "fleet-node-2", template_id: template.id,
+               description: "edge cell", enabled: false,
+               public_address: "203.0.113.9", config: { "zone" => "edge-1" })
+      expect(r[:success]).to be true
+      node = System::Node.find(r.dig(:data, :node, :id))
+      expect(node.description).to eq("edge cell")
+      expect(node.enabled).to be false
+      expect(node.public_address).to eq("203.0.113.9")
+      expect(node.config).to include("zone" => "edge-1")
+    end
+
+    # Pin (not a fix): validation failures already come back as a clean
+    # envelope via the call-level RecordInvalid rescue — the finding's
+    # raw-error claim was wrong, and this stops it being re-filed.
+    it "system_create_node returns a clean envelope on validation failure" do
+      r = call("system_create_node", name: "", template_id: template.id)
+      expect(r[:success]).to be false
+      expect(r[:error]).to be_present
+    end
+
     it "system_list_nodes returns account-scoped nodes" do
       n1 = create(:system_node, account: account, node_template: template, name: "a")
       n2 = create(:system_node, account: account, node_template: template, name: "b")

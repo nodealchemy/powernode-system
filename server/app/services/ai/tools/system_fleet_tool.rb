@@ -315,10 +315,16 @@ module Ai
             parameters: { node_id: { type: "string", required: true, description: "UUID of the node to fetch (account-scoped)" } }
           },
           "system_create_node" => {
-            description: "Create a new node bound to a template",
+            description: "Create a new node bound to a template. Accepts the same surface as REST create (minus SSH key material — manage keys via the REST/Vault path).",
             parameters: {
               name: { type: "string", required: true, description: "Display name for the new node" },
-              template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to bind the node to" }
+              template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to bind the node to" },
+              description: { type: "string", required: false, description: "Free-text description for the node" },
+              enabled: { type: "boolean", required: false, description: "Create disabled with false (default true)" },
+              worker_id: { type: "string", required: false, description: "UUID of the Worker that services this node's tasks" },
+              public_address: { type: "string", required: false, description: "Public hostname or IP to reach the node at" },
+              allocate_public_ip: { type: "boolean", required: false, description: "When true, request a public IP allocation for the node" },
+              config: { type: "object", required: false, description: "Arbitrary node config hash" }
             }
           },
           # F8-07 — REST update parity. Mirrors nodes_controller node_params
@@ -1638,12 +1644,18 @@ module Ai
         success_result(node: serialize_node_full(node))
       end
 
+      # IMP-a5dcb7cfca0a — same surface as REST create (node_params minus
+      # ssh_key/ssh_host_key, the F8-07 exclusion update_node documents).
+      # Validation failures come back as clean envelopes via the call-level
+      # RecordInvalid rescue.
       def create_node(params)
         template = account_templates.find(params[:template_id])
+        attrs = params.slice(
+          :description, :enabled, :worker_id,
+          :public_address, :allocate_public_ip, :config
+        ).to_h.compact
         node = ::System::Node.create!(
-          account: @account,
-          node_template: template,
-          name: params[:name]
+          attrs.merge(account: @account, node_template: template, name: params[:name])
         )
         success_result(node: serialize_node_full(node))
       end
