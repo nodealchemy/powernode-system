@@ -768,6 +768,36 @@ RSpec.describe Ai::Tools::SystemFleetTool do
   describe "Templates" do
     let!(:other_account_template) { create(:system_node_template, account: create(:account)) }
 
+    # IMP-bc6621864e93 — system_delete_template had zero coverage on either
+    # surface; the in-use guard exists twice (inline count pre-check here,
+    # dependent: :restrict_with_error on the model for REST) and neither
+    # refusal path was tested anywhere.
+    it "system_delete_template deletes an unused template and reports its name" do
+      t2 = create(:system_node_template, account: account,
+                  node_platform: platform_record, name: "delete-me")
+      r = call("system_delete_template", template_id: t2.id)
+      expect(r[:success]).to be true
+      expect(r.dig(:data, :deleted)).to be true
+      expect(r.dig(:data, :name)).to eq("delete-me")
+      expect(System::NodeTemplate.exists?(t2.id)).to be false
+    end
+
+    it "system_delete_template refuses while nodes use the template, naming the count" do
+      create(:system_node, account: account, node_template: template, name: "still-here")
+      r = call("system_delete_template", template_id: template.id)
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("in use by 1 node")
+      expect(System::NodeTemplate.exists?(template.id)).to be true
+    end
+
+    it "system_delete_template does not reach another account's template" do
+      # The call-level RecordNotFound rescue converts the scoped miss into a
+      # clean envelope — the row must survive untouched.
+      r = call("system_delete_template", template_id: other_account_template.id)
+      expect(r[:success]).to be false
+      expect(System::NodeTemplate.exists?(other_account_template.id)).to be true
+    end
+
     it "system_list_templates is account-scoped" do
       template_id = template.id # force lazy let creation before the call
       r = call("system_list_templates")
