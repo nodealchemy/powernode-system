@@ -1,8 +1,8 @@
 // Unit tests for register.ts
 //
 // register() is a pure side-effect entry point. It calls:
-//   1. featureRegistry.registerRoutes('system', [...])   — 28 routes
-//   2. featureRegistry.registerNavSections('system', [...]) — 1 section, 10 items
+//   1. featureRegistry.registerRoutes('system', [...])   — 29 routes
+//   2. featureRegistry.registerNavSections('system', [...]) — 1 section, 12 items
 //   3. registerSystemEntities()                          — cross-reference wiring
 //
 // Strategy: mock the two dependencies so we can assert on exact payloads
@@ -86,8 +86,8 @@ describe('registered routes', () => {
     routes = mockRegisterRoutes.mock.calls[0][1] as typeof routes;
   });
 
-  it('registers 28 routes in total', () => {
-    expect(routes).toHaveLength(28);
+  it('registers 29 routes in total', () => {
+    expect(routes).toHaveLength(29);
   });
 
   // Primary pages
@@ -115,6 +115,15 @@ describe('registered routes', () => {
     const r = routes.find((x) => x.path === '/system/instance-pools');
     expect(r).toBeDefined();
     expect(r!.component).toBeDefined();
+    expect(r!.permission).toBeUndefined();
+  });
+
+  it('registers /system/topology (FleetTopologyPage) ungated', () => {
+    const r = routes.find((x) => x.path === '/system/topology');
+    expect(r).toBeDefined();
+    expect(r!.component).toBeDefined();
+    // Ungated like the Compute/Catalog/Operations hubs — each underlying
+    // list API still enforces its own permission.
     expect(r!.permission).toBeUndefined();
   });
 
@@ -267,8 +276,8 @@ describe('registered nav sections', () => {
     expect(systemSection.permissions).toEqual([]);
   });
 
-  it('registers 10 nav items', () => {
-    expect(items).toHaveLength(10);
+  it('registers 12 nav items', () => {
+    expect(items).toHaveLength(12);
   });
 
   // Verify every item individually
@@ -280,15 +289,17 @@ describe('registered nav sections', () => {
     permission?: string;
   }> = [
     { label: 'Overview',          path: '/app/system',                icon: 'LayoutDashboard', order: 1 },
-    { label: 'Compute',           path: '/app/system/compute',        icon: 'Server',          order: 2 },
-    { label: 'Catalog',           path: '/app/system/catalog',        icon: 'Boxes',           order: 3 },
-    { label: 'Operations',        path: '/app/system/operations',     icon: 'Activity',        order: 4 },
-    { label: 'Instance Pools',    path: '/app/system/instance-pools', icon: 'Droplet',         order: 5 },
-    { label: 'SDWAN',             path: '/app/system/sdwan',          icon: 'ShieldCheck',     order: 6 },
-    { label: 'Federation',        path: '/app/system/federation',     icon: 'Share2',          order: 7, permission: 'system.peers.read' },
-    { label: 'Service Delivery',  path: '/app/system/service-delivery', icon: 'Workflow',      order: 8 },
-    { label: 'ACME',              path: '/app/system/acme',           icon: 'KeyRound',        order: 9 },
-    { label: 'Ingress',           path: '/app/system/ingress',        icon: 'Globe',           order: 10, permission: 'system.ingress.read' },
+    { label: 'Topology',          path: '/app/system/topology',       icon: 'Network',         order: 2 },
+    { label: 'Compute',           path: '/app/system/compute',        icon: 'Server',          order: 3 },
+    { label: 'Catalog',           path: '/app/system/catalog',        icon: 'Boxes',           order: 4 },
+    { label: 'Template Composer', path: '/app/system/templates/compose', icon: 'WandSparkles', order: 5 },
+    { label: 'Operations',        path: '/app/system/operations',     icon: 'Activity',        order: 6 },
+    { label: 'Instance Pools',    path: '/app/system/instance-pools', icon: 'Droplet',         order: 7 },
+    { label: 'SDWAN',             path: '/app/system/sdwan',          icon: 'ShieldCheck',     order: 8 },
+    { label: 'Federation',        path: '/app/system/federation',     icon: 'Share2',          order: 9, permission: 'system.peers.read' },
+    { label: 'Service Delivery',  path: '/app/system/service-delivery', icon: 'Workflow',      order: 10 },
+    { label: 'ACME',              path: '/app/system/acme',           icon: 'KeyRound',        order: 11 },
+    { label: 'Ingress',           path: '/app/system/ingress',        icon: 'Globe',           order: 12, permission: 'system.ingress.read' },
   ];
 
   it.each(expectedItems)(

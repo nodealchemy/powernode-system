@@ -31,6 +31,11 @@ const SystemOverviewPage = lazyPage(() => import('./pages/app/system/SystemOverv
 // Drill-down pages still routed standalone (no tab equivalent).
 const TemplateComposerPage = lazyPage(() => import('./pages/app/system/TemplateComposerPage'));
 const InstancePoolsPage = lazyPage(() => import('./pages/app/system/InstancePoolsPage'));
+// Fleet Topology — the fleet's containment graph (provider/platform groups
+// → nodes → instances → SDWAN networks) on @xyflow/react, live off
+// SystemFleetChannel. Gap G3 + G9 in the dashboard gap analysis; the
+// Compute hub's five tables show the same objects with no relationships.
+const FleetTopologyPage = lazyPage(() => import('./pages/app/system/FleetTopologyPage'));
 // Phase B hubs.
 const ComputePage = lazyPage(() => import('./pages/app/system/ComputePage'));
 const CatalogPage = lazyPage(() => import('./pages/app/system/CatalogPage'));
@@ -90,6 +95,11 @@ export function register(): void {
     { path: '/system/templates/compose', component: TemplateComposerPage },
     { path: '/system/instance-pools', component: InstancePoolsPage },
 
+    // Fleet topology graph. Ungated like the Compute/Catalog/Operations
+    // hubs — it reads the same node/instance lists those tabs render, and
+    // each underlying API still enforces its own permission.
+    { path: '/system/topology', component: FleetTopologyPage },
+
     // Phase B hubs — path-based tabs delegate to nested <Routes>.
     { path: '/system/compute/*', component: ComputePage },
     { path: '/system/catalog/*', component: CatalogPage },
@@ -138,15 +148,23 @@ export function register(): void {
       order: 8,
       items: [
         { label: 'Overview',       path: '/app/system',                icon: 'LayoutDashboard', order: 1 },
-        { label: 'Compute',        path: '/app/system/compute',        icon: 'Server',          order: 2 },
-        { label: 'Catalog',        path: '/app/system/catalog',        icon: 'Boxes',           order: 3 },
-        { label: 'Operations',     path: '/app/system/operations',     icon: 'Activity',        order: 4 },
-        { label: 'Instance Pools', path: '/app/system/instance-pools', icon: 'Droplet',         order: 5 },
-        { label: 'SDWAN',            path: '/app/system/sdwan',            icon: 'ShieldCheck',     order: 6 },
-        { label: 'Federation',       path: '/app/system/federation',       icon: 'Share2',          order: 7, permission: 'system.peers.read' },
-        { label: 'Service Delivery', path: '/app/system/service-delivery', icon: 'Workflow',        order: 8 },
-        { label: 'ACME',             path: '/app/system/acme',             icon: 'KeyRound',        order: 9 },
-        { label: 'Ingress',          path: '/app/system/ingress',          icon: 'Globe',           order: 10, permission: 'system.ingress.read' },
+        // Topology sits directly under Overview: it is the fleet-wide
+        // "where does everything live" view the hubs' tables can't show.
+        { label: 'Topology',       path: '/app/system/topology',       icon: 'Network',         order: 2 },
+        { label: 'Compute',        path: '/app/system/compute',        icon: 'Server',          order: 3 },
+        { label: 'Catalog',        path: '/app/system/catalog',        icon: 'Boxes',           order: 4 },
+        // Template Composer was route-only (no nav entry, no in-app link)
+        // — reachable solely by typing the URL. Gap G6.
+        // Icon names must exist in lucide's `icons` map or the host falls
+        // back to Puzzle — this build has WandSparkles, not Wand2.
+        { label: 'Template Composer', path: '/app/system/templates/compose', icon: 'WandSparkles', order: 5 },
+        { label: 'Operations',     path: '/app/system/operations',     icon: 'Activity',        order: 6 },
+        { label: 'Instance Pools', path: '/app/system/instance-pools', icon: 'Droplet',         order: 7 },
+        { label: 'SDWAN',            path: '/app/system/sdwan',            icon: 'ShieldCheck',     order: 8 },
+        { label: 'Federation',       path: '/app/system/federation',       icon: 'Share2',          order: 9, permission: 'system.peers.read' },
+        { label: 'Service Delivery', path: '/app/system/service-delivery', icon: 'Workflow',        order: 10 },
+        { label: 'ACME',             path: '/app/system/acme',             icon: 'KeyRound',        order: 11 },
+        { label: 'Ingress',          path: '/app/system/ingress',          icon: 'Globe',           order: 12, permission: 'system.ingress.read' },
       ],
     },
   ]);

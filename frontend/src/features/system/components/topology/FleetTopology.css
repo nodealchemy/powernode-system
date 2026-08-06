@@ -1,0 +1,82 @@
+/*
+ * CSS overrides for @xyflow/react inside the Fleet Topology view.
+ * Same approach (and same reasons) as SystemTopology.css: the library
+ * ships light-mode defaults that render a white card behind our themed
+ * node renderers, a white Controls panel that vanishes in dark mode, and
+ * dark-on-dark edge labels.
+ *
+ * Scoped via the `.fleet-topology` wrapper class so the SDWAN topology,
+ * MissionTaskGraph, KnowledgeGraphVisualization, etc. are untouched.
+ */
+
+.fleet-topology .react-flow__background {
+  background: var(--color-background);
+}
+
+/* Strip the default white-card background from the node wrapper — the
+   custom renderers in FleetTopologyNodes.tsx own the visual styling and
+   need the wrapper transparent. */
+.fleet-topology .react-flow__node {
+  background: transparent;
+  border: none;
+  padding: 0;
+  box-shadow: none;
+  color: var(--color-text-primary);
+}
+
+/* Group nodes anchor the graph — their handles pick up the info colour
+   to match the themed border + icon. Everything below uses the xyflow
+   default handle colour, which reads fine against the surface. */
+.fleet-topology .react-flow__node-fleet-group .react-flow__handle {
+  background: var(--color-info);
+}
+
+.fleet-topology .react-flow__node.selected {
+  outline: 2px solid var(--color-info);
+  outline-offset: 4px;
+  border-radius: 0.5rem;
+}
+
+/* Zoom + fit-view controls (bottom-left). */
+.fleet-topology .react-flow__controls {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.fleet-topology .react-flow__controls-button {
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-bottom: 1px solid var(--color-border);
+  width: 28px;
+  height: 28px;
+}
+
+.fleet-topology .react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+.fleet-topology .react-flow__controls-button:hover {
+  background: var(--color-surface-hover);
+}
+
+.fleet-topology .react-flow__controls-button svg {
+  fill: var(--color-text-primary);
+  max-width: 14px;
+  max-height: 14px;
+}
+
+/* Edge labels — re-style the background pill + text. */
+.fleet-topology .react-flow__edge-text {
+  fill: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+.fleet-topology .react-flow__edge-textbg {
+  fill: var(--color-surface);
+  opacity: 0.92;
+}
+
+/* Attribution stays hidden via the proOptions prop on ReactFlow. */
