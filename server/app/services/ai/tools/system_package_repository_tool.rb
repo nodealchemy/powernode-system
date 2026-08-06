@@ -481,8 +481,21 @@ module Ai
 
       def create_module_from_package(params)
         repo = scoped_repos.find(params[:repository_id])
-        category = params[:category_id].present? ?
-                     @user.account.system_node_module_categories.find_by(id: params[:category_id]) : nil
+        # IMP-c33045a39443 — an unresolvable category_id used to yield nil and
+        # fall through to the materializer's DEFAULT category with a success
+        # envelope, so an agent that named a category got a different one and
+        # was never told. Absent is still fine (nil keeps the materializer's
+        # documented defaulting); NAMED-BUT-WRONG is now a refusal.
+        category = nil
+        if params[:category_id].present?
+          category = @user.account.system_node_module_categories.find_by(id: params[:category_id])
+          unless category
+            return error_result(
+              "category not found in this account: #{params[:category_id]} — " \
+              "omit category_id to use the default category"
+            )
+          end
+        end
         result = ::System::PackageModuleMaterializer.call(
           repository:          repo,
           package_name:        params[:package_name],

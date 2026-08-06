@@ -169,4 +169,45 @@ RSpec.describe Ai::Tools::SystemPackageRepositoryTool do
       expect(user_tool.send(:action_permitted?, gated_action)).to be false
     end
   end
+
+  # IMP-c33045a39443 — the category lookup used find_by, so a bogus or
+  # foreign category_id resolved to nil and the call materialized into the
+  # DEFAULT category with a success envelope. An agent that explicitly chose
+  # a category got its choice silently ignored, which is worse than an error:
+  # the modules land somewhere the caller did not ask for and nothing says so.
+  describe "system_create_module_from_package category resolution" do
+    let(:repo) { create(:system_package_repository, account: account) }
+
+    it "refuses an unknown category_id instead of falling back to the default" do
+      expect(::System::PackageModuleMaterializer).not_to receive(:call)
+
+      r = call("system_create_module_from_package", repository_id: repo.id,
+               package_name: "curl", category_id: SecureRandom.uuid)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/category/i)
+    end
+
+    it "refuses another account's category_id" do
+      foreign = create(:system_node_module_category, account: create(:account))
+      expect(::System::PackageModuleMaterializer).not_to receive(:call)
+
+      r = call("system_create_module_from_package", repository_id: repo.id,
+               package_name: "curl", category_id: foreign.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/category/i)
+    end
+
+    it "still allows the default when no category_id is supplied" do
+      # Absent is not the same as wrong: omitting the parameter keeps the
+      # materializer's own defaulting behavior, which its spec covers.
+      expect(::System::PackageModuleMaterializer).to receive(:call)
+        .with(hash_including(category: nil)).and_return(
+          instance_double("Result", success?: false, errors: [ "stubbed" ])
+        )
+
+      call("system_create_module_from_package", repository_id: repo.id, package_name: "curl")
+    end
+  end
 end
