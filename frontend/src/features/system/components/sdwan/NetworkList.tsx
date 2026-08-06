@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Network as NetworkIcon, Trash2, ChevronRight, Eye } from 'lucide-react';
+import { Network as NetworkIcon, Trash2, ChevronRight, ChevronDown, Eye, Waypoints } from 'lucide-react';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { SdwanTopology } from './SdwanTopology';
 import type { SdwanNetwork } from '../../types/sdwan.types';
 
 interface NetworkListProps {
@@ -15,9 +16,13 @@ interface NetworkListProps {
  * NetworkList — operator-facing list of SDWAN networks.
  *
  * Click a row to expand it inline showing basic details (CIDR slugs,
- * peer counts, description, settings, timestamps). Click the eye icon
- * in the actions column to open a richer detail modal that fetches
- * peers + topology preview.
+ * peer counts, description, settings, timestamps) plus a "Topology"
+ * disclosure that renders the SdwanTopology graph in place — the
+ * expanded-row basics stay a zero-fetch summary of already-loaded
+ * data, and the graph (its own topology + peer-roster fetch) loads
+ * only once an operator actually asks for it. Click the eye icon in
+ * the actions column to open the richer detail modal (7 tabs, of
+ * which Topology is one) for full peer/firewall/VIP/routing management.
  *
  * Slice 3 ships a flat-list rendering instead of useInfiniteResourceList
  * because the typical account has fewer than 50 networks; pagination/scroll
@@ -180,26 +185,57 @@ interface ExpandedRowDetailsProps {
   network: SdwanNetwork;
 }
 
-const ExpandedRowDetails: React.FC<ExpandedRowDetailsProps> = ({ network: n }) => (
-  <dl className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-    <DetailField label="Slug" value={n.slug} mono />
-    <DetailField label="CIDR" value={n.cidr_64} mono />
-    <DetailField label="Topology" value={(n.settings as { topology_strategy?: string })?.topology_strategy ?? '—'} />
-    {n.description && (
-      <DetailField label="Description" value={n.description} className="md:col-span-3" />
-    )}
-    <DetailField
-      label="Peer breakdown"
-      value={`${n.peer_count} total · ${n.hub_count ?? 0} hub${n.hub_count === 1 ? '' : 's'} · ${n.spoke_count ?? 0} spoke${n.spoke_count === 1 ? '' : 's'}`}
-    />
-    {n.created_at && (
-      <DetailField label="Created" value={new Date(n.created_at).toLocaleString()} />
-    )}
-    {n.updated_at && (
-      <DetailField label="Updated" value={new Date(n.updated_at).toLocaleString()} />
-    )}
-  </dl>
-);
+const ExpandedRowDetails: React.FC<ExpandedRowDetailsProps> = ({ network: n }) => {
+  const [showTopology, setShowTopology] = useState(false);
+
+  return (
+    <div className="space-y-3">
+      <dl className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+        <DetailField label="Slug" value={n.slug} mono />
+        <DetailField label="CIDR" value={n.cidr_64} mono />
+        <DetailField label="Topology" value={(n.settings as { topology_strategy?: string })?.topology_strategy ?? '—'} />
+        {n.description && (
+          <DetailField label="Description" value={n.description} className="md:col-span-3" />
+        )}
+        <DetailField
+          label="Peer breakdown"
+          value={`${n.peer_count} total · ${n.hub_count ?? 0} hub${n.hub_count === 1 ? '' : 's'} · ${n.spoke_count ?? 0} spoke${n.spoke_count === 1 ? '' : 's'}`}
+        />
+        {n.created_at && (
+          <DetailField label="Created" value={new Date(n.created_at).toLocaleString()} />
+        )}
+        {n.updated_at && (
+          <DetailField label="Updated" value={new Date(n.updated_at).toLocaleString()} />
+        )}
+      </dl>
+
+      {/* Gap G7 promotion — the peer/edge graph used to be reachable
+          only by opening the detail modal (eye icon → Topology tab).
+          This inline disclosure surfaces it a click closer, and stays
+          lazy (mounts SdwanTopology, which owns its own fetch, only
+          once toggled) so expanding a row never fires an extra
+          request an operator didn't ask for. */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowTopology((v) => !v)}
+          className="flex items-center gap-1.5 text-xs font-medium text-theme-info-fg hover:text-theme-primary transition-colors"
+          aria-expanded={showTopology}
+          data-testid={`toggle-topology-${n.id}`}
+        >
+          {showTopology ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <Waypoints size={14} />
+          Topology graph
+        </button>
+        {showTopology && (
+          <div className="mt-2">
+            <SdwanTopology networkId={n.id} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 interface DetailFieldProps {
   label: string;

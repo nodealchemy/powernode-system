@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, waitFor, act } from '@testing-library/react';
 import { SdwanTopology } from './SdwanTopology';
-import type { SdwanTopologyResponse } from '../../types/sdwan.types';
+import type { SdwanTopologyResponse, SdwanPeer } from '../../types/sdwan.types';
 
 // =============================================================================
 // Mocks
@@ -11,33 +11,46 @@ import type { SdwanTopologyResponse } from '../../types/sdwan.types';
 // ReactFlow is mocked to avoid canvas/DOM complexity in jsdom.
 // =============================================================================
 
-// Mock @xyflow/react so ReactFlow renders a sentinel div in jsdom.
+// Mock @xyflow/react so ReactFlow renders a sentinel div in jsdom. Each
+// node is also rendered as its own testid carrying the resolved node
+// `type` (hub/spoke) and label text, so tests can assert on hub/spoke
+// classification and label resolution without reaching into ReactFlow
+// internals.
 jest.mock('@xyflow/react', () => ({
   ReactFlow: ({
     nodes,
     edges,
     children,
   }: {
-    nodes: unknown[];
+    nodes: { id: string; type?: string; data: { label: string } }[];
     edges: unknown[];
     children?: React.ReactNode;
   }) => (
     <div data-testid="react-flow">
       <span data-testid="node-count">{nodes.length}</span>
       <span data-testid="edge-count">{edges.length}</span>
+      {nodes.map((n) => (
+        <div key={n.id} data-testid={`node-${n.id}`} data-node-type={n.type}>
+          {n.data.label}
+        </div>
+      ))}
       {children}
     </div>
   ),
   Background: () => <div data-testid="rf-background" />,
   Controls: () => <div data-testid="rf-controls" />,
+  Handle: () => null,
+  Position: { Top: 'top', Bottom: 'bottom' },
   MarkerType: { ArrowClosed: 'arrowclosed' },
 }));
 
 // Mock the sdwanApi facade — the component imports it as a named export.
 const mockGetTopology = jest.fn();
+const mockGetPeers = jest.fn();
 jest.mock('@system/features/system/services/api/sdwanApi', () => ({
   sdwanApi: {
     getTopology: (...args: unknown[]) => mockGetTopology(...args),
+    getPeers: (...args: unknown[]) => mockGetPeers(...args),
   },
 }));
 
@@ -132,6 +145,40 @@ const TOPOLOGY_WITH_PEERS: SdwanTopologyResponse = {
   peers: [HUB_PEER, SPOKE_PEER_1, SPOKE_PEER_2],
 };
 
+// Peer roster (sdwanApi.getPeers) fixtures — the only place
+// publicly_reachable and endpoint hostnames actually live. peer_id in
+// the topology view corresponds to `id` here.
+const HUB_PEER_ROW: SdwanPeer = {
+  id: 'peer-hub-1',
+  network_id: 'net-1',
+  node_instance_id: 'ni-hub-1',
+  assigned_address: 'fd12:3456::1:2345/128',
+  publicly_reachable: true,
+  endpoint_host_v6: 'hub.example.com',
+  listen_port: 51820,
+  status: 'active',
+};
+
+const SPOKE_PEER_ROW_1: SdwanPeer = {
+  id: 'peer-spoke-1',
+  network_id: 'net-1',
+  node_instance_id: 'ni-spoke-1',
+  assigned_address: 'fd12:3456::2:0001/128',
+  publicly_reachable: false,
+  listen_port: 51820,
+  status: 'active',
+};
+
+const SPOKE_PEER_ROW_2: SdwanPeer = {
+  id: 'peer-spoke-2',
+  network_id: 'net-1',
+  node_instance_id: 'ni-spoke-2',
+  assigned_address: 'fd12:3456::2:0002/128',
+  publicly_reachable: false,
+  listen_port: 51820,
+  status: 'active',
+};
+
 // A peer with multiple allowed_ips to test edge label formatting.
 const MULTI_IP_PEER = {
   peer_id: 'peer-multi',
@@ -187,6 +234,10 @@ const renderTopology = (props: { networkId: string; refreshKey?: number }) =>
 describe('SdwanTopology', () => {
   beforeEach(() => {
     mockGetTopology.mockReset();
+    mockGetPeers.mockReset();
+    // Default: no peer roster. Tests that need hub/label resolution
+    // override this with their own peers fixture.
+    mockGetPeers.mockResolvedValue({ peers: [] });
   });
 
   // ---------------------------------------------------------------------------
@@ -307,16 +358,40 @@ describe('SdwanTopology', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Hub vs spoke classification (isHub heuristic)
+  // Hub vs spoke classification — driven by the real publicly_reachable
+  // flag from the peer roster (sdwanApi.getPeers), not edge-count shape.
   // ---------------------------------------------------------------------------
-  it('treats a peer with peers.length > 1 as a hub (node count includes it)', async () => {
-    // Topology: hub peer (2 outgoing edges) + 2 spokes (1 edge each).
+  it('fetches the peer roster alongside the topology', async () => {
+    mockGetTopology.mockResolvedValue(TOPOLOGY_WITH_PEERS);
+    mockGetPeers.mockResolvedValue({ peers: [HUB_PEER_ROW, SPOKE_PEER_ROW_1, SPOKE_PEER_ROW_2] });
+
+    renderTopology({ networkId: 'net-1' });
+
+    await waitFor(() => expect(mockGetPeers).toHaveBeenCalledWith('net-1'));
+  });
+
+  it('classifies a peer as a hub only when the roster marks publicly_reachable true', async () => {
+    mockGetTopology.mockResolvedValue(TOPOLOGY_WITH_PEERS);
+    mockGetPeers.mockResolvedValue({ peers: [HUB_PEER_ROW, SPOKE_PEER_ROW_1, SPOKE_PEER_ROW_2] });
+
+    renderTopology({ networkId: 'net-1' });
+
+    await waitFor(() => expect(screen.getByTestId('node-peer-hub-1')).toBeInTheDocument());
+    expect(screen.getByTestId('node-peer-hub-1')).toHaveAttribute('data-node-type', 'hub');
+    expect(screen.getByTestId('node-peer-spoke-1')).toHaveAttribute('data-node-type', 'spoke');
+    expect(screen.getByTestId('node-peer-spoke-2')).toHaveAttribute('data-node-type', 'spoke');
+  });
+
+  it('treats a peer as a spoke when the roster has not loaded, even with 2 outgoing edges', async () => {
+    // Roster fetch defaults to { peers: [] } (see beforeEach) — a peer
+    // with 2 outgoing edges must NOT be misclassified as a hub via the
+    // old edge-count-symmetry heuristic.
     mockGetTopology.mockResolvedValue(TOPOLOGY_WITH_PEERS);
 
     renderTopology({ networkId: 'net-1' });
 
-    // All 3 peers become nodes regardless of hub/spoke classification.
-    await waitFor(() => expect(screen.getByTestId('node-count')).toHaveTextContent('3'));
+    await waitFor(() => expect(screen.getByTestId('node-peer-hub-1')).toBeInTheDocument());
+    expect(screen.getByTestId('node-peer-hub-1')).toHaveAttribute('data-node-type', 'spoke');
   });
 
   it('renders a single-peer topology without crashing (no edges)', async () => {
@@ -362,6 +437,34 @@ describe('SdwanTopology', () => {
 
     await waitFor(() => expect(mockGetTopology).toHaveBeenCalledTimes(2));
     expect(mockGetTopology).toHaveBeenNthCalledWith(2, 'net-2');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Label resolution — the roster's endpoint hostname wins over a
+  // synthesized address fragment; address is only a fallback.
+  // ---------------------------------------------------------------------------
+  it('labels a peer with its endpoint hostname when the roster provides one', async () => {
+    mockGetTopology.mockResolvedValue(TOPOLOGY_WITH_PEERS);
+    mockGetPeers.mockResolvedValue({ peers: [HUB_PEER_ROW, SPOKE_PEER_ROW_1, SPOKE_PEER_ROW_2] });
+
+    renderTopology({ networkId: 'net-1' });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('node-peer-hub-1')).toHaveTextContent('hub.example.com'),
+    );
+  });
+
+  it('falls back to a short address form when the roster has no hostname for the peer', async () => {
+    mockGetTopology.mockResolvedValue(TOPOLOGY_WITH_PEERS);
+    mockGetPeers.mockResolvedValue({ peers: [HUB_PEER_ROW, SPOKE_PEER_ROW_1, SPOKE_PEER_ROW_2] });
+
+    renderTopology({ networkId: 'net-1' });
+
+    // SPOKE_PEER_ROW_1 has no endpoint_host* — falls back to the last
+    // two hextets of its assigned_address.
+    await waitFor(() =>
+      expect(screen.getByTestId('node-peer-spoke-1')).toHaveTextContent('…2:0001'),
+    );
   });
 
   // ---------------------------------------------------------------------------
