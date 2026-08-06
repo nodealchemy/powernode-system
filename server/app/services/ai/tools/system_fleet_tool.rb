@@ -53,8 +53,14 @@ module Ai
         "system_reap_agent_fleet" => "system.node_instances.manage",
         "system_mint_peer_capability_token" => "system.node_instances.manage",
         "system_list_isolation_tiers" => "system.node_instances.read",
-        "system_list_templates"         => "system.nodes.read",
-        "system_get_template"           => "system.nodes.read",
+        # IMP-767c0448b8b9 — template actions take the templates family, not
+        # nodes.*: the registered catalog carries system.templates.{read,
+        # create,update,delete} (engine.rb `resource :templates`) and REST
+        # gates every template action there. Admin grant is identical either
+        # way; the families differ for system_worker (nodes grants it
+        # read+update, templates nothing), matching REST's refusal.
+        "system_list_templates"         => "system.templates.read",
+        "system_get_template"           => "system.templates.read",
         # IMP-20b3eb50da30 — design-time composition analysis. Reads a module
         # set and reports conflicts/footprint/graph; persists nothing. REST's
         # compose_preview is gated on templates.UPDATE only because it was
@@ -69,7 +75,7 @@ module Ai
         # Read-only ranking over the same rows list_modules/list_templates
         # already expose, so each takes the permission of its list counterpart.
         "system_discover_modules"       => "system.modules.read",
-        "system_discover_templates"     => "system.nodes.read",
+        "system_discover_templates"     => "system.templates.read",
         "system_module_publish_target"  => "system.modules.read",
         "system_module_publication_integrity" => "system.modules.read",
         "system_instance_hold_status"   => "system.instances.read",
@@ -84,8 +90,8 @@ module Ai
         "system_update_node"            => "system.nodes.update",
         "system_delete_node"            => "system.nodes.delete",
         "system_create_template"        => "system.templates.create",
-        "system_delete_template"        => "system.nodes.delete",
-        "system_update_template"        => "system.nodes.update",
+        "system_delete_template"        => "system.templates.delete",
+        "system_update_template"        => "system.templates.update",
         "system_update_instance"        => "system.instances.update",
         "system_delete_module"          => "system.modules.delete",
         "system_refresh_instance_modules" => "system.node_instances.manage",

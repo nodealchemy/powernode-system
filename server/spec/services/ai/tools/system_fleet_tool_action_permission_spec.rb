@@ -158,4 +158,52 @@ RSpec.describe Ai::Tools::SystemFleetTool, "per-action permissions" do
       end
     end
   end
+
+  # ── IMP-767c0448b8b9: template actions belong to the templates family ────
+  #
+  # Five template actions were gated on system.nodes.* while the registered
+  # catalog carries the full system.templates family (engine.rb `resource
+  # :templates`) and REST (node_templates_controller) gates every template
+  # action on system.templates.*. create + compose_preview already used the
+  # templates family, which made the nodes.* entries read as leftovers.
+  #
+  # NOTE on the worker divergence the finding named (nodes grants
+  # system_worker read+update; templates grants the worker nothing): a
+  # real-role behavioral assertion for that is NOT provable today because the
+  # system_worker role holds system.admin grant-all (see IMP-019fd140 /
+  # IMP-4bd5ac8ca3ad) — the worker clears every gate regardless of family.
+  # The mapping pins below are the enforceable half; the behavioral half
+  # becomes assertable when that grant-all is settled.
+  describe "template-family mapping (IMP-767c0448b8b9)" do
+    TEMPLATE_FAMILY = {
+      "system_list_templates"           => "system.templates.read",
+      "system_get_template"             => "system.templates.read",
+      "system_discover_templates"       => "system.templates.read",
+      "system_update_template"          => "system.templates.update",
+      "system_delete_template"          => "system.templates.delete",
+      # Already correct before this fix — pinned so a revert cannot sweep them.
+      "system_create_template"          => "system.templates.create",
+      "system_compose_preview_template" => "system.templates.read"
+    }.freeze
+
+    TEMPLATE_FAMILY.each do |action, perm|
+      it "maps #{action} to #{perm}" do
+        expect(described_class::ACTION_PERMISSIONS[action]).to eq(perm)
+      end
+    end
+
+    it "leaves no template action on the nodes family" do
+      strays = described_class::ACTION_PERMISSIONS
+               .select { |a, p| a.include?("template") && p.start_with?("system.nodes.") }
+      expect(strays).to be_empty,
+        "template actions gated on the nodes family: #{strays.inspect}"
+    end
+
+    it "admin (not super_admin) holds the templates family end to end" do
+      %w[read create update delete].each do |verb|
+        expect(admin.has_permission?("system.templates.#{verb}")).to be(true),
+          "admin lacks system.templates.#{verb} — retargeting would lock admins out"
+      end
+    end
+  end
 end
