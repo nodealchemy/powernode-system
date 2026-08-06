@@ -4323,4 +4323,58 @@ end
       expect(defn[:description]).to include("system_refresh_package_module")
     end
   end
+
+  # Closes the "author a module over MCP" gap: create/update now route a raw
+  # manifest.yaml through ManifestImportService so the module carries the
+  # authoritative manifest_yaml (+ derived specs) and is therefore buildable.
+  describe "MCP module authoring via manifest_yaml" do
+    let(:manifest) do
+      <<~YAML
+        schema_version: 1
+        name: ghtest
+        file_spec:
+          - "/usr/local/bin/ghtest"
+        package_spec: []
+        reboot_required: false
+      YAML
+    end
+
+    it "declares manifest_yaml on both create and update" do
+      defs = described_class.action_definitions
+      expect(defs.fetch("system_create_module")[:parameters]).to include(:manifest_yaml, :create_version)
+      expect(defs.fetch("system_update_module")[:parameters]).to include(:manifest_yaml)
+    end
+
+    it "creates a module carrying the imported manifest_yaml + derived specs (so it is buildable)" do
+      r = call("system_create_module", name: "ghtest", node_platform_id: platform_record.id,
+                                        category_id: category.id, manifest_yaml: manifest)
+      expect(r[:success]).to be(true)
+
+      mod = ::System::NodeModule.find(r[:data][:node_module][:id])
+      expect(mod.manifest_yaml).to be_present
+      expect(mod.manifest_yaml).to include("ghtest")
+      # a non-blank manifest_yaml is exactly what ModuleBuildPlannerService#known_module_names
+      # requires to plan a build — the piece that was missing over MCP.
+      expect(mod.file_spec).to be_present
+      expect(r[:data][:node_module_version_id]).to be_present
+    end
+
+    it "rejects an invalid manifest and leaves no half-authored row behind" do
+      before = ::System::NodeModule.where(account: account).count
+      r = call("system_create_module", name: "badmod", node_platform_id: platform_record.id,
+                                        category_id: category.id,
+                                        manifest_yaml: "schema_version: 1\nname: badmod\nfile_spec:\n  - \"/home/evil\"\n")
+      expect(r[:success]).to be(false)
+      expect(r[:error]).to match(/manifest import failed/)
+      expect(::System::NodeModule.where(account: account).count).to eq(before)
+    end
+
+    it "re-imports a manifest onto an existing module via update" do
+      mod = create(:system_node_module, account: account, node_platform: platform_record, name: "upmod")
+      r = call("system_update_module", module_id: mod.id,
+                                       manifest_yaml: "schema_version: 1\nname: upmod\nfile_spec:\n  - \"/usr/local/bin/upmod\"\nreboot_required: false\n")
+      expect(r[:success]).to be(true)
+      expect(mod.reload.manifest_yaml).to include("upmod")
+    end
+  end
 end
