@@ -159,6 +159,44 @@ RSpec.describe Ai::Tools::SystemFleetTool, "per-action permissions" do
     end
   end
 
+  # ── IMP-51296ff7208a: canary marking stays worker-only, and says so ──────
+  #
+  # An offer proposed retargeting system_module_mark_canary to
+  # system.modules.update to match REST. Refused: this action is already
+  # pinned in LEFT_ON_FLEET_AUTONOMY above as a deliberate exception
+  # ("marks a honeypot deception asset"), and placing a decoy is an autonomy
+  # decision rather than ordinary module editing. What WAS missing is the
+  # thing that makes a deliberate denial readable — the restriction appears
+  # in neither the description nor the denial message, so an admin hitting it
+  # debugs a misconfiguration that does not exist.
+  describe "worker-only canary marking (IMP-51296ff7208a)" do
+    it "keeps mark_canary on the autonomy grant" do
+      expect(described_class::ACTION_PERMISSIONS["system_module_mark_canary"])
+        .to eq("system.fleet.autonomy")
+    end
+
+    it "explains the restriction in the denial message rather than reading as an outage" do
+      msg = described_class.new(account: account, user: admin)
+                           .send(:permission_denied_message, "system_module_mark_canary")
+      expect(msg).to match(/by design|worker/i),
+        "a deliberate worker-only denial must say so — see WORKER_ONLY_ACTIONS"
+    end
+
+    it "states the restriction in the action description too" do
+      desc = described_class.action_definitions.dig("system_module_mark_canary", :description)
+      expect(desc).to match(/autonomy|worker/i)
+    end
+
+    # The inverse is deliberately NOT worker-only: an operator must always be
+    # able to CLEAR a decoy that is firing wrongly, and REST already allows
+    # exactly that (unmark_canary requires system.modules.update), so MCP
+    # matching it widens nothing.
+    it "leaves unmark reachable by an ordinary module editor" do
+      expect(described_class::ACTION_PERMISSIONS["system_unmark_module_canary"])
+        .to eq("system.modules.update")
+    end
+  end
+
   # ── IMP-767c0448b8b9: template actions belong to the templates family ────
   #
   # Five template actions were gated on system.nodes.* while the registered

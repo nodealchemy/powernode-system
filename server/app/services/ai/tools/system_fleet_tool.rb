@@ -1199,7 +1199,7 @@ module Ai
             parameters: { id: { type: "string", required: true, description: "UUID of the empty InstancePool to delete (account-scoped)" } }
           },
           "system_module_mark_canary" => {
-            description: "Mark a NodeModule as a honeypot canary (config['honeypot']['canary'] = true). Canary modules are decoys — any access triggers a high-severity FleetEvent via honeypot_access_sensor. Idempotent — re-marking is a no-op.",
+            description: "Mark a NodeModule as a honeypot canary (config['honeypot']['canary'] = true). Canary modules are decoys — any access triggers a high-severity FleetEvent via honeypot_access_sensor. Idempotent — re-marking is a no-op. RESTRICTED BY DESIGN: placing a decoy is an autonomy decision, so this takes the worker-only system.fleet.autonomy grant; clearing one via system_unmark_module_canary needs only system.modules.update.",
             parameters: {
               module_id: { type: "string", required: true, description: "UUID of the NodeModule to mark as a honeypot canary" },
               lure_kind: { type: "string", required: false, description: "Display label for the canary (default 'credential_store')" }
@@ -1685,7 +1685,18 @@ module Ai
       # non-admin caller isn't a misconfiguration to fix — it's the intended
       # shape — so the message says so instead of reading like an outage.
       WORKER_ONLY_ACTIONS = {
-        "system_dispatch_module_build_batch" => "granted only to the system_worker role by design (bounds a leaked non-admin token's blast radius); ordinary agent/operator principals cannot invoke this action — a system.admin holder still can, via the has_permission? short-circuit"
+        "system_dispatch_module_build_batch" => "granted only to the system_worker role by design (bounds a leaked non-admin token's blast radius); ordinary agent/operator principals cannot invoke this action — a system.admin holder still can, via the has_permission? short-circuit",
+        # IMP-51296ff7208a — an offer proposed retargeting this to
+        # system.modules.update to match REST's mark_canary. Refused: PLACING
+        # a decoy is an autonomy decision, not ordinary module editing, and
+        # this action is pinned as a deliberate exception in
+        # system_fleet_tool_action_permission_spec's LEFT_ON_FLEET_AUTONOMY.
+        # The gap was that the deliberate denial did not say it was
+        # deliberate. Note the asymmetry is intended: CLEARING a canary
+        # (system_unmark_module_canary) takes system.modules.update, so an
+        # operator can always silence a decoy that is firing wrongly — REST
+        # already permits exactly that, so nothing widens.
+        "system_module_mark_canary" => "placing a honeypot decoy is an autonomy decision, so it is granted only to the system_worker role by design; clearing one (system_unmark_module_canary) needs just system.modules.update, which any module editor holds — a system.admin holder can still mark, via the has_permission? short-circuit"
       }.freeze
 
       def permission_denied_message(action)
