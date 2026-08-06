@@ -26,9 +26,12 @@ module Ai
       # to know them. (IMP-e89d83547bad)
       INNER_ACTION_KEYS = %i[op maintenance_action resilience_action].freeze
 
-      # Per-action permission map. Aligned with the platform's seeded
-      # `system.<resource>.<action>` naming (per
-      # extensions/system/server/db/migrate/20260429120000_seed_system_extension_permissions_and_flags.rb).
+      # Per-action permission map. Aligned with the registered
+      # `system.<resource>.<action>` catalog — the authoritative home is the
+      # Permissions.register_catalog(namespace: "system") block in
+      # server/lib/powernode_system/engine.rb (the old permission-seed
+      # migration was deleted in the squash into
+      # server/db/migrate/20250101000009_system_baseline.rb).
       # Internal callers (system services, autonomy reconcilers) bypass
       # this check by passing `internal: true` to .new — passing user: nil
       # alone is NOT a bypass (IMP-9030413bc292).
