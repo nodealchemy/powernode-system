@@ -63,7 +63,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [controllers, services, models-lib]
+        suite: [controllers, services, models-lib, misc]
     # Service addressing: sidecars publish container ports to the host;
     # the job container reaches them at the docker bridge gateway IP
     # (172.17.0.1 on a default Linux docker setup), NOT localhost.
@@ -191,9 +191,12 @@ jobs:
 
       - name: Run system extension specs (${{ matrix.suite }})
         working-directory: powernode-platform/server
-        # Each suite runs a disjoint subset. Adding a new spec directory?
-        # Slot it into the closest-matching bucket here so total coverage stays
-        # at 100% across the matrix.
+        # Each named suite runs a disjoint subset; `misc` sweeps every
+        # remaining top-level spec directory, so a NEW directory is covered by
+        # default without editing this file. Move a directory into a named
+        # bucket only when it needs its own lane — and then add its name to
+        # `claimed` below. spec/scripts/ci_matrix_spec_coverage_spec.rb fails
+        # if a claimed directory is not explicitly run by a named suite.
         run: |
           case "${{ matrix.suite }}" in
             controllers)
@@ -204,6 +207,20 @@ jobs:
               ;;
             models-lib)
               paths="../extensions/system/server/spec/models ../extensions/system/server/spec/lib ../extensions/system/server/spec/integration"
+              ;;
+            misc)
+              # Sweep: everything not claimed by a named suite above. The
+              # helper dirs (factories/fixtures/support) carry no *_spec.rb
+              # and are loaded by rails_helper, so they are claimed too.
+              claimed="controllers requests services models lib integration factories fixtures support"
+              paths=""
+              for d in ../extensions/system/server/spec/*/; do
+                name=$(basename "$d")
+                case " $claimed " in
+                  *" $name "*) ;;
+                  *) paths="$paths ${d%/}" ;;
+                esac
+              done
               ;;
             *)
               echo "FATAL: unknown matrix.suite=${{ matrix.suite }}"
