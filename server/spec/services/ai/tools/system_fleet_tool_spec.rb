@@ -1445,6 +1445,66 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # IMP-0cea3952202c — AI-first parity: an agent could DELETE a module it had
+  # no way to author or repair, system.modules.create was registered but
+  # referenced by no MCP action, and mark_canary had no inverse.
+  describe "Modules — create / update / unmark canary" do
+    it "system_create_module authors a module from the REST create surface" do
+      r = call("system_create_module", name: "authored-1", node_platform_id: platform_record.id,
+               category_id: category.id, variety: "subscription",
+               description: "authored over MCP", priority: 40,
+               package_spec: "curl\njq", config: { "zone" => "edge" })
+      expect(r[:success]).to be true
+      m = System::NodeModule.find(r.dig(:data, :node_module, :id))
+      expect(m.name).to eq("authored-1")
+      expect(m.description).to eq("authored over MCP")
+      expect(m.priority).to eq(40)
+      expect(m.config).to include("zone" => "edge")
+      expect(m.account_id).to eq(account.id)
+    end
+
+    it "system_create_module returns a clean envelope on validation failure" do
+      r = call("system_create_module", name: "", node_platform_id: platform_record.id)
+      expect(r[:success]).to be false
+      expect(r[:error]).to be_present
+    end
+
+    it "system_update_module edits an existing module" do
+      m = create(:system_node_module, account: account, node_platform: platform_record,
+                 category: category, name: "editable", description: "before")
+      r = call("system_update_module", module_id: m.id, description: "after", enabled: false)
+      expect(r[:success]).to be true
+      m.reload
+      expect(m.description).to eq("after")
+      expect(m.enabled).to be false
+    end
+
+    it "system_update_module refuses an empty edit" do
+      m = create(:system_node_module, account: account, node_platform: platform_record,
+                 category: category, name: "untouched")
+      r = call("system_update_module", module_id: m.id)
+      expect(r[:success]).to be false
+    end
+
+    it "system_update_module does not reach another account's module" do
+      other = create(:system_node_module, account: create(:account))
+      r = call("system_update_module", module_id: other.id, description: "hijack")
+      expect(r[:success]).to be false
+      expect(other.reload.description).not_to eq("hijack")
+    end
+
+    it "system_unmark_module_canary clears the flag mark_canary sets" do
+      m = create(:system_node_module, account: account, node_platform: platform_record,
+                 category: category, name: "canary-target")
+      call("system_module_mark_canary", module_id: m.id)
+      expect(System::Honeypot::CanaryModuleService.canary?(node_module: m.reload)).to be true
+
+      r = call("system_unmark_module_canary", module_id: m.id)
+      expect(r[:success]).to be true
+      expect(System::Honeypot::CanaryModuleService.canary?(node_module: m.reload)).to be false
+    end
+  end
+
   describe "Modules + Versions" do
     let!(:mod) do
       create(:system_node_module,

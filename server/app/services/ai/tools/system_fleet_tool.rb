@@ -93,6 +93,13 @@ module Ai
         "system_delete_template"        => "system.templates.delete",
         "system_update_template"        => "system.templates.update",
         "system_update_instance"        => "system.instances.update",
+        "system_create_module"          => "system.modules.create",
+        "system_update_module"          => "system.modules.update",
+        # The inverse of system_module_mark_canary. Gated on modules.update to
+        # match REST's unmark_canary — deliberately NOT on the worker-only
+        # system.fleet.autonomy that mark_canary carries, so an operator who
+        # can set the flag over REST can always clear it over MCP.
+        "system_unmark_module_canary"   => "system.modules.update",
         "system_delete_module"          => "system.modules.delete",
         "system_refresh_instance_modules" => "system.node_instances.manage",
         "system_upgrade_boot_image"     => "system.node_instances.manage",
@@ -382,6 +389,62 @@ module Ai
           "system_delete_module" => {
             description: "Delete a NodeModule. Cascades child_modules, versions, node_module_assignments, template_modules, module_puppet_assignments, module_dependencies.",
             parameters: { module_id: { type: "string", required: true, description: "UUID of the NodeModule to delete (account-scoped)" } }
+          },
+          "system_create_module" => {
+            description: "Author a new NodeModule. Same surface as REST create. Spec fields (mask/file_spec/package_spec/dependency_spec/protected_spec) take newline-joined glob strings or already-encoded arrays. Reuse-first: run system_discover_modules before authoring — a duplicate module is the failure this action makes cheap.",
+            parameters: {
+              name: { type: "string", required: true, description: "Module name (unique per account)" },
+              node_platform_id: { type: "string", required: true, description: "UUID of the NodePlatform this module targets" },
+              category_id: { type: "string", required: false, description: "UUID of the NodeModuleCategory" },
+              variety: { type: "string", required: false, description: "Module variety (e.g. subscription, instance)" },
+              description: { type: "string", required: false, description: "Free-text description" },
+              enabled: { type: "boolean", required: false, description: "Whether the module is enabled" },
+              public: { type: "boolean", required: false, description: "Whether the module is publicly visible" },
+              priority: { type: "integer", required: false, description: "Composition priority (lower applies first)" },
+              copy_path_id: { type: "string", required: false, description: "UUID of a module to copy paths from" },
+              lock_spec: { type: "boolean", required: false, description: "Lock the spec fields against further edits" },
+              init_start: { type: "string", required: false, description: "Init start command" },
+              init_stop: { type: "string", required: false, description: "Init stop command" },
+              init_restart: { type: "string", required: false, description: "Init restart command" },
+              reboot_required: { type: "boolean", required: false, description: "Whether applying this module requires a reboot" },
+              mask: { type: "string", required: false, description: "Mask spec — newline-joined globs or encoded array" },
+              file_spec: { type: "string", required: false, description: "File spec — newline-joined globs or encoded array" },
+              package_spec: { type: "string", required: false, description: "Package spec — newline-joined names or encoded array" },
+              dependency_spec: { type: "string", required: false, description: "Dependency spec — newline-joined entries or encoded array" },
+              protected_spec: { type: "string", required: false, description: "Protected-path spec — newline-joined globs or encoded array" },
+              consent_budget_per_day: { type: "integer", required: false, description: "Daily ceiling on autonomous decisions for this module (policy; the consumed-count ledger is not settable here)" },
+              config: { type: "object", required: false, description: "Arbitrary module config hash" }
+            }
+          },
+          "system_update_module" => {
+            description: "Update an existing NodeModule's mutable attributes. Accepts the same fields as system_create_module; absent fields are left untouched. Does NOT accept the consent-budget consumed-count ledger — that is maintained by the autonomy gate.",
+            parameters: {
+              module_id: { type: "string", required: true, description: "UUID of the NodeModule to update (account-scoped)" },
+              name: { type: "string", required: false, description: "New module name" },
+              description: { type: "string", required: false, description: "New description" },
+              variety: { type: "string", required: false, description: "New variety" },
+              enabled: { type: "boolean", required: false, description: "Enable or disable the module" },
+              public: { type: "boolean", required: false, description: "Publicly visible or not" },
+              priority: { type: "integer", required: false, description: "Composition priority" },
+              node_platform_id: { type: "string", required: false, description: "Retarget to another NodePlatform" },
+              category_id: { type: "string", required: false, description: "Recategorize the module" },
+              lock_spec: { type: "boolean", required: false, description: "Lock/unlock the spec fields" },
+              init_start: { type: "string", required: false, description: "Init start command" },
+              init_stop: { type: "string", required: false, description: "Init stop command" },
+              init_restart: { type: "string", required: false, description: "Init restart command" },
+              reboot_required: { type: "boolean", required: false, description: "Whether applying requires a reboot" },
+              mask: { type: "string", required: false, description: "Mask spec" },
+              file_spec: { type: "string", required: false, description: "File spec" },
+              package_spec: { type: "string", required: false, description: "Package spec" },
+              dependency_spec: { type: "string", required: false, description: "Dependency spec" },
+              protected_spec: { type: "string", required: false, description: "Protected-path spec" },
+              consent_budget_per_day: { type: "integer", required: false, description: "Daily ceiling on autonomous decisions for this module" },
+              config: { type: "object", required: false, description: "Arbitrary module config hash" }
+            }
+          },
+          "system_unmark_module_canary" => {
+            description: "Clear the honeypot canary flag on a NodeModule — the inverse of system_module_mark_canary. Removes the honeypot key from config and leaves the rest untouched.",
+            parameters: { module_id: { type: "string", required: true, description: "UUID of the NodeModule to unmark (account-scoped)" } }
           },
           "system_refresh_instance_modules" => {
             description: "Force re-apply all assigned modules to an instance — queues a reconcile task. Useful when instance has drifted from desired template state.",
@@ -1426,6 +1489,9 @@ module Ai
         when "system_create_template"          then create_template(params)
         when "system_delete_template"          then delete_template(params)
         when "system_update_template"          then update_template(params)
+        when "system_create_module"            then create_module(params)
+        when "system_update_module"            then update_module(params)
+        when "system_unmark_module_canary"     then unmark_module_canary(params)
         when "system_delete_module"            then delete_module(params)
         when "system_refresh_instance_modules" then refresh_instance_modules(params)
         when "system_upgrade_boot_image"       then upgrade_boot_image(params)
@@ -1740,6 +1806,57 @@ module Ai
         attrs[:admin_user]       = params[:admin_user]       if params[:admin_user].present?
         attrs[:config]           = params[:config]           if params[:config].is_a?(Hash)
         attrs
+      end
+
+      # IMP-0cea3952202c — AI-first parity for the NodeModule resource. An
+      # agent could delete a module it had no way to author or repair, and
+      # system.modules.create was registered but referenced by no MCP action.
+      # Mirrors node_modules_controller's node_module_params, minus
+      # consent_budget_used_count / consent_budget_window_start_at: those are
+      # the RUNTIME ledger the autonomy gate maintains, and letting an agent
+      # write them would let it reset its own consumed budget. The ceiling
+      # (consent_budget_per_day) stays settable — that is policy, not ledger.
+      MODULE_WRITE_FIELDS = %i[
+        name description variety enabled public priority
+        node_platform_id category_id copy_path_id
+        lock_spec init_start init_stop init_restart reboot_required
+        mask file_spec package_spec dependency_spec protected_spec
+        consent_budget_per_day config
+      ].freeze
+
+      def module_attrs(params)
+        params.slice(*MODULE_WRITE_FIELDS).to_h.compact
+      end
+
+      def create_module(params)
+        node_module = account_modules.build(module_attrs(params))
+        node_module.save!
+        success_result(node_module: serialize_module_full(node_module))
+      end
+
+      def update_module(params)
+        node_module = account_modules.find(params[:module_id])
+        attrs = module_attrs(params)
+        return error_result("no mutable fields supplied") if attrs.empty?
+
+        node_module.update!(attrs)
+        success_result(node_module: serialize_module_full(node_module.reload))
+      end
+
+      # The inverse of system_module_mark_canary, which had none — an agent
+      # could set the honeypot flag and never clear it. Mirrors
+      # node_modules_controller#unmark_canary: drop the honeypot key, leave
+      # the rest of config alone.
+      def unmark_module_canary(params)
+        node_module = account_modules.find(params[:module_id])
+        if node_module.config&.dig("honeypot")
+          new_config = node_module.config.deep_dup
+          new_config.delete("honeypot")
+          node_module.update!(config: new_config)
+        end
+        success_result(unmarked: true, module_id: node_module.id,
+                       module_name: node_module.name,
+                       canary: ::System::Honeypot::CanaryModuleService.canary?(node_module: node_module.reload))
       end
 
       def delete_module(params)
