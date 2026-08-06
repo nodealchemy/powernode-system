@@ -43,6 +43,7 @@ module Ai
             display_name:    { type: "string",  required: false },
             description:     { type: "string",  required: false },
             kernel_options:  { type: "string",  required: false },
+            aliases:         { type: "array",   required: false },
             enabled:         { type: "boolean", required: false },
             public:          { type: "boolean", required: false },
             is_canonical:    { type: "boolean", required: false },
@@ -77,6 +78,7 @@ module Ai
               display_name: { type: "string",  required: false, description: "Human-friendly display label for the catalog UI" },
               description:  { type: "string",  required: false, description: "Optional free-text description of the architecture" },
               kernel_options: { type: "string", required: false, description: "Default kernel boot options associated with this architecture" },
+              aliases:      { type: "array", required: false, description: "Alternate names this architecture is known by (e.g. [\"x86_64\"] for amd64) — stored lowercased and deduplicated, and consulted when matching an arch string" },
               enabled:      { type: "boolean", required: false, description: "Whether the architecture is enabled for use (default true)" },
               public:       { type: "boolean", required: false, description: "Whether the architecture is publicly visible (default true)" }
             }
@@ -86,7 +88,7 @@ module Ai
             parameters: {
               architecture_id: { type: "string", required: true, description: "UUID of the custom architecture to update" },
               attributes:      { type: "object", required: true,
-                                  description: "Allowed: name, family, apt_name, rpm_name, display_name, description, kernel_options, enabled, public" }
+                                  description: "Allowed: name, family, apt_name, rpm_name, display_name, description, kernel_options, aliases, enabled, public" }
             }
           },
           "system_delete_architecture" => {
@@ -104,6 +106,7 @@ module Ai
               rpm_name:     { type: "string",  required: false, description: "RPM/DNF arch label for the proposed architecture" },
               display_name: { type: "string",  required: false, description: "Human-friendly display label for the catalog UI" },
               description:  { type: "string",  required: false, description: "Optional free-text description of the proposed architecture" },
+              aliases:      { type: "array",   required: false, description: "Alternate names for the proposed architecture — carried into the proposal so approval materializes the same row a direct create would" },
               justification: { type: "string", required: false, description: "Why this architecture should be added — surfaces in the approval UI" }
             }
           }
@@ -231,8 +234,11 @@ module Ai
 
         title = "Add architecture: #{params[:name]}"
 
+        # aliases rides the proposal (IMP-77a46f475912): the slice previously
+        # dropped it, so an approved proposal materialized a DIFFERENT row
+        # than the same arguments passed to create_architecture would.
         proposed = create_attrs(params).merge(is_canonical: false).slice(
-          :name, :family, :apt_name, :rpm_name, :display_name, :description
+          :name, :family, :apt_name, :rpm_name, :display_name, :description, :aliases
         )
 
         proposal = ::Ai::AgentProposal.new(

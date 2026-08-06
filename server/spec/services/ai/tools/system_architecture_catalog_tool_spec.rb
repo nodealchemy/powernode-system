@@ -324,4 +324,35 @@ RSpec.describe Ai::Tools::SystemArchitectureCatalogTool do
       expect(user_tool.send(:action_permitted?, gated_action)).to be false
     end
   end
+
+  # IMP-77a46f475912 — aliases is fully writable (create_attrs +
+  # ALLOWED_UPDATE_KEYS) and is returned by serialize, but no MCP schema
+  # declared it. validate_params! only enforces REQUIRED params, so the
+  # attribute worked and was simply invisible: the schema is the only surface
+  # an agent sees, so no agent would ever set it.
+  describe "schema declares every writable attribute" do
+    it "declares aliases on create, update and propose" do
+      defs = described_class.action_definitions
+      expect(defs.dig("system_create_architecture", :parameters)).to have_key(:aliases)
+      expect(defs.dig("system_propose_architecture", :parameters)).to have_key(:aliases)
+      # update takes a free-form `attributes` object; its description must at
+      # least name aliases so the allowed key set is discoverable.
+      expect(defs.dig("system_update_architecture", :parameters, :attributes, :description))
+        .to include("aliases")
+    end
+
+    it "declares aliases on the generic top-level definition" do
+      expect(described_class.definition[:parameters]).to have_key(:aliases)
+    end
+
+    it "carries aliases through the propose path, not just direct create" do
+      # The before block seeds the Fleet Autonomy agent the propose path
+      # falls back to, so call_as is enough here.
+      r = call_as(propose_user, "system_propose_architecture", name: "loongarch64",
+                  family: "other", aliases: %w[loong64])
+      expect(r[:success]).to be true
+      proposal = ::Ai::AgentProposal.find(r.dig(:data, :proposal_id))
+      expect(proposal.proposed_changes.dig("attributes", "aliases")).to eq(%w[loong64])
+    end
+  end
 end
