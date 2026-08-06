@@ -159,6 +159,39 @@ RSpec.describe Ai::Tools::SystemFleetTool, "per-action permissions" do
     end
   end
 
+  # ── IMP-dcf2e39e92ed: a join mutation is a TEMPLATE mutation ─────────────
+  #
+  # REST gated the three TemplateModule mutations on system.templates.update
+  # while MCP used system.modules.update. Both readings are defensible, so
+  # this pins the decision and its reason rather than leaving two conventions:
+  # the join row belongs_to the TEMPLATE, the tool's own
+  # record_template_blast_radius reports the change against the TEMPLATE's
+  # live nodes, and REST already said so. Aligning also finishes the direction
+  # IMP-767c0448b8b9 started (template surfaces take the templates family).
+  #
+  # The pre-existing in-map invariant survives: assign / update / unassign all
+  # share ONE grant, so disabling a join (the non-destructive alternative)
+  # stays reachable by anyone who can unassign it.
+  describe "template-module join family (IMP-dcf2e39e92ed)" do
+    JOIN_ACTIONS = %w[
+      system_assign_module_to_template
+      system_update_template_module
+      system_unassign_module_from_template
+    ].freeze
+
+    JOIN_ACTIONS.each do |action|
+      it "gates #{action} on system.templates.update, matching REST" do
+        expect(described_class::ACTION_PERMISSIONS[action]).to eq("system.templates.update")
+      end
+    end
+
+    it "keeps all three join mutations on one grant" do
+      grants = JOIN_ACTIONS.map { |a| described_class::ACTION_PERMISSIONS[a] }.uniq
+      expect(grants.size).to eq(1),
+        "disabling a join must stay reachable by anyone who can unassign it"
+    end
+  end
+
   # ── IMP-51296ff7208a: canary marking stays worker-only, and says so ──────
   #
   # An offer proposed retargeting system_module_mark_canary to

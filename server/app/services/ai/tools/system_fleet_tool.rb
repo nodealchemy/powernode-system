@@ -106,11 +106,17 @@ module Ai
         "system_delete_module"          => "system.modules.delete",
         "system_refresh_instance_modules" => "system.node_instances.manage",
         "system_upgrade_boot_image"     => "system.node_instances.manage",
-        "system_assign_module_to_template" => "system.modules.update",
+        # IMP-dcf2e39e92ed — a join mutation is a TEMPLATE mutation. The row
+        # belongs_to the template, record_template_blast_radius reports the
+        # change against the TEMPLATE's live nodes, and REST
+        # (template_modules_controller) already gated all three on
+        # templates.update — so this ends the two-conventions split rather
+        # than leaving each surface with its own defensible reading.
+        "system_assign_module_to_template" => "system.templates.update",
         # Deliberately the same grant as assign/unassign: disabling a join is
         # the non-destructive alternative to unassigning it, so anyone who can
         # do the destructive removal must be able to reach the safe one.
-        "system_update_template_module" => "system.modules.update",
+        "system_update_template_module" => "system.templates.update",
         "system_provision_instance"     => "system.instances.create",
         "system_terminate_instance"     => "system.instances.control",
         "system_destroy_instance"       => "system.instances.control",
@@ -225,7 +231,7 @@ module Ai
         "system_get_cve_exposure"              => "system.modules.read",
         "system_create_cve"                    => "system.fleet.autonomy",
         "system_delete_cve"                    => "system.fleet.autonomy",
-        "system_unassign_module_from_template" => "system.modules.update",
+        "system_unassign_module_from_template" => "system.templates.update",
         # Toggle a NodeModuleAssignment's enabled flag (mirrors the
         # NodeModuleAssignmentsController enable/disable member actions).
         "system_update_module_assignment"      => "system.modules.update",
