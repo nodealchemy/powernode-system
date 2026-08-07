@@ -188,6 +188,14 @@ module System
     end
 
     def mark_failed!(publication, error_message)
+      # A raise inside publish!'s transaction rolls the DB back to :verifying
+      # while the in-memory object still says :published — AASM's rollback
+      # reverts rows, not Ruby attributes — and mark_failed has no
+      # published→failed transition, so without a resync the event silently
+      # no-ops (whiny_transitions: false) and the row strands in :verifying,
+      # still carrying rolled-back file_object ids that the failure save
+      # would then re-persist. Reload discards both desyncs first.
+      publication.reload if publication.persisted?
       publication.mark_failed!(error_message)
       publication.node_platform.update_columns(
         disk_image_publication_status: "failed",
