@@ -85,7 +85,7 @@ func NewServerManager(client *Client, modules ModulesAPI, applier ServerApplier,
 		Modules:   modules,
 		Applier:   applier,
 		NodeID:    nodeID,
-		StatePath: DefaultServerStatePath,
+		StatePath: defaultServerStatePath,
 		OnError:   onError,
 	}
 	m.loadState()
