@@ -55,6 +55,44 @@ mask:
   # lower-layer file, the agent's writable-upper write wins.
   - "/etc/hostname"
 
+# NOTE ON rootfs/sbin — LOAD-BEARING, do NOT delete.
+#
+# `rootfs/sbin` is a checked-in symlink to `usr/sbin`: this module ships the
+# usr-merge layout itself rather than relying on anything to synthesise it.
+#
+# Why it is needed at all. The file_spec below carves `/sbin/**` and `/bin/**`
+# — children, never the bare entry — so the distro's own top-level usr-merge
+# symlinks are dropped by the carve and NO layer ships /sbin. Something must
+# then create it post-compose, and on a stale boot image that something creates
+# it WRONG: pre-c0e6e7e2 `ensureCanonicalInit` ran an unconditional
+# `os.MkdirAll(sysroot/sbin)` (agent/cmd/powernode-agent/commands.go:503 at
+# c0e6e7e2^), materialising /sbin as a DIRECTORY. overlayfs cannot merge a
+# directory with a lower-layer symlink, so all of /usr/sbin vanishes from /sbin
+# — 1 visible entry against 221 on dev-cell, 2026-08-07. That silently breaks
+# every consumer that resolves by /sbin path, including two the kernel itself
+# hardcodes: kernel.modprobe=/sbin/modprobe (request_module autoload) and
+# kernel.poweroff_cmd=/sbin/poweroff (orderly_poweroff) — plus qemu-ga's
+# guest-shutdown exec of /sbin/shutdown, which degrades every `qm shutdown`
+# into a hard power-off on a node running Postgres.
+#
+# Why shipping it HERE fixes nodes running that stale image. With the symlink in
+# this erofs lower, the old binary's first probe — `os.Stat(sysroot/sbin/init)`
+# (commands.go:494-500 at c0e6e7e2^) — resolves THROUGH it to usr/sbin/init and
+# early-returns, so the MkdirAll is never reached. The fix therefore lands
+# without waiting on a UKI rebuild, which is not deliverable by `agent update`,
+# a module overlay, or an LKG retarget.
+#
+# Why it does not fight the eventual image fix. Every actor that touches /sbin
+# is create-only-if-absent — the fixed `ensureSbin` Lstat-early-returns
+# (commands.go:549-550), and the old MkdirAll no-ops on an existing symlink. So
+# image-fix and module-fix coexist. A tmpfiles.d `L+` fragment would NOT: it
+# force-replaces. Do not "simplify" this into one.
+#
+# Ship ONLY `sbin`. /bin and /lib come out correct without help, and /lib64's
+# target is arch-specific — hardcoding it here would break non-amd64 siblings.
+# This belongs in the OS layer, not powernode-system-base, because it describes
+# THIS distro's layout; an Alpine sibling ships its own.
+
 file_spec:
   - "/etc/**"
   - "/usr/bin/**"
@@ -168,9 +206,19 @@ dependencies:
   # a single source-of-truth for the Powernode agent without
   # duplicating the Go cross-compile in every variant's CI step.
   # The Powernode dependency resolver mounts powernode-system-base
-  # at a lower-priority layer so its /sbin/powernode-agent appears
-  # in /sysroot under this module's /sbin (which is a directory
-  # from the apt-installed coreutils — no file conflict).
+  # at a lower-priority layer so its agent binary appears in /sysroot
+  # through this module's /sbin.
+  #
+  # 2026-08-07 — the previous wording said /sbin here "is a directory from
+  # the apt-installed coreutils". That was wrong on both counts and it is the
+  # exact mental model that caused the usr-merge outage documented in the NOTE
+  # above: on usr-merged Ubuntu /sbin is a SYMLINK to usr/sbin, and no package
+  # creates it as a directory. There is no file conflict because NEITHER module
+  # ships a real /sbin directory — system-base's binary lives at
+  # /usr/sbin/powernode-agent, this module ships /sbin as the usr-merge symlink
+  # (rootfs/sbin), and /sbin/powernode-agent resolves through it. If either
+  # module ever ships a real path under /sbin, that symlink becomes a directory
+  # for the whole union and every binary in /usr/sbin disappears from /sbin.
   requires:
     - powernode/powernode-system-base@^1.0
   # Capability tags that hub / app modules can match against. The
