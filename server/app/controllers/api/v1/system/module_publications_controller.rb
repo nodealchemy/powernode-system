@@ -165,7 +165,12 @@ module Api
           # Promote via the model's single-writer so current_version_number is
           # written alongside current_version_id (idempotent) — an id-only flip
           # drifts the denormalized number the fleet/agent/UI read.
-          if promotable_publish?(normalized)
+          if !::System::ModulePublicationProcessor.auto_promote?(node_module)
+            Rails.logger.info(
+              "[ModulePublicationsController] #{module_name}@#{tag}: auto_promote is disabled for this " \
+              "module; version #{version.id} published but NOT promoted."
+            )
+          elsif promotable_publish?(normalized)
             node_module.promote_to_version!(version)
           else
             Rails.logger.error(

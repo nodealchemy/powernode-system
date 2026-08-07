@@ -171,6 +171,43 @@ RSpec.describe System::ModulePublicationProcessor do
       expect(node_module.reload.current_version_id).to be_nil
     end
 
+    # The empty-artifact floor catches only the degenerate case. A non-empty
+    # but BROKEN artifact — wrong arch, truncated tree, a missing binary the
+    # units need — still reaches every node running the module the instant it
+    # publishes. Full canary/dwell automation is an operator policy decision
+    # (see the task report); this is the piece that needs no decision: a
+    # per-module holdback an operator can set on a high-risk module so its
+    # publishes land as versions WITHOUT becoming what the fleet runs.
+    #
+    # Defaults to ON, so a module that says nothing behaves exactly as before.
+    describe "per-module auto_promote holdback" do
+      it "still promotes by default, so existing modules are unaffected" do
+        result = described_class.process!(node_module: node_module, tag: "dflt001")
+
+        expect(node_module.reload.current_version_id).to eq(result.node_module_version.id)
+      end
+
+      it "publishes but does NOT promote when the module opts out" do
+        node_module.update!(auto_promote: false)
+
+        result = described_class.process!(node_module: node_module, tag: "held001")
+
+        expect(result.node_module_version).to be_present
+        expect(node_module.reload.current_version_id).to be_nil
+      end
+
+      it "leaves an existing good version current when a later publish is held" do
+        described_class.process!(node_module: node_module, tag: "good002")
+        good_id = node_module.reload.current_version_id
+        expect(good_id).to be_present
+
+        node_module.update!(auto_promote: false)
+        described_class.process!(node_module: node_module, tag: "held002")
+
+        expect(node_module.reload.current_version_id).to eq(good_id)
+      end
+    end
+
     it "honours a configured floor rather than a hardcoded constant" do
       SiteSetting.set("system.module_publish.min_artifact_bytes", "50000000", setting_type: "integer")
       # The default stub artifact is ~12MB — fine normally, below a 50MB floor.

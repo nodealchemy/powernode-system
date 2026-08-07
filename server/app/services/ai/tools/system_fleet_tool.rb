@@ -1904,6 +1904,7 @@ module Ai
         lock_spec init_start init_stop init_restart reboot_required
         mask file_spec package_spec dependency_spec protected_spec
         consent_budget_per_day config
+        auto_promote
       ].freeze
 
       def module_attrs(params)

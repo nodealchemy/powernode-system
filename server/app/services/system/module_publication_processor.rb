@@ -83,10 +83,14 @@ module System
         # inspected — but promotion is the step that reaches the fleet, and on
         # 2026-08-07 promoting two zero-file erofs blobs made agents hot-prune
         # /usr/local/go and /usr/local/bin/gitleaks off a live node's root.
-        if promote && promotable_artifact?(canonical)
-          promote_current_version(node_module, node_module_version)
-        elsif promote
-          withhold_promotion!(node_module, node_module_version, canonical, tag)
+        if promote
+          if !auto_promote?(node_module)
+            hold_promotion_by_policy!(node_module, node_module_version, tag)
+          elsif promotable_artifact?(canonical)
+            promote_current_version(node_module, node_module_version)
+          else
+            withhold_promotion!(node_module, node_module_version, canonical, tag)
+          end
         end
         register_skills_for(node_module)
         emit_published_event(node_module, node_module_version, oci_ref, result.module_artifacts, tag, promote)
@@ -244,6 +248,50 @@ module System
       return false if canonical.nil?
 
       canonical.size_bytes.to_i >= min_artifact_bytes
+    end
+
+    # Per-module holdback. DEFAULTS TO TRUE, so a module that says nothing
+    # behaves exactly as it did before this existed — this adds a lever, it
+    # does not change fleet-wide policy.
+    #
+    # The empty-artifact floor catches only the degenerate case; a non-empty
+    # but broken artifact (wrong arch, truncated tree, a missing binary the
+    # units need) still reaches every node the instant it publishes. Full
+    # canary/dwell automation is an operator policy decision that would reverse
+    # the deliberate auto-promote design documented in
+    # module_publications_controller — this is the part of the gap that needs
+    # no such decision: an operator can hold a known-risky module back and
+    # advance it deliberately (system_rollback_module_version / the
+    # staging->blessed promotion path) while everything else keeps flowing.
+    #
+    # Settable over MCP today: `config` is already in
+    # Backed by its OWN COLUMN, not a key on `config`. config is in
+    # System::NodeModule::VERSIONED_ATTRIBUTES, so writing it fires the
+    # after_update auto_create_version callback — storing the flag there would
+    # mean that enabling the holdback itself created a new module version,
+    # precisely the event the holdback exists to withhold. (Found by measuring:
+    # a two-publish scenario promoted anyway, and the extra version came from
+    # the config write, not the publish.) Settable over MCP via
+    # system_update_module(module_id:, auto_promote: false).
+    #
+    # Class-level for the same reason as artifact_size_promotable?: the REST
+    # publish path in module_publications_controller must honour the identical
+    # flag, and a policy defined twice is a policy that drifts.
+    def self.auto_promote?(node_module)
+      node_module.auto_promote != false
+    end
+
+    def auto_promote?(node_module)
+      self.class.auto_promote?(node_module)
+    end
+
+    def hold_promotion_by_policy!(node_module, version, tag)
+      Rails.logger.info(
+        "[ModulePublicationProcessor] #{node_module.name}@#{tag}: auto_promote is disabled for this " \
+        "module; version #{version.id} published but NOT promoted. The fleet keeps the current version " \
+        "until it is advanced deliberately."
+      )
+      emit_promotion_withheld_event(node_module, version, tag, "auto_promote disabled for this module")
     end
 
     def withhold_promotion!(node_module, version, canonical, tag)
