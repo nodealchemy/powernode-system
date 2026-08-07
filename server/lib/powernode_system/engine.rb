@@ -293,7 +293,10 @@ module PowernodeSystem
                    }
           resource :infra_tasks, actions: %i[read create control], grant: { admin: :all }
           resource :instances, actions: %i[read create update delete control claim], grant: { admin: :all }
-          resource :modules, actions: %i[read create update delete],
+          # `rollback` is an OPERATOR recovery verb, deliberately not granted to
+          # system_worker: repointing current_version is a human decision made
+          # after a bad publish, not something a reconcile tick should do.
+          resource :modules, actions: %i[read create update delete rollback],
                    grant: { admin: :all, system_worker: %i[read update] }
           resource :networks, actions: %i[read create update delete], grant: { admin: :all }
           resource :node_instances, actions: %i[read create update delete manage],

@@ -4323,4 +4323,86 @@ end
       expect(defn[:description]).to include("system_refresh_package_module")
     end
   end
+
+  # 2026-08-07: runtime-go v2 and gitleaks v4 auto-promoted EMPTY artifacts and
+  # nodes whiteout-deleted the corresponding files off a live root. Publishing
+  # auto-promotes, so a bad build reaches the fleet with no gate — and there was
+  # no supported way to repoint either module back to its last good version.
+  #
+  # The sharp part is target selection: both modules' immediately-previous
+  # version rows carry oci_digest: null, so a naive "promote the previous row"
+  # would have pointed the fleet at nothing. The action must walk back to the
+  # most recent version that actually has a usable artifact.
+  describe "system_rollback_module_version" do
+    let!(:mod) { create(:system_node_module, account: account, name: "runtime-go") }
+
+    def version_with_digest(number, digest: "sha256:#{'a' * 64}", size: 12_345_000)
+      create(:system_node_module_version, node_module: mod, version_number: number,
+             artifacts: { "erofs" => { "oci_digest" => digest, "size" => size, "oci_ref" => "ref#{number}" } })
+    end
+
+    def version_without_digest(number)
+      create(:system_node_module_version, node_module: mod, version_number: number, artifacts: {})
+    end
+
+    it "rolls back to the most recent version WITH a usable artifact, skipping digestless rows" do
+      good = version_with_digest(1)
+      version_without_digest(2)          # the naive "previous row" — points at nothing
+      bad  = version_with_digest(3, size: 1_024) # the empty artifact that got promoted
+      mod.promote_to_version!(bad)
+
+      result = call("system_rollback_module_version", module_id: mod.id)
+
+      expect(result[:success]).to be(true)
+      expect(mod.reload.current_version_id).to eq(good.id)
+      expect(mod.current_version_number).to eq(good.version_number)
+    end
+
+    it "refuses when no prior version has a usable artifact" do
+      version_without_digest(1)
+      current = version_with_digest(2)
+      mod.promote_to_version!(current)
+
+      result = call("system_rollback_module_version", module_id: mod.id)
+
+      expect(result[:success]).to be(false)
+      expect(mod.reload.current_version_id).to eq(current.id)
+    end
+
+    it "rolls back to an explicitly named version" do
+      v1 = version_with_digest(1)
+      version_with_digest(2)
+      v3 = version_with_digest(3)
+      mod.promote_to_version!(v3)
+
+      result = call("system_rollback_module_version", module_id: mod.id, version_id: v1.id)
+
+      expect(result[:success]).to be(true)
+      expect(mod.reload.current_version_id).to eq(v1.id)
+    end
+
+    it "refuses an explicit target that has no usable artifact" do
+      dud = version_without_digest(1)
+      current = version_with_digest(2)
+      mod.promote_to_version!(current)
+
+      result = call("system_rollback_module_version", module_id: mod.id, version_id: dud.id)
+
+      expect(result[:success]).to be(false)
+      expect(mod.reload.current_version_id).to eq(current.id)
+    end
+
+    it "refuses a version belonging to a different module" do
+      other = create(:system_node_module, account: account, name: "gitleaks")
+      foreign = create(:system_node_module_version, node_module: other, version_number: 1,
+                       artifacts: { "erofs" => { "oci_digest" => "sha256:#{'b' * 64}", "size" => 9_000_000 } })
+      current = version_with_digest(2)
+      mod.promote_to_version!(current)
+
+      result = call("system_rollback_module_version", module_id: mod.id, version_id: foreign.id)
+
+      expect(result[:success]).to be(false)
+      expect(mod.reload.current_version_id).to eq(current.id)
+    end
+  end
 end
