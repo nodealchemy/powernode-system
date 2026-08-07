@@ -42,6 +42,86 @@ import (
 // `systemctl soft-reboot` (v254; the noble base image carries 255+).
 const MinSoftRebootSystemd = 254
 
+// CriticalSoftRebootMounts are mounts whose disappearance across a
+// soft-reboot leaves the node unrecoverable, so the preflight refuses
+// unless each is configured to survive.
+//
+// /persist carries the enrolled mTLS PKI, the boot LKG + pending-compose
+// state, the module blob cache, and the durable /var bind. A node that
+// soft-reboots without it comes up with no identity and no durable state
+// — and on a self-hosted control plane it cannot re-enroll, because the
+// platform it would enroll against is the node itself.
+var CriticalSoftRebootMounts = []string{"/persist"}
+
+// mountSurvivesSoftReboot reports whether the mount unit backing path is
+// configured to stay mounted through the shutdown phase of a soft-reboot.
+//
+// This is NOT the default. systemd-soft-reboot.service documents that
+// "/run/ file system remains mounted", but that other mounts survive only
+// if "configured to remain until the very end of the shutdown process" —
+// i.e. DefaultDependencies=no and no Conflicts=umount.target. A stock
+// fleet node's persist.mount has DefaultDependencies=yes AND
+// Conflicts=umount.target (verified on a live pivot node 2026-08-07), so
+// it is torn down like any other filesystem.
+//
+// A unit systemctl does not know (empty output) is reported as NOT
+// surviving: unknown means unproven, and the failure mode here is losing
+// the node.
+func mountSurvivesSoftReboot(ctx context.Context, run mount.Runner, path string) (bool, string) {
+	unit := MountUnitName(path)
+	out, err := run.Output(ctx, "systemctl", "show", unit,
+		"-p", "DefaultDependencies", "-p", "Conflicts", "-p", "LoadState")
+	if err != nil {
+		return false, fmt.Sprintf("could not query %s: %v", unit, err)
+	}
+	fields := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok {
+			fields[k] = v
+		}
+	}
+	if len(fields) == 0 || fields["LoadState"] == "not-found" {
+		return false, fmt.Sprintf("%s is unknown to systemd — cannot prove it survives", unit)
+	}
+	var reasons []string
+	if !strings.EqualFold(fields["DefaultDependencies"], "no") {
+		reasons = append(reasons, "DefaultDependencies is not 'no'")
+	}
+	if strings.Contains(fields["Conflicts"], "umount.target") {
+		reasons = append(reasons, "it Conflicts=umount.target")
+	}
+	if len(reasons) > 0 {
+		return false, fmt.Sprintf("%s: %s", unit, strings.Join(reasons, " and "))
+	}
+	return true, ""
+}
+
+// MountUnitName renders a path as its systemd mount-unit name using
+// systemd's own escaping ("/" -> "-", "-" -> "\x2d", other specials
+// hex-escaped), so "/persist" -> "persist.mount".
+func MountUnitName(path string) string {
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return "-.mount"
+	}
+	var b strings.Builder
+	for i := 0; i < len(trimmed); i++ {
+		c := trimmed[i]
+		switch {
+		case c == '/':
+			b.WriteByte('-')
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_':
+			b.WriteByte(c)
+		case c == '.' && i > 0:
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, `\x%02x`, c)
+		}
+	}
+	return b.String() + ".mount"
+}
+
 // pendingBootSlot indirects bootslots.Load for tests.
 var pendingBootSlot = func() string { return bootslots.Load().Pending }
 
@@ -78,6 +158,15 @@ func SoftRecomposePreflight(ctx context.Context, run mount.Runner) error {
 	}
 	if p := pendingBootSlot(); p != "" {
 		return fmt.Errorf("an A/B boot-image upgrade is armed (pending slot %q, unproven) — a soft-reboot skips the bootloader, so it would neither boot the pending slot nor exercise the bless-or-rollback flow; let the upgrade resolve first", p)
+	}
+	for _, path := range CriticalSoftRebootMounts {
+		if ok, why := mountSurvivesSoftReboot(ctx, run, path); !ok {
+			return fmt.Errorf("%s is not configured to survive a soft-reboot (%s). "+
+				"systemd tears down every mount except /run unless its unit sets DefaultDependencies=no and does not Conflicts=umount.target, "+
+				"so soft-rebooting now would land in the new root with %s GONE — no enrolled PKI, no LKG, no durable /var. "+
+				"Ship a mount drop-in that keeps it to the end of shutdown before using --execute; a full reboot applies the composition safely in the meantime",
+				path, why, path)
+		}
 	}
 	return nil
 }

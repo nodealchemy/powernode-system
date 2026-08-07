@@ -78,14 +78,6 @@ func TestSoftRecomposePreflight_RefusesWhileSlotUpgradeArmed(t *testing.T) {
 	}
 }
 
-func TestSoftRecomposePreflight_PassesOnHealthyPivotNode(t *testing.T) {
-	pinRootMode(t, lifecycle.RootModeNative)
-	pinPendingSlot(t, "")
-	if err := SoftRecomposePreflight(context.Background(), stubVersionRunner("systemd 256 (256.5)\n")); err != nil {
-		t.Errorf("healthy pivot node must pass preflight, got %v", err)
-	}
-}
-
 // NextrootLayout must never share scratch (upper/work) with the live
 // layout — two overlays over one upperdir/workdir is undefined kernel
 // behavior — while SHARING the module mounts and blob cache.
@@ -110,5 +102,69 @@ func TestNextrootLayout_OwnScratchSharedModules(t *testing.T) {
 	}
 	if mount.NextrootLayout("gen1").ScratchRoot == mount.NextrootLayout("gen2").ScratchRoot {
 		t.Error("distinct generations must get distinct scratch roots")
+	}
+}
+
+// The mount-survival guard. systemd tears down every mount except /run
+// unless its unit opts out, and a stock fleet node's persist.mount does
+// NOT (verified live 2026-08-07: DefaultDependencies=yes,
+// Conflicts=umount.target) — soft-rebooting into a root without /persist
+// loses the enrolled PKI and durable /var, which on a self-hosted control
+// plane is unrecoverable.
+func softRebootRunner(persistProps string) *mount.RecorderRunner {
+	return &mount.RecorderRunner{StubOutput: map[string][]byte{
+		"systemctl --version": []byte("systemd 255 (255.4)\n"),
+		"systemctl show persist.mount -p DefaultDependencies -p Conflicts -p LoadState": []byte(persistProps),
+	}}
+}
+
+func TestSoftRecomposePreflight_RefusesWhenPersistWouldBeUnmounted(t *testing.T) {
+	pinRootMode(t, lifecycle.RootModeNative)
+	pinPendingSlot(t, "")
+	// Exactly what a live fleet node reports today.
+	run := softRebootRunner("DefaultDependencies=yes\nConflicts=umount.target\nLoadState=loaded\n")
+	err := SoftRecomposePreflight(context.Background(), run)
+	if err == nil || !strings.Contains(err.Error(), "/persist") {
+		t.Fatalf("want a /persist survival refusal, got %v", err)
+	}
+}
+
+func TestSoftRecomposePreflight_RefusesOnEitherHalfOfTheGuard(t *testing.T) {
+	pinRootMode(t, lifecycle.RootModeNative)
+	pinPendingSlot(t, "")
+	// Each clause must independently refuse — a compound guard where only
+	// one half is exercised is how a broken guard ships.
+	for name, props := range map[string]string{
+		"conflicts only":   "DefaultDependencies=no\nConflicts=umount.target\nLoadState=loaded\n",
+		"deps only":        "DefaultDependencies=yes\nConflicts=\nLoadState=loaded\n",
+		"unit unknown":     "LoadState=not-found\n",
+		"no output at all": "",
+	} {
+		if err := SoftRecomposePreflight(context.Background(), softRebootRunner(props)); err == nil {
+			t.Errorf("%s: must refuse, got nil", name)
+		}
+	}
+}
+
+func TestSoftRecomposePreflight_PassesWhenPersistIsConfiguredToSurvive(t *testing.T) {
+	pinRootMode(t, lifecycle.RootModeNative)
+	pinPendingSlot(t, "")
+	run := softRebootRunner("DefaultDependencies=no\nConflicts=\nLoadState=loaded\n")
+	if err := SoftRecomposePreflight(context.Background(), run); err != nil {
+		t.Errorf("a persist.mount configured to survive must pass, got %v", err)
+	}
+}
+
+func TestMountUnitName(t *testing.T) {
+	cases := map[string]string{
+		"/persist":       "persist.mount",
+		"/":              "-.mount",
+		"/var/lib/thing": "var-lib-thing.mount",
+		"/my-dir":        `my\x2ddir.mount`,
+	}
+	for path, want := range cases {
+		if got := MountUnitName(path); got != want {
+			t.Errorf("MountUnitName(%q) = %q, want %q", path, got, want)
+		}
 	}
 }
