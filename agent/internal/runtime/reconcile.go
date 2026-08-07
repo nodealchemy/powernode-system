@@ -1192,19 +1192,61 @@ func (r *Reconciler) detachModule(ctx context.Context, current *mount.State, mod
 				fmt.Errorf("module %s: %w", mod.ID, err))
 		}
 	}
-	// Unmount the module's erofs blob. The union overlay above SysRoot
-	// holds an open reference to this mountpoint, so we MUST be called
-	// after the union is recomposed (which is the case — RunOnce reaps
-	// detached modules first, then rebuilds the overlay with the
-	// remaining stack). Best-effort: log + continue on failure. The
-	// kernel cleans up the loop device automatically when umount
-	// releases the mount.
-	if err := mount.UnmountModule(ctx, r.cfg.MountRunner, r.cfg.Layout, mod.Digest); err != nil {
+	// Unmount the module's erofs blob — UNLESS the live union still lists
+	// it as a lower layer.
+	//
+	// The original reasoning here was that unmounting is safe because
+	// "RunOnce reaps detached modules first, then rebuilds the overlay
+	// with the remaining stack". That holds for the cloud_init model,
+	// where the union lives at SysRoot and IS recomposed on every stack
+	// change. It is false in exactly the mode that matters: on a pivot
+	// node / IS the union, its lowerdir was fixed at mount time, and the
+	// union-skip block further up deliberately never rebuilds it. So the
+	// premise the unmount relied on never becomes true there, and
+	// unmounting pulls a layer out from under the RUNNING root — every
+	// file it provided stops resolving, with no error and no crash.
+	//
+	// Cost of the two mistakes is wildly asymmetric: keeping an unused
+	// erofs mounted wastes one loop device until the next reboot, while
+	// unmounting a referenced one silently strips content from a live
+	// node (2026-08-07: the entire Go toolchain, GOROOT/src included).
+	// So an unreadable mount table means SKIP, never proceed.
+	if skip, why := r.unmountWouldStripLiveRoot(mod); skip {
+		r.cfg.OnError("reconciler:unmount_skipped",
+			fmt.Errorf("module %s: leaving erofs mounted — %s", mod.ID, why))
+	} else if err := mount.UnmountModule(ctx, r.cfg.MountRunner, r.cfg.Layout, mod.Digest); err != nil {
 		r.cfg.OnError("reconciler:unmount_module",
 			fmt.Errorf("module %s: %w", mod.ID, err))
 	}
 	_ = current // current state held by caller; best-effort detach
 	return nil
+}
+
+// unmountWouldStripLiveRoot reports whether unmounting mod's erofs would
+// remove a layer the RUNNING root's overlay still references, and why.
+//
+// Only meaningful in native (pivot) mode: there / IS the union and its
+// lowerdir is frozen at mount time. In chroot mode the union is remounted
+// at SysRoot on every stack change, so a superseded layer is genuinely
+// unreferenced by the time we get here and unmounting reclaims it.
+//
+// Fails CLOSED. If the mount table cannot be read, or the union cannot be
+// parsed, the answer is "would strip" — see the asymmetry argument at the
+// call site.
+func (r *Reconciler) unmountWouldStripLiveRoot(mod mount.Module) (bool, string) {
+	if pivotAwareRootMode() != lifecycle.RootModeNative {
+		return false, ""
+	}
+	liveRoot := filepath.Join(r.cfg.Layout.Root, "/")
+	dir := r.cfg.Layout.ModuleMountPath(mod.Digest)
+	inUnion, err := mount.PathInLiveUnion(liveRoot, dir)
+	if err != nil {
+		return true, fmt.Sprintf("cannot read the live mount table to prove %s is unreferenced (%v); refusing to risk stripping the running root", dir, err)
+	}
+	if inUnion {
+		return true, fmt.Sprintf("%s is still a lower layer of the live union at %s; unmounting it would remove its files from the running root", dir, liveRoot)
+	}
+	return false, ""
 }
 
 // hostFromURL parses a URL and returns the host (without port).
