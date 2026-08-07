@@ -168,7 +168,15 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 	// provision an LKG this cycle). The post-boot capturer reads this after an
 	// app-health confirm; the heartbeat reads FromLKG/age for observability.
 	if bc != nil {
-		if err := WriteBreadcrumb(BootBreadcrumbPath, bc); err != nil {
+		if r.cfg.BreadcrumbSink != nil {
+			// Soft-recompose prepare: the breadcrumb describes a composition
+			// the CURRENT userspace is not running, and a soft-reboot keeps
+			// the kernel boot ID, so the LKG capturer's stale-breadcrumb
+			// check could not tell "prepared and executed" from "prepared
+			// and abandoned". Hand it to the caller, who commits it to disk
+			// only at the moment the soft-reboot is actually fired.
+			r.cfg.BreadcrumbSink(bc)
+		} else if err := WriteBreadcrumb(BootBreadcrumbPath, bc); err != nil {
 			r.cfg.OnError("compose:breadcrumb_write", err)
 		}
 	}
@@ -482,6 +490,15 @@ func applyTraefikIngressPersistence(sysroot, persistRoot string, manifests map[s
 // Called by bootCmd AFTER Boot's enroll step, because the mTLS client requires
 // the enrolled cert to exist on disk.
 func NewPivotComposer(platformURL, pkiDir string, onError func(string, error)) (*Reconciler, error) {
+	return NewPivotComposerAt(platformURL, pkiDir, mount.DefaultLayout(), nil, onError)
+}
+
+// NewPivotComposerAt is NewPivotComposer with a caller-chosen Layout and an
+// optional breadcrumb sink. The soft-recompose path composes at
+// mount.NextrootLayout — /run/nextroot with its OWN scratch tmpfs, sharing
+// the module mounts + blob cache — and withholds the breadcrumb until the
+// soft-reboot is actually fired (see ReconcilerConfig.BreadcrumbSink).
+func NewPivotComposerAt(platformURL, pkiDir string, layout mount.Layout, breadcrumbSink func(*BootComposedBreadcrumb), onError func(string, error)) (*Reconciler, error) {
 	if onError == nil {
 		onError = func(string, error) {}
 	}
@@ -503,11 +520,12 @@ func NewPivotComposer(platformURL, pkiDir string, onError func(string, error)) (
 			PlatformURL: client.PlatformURL,
 			Cache:       "/persist/cache/modules",
 		},
-		Verifier:    verify.AlwaysOK{},
-		MountRunner: mount.ExecRunner{},
-		Layout:      mount.DefaultLayout(),
-		StatePath:   mount.StatePath,
-		OnError:     onError,
-		PlatformURL: client.PlatformURL,
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    mount.ExecRunner{},
+		Layout:         layout,
+		StatePath:      mount.StatePath,
+		OnError:        onError,
+		PlatformURL:    client.PlatformURL,
+		BreadcrumbSink: breadcrumbSink,
 	})
 }

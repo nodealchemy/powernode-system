@@ -98,6 +98,11 @@ type ReconcilerConfig struct {
 	// overlay upperdir (see SyncOptions.MinFreeBytes). 0 means
 	// DefaultScratchMinFreeBytes.
 	ScratchMinFreeBytes uint64
+	// BreadcrumbSink, when set, receives ComposeForPivot's boot-composed
+	// breadcrumb INSTEAD of it being written to BootBreadcrumbPath. Set
+	// only by the soft-recompose prepare path — see the write site in
+	// compose.go for why the on-disk write must wait for execute time.
+	BreadcrumbSink func(*BootComposedBreadcrumb)
 }
 
 // DefaultScratchMinFreeBytes is the default budget-guard floor: a live
@@ -1379,6 +1384,8 @@ type FactoryConfig struct {
 	// PlatformURL is recorded as the boot-LKG breadcrumb Source (the control
 	// plane the compose fetched from). Purely informational for the snapshot.
 	PlatformURL string
+	// BreadcrumbSink — see ReconcilerConfig.BreadcrumbSink.
+	BreadcrumbSink func(*BootComposedBreadcrumb)
 }
 
 // NewReconcilerForCLI builds a Reconciler suitable for one-shot CLI
@@ -1400,6 +1407,7 @@ func NewReconcilerForCLI(cfg FactoryConfig) (*Reconciler, error) {
 		DryRun:         cfg.DryRun,
 		OnError:        cfg.OnError,
 		PlatformURL:    cfg.PlatformURL,
+		BreadcrumbSink: cfg.BreadcrumbSink,
 	})
 }
 
