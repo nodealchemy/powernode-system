@@ -141,4 +141,107 @@ RSpec.describe System::InstanceControlService do
       expect(instance.reload.status).to eq('stopped')
     end
   end
+
+  # IMP-af53c24a956f — terminate had zero coverage. cloud_instance_id is a
+  # store_accessor on config (see NodeInstance), so it's settable directly on
+  # the factory the same way cloud_sync_service_spec/image_creation_service_spec
+  # already do it.
+  describe '#execute — terminate (cloud)' do
+    let(:instance) do
+      create(:system_node_instance, node: node, status: 'stopped', cloud_instance_id: 'i-terminate-1')
+    end
+    # Mirrors decision_engine_spec's convention: instance_double the adapter
+    # contract, then stub the specific action method per example.
+    let(:adapter) { instance_double('System::Providers::BaseProvider', provider_type: 'proxmox') }
+
+    before { allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter) }
+
+    it 'terminates the instance when the provider reports success' do
+      # Full build_instance_response shape — real adapters always include the
+      # ip keys (as nil) on terminate, which drives the post-success ip write.
+      # A bare { success: true } stub would skip that branch and hide bugs in it.
+      allow(adapter).to receive(:terminate_instance).with('i-terminate-1').and_return(
+        success: true, cloud_instance_id: 'i-terminate-1', status: 'terminated',
+        private_ip_address: nil, public_ip_address: nil, provider_type: 'proxmox'
+      )
+
+      result = described_class.execute(instance: instance, action: :terminate)
+
+      expect(result.success?).to be true
+      expect(instance.reload.status).to eq('terminated')
+    end
+
+    # The inverse hazard of reverting a failed terminate: once the provider
+    # destroy has genuinely succeeded, NOTHING may un-terminate the row — the
+    # machine is gone. Post-success bookkeeping (the ip-field write) can fail
+    # transiently; that must surface in the Result, not resurrect the row.
+    it 'keeps the row terminated when post-success bookkeeping raises' do
+      allow(adapter).to receive(:terminate_instance).with('i-terminate-1').and_return(
+        success: true, private_ip_address: nil, public_ip_address: nil
+      )
+      allow(instance).to receive(:update!)
+        .and_raise(ActiveRecord::StatementInvalid, 'server closed the connection')
+
+      result = described_class.execute(instance: instance, action: :terminate)
+
+      expect(result.success?).to be false
+      expect(instance.reload.status).to eq('terminated')
+    end
+
+    # A failed terminate must not leave a false terminated stamp on the row —
+    # the disk may still exist on the provider side. The row goes to :error so
+    # an operator investigates instead of the platform believing it's gone.
+    it 'does not stamp the row terminated when the provider reports failure — goes to error instead' do
+      allow(adapter).to receive(:terminate_instance).with('i-terminate-1')
+        .and_return(success: false, error: 'guest is locked')
+
+      result = described_class.execute(instance: instance, action: :terminate)
+
+      expect(result.success?).to be false
+      expect(result.error).to eq('guest is locked')
+      expect(instance.reload.status).to eq('error')
+    end
+
+    it 'does not stamp the row terminated when the provider raises — goes to error instead' do
+      allow(adapter).to receive(:terminate_instance).with('i-terminate-1')
+        .and_raise(System::Providers::BaseProvider::ProviderError, 'api timeout')
+
+      result = described_class.execute(instance: instance, action: :terminate)
+
+      expect(result.success?).to be false
+      expect(instance.reload.status).to eq('error')
+    end
+  end
+
+  describe '#execute — terminate (physical)' do
+    # Physical terminate is an unconditional platform-side no-op success —
+    # there is no provider to call and no driver to fake (see the IPMI/WoL
+    # specs above for why physical control otherwise refuses rather than
+    # fakes success).
+    let(:instance) do
+      create(:system_node_instance, :physical, node: node, status: 'stopped')
+    end
+
+    it 'succeeds without a provider and marks the row terminated' do
+      result = described_class.execute(instance: instance, action: :terminate)
+
+      expect(result.success?).to be true
+      expect(instance.reload.status).to eq('terminated')
+    end
+  end
+
+  describe '#execute — terminate refused under ops hold' do
+    let(:instance) do
+      create(:system_node_instance, node: node, status: 'stopped', cloud_instance_id: 'i-held-1',
+             ops_hold_at: Time.current, ops_hold_reason: 'offline /persist edit')
+    end
+
+    it 'refuses and leaves the status unchanged — terminate would destroy the disks under hold' do
+      result = described_class.execute(instance: instance, action: :terminate)
+
+      expect(result.success?).to be false
+      expect(result.error).to match(/ops hold/i)
+      expect(instance.reload.status).to eq('stopped')
+    end
+  end
 end

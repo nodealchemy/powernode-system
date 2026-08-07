@@ -14,6 +14,7 @@ module System
     end
 
     def execute(instance:, action:, operation_id: nil, force: false)
+      provider_succeeded = false
       validate_instance!(instance)
       validate_action!(action)
 
@@ -46,6 +47,7 @@ module System
       end
 
       if adapter_result[:success]
+        provider_succeeded = true
         update_instance_from_result(instance, adapter_result)
         Runtime::Result.ok(data: adapter_result.except(:success))
       else
@@ -54,11 +56,16 @@ module System
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[InstanceControlService] Provider error: #{e.message}")
-      revert_status(instance)
+      revert_status(instance) unless provider_succeeded
       Runtime::Result.err(error: e.message)
     rescue StandardError => e
+      # Revert only when the provider action itself did not succeed. Once it
+      # has, the stamped state is the truth (the machine really
+      # started/stopped/died) — a raise in post-success bookkeeping must
+      # surface in the Result, not rewrite the row to a state known false.
+      # For terminate that rewrite would resurrect a destroyed instance.
       Rails.logger.error("[InstanceControlService] #{action} failed: #{e.message}")
-      revert_status(instance)
+      revert_status(instance) unless provider_succeeded
       Runtime::Result.err(error: e.message)
     end
 
@@ -138,6 +145,12 @@ module System
       when "starting"  then instance.mark_stopped! if instance.may_mark_stopped?
       when "stopping"  then instance.mark_running! if instance.may_mark_running?
       when "rebooting" then instance.mark_running! if instance.may_mark_running?
+      # terminate has no transitional state — terminate! stamps :terminated
+      # before the provider call. A failed provider terminate must not leave
+      # that stamp standing (the instance still exists, and bills, at the
+      # provider), and the pre-terminate state is unknowable here, so the row
+      # goes to :error for operator attention rather than back to a guess.
+      when "terminated" then instance.revert_termination! if instance.may_revert_termination?
       end
     end
 

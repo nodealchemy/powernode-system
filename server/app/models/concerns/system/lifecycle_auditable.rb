@@ -21,7 +21,7 @@ module System
   #   never blocks a lifecycle transition.
   module LifecycleAuditable
     AUDITED_EVENTS = %w[
-      start stop reboot terminate
+      start stop reboot terminate revert_termination
       mark_provisioning mark_running mark_stopped mark_terminated mark_errored
     ].freeze
 
