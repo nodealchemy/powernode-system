@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
+	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime"
@@ -83,10 +87,7 @@ full reboot).`,
 			if err := composer.ComposeForPivot(ctx, layout.SysRoot); err != nil {
 				return fmt.Errorf("compose union at %s: %w", layout.SysRoot, err)
 			}
-			// Same durable/API binds + canonical-init guarantee the
-			// switch_root path relies on; soft-reboot moves the nextroot
-			// tree (submounts included) onto / and re-executes its init.
-			if err := bindAndCheckSysroot(layout.SysRoot); err != nil {
+			if err := prepareNextrootMounts(layout.SysRoot); err != nil {
 				return fmt.Errorf("bind durable mounts into %s: %w", layout.SysRoot, err)
 			}
 
@@ -110,9 +111,27 @@ full reboot).`,
 			}
 			fmt.Fprintln(out, "[soft-recompose] invoking systemctl soft-reboot — userspace is going down NOW")
 			if err := (mount.ExecRunner{}).Run(ctx, "systemctl", "soft-reboot"); err != nil {
-				if bc != nil && priorErr == nil {
-					if rerr := os.WriteFile(runtime.BootBreadcrumbPath, prior, 0o644); rerr != nil {
-						fmt.Fprintf(os.Stderr, "[soft-recompose] WARNING: soft-reboot failed AND the prior breadcrumb could not be restored (%v) — run `powernode-agent soft-recompose --execute` again or full-reboot before the LKG gate next runs\n", rerr)
+				// Undo the breadcrumb we just committed. Both branches
+				// matter: when there WAS no prior breadcrumb the correct
+				// undo is to REMOVE the file, not to leave ours behind —
+				// otherwise a composition that never ran sits on disk
+				// carrying the current boot id, which the LKG capturer's
+				// staleness check happily accepts and may freeze as
+				// last-known-good. Restore uses the same atomic writer as
+				// the write path so a crash here cannot truncate it.
+				if bc != nil {
+					var rerr error
+					if priorErr == nil {
+						rerr = fsutil.AtomicWrite(runtime.BootBreadcrumbPath, prior, 0o644)
+					} else if os.IsNotExist(priorErr) {
+						if remErr := os.Remove(runtime.BootBreadcrumbPath); remErr != nil && !os.IsNotExist(remErr) {
+							rerr = remErr
+						}
+					} else {
+						rerr = priorErr
+					}
+					if rerr != nil {
+						fmt.Fprintf(os.Stderr, "[soft-recompose] WARNING: soft-reboot failed AND the breadcrumb could not be reverted (%v) — the file at %s now describes a composition this boot is NOT running; remove it or full-reboot before the LKG gate next runs\n", rerr, runtime.BootBreadcrumbPath)
 					}
 				}
 				return fmt.Errorf("systemctl soft-reboot: %w", err)
@@ -122,4 +141,88 @@ full reboot).`,
 	}
 	c.Flags().BoolVar(&execute, "execute", false, "apply the prepared composition now via `systemctl soft-reboot` (default: prepare + report only)")
 	return c
+}
+
+// nextrootBindSources are the ONLY mounts bound into a soft-reboot
+// nextroot. The list is deliberately short, and /run is deliberately
+// ABSENT — see prepareNextrootMounts.
+var nextrootBindSources = []string{"/persist"}
+
+// prepareNextrootMounts is the soft-reboot analogue of
+// bindAndCheckSysroot, and it exists because reusing that function here
+// DESTROYS THE RUNNING NODE.
+//
+// bindAndCheckSysroot rbinds /persist, /dev, /sys, /proc and /run into the
+// target. That is correct for the initramfs switch_root path, where the
+// target is /sysroot — a directory OUTSIDE /run. It is catastrophic for a
+// soft-reboot target, because that target is /run/nextroot, which lives
+// INSIDE /run: `mount --rbind /run /run/nextroot/run` recursively binds a
+// tree that contains its own destination, pulling the live
+// /run/powernode/scratch (the tmpfs backing the RUNNING root's overlay
+// upperdir) and every erofs module mount into the nextroot's subtree.
+//
+// A second `soft-recompose` then calls MountUnion, whose plain umount of
+// the existing /run/nextroot fails EBUSY and falls back to `umount -l` —
+// and the lazy detach takes the whole propagated subtree with it. The live
+// root loses its upperdir and all of its lower layers while running.
+//
+// Reproduced in an isolated mount namespace 2026-08-07: after the second
+// prepare, /run/powernode/scratch and every /run/powernode/modules/* mount
+// read GONE from /proc/self/mountinfo; an otherwise identical run that
+// binds everything EXCEPT /run leaves them all OK. Two prepares is not an
+// exotic sequence — prepare is the DEFAULT mode of this command, the one
+// that does not pass --execute and reads as the safe dry run.
+//
+// So: bind only what the post-soft-reboot userspace genuinely cannot
+// reconstruct — /persist, which carries the enrolled PKI, the boot LKG and
+// the durable /var, and which is a top-level mount rather than one under
+// /run, so binding it creates no containment loop. Note that after this
+// change /persist reaches the new root SOLELY via run-nextroot-persist.mount
+// — that bind is now the single load-bearing carrier, and it is not what
+// CriticalSoftRebootMounts currently checks.
+//
+// The API filesystems are deliberately NOT bound, and that is a REAL
+// DEPENDENCY, not merely dropping something redundant: we now RELY on
+// systemd's switch-root moving /dev, /proc, /sys and /run into the new
+// root itself (src/shared/switch-root.c does exactly that). If that ever
+// stops holding, the new root comes up with no /dev — unrecoverable in the
+// same way losing /persist is. Binding them here is not an option: they
+// live under paths whose peer groups reintroduce the detach bug above.
+func prepareNextrootMounts(sysroot string) error {
+	for _, src := range nextrootBindSources {
+		// The hazard is SHARED PEER GROUPS, not path containment as such.
+		// Every mount on a fleet node is shared:, so binding ANY source
+		// under /run creates peer copies of /run's children beneath the
+		// nextroot — and the next `umount -l` propagates the detach back
+		// to the live originals. Path containment alone would wave
+		// through e.g. "/run/powernode", which does not contain
+		// /run/nextroot yet reproduces the bug exactly. Both tests, so a
+		// future edit fails loudly instead of silently unmounting the
+		// running root's layers.
+		if src == "/run" || strings.HasPrefix(src, "/run/") {
+			return fmt.Errorf("refusing to bind %s into %s: sources under /run share a peer group with the target's parent, and a later lazy umount would detach the live root's scratch and module mounts", src, sysroot)
+		}
+		if strings.HasPrefix(sysroot, strings.TrimSuffix(src, "/")+"/") {
+			return fmt.Errorf("refusing to bind %s into %s: the source contains the target, which would detach live mounts on teardown", src, sysroot)
+		}
+		dst := filepath.Join(sysroot, src)
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dst, err)
+		}
+		if isMountedAt(dst) {
+			continue
+		}
+		out, err := exec.Command("mount", "--rbind", src, dst).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("rbind %s -> %s: %w (output: %s)", src, dst, err, out)
+		}
+	}
+
+	initPath, err := ensureCanonicalInit(sysroot)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("[soft-recompose] nextroot ready — init=%s, bound=%v (NOT /run: see prepareNextrootMounts)\n",
+		initPath, nextrootBindSources)
+	return nil
 }

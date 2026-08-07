@@ -1001,17 +1001,22 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 		HigherLayers: r.higherPriorityLayerDirs(desired, mod.ID),
 		MinFreeBytes: r.scratchMinFreeBytes(),
 	})
-	switch {
-	case errors.Is(err, ErrScratchBudget):
+	if errors.Is(err, ErrScratchBudget) {
 		// The materialization would exhaust the scratch tmpfs backing the
-		// live root's upperdir. Copied files stay (winner content, they
-		// re-converge); the rest of this module needs a recompose the
-		// upper can't hold — surface it as its own signal so the operator
-		// (or a later soft-reboot tier) can act on it distinctly from an
-		// ordinary copy failure.
+		// live root's upperdir. Surface it as its own signal so the
+		// operator can act on it distinctly from an ordinary copy failure.
+		//
+		// RETURN — never fall through to the prune below. The prune
+		// rewrites restored files onto the very filesystem this sync just
+		// refused to write a single byte to, and its whiteouts are
+		// themselves upperdir entries (one real incident produced 14,494
+		// of them from a single pass). Refusing to copy and then deleting,
+		// on a scratch that is already full, is the worst of both.
 		r.cfg.OnError("reconciler:recompose_budget",
-			fmt.Errorf("module %s: live materialization aborted (`powernode-agent soft-recompose --execute` applies it without the scratch limit): %w", mod.ID, err))
-	case err != nil:
+			fmt.Errorf("module %s: live materialization aborted, skipping this module's prune (`powernode-agent soft-recompose --execute` applies it without the scratch limit): %w", mod.ID, err))
+		return
+	}
+	if err != nil {
 		r.cfg.OnError("reconciler:hot_reconcile", fmt.Errorf("module %s: %w", mod.ID, err))
 	}
 	// Same composition smell hot_prune_contested surfaces: two modules
@@ -1073,7 +1078,14 @@ func (r *Reconciler) higherPriorityLayerDirs(desired mount.ModuleStack, modID st
 	}
 	dirs := make([]string, 0, len(sorted)-self-1)
 	for i := len(sorted) - 1; i > self; i-- {
-		dirs = append(dirs, r.cfg.Layout.ModuleMountPath(sorted[i].Digest))
+		d := r.cfg.Layout.ModuleMountPath(sorted[i].Digest)
+		// An unmounted/empty higher layer must not be consulted: it would
+		// resolve every contested path to "nobody else provides this" and
+		// re-open the very shadowing bug this list exists to prevent.
+		if !layerProvidesAnything(d) {
+			continue
+		}
+		dirs = append(dirs, d)
 	}
 	return dirs
 }
@@ -1105,7 +1117,14 @@ func (r *Reconciler) survivingLayerDirs(desired mount.ModuleStack, excludeID str
 		if sorted[i].ID == excludeID {
 			continue
 		}
-		dirs = append(dirs, r.cfg.Layout.ModuleMountPath(sorted[i].Digest))
+		d := r.cfg.Layout.ModuleMountPath(sorted[i].Digest)
+		// A layer that is not serving content cannot authorise a deletion
+		// (see layerProvidesAnything): including it would make paths it
+		// should still provide look sole-owned.
+		if !layerProvidesAnything(d) {
+			continue
+		}
+		dirs = append(dirs, d)
 	}
 	return dirs
 }

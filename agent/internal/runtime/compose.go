@@ -261,7 +261,17 @@ func (r *Reconciler) resolveComposeSet(ctx context.Context) (mount.ModuleStack, 
 		// leaving that file to linger at Attempts=0 until some later platform
 		// outage, where it would be preferred over the LKG despite possibly having
 		// been rolled back platform-side. Drop it now that we have the real answer.
-		if err := ClearPendingCompose(PendingComposePath); err != nil {
+		// Only a REAL boot may clear the staged set. The soft-recompose
+		// prepare path runs this on a live, already-booted node where the
+		// fetch always succeeds — clearing there resets the PendingMaxTries
+		// attempt counter that exists to stop a bad set retrying forever,
+		// and after an --execute it leaves the running composition neither
+		// promoted to LKG nor staged, so the next COLD boot silently
+		// reverts to the old frozen LKG. BreadcrumbSink is set only by that
+		// path, so it doubles as "this is not the boot compose".
+		if r.cfg.BreadcrumbSink != nil {
+			// nextroot compose: leave boot state alone.
+		} else if err := ClearPendingCompose(PendingComposePath); err != nil {
 			r.cfg.OnError("compose:clear_pending_after_live_fetch", err)
 		}
 		return desired, manifests, bc, nil

@@ -177,10 +177,15 @@ func (r *Reconciler) processPendingPrunes(desired mount.ModuleStack) {
 	desiredIDs := make(map[string]bool, len(desired))
 	for _, m := range desired {
 		desiredIDs[m.ID] = true
-		if _, statErr := os.Stat(r.cfg.Layout.ModuleMountPath(m.Digest)); statErr != nil {
-			// A missing surviving layer would make every path it provides
-			// look sole-owned and turn restores into removals. Defer the
-			// whole pass to a tick where the full desired stack is mounted.
+		if !layerProvidesAnything(r.cfg.Layout.ModuleMountPath(m.Digest)) {
+			// A surviving layer that is not actually serving content makes
+			// every path it provides look sole-owned, turning restores into
+			// removals. An os.Stat existence check is NOT sufficient here:
+			// MountModule mkdir's the mount point BEFORE mounting, so a
+			// failed or torn-down mount leaves a directory that stats fine
+			// and provides nothing. Require real content instead, and defer
+			// the whole pass otherwise — deferring is always recoverable, a
+			// wrong prune is not.
 			return
 		}
 	}
@@ -239,4 +244,32 @@ func (r *Reconciler) processPendingPrunes(desired mount.ModuleStack) {
 		// entry every tick forever would only spam OnError.
 		_ = os.Remove(path)
 	}
+}
+
+// layerProvidesAnything reports whether a module mount dir is actually
+// serving content: it exists AND has at least one entry.
+//
+// The bare-existence check it replaces was unsound in both directions that
+// matter. mount.MountModule creates the mount point with MkdirAll before
+// mounting it, so a mount that never happened — or one that was detached,
+// which is exactly what a lazy umount of a shared peer group does — leaves
+// an empty directory that os.Stat happily confirms. Any layer-resolution
+// pass that trusts that stat concludes "this layer provides nothing" and
+// converts a restore into a deletion.
+//
+// Reading a single dirent is enough and is O(1); we never need the listing.
+// A module whose artifact genuinely ships nothing (a broken build) reads as
+// "provides nothing" too, which is the correct and safe answer here: it
+// makes such a layer ineligible to authorise deletions.
+func layerProvidesAnything(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	names, err := f.Readdirnames(1)
+	return err == nil && len(names) > 0
 }

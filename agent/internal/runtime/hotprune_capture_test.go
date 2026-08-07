@@ -1,11 +1,25 @@
 package runtime
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
+
+// materializeLayers gives each module's mount path real content. A layer
+// dir that exists but is EMPTY is exactly what an unmounted or
+// failed-to-mount layer looks like, and layerProvidesAnything
+// deliberately treats that as "provides nothing" — so fixtures must
+// populate the dirs to represent mounted layers.
+func materializeLayers(t *testing.T, layout mount.Layout, stack mount.ModuleStack) {
+	t.Helper()
+	for _, m := range stack {
+		hpWriteFile(t, layout.ModuleMountPath(m.Digest), "usr/share/marker", m.ID)
+	}
+}
 
 func captureFixture(t *testing.T) (*Reconciler, mount.Layout) {
 	t.Helper()
@@ -87,6 +101,8 @@ func TestSurvivingLayerDirs_ExcludesSelfAndOrdersHighestFirst(t *testing.T) {
 		{ID: "high", Digest: "sha256:h", Priority: 90},
 	}
 
+	materializeLayers(t, layout, desired)
+
 	got := r.survivingLayerDirs(desired, "self")
 
 	want := []string{
@@ -117,6 +133,8 @@ func TestHigherPriorityLayerDirs_OnlyHigherHighestFirst(t *testing.T) {
 		{ID: "high", Digest: "sha256:h", Priority: 90},
 	}
 
+	materializeLayers(t, layout, desired)
+
 	got := r.higherPriorityLayerDirs(desired, "self")
 
 	want := []string{
@@ -143,11 +161,12 @@ func TestHigherPriorityLayerDirs_OnlyHigherHighestFirst(t *testing.T) {
 
 // Top of the stack out-ranks nobody.
 func TestHigherPriorityLayerDirs_TopOfStackHasNone(t *testing.T) {
-	r, _ := captureFixture(t)
+	r, layout := captureFixture(t)
 	desired := mount.ModuleStack{
 		{ID: "low", Digest: "sha256:l", Priority: 10},
 		{ID: "top", Digest: "sha256:t", Priority: 99},
 	}
+	materializeLayers(t, layout, desired)
 	if got := r.higherPriorityLayerDirs(desired, "top"); len(got) != 0 {
 		t.Errorf("highest-priority module must have no higher layers, got %v", got)
 	}
@@ -172,11 +191,61 @@ func TestHigherPriorityLayerDirs_TieBreakMatchesSortByPriority(t *testing.T) {
 		{ID: "aaa", Digest: "sha256:a", Priority: 50},
 		{ID: "zzz", Digest: "sha256:z", Priority: 50},
 	}
+	materializeLayers(t, layout, desired)
+
 	got := r.higherPriorityLayerDirs(desired, "aaa")
 	if len(got) != 1 || got[0] != layout.ModuleMountPath("sha256:z") {
 		t.Errorf("got %v, want the same-priority higher-ID module to out-rank", got)
 	}
 	if other := r.higherPriorityLayerDirs(desired, "zzz"); len(other) != 0 {
 		t.Errorf("the tie WINNER must have no higher layers, got %v", other)
+	}
+}
+
+// An UNMOUNTED (or failed-to-mount) layer leaves its mount point behind as
+// an empty directory, because MountModule mkdir's it before mounting. A
+// bare existence check passes on that dir and reports the layer as
+// providing nothing — which turns a restore into a deletion, and in the
+// higher-layer case re-opens the shadowing bug winner resolution exists to
+// prevent. Both lists must therefore drop such a layer.
+func TestLayerDirs_SkipUnmountedEmptyLayers(t *testing.T) {
+	r, layout := captureFixture(t)
+	desired := mount.ModuleStack{
+		{ID: "self", Digest: "sha256:s", Priority: 10},
+		{ID: "mounted", Digest: "sha256:ok", Priority: 50},
+		{ID: "unmounted", Digest: "sha256:empty", Priority: 90},
+	}
+	// "mounted" serves content; "unmounted" is a bare mount point.
+	hpWriteFile(t, layout.ModuleMountPath("sha256:s"), "x", "self")
+	hpWriteFile(t, layout.ModuleMountPath("sha256:ok"), "usr/bin/tool", "real")
+	if err := os.MkdirAll(layout.ModuleMountPath("sha256:empty"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	for label, got := range map[string][]string{
+		"higherPriorityLayerDirs": r.higherPriorityLayerDirs(desired, "self"),
+		"survivingLayerDirs":      r.survivingLayerDirs(desired, "self"),
+	} {
+		if len(got) != 1 || got[0] != layout.ModuleMountPath("sha256:ok") {
+			t.Errorf("%s = %v, want only the layer actually serving content", label, got)
+		}
+	}
+}
+
+// layerProvidesAnything's own contract, stated directly.
+func TestLayerProvidesAnything(t *testing.T) {
+	dir := t.TempDir()
+	if layerProvidesAnything(dir) {
+		t.Error("an empty dir provides nothing")
+	}
+	if layerProvidesAnything(filepath.Join(dir, "missing")) {
+		t.Error("a missing dir provides nothing")
+	}
+	if layerProvidesAnything("") {
+		t.Error("an empty path provides nothing")
+	}
+	hpWriteFile(t, dir, "a/b.txt", "x")
+	if !layerProvidesAnything(dir) {
+		t.Error("a dir with content provides something")
 	}
 }
