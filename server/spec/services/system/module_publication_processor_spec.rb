@@ -157,6 +157,52 @@ RSpec.describe System::ModulePublicationProcessor do
       expect(node_module.reload.current_version_id).to eq(good_version_id)
     end
 
+    # Review finding: emit_published_event was handed the REQUESTED promote
+    # flag, not the outcome, so a withheld promotion still announced
+    # promoted: true — anything reading the fleet event stream believed the bad
+    # version was live while current_version_id still pointed at the previous
+    # one. That is the same "audit trail asserts something that did not happen"
+    # shape the withhold exists to prevent.
+    it "reports promoted: false in the event when the promotion was withheld" do
+      stub_erofs_of_size(1_024)
+
+      described_class.process!(node_module: node_module, tag: "evt001")
+
+      event = System::FleetEvent.where(account: account, kind: "system.module_published").last
+      expect(event.payload["promoted"]).to eq(false)
+      expect(node_module.reload.current_version_id).to be_nil
+    end
+
+    it "reports promoted: false in the event when the module is held back by policy" do
+      node_module.update!(auto_promote: false)
+
+      described_class.process!(node_module: node_module, tag: "evt002")
+
+      event = System::FleetEvent.where(account: account, kind: "system.module_published").last
+      expect(event.payload["promoted"]).to eq(false)
+    end
+
+    # FAIL CLOSED on an unmeasured artifact. Ingest writes
+    # `fetch(:size_bytes, 0)`, so a failed layer-descriptor read is
+    # indistinguishable from a real 0 — and the pipeline that fails to measure
+    # a blob is plausibly the same one that emitted the empty blob on
+    # 2026-08-07. Withholding costs a recoverable "fleet stays on the old
+    # version"; promoting costs files deleted off live roots.
+    it "does NOT promote an artifact whose size ingest never determined" do
+      System::ModuleOciIngestService.adapter.stub_manifest = {
+        per_arch_descriptors: [ {
+          architecture: "amd64", oci_digest: "sha256:#{'c' * 64}",
+          media_type: ::System::ModuleArtifact::DEFAULT_MEDIA_TYPE,
+          size_bytes: 0, fsverity_root_hash: "fsv-unknown", built_at: Time.current
+        } ]
+      }
+
+      result = described_class.process!(node_module: node_module, tag: "unk001")
+
+      expect(result.node_module_version).to be_present
+      expect(node_module.reload.current_version_id).to be_nil
+    end
+
     it "still promotes an artifact comfortably above the floor" do
       result = described_class.process!(node_module: node_module, tag: "fine001")
 

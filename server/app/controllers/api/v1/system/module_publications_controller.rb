@@ -253,6 +253,11 @@ module Api
         def promotable_publish?(normalized)
           return false if normalized.blank?
 
+          # size UNKNOWN -> allow, because the layer-digest fetch above is
+          # explicitly best-effort and the agent refuses to mount a version with
+          # no digest, so a missing size here is already backstopped on the node.
+          # The processor's fresh-publish path fails CLOSED instead; see
+          # artifact_size_promotable?'s comment for why they differ.
           size = normalized.dig("erofs", "size")
           return true if size.nil?
 

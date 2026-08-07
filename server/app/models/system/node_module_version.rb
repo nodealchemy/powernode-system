@@ -167,6 +167,10 @@ module System
       return false if data.blank?
       return false if (data["oci_digest"] || data[:oci_digest]).blank?
 
+      # FAIL OPEN on an unknown size, unlike the fresh-publish path: old version
+      # rows predate size recording, and refusing them would block rollback to a
+      # version known to have worked. See artifact_size_promotable?'s comment
+      # for why the two readings differ on purpose.
       size = data["size"] || data[:size]
       return true if size.nil?
 

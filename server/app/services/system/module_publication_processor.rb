@@ -83,17 +83,30 @@ module System
         # inspected — but promotion is the step that reaches the fleet, and on
         # 2026-08-07 promoting two zero-file erofs blobs made agents hot-prune
         # /usr/local/go and /usr/local/bin/gitleaks off a live node's root.
+        # promoted is the OUTCOME, not the request. Passing the `promote`
+        # parameter to the event meant a withheld promotion still published
+        # system.module_published with promoted: true, so anything reading the
+        # fleet event stream (or a UI reading payload.promoted) believed the bad
+        # version was current while current_version_id still pointed at the
+        # previous one. The REST controller already reports the real outcome
+        # (promoted_to_current: current_version_id == version.id).
+        promoted = false
         if promote
           if !auto_promote?(node_module)
             hold_promotion_by_policy!(node_module, node_module_version, tag)
           elsif promotable_artifact?(canonical)
             promote_current_version(node_module, node_module_version)
+            # Read the STATE, not promote_to_version!'s return: that returns
+            # false for an already-current version, which is a successful no-op
+            # (a republished tag), not a withheld promotion. update_columns
+            # refreshes the in-memory attribute, so no reload is needed.
+            promoted = node_module.current_version_id == node_module_version.id
           else
             withhold_promotion!(node_module, node_module_version, canonical, tag)
           end
         end
         register_skills_for(node_module)
-        emit_published_event(node_module, node_module_version, oci_ref, result.module_artifacts, tag, promote)
+        emit_published_event(node_module, node_module_version, oci_ref, result.module_artifacts, tag, promoted)
         Result.new(
           ok?: true,
           node_module_version: node_module_version,
@@ -233,6 +246,24 @@ module System
       DEFAULT_MIN_ARTIFACT_BYTES
     end
 
+    # The size THRESHOLD is shared by all three callers; the unknown-size
+    # SEMANTICS deliberately are not, and an earlier attempt to unify them was
+    # wrong. Recorded here so it is not "cleaned up" again:
+    #
+    #   fresh publish (promotable_artifact? below) — FAIL CLOSED. An unknown
+    #     size cannot be distinguished from a real one, because ingest writes
+    #     `fetch(:size_bytes, 0)`, so a failed layer-descriptor read lands as 0
+    #     exactly like a genuinely tiny blob. Promoting on that auto-promotes an
+    #     artifact nobody measured — plausibly produced by the same broken
+    #     pipeline that emitted the empty blob on 2026-08-07. Withholding costs
+    #     a visible, recoverable "fleet stays on the old version"; promoting
+    #     costs files deleted off live roots.
+    #
+    #   rollback target (NodeModuleVersion#rollback_usable?) — FAIL OPEN. Old
+    #     version rows predate size recording, and refusing them would block
+    #     recovery to a version known to have worked.
+    #
+    # Callers that want the fail-open reading pass their own nil check first.
     def self.artifact_size_promotable?(size_bytes)
       size_bytes.to_i >= min_artifact_bytes
     end
@@ -247,7 +278,7 @@ module System
     def promotable_artifact?(canonical)
       return false if canonical.nil?
 
-      canonical.size_bytes.to_i >= min_artifact_bytes
+      self.class.artifact_size_promotable?(canonical.size_bytes)
     end
 
     # Per-module holdback. DEFAULTS TO TRUE, so a module that says nothing
