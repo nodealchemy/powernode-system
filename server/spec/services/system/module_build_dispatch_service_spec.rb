@@ -205,6 +205,131 @@ RSpec.describe System::ModuleBuildDispatchService do
     end
   end
 
+  # Golden Eclipse M1.C follow-up — closure-batched build dispatch. Fires ONE
+  # workflow per architecture (vs. one per module for dispatch_build!) and
+  # carries the whole modules_payload + a per-closure webhook_secret so the
+  # PackageBuildWebhookController can verify + fan the callback back out.
+  describe ".dispatch_closure" do
+    let(:repository) { create(:system_package_repository, account: account) }
+
+    let(:mod_one) do
+      create(:system_node_module, account: account, node_platform: platform, category: category,
+             variety: "subscription", name: "closure-mod-one").tap do |m|
+        m.update!(mask: "/etc/secret")
+        create(:system_package_module_link, node_module: m, package_repository: repository,
+               package_name: "nginx", architecture: "amd64")
+      end
+    end
+    let(:mod_two) do
+      create(:system_node_module, account: account, node_platform: platform, category: category,
+             variety: "subscription", name: "closure-mod-two").tap do |m|
+        create(:system_package_module_link, node_module: m, package_repository: repository,
+               package_name: "libpcre3", architecture: "amd64")
+      end
+    end
+
+    # Small in-memory recorder distinct from LocalDispatchAdapter — injecting
+    # it via described_class.adapter= exercises the adapter seam explicitly
+    # and makes every recorded payload directly inspectable. The outer
+    # before/after described_class.reset! (top of this file) rebuilds the
+    # default adapter before this hook runs and clears the stub again after
+    # each example, so it never leaks into a later example.
+    let(:recording_adapter) do
+      Class.new do
+        attr_reader :dispatched
+
+        def initialize
+          @dispatched = []
+        end
+
+        def dispatch(payload, account: nil)
+          id = "rec-#{SecureRandom.hex(4)}"
+          @dispatched << payload
+          { ok: true, dispatch_id: id }
+        end
+      end.new
+    end
+
+    before { described_class.adapter = recording_adapter }
+
+    it "dispatches one workflow per architecture through the injected adapter" do
+      result = described_class.dispatch_closure(
+        repository: repository, modules: [ mod_one, mod_two ], architectures: [ "amd64", "arm64" ]
+      )
+
+      expect(recording_adapter.dispatched.size).to eq(2)
+      recording_adapter.dispatched.each do |payload|
+        expect(payload[:repository]).to be_present
+        expect(payload[:workflow]).to eq(described_class::PACKAGE_BUILD_WORKFLOW)
+        expect(payload[:ref]).to eq(described_class::DEFAULT_REF)
+      end
+
+      expect(result.map { |r| r[:architecture] }).to match_array([ "amd64", "arm64" ])
+      expect(result).to all(include(ok: true))
+    end
+
+    # Load-bearing: pins the HMAC derivation consistency between the
+    # dispatcher and the inbound webhook verifier (both derive
+    # webhook_secret_for(closure_id) independently), and regression-guards
+    # campaign 019f6084 inc2 — a bare decode_spec_text(m.mask) raised
+    # NoMethodError against a real module, so this exercises the REAL
+    # NodeModule#mask_text rather than stubbing it.
+    it "derives webhook_secret via .webhook_secret_for and encodes real mask_text into modules_payload" do
+      result = described_class.dispatch_closure(
+        repository: repository, modules: [ mod_one, mod_two ], architectures: [ "amd64" ]
+      )
+      expect(result.first[:ok]).to be true
+
+      inputs = recording_adapter.dispatched.last[:inputs]
+      expect(inputs[:closure_id]).to be_present
+      expect(inputs[:webhook_secret]).to eq(described_class.webhook_secret_for(inputs[:closure_id]))
+
+      modules_payload = JSON.parse(inputs[:modules_payload])
+      expect(modules_payload.size).to eq(2)
+
+      entry_one = modules_payload.find { |e| e["module_id"] == mod_one.id }
+      expect(entry_one["package_name"]).to eq("nginx")
+      expect(entry_one["mask"]).to eq(mod_one.mask_text)
+      expect(entry_one["mask"]).not_to be_empty
+
+      entry_two = modules_payload.find { |e| e["module_id"] == mod_two.id }
+      expect(entry_two["package_name"]).to eq("libpcre3")
+    end
+
+    context "apt vs rpm repository input routing" do
+      it "populates apt_suite/apt_components and nils rpm_releasever for an apt repository" do
+        described_class.dispatch_closure(repository: repository, modules: [ mod_one ], architectures: [ "amd64" ])
+        inputs = recording_adapter.dispatched.last[:inputs]
+
+        expect(inputs[:apt_suite]).to eq("noble")
+        expect(inputs[:apt_components]).to eq("main")
+        expect(inputs[:rpm_releasever]).to be_nil
+      end
+
+      it "populates rpm_releasever and nils apt_suite/apt_components for a non-apt repository" do
+        rpm_repo = create(:system_package_repository, :rpm, account: account)
+        described_class.dispatch_closure(repository: rpm_repo, modules: [ mod_one ], architectures: [ "amd64" ])
+        inputs = recording_adapter.dispatched.last[:inputs]
+
+        expect(inputs[:rpm_releasever]).to eq("40")
+        expect(inputs[:apt_suite]).to be_nil
+        expect(inputs[:apt_components]).to be_nil
+      end
+    end
+
+    it "raises DispatchError when modules is empty" do
+      expect {
+        described_class.dispatch_closure(repository: repository, modules: [], architectures: [ "amd64" ])
+      }.to raise_error(described_class::DispatchError, /modules required/)
+    end
+
+    it "raises DispatchError when architectures is empty" do
+      expect {
+        described_class.dispatch_closure(repository: repository, modules: [ mod_one ], architectures: [])
+      }.to raise_error(described_class::DispatchError, /architectures required/)
+    end
+  end
+
   # IMP-7c61c2db3bef / D9 step-2 — per-module derived webhook secret.
   describe ".module_webhook_secret_for" do
     it "is a hex SHA256 HMAC over the domain-separated 'module-webhook:<id>'" do
