@@ -504,7 +504,14 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		}
 		current.AttachedModules = append(current.AttachedModules, mod)
 		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
-		r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired)
+		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired) {
+			// The stamp above is what the reattach gate compares, so leaving
+			// it in place after a refused materialization tells the next tick
+			// this module is fully synced when it is not. Clear it to re-queue.
+			// The module STAYS in AttachedModules — the erofs layer really is
+			// attached; only the file copy was refused.
+			delete(current.LastAttachedManifestHashes, mod.ID)
+		}
 	}
 
 	// Re-attach loop for manifest-only changes. attachModule is
@@ -522,7 +529,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
-		r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired)
+		if r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired) {
+			// Same re-queue as the attach loop: a refused materialization must
+			// not leave a stamp claiming this manifest is materialized.
+			delete(current.LastAttachedManifestHashes, mod.ID)
+		}
 	}
 
 	// Deferred leaver prunes — after both attach loops so every desired
@@ -983,17 +994,28 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 //     changed == 0, i.e. nothing had actually drifted) is not logged —
 //     OnError is reserved for failures and there's no dedicated
 //     benign/info-log hook in this package.
-func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifest, stateWasEmpty bool, oldPaths map[string]bool, desired mount.ModuleStack) {
+// Returns retryNeeded: true ONLY when the materialization was refused for a
+// reason a later tick could resolve on its own. The caller clears the module's
+// manifest-hash stamp in that case, which puts it back into toReattach next
+// tick — see the reattach gate in RunOnce.
+//
+// It is deliberately NOT "anything other than complete success". A
+// reboot_required module and a first-boot attach both decline to sync here and
+// must return false: retrying either would re-enter toReattach on every tick
+// forever, spamming signals without ever making progress, because nothing the
+// reconciler does resolves them. Only the scratch-budget abort is genuinely
+// transient — the space may exist next time.
+func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifest, stateWasEmpty bool, oldPaths map[string]bool, desired mount.ModuleStack) (retryNeeded bool) {
 	if r.cfg.DryRun || stateWasEmpty || mf == nil {
-		return
+		return false
 	}
 	if pivotAwareRootMode() != lifecycle.RootModeNative {
-		return
+		return false
 	}
 	if mf.RebootRequired {
 		r.cfg.OnError("reconciler:reboot_pending",
 			fmt.Errorf("module %s changed but reboot_required=true; a reboot (or `powernode-agent soft-recompose --execute`) is needed to apply", mod.ID))
-		return
+		return false
 	}
 	srcDir := r.cfg.Layout.ModuleMountPath(mod.Digest)
 	dstRoot := filepath.Join(r.cfg.Layout.Root, "/")
@@ -1014,7 +1036,19 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 		// on a scratch that is already full, is the worst of both.
 		r.cfg.OnError("reconciler:recompose_budget",
 			fmt.Errorf("module %s: live materialization aborted, skipping this module's prune (`powernode-agent soft-recompose --execute` applies it without the scratch limit): %w", mod.ID, err))
-		return
+		// RETRY. The caller stamps LastAttachedManifestHashes before calling
+		// us, so without this the reattach gate sees a matching hash on every
+		// later tick and the partial sync is never attempted again — the
+		// signal above fires once and goes quiet, reading as resolved rather
+		// than stuck. Clearing the stamp re-queues the module so it converges
+		// once the scratch has room.
+		//
+		// Note this does NOT repair the split the abort leaves behind:
+		// fs.SkipAll stops a lexically-ordered walk, so the module sits at an
+		// arbitrary alphabetical boundary with its units already restarted
+		// against a mixture of old and new files until a retry completes.
+		// Making the materialization atomic is a separate change.
+		return true
 	}
 	if err != nil {
 		r.cfg.OnError("reconciler:hot_reconcile", fmt.Errorf("module %s: %w", mod.ID, err))
@@ -1031,7 +1065,7 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 	// inventoried before it was unmounted; a first attach (nothing
 	// outgoing) has no baseline and correctly prunes nothing.
 	if len(oldPaths) == 0 {
-		return
+		return false
 	}
 	pruneRes, pruneErr := PruneRemovedFiles(PruneOptions{
 		OldPaths:        oldPaths,
@@ -1052,6 +1086,7 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 		r.cfg.OnError("reconciler:hot_prune_contested",
 			fmt.Errorf("module %s: %d path(s) it dropped are also provided by another module and were restored from it", mod.ID, pruneRes.Restored))
 	}
+	return false
 }
 
 // higherPriorityLayerDirs returns the mount dirs of every module in the
