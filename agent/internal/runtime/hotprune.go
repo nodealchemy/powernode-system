@@ -221,7 +221,7 @@ func PruneRemovedFiles(opts PruneOptions) (PruneResult, error) {
 
 		// Re-resolve against the surviving stack BEFORE considering removal.
 		if src, srcInfo, found := findInLayers(opts.SurvivingLayers, rel); found {
-			changed, err := restoreFrom(src, dst, srcInfo)
+			changed, err := restoreFrom(src, dst, srcInfo, nil)
 			switch {
 			case err != nil:
 				problems = append(problems, fmt.Errorf("restore %s from %s: %w", dst, src, err))
@@ -262,14 +262,15 @@ func findInLayers(layers []string, rel string) (string, os.FileInfo, bool) {
 }
 
 // restoreFrom rewrites dst from a surviving layer's copy, reusing the same
-// atomic-write and verbatim-symlink helpers SyncModuleFilesToRoot uses so
-// restore and sync cannot drift apart in their guarantees.
-func restoreFrom(src, dst string, info os.FileInfo) (bool, error) {
+// atomic-write and verbatim-symlink helpers SyncModuleFiles uses so
+// restore and sync cannot drift apart in their guarantees. guard follows
+// syncRegularFile's contract (nil = unguarded).
+func restoreFrom(src, dst string, info os.FileInfo, guard func(int64) error) (bool, error) {
 	switch {
 	case info.Mode()&os.ModeSymlink != 0:
 		return syncSymlink(src, dst)
 	case info.Mode().IsRegular():
-		return syncRegularFile(src, dst, info.Mode().Perm())
+		return syncRegularFile(src, dst, info.Mode().Perm(), guard)
 	default:
 		// A directory (or device/FIFO/socket) in the surviving layer where
 		// the live root has a file: out of scope for a prune pass, and

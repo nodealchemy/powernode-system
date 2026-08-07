@@ -8,9 +8,75 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
-// SyncModuleFilesToRoot walks srcErofsDir (a module's loop-mounted,
+// ErrScratchBudget marks a sync aborted because copying further files would
+// leave the destination's backing filesystem (in production: the shared
+// scratch tmpfs backing the live root's overlay upperdir — overlayfs statfs
+// reports the upper fs) with less than SyncOptions.MinFreeBytes free.
+// Callers match with errors.Is and surface "this recompose needs a
+// (soft-)reboot" instead of letting the live root's upper hit ENOSPC
+// mid-materialization.
+var ErrScratchBudget = errors.New("scratch budget exhausted")
+
+// freeBytesAt reports the free bytes available to unprivileged writers on
+// the filesystem containing path. Package-level var so tests can inject a
+// fake without a real small filesystem.
+var freeBytesAt = func(path string) (uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return st.Bavail * uint64(st.Bsize), nil
+}
+
+// SyncOptions parameterizes SyncModuleFiles beyond the plain "copy this
+// tree onto the root" contract.
+type SyncOptions struct {
+	// HigherLayers are the mounted trees of every module with HIGHER
+	// effective priority than the module being synced, highest first —
+	// the same order overlayfs resolves lowers in. A path any of these
+	// provides is contested: the union serves the higher layer's entry,
+	// so the sync must materialize THAT entry (or leave a live view that
+	// already matches it alone), never this module's copy. Without this,
+	// a low-priority module added or updated post-boot would copy-up its
+	// version of a shared path and shadow the rightful winner until
+	// reboot. Nil/empty means "this module wins every path it ships"
+	// (correct only when the caller knows no higher layer exists).
+	HigherLayers []string
+
+	// MinFreeBytes, when > 0, enables the scratch budget guard: before
+	// each file copy, the destination filesystem must have at least
+	// (file size + MinFreeBytes) free or the sync aborts with
+	// ErrScratchBudget. Files already copied stay — they are winner
+	// content and re-converge on the next tick or reboot.
+	MinFreeBytes uint64
+}
+
+// SyncResult counts what a sync did, for the caller's logging.
+type SyncResult struct {
+	// Changed counts files/symlinks actually written (new, or content/
+	// target differed) — NOT directories, and not entries skipped as
+	// already-identical.
+	Changed int
+	// Contested counts paths this module ships that a higher-priority
+	// layer also ships (the higher layer's entry was kept/materialized).
+	// Persistently non-zero means two modules are fighting over a path —
+	// the same composition smell PruneResult.Restored surfaces.
+	Contested int
+}
+
+// SyncModuleFilesToRoot preserves the original single-module contract:
+// copy srcErofsDir onto dstRoot with no winner resolution and no budget
+// guard. Thin wrapper over SyncModuleFiles — see its doc for the full
+// contract.
+func SyncModuleFilesToRoot(srcErofsDir, dstRoot string) (int, error) {
+	res, err := SyncModuleFiles(srcErofsDir, dstRoot, SyncOptions{})
+	return res.Changed, err
+}
+
+// SyncModuleFiles walks srcErofsDir (a module's loop-mounted,
 // read-only erofs blob at Layout.ModuleMountPath(digest)) and copies every
 // entry into dstRoot (the live pivot-node root, "/"), so a changed module's
 // new files show up WITHOUT a reboot.
@@ -68,14 +134,34 @@ import (
 //     returned error via errors.Join; the walk continues past them so one
 //     bad entry doesn't block every other file in the module from
 //     syncing.
-//
-// changed counts files/symlinks actually written (new, or content/target
-// differed from what was already at the destination) — NOT directories,
-// and not entries skipped as already-identical. Callers use changed > 0 to
-// decide whether the hot-reconcile is worth surfacing.
-func SyncModuleFilesToRoot(srcErofsDir, dstRoot string) (int, error) {
-	changed := 0
+//   - Contested paths (opts.HigherLayers): a path a higher-priority layer
+//     also provides is materialized FROM that layer (findInLayers +
+//     restoreFrom, the same resolution prune uses), never from this
+//     module — the union winner must win in the live view too.
+//   - Budget (opts.MinFreeBytes): each copy is preceded by a free-space
+//     probe on dstRoot's filesystem; a would-breach copy aborts the whole
+//     walk with ErrScratchBudget (already-copied files stay — they are
+//     winner content either way).
+func SyncModuleFiles(srcErofsDir, dstRoot string, opts SyncOptions) (SyncResult, error) {
+	var res SyncResult
 	var errs []error
+
+	var guard func(int64) error
+	if opts.MinFreeBytes > 0 {
+		guard = func(size int64) error {
+			free, ferr := freeBytesAt(dstRoot)
+			if ferr != nil {
+				// Fail open: a probe failure must not block a sync that
+				// may well fit; ENOSPC on the actual copy still surfaces.
+				return nil
+			}
+			if free < uint64(size)+opts.MinFreeBytes {
+				return fmt.Errorf("%w: copying %d bytes would leave under the %d-byte floor (%d free)",
+					ErrScratchBudget, size, opts.MinFreeBytes, free)
+			}
+			return nil
+		}
+	}
 
 	walkErr := filepath.WalkDir(srcErofsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -93,13 +179,35 @@ func SyncModuleFilesToRoot(srcErofsDir, dstRoot string) (int, error) {
 		}
 		target := filepath.Join(dstRoot, rel)
 
+		// Winner resolution: a path a higher-priority layer also provides
+		// is contested, and the union serves THAT layer's entry — so the
+		// live view must get the winner's content (restoreFrom is
+		// idempotent when it already does), never this module's copy.
+		// Directories are exempt: they merge in the union, and MkdirAll
+		// below cannot lose anyone's content.
+		if len(opts.HigherLayers) > 0 && !d.IsDir() {
+			if winSrc, winInfo, found := findInLayers(opts.HigherLayers, rel); found {
+				res.Contested++
+				wrote, resErr := restoreFrom(winSrc, target, winInfo, guard)
+				if resErr != nil {
+					errs = append(errs, fmt.Errorf("winner rewrite %s: %w", rel, resErr))
+					if errors.Is(resErr, ErrScratchBudget) {
+						return fs.SkipAll
+					}
+				} else if wrote {
+					res.Changed++
+				}
+				return nil
+			}
+		}
+
 		switch {
 		case d.Type()&fs.ModeSymlink != 0:
 			wrote, symErr := syncSymlink(path, target)
 			if symErr != nil {
 				errs = append(errs, fmt.Errorf("symlink %s: %w", rel, symErr))
 			} else if wrote {
-				changed++
+				res.Changed++
 			}
 
 		case d.IsDir():
@@ -118,11 +226,14 @@ func SyncModuleFilesToRoot(srcErofsDir, dstRoot string) (int, error) {
 				errs = append(errs, fmt.Errorf("stat %s: %w", rel, statErr))
 				return nil
 			}
-			wrote, copyErr := syncRegularFile(path, target, info.Mode().Perm())
+			wrote, copyErr := syncRegularFile(path, target, info.Mode().Perm(), guard)
 			if copyErr != nil {
 				errs = append(errs, fmt.Errorf("copy %s: %w", rel, copyErr))
+				if errors.Is(copyErr, ErrScratchBudget) {
+					return fs.SkipAll
+				}
 			} else if wrote {
-				changed++
+				res.Changed++
 			}
 
 		default:
@@ -135,7 +246,7 @@ func SyncModuleFilesToRoot(srcErofsDir, dstRoot string) (int, error) {
 		errs = append(errs, fmt.Errorf("walk %s: %w", srcErofsDir, walkErr))
 	}
 
-	return changed, errors.Join(errs...)
+	return res, errors.Join(errs...)
 }
 
 // syncSymlink recreates the symlink at src (read via os.Readlink, never
@@ -177,8 +288,11 @@ func syncSymlink(src, dst string) (bool, error) {
 // syncRegularFile copies src to dst atomically (temp file in dst's
 // directory, chmod'd to mode, fsync'd, renamed over dst) unless the two
 // are already byte-identical. Returns wrote=true only when a copy
-// actually happened.
-func syncRegularFile(src, dst string, mode os.FileMode) (bool, error) {
+// actually happened. A non-nil guard is consulted with the source size
+// after the identical-check and before any write — an identical file
+// never charges the budget, and a guard refusal propagates verbatim so
+// errors.Is(err, ErrScratchBudget) works at the caller.
+func syncRegularFile(src, dst string, mode os.FileMode, guard func(int64) error) (bool, error) {
 	identical, err := filesIdentical(src, dst)
 	if err != nil {
 		return false, fmt.Errorf("compare: %w", err)
@@ -188,6 +302,15 @@ func syncRegularFile(src, dst string, mode os.FileMode) (bool, error) {
 	}
 	if fi, statErr := os.Lstat(dst); statErr == nil && fi.IsDir() {
 		return false, errors.New("destination is a directory, refusing to replace with a file")
+	}
+	if guard != nil {
+		si, statErr := os.Stat(src)
+		if statErr != nil {
+			return false, fmt.Errorf("stat source: %w", statErr)
+		}
+		if gerr := guard(si.Size()); gerr != nil {
+			return false, gerr
+		}
 	}
 
 	dir := filepath.Dir(dst)
