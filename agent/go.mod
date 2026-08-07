@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/go-acme/lego/v4 v4.35.2
 	github.com/spf13/cobra v1.8.0
+	golang.org/x/sys v0.43.0
 )
 
 require (
@@ -51,7 +52,6 @@ require (
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect
 	google.golang.org/api v0.276.0 // indirect
