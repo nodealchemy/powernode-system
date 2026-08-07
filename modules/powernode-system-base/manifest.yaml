@@ -47,6 +47,22 @@ file_spec:
 # prepare-root now creates /sbin AS the usr-merge symlink (see ensureSbin), so
 # /sbin/powernode-agent below resolves through it to /usr/sbin/powernode-agent —
 # along with everything else in /usr/sbin — with nothing shipped here at all.
+#
+# 2026-08-07 — that last paragraph describes the SOURCE, not the fleet. ensureSbin
+# is correct in-tree (c0e6e7e2, 2026-07-25) but the binary that actually runs
+# prepare-root lives in the UKI initramfs, and dev-cell boots image 6924d16c
+# (2026-07-20) — `git merge-base --is-ancestor c0e6e7e2 6924d16c` is FALSE, so
+# the fix is absent from the running image and the defect recurred live. A new
+# UKI is not deliverable by `agent update`, a module overlay, or an LKG retarget;
+# it needs a disk-image rebuild. Until every node boots an image carrying
+# c0e6e7e2, the usr-merge symlink is supplied by the OS layer instead — see the
+# NOTE ON rootfs/sbin in modules/base-os-ubuntu-noble/manifest.yaml. Deleting
+# that symlink regresses only nodes still on a stale UKI, which is exactly the
+# kind of silent, delayed regression this note exists to prevent.
+#
+# The rule above is UNCHANGED and still absolute: do not ship real files under
+# /sbin from this module. A symlink in the OS layer is not an exception to it —
+# a real path here would still shadow the merge for the whole union.
 
 mask: []
 dependency_spec: []
