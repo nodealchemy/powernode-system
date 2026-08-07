@@ -1065,7 +1065,10 @@ func (r *Reconciler) higherPriorityLayerDirs(desired mount.ModuleStack, modID st
 			break
 		}
 	}
-	if self < 0 || self == len(sorted)-1 {
+	// self < 0 is load-bearing: without it the loop below treats EVERY
+	// module as higher-priority. A top-of-stack module needs no special
+	// case — the loop simply yields nothing.
+	if self < 0 {
 		return nil
 	}
 	dirs := make([]string, 0, len(sorted)-self-1)

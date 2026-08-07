@@ -59,9 +59,16 @@ func TestSoftRecomposePreflight_RefusesNonPivotNode(t *testing.T) {
 func TestSoftRecomposePreflight_RefusesOldSystemd(t *testing.T) {
 	pinRootMode(t, lifecycle.RootModeNative)
 	pinPendingSlot(t, "")
-	err := SoftRecomposePreflight(context.Background(), stubVersionRunner("systemd 249 (249.11)\n"))
-	if err == nil || !strings.Contains(err.Error(), "soft-reboot") {
-		t.Errorf("want an old-systemd refusal, got %v", err)
+	// The mount stub says "survives", so the version floor is the ONLY
+	// clause that can refuse. Asserting on the version text matters: an
+	// earlier version of this test asserted merely "soft-reboot", which the
+	// /persist refusal message ALSO contains — it passed even with the
+	// version floor deleted (surviving mutant, 2026-08-07).
+	run := softRebootRunner("DefaultDependencies=no\nConflicts=\nLoadState=loaded\n")
+	run.StubOutput["systemctl --version"] = []byte("systemd 249 (249.11)\n")
+	err := SoftRecomposePreflight(context.Background(), run)
+	if err == nil || !strings.Contains(err.Error(), "249") || !strings.Contains(err.Error(), "254") {
+		t.Errorf("want a refusal naming the found and required systemd versions, got %v", err)
 	}
 }
 
@@ -166,5 +173,18 @@ func TestMountUnitName(t *testing.T) {
 		if got := MountUnitName(path); got != want {
 			t.Errorf("MountUnitName(%q) = %q, want %q", path, got, want)
 		}
+	}
+}
+
+// A mount unit systemd does not know must count as NOT surviving, on its
+// own merits: this stub satisfies BOTH other clauses (DefaultDependencies
+// is "no", Conflicts empty), so only the unknown-unit clause can refuse.
+func TestSoftRecomposePreflight_UnknownUnitAloneRefuses(t *testing.T) {
+	pinRootMode(t, lifecycle.RootModeNative)
+	pinPendingSlot(t, "")
+	run := softRebootRunner("DefaultDependencies=no\nConflicts=\nLoadState=not-found\n")
+	err := SoftRecomposePreflight(context.Background(), run)
+	if err == nil || !strings.Contains(err.Error(), "unknown to systemd") {
+		t.Errorf("an unknown mount unit is unproven and must refuse, got %v", err)
 	}
 }

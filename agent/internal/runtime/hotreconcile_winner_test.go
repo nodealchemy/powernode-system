@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -173,6 +174,31 @@ func TestSyncModuleFiles_IdenticalFilesBypassBudget(t *testing.T) {
 	res, err := SyncModuleFiles(src, dst, SyncOptions{MinFreeBytes: 1 << 20})
 	if err != nil {
 		t.Fatalf("SyncModuleFiles: %v", err)
+	}
+	if res.Changed != 0 {
+		t.Errorf("Changed = %d, want 0", res.Changed)
+	}
+}
+
+// The budget must charge the FILE SIZE against the floor, not just compare
+// free space to the floor. Free space here is comfortably above the floor,
+// yet the copy would still push it below — mutating the check to
+// `free < MinFreeBytes` lets this through (surviving mutant, 2026-08-07).
+func TestSyncModuleFiles_BudgetChargesFileSize(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	payload := strings.Repeat("x", 500)
+	writeTestFile(t, filepath.Join(src, "big.bin"), payload, 0o644)
+
+	const floor = 1000
+	orig := freeBytesAt
+	// 1200 free: above the 1000 floor, but 500 more bytes would breach it.
+	freeBytesAt = func(string) (uint64, error) { return 1200, nil }
+	t.Cleanup(func() { freeBytesAt = orig })
+
+	res, err := SyncModuleFiles(src, dst, SyncOptions{MinFreeBytes: floor})
+	if !errors.Is(err, ErrScratchBudget) {
+		t.Fatalf("err = %v, want ErrScratchBudget (the file size must count against the floor)", err)
 	}
 	if res.Changed != 0 {
 		t.Errorf("Changed = %d, want 0", res.Changed)
