@@ -153,7 +153,13 @@ module System
           }
         },
         "system.module_promotion_ready" => {
-          skill: nil, # ModulePromotionService is invoked directly
+          # skill: nil because there is no on-node task to dispatch — the
+          # remediation is a model-side state transition, actuated by the
+          # #apply_module_promotion entry in REMEDIATION_APPLIERS. The previous
+          # comment here read "ModulePromotionService is invoked directly",
+          # which was false: promote! had no call site anywhere in application
+          # code, so every approved promotion returned "no applier".
+          skill: nil,
           action_category: "system.module_promote_to_live"
         },
         "system.config_drift" => {
@@ -821,7 +827,17 @@ module System
         # A pivot instance's composed union is boot-time-fixed, so the task
         # is skipped in favor of a requires_reprovision flag — see
         # #apply_template_closure_drift.
-        "system.template_closure_drift" => { method: :apply_template_closure_drift }
+        "system.template_closure_drift" => { method: :apply_template_closure_drift },
+        # IMP-41eb6ddbc490: staging→blessed was fully built for detection and
+        # gating and dead-ended here. ModulePromotionSensor found eligible
+        # versions and the binding routed them through require_approval, but
+        # ModulePromotionService.promote! had ZERO call sites in application
+        # code and this constant had no entry — so an operator could approve a
+        # promotion and apply_remediation! returned "no applier". Same class as
+        # IMP-555e29eeb4ab and IMP-83471cc28e1a above, and the reason the
+        # binding's "invoked directly" comment was wrong rather than merely
+        # imprecise.
+        "system.module_promotion_ready" => { method: :apply_module_promotion }
       }.freeze
 
       OPEN_TASK_STATUSES = %w[pending scheduled running].freeze
@@ -953,6 +969,46 @@ module System
       # when nothing currently runs the accessed canary — nothing to
       # terminate, so that's applied: false with a clear reason rather than
       # an error. Same applied/reason shape as the other appliers.
+      # Actuates an approved staging→blessed promotion.
+      #
+      # RE-CHECKS THE STATE rather than trusting the signal. The approval gate
+      # carries a TTL, so the version can move between the sensor firing and an
+      # operator approving — and unlike the converge-style appliers above,
+      # re-promoting is not a harmless no-op, it is an invalid transition. The
+      # same reasoning the instance_reprovision applier documents about
+      # approvals outliving the state they were raised for.
+      #
+      # Eligibility is NOT re-checked here on purpose: ModulePromotionService
+      # #promote! re-evaluates PromotionCriteria itself for a blessed target,
+      # so the approved promotion passes the same gate a direct promotion
+      # would. Duplicating it here would let the two drift.
+      def apply_module_promotion(signal, _skill_result)
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        id = payload["module_version_id"] || payload[:module_version_id]
+        return { applied: false, reason: "no module_version_id in payload" } if id.blank?
+
+        version = ::System::NodeModuleVersion
+                  .joins(node_module: :account)
+                  .where(accounts: { id: account.id })
+                  .find_by(id: id)
+        return { applied: false, reason: "module version not found: #{id.inspect}" } unless version
+
+        unless version.promotion_state == "staging"
+          return { applied: false,
+                   reason: "version is #{version.promotion_state}, no longer staging — " \
+                           "the approval outlived the state it was raised for" }
+        end
+
+        result = ::System::Fleet::ModulePromotionService.promote!(version: version, target_state: "blessed")
+        {
+          applied: result.ok?,
+          action: "module_promote_to_live",
+          module_version_id: version.id,
+          promoted_to: (result.ok? ? "blessed" : nil),
+          reason: result.error
+        }.compact
+      end
+
       def quarantine_honeypot_instance(signal, _skill_result)
         id = signal.payload.is_a?(Hash) ? (signal.payload["instance_id"] || signal.payload[:instance_id]) : nil
         return { applied: false, reason: "no instance to quarantine (module-only honeypot signal)" } if id.blank?
