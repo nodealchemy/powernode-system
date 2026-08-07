@@ -48,6 +48,31 @@ func DefaultLayout() Layout {
 	}
 }
 
+// NextrootLayout returns the Layout for composing a soft-reboot target
+// union at /run/nextroot (the path systemd-soft-reboot switches into):
+// same module mounts + blob cache as the live layout — erofs lowers are
+// read-only and safely shared between unions — but its OWN scratch tmpfs,
+// because two overlays sharing one upperdir/workdir is undefined kernel
+// behavior and the live root's scratch is in use by /.
+//
+// gen disambiguates repeated soft-recomposes within one kernel boot: each
+// prepare gets a fresh scratch (a stale prepared union can be torn down,
+// but a scratch that BECAME the live root's upper after a soft-reboot
+// cannot), so superseded scratch mounts are left for the next full reboot
+// to clear. Empty gen means the bare path.
+func NextrootLayout(gen string) Layout {
+	l := DefaultLayout()
+	l.SysRoot = "/run/nextroot"
+	scratch := "/run/powernode/nextroot-scratch"
+	if gen != "" {
+		scratch += "-" + gen
+	}
+	l.ScratchRoot = scratch
+	l.UpperDir = filepath.Join(scratch, "upper")
+	l.WorkDir = filepath.Join(scratch, "work")
+	return l
+}
+
 // Resolve applies Root to all paths, returning a copy with absolute paths
 // rooted under l.Root (used in tests to redirect to a temp dir).
 func (l Layout) Resolve() Layout {

@@ -71,6 +71,15 @@ security:
 skills: []
 
 build:
+  # INCIDENT 2026-08-07 — this module published an EMPTY artifact (v4,
+  # sha256:ab8a2148…, zero files) which auto-promoted, and the agent's
+  # hot-prune then whiteout-deleted /usr/local/bin/gitleaks off a live root
+  # (the platform's own validate.sh completion gate runs it). Same cause as
+  # runtime-go's v2 in the same batch: the build ran against a source ref
+  # that had been deleted mid-flight, so the Stage 1.5 fetch below never
+  # staged the binary. The fetch guards themselves are sound — the pinned
+  # sha256 check and the version-exec check are both fatal. Publish-side
+  # guard tracked as IMP 019fd9e2.
   apt_snapshot: "20260415T000000Z"
   # gitleaks release fetched + sha256-verified in Stage 1.5 (see the gitleaks
   # case in scripts/module-build/stage15.sh). Bump this alongside the pinned

@@ -437,7 +437,10 @@ module Ai
               dependency_spec: { type: "string", required: false, description: "Dependency spec — newline-joined entries or encoded array" },
               protected_spec: { type: "string", required: false, description: "Protected-path spec — newline-joined globs or encoded array" },
               consent_budget_per_day: { type: "integer", required: false, description: "Daily ceiling on autonomous decisions for this module (policy; the consumed-count ledger is not settable here)" },
-              config: { type: "object", required: false, description: "Arbitrary module config hash" }
+              config: { type: "object", required: false, description: "Arbitrary module config hash" },
+              manifest_yaml: { type: "string", required: false, description: "Raw manifest.yaml. When given it is authoritative for the spec/lifecycle fields (mask/file_spec/package_spec/dependency_spec/protected_spec/init/reboot), which are derived by the same importer the loader seed uses — pass only name/node_platform_id/category_id alongside it. This is what makes an MCP-authored module carry a manifest_yaml and therefore be buildable (visible to the module-build planner)." },
+              create_version: { type: "boolean", required: false, description: "With manifest_yaml, also snapshot the imported state into a new NodeModuleVersion (default true on create)" },
+              version_changelog: { type: "string", required: false, description: "Changelog recorded on the snapshotted version when create_version is set" }
             }
           },
           "system_update_module" => {
@@ -463,7 +466,10 @@ module Ai
               dependency_spec: { type: "string", required: false, description: "Dependency spec" },
               protected_spec: { type: "string", required: false, description: "Protected-path spec" },
               consent_budget_per_day: { type: "integer", required: false, description: "Daily ceiling on autonomous decisions for this module" },
-              config: { type: "object", required: false, description: "Arbitrary module config hash" }
+              config: { type: "object", required: false, description: "Arbitrary module config hash" },
+              manifest_yaml: { type: "string", required: false, description: "Raw manifest.yaml to re-import onto this module (authoritative for spec/lifecycle fields; same importer as the loader seed / REST import_manifest). Use to update a module's manifest — e.g. a CVE version bump — over MCP." },
+              create_version: { type: "boolean", required: false, description: "With manifest_yaml, snapshot the imported state into a new NodeModuleVersion (default false on update)" },
+              version_changelog: { type: "string", required: false, description: "Changelog recorded on the snapshotted version when create_version is set" }
             }
           },
           "system_unmark_module_canary" => {
@@ -1306,7 +1312,7 @@ module Ai
             parameters: {}
           },
           "system_dispatch_module_build_batch" => {
-            description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks). This planner builds ONLY manifest-backed platform modules (those with a modules/<slug>/ tree); package-origin modules materialized from an upstream apt/rpm package build through a separate package-closure trigger and are never planned here even with force_all — the result lists any it dropped under excluded_modules[] (with a reason each) plus excluded_count, and system_refresh_package_module is how you rebuild those. Requires system.module_builds.dispatch, which core grants only to the system_worker role by design (leaked-token blast-radius bound) — agent and operator principals cannot invoke this action.",
+            description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks). This planner builds ONLY manifest-backed platform modules (those with a modules/<slug>/ tree); package-origin modules materialized from an upstream apt/rpm package build through a separate package-closure trigger and are never planned here even with force_all — the result lists any it dropped under excluded_modules[] (with a reason each) plus excluded_count, and system_refresh_package_module is how you rebuild those. Requires system.module_builds.dispatch, which core grants explicitly only to the system_worker role by design (bounds a leaked NON-admin token's blast radius) — so ordinary agent/operator principals are denied, but a system.admin holder CAN invoke it (User#has_permission? short-circuits on system.admin, before the role-grant exclusion is consulted). Confirmed live over MCP: an admin operator connector dispatches successfully.",
             parameters: {
               base_sha: { type: "string", required: true, description: "Pre-push commit SHA (diff base) the planner compares from" },
               head_sha: { type: "string", required: true, description: "Post-push commit SHA (diff head); also the source of each build's short tag" },
@@ -1904,19 +1910,73 @@ module Ai
         params.slice(*MODULE_WRITE_FIELDS).to_h.compact
       end
 
+      # DB-relational columns a manifest.yaml does NOT carry — the only fields to
+      # set directly when the caller supplies a manifest (which is authoritative
+      # for everything else and gets applied by ManifestImportService).
+      MODULE_RELATIONAL_FIELDS = %i[name node_platform_id category_id variety enabled public priority].freeze
+
       def create_module(params)
-        node_module = account_modules.build(module_attrs(params))
+        yaml = params[:manifest_yaml].presence
+        # With a manifest, set only the relational columns and let the importer
+        # derive the spec/lifecycle fields — otherwise a manifest field and its
+        # individual-param twin could disagree.
+        base_attrs = yaml ? params.slice(*MODULE_RELATIONAL_FIELDS).to_h.compact : module_attrs(params)
+        node_module = account_modules.build(base_attrs)
         node_module.save!
-        success_result(node_module: serialize_module_full(node_module))
+
+        return success_result(node_module: serialize_module_full(node_module)) unless yaml
+
+        imported = import_module_manifest(node_module, yaml, params, default_create_version: true)
+        unless imported[:ok]
+          # A rejected manifest must leave no half-authored row behind.
+          node_module.destroy
+          return error_result("manifest import failed: #{imported[:error]}")
+        end
+
+        success_result(
+          node_module: serialize_module_full(node_module.reload),
+          node_module_version_id: imported[:version_id],
+          resolved_dependencies: imported[:resolved_dependencies]
+        )
       end
 
       def update_module(params)
         node_module = account_modules.find(params[:module_id])
+        yaml = params[:manifest_yaml].presence
         attrs = module_attrs(params)
-        return error_result("no mutable fields supplied") if attrs.empty?
+        return error_result("no mutable fields supplied") if attrs.empty? && yaml.nil?
 
-        node_module.update!(attrs)
+        node_module.update!(attrs) if attrs.any?
+
+        if yaml
+          imported = import_module_manifest(node_module, yaml, params, default_create_version: false)
+          return error_result("manifest import failed: #{imported[:error]}") unless imported[:ok]
+        end
+
         success_result(node_module: serialize_module_full(node_module.reload))
+      end
+
+      # Apply a raw manifest.yaml through the SAME importer the loader seed and
+      # the REST import_manifest endpoint use, so an MCP-authored/edited module
+      # carries the authoritative manifest_yaml (+ derived spec/dependency rows).
+      # This is the piece that was missing for end-to-end module authoring over
+      # MCP: ModuleBuildPlannerService#known_module_names only builds modules with
+      # a non-blank manifest_yaml, so a module created via bare fields alone was
+      # invisible to the build planner.
+      def import_module_manifest(node_module, yaml, params, default_create_version:)
+        cv = params[:create_version]
+        result = ::System::ManifestImportService.import!(
+          node_module: node_module,
+          yaml: yaml,
+          create_version: cv.nil? ? default_create_version : ::ActiveModel::Type::Boolean.new.cast(cv),
+          version_changelog: params[:version_changelog].presence
+        )
+        {
+          ok: result.ok?,
+          error: result.error,
+          version_id: result.node_module_version&.id,
+          resolved_dependencies: result.resolved_dependencies
+        }
       end
 
       # The inverse of system_module_mark_canary, which had none — an agent

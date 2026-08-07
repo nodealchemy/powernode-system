@@ -93,7 +93,24 @@ type ReconcilerConfig struct {
 	// egress chain never drops the agent's own control-plane traffic
 	// even when a strict module attaches with an empty EgressAllow list.
 	PlatformURL string
+	// ScratchMinFreeBytes is the free-space floor the hot-reconcile
+	// budget guard keeps on the scratch tmpfs backing the live root's
+	// overlay upperdir (see SyncOptions.MinFreeBytes). 0 means
+	// DefaultScratchMinFreeBytes.
+	ScratchMinFreeBytes uint64
+	// BreadcrumbSink, when set, receives ComposeForPivot's boot-composed
+	// breadcrumb INSTEAD of it being written to BootBreadcrumbPath. Set
+	// only by the soft-recompose prepare path — see the write site in
+	// compose.go for why the on-disk write must wait for execute time.
+	BreadcrumbSink func(*BootComposedBreadcrumb)
 }
+
+// DefaultScratchMinFreeBytes is the default budget-guard floor: a live
+// materialization never takes the scratch tmpfs below this much free.
+// 64 MiB of the (default 512 MiB) scratch pool: enough headroom for the
+// overlay's own copy-up traffic — identity renders, unit writes, service
+// runtime writes — to keep landing while a large module sync is refused.
+const DefaultScratchMinFreeBytes uint64 = 64 << 20
 
 // Reconciler is the long-lived module-state reconcile loop. Pulls the
 // platform's assigned-modules list, diffs vs on-disk state.json,
@@ -342,6 +359,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// deletions were originally out of scope. See hotprune.go.
 	outgoingPaths := r.captureOutgoingPaths(toDetach, toAttach, manifests)
 
+	// Same pre-unmount window, other half of the split: inventory modules
+	// LEAVING the composition (no same-ID successor) for the deferred
+	// leaver prune. See hotleaver.go for the tick-by-tick contract.
+	leavers := r.captureLeaverInventories(toDetach, toAttach, manifests)
+
 	// Detaches first, in reverse priority (highest priority unmounted first
 	// so dependency stacks come down cleanly).
 	detachStack := mount.ModuleStack(toDetach).SortByPriority()
@@ -352,6 +374,8 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// Continue — best-effort detach; partial failure shouldn't block other detaches.
 		}
 	}
+
+	r.writePendingPrunes(leavers)
 
 	// Render /etc/passwd, /etc/group, /etc/shadow, /etc/gshadow from
 	// the post-detach manifest set BEFORE any attach kicks off systemd
@@ -500,6 +524,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
 		r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired)
 	}
+
+	// Deferred leaver prunes — after both attach loops so every desired
+	// module's tree is mounted before any surviving-layer resolution.
+	r.processPendingPrunes(desired)
 
 	// Filter out detached modules from current — both from the attached
 	// list and from the manifest-hash map (so a later re-add doesn't
@@ -964,13 +992,39 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 	}
 	if mf.RebootRequired {
 		r.cfg.OnError("reconciler:reboot_pending",
-			fmt.Errorf("module %s changed but reboot_required=true; a reboot is needed to apply", mod.ID))
+			fmt.Errorf("module %s changed but reboot_required=true; a reboot (or `powernode-agent soft-recompose --execute`) is needed to apply", mod.ID))
 		return
 	}
 	srcDir := r.cfg.Layout.ModuleMountPath(mod.Digest)
 	dstRoot := filepath.Join(r.cfg.Layout.Root, "/")
-	if _, err := SyncModuleFilesToRoot(srcDir, dstRoot); err != nil {
+	res, err := SyncModuleFiles(srcDir, dstRoot, SyncOptions{
+		HigherLayers: r.higherPriorityLayerDirs(desired, mod.ID),
+		MinFreeBytes: r.scratchMinFreeBytes(),
+	})
+	if errors.Is(err, ErrScratchBudget) {
+		// The materialization would exhaust the scratch tmpfs backing the
+		// live root's upperdir. Surface it as its own signal so the
+		// operator can act on it distinctly from an ordinary copy failure.
+		//
+		// RETURN — never fall through to the prune below. The prune
+		// rewrites restored files onto the very filesystem this sync just
+		// refused to write a single byte to, and its whiteouts are
+		// themselves upperdir entries (one real incident produced 14,494
+		// of them from a single pass). Refusing to copy and then deleting,
+		// on a scratch that is already full, is the worst of both.
+		r.cfg.OnError("reconciler:recompose_budget",
+			fmt.Errorf("module %s: live materialization aborted, skipping this module's prune (`powernode-agent soft-recompose --execute` applies it without the scratch limit): %w", mod.ID, err))
+		return
+	}
+	if err != nil {
 		r.cfg.OnError("reconciler:hot_reconcile", fmt.Errorf("module %s: %w", mod.ID, err))
+	}
+	// Same composition smell hot_prune_contested surfaces: two modules
+	// claim one path. Here the higher-priority layer's content was kept,
+	// which is correct — but the operator should still see the contention.
+	if res.Contested > 0 {
+		r.cfg.OnError("reconciler:hot_sync_contested",
+			fmt.Errorf("module %s: %d path(s) it ships are also shipped by a higher-priority module; the higher layer's content was kept", mod.ID, res.Contested))
 	}
 
 	// Removals. Only reachable when the previous version's tree was
@@ -979,25 +1033,70 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 	if len(oldPaths) == 0 {
 		return
 	}
-	res, err := PruneRemovedFiles(PruneOptions{
+	pruneRes, pruneErr := PruneRemovedFiles(PruneOptions{
 		OldPaths:        oldPaths,
 		NewErofsDir:     srcDir,
 		DstRoot:         dstRoot,
 		SurvivingLayers: r.survivingLayerDirs(desired, mod.ID),
 		Protected:       mf.ProtectedSpec,
 	})
-	if err != nil {
-		r.cfg.OnError("reconciler:hot_prune", fmt.Errorf("module %s: %w", mod.ID, err))
+	if pruneErr != nil {
+		r.cfg.OnError("reconciler:hot_prune", fmt.Errorf("module %s: %w", mod.ID, pruneErr))
 	}
 	// Restored means another module in the stack also claims a path this
 	// one just dropped. That resolves correctly here, but two modules
 	// owning one path is a composition smell the operator should see —
 	// it is the shape that produced the shadowed-`go` defect this
 	// mechanism was built after.
-	if res.Restored > 0 {
+	if pruneRes.Restored > 0 {
 		r.cfg.OnError("reconciler:hot_prune_contested",
-			fmt.Errorf("module %s: %d path(s) it dropped are also provided by another module and were restored from it", mod.ID, res.Restored))
+			fmt.Errorf("module %s: %d path(s) it dropped are also provided by another module and were restored from it", mod.ID, pruneRes.Restored))
 	}
+}
+
+// higherPriorityLayerDirs returns the mount dirs of every module in the
+// desired composition with HIGHER effective priority than modID, highest
+// first — the subset of the union that can out-rank modID on a contested
+// path. Ties resolve the way SortByPriority orders them (ascending
+// priority, then ID): a later position in the sorted stack is closer to
+// the union top, so it counts as higher here too — divergence between the
+// two orderings is exactly how a winner-resolution bug would creep back in.
+func (r *Reconciler) higherPriorityLayerDirs(desired mount.ModuleStack, modID string) []string {
+	sorted := desired.SortByPriority()
+	self := -1
+	for i, m := range sorted {
+		if m.ID == modID {
+			self = i
+			break
+		}
+	}
+	// self < 0 is load-bearing: without it the loop below treats EVERY
+	// module as higher-priority. A top-of-stack module needs no special
+	// case — the loop simply yields nothing.
+	if self < 0 {
+		return nil
+	}
+	dirs := make([]string, 0, len(sorted)-self-1)
+	for i := len(sorted) - 1; i > self; i-- {
+		d := r.cfg.Layout.ModuleMountPath(sorted[i].Digest)
+		// An unmounted/empty higher layer must not be consulted: it would
+		// resolve every contested path to "nobody else provides this" and
+		// re-open the very shadowing bug this list exists to prevent.
+		if !layerProvidesAnything(d) {
+			continue
+		}
+		dirs = append(dirs, d)
+	}
+	return dirs
+}
+
+// scratchMinFreeBytes resolves the budget-guard floor: the configured
+// value, else DefaultScratchMinFreeBytes.
+func (r *Reconciler) scratchMinFreeBytes() uint64 {
+	if r.cfg.ScratchMinFreeBytes > 0 {
+		return r.cfg.ScratchMinFreeBytes
+	}
+	return DefaultScratchMinFreeBytes
 }
 
 // survivingLayerDirs returns the mount dirs of every module in the desired
@@ -1018,7 +1117,14 @@ func (r *Reconciler) survivingLayerDirs(desired mount.ModuleStack, excludeID str
 		if sorted[i].ID == excludeID {
 			continue
 		}
-		dirs = append(dirs, r.cfg.Layout.ModuleMountPath(sorted[i].Digest))
+		d := r.cfg.Layout.ModuleMountPath(sorted[i].Digest)
+		// A layer that is not serving content cannot authorise a deletion
+		// (see layerProvidesAnything): including it would make paths it
+		// should still provide look sole-owned.
+		if !layerProvidesAnything(d) {
+			continue
+		}
+		dirs = append(dirs, d)
 	}
 	return dirs
 }
@@ -1086,19 +1192,61 @@ func (r *Reconciler) detachModule(ctx context.Context, current *mount.State, mod
 				fmt.Errorf("module %s: %w", mod.ID, err))
 		}
 	}
-	// Unmount the module's erofs blob. The union overlay above SysRoot
-	// holds an open reference to this mountpoint, so we MUST be called
-	// after the union is recomposed (which is the case — RunOnce reaps
-	// detached modules first, then rebuilds the overlay with the
-	// remaining stack). Best-effort: log + continue on failure. The
-	// kernel cleans up the loop device automatically when umount
-	// releases the mount.
-	if err := mount.UnmountModule(ctx, r.cfg.MountRunner, r.cfg.Layout, mod.Digest); err != nil {
+	// Unmount the module's erofs blob — UNLESS the live union still lists
+	// it as a lower layer.
+	//
+	// The original reasoning here was that unmounting is safe because
+	// "RunOnce reaps detached modules first, then rebuilds the overlay
+	// with the remaining stack". That holds for the cloud_init model,
+	// where the union lives at SysRoot and IS recomposed on every stack
+	// change. It is false in exactly the mode that matters: on a pivot
+	// node / IS the union, its lowerdir was fixed at mount time, and the
+	// union-skip block further up deliberately never rebuilds it. So the
+	// premise the unmount relied on never becomes true there, and
+	// unmounting pulls a layer out from under the RUNNING root — every
+	// file it provided stops resolving, with no error and no crash.
+	//
+	// Cost of the two mistakes is wildly asymmetric: keeping an unused
+	// erofs mounted wastes one loop device until the next reboot, while
+	// unmounting a referenced one silently strips content from a live
+	// node (2026-08-07: the entire Go toolchain, GOROOT/src included).
+	// So an unreadable mount table means SKIP, never proceed.
+	if skip, why := r.unmountWouldStripLiveRoot(mod); skip {
+		r.cfg.OnError("reconciler:unmount_skipped",
+			fmt.Errorf("module %s: leaving erofs mounted — %s", mod.ID, why))
+	} else if err := mount.UnmountModule(ctx, r.cfg.MountRunner, r.cfg.Layout, mod.Digest); err != nil {
 		r.cfg.OnError("reconciler:unmount_module",
 			fmt.Errorf("module %s: %w", mod.ID, err))
 	}
 	_ = current // current state held by caller; best-effort detach
 	return nil
+}
+
+// unmountWouldStripLiveRoot reports whether unmounting mod's erofs would
+// remove a layer the RUNNING root's overlay still references, and why.
+//
+// Only meaningful in native (pivot) mode: there / IS the union and its
+// lowerdir is frozen at mount time. In chroot mode the union is remounted
+// at SysRoot on every stack change, so a superseded layer is genuinely
+// unreferenced by the time we get here and unmounting reclaims it.
+//
+// Fails CLOSED. If the mount table cannot be read, or the union cannot be
+// parsed, the answer is "would strip" — see the asymmetry argument at the
+// call site.
+func (r *Reconciler) unmountWouldStripLiveRoot(mod mount.Module) (bool, string) {
+	if pivotAwareRootMode() != lifecycle.RootModeNative {
+		return false, ""
+	}
+	liveRoot := filepath.Join(r.cfg.Layout.Root, "/")
+	dir := r.cfg.Layout.ModuleMountPath(mod.Digest)
+	inUnion, err := mount.PathInLiveUnion(liveRoot, dir)
+	if err != nil {
+		return true, fmt.Sprintf("cannot read the live mount table to prove %s is unreferenced (%v); refusing to risk stripping the running root", dir, err)
+	}
+	if inUnion {
+		return true, fmt.Sprintf("%s is still a lower layer of the live union at %s; unmounting it would remove its files from the running root", dir, liveRoot)
+	}
+	return false, ""
 }
 
 // hostFromURL parses a URL and returns the host (without port).
@@ -1300,6 +1448,8 @@ type FactoryConfig struct {
 	// PlatformURL is recorded as the boot-LKG breadcrumb Source (the control
 	// plane the compose fetched from). Purely informational for the snapshot.
 	PlatformURL string
+	// BreadcrumbSink — see ReconcilerConfig.BreadcrumbSink.
+	BreadcrumbSink func(*BootComposedBreadcrumb)
 }
 
 // NewReconcilerForCLI builds a Reconciler suitable for one-shot CLI
@@ -1321,6 +1471,7 @@ func NewReconcilerForCLI(cfg FactoryConfig) (*Reconciler, error) {
 		DryRun:         cfg.DryRun,
 		OnError:        cfg.OnError,
 		PlatformURL:    cfg.PlatformURL,
+		BreadcrumbSink: cfg.BreadcrumbSink,
 	})
 }
 

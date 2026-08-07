@@ -79,6 +79,7 @@ See https://docs.powernode.org/agent for full documentation.`,
 		abandonBootImageCmd(),
 		lkgCmd(),
 		retryPendingComposeCmd(),
+		softRecomposeCmd(),
 		versionCmd(),
 	)
 

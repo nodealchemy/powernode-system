@@ -47,6 +47,20 @@ services: []
 skills: []
 
 build:
+  # INCIDENT 2026-08-07 — this module published an EMPTY artifact (v2,
+  # sha256:0ffc2cc0…, zero files) which auto-promoted. Nodes pulled it, the
+  # agent's hot-prune correctly found no surviving layer providing the old
+  # paths, and whiteout-deleted the entire Go toolchain — GOROOT/src
+  # included — off a live root. The node reported healthy throughout.
+  # Nothing in the fetch path below is suspected: the sha256 check and the
+  # version-exec check are both fatal. The artifact went out empty during a
+  # build batch whose source ref had been deleted mid-flight, so the payload
+  # was never staged in the first place. Two consequences worth keeping in
+  # mind when touching this module: its payload is an EXTERNAL download, so
+  # a build that cannot reach the source produces a structurally valid but
+  # empty erofs; and because /usr/local/** is carved wholesale, an empty
+  # build here deletes every path this module previously owned. Publish-side
+  # guard tracked as IMP 019fd9e2.
   apt_snapshot: "20260415T000000Z"
   # Fetched + sha256-verified in Stage 1.5 (see the runtime-go case in
   # .gitea/workflows -> scripts/module-build/stage15.sh). Bump this alongside

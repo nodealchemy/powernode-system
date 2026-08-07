@@ -8,10 +8,19 @@ import (
 	"strings"
 )
 
+// DefaultScratchSize is the tmpfs size= for the shared scratch mount
+// (upper + work pool) when Overlay.ScratchSize is unset.
+const DefaultScratchSize = "512m"
+
 // Overlay is the agent's high-level handle for the union mount.
 type Overlay struct {
 	Layout Layout
 	Runner Runner
+	// ScratchSize overrides the scratch tmpfs size= option (e.g. "1g").
+	// Empty means DefaultScratchSize. Live-growable after the fact with
+	// `mount -o remount,size=` on the scratch mount — tmpfs honors that
+	// online — so raising it never needs a reboot.
+	ScratchSize string
 }
 
 // LowerDirString returns the overlayfs `lowerdir=` argument for a sorted
@@ -54,9 +63,13 @@ func (o *Overlay) EnsureUpperWorkDirs(ctx context.Context) error {
 		// size applies to upper + work pooled; in practice upper is
 		// the only thing that grows, work just holds overlayfs
 		// whiteout state.
+		size := o.ScratchSize
+		if size == "" {
+			size = DefaultScratchSize
+		}
 		if err := o.Runner.Run(ctx, "mount",
 			"-t", "tmpfs",
-			"-o", "size=512m,nosuid,nodev,mode=755",
+			"-o", "size="+size+",nosuid,nodev,mode=755",
 			"tmpfs-powernode-scratch", scratch,
 		); err != nil {
 			return fmt.Errorf("mount scratch tmpfs at %s: %w", scratch, err)
@@ -92,10 +105,12 @@ func (o *Overlay) MountUnion(ctx context.Context, stack ModuleStack) error {
 	if already {
 		// overlayfs `mount -o remount,lowerdir=...` is a kernel no-op:
 		// the syscall returns success but lowerdir is set at mount time
-		// and cannot be replaced (only the upperdir/workdir/ro-rw flags
-		// can be flipped at remount, plus `lowerdir+=` to APPEND on
-		// 5.18+). Replacing the lowerdir stack requires a fresh mount,
-		// so we always umount + remount when /sysroot is already up.
+		// and cannot be replaced (only ro/rw-style flags flip at
+		// remount). The new-mount-API `lowerdir+` option is likewise
+		// mount-CREATION-time only — there is no live append; a mounted
+		// overlay's lower stack is immutable, full stop. Replacing it
+		// requires a fresh mount, so we always umount + remount when
+		// /sysroot is already up.
 		//
 		// Lazy umount (`-l`, MNT_DETACH) is the safe fallback for the
 		// busy case: a service that holds /sysroot open (e.g. a unit
