@@ -27,6 +27,9 @@ file_spec:
   # purpose: a broad /etc/systemd/system/** would sweep unrelated units out
   # of the builder rootfs into this module's layer.
   - '/etc/systemd/system/serial-getty@ttyS0.service.d/**'
+  # /persist soft-reboot survival drop-in (see the file's own header).
+  # Same narrow-glob discipline as the line above.
+  - '/etc/systemd/system/persist.mount.d/**'
 
 # NOTE ON /sbin — do NOT ship real files here.
 #
