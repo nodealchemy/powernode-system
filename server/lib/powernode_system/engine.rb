@@ -407,8 +407,13 @@ module PowernodeSystem
         # is extension policy, so it's registered here rather than inlined
         # into core's ROLES admin/manager lists.
         # ---------------------------------------------------------------
-        ::Permissions.register_role_permissions("admin", %w[system.module_builds.read])
-        ::Permissions.register_role_permissions("manager", %w[system.module_builds.read])
+        # system.module_builds.cancel rides the same policy as .read and for
+        # the same reason: it is an OPERATOR surface. Leaving it on the raw
+        # SYSTEM_PERMISSIONS default (system_worker only) would reproduce the
+        # exact defect this permission exists to fix — an operator watching a
+        # runaway batch with no way to stop it.
+        ::Permissions.register_role_permissions("admin", %w[system.module_builds.read system.module_builds.cancel])
+        ::Permissions.register_role_permissions("manager", %w[system.module_builds.read system.module_builds.cancel])
 
         # ---------------------------------------------------------------
         # Operator-facing gap closure (improvement 019f6479). These names are

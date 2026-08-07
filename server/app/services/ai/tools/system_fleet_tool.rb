@@ -260,6 +260,12 @@ module Ai
         "system_list_disk_image_webhooks"            => "system.modules.read",
         # Campaign 019f5885 inc9 — native module-build batch orchestration.
         "system_dispatch_module_build_batch"         => "system.module_builds.dispatch",
+        # Cancel is deliberately NOT gated on ...dispatch: that permission is
+        # granted only to system_worker, so reusing it would leave the human
+        # operator — the one who notices mid-batch that the wrong thing was
+        # dispatched — unable to stop it, which is the whole finding. Its own
+        # permission is registered to admin/manager alongside ...read.
+        "system_cancel_module_build_batch"           => "system.module_builds.cancel",
 
         # === Missing-features slice 6a — GitOps reconciler MCP surface ===
         "system_gitops_register_repository" => "system.modules.update",
@@ -1308,6 +1314,14 @@ module Ai
             }
           },
 
+          "system_cancel_module_build_batch" => {
+            description: "Stop a running native module-build batch. This is the operator kill switch: it transitions the batch to `cancelled`, cancels every member ci.module_build task that has not already finished, releases the builder leases those tasks held, and — critically — prevents the orchestrator from leasing a builder for any still-queued module. Cancelling a single task via system_cancel_task does NOT stop a batch: the orchestrator advances on every task completion and simply dispatches the next queued module onto a fresh builder. Already-published module versions are NOT rolled back (a batch that published before you cancelled it has already promoted those versions — use the module rollback path for that); this stops further building only. Refuses when the batch has already reached a terminal state.",
+            parameters: {
+              batch_id: { type: "string", required: true,  description: "System::ModuleBuildBatch id to cancel" },
+              reason:   { type: "string", required: false, description: "Operator-supplied reason, recorded on the batch's error_message for audit" }
+            }
+          },
+
           # === Missing-features slice 6a — GitOps reconciler MCP surface ===
           "system_gitops_register_repository" => {
             description: "Register a new GitopsRepository pointing at a git remote whose contents describe desired fleet state. The reconciler clones + pulls every 5 min by default; operator can trigger immediately via system_gitops_sync_repository.",
@@ -1623,6 +1637,7 @@ module Ai
         when "system_list_disk_image_webhooks"      then list_disk_image_webhooks(params)
         # Campaign 019f5885 inc9 — native module-build batch orchestration
         when "system_dispatch_module_build_batch"   then dispatch_module_build_batch(params)
+        when "system_cancel_module_build_batch"     then cancel_module_build_batch(params)
         # Missing-features slice 6a — GitOps reconciler
         when "system_gitops_register_repository"    then gitops_register_repository(params)
         when "system_gitops_sync_repository"        then gitops_sync_repository(params)
@@ -4634,6 +4649,26 @@ module Ai
         error_result(e.message)
       end
 
+      # The kill switch the 2026-08-07 incident had no equivalent of: aborting
+      # the in-flight task freed a builder and the orchestrator leased another
+      # ~2min later, so the batch ran on for ~15 more minutes. Deleting the
+      # git ref the builders check out did not stop it either.
+      def cancel_module_build_batch(params)
+        batch_id = params[:batch_id].to_s
+        return error_result("batch_id is required") if batch_id.blank?
+
+        batch = ::System::ModuleBuildBatch.where(account: @account).find_by(id: batch_id)
+        return error_result("Module build batch '#{batch_id}' not found") unless batch
+
+        result = ::System::NativeModuleBuildOrchestrator.cancel!(batch: batch, reason: params[:reason].presence)
+
+        unless result.ok?
+          return error_result("Batch is already #{batch.status} and cannot be cancelled")
+        end
+
+        success_result(module_build_batch: serialize_module_build_batch(batch.reload))
+      end
+
       def serialize_module_build_batch(batch)
         {
           id: batch.id,
@@ -4645,7 +4680,8 @@ module Ai
           planned_count: batch.planned_count,
           succeeded_count: batch.succeeded_count,
           failed_count: batch.failed_count,
-          error_message: batch.error_message
+          error_message: batch.error_message,
+          cancelled_at: batch.cancelled_at&.iso8601
         }
       end
 
