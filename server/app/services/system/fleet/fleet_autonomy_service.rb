@@ -15,6 +15,7 @@ module System
       # Emergency kill-switch is authoritative across every reconciler — a halt
       # must stop the fleet reconcile loop, not just the AI execution jobs.
       include ::System::Autonomy::KillSwitchGuard
+      include ::System::Autonomy::ControlPlaneGuard
 
       attr_reader :account, :agent, :role
 
@@ -56,6 +57,11 @@ module System
         # no-ops the entire reconcile (no sensing, deciding, reaping, or task
         # dispatch) before any state is touched.
         return halted_tick_result if kill_switch_engaged?
+
+        # Dual-plane fence SECOND: on the standby plane the tick must do
+        # nothing — the active plane owns actuation (ControlPlaneRole is the
+        # split-brain gate; inert unless the coordinator SiteSetting arms it).
+        return standby_tick_result unless control_plane_active?
 
         # Sweep BEFORE sensing: expired pending approvals must transition
         # (timeout_action) so the rejected-cooldown — not a fresh duplicate

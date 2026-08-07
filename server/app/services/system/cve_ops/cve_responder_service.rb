@@ -26,6 +26,7 @@ module System
       # Emergency kill-switch is authoritative across every reconciler — a halt
       # must stop CVE remediation too, not just the AI execution jobs.
       include ::System::Autonomy::KillSwitchGuard
+      include ::System::Autonomy::ControlPlaneGuard
 
       attr_reader :account, :agent, :role
 
@@ -61,6 +62,11 @@ module System
         # no-ops the entire reconcile (no sensing, deciding, or inline CVE
         # dispatch) before any state is touched.
         return halted_tick_result if kill_switch_engaged?
+
+        # Dual-plane fence SECOND: on the standby plane the tick must do
+        # nothing — the active plane owns actuation (ControlPlaneRole is the
+        # split-brain gate; inert unless the coordinator SiteSetting arms it).
+        return standby_tick_result unless control_plane_active?
 
         tick_correlation = "tick:#{SecureRandom.hex(8)}"
         emit_event(kind: "cve_responder.tick_started", payload: { agent_id: agent.id }, correlation_id: tick_correlation)
