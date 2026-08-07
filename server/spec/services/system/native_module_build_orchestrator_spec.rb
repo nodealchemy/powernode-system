@@ -467,4 +467,89 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
       described_class.new(batch: batch).send(:apply_module_manifest!, mod, mod.name)
     end
   end
+
+  # A batch had no kill switch: aborting a member Task only freed a builder,
+  # and the next #advance! immediately leased another and dispatched the next
+  # queued module (observed 2026-08-07 — a fresh builder ~2min after an
+  # abort). Cancellation therefore has to bite in three independent places:
+  # the batch's own state, the dispatch path, and the retry path. Asserting
+  # only "status == cancelled" would pass while the batch kept building.
+  describe "#cancel!" do
+    it "stops the batch dispatching any further queued module" do
+      SiteSetting.set("system.module_builds.max_concurrent_builders", "1", setting_type: "integer")
+      2.times { seed_pool_member }
+      mods  = Array.new(2) { |i| create_module("mod-cancel-#{i}") }
+      batch = build_batch(modules: mods)
+
+      described_class.dispatch!(batch: batch)
+      expect(System::Task.where(command: "ci.module_build", account: account).count).to eq(1)
+      expect(batch.reload.metadata["modules"].values.count { |m| m["state"] == "queued" }).to eq(1)
+
+      described_class.cancel!(batch: batch, reason: "operator stopped the batch")
+
+      expect(batch.reload.status).to eq("cancelled")
+      expect(batch.cancelled_at).to be_present
+      expect(batch.error_message).to eq("operator stopped the batch")
+
+      # The load-bearing assertion: advancing a cancelled batch must not
+      # lease a builder or create a task for the still-queued module.
+      expect { described_class.advance!(batch: batch) }
+        .not_to change { System::Task.where(command: "ci.module_build", account: account).count }
+    end
+
+    it "cancels the in-flight member task and releases its lease" do
+      seed_pool_member
+      mod   = create_module("mod-inflight")
+      batch = build_batch(modules: [ mod ])
+
+      described_class.dispatch!(batch: batch)
+      task  = System::Task.find_by(command: "ci.module_build", account: account)
+      lease = System::CiRunnerLease.for_account(account).find_by(build_task_id: task.id)
+      expect(lease).not_to be_finished
+
+      described_class.cancel!(batch: batch, reason: "wrong ref")
+
+      expect(task.reload.status).to eq("cancelled")
+      expect(lease.reload).to be_finished
+    end
+
+    it "does not re-queue a failed module for retry once cancelled" do
+      seed_pool_member
+      mod   = create_module("mod-noretry")
+      batch = build_batch(modules: [ mod ])
+
+      described_class.dispatch!(batch: batch)
+      described_class.cancel!(batch: batch, reason: "stop")
+
+      orchestrator = described_class.new(batch: batch.reload)
+      entry = { "module" => "mod-noretry", "attempts" => 1, "state" => "dispatched" }
+
+      expect(orchestrator.send(:attempt_retry!, entry)).to be(false)
+      expect(entry["state"]).to eq("dispatched")
+    end
+
+    it "leaves a cancelled batch cancelled instead of resolving it to complete or failed" do
+      seed_pool_member
+      mod   = create_module("mod-terminal")
+      batch = build_batch(modules: [ mod ])
+
+      described_class.dispatch!(batch: batch)
+      described_class.cancel!(batch: batch, reason: "stop")
+
+      described_class.advance!(batch: batch)
+
+      expect(batch.reload.status).to eq("cancelled")
+    end
+
+    it "refuses to cancel a batch that already finished" do
+      mod   = create_module("mod-done")
+      batch = build_batch(modules: [ mod ])
+      batch.update!(status: "complete")
+
+      result = described_class.cancel!(batch: batch, reason: "too late")
+
+      expect(result.ok?).to be(false)
+      expect(batch.reload.status).to eq("complete")
+    end
+  end
 end

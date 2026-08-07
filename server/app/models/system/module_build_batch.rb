@@ -24,7 +24,11 @@ module System
     self.table_name = "system_module_build_batches"
 
     # === Constants ===
-    STATUSES = %w[planning dispatched awaiting_signature publishing complete partial failed].freeze
+    # "cancelled": an operator stopped the batch mid-flight. Distinct from
+    # "failed" on purpose — a cancelled batch's member builds did not fail,
+    # they were never allowed to finish, and conflating the two would make
+    # succeeded/failed_count read as a build-quality signal when it isn't.
+    STATUSES = %w[planning dispatched awaiting_signature publishing complete partial failed cancelled].freeze
     # "package" (campaign 019f6084 inc2 §4.3.2): an on-demand package-closure
     # build materialized by System::PackageModuleMaterializer and routed through
     # the native pipeline via System::PackageClosureBuildBridge. Unlike push/
@@ -60,6 +64,7 @@ module System
       state :complete
       state :partial
       state :failed
+      state :cancelled
 
       # All planned ci.module_build Tasks have been created/enqueued.
       event :dispatch do
@@ -99,6 +104,25 @@ module System
 
         before do |message = nil|
           self.failed_at = Time.current
+          self.error_message = message if message
+        end
+      end
+
+      # Operator kill switch. Allowed from every active state (same
+      # allow-from-anywhere-active shape as #fail) but NEVER from a terminal
+      # one — cancelling an already-complete batch would rewrite history for
+      # versions that have already published and shipped to nodes.
+      #
+      # This transition is only the FIRST of the three things that stop a
+      # batch; on its own it is just a status column. The orchestrator owns
+      # the other two (refusing further dispatch, and cancelling the
+      # in-flight member tasks + releasing their leases) — see
+      # System::NativeModuleBuildOrchestrator#cancel!.
+      event :cancel do
+        transitions from: [ :planning, :dispatched, :awaiting_signature, :publishing ], to: :cancelled
+
+        before do |message = nil|
+          self.cancelled_at = Time.current
           self.error_message = message if message
         end
       end
@@ -233,7 +257,7 @@ module System
     end
 
     def finished?
-      %w[complete partial failed].include?(status)
+      %w[complete partial failed cancelled].include?(status)
     end
   end
 end
