@@ -93,7 +93,19 @@ type ReconcilerConfig struct {
 	// egress chain never drops the agent's own control-plane traffic
 	// even when a strict module attaches with an empty EgressAllow list.
 	PlatformURL string
+	// ScratchMinFreeBytes is the free-space floor the hot-reconcile
+	// budget guard keeps on the scratch tmpfs backing the live root's
+	// overlay upperdir (see SyncOptions.MinFreeBytes). 0 means
+	// DefaultScratchMinFreeBytes.
+	ScratchMinFreeBytes uint64
 }
+
+// DefaultScratchMinFreeBytes is the default budget-guard floor: a live
+// materialization never takes the scratch tmpfs below this much free.
+// 64 MiB of the (default 512 MiB) scratch pool: enough headroom for the
+// overlay's own copy-up traffic — identity renders, unit writes, service
+// runtime writes — to keep landing while a large module sync is refused.
+const DefaultScratchMinFreeBytes uint64 = 64 << 20
 
 // Reconciler is the long-lived module-state reconcile loop. Pulls the
 // platform's assigned-modules list, diffs vs on-disk state.json,
@@ -342,6 +354,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// deletions were originally out of scope. See hotprune.go.
 	outgoingPaths := r.captureOutgoingPaths(toDetach, toAttach, manifests)
 
+	// Same pre-unmount window, other half of the split: inventory modules
+	// LEAVING the composition (no same-ID successor) for the deferred
+	// leaver prune. See hotleaver.go for the tick-by-tick contract.
+	leavers := r.captureLeaverInventories(toDetach, toAttach, manifests)
+
 	// Detaches first, in reverse priority (highest priority unmounted first
 	// so dependency stacks come down cleanly).
 	detachStack := mount.ModuleStack(toDetach).SortByPriority()
@@ -352,6 +369,8 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// Continue — best-effort detach; partial failure shouldn't block other detaches.
 		}
 	}
+
+	r.writePendingPrunes(leavers)
 
 	// Render /etc/passwd, /etc/group, /etc/shadow, /etc/gshadow from
 	// the post-detach manifest set BEFORE any attach kicks off systemd
@@ -500,6 +519,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
 		r.hotReconcileIfNeeded(mod, mf, stateWasEmpty, outgoingPaths[mod.ID], desired)
 	}
+
+	// Deferred leaver prunes — after both attach loops so every desired
+	// module's tree is mounted before any surviving-layer resolution.
+	r.processPendingPrunes(desired)
 
 	// Filter out detached modules from current — both from the attached
 	// list and from the manifest-hash map (so a later re-add doesn't
@@ -964,13 +987,34 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 	}
 	if mf.RebootRequired {
 		r.cfg.OnError("reconciler:reboot_pending",
-			fmt.Errorf("module %s changed but reboot_required=true; a reboot is needed to apply", mod.ID))
+			fmt.Errorf("module %s changed but reboot_required=true; a reboot (or `powernode-agent soft-recompose --execute`) is needed to apply", mod.ID))
 		return
 	}
 	srcDir := r.cfg.Layout.ModuleMountPath(mod.Digest)
 	dstRoot := filepath.Join(r.cfg.Layout.Root, "/")
-	if _, err := SyncModuleFilesToRoot(srcDir, dstRoot); err != nil {
+	res, err := SyncModuleFiles(srcDir, dstRoot, SyncOptions{
+		HigherLayers: r.higherPriorityLayerDirs(desired, mod.ID),
+		MinFreeBytes: r.scratchMinFreeBytes(),
+	})
+	switch {
+	case errors.Is(err, ErrScratchBudget):
+		// The materialization would exhaust the scratch tmpfs backing the
+		// live root's upperdir. Copied files stay (winner content, they
+		// re-converge); the rest of this module needs a recompose the
+		// upper can't hold — surface it as its own signal so the operator
+		// (or a later soft-reboot tier) can act on it distinctly from an
+		// ordinary copy failure.
+		r.cfg.OnError("reconciler:recompose_budget",
+			fmt.Errorf("module %s: live materialization aborted (`powernode-agent soft-recompose --execute` applies it without the scratch limit): %w", mod.ID, err))
+	case err != nil:
 		r.cfg.OnError("reconciler:hot_reconcile", fmt.Errorf("module %s: %w", mod.ID, err))
+	}
+	// Same composition smell hot_prune_contested surfaces: two modules
+	// claim one path. Here the higher-priority layer's content was kept,
+	// which is correct — but the operator should still see the contention.
+	if res.Contested > 0 {
+		r.cfg.OnError("reconciler:hot_sync_contested",
+			fmt.Errorf("module %s: %d path(s) it ships are also shipped by a higher-priority module; the higher layer's content was kept", mod.ID, res.Contested))
 	}
 
 	// Removals. Only reachable when the previous version's tree was
@@ -979,25 +1023,60 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 	if len(oldPaths) == 0 {
 		return
 	}
-	res, err := PruneRemovedFiles(PruneOptions{
+	pruneRes, pruneErr := PruneRemovedFiles(PruneOptions{
 		OldPaths:        oldPaths,
 		NewErofsDir:     srcDir,
 		DstRoot:         dstRoot,
 		SurvivingLayers: r.survivingLayerDirs(desired, mod.ID),
 		Protected:       mf.ProtectedSpec,
 	})
-	if err != nil {
-		r.cfg.OnError("reconciler:hot_prune", fmt.Errorf("module %s: %w", mod.ID, err))
+	if pruneErr != nil {
+		r.cfg.OnError("reconciler:hot_prune", fmt.Errorf("module %s: %w", mod.ID, pruneErr))
 	}
 	// Restored means another module in the stack also claims a path this
 	// one just dropped. That resolves correctly here, but two modules
 	// owning one path is a composition smell the operator should see —
 	// it is the shape that produced the shadowed-`go` defect this
 	// mechanism was built after.
-	if res.Restored > 0 {
+	if pruneRes.Restored > 0 {
 		r.cfg.OnError("reconciler:hot_prune_contested",
-			fmt.Errorf("module %s: %d path(s) it dropped are also provided by another module and were restored from it", mod.ID, res.Restored))
+			fmt.Errorf("module %s: %d path(s) it dropped are also provided by another module and were restored from it", mod.ID, pruneRes.Restored))
 	}
+}
+
+// higherPriorityLayerDirs returns the mount dirs of every module in the
+// desired composition with HIGHER effective priority than modID, highest
+// first — the subset of the union that can out-rank modID on a contested
+// path. Ties resolve the way SortByPriority orders them (ascending
+// priority, then ID): a later position in the sorted stack is closer to
+// the union top, so it counts as higher here too — divergence between the
+// two orderings is exactly how a winner-resolution bug would creep back in.
+func (r *Reconciler) higherPriorityLayerDirs(desired mount.ModuleStack, modID string) []string {
+	sorted := desired.SortByPriority()
+	self := -1
+	for i, m := range sorted {
+		if m.ID == modID {
+			self = i
+			break
+		}
+	}
+	if self < 0 || self == len(sorted)-1 {
+		return nil
+	}
+	dirs := make([]string, 0, len(sorted)-self-1)
+	for i := len(sorted) - 1; i > self; i-- {
+		dirs = append(dirs, r.cfg.Layout.ModuleMountPath(sorted[i].Digest))
+	}
+	return dirs
+}
+
+// scratchMinFreeBytes resolves the budget-guard floor: the configured
+// value, else DefaultScratchMinFreeBytes.
+func (r *Reconciler) scratchMinFreeBytes() uint64 {
+	if r.cfg.ScratchMinFreeBytes > 0 {
+		return r.cfg.ScratchMinFreeBytes
+	}
+	return DefaultScratchMinFreeBytes
 }
 
 // survivingLayerDirs returns the mount dirs of every module in the desired
