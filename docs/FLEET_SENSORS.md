@@ -169,10 +169,10 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 
 **Source:** `trading_pressure_sensor.rb` (class `TradingPressureSensor`)
 **Watches:** Stigmergic pressure signals emitted by sibling extensions on the platform-wide signal bus
-**Threshold:** Aggregate external pressure ≥1.0 → fleet defers non-critical actions
-**Signals:** `fleet.trading_pressure_high`, `fleet.trading_pressure_normal` (signal-type constants; the `trading_` prefix predates the cross-domain generalization)
-**Recommended remediation:** Internal — no executor; the `TradingAwareThrottle` consults this signal to defer Fleet Autonomy actions when a sibling extension is under load.
-**Naming:** The `Trading*` class + signal names predate the cross-domain generalization — the sensor and throttle already consume any sibling extension's pressure feed. A rename to neutral `ExternalPressureSensor` / `ExternalAwareThrottle` names is contemplated but not in scope today.
+**Threshold:** Aggregate external pressure ≥1.0 → one aggregated signal (severity scales with aggregate strength)
+**Signals:** `system.trading_pressure_observed` (the `trading_` prefix predates the cross-domain generalization)
+**Recommended remediation:** Internal — no executor; observe-only. The DecisionEngine binds it to `system.observation` (auto_approve): it is recorded in the FleetEvent audit trail but reaches no operator and triggers no action. (A consume-side `TradingAwareThrottle` that would have deferred non-critical fleet actions was planned but never wired into `gate_action!`, and was deleted as dead scaffolding after the trading integration was descoped — IMP-86be386ac485.)
+**Naming:** The `Trading*` class + signal names predate the cross-domain generalization — the sensor already consumes any sibling extension's pressure feed. A rename to a neutral `ExternalPressureSensor` name is contemplated but not in scope today.
 
 ### `instance_state_drift_sensor` — DB↔provider truth divergence
 

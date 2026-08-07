@@ -40,7 +40,8 @@ module System
 
           # Aggregate into a single fleet-side signal so DecisionEngine
           # doesn't dispatch one decision per trading signal — they collectively
-          # mean "trading is busy; throttle non-critical fleet actions".
+          # mean "trading is busy". (Observe-side only: the throttle that was
+          # meant to consume this was never wired and has been deleted.)
           aggregate_strength = relevant.sum { |s| s.strength.to_f }
           severity = case aggregate_strength
           when 0..1.0 then :medium

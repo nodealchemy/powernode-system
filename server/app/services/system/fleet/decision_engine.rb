@@ -187,8 +187,9 @@ module System
         "system.trading_pressure_observed" => {
           # Trading pressure is informational — no autonomy action; the binding
           # exists so the signal isn't classified as "skipped" and dashboard
-          # can filter for it. Used by gate_action! to throttle non-critical
-          # actions when trading load is high.
+          # can filter for it. Observe-only: nothing consumes it to throttle
+          # or defer actions (the planned consume-side throttle was never
+          # wired and was deleted — IMP-86be386ac485).
           skill: nil,
           action_category: "system.observation"
         },
