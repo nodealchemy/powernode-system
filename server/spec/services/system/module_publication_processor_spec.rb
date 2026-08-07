@@ -107,4 +107,77 @@ RSpec.describe System::ModulePublicationProcessor do
       expect(node_module.reload.current_version_id).to be_nil
     end
   end
+
+  # 2026-08-07 incident: runtime-go v2 and gitleaks v4 published erofs blobs
+  # containing ZERO files. Both cleared cosign AND OCI ingest — neither gate
+  # looks at whether the artifact contains anything — so both auto-promoted,
+  # agents pulled them, and hot-prune correctly concluded no surviving layer
+  # provided the old paths and whiteout-deleted /usr/local/go and
+  # /usr/local/bin/gitleaks off a live node's root. Every platform signal read
+  # healthy throughout.
+  #
+  # From the agent's side an empty artifact is indistinguishable from a
+  # legitimate "this module now ships nothing", so the floor has to live here,
+  # at publish time. The version is still RECORDED (so the bad build can be
+  # inspected); what is withheld is PROMOTION, which is the step that reaches
+  # the fleet.
+  describe "empty-artifact promotion floor" do
+    def stub_erofs_of_size(bytes)
+      System::ModuleOciIngestService.adapter.stub_manifest = {
+        per_arch_descriptors: [ {
+          architecture:       "amd64",
+          oci_digest:         "sha256:#{'0' * 64}",
+          media_type:         ::System::ModuleArtifact::DEFAULT_MEDIA_TYPE,
+          size_bytes:         bytes,
+          fsverity_root_hash: "fsv-empty",
+          built_at:           Time.current
+        } ]
+      }
+    end
+
+    it "does NOT promote a module whose artifact is below the non-empty floor" do
+      stub_erofs_of_size(1_024) # an empty erofs is a few KiB of superblock
+
+      result = described_class.process!(node_module: node_module, tag: "empty01")
+
+      # The version is still recorded — only promotion is withheld.
+      expect(result.node_module_version).to be_present
+      expect(node_module.reload.current_version_id).to be_nil
+    end
+
+    it "does not DEMOTE an already-good current version when a later empty build lands" do
+      described_class.process!(node_module: node_module, tag: "good001")
+      good_version_id = node_module.reload.current_version_id
+      expect(good_version_id).to be_present
+
+      stub_erofs_of_size(1_024)
+      described_class.process!(node_module: node_module, tag: "empty02")
+
+      # The whole point: the fleet keeps running the last good version.
+      expect(node_module.reload.current_version_id).to eq(good_version_id)
+    end
+
+    it "still promotes an artifact comfortably above the floor" do
+      result = described_class.process!(node_module: node_module, tag: "fine001")
+
+      expect(node_module.reload.current_version_id).to eq(result.node_module_version.id)
+    end
+
+    it "does not promote when ingest produced no canonical artifact at all" do
+      System::ModuleOciIngestService.adapter.stub_manifest = { per_arch_descriptors: [] }
+
+      described_class.process!(node_module: node_module, tag: "noart01")
+
+      expect(node_module.reload.current_version_id).to be_nil
+    end
+
+    it "honours a configured floor rather than a hardcoded constant" do
+      SiteSetting.set("system.module_publish.min_artifact_bytes", "50000000", setting_type: "integer")
+      # The default stub artifact is ~12MB — fine normally, below a 50MB floor.
+
+      described_class.process!(node_module: node_module, tag: "cfg0001")
+
+      expect(node_module.reload.current_version_id).to be_nil
+    end
+  end
 end

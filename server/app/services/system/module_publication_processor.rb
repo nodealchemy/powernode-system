@@ -78,7 +78,16 @@ module System
             }
           )
         end
-        promote_current_version(node_module, node_module_version) if promote
+        # An artifact that contains nothing must never become current_version.
+        # Publishing it is fine — the row is kept so a bad build can be
+        # inspected — but promotion is the step that reaches the fleet, and on
+        # 2026-08-07 promoting two zero-file erofs blobs made agents hot-prune
+        # /usr/local/go and /usr/local/bin/gitleaks off a live node's root.
+        if promote && promotable_artifact?(canonical)
+          promote_current_version(node_module, node_module_version)
+        elsif promote
+          withhold_promotion!(node_module, node_module_version, canonical, tag)
+        end
         register_skills_for(node_module)
         emit_published_event(node_module, node_module_version, oci_ref, result.module_artifacts, tag, promote)
         Result.new(
@@ -194,6 +203,85 @@ module System
     # buys nothing but drift between what's published and what the fleet
     # resolves (agents read node_module.current_version&.artifact; the
     # drift sensor + system_fleet_tool key off current_version&.oci_digest).
+    # The non-empty floor, in bytes of the erofs layer. There is no file count
+    # available at publish time — the builder's .erofs.meta sidecar carries
+    # only fsverity_root and size, and the OCI manifest carries only the layer
+    # descriptor — so size is the discriminator we actually have.
+    #
+    # An empty erofs is not zero bytes: mkfs.erofs on an empty tree still emits
+    # a superblock and root inode, a few KiB. The default is set above that and
+    # below any module carrying real content. It is deliberately a floor on the
+    # SAFE side: withholding promotion from a legitimately tiny module is a
+    # visible, recoverable annoyance (the version is still published; an
+    # operator can lower the floor or promote by hand), whereas promoting an
+    # empty one deletes files off live nodes. Configurable rather than
+    # hardcoded so an operator can tune it without a deploy.
+    DEFAULT_MIN_ARTIFACT_BYTES = 16_384
+
+    # Class-level so the REST publish path (module_publications_controller)
+    # enforces the SAME floor. Two publish paths reach promote_to_version!,
+    # and a floor defined twice is a floor that drifts.
+    def self.min_artifact_bytes
+      configured = ::SiteSetting.get("system.module_publish.min_artifact_bytes")
+      value = configured.to_i
+      value.positive? ? value : DEFAULT_MIN_ARTIFACT_BYTES
+    rescue StandardError
+      DEFAULT_MIN_ARTIFACT_BYTES
+    end
+
+    def self.artifact_size_promotable?(size_bytes)
+      size_bytes.to_i >= min_artifact_bytes
+    end
+
+    def min_artifact_bytes
+      self.class.min_artifact_bytes
+    end
+
+    # nil canonical means ingest produced no artifact for this version at all —
+    # previously that STILL promoted, because the promote call sat outside the
+    # `if canonical` block that guards the artifact write.
+    def promotable_artifact?(canonical)
+      return false if canonical.nil?
+
+      canonical.size_bytes.to_i >= min_artifact_bytes
+    end
+
+    def withhold_promotion!(node_module, version, canonical, tag)
+      size = canonical&.size_bytes.to_i
+      reason = canonical.nil? ? "ingest produced no artifact" : "artifact is #{size}B, below the #{min_artifact_bytes}B non-empty floor"
+
+      Rails.logger.error(
+        "[ModulePublicationProcessor] REFUSING to promote #{node_module.name}@#{tag}: #{reason}. " \
+        "Version #{version.id} is published but NOT current; the fleet keeps the previous version."
+      )
+      emit_promotion_withheld_event(node_module, version, tag, reason)
+    end
+
+    def emit_promotion_withheld_event(node_module, version, tag, reason)
+      return unless defined?(::System::Fleet::EventBroadcaster)
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: node_module.account,
+        kind: "system.module_promotion_withheld",
+        # high: this is the signal that the 2026-08-07 incident had no
+        # equivalent of — every platform signal read healthy while a bad
+        # artifact reached the fleet. A withheld promotion means a build
+        # produced nothing usable and wants a human.
+        severity: :high,
+        source: "module_publication_processor",
+        node_module_id: node_module.id,
+        node_module_version_id: version.id,
+        payload: {
+          module_name:    node_module.name,
+          version_number: version.version_number,
+          git_tag:        tag,
+          reason:         reason
+        }
+      )
+    rescue StandardError => e
+      Rails.logger.warn("[ModulePublicationProcessor] promotion-withheld event failed: #{e.message}")
+    end
+
     def promote_current_version(node_module, version)
       # Writes current_version_id AND the denormalized current_version_number
       # atomically (idempotent) — never just the id, which drifts the number the
