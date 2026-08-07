@@ -91,6 +91,25 @@ RSpec.describe "instance ops hold" do
         expect(instance.ops_hold_summary).to match(/expired/i)
       end
     end
+
+    describe ".status" do
+      # A provider read failure must be diagnosable. Silently mapping it to nil
+      # makes a transient API error indistinguishable from "no lock present",
+      # which either raises a false drift alarm (held instance) or hides real
+      # drift (externally locked instance).
+      it "logs the provider state read failure instead of silently treating it as no lock" do
+        provider = instance_double(System::Providers::BaseProvider, supports_ops_hold?: true)
+        allow(provider).to receive(:ops_hold_state).and_raise(StandardError, "pve timeout")
+        allow(::System::Providers::Registry).to receive(:for_instance).and_return(provider)
+
+        expect(Rails.logger).to receive(:warn)
+          .with(a_string_matching(/provider state read failed for #{Regexp.escape(instance.name)}.*pve timeout/))
+
+        result = described_class.status(instance: instance)
+        expect(result).to be_ok
+        expect(result.provider_state).to be_nil
+      end
+    end
   end
 
   describe System::InstanceControlService do
