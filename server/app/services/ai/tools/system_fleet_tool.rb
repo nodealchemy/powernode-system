@@ -477,8 +477,12 @@ module Ai
             parameters: { module_id: { type: "string", required: true, description: "UUID of the NodeModule to unmark (account-scoped)" } }
           },
           "system_refresh_instance_modules" => {
-            description: "Force re-apply all assigned modules to an instance — queues a reconcile task. Useful when instance has drifted from desired template state.",
-            parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance whose modules to re-apply" } }
+            description: "Queue a module reconcile on an instance. By DEFAULT this is an ordinary reconcile: it applies drift (a module assigned, removed, or pointed at a new version) and does nothing when the node already matches desired state. That is NOT sufficient to repair a root whose files were deleted underneath an UNCHANGED module version — the 2026-08-07 shape, where an empty artifact's hot-prune whiteout-deleted /usr/local/go and /usr/local/bin/gitleaks while the digest stayed the same. Nothing has drifted in that state, so a plain reconcile correctly concludes there is nothing to do. Pass force_resync: true to re-materialize a module's files regardless of drift; add module_id to narrow it to one module, or omit it to resync every module on the node. Recovery for that incident was a hand bind-mount over a root shell — force_resync is the supported, audited equivalent. Note it re-materializes from whatever version is CURRENT, so if the bad version is still current, roll it back first (system_rollback_module_version).",
+            parameters: {
+              instance_id:  { type: "string",  required: true,  description: "UUID of the NodeInstance whose modules to reconcile" },
+              force_resync: { type: "boolean", required: false, description: "Re-materialize module files even when nothing has drifted. Default false." },
+              module_id:    { type: "string",  required: false, description: "With force_resync, resync only this module — the platform NodeModule UUID, which is what the agent keys its attached-module state by (NOT the module slug; a slug is rejected as not-attached). Omit to resync every module on the node." }
+            }
           },
 
           # === Instances ===
@@ -2010,13 +2014,33 @@ module Ai
 
       def refresh_instance_modules(params)
         instance = account_instances.find(params[:instance_id])
+        force = params[:force_resync].to_s == "true" || params[:force_resync] == true
+        module_id = params[:module_id].presence
+
+        options = {
+          "source" => force ? "mcp_resync" : "mcp_refresh",
+          "triggered_by_user_id" => @user&.id,
+          "triggered_at" => Time.current.iso8601
+        }
+        if force
+          # The agent clears its attached-state stamps for this scope before
+          # reconciling, so files are re-materialized even though nothing has
+          # drifted. Without it, a root whose files were deleted underneath an
+          # unchanged version is unrepairable by any platform action — the
+          # 2026-08-07 incident was recovered by a hand bind-mount over a root
+          # shell.
+          options["force_resync"] = true
+          options["module_id"] = module_id if module_id
+        end
+
         task = ::System::Task.create!(
           account: @account, operable: instance,
           command: "sync_modules", status: "pending",
           initiated_by: @user,
-          options: { "source" => "mcp_refresh", "triggered_by_user_id" => @user&.id, "triggered_at" => Time.current.iso8601 }
+          options: options
         )
-        success_result(refreshed: true, instance_id: instance.id, task_id: task.id, task_status: task.status)
+        success_result(refreshed: true, resync: force, module_id: module_id,
+                       instance_id: instance.id, task_id: task.id, task_status: task.status)
       rescue ActiveRecord::RecordInvalid => e
         error_result("Failed to queue refresh task: #{e.message}")
       end

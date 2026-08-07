@@ -4333,6 +4333,44 @@ end
   # version rows carry oci_digest: null, so a naive "promote the previous row"
   # would have pointed the fleet at nothing. The action must walk back to the
   # most recent version that actually has a usable artifact.
+  # A plain reconcile applies DRIFT. It cannot repair a root whose files were
+  # deleted underneath an unchanged module version (2026-08-07: an empty
+  # artifact's hot-prune whiteout-deleted /usr/local/go and
+  # /usr/local/bin/gitleaks), because in that state nothing has drifted and the
+  # reconcile correctly does nothing. Recovery was a hand bind-mount over a root
+  # shell. force_resync carries the instruction that makes it a platform action.
+  describe "system_refresh_instance_modules force_resync" do
+    let(:node) { create(:system_node, account: account, node_template: template) }
+    let(:instance) { create(:system_node_instance, node: node, name: "n1") }
+
+    def queued_task
+      ::System::Task.where(account: account, command: "sync_modules").order(:created_at).last
+    end
+
+    it "queues an ordinary reconcile with no resync instruction by default" do
+      result = call("system_refresh_instance_modules", instance_id: instance.id)
+
+      expect(result[:success]).to be(true)
+      expect(queued_task.options).not_to have_key("force_resync")
+    end
+
+    it "carries force_resync and the module scope when asked" do
+      result = call("system_refresh_instance_modules", instance_id: instance.id,
+                                                        force_resync: true, module_id: "runtime-go")
+
+      expect(result[:success]).to be(true)
+      expect(queued_task.options["force_resync"]).to be(true)
+      expect(queued_task.options["module_id"]).to eq("runtime-go")
+    end
+
+    it "omits module_id for a whole-node resync so every module is re-materialized" do
+      call("system_refresh_instance_modules", instance_id: instance.id, force_resync: true)
+
+      expect(queued_task.options["force_resync"]).to be(true)
+      expect(queued_task.options).not_to have_key("module_id")
+    end
+  end
+
   describe "system_rollback_module_version" do
     let!(:mod) { create(:system_node_module, account: account, name: "runtime-go") }
 
