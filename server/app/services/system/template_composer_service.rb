@@ -23,6 +23,25 @@ module System
       @modules = Array(modules)
     end
 
+    # Every module id a conflict hash involves, across all three kinds'
+    # id keys. Lives here because this class OWNS the conflict shape —
+    # a new kind's id key is added next to the code that emits it, not
+    # remembered in each consumer (IMP-4b17077a965b).
+    def self.conflict_module_ids(conflict)
+      (conflict.values_at(:source_id, :target_id, :claimer_id, :other_id) +
+        Array(conflict[:module_ids])).compact.uniq
+    end
+
+    # The shared "<kind> — <detail> (modules: <names>)" label. names_by_id
+    # maps module id → name; unknown ids are dropped, and the suffix is
+    # omitted when nothing resolves.
+    def self.conflict_label(conflict, names_by_id)
+      names = conflict_module_ids(conflict).filter_map { |id| names_by_id[id] }
+      detail = conflict[:detail].presence || conflict[:kind]
+      base = "#{conflict[:kind]} — #{detail}"
+      names.any? ? "#{base} (modules: #{names.join(', ')})" : base
+    end
+
     # Serializes every module in the closure. `explicit_ids` is the set of
     # module ids the operator picked directly; everything else is flagged
     # auto_resolved.

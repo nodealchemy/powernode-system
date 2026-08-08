@@ -138,12 +138,7 @@ module System
       conflicts.filter_map do |conflict|
         next if conflict[:severity].to_s == "warning"
 
-        involved = (conflict.values_at(:source_id, :target_id, :claimer_id, :other_id) +
-                    Array(conflict[:module_ids])).compact.uniq
-        labels = involved.filter_map { |id| names[id] }
-        detail = conflict[:detail].presence || conflict[:kind]
-        base = "composition conflict: #{conflict[:kind]} — #{detail}"
-        labels.any? ? "#{base} (modules: #{labels.join(', ')})" : base
+        "composition conflict: #{TemplateComposerService.conflict_label(conflict, names)}"
       end
     end
 

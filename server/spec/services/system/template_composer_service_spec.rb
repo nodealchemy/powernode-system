@@ -171,6 +171,36 @@ RSpec.describe System::TemplateComposerService do
     end
   end
 
+  # IMP-4b17077a965b: id-extraction + labeling for conflict hashes lives HERE,
+  # on the class that produces the hashes — it was previously duplicated
+  # byte-for-byte in TemplateExpansionService#conflict_warnings and
+  # TemplateCompositionAnalysis#summarize, so a new conflict kind's id key
+  # meant remembering two other files.
+  describe "conflict labeling (class-level, shared by the conflict consumers)" do
+    it ".conflict_module_ids gathers pairwise ids and module_ids, compacted and deduped" do
+      conflict = { kind: "x", source_id: "a", target_id: "b", claimer_id: "b",
+                   other_id: nil, module_ids: [ "c", "a" ] }
+
+      expect(described_class.conflict_module_ids(conflict)).to match_array(%w[a b c])
+    end
+
+    it ".conflict_label renders kind — detail with resolved module names" do
+      conflict = { kind: "instance_variety_collision", detail: "Only one allowed",
+                   module_ids: %w[m1 m2] }
+
+      label = described_class.conflict_label(conflict, { "m1" => "postgres", "m2" => "mysql" })
+
+      expect(label).to eq("instance_variety_collision — Only one allowed (modules: postgres, mysql)")
+    end
+
+    it ".conflict_label falls back to the kind for a blank detail and omits the modules suffix when no name resolves" do
+      conflict = { kind: "protected_spec_overlap", detail: "", claimer_id: "unknown-id" }
+
+      expect(described_class.conflict_label(conflict, {}))
+        .to eq("protected_spec_overlap — protected_spec_overlap")
+    end
+  end
+
   describe "#paths_overlap? (private — the preview's cheap prefix check)" do
     subject(:service) { described_class.new([]) }
 

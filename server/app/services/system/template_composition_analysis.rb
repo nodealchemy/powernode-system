@@ -240,20 +240,8 @@ module System
     end
 
     def summarize(conflicts)
-      conflicts.map do |conflict|
-        names = module_names(conflict_module_ids(conflict))
-        detail = conflict[:detail].presence || conflict[:kind]
-        names.any? ? "#{conflict[:kind]} — #{detail} (modules: #{names.join(', ')})" : "#{conflict[:kind]} — #{detail}"
-      end.join("; ")
-    end
-
-    def conflict_module_ids(conflict)
-      (conflict.values_at(:source_id, :target_id, :claimer_id, :other_id) +
-        Array(conflict[:module_ids])).compact.uniq
-    end
-
-    def module_names(ids)
-      ids.filter_map { |id| name_lookup[id] }
+      conflicts.map { |conflict| TemplateComposerService.conflict_label(conflict, name_lookup) }
+               .join("; ")
     end
 
     def name_lookup
