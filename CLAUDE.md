@@ -109,7 +109,7 @@ This is a git submodule. Per root CLAUDE.md:
 - `docs/SDWAN_ARCHITECTURE.md` — SDWAN compile pipeline: intent models → orchestrator (`Sdwan::TopologyCompiler`) + per-stage compilers (BGP/FRR, OVN, nftables firewall/NAT) → on-node artifacts, allocators, topology strategies, MCP surface
 - `docs/PROVIDER_ADAPTER_AUTHORING.md` — how to write a new cloud/hypervisor provider adapter (the `System::Providers::BaseProvider` 24-method contract, normalized return shapes, credential resolution, Registry wiring, and the `it_behaves_like "a cloud provider"` shared spec)
 - `docs/STORAGE_SUBSYSTEM.md` — storage data plane: volumes, mounts, chown ownership model, volume-to-volume migration state machine + MCP surface
-- `docs/SMOKE_TEST.md` — platform-level smoke catalog (18 seeded scripts, 8 passes: boot, container runtimes, SDWAN, federation, ACME, storage, credentials, hardware/CI extras)
+- `docs/SMOKE_TEST.md` — platform-level smoke catalog covering boot, container runtimes, SDWAN, federation, ACME, storage, credentials, hardware/CI, and K3s. The catalog is the source of truth for seed-script and pass counts — they are deliberately not restated here (they drift; see the hygiene spec at `server/spec/integration/claude_md_smoke_catalog_reference_spec.rb`)
 - `docs/CONTAINER_RUNTIMES.md` — Phase 1 Docker + Phase 2 K3s operator guide + troubleshooting
 - `docs/CLAUDE_TMUX_MODULE.md` — claude-tmux NodeModule: managed Claude Code CLI in a systemd-supervised tmux session, Vault-backed credential injection at boot, operator runbook
 - `docs/USE_CASE_MATRIX.md` — what works / what doesn't / what to expect for 10 NodeInstance container use cases (READ FIRST when designing a deployment)
