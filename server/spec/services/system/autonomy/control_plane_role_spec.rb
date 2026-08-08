@@ -253,6 +253,31 @@ RSpec.describe System::Autonomy::ControlPlaneRole do
       expect(described_class.status).to eq(:standby)
     end
 
+    it "amortizes pass-scoped reads: fresh_or_refreshed_reading returns the carried reading while fresh" do
+      arm!
+      reader_calls = 0
+      described_class.quorum_reader = -> { reader_calls += 1; quorumtool_output }
+
+      first = described_class.fresh_or_refreshed_reading(nil)
+      second = described_class.fresh_or_refreshed_reading(first)
+
+      expect(second).to equal(first)
+      expect(reader_calls).to eq(1)
+    end
+
+    it "fresh_or_refreshed_reading observes afresh when the carried reading is stale" do
+      arm!(freshness: 5)
+      reader_calls = 0
+      described_class.quorum_reader = -> { reader_calls += 1; quorumtool_output }
+
+      stale = described_class.current_reading(now: 1.minute.ago)
+      refreshed = described_class.fresh_or_refreshed_reading(stale)
+
+      expect(refreshed).not_to equal(stale)
+      expect(refreshed.fresh?).to be(true)
+      expect(reader_calls).to eq(2)
+    end
+
     it "is :gate_error when the gate itself raises — even in the armed? read" do
       allow(::SiteSetting).to receive(:get).and_raise(ActiveRecord::ConnectionNotEstablished, "db hiccup")
 

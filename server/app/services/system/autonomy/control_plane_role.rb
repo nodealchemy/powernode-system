@@ -140,6 +140,18 @@ module System
           ::SiteSetting.get(COORDINATOR_KEY).present?
         end
 
+        # Pass-scoped amortization (IMP-6ea384a0ee79): return the carried
+        # reading while it is still fresh, otherwise observe afresh. A
+        # multi-account reconcile pass carries one reading through its loop
+        # and pays one quorumtool subprocess per FRESHNESS window instead of
+        # one per account — while keeping the freshness contract intact: a
+        # reading past its valid_until is never reused, it is replaced.
+        def fresh_or_refreshed_reading(carried, now: Time.current)
+          return carried if carried&.fresh?(now)
+
+          current_reading(now: now)
+        end
+
         def freshness_seconds
           configured = ::SiteSetting.get(FRESHNESS_KEY).to_i
           return DEFAULT_FRESHNESS_SECONDS unless configured.positive?

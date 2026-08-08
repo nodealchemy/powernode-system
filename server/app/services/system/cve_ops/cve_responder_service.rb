@@ -43,11 +43,11 @@ module System
         ::System::CveOps::Sensors::CriticalUpgradeAvailableSensor
       ].freeze
 
-      def self.tick!(account:)
+      def self.tick!(account:, control_plane_reading: nil)
         agent = ::Ai::Agent.resolve_for(account.id, name: "CVE Responder", agent_type: "monitor")&.tap { |a| a.resolving_account = account }
         return { ok: false, reason: "CVE Responder agent not seeded for account" } unless agent
 
-        new(account: account, agent: agent).tick!
+        new(account: account, agent: agent).tick!(control_plane_reading: control_plane_reading)
       end
 
       def initialize(account:, agent:, role: nil)
@@ -57,7 +57,7 @@ module System
         @policy_service = ::Ai::InterventionPolicyService.new(account: account)
       end
 
-      def tick!
+      def tick!(control_plane_reading: nil)
         # Authoritative kill-switch check FIRST — an engaged emergency halt
         # no-ops the entire reconcile (no sensing, deciding, or inline CVE
         # dispatch) before any state is touched.
@@ -66,7 +66,9 @@ module System
         # Dual-plane fence SECOND: on the standby plane the tick must do
         # nothing — the active plane owns actuation (ControlPlaneRole is the
         # split-brain gate; inert unless the coordinator SiteSetting arms it).
-        return standby_tick_result unless control_plane_active?
+        # A caller-carried pass-scoped reading is honored; freshness is still
+        # enforced on it inside active?.
+        return standby_tick_result unless control_plane_active?(reading: control_plane_reading)
 
         tick_correlation = "tick:#{SecureRandom.hex(8)}"
         emit_event(kind: "cve_responder.tick_started", payload: { agent_id: agent.id }, correlation_id: tick_correlation)
@@ -183,6 +185,21 @@ module System
 
         cve_ids = extract_cve_ids(metadata)
         return if cve_ids.empty?
+
+        # Mid-tick re-check with a FRESH observation (IMP-6ea384a0ee79):
+        # inline critical remediation runs multi-minute, far past any
+        # reading's 5-30s freshness window, so the tick-entry verdict is
+        # stale by definition here. This is the carry-and-recheck contract
+        # ControlPlaneRole documents for irreversible actions — a plane that
+        # lost election mid-tick must not keep dispatching. Deliberately a
+        # fresh read (never the carried pass reading).
+        unless control_plane_active?
+          Rails.logger.warn(
+            "[CveResponder] inline dispatch withheld — control plane no longer active " \
+            "(mid-tick re-check; cves=#{cve_ids.join(',')})"
+          )
+          return
+        end
 
         orchestrator = ::System::Ai::Skills::CveRemediationOrchestrationExecutor.new(
           account: account, agent: agent, user: nil

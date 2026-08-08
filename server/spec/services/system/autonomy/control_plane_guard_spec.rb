@@ -27,6 +27,14 @@ RSpec.describe System::Autonomy::ControlPlaneGuard do
     expect(result[:reason]).not_to match(/armed/)
   end
 
+  it "forwards a carried reading through control_plane_active? (pass-scoped quorum, IMP-6ea384a0ee79)" do
+    reading = instance_double(System::Autonomy::ControlPlaneRole::Reading)
+    expect(System::Autonomy::ControlPlaneRole).to receive(:active?)
+      .with(reading: reading).and_return(true)
+
+    expect(host.control_plane_active?(reading: reading)).to be(true)
+  end
+
   it "computes the status itself when called bare (existing caller compatibility)" do
     allow(System::Autonomy::ControlPlaneRole).to receive(:status).and_return(:gate_error)
 

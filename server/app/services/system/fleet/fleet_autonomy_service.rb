@@ -44,15 +44,15 @@ module System
       # fleet autonomy agent for the account, runs every sensor, routes
       # signals through the DecisionEngine, and records outcomes via the
       # LearningExtractor. Returns a structured tick summary.
-      def self.tick!(account:)
+      def self.tick!(account:, control_plane_reading: nil)
         agent = ::Ai::Agent.resolve_for(account.id, name: "Fleet Autonomy", agent_type: "monitor")&.tap { |a| a.resolving_account = account }
         return { ok: false, reason: "Fleet Autonomy agent not seeded for account" } unless agent
 
         service = new(account: account, agent: agent)
-        service.tick!
+        service.tick!(control_plane_reading: control_plane_reading)
       end
 
-      def tick!
+      def tick!(control_plane_reading: nil)
         # Authoritative kill-switch check FIRST — an engaged emergency halt
         # no-ops the entire reconcile (no sensing, deciding, reaping, or task
         # dispatch) before any state is touched.
@@ -61,7 +61,9 @@ module System
         # Dual-plane fence SECOND: on the standby plane the tick must do
         # nothing — the active plane owns actuation (ControlPlaneRole is the
         # split-brain gate; inert unless the coordinator SiteSetting arms it).
-        return standby_tick_result unless control_plane_active?
+        # A caller-carried pass-scoped reading is honored; freshness is still
+        # enforced on it inside active?.
+        return standby_tick_result unless control_plane_active?(reading: control_plane_reading)
 
         # Sweep BEFORE sensing: expired pending approvals must transition
         # (timeout_action) so the rejected-cooldown — not a fresh duplicate

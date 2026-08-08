@@ -23,9 +23,21 @@ module Api
             return if performed?
 
             accounts = scope_accounts
+            # One quorum observation per PASS, not per account
+            # (IMP-6ea384a0ee79): carry a reading through the loop, refreshing
+            # only when its freshness window expires — so every account in one
+            # logical pass sees the same active/standby verdict and the pass
+            # spawns one quorumtool subprocess per window instead of N.
+            carried_reading = nil
+            armed = ::System::Autonomy::ControlPlaneRole.armed?
             results = accounts.map do |account|
               account_id = account.id
-              tick_result = ::System::Fleet::FleetAutonomyService.tick!(account: account)
+              if armed
+                carried_reading = ::System::Autonomy::ControlPlaneRole.fresh_or_refreshed_reading(carried_reading)
+              end
+              tick_result = ::System::Fleet::FleetAutonomyService.tick!(
+                account: account, control_plane_reading: carried_reading
+              )
               { account_id: account_id }.merge(tick_result)
             rescue StandardError => e
               Rails.logger.error("[FleetReconcile] account=#{account.id} failed: #{e.class}: #{e.message}")

@@ -18,8 +18,12 @@ module System
     #     ...
     #   end
     module ControlPlaneGuard
-      def control_plane_active?
-        ::System::Autonomy::ControlPlaneRole.active?
+      # reading: an optional carried ControlPlaneRole::Reading captured once
+      # for a whole reconcile pass (IMP-6ea384a0ee79) — active? still enforces
+      # freshness on it, so a stale carried reading stands the plane down
+      # rather than being trusted. Called bare, observes afresh as before.
+      def control_plane_active?(reading: nil)
+        ::System::Autonomy::ControlPlaneRole.active?(reading: reading)
       end
 
       # Uniform no-op summary returned by a tick declined on the standby plane.
