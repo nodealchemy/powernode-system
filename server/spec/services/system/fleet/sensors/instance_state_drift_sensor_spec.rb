@@ -42,6 +42,36 @@ RSpec.describe System::Fleet::Sensors::InstanceStateDriftSensor do
     # sync, so it stamps last_synced_at (CloudSyncService's column, same
     # success-only convention), and sense orders by it NULLS FIRST — the
     # window rotates least-recently-synced first.
+    # IMP-bcadb1ecd52d — the starvation valve. The IMP-e26d76041d9a rotation
+    # ordered by SUCCESS-stamped last_synced_at, so never-stampable rows (no
+    # cloud id, no adapter, persistently failing reads) kept NULL forever,
+    # pinned the front of the window, and with MAX_PER_TICK of them starved
+    # everything else. Rotation now orders by last_sync_attempted_at, stamped
+    # on EVERY attempt; last_synced_at stays success-only for its readers.
+    describe "starvation valve (attempt-ordered rotation)" do
+      it "cannot be starved by never-stampable instances" do
+        stub_const("#{described_class}::MAX_PER_TICK", 3)
+        3.times { running_instance(cloud_instance_id: nil) } # never stampable
+        reachable = running_instance
+        allow(adapter).to receive(:sync_status).and_return(success: true, status: "running")
+
+        sensor.sense # tick 1: window consumed by the unstampables (attempts stamped)
+        sensor.sense # tick 2: rotation must reach the stampable instance
+
+        expect(adapter).to have_received(:sync_status).with(reachable.cloud_instance_id)
+      end
+
+      it "stamps last_sync_attempted_at on every attempt while last_synced_at stays success-only" do
+        failing = running_instance
+        allow(adapter).to receive(:sync_status).and_return(success: false, error: "boom")
+
+        sensor.sense
+
+        expect(failing.reload.last_sync_attempted_at).to be_present
+        expect(failing.reload.last_synced_at).to be_nil
+      end
+    end
+
     describe "window rotation" do
       it "stamps last_synced_at on a successful provider read" do
         instance = running_instance
@@ -53,11 +83,14 @@ RSpec.describe System::Fleet::Sensors::InstanceStateDriftSensor do
 
       it "fills the capped window least-recently-synced first" do
         stub_const("#{described_class}::MAX_PER_TICK", 2)
+        # Ordering pivoted to last_sync_attempted_at (IMP-bcadb1ecd52d) —
+        # stamped on every attempt, so the rotation cannot be pinned by rows
+        # that never sync successfully.
         recently = running_instance
-        recently.update_column(:last_synced_at, 1.minute.ago)
+        recently.update_column(:last_sync_attempted_at, 1.minute.ago)
         stale = running_instance
-        stale.update_column(:last_synced_at, 2.days.ago)
-        never = running_instance # nil last_synced_at sorts first
+        stale.update_column(:last_sync_attempted_at, 2.days.ago)
+        never = running_instance # nil last_sync_attempted_at sorts first
 
         seen = []
         allow(adapter).to receive(:sync_status) do |cloud_id|

@@ -26,20 +26,22 @@ module System
         MAX_PER_TICK = 50
 
         def sense
-          # Least-recently-synced first (IMP-e26d76041d9a): an unordered LIMIT
-          # let Postgres return the same arbitrary window every tick, so
-          # instances beyond it were never drift-checked. signal_for stamps
-          # last_synced_at on each successful provider read (success-only,
-          # matching CloudSyncService's convention for the column), which
-          # rotates the capped window through the whole fleet. NULLS FIRST so
-          # never-synced instances are checked before any re-check;
-          # persistently-failing reads keep sorting first by design — they
-          # need the attention, and the warn log makes them visible.
+          # Least-recently-ATTEMPTED first (IMP-bcadb1ecd52d, refining
+          # IMP-e26d76041d9a): the original rotation ordered by the
+          # success-only last_synced_at, so never-stampable rows (no adapter,
+          # no cloud id, persistently failing reads) kept NULL forever, pinned
+          # the front of the window, and MAX_PER_TICK of them starved every
+          # other instance of drift checks. signal_for stamps
+          # last_sync_attempted_at on EVERY row that enters the window, so
+          # unstampable rows rotate to the back like everyone else — while
+          # last_synced_at keeps its success-only convention for its readers.
+          # NULLS FIRST so never-attempted instances are checked before any
+          # re-check.
           ::System::NodeInstance
             .joins(:node)
             .where(system_nodes: { account_id: account.id })
             .where(status: "running")
-            .order(Arel.sql("system_node_instances.last_synced_at ASC NULLS FIRST"))
+            .order(Arel.sql("system_node_instances.last_sync_attempted_at ASC NULLS FIRST"))
             .limit(MAX_PER_TICK)
             .filter_map { |inst| signal_for(inst) }
         end
@@ -47,6 +49,11 @@ module System
         private
 
         def signal_for(instance)
+          # Stamped BEFORE every bail-out below — the rotation invariant is
+          # "each window slot advances", not "each successful read advances",
+          # or unstampable rows would pin the window (IMP-bcadb1ecd52d).
+          instance.update_column(:last_sync_attempted_at, Time.current)
+
           adapter = ::System::Providers::Registry.for_instance(instance)
           return nil unless adapter.respond_to?(:sync_status)
 
