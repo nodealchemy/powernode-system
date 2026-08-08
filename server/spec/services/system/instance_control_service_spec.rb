@@ -244,4 +244,51 @@ RSpec.describe System::InstanceControlService do
       expect(instance.reload.status).to eq('stopped')
     end
   end
+
+  # IMP-692a6552a2f6 — start/stop/reboot stamp a TRANSITIONAL state before the
+  # provider call; once the provider succeeds, reverting is forbidden (correct,
+  # 8dbd66ca) but a raise in post-success bookkeeping used to strand the row in
+  # 'starting'/'stopping'/'rebooting'. Verified healers do NOT cover this: the
+  # drift sensor scans status='running' only, and the cron region sync skips
+  # providers without :sync support (pro_cloud). The service now salvages the
+  # provider-truth FINAL state onto a FRESH row (dodging dirty in-memory
+  # state) while still surfacing the bookkeeping error in the Result.
+  describe '#execute — cloud start post-success strand (IMP-692a6552a2f6)' do
+    let(:instance) do
+      create(:system_node_instance, node: node, status: 'stopped', cloud_instance_id: 'i-start-1')
+    end
+    let(:adapter) { instance_double('System::Providers::BaseProvider', provider_type: 'proxmox') }
+
+    before do
+      allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter)
+      allow(adapter).to receive(:start_instance).with('i-start-1').and_return(
+        success: true, cloud_instance_id: 'i-start-1', status: 'running',
+        private_ip_address: '10.0.0.9', public_ip_address: nil, provider_type: 'proxmox'
+      )
+    end
+
+    it 'salvages the provider-truth final state when the status write raises (no transitional strand)' do
+      # Transient DB failure on the in-memory row's status write; the salvage
+      # retries on a freshly-loaded row, where it succeeds.
+      allow(instance).to receive(:mark_running!)
+        .and_raise(ActiveRecord::StatementInvalid, 'server closed the connection')
+
+      result = described_class.execute(instance: instance, action: :start)
+
+      expect(result.success?).to be false # the bookkeeping failure still surfaces
+      expect(instance.reload.status).to eq('running') # provider truth, not 'starting'
+    end
+
+    it 'leaves the row transitional (never reverts) when the salvage itself also fails' do
+      allow(instance).to receive(:mark_running!)
+        .and_raise(ActiveRecord::StatementInvalid, 'server closed the connection')
+      allow(::System::NodeInstance).to receive(:find).with(instance.id)
+        .and_raise(ActiveRecord::StatementInvalid, 'still down')
+
+      result = described_class.execute(instance: instance, action: :start)
+
+      expect(result.success?).to be false
+      expect(instance.reload.status).to eq('starting') # best-effort: strand beats a false revert
+    end
+  end
 end

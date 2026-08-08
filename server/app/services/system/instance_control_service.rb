@@ -48,7 +48,23 @@ module System
 
       if adapter_result[:success]
         provider_succeeded = true
-        update_instance_from_result(instance, adapter_result)
+        begin
+          update_instance_from_result(instance, adapter_result)
+        rescue StandardError => e
+          # Post-success bookkeeping failed. Reverting is forbidden (the
+          # machine really changed state — see the outer rescue), but for
+          # start/stop/reboot the row currently holds the TRANSITIONAL stamp,
+          # and no healer covers a stranded one: the drift sensor scans
+          # status='running' only, and the cron region sync skips providers
+          # without :sync support (IMP-692a6552a2f6). Salvage the
+          # provider-truth FINAL state onto a fresh row, then surface the
+          # bookkeeping error in the Result.
+          salvage_final_state(instance, adapter_result)
+          Rails.logger.error(
+            "[InstanceControlService] post-#{action} bookkeeping failed for #{instance.id}: #{e.class}: #{e.message}"
+          )
+          return Runtime::Result.err(error: "post-#{action} bookkeeping failed: #{e.message}")
+        end
         Runtime::Result.ok(data: adapter_result.except(:success))
       else
         revert_status(instance)
@@ -121,6 +137,24 @@ module System
       ip_updates[:private_ip_address] = result[:private_ip_address] if result.key?(:private_ip_address)
       ip_updates[:public_ip_address]  = result[:public_ip_address]  if result.key?(:public_ip_address)
       instance.update!(ip_updates) if ip_updates.any?
+    end
+
+    # Best-effort second attempt at stamping the provider-truth final state
+    # after a post-success bookkeeping raise. Works on a FRESHLY-LOADED row —
+    # the failed write may have left the in-memory instance dirty or its
+    # connection wedged, and a transient DB failure often succeeds on retry.
+    # If this also fails, the transitional strand stands (logged): a strand a
+    # later action or operator can resolve beats a false state.
+    def salvage_final_state(instance, result)
+      return if result[:status].blank?
+
+      fresh = ::System::NodeInstance.find(instance.id)
+      finalize_state_from_result(fresh, result[:status])
+    rescue StandardError => e
+      Rails.logger.error(
+        "[InstanceControlService] final-state salvage failed for #{instance.id} " \
+        "(row remains transitional): #{e.class}: #{e.message}"
+      )
     end
 
     # Map provider-reported status to the matching AASM finalizer event.
