@@ -36,4 +36,28 @@ RSpec.describe System::PlatformModuleManifestLoader do
 
     expect(manifests).to include("postgres-primary")
   end
+
+  describe ".git_tracked_dirs" do
+    # IMP-623f671b4826: the rescue used to return nil with no trace. nil is a
+    # documented outcome (no git binary / not a work tree), but reaching it via
+    # an exception also covers transient failures (ENOMEM, EACCES, disk
+    # pressure) — and a nil here disarms the F7-03 guard above, so it must
+    # leave an operator-visible line like every other rescue in the
+    # module-management services.
+    it "logs a warning when the git probe raises, so a disarmed guard leaves a trace" do
+      allow(::IO).to receive(:popen).and_raise(Errno::ENOMEM)
+      expect(Rails.logger).to receive(:warn)
+        .with(/git tracking unavailable.*Errno::ENOMEM.*F7-03/).at_least(:once)
+
+      expect(described_class.git_tracked_dirs(root)).to be_nil
+    end
+
+    it "stays silent on the clean not-a-work-tree path (nonzero git exit, no exception)" do
+      Dir.mktmpdir do |bare_dir|
+        expect(Rails.logger).not_to receive(:warn)
+
+        expect(described_class.git_tracked_dirs(bare_dir)).to be_nil
+      end
+    end
+  end
 end
