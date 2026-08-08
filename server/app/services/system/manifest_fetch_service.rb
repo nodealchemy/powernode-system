@@ -26,37 +26,14 @@ module System
 
     class FetchError < StandardError; end
 
-    class << self
-      def adapter
-        @adapter ||= build_adapter
-      end
+    extend ::System::EnvSwitchedAdapter
+    env_switched_adapter env_var: "POWERNODE_MANIFEST_FETCH_MODE",
+                         adapters: { "gitea" => "GiteaFetchAdapter",
+                                     "local" => "LocalFetchAdapter" },
+                         error_class: FetchError
 
-      def adapter=(replacement)
-        @adapter = replacement
-      end
-
-      def reset!
-        @adapter = nil
-      end
-
-      def fetch(node_module:, ref:, path: DEFAULT_PATH)
-        new.fetch(node_module: node_module, ref: ref, path: path)
-      end
-
-      private
-
-      def build_adapter
-        mode = ENV.fetch("POWERNODE_MANIFEST_FETCH_MODE", default_mode_for_env)
-        case mode
-        when "gitea" then GiteaFetchAdapter.new
-        when "local" then LocalFetchAdapter.new
-        else raise FetchError, "Unknown POWERNODE_MANIFEST_FETCH_MODE: #{mode.inspect}"
-        end
-      end
-
-      def default_mode_for_env
-        Rails.env.production? ? "gitea" : "local"
-      end
+    def self.fetch(node_module:, ref:, path: DEFAULT_PATH)
+      new.fetch(node_module: node_module, ref: ref, path: path)
     end
 
     def fetch(node_module:, ref:, path: DEFAULT_PATH)
