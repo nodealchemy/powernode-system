@@ -42,8 +42,8 @@ module System
     Result = Struct.new(:ok?, :state, :advanced, :waiting, :parked, :error,
                         :already_advancing, keyword_init: true)
 
-    def self.advance!(request:)
-      new(request: request).advance!
+    def self.advance!(request:, operator: false)
+      new(request: request).advance!(operator: operator)
     end
 
     # Stable 63-bit signed key from the request UUID (fits a Postgres bigint).
@@ -78,7 +78,31 @@ module System
     # multi-minute advance never pins a DB transaction; released in an ensure so
     # a mid-phase raise cannot leak it, and a dead process's session lock is
     # dropped by Postgres automatically.
-    def advance!
+    def advance!(operator: false)
+      # Gates at the ACTUATOR (IMP-f90858fd9b5b): every path that can advance
+      # a fulfillment request — provisioning instances, authoring templates —
+      # funnels through here (gated sweep, operator approve endpoint, the
+      # autonomous inline executor call), so the gates live here rather than
+      # at N call sites, and future callers inherit them.
+      #
+      # Dual-plane fence first, with NO operator exemption:
+      # single-actuator-per-fleet is a plane invariant, not an actor policy —
+      # even a human must act via the active plane.
+      unless ::System::Autonomy::ControlPlaneRole.active?
+        return Result.new(ok?: false, state: @request.state, advanced: false,
+                          error: "standby control plane — advance refused")
+      end
+
+      # Kill-switch second, gating AUTONOMOUS advancement only. The worker
+      # job's once-per-job cached bail check does not cover an in-flight
+      # inline call; this does. operator: true (the human approve endpoint)
+      # is exempt — emergency_halt suspends AI activity, and an explicit
+      # human approval is not that.
+      if !operator && ::Ai::Autonomy::KillSwitchService.new(account: @account).halted?
+        return Result.new(ok?: false, state: @request.state, advanced: false,
+                          error: "kill-switch engaged — autonomous advance refused")
+      end
+
       return already_advancing_result unless acquire_advance_lock!
 
       begin
