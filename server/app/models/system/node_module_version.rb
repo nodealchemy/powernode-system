@@ -84,7 +84,7 @@ module System
 
     # === Promotion lifecycle (Golden Eclipse M0.M) ===
     # Column-only state machine for now. Full AASM with PromotionCriteria
-    # gates lands in M1 (mirroring Trading::PromotionCriteria pattern).
+    # gates lands in M1 (the platform's standard promotion-criteria pattern).
 
     PROMOTION_STATES.each do |state|
       define_method(:"#{state}?") { promotion_state == state }

@@ -2,15 +2,15 @@
 
 module System
   module Fleet
-    # Autonomy reconciler for the System extension fleet. Mirrors
-    # Trading::OverseerAutonomyService verbatim — same gate_action!, same
+    # Autonomy reconciler for the System extension fleet. Follows the
+    # platform's standard overseer-autonomy shape — same gate_action!, same
     # dedup, same TTL, same ApprovalRequest shape — so the operator approval
-    # UI surfaces fleet decisions identically to trading decisions.
+    # UI surfaces fleet decisions identically to every other domain's.
     #
     # Reference: Golden Eclipse plan M7. The cross-cutting design property is
     # that nothing in this service hardcodes "fleet" semantics; only the
     # ADVANCEMENT_ACTIONS set, the source_type, and the chain lookup are
-    # domain-specific. Everything else follows the trading pattern row-for-row.
+    # domain-specific. Everything else follows the shared pattern row-for-row.
     class FleetAutonomyService
       # Emergency kill-switch is authoritative across every reconciler — a halt
       # must stop the fleet reconcile loop, not just the AI execution jobs.

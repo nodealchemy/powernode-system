@@ -7,11 +7,11 @@ module System
     # that goes through FleetAutonomyService#gate_action!. The engine has
     # no policy logic of its own — that lives in InterventionPolicy rows.
     #
-    # Reference: Golden Eclipse plan M7 — DecisionEngine. The shape mirrors
-    # Trading::Overseer::DecisionExecutionService but stays much smaller:
-    # we only need to thread (signal → skill → gate → execute-or-record)
-    # for v0; the trading service has additional flow control we don't yet
-    # need (concurrency caps, role-based dispatch).
+    # Reference: Golden Eclipse plan M7 — DecisionEngine. Follows the
+    # platform's decision-execution shape but stays much smaller: we only
+    # need to thread (signal → skill → gate → execute-or-record) for v0,
+    # without the additional flow control richer domains use (concurrency
+    # caps, role-based dispatch).
     class DecisionEngine
       # Control-plane fence — never reap/actuate on an instance owned by a
       # DIFFERENT control plane (imp 019f6d6b-63e5). Kept ALONGSIDE the existing
