@@ -103,7 +103,9 @@ Rails.application.routes.draw do
         # agent-pollable build-completion barrier over both platform module
         # builds and on-demand package-closure builds. Dispatch stays
         # worker/webhook-gated; this is list/show only.
-        resources :module_build_batches, only: %i[index show]
+        resources :module_build_batches, only: %i[index show] do
+          member { post :cancel }
+        end
 
         # Operator approval surface for on-demand capability fulfillment
         # (campaign 019f6084 inc-M). A composed System::FulfillmentRequest waits
