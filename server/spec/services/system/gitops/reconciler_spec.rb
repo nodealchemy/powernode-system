@@ -182,4 +182,37 @@ RSpec.describe System::Gitops::Reconciler do
       end
     end
   end
+
+  # IMP-0ad117c2feb8 — dual-plane fence. Unlike the kill-switch (Gate 3,
+  # auto-apply only, so proposals keep flowing for operator visibility under a
+  # halt), a STANDBY plane stands the whole pass down: the active plane
+  # produces the identical clone/diff/proposals, and a standby plane that
+  # keeps reconciling both duplicates proposals and auto-applies live changes
+  # on its own 5-minute cron — the split-brain the gate exists to prevent.
+  describe "dual-plane fence" do
+    it "skips the entire reconcile on a non-active control plane" do
+      allow(::System::Autonomy::ControlPlaneRole).to receive(:active?).and_return(false)
+      expect(::System::Gitops::RepoSyncService).not_to receive(:sync!)
+
+      result = described_class.reconcile!(repository: repo)
+
+      expect(result.ok?).to be(true)
+      expect(result.diff_count).to eq(0)
+      expect(result.diff_summary).to match(/standby/)
+      expect(System::GitopsSyncRun.count).to eq(0)
+    end
+
+    it "finalizes a caller-supplied sync_run instead of stranding it at running" do
+      # sync_now (REST) creates the run BEFORE calling reconcile! — on standby
+      # that run must not sit at "running" on the timeline forever.
+      allow(::System::Autonomy::ControlPlaneRole).to receive(:active?).and_return(false)
+      run = repo.schedule_sync!
+
+      described_class.reconcile!(repository: repo, sync_run: run)
+
+      run.reload
+      expect(run.status).to eq("success")
+      expect(run.diff_summary.to_s).to match(/standby/)
+    end
+  end
 end
