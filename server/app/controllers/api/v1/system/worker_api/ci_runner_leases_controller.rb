@@ -15,15 +15,29 @@ module Api
         # POST /api/v1/system/worker_api/ci_runner_leases/advance
         #   Auth: mTLS (@current_worker — handled by BaseController)
         #   Body (optional): { account_id }  # scope the sweep to one account
-        #   Response: { data: { accounts_swept, advanced, released, flagged,
-        #                       errored, orphans_reaped } }
+        #   Response: { data: { accounts_swept, accounts_gated, gates,
+        #                       advanced, released, flagged, errored,
+        #                       orphans_reaped } }
+        #
+        # accounts_swept counts accounts the sweep actually RAN for; gated
+        # (halted/standby) accounts are broken out with per-gate counts —
+        # the same honest-aggregate shape as FulfillmentController#sweep
+        # (IMP-5fee957b75b5), added alongside the sweep's gates
+        # (IMP-5f337c0f8e3e).
         class CiRunnerLeasesController < BaseController
           def advance
             summaries = target_accounts.map do |account|
               ::System::CiRunnerLeaseSweepService.run!(account: account)
             end
 
-            render_success(aggregate(summaries).merge(accounts_swept: summaries.size))
+            gated, ran = summaries.partition { |s| s[:halted] || s[:standby] }
+            render_success(
+              aggregate(ran).merge(
+                accounts_swept: ran.size,
+                accounts_gated: gated.size,
+                gates: gate_breakdown(gated)
+              )
+            )
           rescue StandardError => e
             Rails.logger.error("[CiRunnerLeasesController] sweep failed: #{e.class}: #{e.message}")
             render_error("ci_runner_lease_advance_failed: #{e.message}", :internal_server_error)
@@ -50,6 +64,8 @@ module Api
               summaries.sum { |summary| summary[key].to_i }
             end
           end
+
+          # gate_breakdown lives on the shared WorkerApi::BaseController.
         end
       end
     end

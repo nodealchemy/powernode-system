@@ -19,15 +19,29 @@ module Api
         # POST /api/v1/system/worker_api/fulfillment/sweep
         #   Auth: mTLS (@current_worker — handled by BaseController)
         #   Body (optional): { account_id }  # scope the sweep to one account
-        #   Response: { data: { accounts_swept, advanced, reached_ready, failed,
-        #                       waiting, requests_expired, instances_reaped, errored } }
+        #   Response: { data: { accounts_swept, accounts_gated, gates,
+        #                       advanced, reached_ready, failed, waiting,
+        #                       requests_expired, instances_reaped, errored } }
+        #
+        # accounts_swept counts accounts the sweep actually RAN for
+        # (IMP-5fee957b75b5); a halted/standby account lands in
+        # accounts_gated with a per-gate breakdown instead of silently
+        # contributing zeros — so accounts_swept 5 / advanced 0 can no
+        # longer mean "kill switch ate everything".
         class FulfillmentController < BaseController
           def sweep
             summaries = target_accounts.map do |account|
               ::System::FulfillmentRequestSweepService.run!(account: account)
             end
 
-            render_success(aggregate(summaries).merge(accounts_swept: summaries.size))
+            gated, ran = summaries.partition { |s| s[:halted] || s[:standby] }
+            render_success(
+              aggregate(ran).merge(
+                accounts_swept: ran.size,
+                accounts_gated: gated.size,
+                gates: gate_breakdown(gated)
+              )
+            )
           rescue StandardError => e
             Rails.logger.error("[FulfillmentController] sweep failed: #{e.class}: #{e.message}")
             render_error("fulfillment_sweep_failed: #{e.message}", :internal_server_error)
@@ -58,6 +72,8 @@ module Api
               summaries.sum { |summary| summary[key].to_i }
             end
           end
+
+          # gate_breakdown lives on the shared WorkerApi::BaseController.
         end
       end
     end
