@@ -36,6 +36,41 @@ RSpec.describe System::Fleet::Sensors::InstanceStateDriftSensor do
       expect(sig.payload["actual_status"]).to eq("stopped")
     end
 
+    # IMP-e26d76041d9a — the unordered LIMIT window: Postgres may return the
+    # same arbitrary MAX_PER_TICK rows every tick, so instances beyond the
+    # window were never drift-checked. A successful provider read IS a status
+    # sync, so it stamps last_synced_at (CloudSyncService's column, same
+    # success-only convention), and sense orders by it NULLS FIRST — the
+    # window rotates least-recently-synced first.
+    describe "window rotation" do
+      it "stamps last_synced_at on a successful provider read" do
+        instance = running_instance
+        allow(adapter).to receive(:sync_status)
+          .and_return(success: true, status: "running")
+
+        expect { sensor.sense }.to change { instance.reload.last_synced_at }.from(nil)
+      end
+
+      it "fills the capped window least-recently-synced first" do
+        stub_const("#{described_class}::MAX_PER_TICK", 2)
+        recently = running_instance
+        recently.update_column(:last_synced_at, 1.minute.ago)
+        stale = running_instance
+        stale.update_column(:last_synced_at, 2.days.ago)
+        never = running_instance # nil last_synced_at sorts first
+
+        seen = []
+        allow(adapter).to receive(:sync_status) do |cloud_id|
+          seen << cloud_id
+          { success: true, status: "running" }
+        end
+
+        sensor.sense
+
+        expect(seen).to contain_exactly(never.cloud_instance_id, stale.cloud_instance_id)
+      end
+    end
+
     it "returns no signal when the provider status still agrees with the DB" do
       instance = running_instance
       allow(adapter).to receive(:sync_status).with(instance.cloud_instance_id)

@@ -26,10 +26,20 @@ module System
         MAX_PER_TICK = 50
 
         def sense
+          # Least-recently-synced first (IMP-e26d76041d9a): an unordered LIMIT
+          # let Postgres return the same arbitrary window every tick, so
+          # instances beyond it were never drift-checked. signal_for stamps
+          # last_synced_at on each successful provider read (success-only,
+          # matching CloudSyncService's convention for the column), which
+          # rotates the capped window through the whole fleet. NULLS FIRST so
+          # never-synced instances are checked before any re-check;
+          # persistently-failing reads keep sorting first by design — they
+          # need the attention, and the warn log makes them visible.
           ::System::NodeInstance
             .joins(:node)
             .where(system_nodes: { account_id: account.id })
             .where(status: "running")
+            .order(Arel.sql("system_node_instances.last_synced_at ASC NULLS FIRST"))
             .limit(MAX_PER_TICK)
             .filter_map { |inst| signal_for(inst) }
         end
@@ -45,6 +55,10 @@ module System
 
           result = adapter.sync_status(cloud_id)
           return nil unless result[:success]
+
+          # A successful sync_status IS a provider sync — stamp it so the
+          # sense window above rotates past this instance next tick.
+          instance.update_column(:last_synced_at, Time.current)
 
           provider_status = result[:status].to_s
           return nil if provider_status.empty?
