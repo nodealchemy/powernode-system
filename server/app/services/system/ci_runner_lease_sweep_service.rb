@@ -24,11 +24,22 @@ module System
   # System::NativeModuleBuildOrchestrator.advance_for_task! then release)
   # rather than workflow_run_id.
   class CiRunnerLeaseSweepService
+    # The sweep recycles and terminates runner instances, so it carries the
+    # same two gates as every actuating reconciler (IMP-5f337c0f8e3e): the
+    # kill switch outranks the dual-plane fence as the reported reason, and
+    # on a standby plane the sweep does nothing — recycle-path idempotency
+    # softened the dual-active blast radius, but reap/terminate is not
+    # idempotent against a plane that no longer owns the fleet.
+    include ::System::Autonomy::KillSwitchGuard
+    include ::System::Autonomy::ControlPlaneGuard
+
     TERMINAL_RUN_STATUSES = %w[completed failed cancelled skipped].freeze
 
     def self.run!(account:)
       new(account: account).run!
     end
+
+    attr_reader :account
 
     def initialize(account:)
       @account = account
@@ -41,6 +52,9 @@ module System
     end
 
     def run!
+      return halted_tick_result if kill_switch_engaged?
+      return standby_tick_result unless control_plane_active?
+
       CiRunnerLease.for_account(@account).active.find_each do |lease|
         advance(lease)
       rescue StandardError => e
