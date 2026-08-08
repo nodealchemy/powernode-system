@@ -103,10 +103,6 @@ module System
       new(account: pool.account).recycle_stale_members!(pool: pool)
     end
 
-    def self.reload_pending_seeds!(pool:)
-      new(account: pool.account).reload_pending_seeds!(pool: pool)
-    end
-
     def initialize(account:)
       @account = account
     end

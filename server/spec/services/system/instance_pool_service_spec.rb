@@ -847,8 +847,20 @@ RSpec.describe System::InstancePoolService, type: :service do
   # before the cicustom seed ever materializes, so it never worked). See
   # System::Providers::ProxmoxProvider#power_cycle_instance for the provider
   # side this delegates to.
-  describe ".reload_pending_seeds!" do
+  describe "#reload_pending_seeds!" do
     let(:provider_double) { instance_double(System::Providers::ProxmoxProvider, power_cycle_instance: true) }
+
+    # IMP-a8df0ef0e00c: the class-level wrapper was spec-only dead code —
+    # production reaches the (public) instance method exclusively through
+    # recycle_stale_members!. These examples now use the same instance-level
+    # entry, and the wrapper must not quietly return.
+    def reload_pending_seeds!(pool)
+      described_class.new(account: pool.account).reload_pending_seeds!(pool: pool)
+    end
+
+    it "has no class-level wrapper (removed dead entry point)" do
+      expect(described_class).not_to respond_to(:reload_pending_seeds!)
+    end
 
     # Seeds a warming member with a cloud_instance_id already present (VM
     # created) — the minimum shape reload_pending_seeds! considers.
@@ -867,7 +879,7 @@ RSpec.describe System::InstancePoolService, type: :service do
       m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
       cloud_instance_id = m.config["cloud_instance_id"]
 
-      count = described_class.reload_pending_seeds!(pool: pool)
+      count = reload_pending_seeds!(pool)
 
       expect(count).to eq(1)
       expect(provider_double).to have_received(:power_cycle_instance).with(cloud_instance_id)
@@ -878,7 +890,7 @@ RSpec.describe System::InstancePoolService, type: :service do
     it "(a) does not cycle a member that already has a heartbeat" do
       m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago, last_heartbeat_at: 1.minute.ago)
 
-      count = described_class.reload_pending_seeds!(pool: pool)
+      count = reload_pending_seeds!(pool)
 
       expect(count).to eq(0)
       expect(provider_double).not_to have_received(:power_cycle_instance)
@@ -888,7 +900,7 @@ RSpec.describe System::InstancePoolService, type: :service do
     it "(b) does not cycle a member younger than seed_reload_after (default 120s)" do
       m = seed_warming_with_cloud_id(warming_started_at: 10.seconds.ago)
 
-      count = described_class.reload_pending_seeds!(pool: pool)
+      count = reload_pending_seeds!(pool)
 
       expect(count).to eq(0)
       expect(provider_double).not_to have_received(:power_cycle_instance)
@@ -901,7 +913,7 @@ RSpec.describe System::InstancePoolService, type: :service do
         config_extra: { "seed_reload_count" => 1, "last_seed_reload_at" => 30.seconds.ago.iso8601 }
       )
 
-      count = described_class.reload_pending_seeds!(pool: pool)
+      count = reload_pending_seeds!(pool)
 
       expect(count).to eq(0)
       expect(provider_double).not_to have_received(:power_cycle_instance)
@@ -914,7 +926,7 @@ RSpec.describe System::InstancePoolService, type: :service do
         config_extra: { "seed_reload_count" => 6, "last_seed_reload_at" => 1.hour.ago.iso8601 }
       )
 
-      count = described_class.reload_pending_seeds!(pool: pool)
+      count = reload_pending_seeds!(pool)
 
       expect(count).to eq(0)
       expect(provider_double).not_to have_received(:power_cycle_instance)
@@ -924,7 +936,7 @@ RSpec.describe System::InstancePoolService, type: :service do
     it "does not cycle a warming member with no cloud_instance_id yet (VM not created)" do
       m = seed_pool_member(state: "warming", warming_started_at: 3.minutes.ago)
 
-      count = described_class.reload_pending_seeds!(pool: pool)
+      count = reload_pending_seeds!(pool)
 
       expect(count).to eq(0)
       expect(provider_double).not_to have_received(:power_cycle_instance)
@@ -935,7 +947,7 @@ RSpec.describe System::InstancePoolService, type: :service do
       m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
       allow(::System::Providers::Registry).to receive(:for_instance).with(m).and_return(double("NonProxmoxProvider"))
 
-      count = described_class.reload_pending_seeds!(pool: pool)
+      count = reload_pending_seeds!(pool)
 
       expect(count).to eq(0)
       expect(m.reload.config["seed_reload_count"]).to be_nil
@@ -946,7 +958,7 @@ RSpec.describe System::InstancePoolService, type: :service do
       allow(::System::Providers::Registry).to receive(:for_instance).with(m)
         .and_raise(System::Providers::Registry::UnknownProviderError, "no connection")
 
-      expect { described_class.reload_pending_seeds!(pool: pool) }.not_to raise_error
+      expect { reload_pending_seeds!(pool) }.not_to raise_error
       expect(m.reload.config["seed_reload_count"]).to be_nil
     end
 
@@ -958,7 +970,7 @@ RSpec.describe System::InstancePoolService, type: :service do
         raise Timeout::Error, "PVE unreachable" if cloud_id == failing_cloud_id
       end
 
-      count = described_class.reload_pending_seeds!(pool: pool)
+      count = reload_pending_seeds!(pool)
 
       expect(count).to eq(1)
       expect(failing.reload.config["seed_reload_count"]).to be_nil
@@ -970,7 +982,7 @@ RSpec.describe System::InstancePoolService, type: :service do
       allow(::SiteSetting).to receive(:get).with("system.ci_builder.seed_reload_after_seconds").and_return("30")
       m = seed_warming_with_cloud_id(warming_started_at: 45.seconds.ago)
 
-      count = described_class.reload_pending_seeds!(pool: pool)
+      count = reload_pending_seeds!(pool)
 
       expect(count).to eq(1)
       expect(m.reload.config["seed_reload_count"]).to eq(1)
