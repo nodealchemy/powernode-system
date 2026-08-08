@@ -80,25 +80,16 @@ module System
     # against the destination would find none of them and report a clean
     # composition for every cross-account clone.
     def record_composition!(cloned)
-      verdict = ::System::TemplateCompositionAnalysis.new(source_template.account).set_verdict(
-        cloned.template_modules.enabled.pluck(:node_module_id)
+      # Shared fail-closed report (IMP-ba082cb22bda) — one contract with
+      # TemplateImporter#composition_report.
+      result = ::System::TemplateCompositionAnalysis.report_for(
+        account: source_template.account,
+        modules: cloned.template_modules.enabled,
+        log_tag: "TemplateCloneService",
+        subject: "cloned #{source_template.name} → #{cloned.name}"
       )
-      @composition_report = verdict.report_entries
-      @composition_message = verdict.message
-      return unless verdict.blocked?
-
-      Rails.logger.warn(
-        "[TemplateCloneService] cloned #{source_template.name} → #{cloned.name}: #{verdict.message}"
-      )
-    rescue StandardError => e
-      @composition_message = "composition analysis failed: #{e.message}"
-      # Fail closed, matching TemplateCompositionAnalysis#warning?: an analysis
-      # that could not run has cleared nothing, so it reports at blocking
-      # severity rather than as an advisory a caller may ignore.
-      @composition_report = [ { severity: ::System::TemplateCompositionAnalysis::BLOCKING_SEVERITY,
-                                kind: "composition_analysis_failed",
-                                detail: @composition_message } ]
-      Rails.logger.warn("[TemplateCloneService] #{@composition_message}")
+      @composition_report = result[:report]
+      @composition_message = result[:message]
     end
 
     def build_template_clone(account, new_name)
