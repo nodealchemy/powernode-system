@@ -13,6 +13,7 @@ module System
   # concurrent operators racing for the same pool member each get a
   # different instance (or NoReadyMembersError when the pool is empty).
   class InstancePoolService
+    include ::System::DevCellDeployKeyRevocation
     class PoolError < StandardError; end
     class NoReadyMembersError < PoolError; end
     class PoolNotActiveError < PoolError; end
@@ -928,20 +929,6 @@ module System
     end
 
     attr_reader :account
-
-    # Best-effort + guarded revoke of a member's dev-cell deploy key on the
-    # reuse-without-reset release path (the recycle path already revokes via
-    # ProvisioningService#finalize_termination!). A revoke failure must never
-    # block the member returning to the pool.
-    def revoke_dev_cell_deploy_key!(instance)
-      return unless defined?(::System::DevCellDeployKey)
-
-      ::System::DevCellDeployKey.revoke_for!(instance)
-    rescue StandardError => e
-      Rails.logger.warn(
-        "[InstancePoolService] dev-cell deploy-key revoke failed (instance=#{instance&.id}): #{e.class}: #{e.message}"
-      )
-    end
 
     # Best-effort + guarded reset of a member's granted_mcp_tools on the
     # reuse-without-reset release path (IMP-71c852bffc37) — see the call site
