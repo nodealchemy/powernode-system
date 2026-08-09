@@ -1045,27 +1045,42 @@ module System
         end
 
         cicustom_parts = []
+        # Seed names carry a per-instance discriminator (F1): the snippets
+        # export is SHARED, and a bare vmid key let a concurrent create that
+        # drew the same vmid overwrite this VM's seed — the surviving VM then
+        # booted with the other instance's enrollment identity.
+        seed_key = "#{vmid}-#{seed_discriminator(params)}"
         # 0o600: user.yml carries the single-use acceptance_token in cleartext
         # (federation-payload.json contents), and meta.yml + network.yml may
         # carry equally sensitive runtime config. The NFS export is shared
         # across PVE hosts + the ops backend, so world-readable 0644 would
         # expose tokens to any tenant with read access on the export.
         if params[:user_data].present?
-          user_path = File.join(snippets_local, "#{vmid}-user.yml")
+          user_path = File.join(snippets_local, "#{seed_key}-user.yml")
           File.write(user_path, params[:user_data], mode: "w", perm: 0o600)
-          cicustom_parts << "user=#{snippets_storage}:snippets/#{vmid}-user.yml"
+          cicustom_parts << "user=#{snippets_storage}:snippets/#{seed_key}-user.yml"
         end
         if params[:meta_data].present?
-          meta_path = File.join(snippets_local, "#{vmid}-meta.yml")
+          meta_path = File.join(snippets_local, "#{seed_key}-meta.yml")
           File.write(meta_path, params[:meta_data], mode: "w", perm: 0o600)
-          cicustom_parts << "meta=#{snippets_storage}:snippets/#{vmid}-meta.yml"
+          cicustom_parts << "meta=#{snippets_storage}:snippets/#{seed_key}-meta.yml"
         end
         if params[:network_config].present?
-          net_path = File.join(snippets_local, "#{vmid}-net.yml")
+          net_path = File.join(snippets_local, "#{seed_key}-net.yml")
           File.write(net_path, params[:network_config], mode: "w", perm: 0o600)
-          cicustom_parts << "network=#{snippets_storage}:snippets/#{vmid}-net.yml"
+          cicustom_parts << "network=#{snippets_storage}:snippets/#{seed_key}-net.yml"
         end
         body["cicustom"] = cicustom_parts.join(",") unless cicustom_parts.empty?
+      end
+
+      # Per-instance seed-name discriminator (F1). The NodeInstance UUID when
+      # the caller threaded one through (ProvisioningService always does),
+      # else random — either way a concurrent create that drew the same vmid
+      # can no longer overwrite this VM's seed on shared storage.
+      def seed_discriminator(params)
+        instance = params[:instance]
+        raw = instance.respond_to?(:id) ? instance.id.to_s.delete("-") : nil
+        raw.presence&.first(12) || SecureRandom.hex(6)
       end
 
       # True when this connection delivers the NoCloud seed as an attached ISO
@@ -1111,7 +1126,10 @@ module System
         iso_storage = params[:cidata_iso_storage] ||
                       connection&.config&.dig("cidata_iso_storage").presence ||
                       storage
-        filename = "cidata-#{vmid}.iso"
+        # Instance-keyed name (F1) — see #seed_discriminator: a bare vmid key
+        # on shared iso storage is last-writer-wins under a vmid-allocation
+        # race, which is identity cross-contamination.
+        filename = "cidata-#{vmid}-#{seed_discriminator(params)}.iso"
 
         Tempfile.create([ "cidata-#{vmid}-", ".iso" ]) do |tmp|
           tmp.binmode
@@ -1428,7 +1446,18 @@ module System
           end
         end
 
-        create_upid = c.post("/api2/json/nodes/#{node}/qemu", body)
+        create_upid = with_vmid_conflict_retry(params, vmid: vmid) do
+          c.post("/api2/json/nodes/#{node}/qemu", body)
+        end
+        if create_upid == :retry_with_fresh_vmid
+          # Re-enter from the top: allocation now skips the conflicted id
+          # (ledger), image resolution is idempotent, and the instance-keyed
+          # seed name means the rerun re-stages only this VM's own seed.
+          return create_uefi_disk_vm_instance(
+            params.merge(_vmid_conflict_retries: params[:_vmid_conflict_retries].to_i + 1),
+            preset: preset
+          )
+        end
         c.wait_task(node: node, upid: create_upid)
 
         resize_boot_disk!(c, node: node, vmid: vmid, params: params, preset: preset)
@@ -1440,6 +1469,32 @@ module System
 
         instance_id = "#{node}/qemu/#{vmid}"
         finalize_create(instance_id, start: params.fetch(:start, true))
+      end
+
+      # F1 (IMP 019fe4c4-b373) — bounded vmid-conflict retry, the cross-process
+      # counterpart of the in-process reservation ledger. `/cluster/nextid`
+      # reserves nothing, so another control plane (or a ledger-expired racer)
+      # can own our id by the time the create lands; PVE then 500s with
+      # "already exists". Records the conflicted id in the ledger so the fresh
+      # allocation advances past it, and signals the caller to re-enter.
+      # Only fires when the CALLER allocated the vmid (params[:vmid] nil) —
+      # an explicit operator-chosen vmid conflict is a real error to surface.
+      def with_vmid_conflict_retry(params, vmid:)
+        yield
+      rescue Proxmox::Client::Error => e
+        attempt = params[:_vmid_conflict_retries].to_i
+        raise unless params[:vmid].nil? && attempt < 2 && vmid_conflict_error?(e)
+
+        self.class.reserve_vmid!(vmid)
+        Rails.logger.warn(
+          "[ProxmoxProvider] qemu create lost vmid #{vmid} to a concurrent allocation " \
+            "(#{e.message.to_s[0, 120]}); retrying with a fresh vmid (attempt #{attempt + 1}/2)"
+        )
+        :retry_with_fresh_vmid
+      end
+
+      def vmid_conflict_error?(error)
+        error.message.to_s.match?(/already exists/i)
       end
 
       # Resolves the boot-disk volid for uefi_disk: an explicit
@@ -1798,6 +1853,53 @@ module System
       # connection configures none.
       PVE_MIN_VMID = 100
 
+      # Process-local vmid reservation ledger (F1, IMP 019fe4c4-b373).
+      #
+      # `/cluster/nextid` reserves NOTHING: two concurrent allocations in one
+      # control plane get the same id. Observed live (dryrun 20260809a): both
+      # provisioning steps drew 9002, one create then failed "already exists"
+      # — and, worse, the loser's vmid-keyed cidata seed had already
+      # overwritten the winner's on shared storage, so the surviving VM booted
+      # with the OTHER instance's enrollment identity.
+      #
+      # The ledger closes the same-process window (the one the mission runner
+      # actually has — its steps execute in the rails process). Cross-process
+      # racers are covered by the vmid-conflict create retry, which records
+      # the conflicted id here before re-allocating. Entries expire so a
+      # reservation whose create never happened cannot leak an id forever.
+      VMID_RESERVATION_TTL = 180 # seconds
+      @vmid_reservations = {}
+      @vmid_reservation_mutex = Mutex.new
+
+      class << self
+        # Records the id as issued; returns the set of currently-live ids.
+        def reserve_vmid!(id, now: Process.clock_gettime(Process::CLOCK_MONOTONIC))
+          @vmid_reservation_mutex.synchronize do
+            @vmid_reservations.delete_if { |_, at| now - at > VMID_RESERVATION_TTL }
+            @vmid_reservations[id.to_i] = now
+            @vmid_reservations.keys
+          end
+        end
+
+        def vmid_reserved?(id, now: Process.clock_gettime(Process::CLOCK_MONOTONIC))
+          @vmid_reservation_mutex.synchronize do
+            at = @vmid_reservations[id.to_i]
+            at.present? && (now - at) <= VMID_RESERVATION_TTL
+          end
+        end
+
+        def reserved_vmids(now: Process.clock_gettime(Process::CLOCK_MONOTONIC))
+          @vmid_reservation_mutex.synchronize do
+            @vmid_reservations.delete_if { |_, at| now - at > VMID_RESERVATION_TTL }
+            @vmid_reservations.keys
+          end
+        end
+
+        def reset_vmid_reservations!
+          @vmid_reservation_mutex.synchronize { @vmid_reservations.clear }
+        end
+      end
+
       def allocate_next_vmid!(c)
         nextid = Integer(c.get("/api2/json/cluster/nextid").to_s)
 
@@ -1828,15 +1930,32 @@ module System
         end
 
         # nextid already inside our band is taken as-is (the common case, and
-        # byte-identical to the previous behaviour for an unfenced connection).
-        return nextid if nextid >= floor && (ceiling.nil? || nextid <= ceiling)
+        # byte-identical to the previous behaviour for an unfenced connection)
+        # — unless this process already issued it to a create that hasn't
+        # landed on the cluster yet (the ledger above), in which case advance
+        # past every live reservation. An id above nextid could in principle
+        # be occupied (sparse clusters); the vmid-conflict create retry is the
+        # backstop for that, and it re-enters here with the conflicted id
+        # freshly reserved.
+        if nextid >= floor && (ceiling.nil? || nextid <= ceiling)
+          candidate = nextid
+          candidate += 1 while self.class.vmid_reserved?(candidate) && (ceiling.nil? || candidate <= ceiling)
+          if ceiling && candidate > ceiling
+            raise ProviderError,
+                  "Proxmox VMID band #{floor}-#{ceiling} has no unreserved id left for this " \
+                  "connection (pending in-process reservations: #{self.class.reserved_vmids.sort.inspect})"
+          end
+          self.class.reserve_vmid!(candidate)
+          return candidate
+        end
 
         # Otherwise pick the first free id at/above the floor, skipping any
-        # already in use cluster-wide (each resources row carries its own vmid).
+        # already in use cluster-wide (each resources row carries its own vmid)
+        # and any id this process has issued but not yet created.
         used = (c.get("/api2/json/cluster/resources", { "type" => "vm" }) || [])
                .filter_map { |r| r["vmid"].to_i if r["vmid"] }
         id = floor
-        id += 1 while used.include?(id) && (ceiling.nil? || id <= ceiling)
+        id += 1 while (used.include?(id) || self.class.vmid_reserved?(id)) && (ceiling.nil? || id <= ceiling)
 
         if ceiling && id > ceiling
           raise ProviderError,
@@ -1845,6 +1964,7 @@ module System
                 "Reap unused instances or widen vmid_max — allocating outside the band would risk " \
                 "colliding with another control plane on this cluster"
         end
+        self.class.reserve_vmid!(id)
         id
       end
 

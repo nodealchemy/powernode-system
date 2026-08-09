@@ -133,6 +133,23 @@ FactoryBot.define do
     variety { "cloud" }
     status { "pending" }
     config { {} }
+    # A cloud instance without provider identity is the F1 phantom shape —
+    # mark_running now refuses it (provider_identity_present? guard). Default
+    # a VALID cloud instance. cloud_instance_id is a store_accessor into the
+    # config JSONB, so this must run AFTER all attributes (some specs set it
+    # as an attribute, others inside an explicit `config:` hash — a plain
+    # sequence clobbers one style or the other depending on declaration
+    # order); fill only when absent, and only for cloud/dynamic varieties.
+    # Specs probing the identity-less state pass `cloud_instance_id: nil` —
+    # an explicit nil records the key in config, which `blank?` still treats
+    # as absent, so re-defaulting is avoided via key?-check on config.
+    after(:build) do |instance|
+      if %w[cloud dynamic].include?(instance.variety.to_s) &&
+         instance.cloud_instance_id.blank? &&
+         !(instance.config || {}).key?("cloud_instance_id")
+        instance.cloud_instance_id = "dna/qemu/#{9000 + SecureRandom.random_number(90_000)}"
+      end
+    end
 
     node { build(:system_node, account: account || create(:account)) }
 

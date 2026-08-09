@@ -131,6 +131,19 @@ module System
 
       cloud_result = provider_adapter.create_instance(provider_params)
 
+      # F1 (IMP 019fe4c4-b373): success without a provider identity is not
+      # success. A row that reaches a live status with no cloud_instance_id is
+      # a phantom nothing can sync, reap, or terminate — and whose enrollment
+      # seed may be live on shared storage for some OTHER VM to boot with.
+      if cloud_result[:success] && cloud_result[:cloud_instance_id].blank?
+        Rails.logger.error(
+          "[ProvisioningService] provider #{provider_adapter.provider_type} reported success " \
+            "WITHOUT a cloud_instance_id for #{instance.name} — treating as failed"
+        )
+        cloud_result = { success: false,
+                         error: "provider returned success without a cloud_instance_id" }
+      end
+
       if cloud_result[:success]
         # Capture the just-created cloud instance id BEFORE the persisting
         # update! (or any later step) that could raise. If one does, the row is

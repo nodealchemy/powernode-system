@@ -159,8 +159,17 @@ module System
       # silently no-op'd and a perfectly healthy instance stayed stranded in
       # :error forever — physical instances (no CloudSync overwrite to
       # accidentally repair them) needed a manual operator "start".
+      # F1 guard (IMP 019fe4c4-b373): a heartbeat can only prove a VM is
+      # running — WHOSE VM it is depends entirely on the identity seed it
+      # booted with. When a seed-contaminated VM heartbeats as an instance
+      # whose provisioning never completed (no cloud_instance_id), the
+      # self-heal below manufactured a "running" instance the provider has
+      # never seen. Cloud/dynamic rows therefore need a provider identity
+      # before any transition to :running; physical instances have no cloud
+      # id by nature and keep the IMP-42cf03360656 stranded-row self-heal.
       event :mark_running do
-        transitions from: [ :starting, :stopping, :rebooting, :provisioning, :pending, :error ], to: :running
+        transitions from: [ :starting, :stopping, :rebooting, :provisioning, :pending, :error ], to: :running,
+                    guard: :provider_identity_present?
       end
 
       # IMP-0d7071dc03f7: :starting is included so a failed "start" can
@@ -189,6 +198,17 @@ module System
       event :mark_errored do
         transitions from: [ :pending, :provisioning, :starting, :running, :stopping, :rebooting ], to: :error
       end
+    end
+
+    # Guard for mark_running (F1): cloud/dynamic instances must carry the
+    # provider-confirmed identity before any heartbeat can flip them running —
+    # a row without cloud_instance_id provably never completed provisioning,
+    # so the "instance" heartbeating under its identity is some OTHER machine
+    # holding its seed. Physical instances have no cloud id by nature.
+    def provider_identity_present?
+      return true unless %w[cloud dynamic].include?(variety.to_s)
+
+      cloud_instance_id.present?
     end
 
     # M4 audit trail — `prepend` so our overrides take precedence over the
