@@ -140,11 +140,13 @@ FactoryBot.define do
     # as an attribute, others inside an explicit `config:` hash — a plain
     # sequence clobbers one style or the other depending on declaration
     # order); fill only when absent, and only for cloud/dynamic varieties.
-    # Specs probing the identity-less state pass `cloud_instance_id: nil` —
-    # an explicit nil records the key in config, which `blank?` still treats
-    # as absent, so re-defaulting is avoided via key?-check on config.
-    after(:build) do |instance|
-      if %w[cloud dynamic].include?(instance.variety.to_s) &&
+    # An explicit `cloud_instance_id: nil` override is invisible here (a nil
+    # store write drops the key), so specs probing the identity-less state
+    # pass the transient `provider_identity: false` instead.
+    transient { provider_identity { true } }
+    after(:build) do |instance, evaluator|
+      if evaluator.provider_identity &&
+         %w[cloud dynamic].include?(instance.variety.to_s) &&
          instance.cloud_instance_id.blank? &&
          !(instance.config || {}).key?("cloud_instance_id")
         instance.cloud_instance_id = "dna/qemu/#{9000 + SecureRandom.random_number(90_000)}"
