@@ -27,6 +27,13 @@ module Sdwan
     # routes, VIP announcements) all unify here for the operator UI.
     has_many :subnet_advertisements, class_name: "Sdwan::SubnetAdvertisement",
              foreign_key: :sdwan_peer_id, dependent: :destroy
+    # IMP 019fe76e-5009: this association was never declared, so peer.destroy!
+    # hit the membership-credentials FK and every instance-terminate
+    # auto-detach failed — terminated instances left orphaned peers polluting
+    # the fabric config (observed on all three dryrun-20260809d teardowns).
+    # A membership credential is meaningless without its peer; destroy it too.
+    has_many :membership_credentials, class_name: "Sdwan::MembershipCredential",
+             foreign_key: :sdwan_peer_id, dependent: :destroy
 
     validates :assigned_address, presence: true, uniqueness: { scope: :account_id }
     validates :status, inclusion: { in: STATUSES }
