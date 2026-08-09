@@ -83,8 +83,8 @@
 #                            --parent-host / --parent-path (only consulted
 #                            by the same Class-B arms as PARENT_PAT).
 #                            Defaults match build-one-module.sh's own
-#                            (git.powernode.org /
-#                            powernode/powernode-platform).
+#                            (github.com /
+#                            nodealchemy/powernode-platform) — PUBLIC repo.
 #
 # CLI:
 #   --result-file FILE          also write the RESULT JSON here (a plain
@@ -161,8 +161,8 @@ PARENT_PAT="${PARENT_PAT:-}"
 ORAS_REGISTRY="${ORAS_REGISTRY:-git.powernode.org}"
 APT_SNAPSHOT="${APT_SNAPSHOT:-}"
 ARCH="${ARCH:-amd64}"
-PARENT_HOST="${PARENT_HOST:-git.powernode.org}"
-PARENT_PATH="${PARENT_PATH:-powernode/powernode-platform}"
+PARENT_HOST="${PARENT_HOST:-github.com}"
+PARENT_PATH="${PARENT_PATH:-nodealchemy/powernode-platform}"
 
 require_cmd git
 require_cmd jq
