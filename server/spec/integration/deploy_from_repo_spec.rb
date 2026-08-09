@@ -76,12 +76,18 @@ RSpec.describe "AI-driven provisioning M3 deploy-from-repo smoke", type: :integr
       "intent" => "Deploy a Discord bot from a Git repo",
       "use_case" => "discord_bot",
       "scale" => { "initial" => 1, "target" => 1, "growth_profile" => "flat" },
-      "regions" => [ "us-east-1" ],
+      # IMP 019fe807: name the region the fixture actually has (factory
+      # region_code sequence is not pinned to "us-east-1") so synthesis
+      # resolves it.
+      "regions" => [ region.region_code ],
       "compliance" => [],
       "budget_cap_usd_monthly" => 25.0,
       "latency_targets_ms" => { "p99" => 500 },
       "data_residency" => [],
       "preferred_provider" => "local_qemu",
+      # IMP 019fe807: name the fixture template so synthesis resolves IT, not
+      # the account-bootstrap default (older, so resolve_default_template wins).
+      "preferred_template" => template.name,
       # M3 Run My Code fields:
       "repo_url" => "https://github.com/example/discord-rss-bot.git",
       "branch" => "main",
@@ -100,6 +106,11 @@ RSpec.describe "AI-driven provisioning M3 deploy-from-repo smoke", type: :integr
   before do
     account
     agent
+    # IMP 019fe807: synthesis (IMP-019fe7f0) resolves template/region from the
+    # brief instead of the old decompose stub materializing them; force them.
+    template
+    region
+    instance_type
     load Rails.root.join("../extensions/system/server/db/seeds/system_provisioning_mission_template.rb")
 
     System::Providers::LocalQemuProvider.runner = System::Providers::LocalQemu::RecorderRunner.new
@@ -254,7 +265,11 @@ RSpec.describe "AI-driven provisioning M3 deploy-from-repo smoke", type: :integr
     # surfaced here is the deploy step's inputs, asserted above. The role-
     # module attach itself is exercised by plan_composer_service_spec.rb.
 
-    mission.update!(configuration: mission.configuration.merge("plan" => { "id" => plan.id }))
+    # compose! already persisted the canonical "plan_id" (the artifact gate,
+    # IMP 019fe5d0, asserts exactly that key); reload instead of re-stashing
+    # a stale-shaped {"id"}.
+    mission.reload
+    expect(mission.configuration.dig("plan", "plan_id")).to eq(plan.id)
 
     # ---------- 4. review_plan (approval gate) ------------------------------
     orchestrator.advance!(result: { plan_id: plan.id })
@@ -303,8 +318,7 @@ RSpec.describe "AI-driven provisioning M3 deploy-from-repo smoke", type: :integr
       )
     )
 
-    # ---------- 9. verify ---------------------------------------------------
-    orchestrator.advance!(result: { provisioned_count: 1, deployment_count: 1 })
+    # ---------- 9. Execution auto-advances to verify (F6, IMP 019fe4c5) -----
     expect(mission.reload.current_phase).to eq("verify")
 
     # ---------- 10. handoff (approval gate) --------------------------------

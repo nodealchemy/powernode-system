@@ -67,12 +67,22 @@ RSpec.describe "AI-driven provisioning M0 end-to-end smoke", type: :integration 
       "intent" => "Provision a 3-region web app with Postgres + Redis",
       "use_case" => "side-business 10k MAU web app, primary in us-east, anycast IP, nightly backups",
       "scale" => { "initial" => 3, "target" => 5, "growth_profile" => "linear" },
-      "regions" => [ "us-east-1", "eu-west-1", "ap-southeast-1" ],
+      # IMP 019fe807: deterministic synthesis resolves regions from the brief
+      # against the account's ProviderRegion catalog, so the brief must name a
+      # region the fixture actually has (the factory's region_code sequence is
+      # not pinned to "us-east-1"). One resolved region → all 3 instances in a
+      # single provision step, matching the assertion below.
+      "regions" => [ region.region_code ],
       "compliance" => [],
       "budget_cap_usd_monthly" => 200.0,
       "latency_targets_ms" => { "p99" => 250 },
       "data_residency" => [],
-      "preferred_provider" => "local_qemu"
+      "preferred_provider" => "local_qemu",
+      # IMP 019fe807: name the fixture template so synthesis resolves IT, not
+      # the account-bootstrap default template (which is older, so
+      # resolve_default_template would otherwise win and the node-template
+      # assertion below would find zero).
+      "preferred_template" => template.name
     }
   end
 
@@ -89,6 +99,16 @@ RSpec.describe "AI-driven provisioning M0 end-to-end smoke", type: :integration 
     # standalone seed run from task #4.
     account
     agent
+    # IMP 019fe807: PlanComposerService now SYNTHESIZES the plan from the brief
+    # for recognized provisioning scenarios (IMP-019fe7f0) instead of calling
+    # the LLM decomposer — so the template/region/instance-type fixtures the
+    # old decompose stub materialized as a side effect must be forced here.
+    # The region factory's first region_code is "us-east-1", which matches the
+    # brief's first region, so synthesis resolves one region and lands all 3
+    # instances in a single provision step (the assertion below).
+    template
+    region
+    instance_type
     load Rails.root.join("../extensions/system/server/db/seeds/system_provisioning_mission_template.rb")
 
     # LocalQemuProvider runner gets swapped to the recording adapter as a
@@ -217,8 +237,11 @@ RSpec.describe "AI-driven provisioning M0 end-to-end smoke", type: :integration 
       expect(step.execution_config["inputs"]).to include("template_id", "count", "brief")
     end
 
-    # Stash the plan_id where the next phase can find it.
-    mission.update!(configuration: mission.configuration.merge("plan" => { "id" => plan.id }))
+    # compose! already persisted the pointer under the canonical "plan_id"
+    # key (persist_plan_pointer!); the artifact gate (IMP 019fe5d0) asserts
+    # exactly that key. Reload rather than re-stashing a stale-shaped {"id"}.
+    mission.reload
+    expect(mission.configuration.dig("plan", "plan_id")).to eq(plan.id)
 
     # ---------- 4. Advance: review_plan (approval gate, no auto-dispatch) --
     orchestrator.advance!(result: { plan_id: plan.id })
@@ -258,8 +281,9 @@ RSpec.describe "AI-driven provisioning M0 end-to-end smoke", type: :integration 
       )
     )
 
-    # ---------- 8. Advance: verify -----------------------------------------
-    orchestrator.advance!(result: { provisioned_count: 3 })
+    # ---------- 8. Execution auto-advances to verify -----------------------
+    # F6 (IMP 019fe4c5): the runner advances the mission out of execute when
+    # the last DAG step completes — no manual advance needed anymore.
     expect(mission.reload.current_phase).to eq("verify")
 
     # ---------- 9. Advance: handoff (approval gate) ------------------------
