@@ -36,6 +36,27 @@ RSpec.describe Sdwan::PeerDetacher do
 
         expect(Sdwan::PeerKey.where(id: key_id)).not_to exist
       end
+
+      it "cascades to the peer's membership credentials (IMP 019fe76e-5009)" do
+        # dryrun-20260809d teardown: every auto-detach failed
+        # PG::ForeignKeyViolation because membership credentials still
+        # referenced the peer — Peer cascaded keys + subnet_advertisements
+        # but never declared this association, so terminated instances left
+        # orphaned peers polluting the fabric.
+        peer = Sdwan::Peer.find_by(node_instance_id: instance.id)
+        credential = Sdwan::MembershipCredential.create!(
+          account: account, peer: peer, network: network,
+          status: "active", revision: 1,
+          issued_at: 1.hour.ago, not_before: 1.hour.ago,
+          not_after: 1.day.from_now, refresh_after: 12.hours.from_now,
+          envelope_json: '{"rev":1}', signature_b64: "AAAA",
+          constellation_handle: "acct-spec"
+        )
+
+        expect { described_class.call(node_instance: instance) }
+          .to change(Sdwan::Peer, :count).by(-1)
+        expect(Sdwan::MembershipCredential.where(id: credential.id)).not_to exist
+      end
     end
 
     context "when scoped to a specific network" do
