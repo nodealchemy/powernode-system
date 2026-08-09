@@ -241,6 +241,10 @@ RSpec.describe "AI-driven provisioning M3 deploy-from-repo smoke", type: :integr
 
     plan = ::Ai::Provisioning::PlanComposerService.new(account: account, mission: mission).compose!
     expect(plan).to be_a(::Ai::GoalPlan)
+    # IMP 019fe807: prove deterministic synthesis built this, not the stubbed
+    # decompose fallback — otherwise a silent recognition regression stays
+    # green here while live regresses to a real LLM call.
+    expect(plan.plan_data["composer"]).to eq("deterministic_synthesis")
 
     steps = plan.steps.reload.order(:step_number).to_a
     expect(steps.size).to eq(2), "expected 2 steps (provision + deploy), got #{steps.size}"

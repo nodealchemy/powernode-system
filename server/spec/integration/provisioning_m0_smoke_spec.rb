@@ -103,9 +103,8 @@ RSpec.describe "AI-driven provisioning M0 end-to-end smoke", type: :integration 
     # for recognized provisioning scenarios (IMP-019fe7f0) instead of calling
     # the LLM decomposer — so the template/region/instance-type fixtures the
     # old decompose stub materialized as a side effect must be forced here.
-    # The region factory's first region_code is "us-east-1", which matches the
-    # brief's first region, so synthesis resolves one region and lands all 3
-    # instances in a single provision step (the assertion below).
+    # (The brief names region.region_code precisely, so synthesis resolves
+    # exactly this fixture region — see the fixed_brief comment.)
     template
     region
     instance_type
@@ -226,6 +225,10 @@ RSpec.describe "AI-driven provisioning M0 end-to-end smoke", type: :integration 
     # Run plan composition.
     plan = Ai::Provisioning::PlanComposerService.new(account: account, mission: mission).compose!
     expect(plan).to be_a(Ai::GoalPlan)
+    # IMP 019fe807: prove the DETERMINISTIC synthesis path built this — else a
+    # silent recognition regression would fall back to the stubbed decomposer
+    # and keep this smoke green while live regressed to a real LLM call.
+    expect(plan.plan_data["composer"]).to eq("deterministic_synthesis")
     # PlanComposerService 5de109b added a step-collapse pass: adjacent
     # provision_full_stack steps for the same skill merge into a single
     # step with summed count. So "Provision 3 web servers" now lands as
