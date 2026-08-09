@@ -104,6 +104,11 @@ module PowernodeSystem
           providers: {
             deploy_method_providers: "System::Deploy::MethodProvider",
             provision_label_resolver: "System::ProvisionLabelResolver",
+            #   * provision_verifier — live-provider reconciliation for the
+            #     verify phase (Ai::Provisioning::VerificationService, F2):
+            #     row exists / has provider identity / provider reports
+            #     running / region matches. Fail-closed.
+            provision_verifier: "System::ProvisionVerifier",
             ingress_certs: "Acme::TraefikConfigWriter",
             ingress_routers: "Acme::TraefikConfigWriter"
           }
