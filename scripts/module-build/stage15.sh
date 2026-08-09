@@ -102,8 +102,8 @@
 #                                empty. Set in the calling
 #                                environment (the workflow step's `env:`
 #                                block) — never pass secrets as CLI args.
-#   --parent-host HOST             default: git.powernode.org
-#   --parent-path OWNER/REPO       default: powernode/powernode-platform
+#   --parent-host HOST             default: github.com (PUBLIC repo)
+#   --parent-path OWNER/REPO       default: nodealchemy/powernode-platform
 #   --arch amd64|arm64             default: amd64
 #
 # Reads:  /tmp/manifest.json (produced by the workflow's untouched "Parse
@@ -144,8 +144,8 @@ WORKSPACE=""
 # `:-` default keeps this safe under `set -u` when the caller (e.g. a
 # Class-A-only local run) never set it.
 PARENT_PAT="${PARENT_PAT:-}"
-POWERNODE_PARENT_HOST="git.powernode.org"
-POWERNODE_PARENT_PATH="powernode/powernode-platform"
+POWERNODE_PARENT_HOST="github.com"
+POWERNODE_PARENT_PATH="nodealchemy/powernode-platform"
 ARCH="amd64"
 
 while [ $# -gt 0 ]; do
@@ -196,9 +196,32 @@ case "$MODULE" in
 esac
 
 if [ "$needs_parent" = "1" ]; then
-  parent_host="${POWERNODE_PARENT_HOST:-git.powernode.org}"
-  parent_path="${POWERNODE_PARENT_PATH:-powernode/powernode-platform}"
-  clone_url="https://x-access-token:${PARENT_PAT}@${parent_host}/${parent_path}.git"
+  parent_host="${POWERNODE_PARENT_HOST:-github.com}"
+  parent_path="${POWERNODE_PARENT_PATH:-nodealchemy/powernode-platform}"
+
+  # powernode-platform is the PUBLIC MIT repo and is sourced from GitHub, not
+  # from a private Gitea. The previous default (git.powernode.org) is a
+  # DIFFERENT Gitea from the one releases are pushed to, so its parent clone
+  # lacked commits the extension frontend imports — extension-system builds
+  # died at "Rollup failed to resolve import @/shared/components/charts" from
+  # 2026-08-06 onward. GitHub's default branch for this repo is `develop`, so
+  # the credential-free --depth 1 clone below lands on the right ref.
+  #
+  # Credentials are OMITTED for a public host: PARENT_PAT is the Gitea token
+  # (config_controller sends the GitProvider's access_token as parent_pat), and
+  # injecting it as x-access-token into a github.com URL can 401 even on a
+  # public repo. Keep the token form only for a private host.
+  case "$parent_host" in
+    github.com|*.github.com) clone_url="https://${parent_host}/${parent_path}.git" ;;
+    *)
+      if [ -n "${PARENT_PAT:-}" ]; then
+        clone_url="https://x-access-token:${PARENT_PAT}@${parent_host}/${parent_path}.git"
+      else
+        clone_url="https://${parent_host}/${parent_path}.git"
+      fi
+      ;;
+  esac
+
   echo "Cloning parent ${parent_host}/${parent_path}..."
   git clone --depth 1 "$clone_url" /tmp/parent
 fi

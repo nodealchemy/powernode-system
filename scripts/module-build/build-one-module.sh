@@ -46,10 +46,10 @@
 #
 # Optional:
 #   --arch amd64|arm64        default: amd64 — threaded to stage15.sh
-#   --parent-host HOST         default: git.powernode.org — threaded to
+#   --parent-host HOST         default: github.com (PUBLIC repo) — threaded to
 #                          stage15.sh (only consulted by the
 #                          powernode-hub-backend/worker/frontend arms)
-#   --parent-path OWNER/REPO  default: powernode/powernode-platform —
+#   --parent-path OWNER/REPO  default: nodealchemy/powernode-platform —
 #                          threaded to stage15.sh (same arms as above)
 #
 # Env (optional, credential — see the crypto-material-safety note in
@@ -108,8 +108,8 @@ MODULE=""
 GITHUB_SHA=""
 WORKSPACE=""
 ARCH="amd64"
-PARENT_HOST="git.powernode.org"
-PARENT_PATH="powernode/powernode-platform"
+PARENT_HOST="github.com"
+PARENT_PATH="nodealchemy/powernode-platform"
 
 while [ $# -gt 0 ]; do
   case "$1" in
