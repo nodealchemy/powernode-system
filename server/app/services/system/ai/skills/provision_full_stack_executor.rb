@@ -104,7 +104,8 @@ module System
         # into every step's inputs (notably `brief`) so the runner's
         # `executor.execute(**inputs)` invocation doesn't raise ArgumentError.
         def perform(template_id:, count:, provider_region_id:, provider_instance_type_id:,
-                    network_id: nil, with_storage_gb: nil, dry_run: false, **_extras)
+                    network_id: nil, with_storage_gb: nil, dry_run: false,
+                    name_prefix: nil, mission_id: nil, **_extras)
           count = count.to_i
           return failure("count must be between 1 and #{MAX_COUNT}") unless count.between?(1, MAX_COUNT)
 
@@ -136,12 +137,14 @@ module System
 
           run_execute(template: template, count: count, region: region,
                       instance_type: instance_type, network: network,
-                      with_storage_gb: with_storage_gb)
+                      with_storage_gb: with_storage_gb,
+                      name_prefix: name_prefix, mission_id: mission_id)
         end
 
         private
 
-        def run_execute(template:, count:, region:, instance_type:, network:, with_storage_gb:)
+        def run_execute(template:, count:, region:, instance_type:, network:, with_storage_gb:,
+                        name_prefix: nil, mission_id: nil)
           node_ids = []
           node_instance_ids = []
           storage_volume_ids = []
@@ -149,7 +152,8 @@ module System
           planned_actions = []
 
           count.times do |i|
-            node = create_node!(template: template, index: i)
+            node = create_node!(template: template, index: i,
+                                name_prefix: name_prefix, mission_id: mission_id)
             node_ids << node.id
             planned_actions << { step: "create_node", node_id: node.id, name: node.name }
 
@@ -210,13 +214,20 @@ module System
           )
         end
 
-        def create_node!(template:, index:)
-          node_name = "#{template.name.parameterize}-#{index + 1}-#{SecureRandom.hex(3)}"
+        # F3 (IMP 019fe4c4-e813): name_prefix carries the mission's marker
+        # (e.g. the charter's dryrun- blast-radius prefix) into node names —
+        # instance names derive from the node's, so the prefix reaches the
+        # substrate. mission_id lands in node.config so created nodes and
+        # their instances are provenance-queryable regardless of naming.
+        def create_node!(template:, index:, name_prefix: nil, mission_id: nil)
+          base = [ name_prefix.presence, template.name.parameterize ].compact.join("-")
+          node_name = "#{base}-#{index + 1}-#{SecureRandom.hex(3)}"
           ::System::Node.create!(
             account: @account,
             name: node_name,
             node_template: template,
-            enabled: true
+            enabled: true,
+            config: mission_id.present? ? { "mission_id" => mission_id } : {}
           )
         end
 
