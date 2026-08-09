@@ -72,6 +72,21 @@ RSpec.describe System::ProvisioningService do
       expect(System::NodeInstance.where(node: node, status: "pending")).to be_empty
       expect(System::NodeInstance.where(node: node).order(:created_at).last.status).to eq("error")
     end
+
+    it "refuses a provider 'success' that carries no cloud_instance_id (F1 phantom shape)" do
+      # dryrun 20260809a: a row that reaches a live status with no provider
+      # identity is a phantom nothing can sync, reap, or terminate. Whatever
+      # the adapter thought it did, without an id the platform must treat the
+      # provision as failed — loudly — not mint a running instance.
+      allow(adapter).to receive(:create_instance)
+        .and_return(success: true, cloud_instance_id: nil, status: "running")
+
+      result = provision
+
+      expect(result.success?).to be(false)
+      expect(result.error).to match(/cloud_instance_id/i)
+      expect(System::NodeInstance.where(node: node).order(:created_at).last.status).to eq("error")
+    end
   end
 
   # Cloud-resource leak (IMP-f21484318518): the cloud VM is created before the

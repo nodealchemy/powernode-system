@@ -48,13 +48,15 @@ RSpec.describe System::Providers::ProxmoxProvider do
       provider.send(:stage_cidata_iso, client, body, params, vmid: 777, node: "dna", storage: "dna-data")
 
       expect(captured[:content]).to eq("iso")
-      expect(captured[:filename]).to eq("cidata-777.iso")
+      # Instance-keyed name (F1): "cidata-<vmid>-<discriminator>.iso" — a bare
+      # vmid key was last-writer-wins on shared storage under a vmid race.
+      expect(captured[:filename]).to match(/\Acidata-777-\h{12}\.iso\z/)
       expect(captured[:storage]).to eq("dna-data")
       expect(captured[:node]).to eq("dna")
       # the uploaded bytes are a real iso9660 carrying the CIDATA volume label
       expect(captured[:bytes].byteslice(16 * 2048 + 40, 32).strip).to eq("CIDATA".b)
       # attached as the CD-ROM (replacing the cloudinit drive); cicustom unused
-      expect(body["ide2"]).to eq("dna-data:iso/cidata-777.iso,media=cdrom")
+      expect(body["ide2"]).to eq("dna-data:iso/#{captured[:filename]},media=cdrom")
       expect(body).not_to have_key("cicustom")
       expect(client).to have_received(:wait_task).with(node: "dna", upid: "UPID:upload")
     end
@@ -67,7 +69,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
       body = {}
       prov.send(:stage_cidata_iso, client, body, params, vmid: 5, node: "dna", storage: "dna-data")
 
-      expect(body["ide2"]).to eq("local:iso/cidata-5.iso,media=cdrom")
+      expect(body["ide2"]).to match(%r{\Alocal:iso/cidata-5-\h{12}\.iso,media=cdrom\z})
       expect(client).to have_received(:upload_file).with(hash_including(storage: "local", content: "iso"))
     end
 
