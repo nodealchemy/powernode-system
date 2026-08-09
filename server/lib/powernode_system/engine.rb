@@ -109,6 +109,10 @@ module PowernodeSystem
             #     row exists / has provider identity / provider reports
             #     running / region matches. Fail-closed.
             provision_verifier: "System::ProvisionVerifier",
+            #   * provision_prerequisites — compose-time "can this plan's
+            #     skills run against this template?" checks for
+            #     PlanComposerService (overlay requirements today).
+            provision_prerequisites: "System::ProvisionPrerequisites",
             ingress_certs: "Acme::TraefikConfigWriter",
             ingress_routers: "Acme::TraefikConfigWriter"
           }

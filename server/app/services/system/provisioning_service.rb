@@ -643,7 +643,28 @@ module System
       # double-enroll the same instance into the same overlay.
       return if ::Sdwan::Peer.exists?(sdwan_network_id: network.id, node_instance_id: instance.id)
 
-      ::Sdwan::PeerEnroller.call(network: network, node_instance: instance)
+      # First-enrollee-becomes-hub (019fe647 topology decision): a network
+      # with no publicly-reachable peer can't punch NAT for spokes, and
+      # mission instances are ephemeral — the first instance to enroll on a
+      # hub-less network takes the hub role, self-healing per run. Hubs must
+      # carry an endpoint (Sdwan::Peer#hub_must_have_endpoint), so this only
+      # engages when the provision returned an address; otherwise the peer
+      # enrolls as a spoke and hub promotion is left to the sdwan_failover
+      # sensor once the agent has detected reachability. 51820 is the
+      # WireGuard listen port PeerEnroller itself defaults to.
+      enroll_opts = {}
+      if !::Sdwan::Peer.where(sdwan_network_id: network.id, publicly_reachable: true).exists?
+        endpoint = instance.private_ip_address.presence || instance.public_ip_address.presence
+        if endpoint
+          enroll_opts = { publicly_reachable: true, endpoint_host: endpoint, endpoint_port: 51820 }
+        else
+          Rails.logger.info(
+            "[ProvisioningService] network #{network.id} has no hub and #{instance.name} has no " \
+              "address at enroll time — enrolling as spoke; hub promotion left to the failover sensor"
+          )
+        end
+      end
+      ::Sdwan::PeerEnroller.call(network: network, node_instance: instance, **enroll_opts)
     rescue StandardError => e
       Rails.logger.error("[ProvisioningService] SDWAN auto-enroll failed for instance #{instance.id}: #{e.class}: #{e.message}")
     end
