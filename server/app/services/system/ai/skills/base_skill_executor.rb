@@ -117,7 +117,7 @@ module System
         def execute(**inputs)
           validate_inputs!(inputs)
           audit_log_start(inputs)
-          result = perform(**inputs)
+          result = perform(**acceptable_inputs(inputs))
           audit_log_finish(result)
           result
         rescue StandardError, NotImplementedError => e
@@ -130,11 +130,29 @@ module System
 
         protected
 
-        # Subclasses MUST override. Receives the same keyword args that were
-        # passed to `execute`. Should return `success(payload)` or
+        # Subclasses MUST override. Receives the keyword args passed to
+        # `execute`, sliced to the keywords the override declares (see
+        # #acceptable_inputs). Should return `success(payload)` or
         # `failure(message)`.
         def perform(**)
           raise NotImplementedError, "#{self.class.name}#perform must be defined"
+        end
+
+        # A composed plan hands every step a SUPERSET of inputs — notably the
+        # shared `brief` the composer stamps onto each step — while executors
+        # declare strict keyword signatures. Live (dryrun 20260809c), every
+        # docker_provision step failed `ArgumentError: unknown keyword:
+        # :brief` before #perform ever ran. Slice the inputs to the keywords
+        # the override declares; a `**rest` capture is the executor's
+        # explicit opt-in to receiving everything. Required-input validation
+        # has already run against the FULL input set by this point, so
+        # slicing can only drop extras, never mask a missing declared input.
+        def acceptable_inputs(inputs)
+          params = method(:perform).parameters
+          return inputs if params.any? { |type, _| type == :keyrest }
+
+          keys = params.filter_map { |type, name| name if %i[key keyreq].include?(type) }
+          inputs.slice(*keys)
         end
 
         # Default required-input validation: any descriptor input with

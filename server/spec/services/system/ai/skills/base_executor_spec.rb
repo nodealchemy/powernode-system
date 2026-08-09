@@ -31,6 +31,66 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
     end
   end
 
+  describe "#execute keyword tolerance (dryrun 20260809c)" do
+    # The composer hands every composed step a superset of inputs — notably
+    # the shared `brief` — while executors declare strict keyword signatures.
+    # Live, every docker_provision step failed `ArgumentError: unknown
+    # keyword: :brief` before perform ran. execute now slices the inputs to
+    # the keywords #perform declares, unless perform captures **rest (the
+    # executor's explicit opt-in to extras).
+    let(:strict_class) do
+      Class.new(described_class) do
+        skill_descriptor(
+          name: "strict_skill", description: "for spec", category: "fleet",
+          inputs: { node_instance_id: { type: "string", required: true } },
+          outputs: {}
+        )
+
+        protected
+
+        def perform(node_instance_id:, dry_run: false)
+          success(received: { node_instance_id: node_instance_id, dry_run: dry_run })
+        end
+      end
+    end
+
+    let(:tolerant_class) do
+      Class.new(described_class) do
+        skill_descriptor(
+          name: "tolerant_skill", description: "for spec", category: "fleet",
+          inputs: { node_instance_id: { type: "string", required: true } },
+          outputs: {}
+        )
+
+        protected
+
+        def perform(node_instance_id:, **extras)
+          success(received: { node_instance_id: node_instance_id, extras: extras })
+        end
+      end
+    end
+
+    it "slices undeclared keywords away from a strict perform signature" do
+      result = strict_class.new(account: account)
+                           .execute(node_instance_id: "i-1", brief: { "intent" => "x" }, dry_run: true)
+      expect(result[:success]).to be true
+      expect(result.dig(:data, :received)).to eq(node_instance_id: "i-1", dry_run: true)
+    end
+
+    it "passes everything through when perform captures **rest" do
+      result = tolerant_class.new(account: account)
+                             .execute(node_instance_id: "i-1", brief: { "intent" => "x" })
+      expect(result[:success]).to be true
+      expect(result.dig(:data, :received, :extras)).to eq(brief: { "intent" => "x" })
+    end
+
+    it "still enforces declared required inputs before slicing" do
+      result = strict_class.new(account: account).execute(brief: {})
+      expect(result[:success]).to be false
+      expect(result[:error]).to match(/missing required input: node_instance_id/)
+    end
+  end
+
   describe ".binds_to" do
     # Targeted unregister — DON'T use a wholesale `reset!`. Under CI's
     # eager_load, @registrations is populated at boot with every binds_to
