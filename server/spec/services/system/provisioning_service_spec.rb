@@ -497,6 +497,45 @@ RSpec.describe System::ProvisioningService do
         result = provision
         expect(result.success?).to be(true)
       end
+
+      # First-enrollee-becomes-hub (019fe647 topology decision, 2026-08-09):
+      # a network with no publicly-reachable peer cannot punch NAT for
+      # spokes, and mission instances are ephemeral — so the first instance
+      # to enroll on a hub-less network takes the hub role (endpoint = its
+      # provisioned address), self-healing per run. Hubs require an endpoint,
+      # so with no address known the peer stays a spoke and promotion is the
+      # failover sensor's job.
+      it "enrolls the FIRST peer on a hub-less network as the hub, endpointed at its address" do
+        allow(adapter).to receive(:create_instance)
+          .and_return(success: true, cloud_instance_id: "i-sdwan-hub", status: "running",
+                      private_ip_address: "10.125.7.31")
+        result = provision
+        peer = Sdwan::Peer.find_by(node_instance_id: result.data[:instance].id)
+        expect(peer.publicly_reachable).to be(true)
+        expect(peer.endpoint_host).to eq("10.125.7.31")
+        expect(peer.endpoint_port).to eq(51820)
+      end
+
+      it "enrolls as a spoke when no address is known at enroll time (sensor promotes later)" do
+        result = provision # default stub returns no private_ip_address
+        peer = Sdwan::Peer.find_by(node_instance_id: result.data[:instance].id)
+        expect(peer).not_to be_nil
+        expect(peer.publicly_reachable).to be(false)
+      end
+
+      it "enrolls subsequent peers as spokes once a hub exists" do
+        hub_instance = create(:system_node_instance, node: node, status: "running")
+        Sdwan::PeerEnroller.call(network: network, node_instance: hub_instance,
+                                 publicly_reachable: true,
+                                 endpoint_host: "10.125.7.1", endpoint_port: 51820)
+
+        allow(adapter).to receive(:create_instance)
+          .and_return(success: true, cloud_instance_id: "i-sdwan-2", status: "running",
+                      private_ip_address: "10.125.7.32")
+        result = provision
+        peer = Sdwan::Peer.find_by(node_instance_id: result.data[:instance].id)
+        expect(peer.publicly_reachable).to be(false)
+      end
     end
 
     context "when neither template nor pool declares sdwan_network_id" do
