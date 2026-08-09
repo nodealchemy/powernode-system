@@ -127,6 +127,35 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
         expect(::System::ProvisioningService).to have_received(:provision_instance).twice
       end
 
+      # F3 (IMP 019fe4c4-e813): all four dryrun VMs came out named
+      # powernode-ops-cell-N-<hex> — the mission's dryrun- marker never
+      # reached the substrate, so the charter's prefix rail was decorative
+      # and teardown fell back to hand-collected instance ids.
+      it "prefixes node names with name_prefix and stamps mission provenance" do
+        r = exec.execute(template_id: template.id, count: 2,
+                         provider_region_id: region.id,
+                         provider_instance_type_id: instance_type.id,
+                         name_prefix: "dryrun-20260809d", mission_id: "m-123")
+
+        expect(r[:success]).to be true
+        nodes = ::System::Node.where(id: r[:data][:outputs][:node_ids])
+        expect(nodes.count).to eq(2)
+        nodes.each do |n|
+          expect(n.name).to start_with("dryrun-20260809d-")
+          expect(n.config["mission_id"]).to eq("m-123")
+        end
+      end
+
+      it "keeps template-derived names and stamps no provenance when none given" do
+        r = exec.execute(template_id: template.id, count: 1,
+                         provider_region_id: region.id,
+                         provider_instance_type_id: instance_type.id)
+
+        node = ::System::Node.find(r[:data][:outputs][:node_ids].first)
+        expect(node.name).to start_with(template.name.parameterize)
+        expect(node.config).not_to have_key("mission_id")
+      end
+
       context "with with_storage_gb" do
         let(:ok_vol) { ::System::Runtime::Result.ok(data: { volume: volume_stub }) }
 
