@@ -427,6 +427,11 @@
           "type": "string",
           "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
         },
+        "gh_version": {
+          "description": "Pinned GitHub CLI (gh) release fetched as a sha256-verified binary (gh module). Bump alongside the pinned amd64 / arm64 checksums in the gh case of scripts/module-build/stage15.sh; values come from the release's gh_<ver>_checksums.txt.",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
         "go_version": {
           "description": "Pinned Go toolchain version (runtime-go module). Bump alongside the per-arch tarball checksums in the runtime-go case of scripts/module-build/stage15.sh.",
           "type": "string",
