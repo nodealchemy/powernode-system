@@ -1355,10 +1355,49 @@ RSpec.describe System::Providers::ProxmoxProvider do
       allow(client).to receive(:wait_task)
       allow(client).to receive(:put) # protection-clear before delete
       allow(client).to receive(:delete).and_raise(System::Providers::Proxmox::Client::NotFoundError, "404")
+      # Absent cluster-wide — stubbed explicitly so this passes on the real
+      # confirmation path rather than by falling into its rescue.
+      allow(client).to receive(:get)
+        .with("/api2/json/cluster/resources", { "type" => "vm" }).and_return([])
 
       result = provider.terminate_instance("dna/qemu/999")
       expect(result[:success]).to be true
       expect(result[:status]).to eq("terminated")
+    end
+
+    # IMP-019fe64b follow-up (adversarial review): PVE reports "deleted" and
+    # "migrated to another node" as the SAME missing-config error, and the
+    # composite instance_id pins the node at provision time. Believing "gone"
+    # here would let finalize_termination! tear down the row, detach the SDWAN
+    # peer and revoke deploy keys while the guest still runs elsewhere.
+    it "refuses to call a MIGRATED vm already-gone (it is live on another node)" do
+      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:wait_task)
+      allow(client).to receive(:put)
+      allow(client).to receive(:delete)
+        .and_raise(System::Providers::Proxmox::Client::NotFoundError,
+                   "Configuration file 'nodes/dna/qemu-server/9009.conf' does not exist")
+      allow(client).to receive(:get)
+        .with("/api2/json/cluster/resources", { "type" => "vm" })
+        .and_return([{ "type" => "qemu", "vmid" => 9009, "node" => "rna", "status" => "running" }])
+
+      result = provider.terminate_instance("dna/qemu/9009")
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include("rna")
+    end
+
+    it "still succeeds when the cluster view is unreachable (fails to prior behaviour, invents no host)" do
+      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:wait_task)
+      allow(client).to receive(:put)
+      allow(client).to receive(:delete).and_raise(System::Providers::Proxmox::Client::NotFoundError, "404")
+      allow(client).to receive(:get)
+        .with("/api2/json/cluster/resources", { "type" => "vm" })
+        .and_raise(System::Providers::Proxmox::Client::Error, "cluster unreachable")
+
+      result = provider.terminate_instance("dna/qemu/999")
+      expect(result[:success]).to be true
     end
   end
 

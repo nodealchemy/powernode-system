@@ -77,4 +77,41 @@ RSpec.describe System::Providers::Proxmox::Client do
       }.to raise_error(System::Providers::Proxmox::Client::Error, /boom/)
     end
   end
+
+  # IMP-019fe64b: PVE answers a request for a vmid it has no config for with
+  # 500 + "Configuration file '...' does not exist", NOT 404. handle_response
+  # mapped only 404 to NotFoundError, so a gone VM surfaced as a generic Error.
+  # Two callers key their behaviour on that class: terminate_instance's
+  # idempotent "already gone -> success" branch, and get_instance's
+  # ResourceNotFoundError, which ProvisionVerifier turns into the actionable
+  # "provider has no record" detail. Both degraded to opaque failure.
+  describe "a gone VM (PVE 500 with no config file)" do
+    let(:status_url) { "https://pve.test:8006/api2/json/nodes/rna/qemu/9009/status/current" }
+
+    it "classifies it as NotFoundError, not a generic Error" do
+      stub_request(:get, status_url).to_return(
+        status: 500,
+        body: { "message" => "Configuration file 'nodes/rna/qemu-server/9009.conf' does not exist" }.to_json,
+        headers: { "Content-Type" => "application/json" }
+      )
+
+      expect { client.get("/api2/json/nodes/rna/qemu/9009/status/current") }
+        .to raise_error(System::Providers::Proxmox::Client::NotFoundError, /does not exist/)
+    end
+
+    it "still treats an unrelated 500 as a generic Error" do
+      stub_request(:get, status_url).to_return(
+        status: 500, body: { "message" => "internal boom" }.to_json,
+        headers: { "Content-Type" => "application/json" }
+      )
+
+      # Assert the class is Error and NOT the NotFoundError subclass. A bare
+      # `not_to raise_error(NotFoundError)` would pass on any other exception,
+      # including one raised before the request is ever made.
+      expect { client.get("/api2/json/nodes/rna/qemu/9009/status/current") }
+        .to raise_error(System::Providers::Proxmox::Client::Error, /boom/) { |e|
+          expect(e).not_to be_a(System::Providers::Proxmox::Client::NotFoundError)
+        }
+    end
+  end
 end
