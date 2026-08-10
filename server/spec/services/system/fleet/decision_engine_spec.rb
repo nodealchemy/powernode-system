@@ -1068,4 +1068,81 @@ RSpec.describe System::Fleet::DecisionEngine do
       expect(decisions.map { |d| d[:decision] }).to all(eq(:skipped))
     end
   end
+
+  # The staging→blessed pipeline was fully built for DETECTION and GATING and
+  # dead-ended at actuation. ModulePromotionSensor finds eligible versions and
+  # SIGNAL_BINDINGS routes them through the approval gate, but the binding's
+  # comment claims "ModulePromotionService is invoked directly" and that is
+  # false: promote! has zero call sites in application code, and
+  # REMEDIATION_APPLIERS had no entry for the kind — so an operator could
+  # approve a promotion and apply_remediation! fell through to
+  # {applied: false, reason: "no applier..."}. Same class of defect as
+  # IMP-555e29eeb4ab and IMP-83471cc28e1a, both fixed by adding the entry.
+  describe "system.module_promotion_ready actuates the promotion" do
+    let(:node_module) { create(:system_node_module, account: account) }
+
+    def staging_version(number: 1)
+      create(:system_node_module_version, node_module: node_module, version_number: number,
+             promotion_state: "staging",
+             artifacts: { "erofs" => { "oci_digest" => "sha256:#{'a' * 64}", "size" => 12_345_000 } })
+    end
+
+    before do
+      Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                     action_category: "system.module_promote_to_live",
+                                     policy: "notify_and_proceed", is_active: true)
+      # Eligibility itself has its own specs; stub it so the real
+      # ModulePromotionService.promote! runs and the assertion is the version
+      # ACTUALLY transitioning rather than a mock being called.
+      allow(::System::Fleet::PromotionCriteria).to receive(:evaluate).and_return({ eligible: true })
+    end
+
+    def decide_promotion(version_id)
+      engine.decide(kind: "system.module_promotion_ready", severity: :medium,
+                    payload: { "module_version_id" => version_id },
+                    fingerprint: "promotion_ready:#{version_id}")
+    end
+
+    it "promotes the version to blessed" do
+      version = staging_version
+
+      d = decide_promotion(version.id)
+
+      expect(d[:remediation]).to include(applied: true)
+      expect(version.reload.promotion_state).to eq("blessed")
+    end
+
+    # The approval gate has a TTL, so the version can move between the sensor
+    # firing and an operator approving. Re-promoting is not idempotent here —
+    # it would be an invalid transition — so the applier must re-check.
+    it "refuses when the version has already left staging" do
+      version = staging_version
+      version.update!(promotion_state: "blessed")
+
+      d = decide_promotion(version.id)
+
+      expect(d[:remediation]).to include(applied: false)
+      expect(d[:remediation][:reason]).to match(/staging/i)
+    end
+
+    it "refuses a version belonging to another account" do
+      other_account = create(:account)
+      other_module  = create(:system_node_module, account: other_account)
+      foreign = create(:system_node_module_version, node_module: other_module, version_number: 1,
+                       promotion_state: "staging",
+                       artifacts: { "erofs" => { "oci_digest" => "sha256:#{'b' * 64}", "size" => 9_000_000 } })
+
+      d = decide_promotion(foreign.id)
+
+      expect(d[:remediation]).to include(applied: false)
+      expect(foreign.reload.promotion_state).to eq("staging")
+    end
+
+    it "refuses when the payload carries no version id" do
+      d = engine.decide(kind: "system.module_promotion_ready", severity: :medium,
+                        payload: {}, fingerprint: "promotion_ready:none")
+
+      expect(d[:remediation]).to include(applied: false)
+    end
+  end
 end

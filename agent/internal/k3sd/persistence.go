@@ -22,6 +22,32 @@ const (
 	DefaultAgentStatePath  = "/persist/var/lib/powernode/k3sd_agent_state.json"
 )
 
+// defaultServerStatePath / defaultAgentStatePath are what the constructors
+// actually consult. Private vars (not the consts) solely so TestMain can
+// sandbox the whole package — without them a test that forgets a StatePath
+// override reads (and on a fleet node could write) live /persist state.
+// Mirrors bootslots.statePath.
+var (
+	defaultServerStatePath = DefaultServerStatePath
+	defaultAgentStatePath  = DefaultAgentStatePath
+)
+
+// SetDefaultServerStatePathForTest points server-manager constructor defaults
+// at path and returns a restore func. Test-only; production never calls it.
+func SetDefaultServerStatePathForTest(path string) (restore func()) {
+	prev := defaultServerStatePath
+	defaultServerStatePath = path
+	return func() { defaultServerStatePath = prev }
+}
+
+// SetDefaultAgentStatePathForTest points agent-manager constructor defaults
+// at path and returns a restore func. Test-only; production never calls it.
+func SetDefaultAgentStatePathForTest(path string) (restore func()) {
+	prev := defaultAgentStatePath
+	defaultAgentStatePath = path
+	return func() { defaultAgentStatePath = prev }
+}
+
 const stateSchemaVersion = 1
 
 // ──────────────────────────────────────────────────────────────────

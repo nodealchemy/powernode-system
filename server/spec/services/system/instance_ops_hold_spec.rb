@@ -91,6 +91,94 @@ RSpec.describe "instance ops hold" do
         expect(instance.ops_hold_summary).to match(/expired/i)
       end
     end
+
+    describe ".status" do
+      # IMP-f3fcb5ade21f — the drift-detection method is the reason this class
+      # exists (2026-07-27: a hypervisor-side start raced offline maintenance
+      # because a platform-only flag can't bind hypervisor callers). Cover the
+      # clean path, the enforced path, and BOTH drift branches, plus the
+      # non-drift case a platform-only provider must produce.
+      def provider_double(supports:, state:)
+        instance_double(System::Providers::BaseProvider,
+                        supports_ops_hold?: supports).tap do |p|
+          allow(p).to receive(:ops_hold_state).and_return(state)
+        end
+      end
+
+      def stub_provider(provider)
+        allow(::System::Providers::Registry).to receive(:for_instance).and_return(provider)
+      end
+
+      it "reports clean with no hold and no provider state" do
+        stub_provider(provider_double(supports: true, state: nil))
+
+        result = described_class.status(instance: instance)
+
+        expect(result).to be_ok
+        expect(result.error).to be_nil
+        expect(result.message).to eq("No ops hold.")
+        expect(result.provider_enforced).to be true
+      end
+
+      it "reports the enforced hold with no drift when platform and provider agree" do
+        described_class.hold!(instance: instance, user: user, reason: "offline edit")
+        stub_provider(provider_double(supports: true, state: "backup=held"))
+
+        result = described_class.status(instance: instance.reload)
+
+        expect(result.error).to be_nil
+        expect(result.provider_state).to eq("backup=held")
+        expect(result.provider_enforced).to be true
+        expect(result.message).to match(/offline edit/)
+      end
+
+      it "warns to re-apply the hold when the platform holds but a supporting provider reports no lock" do
+        described_class.hold!(instance: instance, user: user, reason: "offline edit")
+        stub_provider(provider_double(supports: true, state: nil))
+
+        result = described_class.status(instance: instance.reload)
+
+        expect(result.error).to match(/Re-apply the hold/)
+      end
+
+      it "warns about an external lock when the provider holds but the platform has no record" do
+        stub_provider(provider_double(supports: true, state: "backup=held"))
+
+        result = described_class.status(instance: instance)
+
+        expect(result.error).to match(/outside the platform locked it/)
+      end
+
+      # Platform-only enforcement is NOT drift: a provider that cannot enforce
+      # holds legitimately reports no lock for a held instance. Flagging that
+      # as "re-apply the hold" would train operators to ignore the warning.
+      it "does not report drift for a held instance on a provider that cannot enforce holds" do
+        described_class.hold!(instance: instance, user: user, reason: "offline edit")
+        stub_provider(provider_double(supports: false, state: nil))
+
+        result = described_class.status(instance: instance.reload)
+
+        expect(result.error).to be_nil
+        expect(result.provider_enforced).to be false
+      end
+
+      # A provider read failure must be diagnosable. Silently mapping it to nil
+      # makes a transient API error indistinguishable from "no lock present",
+      # which either raises a false drift alarm (held instance) or hides real
+      # drift (externally locked instance).
+      it "logs the provider state read failure instead of silently treating it as no lock" do
+        provider = instance_double(System::Providers::BaseProvider, supports_ops_hold?: true)
+        allow(provider).to receive(:ops_hold_state).and_raise(StandardError, "pve timeout")
+        allow(::System::Providers::Registry).to receive(:for_instance).and_return(provider)
+
+        expect(Rails.logger).to receive(:warn)
+          .with(a_string_matching(/provider state read failed for #{Regexp.escape(instance.name)}.*pve timeout/))
+
+        result = described_class.status(instance: instance)
+        expect(result).to be_ok
+        expect(result.provider_state).to be_nil
+      end
+    end
   end
 
   describe System::InstanceControlService do

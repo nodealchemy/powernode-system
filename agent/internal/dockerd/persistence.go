@@ -14,6 +14,21 @@ import (
 // agent restart.
 const DefaultStatePath = "/persist/var/lib/powernode/dockerd_state.json"
 
+// defaultStatePath is what NewManager actually consults. A private var (not
+// the const) solely so TestMain can sandbox the whole package — without it a
+// test that forgets a StatePath override reads (and on a fleet node could
+// write) live /persist state. Mirrors bootslots.statePath.
+var defaultStatePath = DefaultStatePath
+
+// SetDefaultStatePathForTest points constructor defaults at path and returns
+// a restore func. Test-only, like bootslots.SetStatePathForTest; production
+// never calls it.
+func SetDefaultStatePathForTest(path string) (restore func()) {
+	prev := defaultStatePath
+	defaultStatePath = path
+	return func() { defaultStatePath = prev }
+}
+
 // persistedState mirrors managedState (the in-memory cache) but with
 // JSON-serializable types. ReadyReportedFor was already a string;
 // StoppedReportedAt converts to ISO8601 for stable round-tripping.

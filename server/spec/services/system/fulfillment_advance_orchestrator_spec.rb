@@ -466,4 +466,52 @@ RSpec.describe System::FulfillmentAdvanceOrchestrator do
       expect(::System::NodeTemplate.find(fr.template_id).config["fulfillment_request_id"]).to eq(fr.id)
     end
   end
+
+  # IMP-f90858fd9b5b — gates at the ACTUATOR: every advance path (the gated
+  # sweep, the operator approve endpoint, the autonomous inline executor call,
+  # and any future caller) funnels through advance!, so the dual-plane fence
+  # and the kill-switch live here rather than at N call sites. The fence has
+  # NO exemption (single-actuator-per-fleet is a plane invariant, not an actor
+  # policy); the kill-switch exempts operator: true — emergency_halt suspends
+  # AI activity, and an explicit human approval is not that.
+  describe "gating" do
+    it "refuses to advance on a standby control plane, operator or not" do
+      fr = approved_request
+      allow(::System::Autonomy::ControlPlaneRole).to receive(:active?).and_return(false)
+
+      result = described_class.advance!(request: fr)
+      operator_result = described_class.advance!(request: fr, operator: true)
+
+      expect(result.ok?).to be(false)
+      expect(result.error).to match(/standby/)
+      expect(operator_result.error).to match(/standby/)
+      expect(fr.reload.state).to eq("approved")
+    end
+
+    it "refuses autonomous advancement while the kill-switch is engaged" do
+      fr = approved_request
+      account.suspend_ai!
+
+      result = described_class.advance!(request: fr)
+
+      expect(result.ok?).to be(false)
+      expect(result.error).to match(/kill-switch/)
+      expect(fr.reload.state).to eq("approved")
+    end
+
+    it "lets an explicit operator advance past the kill-switch all the way to ready" do
+      # gaps: [] skips the materialize/build-barrier path so the provision +
+      # smoke stubs are genuinely traversed — with gaps present the request
+      # fails at materialize and a not-kill-switch assertion passes vacuously.
+      fr = approved_request(gaps: [])
+      account.suspend_ai!
+      stub_fresh_provision!
+      stub_smoke_ok!
+
+      result = described_class.advance!(request: fr, operator: true)
+
+      expect(result.ok?).to be(true)
+      expect(fr.reload.state).to eq("ready")
+    end
+  end
 end

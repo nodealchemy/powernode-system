@@ -46,7 +46,10 @@ module Api
           end
 
           @fulfillment_request.approve_by!(user: current_user, source: "operator_ui")
-          result = ::System::FulfillmentAdvanceOrchestrator.advance!(request: @fulfillment_request)
+          # operator: true — an explicit human approval is exempt from the
+          # kill-switch (which suspends AI activity), though never from the
+          # dual-plane fence (IMP-f90858fd9b5b).
+          result = ::System::FulfillmentAdvanceOrchestrator.advance!(request: @fulfillment_request, operator: true)
 
           render_success(
             fulfillment_request: @fulfillment_request.reload.summary,

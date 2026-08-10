@@ -302,7 +302,10 @@ module PowernodeSystem
                    }
           resource :infra_tasks, actions: %i[read create control], grant: { admin: :all }
           resource :instances, actions: %i[read create update delete control claim], grant: { admin: :all }
-          resource :modules, actions: %i[read create update delete],
+          # `rollback` is an OPERATOR recovery verb, deliberately not granted to
+          # system_worker: repointing current_version is a human decision made
+          # after a bad publish, not something a reconcile tick should do.
+          resource :modules, actions: %i[read create update delete rollback],
                    grant: { admin: :all, system_worker: %i[read update] }
           resource :networks, actions: %i[read create update delete], grant: { admin: :all }
           resource :node_instances, actions: %i[read create update delete manage],
@@ -416,8 +419,13 @@ module PowernodeSystem
         # is extension policy, so it's registered here rather than inlined
         # into core's ROLES admin/manager lists.
         # ---------------------------------------------------------------
-        ::Permissions.register_role_permissions("admin", %w[system.module_builds.read])
-        ::Permissions.register_role_permissions("manager", %w[system.module_builds.read])
+        # system.module_builds.cancel rides the same policy as .read and for
+        # the same reason: it is an OPERATOR surface. Leaving it on the raw
+        # SYSTEM_PERMISSIONS default (system_worker only) would reproduce the
+        # exact defect this permission exists to fix — an operator watching a
+        # runaway batch with no way to stop it.
+        ::Permissions.register_role_permissions("admin", %w[system.module_builds.read system.module_builds.cancel])
+        ::Permissions.register_role_permissions("manager", %w[system.module_builds.read system.module_builds.cancel])
 
         # ---------------------------------------------------------------
         # Operator-facing gap closure (improvement 019f6479). These names are

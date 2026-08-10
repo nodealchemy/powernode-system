@@ -184,6 +184,17 @@ module System
         transitions from: [ :terminated, :stopped, :running, :error ], to: :terminated
       end
 
+      # Undo a terminate stamp whose provider action then FAILED. The terminate
+      # event has no transitional state — it lands directly on :terminated
+      # before the provider call runs — so a provider-side failure needs a way
+      # back out, or the row records a destroy that never happened (an orphaned,
+      # still-billable instance nothing revisits). Only
+      # InstanceControlService#revert_status calls this; a row whose terminate
+      # actually succeeded must stay :terminated.
+      event :revert_termination do
+        transitions from: :terminated, to: :error
+      end
+
       event :mark_errored do
         transitions from: [ :pending, :provisioning, :starting, :running, :stopping, :rebooting ], to: :error
       end

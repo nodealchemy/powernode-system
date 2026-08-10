@@ -78,7 +78,7 @@ func NewAgentManager(client *Client, modules ModulesAPI, applier AgentApplier,
 		Modules:   modules,
 		Applier:   applier,
 		NodeID:    nodeID,
-		StatePath: DefaultAgentStatePath,
+		StatePath: defaultAgentStatePath,
 		OnError:   onError,
 	}
 	m.loadState()

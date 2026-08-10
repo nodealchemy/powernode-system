@@ -78,9 +78,35 @@ module System
             }
           )
         end
-        promote_current_version(node_module, node_module_version) if promote
+        # An artifact that contains nothing must never become current_version.
+        # Publishing it is fine — the row is kept so a bad build can be
+        # inspected — but promotion is the step that reaches the fleet, and on
+        # 2026-08-07 promoting two zero-file erofs blobs made agents hot-prune
+        # /usr/local/go and /usr/local/bin/gitleaks off a live node's root.
+        # promoted is the OUTCOME, not the request. Passing the `promote`
+        # parameter to the event meant a withheld promotion still published
+        # system.module_published with promoted: true, so anything reading the
+        # fleet event stream (or a UI reading payload.promoted) believed the bad
+        # version was current while current_version_id still pointed at the
+        # previous one. The REST controller already reports the real outcome
+        # (promoted_to_current: current_version_id == version.id).
+        promoted = false
+        if promote
+          if !auto_promote?(node_module)
+            hold_promotion_by_policy!(node_module, node_module_version, tag)
+          elsif promotable_artifact?(canonical)
+            promote_current_version(node_module, node_module_version)
+            # Read the STATE, not promote_to_version!'s return: that returns
+            # false for an already-current version, which is a successful no-op
+            # (a republished tag), not a withheld promotion. update_columns
+            # refreshes the in-memory attribute, so no reload is needed.
+            promoted = node_module.current_version_id == node_module_version.id
+          else
+            withhold_promotion!(node_module, node_module_version, canonical, tag)
+          end
+        end
         register_skills_for(node_module)
-        emit_published_event(node_module, node_module_version, oci_ref, result.module_artifacts, tag, promote)
+        emit_published_event(node_module, node_module_version, oci_ref, result.module_artifacts, tag, promoted)
         Result.new(
           ok?: true,
           node_module_version: node_module_version,
@@ -194,6 +220,147 @@ module System
     # buys nothing but drift between what's published and what the fleet
     # resolves (agents read node_module.current_version&.artifact; the
     # drift sensor + system_fleet_tool key off current_version&.oci_digest).
+    # The non-empty floor, in bytes of the erofs layer. There is no file count
+    # available at publish time — the builder's .erofs.meta sidecar carries
+    # only fsverity_root and size, and the OCI manifest carries only the layer
+    # descriptor — so size is the discriminator we actually have.
+    #
+    # An empty erofs is not zero bytes: mkfs.erofs on an empty tree still emits
+    # a superblock and root inode, a few KiB. The default is set above that and
+    # below any module carrying real content. It is deliberately a floor on the
+    # SAFE side: withholding promotion from a legitimately tiny module is a
+    # visible, recoverable annoyance (the version is still published; an
+    # operator can lower the floor or promote by hand), whereas promoting an
+    # empty one deletes files off live nodes. Configurable rather than
+    # hardcoded so an operator can tune it without a deploy.
+    DEFAULT_MIN_ARTIFACT_BYTES = 16_384
+
+    # Class-level so the REST publish path (module_publications_controller)
+    # enforces the SAME floor. Two publish paths reach promote_to_version!,
+    # and a floor defined twice is a floor that drifts.
+    def self.min_artifact_bytes
+      configured = ::SiteSetting.get("system.module_publish.min_artifact_bytes")
+      value = configured.to_i
+      value.positive? ? value : DEFAULT_MIN_ARTIFACT_BYTES
+    rescue StandardError
+      DEFAULT_MIN_ARTIFACT_BYTES
+    end
+
+    # The size THRESHOLD is shared by all three callers; the unknown-size
+    # SEMANTICS deliberately are not, and an earlier attempt to unify them was
+    # wrong. Recorded here so it is not "cleaned up" again:
+    #
+    #   fresh publish (promotable_artifact? below) — FAIL CLOSED. An unknown
+    #     size cannot be distinguished from a real one, because ingest writes
+    #     `fetch(:size_bytes, 0)`, so a failed layer-descriptor read lands as 0
+    #     exactly like a genuinely tiny blob. Promoting on that auto-promotes an
+    #     artifact nobody measured — plausibly produced by the same broken
+    #     pipeline that emitted the empty blob on 2026-08-07. Withholding costs
+    #     a visible, recoverable "fleet stays on the old version"; promoting
+    #     costs files deleted off live roots.
+    #
+    #   rollback target (NodeModuleVersion#rollback_usable?) — FAIL OPEN. Old
+    #     version rows predate size recording, and refusing them would block
+    #     recovery to a version known to have worked.
+    #
+    # Callers that want the fail-open reading pass their own nil check first.
+    def self.artifact_size_promotable?(size_bytes)
+      size_bytes.to_i >= min_artifact_bytes
+    end
+
+    def min_artifact_bytes
+      self.class.min_artifact_bytes
+    end
+
+    # nil canonical means ingest produced no artifact for this version at all —
+    # previously that STILL promoted, because the promote call sat outside the
+    # `if canonical` block that guards the artifact write.
+    def promotable_artifact?(canonical)
+      return false if canonical.nil?
+
+      self.class.artifact_size_promotable?(canonical.size_bytes)
+    end
+
+    # Per-module holdback. DEFAULTS TO TRUE, so a module that says nothing
+    # behaves exactly as it did before this existed — this adds a lever, it
+    # does not change fleet-wide policy.
+    #
+    # The empty-artifact floor catches only the degenerate case; a non-empty
+    # but broken artifact (wrong arch, truncated tree, a missing binary the
+    # units need) still reaches every node the instant it publishes. Full
+    # canary/dwell automation is an operator policy decision that would reverse
+    # the deliberate auto-promote design documented in
+    # module_publications_controller — this is the part of the gap that needs
+    # no such decision: an operator can hold a known-risky module back and
+    # advance it deliberately (system_rollback_module_version / the
+    # staging->blessed promotion path) while everything else keeps flowing.
+    #
+    # Settable over MCP today: `config` is already in
+    # Backed by its OWN COLUMN, not a key on `config`. config is in
+    # System::NodeModule::VERSIONED_ATTRIBUTES, so writing it fires the
+    # after_update auto_create_version callback — storing the flag there would
+    # mean that enabling the holdback itself created a new module version,
+    # precisely the event the holdback exists to withhold. (Found by measuring:
+    # a two-publish scenario promoted anyway, and the extra version came from
+    # the config write, not the publish.) Settable over MCP via
+    # system_update_module(module_id:, auto_promote: false).
+    #
+    # Class-level for the same reason as artifact_size_promotable?: the REST
+    # publish path in module_publications_controller must honour the identical
+    # flag, and a policy defined twice is a policy that drifts.
+    def self.auto_promote?(node_module)
+      node_module.auto_promote != false
+    end
+
+    def auto_promote?(node_module)
+      self.class.auto_promote?(node_module)
+    end
+
+    def hold_promotion_by_policy!(node_module, version, tag)
+      Rails.logger.info(
+        "[ModulePublicationProcessor] #{node_module.name}@#{tag}: auto_promote is disabled for this " \
+        "module; version #{version.id} published but NOT promoted. The fleet keeps the current version " \
+        "until it is advanced deliberately."
+      )
+      emit_promotion_withheld_event(node_module, version, tag, "auto_promote disabled for this module")
+    end
+
+    def withhold_promotion!(node_module, version, canonical, tag)
+      size = canonical&.size_bytes.to_i
+      reason = canonical.nil? ? "ingest produced no artifact" : "artifact is #{size}B, below the #{min_artifact_bytes}B non-empty floor"
+
+      Rails.logger.error(
+        "[ModulePublicationProcessor] REFUSING to promote #{node_module.name}@#{tag}: #{reason}. " \
+        "Version #{version.id} is published but NOT current; the fleet keeps the previous version."
+      )
+      emit_promotion_withheld_event(node_module, version, tag, reason)
+    end
+
+    def emit_promotion_withheld_event(node_module, version, tag, reason)
+      return unless defined?(::System::Fleet::EventBroadcaster)
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: node_module.account,
+        kind: "system.module_promotion_withheld",
+        # high: this is the signal that the 2026-08-07 incident had no
+        # equivalent of — every platform signal read healthy while a bad
+        # artifact reached the fleet. A withheld promotion means a build
+        # produced nothing usable and wants a human.
+        severity: :high,
+        source: "module_publication_processor",
+        node_module_id: node_module.id,
+        node_module_version_id: version.id,
+        payload: {
+          module_name:    node_module.name,
+          version_number: version.version_number,
+          git_tag:        tag,
+          reason:         reason
+        }
+      )
+    rescue StandardError => e
+      Rails.logger.warn("[ModulePublicationProcessor] promotion-withheld event failed: #{e.message}")
+    end
+
     def promote_current_version(node_module, version)
       # Writes current_version_id AND the denormalized current_version_number
       # atomically (idempotent) — never just the id, which drifts the number the

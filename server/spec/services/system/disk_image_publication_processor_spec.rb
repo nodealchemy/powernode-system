@@ -145,5 +145,120 @@ RSpec.describe System::DiskImagePublicationProcessor do
         include_examples "a strict no-op re-entry"
       end
     end
+
+    # Happy-path coverage: the 5 examples above only exercised failure/
+    # conflict/no-op branches. These exercise publish! itself — the atomic
+    # transaction the class header calls out as the whole point of wrapping
+    # publication + platform updates together.
+    describe "successful publish" do
+      it "publishes atomically and flips the platform pointer" do
+        prior_pointer = create(:file_object, account: account)
+        platform.update!(disk_image_file_object_id: prior_pointer.id)
+
+        tempfile = Tempfile.new("disk-image-spec")
+        tempfile.write("bytes")
+        tempfile.flush
+        local_path = tempfile.path
+        ok_ingest = System::DiskImageOciIngestService::Result.new(
+          ok?: true, error: nil, local_path: local_path,
+          cosign_bundle_b64: "Zm9v", attestation_bundle_b64: nil
+        )
+        allow(System::DiskImageOciIngestService).to receive(:verify_and_pull!).and_return(ok_ingest)
+
+        new_file_object = create(:file_object, account: account)
+        fake_storage = instance_double(FileStorageService)
+        allow(FileStorageService).to receive(:new).and_return(fake_storage)
+        allow(fake_storage).to receive(:upload_file).and_return(new_file_object)
+
+        # enqueue_retention_sweep hits the worker over HTTP; stub it the same
+        # way the async-dispatch webhook spec does. warm_uki_blob_cache! needs
+        # no stub — the factory publication carries no uki_oci_ref/uki_sha256,
+        # so it returns early on its own blank? guard.
+        worker_double = instance_double(WorkerApiClient, queue_job: { job_id: "job-abc" })
+        allow(WorkerApiClient).to receive(:new).and_return(worker_double)
+
+        result = described_class.process!(publication: publication)
+
+        expect(result.ok?).to be true
+        expect(publication.reload.status).to eq("published")
+        expect(publication.file_object_id).to eq(new_file_object.id)
+        expect(publication.prior_file_object_id).to eq(prior_pointer.id)
+
+        platform.reload
+        expect(platform.disk_image_file_object_id).to eq(new_file_object.id)
+        expect(platform.disk_image_publication_status).to eq("published")
+        expect(platform.disk_image_publication_error).to be_nil
+
+        # emit_published_event's boundary is the persisted FleetEvent row
+        # (System::Fleet::EventBroadcaster.emit!), not a mock expectation —
+        # same convention as the QuotaExceededError example above.
+        expect(
+          System::FleetEvent.where(account: account, kind: "system.disk_image_published")
+                             .where("payload ->> 'publication_id' = ?", publication.id)
+                             .exists?
+        ).to be true
+      ensure
+        tempfile&.close!
+      end
+
+      # THE invariant the class header promises: "The DB transaction wrapping
+      # publication + platform updates ensures we never end up with a
+      # half-updated platform pointing at a non-existent FileObject."
+      it "does not leave a half-updated platform when the pointer flip fails" do
+        prior_pointer = create(:file_object, account: account)
+        platform.update!(disk_image_file_object_id: prior_pointer.id)
+
+        tempfile = Tempfile.new("disk-image-spec")
+        tempfile.write("bytes")
+        tempfile.flush
+        local_path = tempfile.path
+        ok_ingest = System::DiskImageOciIngestService::Result.new(
+          ok?: true, error: nil, local_path: local_path,
+          cosign_bundle_b64: nil, attestation_bundle_b64: nil
+        )
+        allow(System::DiskImageOciIngestService).to receive(:verify_and_pull!).and_return(ok_ingest)
+
+        new_file_object = create(:file_object, account: account)
+        fake_storage = instance_double(FileStorageService)
+        allow(FileStorageService).to receive(:new).and_return(fake_storage)
+        allow(fake_storage).to receive(:upload_file).and_return(new_file_object)
+
+        # publish! calls `publication.node_platform.update!` inside the
+        # transaction. Verified empirically that because `publication` above
+        # is created with `node_platform: platform` (the live object, not
+        # just the FK), `publication.node_platform.equal?(platform)` is true
+        # here — but stub the object publish! actually dereferences rather
+        # than relying on that coincidence holding.
+        allow(publication.node_platform).to receive(:update!)
+          .and_raise(ActiveRecord::RecordInvalid.new(publication.node_platform))
+
+        result = described_class.process!(publication: publication)
+
+        expect(result.ok?).to be false
+        expect(publication.reload.status).to eq("failed")
+        expect(publication.error_message.to_s).to include("DB invariant violation")
+        expect(publication.file_object_id).to be_nil
+
+        expect(platform.reload.disk_image_file_object_id).to eq(prior_pointer.id)
+      ensure
+        tempfile&.close!
+      end
+
+      it "short-circuits idempotently on re-receive" do
+        published_publication = create(:system_disk_image_publication, :published,
+                                        account: account, node_platform: platform)
+        original_attempt_count = published_publication.attempt_count
+        original_file_object = published_publication.file_object
+
+        expect(System::DiskImageOciIngestService).not_to receive(:verify_and_pull!)
+
+        result = described_class.process!(publication: published_publication)
+
+        expect(result.ok?).to be true
+        expect(result.idempotent_hit).to be true
+        expect(result.file_object).to eq(original_file_object)
+        expect(published_publication.reload.attempt_count).to eq(original_attempt_count)
+      end
+    end
   end
 end

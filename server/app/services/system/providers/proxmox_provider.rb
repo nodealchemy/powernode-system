@@ -806,9 +806,10 @@ module System
         # System::Node AR record there for adapters that need template/
         # platform access, but PVE expects a node-name STRING. Filter
         # to strings only; fall back to first_online_node! otherwise.
-        node = pve_node_name(params) || first_online_node!(c)
+        node = resolve_target_node(c, params)
         vmid = params[:vmid] || allocate_next_vmid!(c)
-        storage = params[:storage] || first_shared_storage_with_content!(c, node: node, content: "images")
+        storage = resolve_chosen_storage!(c, params, node: node) ||
+                  first_shared_storage_with_content!(c, node: node, content: "images")
         bridge = params[:network_bridge] || DEFAULT_NETWORK_BRIDGE
         ip_config = params[:ip_config] || "ip=dhcp"
         image_volid = params.fetch(:image_id)
@@ -1204,7 +1205,7 @@ module System
       #                     spawn_payload-derived entries).
       def create_direct_kernel_vm_instance(params, preset:)
         c = require_client!
-        node = pve_node_name(params) || first_online_node!(c)
+        node = resolve_target_node(c, params)
         vmid = params[:vmid] || allocate_next_vmid!(c)
         bridge = params[:network_bridge] || DEFAULT_NETWORK_BRIDGE
 
@@ -1354,10 +1355,7 @@ module System
         # the region (regions model PVE nodes, so region_code IS the node name)
         # or the operator's default_node — only then fall back to "first online",
         # which can otherwise land the VM on an undersized/wrong node.
-        node = pve_node_name(params) ||
-               region&.region_code.presence ||
-               pve_credential("default_node", "default_node").presence ||
-               first_online_node!(c)
+        node = resolve_target_node(c, params)
         vmid = params[:vmid] || allocate_next_vmid!(c)
         # uefi_disk imports the boot image into `storage` AND creates the boot
         # disk there, so the storage must support BOTH `import` and `images`.
@@ -1365,8 +1363,7 @@ module System
         # right pool is used); the content-based fallback requires `import`
         # (the scarcer, mandatory capability here) — selecting by `images`
         # alone can land on an images-only pool that rejects the import.
-        storage = params[:storage] ||
-                  pve_credential("default_storage", "default_storage").presence ||
+        storage = resolve_chosen_storage!(c, params, node: node) ||
                   first_shared_storage_with_content!(c, node: node, content: "import")
         bridge = params[:network_bridge] || DEFAULT_NETWORK_BRIDGE
         ip_config = params[:ip_config] || "ip=dhcp"
@@ -1692,9 +1689,10 @@ module System
 
       def create_lxc_instance(params, preset:)
         c = require_client!
-        node = params[:node] || first_online_node!(c)
+        node = resolve_target_node(c, params)
         vmid = params[:vmid] || allocate_next_vmid!(c)
-        storage = params[:storage] || first_shared_storage_with_content!(c, node: node, content: "rootdir")
+        storage = resolve_chosen_storage!(c, params, node: node) ||
+                  first_shared_storage_with_content!(c, node: node, content: "rootdir")
         bridge = params[:network_bridge] || DEFAULT_NETWORK_BRIDGE
         ip_config = params[:ip_config] || "ip=dhcp"
         ostemplate = params.fetch(:image_id)
@@ -1978,6 +1976,45 @@ module System
       def pve_node_name(params)
         v = params[:node]
         v if v.is_a?(String) && !v.empty?
+      end
+
+      # One placement chain for every create path (IMP-14bc7e5b85f5):
+      # explicit param -> region (regions model PVE nodes; region_code IS
+      # the node name) -> operator default_node -> first online. Previously
+      # only uefi_disk honored the region, so cloud_init/direct_kernel/lxc
+      # placed arbitrarily on multi-node clusters.
+      def resolve_target_node(c, params)
+        pve_node_name(params) ||
+          region&.region_code.presence ||
+          pve_credential("default_node", "default_node").presence ||
+          first_online_node!(c)
+      end
+
+      # Fail loud when an explicitly-chosen storage (param or operator
+      # default) is absent/inactive on the placement node — an rna placement
+      # with dna-scoped storage must fail at the adapter contract, not deep
+      # inside a PVE import task (IMP-14bc7e5b85f5). Only called for
+      # caller-chosen storage; the content-based fallback is node-scoped by
+      # construction.
+      def assert_storage_on_node!(c, node:, storage:)
+        storages = c.get("/api2/json/nodes/#{node}/storage") || []
+        entry = storages.find { |st| st["storage"] == storage }
+        return if entry && entry["active"] == 1
+
+        raise ProviderError,
+              "storage #{storage.inspect} is not present/active on PVE node #{node.inspect} — "               "pick a storage that exists on the placement node, or change the placement "               "(region/default_node), rather than relying on a cross-node default"
+      end
+
+      # Caller-chosen storage (param or operator default) validated against
+      # the node; nil when neither is set so callers use their node-scoped
+      # content fallback.
+      def resolve_chosen_storage!(c, params, node:)
+        chosen = params[:storage].presence ||
+                 pve_credential("default_storage", "default_storage").presence
+        return nil unless chosen
+
+        assert_storage_on_node!(c, node: node, storage: chosen)
+        chosen
       end
 
       def first_shared_storage_with_content!(c, node:, content:)

@@ -289,4 +289,44 @@ RSpec.describe System::CiRunnerLeaseSweepService do
       expect(System::CiRunnerLease.for_account(account).active.count).to eq(0)
     end
   end
+
+  # IMP-5f337c0f8e3e — the sweep recycles/terminates runner instances, so it
+  # carries the same two gates as the fulfillment sweep: kill switch first
+  # (outranks the fence as the reported reason), then the dual-plane fence.
+  # With both absent, dual-plane mode had BOTH planes sweeping concurrently.
+  describe "autonomy gates" do
+    let(:service) { described_class.new(account: account) }
+
+    it "no-ops entirely under the account kill switch" do
+      account.suspend_ai!
+      lease = build_lease(status: "leased", runner_name: "fleet-halted")
+
+      result = service.run!
+
+      expect(result[:ok]).to be false
+      expect(result[:halted]).to be true
+      expect(lease.reload.status).to eq("leased")
+    end
+
+    it "stands down entirely on a non-active control plane" do
+      allow(::System::Autonomy::ControlPlaneRole).to receive(:active?).and_return(false)
+      lease = build_lease(status: "leased", runner_name: "fleet-standby")
+
+      result = service.run!
+
+      expect(result[:ok]).to be false
+      expect(result[:standby]).to be true
+      expect(lease.reload.status).to eq("leased")
+    end
+
+    it "reports halted, not standby, when both gates would fire" do
+      account.suspend_ai!
+      allow(::System::Autonomy::ControlPlaneRole).to receive(:active?).and_return(false)
+
+      result = service.run!
+
+      expect(result[:halted]).to be true
+      expect(result[:standby]).to be_nil
+    end
+  end
 end

@@ -5,14 +5,16 @@ module System
   # (with priorities, enabled flags, per-module config, and
   # recommends_override JSON preserved).
   #
-  # Cross-account cloning is supported by passing `account:` — useful for
-  # template-marketplace import flows. Defaults to the source template's
-  # own account.
+  # Clones stay within the source template's account. A cross-account
+  # `account:` kwarg existed for hypothetical marketplace-import flows but
+  # was removed as dead code (IMP-90808e05677c): no caller ever supplied
+  # it, and it copied node_platform_id verbatim — wiring the destination
+  # account's template to the SOURCE account's platform row. An import
+  # flow needs a dedicated path that remaps platform and modules.
   #
   # Raises TemplateCloneService::CloneError on validation failure
-  # (typically a name collision on the destination account; the unique
-  # index is scoped to account_id, so cloning within the same account
-  # requires a distinct name).
+  # (typically a name collision; the unique index is scoped to
+  # account_id, so a clone requires a distinct name).
   #
   # Composition: a clone copies the source's joins wholesale, which is how a
   # composition conflict travels — and because the guard on the assignment
@@ -50,13 +52,11 @@ module System
     # Returns the new NodeTemplate.
     #
     # new_name — optional override; defaults to "<source name>-copy".
-    # account  — optional destination account; defaults to source.account.
-    def clone!(new_name: nil, account: nil)
-      account ||= source_template.account
+    def clone!(new_name: nil)
       new_name ||= "#{source_template.name}-copy"
 
       cloned = ActiveRecord::Base.transaction do
-        clone = build_template_clone(account, new_name)
+        clone = build_template_clone(new_name)
         clone.save!
         copy_template_modules!(clone)
         clone
@@ -73,40 +73,25 @@ module System
     # Advisory only, so it runs AFTER the commit and cannot fail the clone —
     # a report that can 500 a working flow is worse than the silence it
     # replaces. An analysis that blows up is itself the warning.
-    #
-    # Scoped to the SOURCE account, not the destination: #copy_template_modules!
-    # copies node_module_id verbatim, so on a cross-account clone the new
-    # template's joins still point at the source account's modules. Resolving
-    # against the destination would find none of them and report a clean
-    # composition for every cross-account clone.
     def record_composition!(cloned)
-      verdict = ::System::TemplateCompositionAnalysis.new(source_template.account).set_verdict(
-        cloned.template_modules.enabled.pluck(:node_module_id)
+      # Shared fail-closed report (IMP-ba082cb22bda) — one contract with
+      # TemplateImporter#composition_report.
+      result = ::System::TemplateCompositionAnalysis.report_for(
+        account: source_template.account,
+        modules: cloned.template_modules.enabled,
+        log_tag: "TemplateCloneService",
+        subject: "cloned #{source_template.name} → #{cloned.name}"
       )
-      @composition_report = verdict.report_entries
-      @composition_message = verdict.message
-      return unless verdict.blocked?
-
-      Rails.logger.warn(
-        "[TemplateCloneService] cloned #{source_template.name} → #{cloned.name}: #{verdict.message}"
-      )
-    rescue StandardError => e
-      @composition_message = "composition analysis failed: #{e.message}"
-      # Fail closed, matching TemplateCompositionAnalysis#warning?: an analysis
-      # that could not run has cleared nothing, so it reports at blocking
-      # severity rather than as an advisory a caller may ignore.
-      @composition_report = [ { severity: ::System::TemplateCompositionAnalysis::BLOCKING_SEVERITY,
-                                kind: "composition_analysis_failed",
-                                detail: @composition_message } ]
-      Rails.logger.warn("[TemplateCloneService] #{@composition_message}")
+      @composition_report = result[:report]
+      @composition_message = result[:message]
     end
 
-    def build_template_clone(account, new_name)
+    def build_template_clone(new_name)
       attrs = source_template.attributes.except(
-        "id", "name", "account_id", "created_at", "updated_at"
+        "id", "name", "created_at", "updated_at"
       )
       ::System::NodeTemplate.new(attrs).tap do |t|
-        t.account = account
+        t.account = source_template.account
         t.name = new_name
         t.config = source_template.config&.deep_dup if t.respond_to?(:config=)
       end

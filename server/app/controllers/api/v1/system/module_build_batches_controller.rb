@@ -16,7 +16,7 @@ module Api
       # artifact/parity state) inc3's fulfill flow and the frontend Module
       # Builds tab (inc5) poll against.
       class ModuleBuildBatchesController < BaseController
-        before_action :set_batch, only: %i[show]
+        before_action :set_batch, only: %i[show cancel]
 
         # GET /api/v1/system/module_build_batches
         # Filters (query params): status (by_status), trigger (by_trigger,
@@ -38,6 +38,32 @@ module Api
         def show
           require_permission("system.module_builds.read")
           render_success(module_build_batch: ::System::ModuleBuildBatchSerializer.new(@batch).as_full)
+        end
+
+        # POST /api/v1/system/module_build_batches/:id/cancel
+        #
+        # Operator kill switch for a running batch (IMP-ecb0615ba1ba — the
+        # Module Builds UI's cancel button). Mirrors the MCP
+        # system_cancel_module_build_batch action: same distinct permission,
+        # same orchestrator seam — NativeModuleBuildOrchestrator#cancel! owns
+        # all three stopping moves (status flip, refusing further dispatch,
+        # cancelling in-flight member tasks + releasing their leases).
+        def cancel
+          require_permission("system.module_builds.cancel")
+
+          result = ::System::NativeModuleBuildOrchestrator.cancel!(
+            batch: @batch, reason: params[:reason].presence
+          )
+          unless result.ok?
+            return render_error(
+              "Batch is already #{@batch.status} and cannot be cancelled",
+              :unprocessable_entity
+            )
+          end
+
+          render_success(
+            module_build_batch: ::System::ModuleBuildBatchSerializer.new(@batch.reload).as_full
+          )
         end
 
         private

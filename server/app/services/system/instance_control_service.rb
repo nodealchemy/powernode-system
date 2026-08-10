@@ -14,6 +14,7 @@ module System
     end
 
     def execute(instance:, action:, operation_id: nil, force: false)
+      provider_succeeded = false
       validate_instance!(instance)
       validate_action!(action)
 
@@ -46,7 +47,24 @@ module System
       end
 
       if adapter_result[:success]
-        update_instance_from_result(instance, adapter_result)
+        provider_succeeded = true
+        begin
+          update_instance_from_result(instance, adapter_result)
+        rescue StandardError => e
+          # Post-success bookkeeping failed. Reverting is forbidden (the
+          # machine really changed state — see the outer rescue), but for
+          # start/stop/reboot the row currently holds the TRANSITIONAL stamp,
+          # and no healer covers a stranded one: the drift sensor scans
+          # status='running' only, and the cron region sync skips providers
+          # without :sync support (IMP-692a6552a2f6). Salvage the
+          # provider-truth FINAL state onto a fresh row, then surface the
+          # bookkeeping error in the Result.
+          salvage_final_state(instance, adapter_result)
+          Rails.logger.error(
+            "[InstanceControlService] post-#{action} bookkeeping failed for #{instance.id}: #{e.class}: #{e.message}"
+          )
+          return Runtime::Result.err(error: "post-#{action} bookkeeping failed: #{e.message}")
+        end
         Runtime::Result.ok(data: adapter_result.except(:success))
       else
         revert_status(instance)
@@ -54,11 +72,16 @@ module System
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[InstanceControlService] Provider error: #{e.message}")
-      revert_status(instance)
+      revert_status(instance) unless provider_succeeded
       Runtime::Result.err(error: e.message)
     rescue StandardError => e
+      # Revert only when the provider action itself did not succeed. Once it
+      # has, the stamped state is the truth (the machine really
+      # started/stopped/died) — a raise in post-success bookkeeping must
+      # surface in the Result, not rewrite the row to a state known false.
+      # For terminate that rewrite would resurrect a destroyed instance.
       Rails.logger.error("[InstanceControlService] #{action} failed: #{e.message}")
-      revert_status(instance)
+      revert_status(instance) unless provider_succeeded
       Runtime::Result.err(error: e.message)
     end
 
@@ -116,6 +139,24 @@ module System
       instance.update!(ip_updates) if ip_updates.any?
     end
 
+    # Best-effort second attempt at stamping the provider-truth final state
+    # after a post-success bookkeeping raise. Works on a FRESHLY-LOADED row —
+    # the failed write may have left the in-memory instance dirty or its
+    # connection wedged, and a transient DB failure often succeeds on retry.
+    # If this also fails, the transitional strand stands (logged): a strand a
+    # later action or operator can resolve beats a false state.
+    def salvage_final_state(instance, result)
+      return if result[:status].blank?
+
+      fresh = ::System::NodeInstance.find(instance.id)
+      finalize_state_from_result(fresh, result[:status])
+    rescue StandardError => e
+      Rails.logger.error(
+        "[InstanceControlService] final-state salvage failed for #{instance.id} " \
+        "(row remains transitional): #{e.class}: #{e.message}"
+      )
+    end
+
     # Map provider-reported status to the matching AASM finalizer event.
     # Each event has a may? guard — if the instance is already in a terminal
     # state (or invalid for this transition), the call is a safe no-op.
@@ -138,6 +179,12 @@ module System
       when "starting"  then instance.mark_stopped! if instance.may_mark_stopped?
       when "stopping"  then instance.mark_running! if instance.may_mark_running?
       when "rebooting" then instance.mark_running! if instance.may_mark_running?
+      # terminate has no transitional state — terminate! stamps :terminated
+      # before the provider call. A failed provider terminate must not leave
+      # that stamp standing (the instance still exists, and bills, at the
+      # provider), and the pre-terminate state is unknowable here, so the row
+      # goes to :error for operator attention rather than back to a guess.
+      when "terminated" then instance.revert_termination! if instance.may_revert_termination?
       end
     end
 

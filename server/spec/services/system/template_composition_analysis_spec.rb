@@ -241,4 +241,65 @@ RSpec.describe System::TemplateCompositionAnalysis do
       expect(conflict).to eq({ kind: "instance_variety_collision", severity: "error" })
     end
   end
+
+  # IMP-ba082cb22bda — the one shared implementation of the fail-closed
+  # composition-verdict report used by the whole-template writers (clone +
+  # import). Previously duplicated near-verbatim in both services, where a
+  # change to the fail-closed contract in one copy would silently strand the
+  # other.
+  describe ".report_for" do
+    let(:mod) do
+      create(:system_node_module, account: account, node_platform: platform,
+             category: cat_one, variety: "subscription", name: "rf-mod-#{SecureRandom.hex(3)}")
+    end
+
+    it "returns the verdict report and message for a clean composition" do
+      result = described_class.report_for(
+        account: account, modules: [ mod.id ],
+        log_tag: "SpecCaller", subject: "spec template"
+      )
+
+      expect(result[:blocked]).to be(false)
+      expect(result[:report]).to eq([])
+      # A clean verdict carries no message (prebuilt only for conflicts) —
+      # the key exists but nil is the preserved contract.
+      expect(result).to have_key(:message)
+    end
+
+    it "fails closed at blocking severity when the analysis itself raises" do
+      allow_any_instance_of(described_class).to receive(:set_verdict)
+        .and_raise(StandardError, "boom")
+      expect(Rails.logger).to receive(:warn)
+        .with(a_string_matching(/\[SpecCaller\] composition analysis failed: boom/))
+
+      result = described_class.report_for(
+        account: account, modules: [ mod.id ],
+        log_tag: "SpecCaller", subject: "spec template"
+      )
+
+      expect(result[:blocked]).to be(true)
+      expect(result[:report].map { |e| e[:kind] }).to eq([ "composition_analysis_failed" ])
+      expect(result[:report].first[:severity]).to eq(described_class::BLOCKING_SEVERITY)
+    end
+
+    it "fails closed when resolving the module scope itself raises" do
+      # Keyword arguments evaluate at the CALL SITE, so callers pass the LAZY
+      # scope and the pluck runs inside this method's rescue — a DB blip while
+      # resolving modules must produce the advisory report, never escape into
+      # (and fail) an otherwise-good clone/import.
+      scope = System::NodeModule.none
+      allow(scope).to receive(:pluck).and_raise(StandardError, "db blip")
+
+      result = nil
+      expect {
+        result = described_class.report_for(
+          account: account, modules: scope,
+          log_tag: "SpecCaller", subject: "spec template"
+        )
+      }.not_to raise_error
+
+      expect(result[:blocked]).to be(true)
+      expect(result[:report].map { |e| e[:kind] }).to eq([ "composition_analysis_failed" ])
+    end
+  end
 end

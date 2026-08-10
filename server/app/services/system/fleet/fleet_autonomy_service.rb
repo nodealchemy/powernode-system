@@ -2,19 +2,20 @@
 
 module System
   module Fleet
-    # Autonomy reconciler for the System extension fleet. Mirrors
-    # Trading::OverseerAutonomyService verbatim — same gate_action!, same
+    # Autonomy reconciler for the System extension fleet. Follows the
+    # platform's standard overseer-autonomy shape — same gate_action!, same
     # dedup, same TTL, same ApprovalRequest shape — so the operator approval
-    # UI surfaces fleet decisions identically to trading decisions.
+    # UI surfaces fleet decisions identically to every other domain's.
     #
     # Reference: Golden Eclipse plan M7. The cross-cutting design property is
     # that nothing in this service hardcodes "fleet" semantics; only the
     # ADVANCEMENT_ACTIONS set, the source_type, and the chain lookup are
-    # domain-specific. Everything else follows the trading pattern row-for-row.
+    # domain-specific. Everything else follows the shared pattern row-for-row.
     class FleetAutonomyService
       # Emergency kill-switch is authoritative across every reconciler — a halt
       # must stop the fleet reconcile loop, not just the AI execution jobs.
       include ::System::Autonomy::KillSwitchGuard
+      include ::System::Autonomy::ControlPlaneGuard
 
       attr_reader :account, :agent, :role
 
@@ -43,19 +44,26 @@ module System
       # fleet autonomy agent for the account, runs every sensor, routes
       # signals through the DecisionEngine, and records outcomes via the
       # LearningExtractor. Returns a structured tick summary.
-      def self.tick!(account:)
+      def self.tick!(account:, control_plane_reading: nil)
         agent = ::Ai::Agent.resolve_for(account.id, name: "Fleet Autonomy", agent_type: "monitor")&.tap { |a| a.resolving_account = account }
         return { ok: false, reason: "Fleet Autonomy agent not seeded for account" } unless agent
 
         service = new(account: account, agent: agent)
-        service.tick!
+        service.tick!(control_plane_reading: control_plane_reading)
       end
 
-      def tick!
+      def tick!(control_plane_reading: nil)
         # Authoritative kill-switch check FIRST — an engaged emergency halt
         # no-ops the entire reconcile (no sensing, deciding, reaping, or task
         # dispatch) before any state is touched.
         return halted_tick_result if kill_switch_engaged?
+
+        # Dual-plane fence SECOND: on the standby plane the tick must do
+        # nothing — the active plane owns actuation (ControlPlaneRole is the
+        # split-brain gate; inert unless the coordinator SiteSetting arms it).
+        # A caller-carried pass-scoped reading is honored; freshness is still
+        # enforced on it inside active?.
+        return standby_tick_result unless control_plane_active?(reading: control_plane_reading)
 
         # Sweep BEFORE sensing: expired pending approvals must transition
         # (timeout_action) so the rejected-cooldown — not a fresh duplicate

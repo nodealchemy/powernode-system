@@ -90,7 +90,7 @@ func NewManager(client *Client, modules ModulesAPI, applier DaemonApplier,
 		NodeID:         nodeID,
 		OverlayAddress: overlayAddress,
 		Paths:          DefaultPaths,
-		StatePath:      DefaultStatePath,
+		StatePath:      defaultStatePath,
 		OnError:        onError,
 	}
 	m.loadState()

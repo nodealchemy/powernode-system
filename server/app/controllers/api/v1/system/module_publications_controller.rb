@@ -153,10 +153,32 @@ module Api
           # Operators who want gated rollout should pin via the rolling-
           # upgrade orchestrator (per-template canary windows), not by
           # withholding current_version_id at the module level.
+          #
+          # ONE EXCEPTION, added 2026-08-07: "cleared every gate the platform
+          # enforces" was the premise, and the incident disproved it — none of
+          # those gates looks at whether the artifact CONTAINS anything. Two
+          # zero-file erofs blobs cleared all of them, auto-promoted, and made
+          # agents whiteout-delete /usr/local/go and /usr/local/bin/gitleaks off
+          # a live node. The empty branch below already knew the artifacts hash
+          # was empty and promoted anyway.
+          #
           # Promote via the model's single-writer so current_version_number is
           # written alongside current_version_id (idempotent) — an id-only flip
           # drifts the denormalized number the fleet/agent/UI read.
-          node_module.promote_to_version!(version)
+          if !::System::ModulePublicationProcessor.auto_promote?(node_module)
+            Rails.logger.info(
+              "[ModulePublicationsController] #{module_name}@#{tag}: auto_promote is disabled for this " \
+              "module; version #{version.id} published but NOT promoted."
+            )
+          elsif promotable_publish?(normalized)
+            node_module.promote_to_version!(version)
+          else
+            Rails.logger.error(
+              "[ModulePublicationsController] REFUSING to promote #{module_name}@#{tag}: " \
+              "artifact is empty or below the non-empty floor. Version #{version.id} is " \
+              "published but NOT current; the fleet keeps the previous version."
+            )
+          end
 
           emit_published_event(node_module, version, tag)
 
@@ -214,6 +236,34 @@ module Api
         # so this controller doesn't need the whole processor's
         # ManifestFetchService + cosign-verify chain (those run on the
         # Gitea-webhook path; this path trusts the CI-signed payload).
+        # The non-empty floor for the REST publish path. Shares its threshold
+        # with System::ModulePublicationProcessor so the two publish paths
+        # cannot drift apart.
+        #
+        # Three cases, deliberately distinguished:
+        #   - no artifacts at all      -> refuse. This is the branch that
+        #     already logged "empty artifacts hash" and promoted anyway.
+        #   - known size below floor   -> refuse. The 2026-08-07 shape: a
+        #     zero-file erofs is a few KiB of superblock, not zero bytes.
+        #   - size UNKNOWN             -> allow. The layer-digest fetch above
+        #     is explicitly best-effort and its failure is tolerated (the
+        #     agent refuses to mount until the digest shows up). Treating an
+        #     unknown size as empty would turn a tolerated transient into a
+        #     blocked publish, which is a different bug.
+        def promotable_publish?(normalized)
+          return false if normalized.blank?
+
+          # size UNKNOWN -> allow, because the layer-digest fetch above is
+          # explicitly best-effort and the agent refuses to mount a version with
+          # no digest, so a missing size here is already backstopped on the node.
+          # The processor's fresh-publish path fails CLOSED instead; see
+          # artifact_size_promotable?'s comment for why they differ.
+          size = normalized.dig("erofs", "size")
+          return true if size.nil?
+
+          ::System::ModulePublicationProcessor.artifact_size_promotable?(size)
+        end
+
         def find_or_create_version(node_module, tag)
           existing = ::System::NodeModuleVersion
                        .where(node_module: node_module)

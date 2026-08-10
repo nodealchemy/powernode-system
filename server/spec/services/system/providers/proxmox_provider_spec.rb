@@ -210,6 +210,50 @@ RSpec.describe System::Providers::ProxmoxProvider do
     end
   end
 
+  # IMP-14bc7e5b85f5 (dry-run campaign P0.5) — regions model PVE nodes:
+  # region_code IS the node name. The uefi_disk path honored that chain
+  # (explicit param -> region -> operator default_node -> first online);
+  # cloud_init/direct_kernel/lxc fell back straight to "first online node" —
+  # arbitrary placement on a multi-node cluster. And a storage chosen
+  # explicitly (or via operator default_storage) was never validated against
+  # the TARGET node, so an rna placement with dna-scoped storage failed deep
+  # inside PVE instead of loudly at the adapter contract.
+  describe "placement (IMP-14bc7e5b85f5)" do
+    let(:region) { instance_double("System::ProviderRegion", region_code: "rna") }
+    let(:params) do
+      { name: "rna-vm", instance_type: "pve.vm.small",
+        image_id: "rna-data:import/noble.qcow2", storage: "rna-data",
+        ssh_keys: [], start: false }
+    end
+
+    before do
+      allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("300")
+      allow(client).to receive(:get).with("/api2/json/nodes/rna/storage").and_return(
+        [ { "storage" => "rna-data", "type" => "nfs", "active" => 1, "shared" => 0,
+            "content" => "import,rootdir,iso,images,snippets" } ]
+      )
+      allow(client).to receive(:post)
+        .with("/api2/json/nodes/rna/qemu", anything)
+        .and_return("UPID:rna:001:001:001:qmcreate:300:user!tok:")
+      allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
+      allow(client).to receive(:put).and_return(nil)
+    end
+
+    it "places a cloud_init VM on the region's node without an explicit node param" do
+      result = provider.create_instance(params)
+
+      expect(result[:success]).to be true
+      expect(result[:cloud_instance_id]).to eq("rna/qemu/300")
+      expect(client).to have_received(:post).with("/api2/json/nodes/rna/qemu", anything)
+    end
+
+    it "fails loud when the chosen storage is not present on the target node" do
+      expect {
+        provider.create_instance(params.merge(storage: "dna-data"))
+      }.to raise_error(System::Providers::BaseProvider::ProviderError, /dna-data.*rna/)
+    end
+  end
+
   describe "#create_instance (VM mode)" do
     let(:params) do
       {

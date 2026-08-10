@@ -49,19 +49,13 @@ module System
     # module's derived secret, and ensuring the SBOM CI signs with it.
     MODULE_WEBHOOK_ENFORCE_ENV = "POWERNODE_MODULE_WEBHOOK_ENFORCE"
 
+    extend ::System::EnvSwitchedAdapter
+    env_switched_adapter env_var: "POWERNODE_BUILD_DISPATCH_MODE",
+                         adapters: { "gitea" => "GiteaDispatchAdapter",
+                                     "local" => "LocalDispatchAdapter" },
+                         error_class: DispatchError
+
     class << self
-      def adapter
-        @adapter ||= build_adapter
-      end
-
-      def adapter=(replacement)
-        @adapter = replacement
-      end
-
-      def reset!
-        @adapter = nil
-      end
-
       def dispatch_build!(node_module:, target: nil, ref: DEFAULT_REF, workflow: DEFAULT_WORKFLOW_FILENAME,
                           runner_label: nil)
         new.dispatch_build!(
@@ -149,21 +143,6 @@ module System
       # behavior change is opt-in and safe to land.
       def module_webhook_enforced?
         ActiveModel::Type::Boolean.new.cast(ENV.fetch(MODULE_WEBHOOK_ENFORCE_ENV, false))
-      end
-
-      private
-
-      def build_adapter
-        mode = ENV.fetch("POWERNODE_BUILD_DISPATCH_MODE", default_mode_for_env)
-        case mode
-        when "gitea" then GiteaDispatchAdapter.new
-        when "local" then LocalDispatchAdapter.new
-        else raise DispatchError, "Unknown POWERNODE_BUILD_DISPATCH_MODE: #{mode.inspect}"
-        end
-      end
-
-      def default_mode_for_env
-        Rails.env.production? ? "gitea" : "local"
       end
     end
 

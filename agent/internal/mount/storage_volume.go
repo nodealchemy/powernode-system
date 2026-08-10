@@ -203,9 +203,32 @@ func ensureNFSSubpath(ctx context.Context, runner Runner, b *StorageVolumeBindin
 	}
 
 	target := tmp + "/" + subpath
-	return os.MkdirAll(target, 0o755)
+	// Through the seam for uniformity — the target lives under this
+	// function's own MkdirTemp, so it is hermetic either way, but no
+	// MkdirAll in this package should bypass the test sandbox.
+	return mkdirAll(target, 0o755)
+}
+
+// mkdirAll is the filesystem seam behind ensureDir. Production is
+// os.MkdirAll; tests inject a sandbox via SetMkdirAllForTest so no test
+// touches real host paths. ensureDir takes SERVER-SUPPLIED absolute mount
+// points (e.g. /var/lib/postgresql), so without the seam any test driving
+// ReconcileStorageVolume silently depends on the host: it fails EACCES on a
+// non-root dev box where the path is absent, and "passes" in a root CI
+// container by actually creating the directory. Same seam family as
+// dockerd/k3sd's state-path vars (test-isolation|agent/internal/migration|
+// host-path-findmnt).
+var mkdirAll = os.MkdirAll
+
+// SetMkdirAllForTest swaps the ensureDir filesystem seam and returns a
+// restore func. Callers MUST restore (defer or TestMain teardown) — a leaked
+// stub would let a live agent skip creating real mount points.
+func SetMkdirAllForTest(fn func(string, os.FileMode) error) (restore func()) {
+	prev := mkdirAll
+	mkdirAll = fn
+	return func() { mkdirAll = prev }
 }
 
 func ensureDir(path string) error {
-	return os.MkdirAll(path, 0o755)
+	return mkdirAll(path, 0o755)
 }

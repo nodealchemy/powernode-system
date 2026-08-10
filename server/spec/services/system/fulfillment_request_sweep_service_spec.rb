@@ -250,4 +250,59 @@ RSpec.describe System::FulfillmentRequestSweepService do
       expect(exists?(foreign)).to be(true)
     end
   end
+
+  # IMP-2401f2183c63 — the sweep is the platform's most consequential 60-second
+  # actuator (instance termination, template destroy!, live template apply) and
+  # ran with ZERO gates. Both gates stand down the WHOLE sweep, bookkeeping
+  # expiry included: deferring pure expiry by a tick is free, while a split
+  # gated/ungated sweep is exactly the complexity that grows a bypass. Matches
+  # the fenced reconcilers' uniform posture (FleetAutonomyService halts its
+  # approval-expiry sweep under the kill-switch too).
+  describe "gating" do
+    let(:service) { described_class.new(account: account) }
+
+    it "no-ops entirely while the kill-switch is engaged" do
+      account.suspend_ai!
+
+      expect(service).not_to receive(:advance_open!)
+      expect(service).not_to receive(:reap_expired!)
+
+      result = service.run!
+
+      expect(result[:ok]).to be false
+      expect(result[:halted]).to be true
+    end
+
+    it "stands down entirely on a non-active control plane" do
+      allow(::System::Autonomy::ControlPlaneRole).to receive(:active?).and_return(false)
+
+      expect(service).not_to receive(:advance_open!)
+      expect(service).not_to receive(:reap_expired!)
+
+      result = service.run!
+
+      expect(result[:ok]).to be false
+      expect(result[:standby]).to be true
+    end
+
+    it "reports halted, not standby, when both gates would fire" do
+      account.suspend_ai!
+      allow(::System::Autonomy::ControlPlaneRole).to receive(:active?).and_return(false)
+
+      result = service.run!
+
+      expect(result[:halted]).to be true
+      expect(result[:standby]).to be_nil
+    end
+
+    it "sweeps normally when unhalted on an active (or unarmed) plane" do
+      expect(service).to receive(:advance_open!)
+      expect(service).to receive(:reap_expired!)
+      expect(service).to receive(:reap_orphan_templates!)
+
+      result = service.run!
+
+      expect(result).to have_key(:advanced)
+    end
+  end
 end

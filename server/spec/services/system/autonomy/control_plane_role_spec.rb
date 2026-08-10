@@ -216,4 +216,74 @@ RSpec.describe System::Autonomy::ControlPlaneRole do
       expect(described_class.active?).to be true
     end
   end
+
+  # IMP-211d8e0fb9e7 — .status makes the WHY visible without weakening the
+  # fail-closed boolean: :inert (unarmed), :active (armed + elected),
+  # :standby (armed, gate healthy, not permitted), :gate_error (the gate
+  # itself failed — INCLUDING an armed? read failure, where armed-ness is
+  # unknown and a "dual-plane armed" reason would be a guess).
+  describe ".status" do
+    it "is :inert while unarmed" do
+      arm!(coordinator: nil)
+
+      expect(described_class.status).to eq(:inert)
+      expect(described_class.active?).to be true
+    end
+
+    it "is :active when armed, quorate, and elected" do
+      arm!
+      reader_returns(quorumtool_output)
+
+      expect(described_class.status).to eq(:active)
+      expect(described_class.active?).to be true
+    end
+
+    it "is :standby when armed and healthy but not elected (fenced, not broken)" do
+      arm!
+      reader_returns(quorumtool_output(local_id: 2))
+
+      expect(described_class.status).to eq(:standby)
+      expect(described_class.active?).to be false
+    end
+
+    it "is :standby (not :gate_error) when the quorum simply cannot be read" do
+      arm!
+      described_class.quorum_reader = -> { nil }
+
+      expect(described_class.status).to eq(:standby)
+    end
+
+    it "amortizes pass-scoped reads: fresh_or_refreshed_reading returns the carried reading while fresh" do
+      arm!
+      reader_calls = 0
+      described_class.quorum_reader = -> { reader_calls += 1; quorumtool_output }
+
+      first = described_class.fresh_or_refreshed_reading(nil)
+      second = described_class.fresh_or_refreshed_reading(first)
+
+      expect(second).to equal(first)
+      expect(reader_calls).to eq(1)
+    end
+
+    it "fresh_or_refreshed_reading observes afresh when the carried reading is stale" do
+      arm!(freshness: 5)
+      reader_calls = 0
+      described_class.quorum_reader = -> { reader_calls += 1; quorumtool_output }
+
+      stale = described_class.current_reading(now: 1.minute.ago)
+      refreshed = described_class.fresh_or_refreshed_reading(stale)
+
+      expect(refreshed).not_to equal(stale)
+      expect(refreshed.fresh?).to be(true)
+      expect(reader_calls).to eq(2)
+    end
+
+    it "is :gate_error when the gate itself raises — even in the armed? read" do
+      allow(::SiteSetting).to receive(:get).and_raise(ActiveRecord::ConnectionNotEstablished, "db hiccup")
+
+      expect(Rails.logger).to receive(:error).with(/gate error/).at_least(:once)
+      expect(described_class.status).to eq(:gate_error)
+      expect(described_class.active?).to be false # fail-closed contract unchanged
+    end
+  end
 end

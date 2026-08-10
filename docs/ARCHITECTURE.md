@@ -320,7 +320,7 @@ bus.
 - `system.region_busy:<region_id>` — per-region instance saturation
 
 **Fleet consumes:**
-- External pressure signals (any extension's `*.high_load`, `*.workload_pressure`, `*.resource_busy:<key>`) → `TradingPressureSensor` aggregates → `TradingAwareThrottle` defers non-critical fleet actions when aggregate pressure ≥ 1.0 (the `Trading*` class names predate the cross-domain generalization; a rename to neutral `External*` names is pending)
+- External pressure signals (any extension's `*.high_load`, `*.workload_pressure`, `*.resource_busy:<key>`) → `TradingPressureSensor` aggregates into one fleet-side signal, bound by the DecisionEngine to `system.observation` (auto_approve — recorded in the FleetEvent audit trail, no operator notification, no action). The `Trading*` name predates the cross-domain generalization; a rename to a neutral `External*` name is pending. A consume-side throttle that would have deferred non-critical fleet actions was never wired and has been deleted (IMP-86be386ac485).
 
 **Sibling extension consumes** (when integrated):
 - `system.capacity_pressure` → consumer-side pressure perceiver returns
@@ -337,7 +337,6 @@ flowchart LR
         Recon[Fleet reconciler<br/>60s tick]
         FleetEmit[Pressure emitter]
         ExtSensor[TradingPressureSensor]
-        Throttle[TradingAwareThrottle]
     end
 
     subgraph Bus["Stigmergic signal bus"]
@@ -353,9 +352,8 @@ flowchart LR
     Recon --> FleetEmit
     FleetEmit -- "system.capacity_pressure<br/>system.fleet_error_pressure<br/>system.region_busy:R" --> StigBus
     Workload -- "*.high_load<br/>*.workload_pressure<br/>*.resource_busy:K" --> StigBus
-    StigBus --> ExtSensor --> Throttle
+    StigBus --> ExtSensor -- "aggregated pressure signal<br/>(observe-only: audit trail)" --> Recon
     StigBus --> PressurePerc --> Autonomy
-    Throttle -. "defer non-critical<br/>fleet actions" .-> Recon
     Autonomy -. "defer deferrable<br/>workload actions" .-> Sibling
 ```
 

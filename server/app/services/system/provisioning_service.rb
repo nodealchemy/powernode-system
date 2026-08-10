@@ -12,6 +12,7 @@ module System
     # System::Autonomy::SelfManagementFence's doc comment for why this is a
     # distinct concern from the existing ControlPlaneFence).
     include ::System::Autonomy::SelfManagementFence
+    include ::System::DevCellDeployKeyRevocation
 
     class ProvisioningError < StandardError; end
 
@@ -680,17 +681,6 @@ module System
       ::Sdwan::PeerDetacher.call(node_instance: instance)
     rescue StandardError => e
       Rails.logger.error("[ProvisioningService] SDWAN auto-detach failed for instance #{instance.id}: #{e.class}: #{e.message}")
-    end
-
-    # Delete the dev-cell's read-write Gitea deploy key + drop its Vault private
-    # key when the instance is terminated/recycled. No-op when the extension
-    # model isn't loaded or the instance never bootstrapped a dev-cell key.
-    def revoke_dev_cell_deploy_key!(instance)
-      return unless defined?(::System::DevCellDeployKey)
-
-      ::System::DevCellDeployKey.revoke_for!(instance)
-    rescue StandardError => e
-      Rails.logger.warn("[ProvisioningService] dev-cell deploy-key revoke failed for instance #{instance&.id}: #{e.class}: #{e.message}")
     end
 
     def normalize_status(status)

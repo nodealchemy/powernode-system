@@ -7,11 +7,24 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
+
+// TestMain sandboxes the mount package's filesystem seam for the WHOLE
+// package: ReconcileStorageVolume ensureDirs server-supplied absolute mount
+// points (/var/lib/postgresql), which on a non-root dev box fails EACCES
+// (path absent, /var/lib unwritable) and in root CI silently creates real
+// directories. Neither belongs in a unit test (IMP-ae2160046005).
+func TestMain(m *testing.M) {
+	restore := mount.SetMkdirAllForTest(func(string, os.FileMode) error { return nil })
+	code := m.Run()
+	restore()
+	os.Exit(code)
+}
 
 // fakeClient is a stand-in for transport.Client that records POSTs and
 // returns canned GET responses keyed by path.

@@ -152,7 +152,8 @@ module System
       return nil unless p.respond_to?(:ops_hold_state)
 
       p.ops_hold_state(instance.key)
-    rescue StandardError
+    rescue StandardError => e
+      Rails.logger.warn("[InstanceOpsHoldService] provider state read failed for #{instance.name}: #{e.message}")
       nil
     end
   end

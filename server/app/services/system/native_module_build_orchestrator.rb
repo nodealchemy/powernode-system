@@ -85,6 +85,10 @@ module System
         new(batch: batch).advance!
       end
 
+      def cancel!(batch:, reason: nil)
+        new(batch: batch).cancel!(reason: reason)
+      end
+
       # Convenience seam for CiRunnerLeaseSweepService: resolve the batch a
       # Task belongs to (via its options["batch_id"]) and advance it. Returns
       # nil (a no-op) when the task carries no batch_id or the batch can't be
@@ -111,6 +115,8 @@ module System
     end
 
     def dispatch!
+      return vacuous_result if @batch.cancelled?
+
       modules = load_modules_state
 
       if modules.empty?
@@ -128,7 +134,48 @@ module System
                  succeeded: 0, retried: 0, failed: count_state(modules, "failed"))
     end
 
+    # Stops a batch mid-flight. Three independent mechanisms, because any one
+    # of them alone leaves the batch running:
+    #
+    #   1. the batch's own AASM state (what an operator/UI reads),
+    #   2. the dispatch path — #advance! is called every time a member task
+    #      finishes and would otherwise lease a builder for the next queued
+    #      module (this is what made an abort look ineffective on 2026-08-07:
+    #      a fresh builder appeared ~2min later),
+    #   3. the in-flight member tasks + their leases, which nothing else will
+    #      reap once the batch stops advancing.
+    #
+    # Returns a Result with ok?: false when the batch is already terminal —
+    # cancelling a complete batch would rewrite the history of versions that
+    # already published.
+    def cancel!(reason: nil)
+      unless @batch.may_cancel?
+        return Result.new(ok?: false, dispatched: 0, queued: 0, succeeded: 0, retried: 0, failed: 0)
+      end
+
+      modules = load_modules_state
+
+      cancel_in_flight_tasks!(modules)
+
+      # Mark every not-yet-terminal module cancelled so a later #advance!
+      # can't mistake a "queued" entry for work still owed.
+      modules.each_value do |entry|
+        next if TERMINAL_MODULE_STATES.include?(entry["state"])
+
+        entry["state"] = "cancelled"
+      end
+      save_modules_state!(modules)
+
+      @batch.cancel!(reason)
+      @batch.recompute_counts!
+
+      Result.new(ok?: true, dispatched: 0, queued: 0, succeeded: 0, retried: 0,
+                 failed: count_state(modules, "failed"))
+    end
+
     def advance!
+      return vacuous_result if @batch.cancelled?
+
       modules = load_modules_state
       return vacuous_result if modules.empty?
 
@@ -244,13 +291,49 @@ module System
 
     # === Dispatch (lease + task creation), capacity-bounded ===
 
+    # Mechanism 2 of #cancel!. Guarded here as well as at the #advance! /
+    # #dispatch! entry points because this is the method that actually leases
+    # a builder — a future caller reaching it by another path must not be able
+    # to restart a cancelled batch.
     def try_dispatch_queued!(modules)
+      return if @batch.cancelled?
+
       modules.each_value do |entry|
         next unless entry["state"] == "queued"
         next unless capacity_available?
 
         dispatch_one!(entry)
       end
+    end
+
+    # Mechanism 3 of #cancel!. Cancels each member Task that hasn't reached a
+    # terminal state and releases the lease it was holding, so a cancelled
+    # batch doesn't strand builders in the pool. force: true — unlike
+    # #release_module_lease (which runs only after a task is already
+    # finished?), here we are deliberately tearing down a lease whose task is
+    # still live, which is the whole point of a kill switch.
+    def cancel_in_flight_tasks!(modules)
+      modules.each_value do |entry|
+        next if TERMINAL_MODULE_STATES.include?(entry["state"])
+
+        task = entry["task_id"].present? ? @batch.member_tasks.find_by(id: entry["task_id"]) : nil
+        if task && !task.finished?
+          task.cancel! if task.may_cancel?
+        end
+
+        release_cancelled_lease(entry["lease_id"])
+      end
+    end
+
+    def release_cancelled_lease(lease_id)
+      return if lease_id.blank?
+
+      lease = ::System::CiRunnerLease.find_by(id: lease_id)
+      return if lease.nil? || lease.finished?
+
+      ::System::CiRunnerLeaseService.release!(account: @account, lease: lease, force: true)
+    rescue StandardError => e
+      Rails.logger.warn("[NativeModuleBuildOrchestrator] lease ##{lease_id} release on cancel failed: #{e.message}")
     end
 
     def capacity_available?
@@ -513,6 +596,11 @@ module System
     # by a later #try_dispatch_queued! pass) when attempts remain; false once
     # max_attempts is exhausted — the caller marks the module "failed".
     def attempt_retry!(entry)
+      # Mechanism 2 (retry half): a cancelled batch must not re-queue a module
+      # for another attempt — that would put work back on the queue that
+      # #try_dispatch_queued! is refusing to drain, and any future caller
+      # reaching dispatch by another path would resurrect the batch.
+      return false if @batch.cancelled?
       return false if entry["attempts"].to_i >= max_attempts
 
       entry["state"]    = "queued"
@@ -522,6 +610,12 @@ module System
     end
 
     def advance_batch_status!(modules)
+      # `cancelled` is terminal: never let the normal resolution flip an
+      # operator-stopped batch to complete/partial/failed. Without this a
+      # cancelled batch whose modules are all non-succeeded would land on
+      # `failed`, reporting a build failure for work an operator stopped.
+      return if @batch.cancelled?
+
       states = modules.values.map { |e| e["state"] }
       return if states.include?("queued") || states.include?("dispatched") # still in flight
 

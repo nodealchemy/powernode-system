@@ -164,4 +164,60 @@ RSpec.describe "Operator API — Module Build Batches", type: :request do
       expect(response.body).not_to include("signed-bundle-bytes")
     end
   end
+
+  # IMP-ecb0615ba1ba — the operator-facing cancel endpoint the Module Builds
+  # UI calls. Mirrors the MCP system_cancel_module_build_batch semantics:
+  # same permission (system.module_builds.cancel), same orchestrator seam
+  # (NativeModuleBuildOrchestrator.cancel! — status flip + refuse further
+  # dispatch + cancel in-flight members), same refusal on terminal batches.
+  describe "POST /api/v1/system/module_build_batches/:id/cancel" do
+    let(:canceller) do
+      user_with_permissions("system.module_builds.read", "system.module_builds.cancel", account: account)
+    end
+
+    it "403s with read-only permission (cancel is a distinct grant)" do
+      batch = build_batch(account: account, status: "dispatched")
+
+      post "/api/v1/system/module_build_batches/#{batch.id}/cancel", headers: headers
+
+      expect(response).to have_http_status(:forbidden)
+      expect(batch.reload.status).to eq("dispatched")
+    end
+
+    it "cancels an active batch through the orchestrator and returns the full row" do
+      batch = build_batch(account: account, status: "dispatched")
+
+      post "/api/v1/system/module_build_batches/#{batch.id}/cancel",
+           params: { reason: "operator stop" }.to_json, headers: auth_headers_for(canceller)
+
+      expect(response).to have_http_status(:ok)
+      body = JSON.parse(response.body).dig("data", "module_build_batch")
+      expect(body["status"]).to eq("cancelled")
+      expect(body).to have_key("modules") # full shape, not summary
+      expect(body["cancelled_at"]).to be_present # the UI's Cancelled ladder step
+      expect(batch.reload.status).to eq("cancelled")
+      expect(batch.cancelled_at).to be_present
+      expect(batch.error_message).to eq("operator stop")
+    end
+
+    it "refuses to cancel a terminal batch (422) without rewriting history" do
+      batch = build_batch(account: account, status: "complete")
+
+      post "/api/v1/system/module_build_batches/#{batch.id}/cancel",
+           headers: auth_headers_for(canceller)
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(batch.reload.status).to eq("complete")
+    end
+
+    it "404s a cross-account batch id" do
+      foreign = build_batch(account: other_account, status: "dispatched")
+
+      post "/api/v1/system/module_build_batches/#{foreign.id}/cancel",
+           headers: auth_headers_for(canceller)
+
+      expect(response).to have_http_status(:not_found)
+      expect(foreign.reload.status).to eq("dispatched")
+    end
+  end
 end

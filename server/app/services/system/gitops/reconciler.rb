@@ -51,6 +51,36 @@ module System
       end
 
       def reconcile!
+        # Dual-plane fence (IMP-0ad117c2feb8): on the standby plane this
+        # reconciler does NOTHING — not even clone/diff/propose. Unlike the
+        # kill-switch (Gate 3 below, auto-apply only, so proposals keep
+        # flowing for operator visibility under a halt), standby stands the
+        # WHOLE pass down: the active plane produces the identical proposals,
+        # and a standby plane that keeps reconciling both duplicates proposal
+        # rows and auto-applies live changes on its own 5-minute cron — the
+        # split-brain ControlPlaneRole exists to prevent. Runs before
+        # schedule_sync! so a standby pass writes no sync-run state either.
+        unless ::System::Autonomy::ControlPlaneRole.active?
+          Rails.logger.info(
+            "[Gitops::Reconciler] standby control plane — skipping reconcile for repository #{@repository.id}"
+          )
+          # A caller-created run (sync_now REST, anything passing sync_run:)
+          # must not strand at "running" on the timeline — finalize it as a
+          # success carrying the skip note. The internal cron path creates no
+          # run at all on standby (this fence runs before schedule_sync!).
+          @sync_run&.finalize!(
+            status: "success", diff_count: 0, proposal_ids: [],
+            synced_revision: nil,
+            diff_summary: { "skipped" => "standby control plane" },
+            error_message: nil
+          )
+          return Result.new(
+            ok?: true, diff_count: 0, proposal_ids: [],
+            applied_proposal_ids: [], failed_proposal_ids: [],
+            diff_summary: "skipped: standby control plane"
+          )
+        end
+
         sync_run = @sync_run || @repository.schedule_sync!
 
         # Step 1: clone/pull

@@ -2,9 +2,9 @@
 
 module System
   module Fleet
-    # Promotion eligibility for NodeModuleVersion. Mirrors
-    # Trading::Overseer::PromotionCriteria's shape: a pure function from
-    # version + observed runtime evidence to {eligible:, ...details} hash.
+    # Promotion eligibility for NodeModuleVersion. A pure function from
+    # version + observed runtime evidence to an {eligible:, ...details}
+    # hash — the platform's standard promotion-criteria shape.
     #
     # v0 thresholds:
     #   - REQUIRED_COUNT: minimum number of healthy instances must be

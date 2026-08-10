@@ -30,6 +30,11 @@ module System
   # inline on approval, and this service remains callable directly (specs +
   # any operator/agent-invoked reconcile).
   class FulfillmentRequestSweepService
+    include ::System::Autonomy::KillSwitchGuard
+    include ::System::Autonomy::ControlPlaneGuard
+
+    attr_reader :account
+
     # How long an authoring artifact must have existed before the reaper will
     # touch it. The reaper does NOT hold the orchestrator's per-request advisory
     # lock, so if a request goes terminal in one process while another is still
@@ -50,6 +55,20 @@ module System
     end
 
     def run!
+      # Gates FIRST, and deliberately over the WHOLE sweep — bookkeeping expiry
+      # included. This sweep terminates instances, destroys templates, and
+      # applies live templates every 60s. Deferring the reap steps is NOT free
+      # under a long halt (lease-expired task-scoped instances keep running —
+      # and billing — for the halt's full duration); that bounded cost is
+      # accepted in exchange for one uniformly-gated actuation surface, because
+      # a split gated/ungated sweep is exactly the complexity that grows a
+      # bypass. Kill-switch outranks the dual-plane fence as the reported
+      # reason (same order as every fenced reconciler). The worker controller's
+      # aggregate() sums counter keys with to_i, so these counter-less guard
+      # results aggregate safely to zeros.
+      return halted_tick_result if kill_switch_engaged?
+      return standby_tick_result unless control_plane_active?
+
       advance_open!
       reap_expired!
       reap_orphan_templates!

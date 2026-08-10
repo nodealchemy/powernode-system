@@ -196,4 +196,34 @@ RSpec.describe System::CveOps::CveResponderService do
       expect(result[:gate]).to eq("block")
     end
   end
+  # IMP-6ea384a0ee79 — the mid-tick re-check ControlPlaneRole's Reading
+  # contract prescribes for irreversible actions: dispatch_inline runs
+  # multi-minute critical remediations well past the 5-30s freshness window,
+  # so it must re-assert activeness with a FRESH observation immediately
+  # before dispatching, and withhold when the plane lost election mid-tick.
+  describe "#dispatch_inline mid-tick control-plane re-check" do
+    let(:service) { described_class.new(account: account, agent: agent) }
+    let(:executor) { instance_double(System::Ai::Skills::CveRemediationOrchestrationExecutor) }
+
+    before do
+      allow(System::Ai::Skills::CveRemediationOrchestrationExecutor)
+        .to receive(:new).and_return(executor)
+    end
+
+    it "withholds the dispatch when the fresh re-check says the plane is no longer active" do
+      allow(System::Autonomy::ControlPlaneRole).to receive(:active?).and_return(false)
+      expect(executor).not_to receive(:execute)
+
+      service.send(:dispatch_inline, "system.cve_remediate",
+                   { "cve_id" => "CVE-2026-1111" }, "critical remediation")
+    end
+
+    it "dispatches when the fresh re-check confirms the plane is still active" do
+      allow(System::Autonomy::ControlPlaneRole).to receive(:active?).and_return(true)
+      expect(executor).to receive(:execute).and_return({ success: true })
+
+      service.send(:dispatch_inline, "system.cve_remediate",
+                   { "cve_id" => "CVE-2026-1111" }, "critical remediation")
+    end
+  end
 end

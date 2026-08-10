@@ -104,25 +104,52 @@ module System
         # path, and mutation testing caught it being unreachable when `active?`
         # could only ever read for itself.
         def active?(now: Time.current, reading: nil)
-          return true unless armed?
+          %i[inert active].include?(status(now: now, reading: reading))
+        end
+
+        # The gate's verdict WITH its why (IMP-211d8e0fb9e7):
+        #   :inert      — unarmed single plane; may actuate.
+        #   :active     — armed, fresh quorate reading elects this node.
+        #   :standby    — armed and the gate is HEALTHY, but this plane is not
+        #                 permitted (not elected, not quorate, stale or
+        #                 unreadable quorum — all legitimate stand-downs).
+        #   :gate_error — the gate itself raised. This includes a failing
+        #                 armed? read, where armed-ness is UNKNOWN — reporting
+        #                 "dual-plane armed" there would be a guess, and on an
+        #                 unarmed plane an actively misleading one.
+        # Fail-closed is unchanged: only :inert/:active permit actuation.
+        def status(now: Time.current, reading: nil)
+          return :inert unless armed?
 
           observed = reading || current_reading(now: now)
-          return false if observed.nil?
-          return false unless observed.fresh?(now)
+          return :standby if observed.nil?
+          return :standby unless observed.fresh?(now)
 
-          observed.elected?
+          observed.elected? ? :active : :standby
         rescue StandardError => e
           # An unexpected failure in the gate itself must not grant actuation.
           # Logged rather than swallowed silently so a persistently-failing gate
           # is visible as a stood-down plane rather than a mystery.
           Rails.logger.error("[ControlPlaneRole] gate error, standing down: #{e.class}: #{e.message}")
-          false
+          :gate_error
         end
 
         # Presence of the marker, read fresh. Not memoized: disarming during an
         # incident must take effect without restarting the process.
         def armed?
           ::SiteSetting.get(COORDINATOR_KEY).present?
+        end
+
+        # Pass-scoped amortization (IMP-6ea384a0ee79): return the carried
+        # reading while it is still fresh, otherwise observe afresh. A
+        # multi-account reconcile pass carries one reading through its loop
+        # and pays one quorumtool subprocess per FRESHNESS window instead of
+        # one per account — while keeping the freshness contract intact: a
+        # reading past its valid_until is never reused, it is replaced.
+        def fresh_or_refreshed_reading(carried, now: Time.current)
+          return carried if carried&.fresh?(now)
+
+          current_reading(now: now)
         end
 
         def freshness_seconds

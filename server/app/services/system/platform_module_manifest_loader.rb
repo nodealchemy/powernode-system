@@ -47,7 +47,15 @@ module System
       return nil unless $?.success? && !out.empty?
 
       out.split("\0").filter_map { |path| path.split("/", 2).first if path.include?("/") }.to_set
-    rescue ::SystemCallError, ::IOError
+    rescue ::SystemCallError, ::IOError => e
+      # nil is the documented "tracking unavailable" outcome, but reaching it
+      # via an exception also covers transient failures (ENOMEM, EACCES, disk
+      # pressure) — and nil disarms the F7-03 resurrection-debris guard, so
+      # leave a trace instead of vanishing (IMP-623f671b4826).
+      ::Rails.logger.warn(
+        "[PlatformModuleManifestLoader] git tracking unavailable (#{e.class}: #{e.message}) — " \
+        "F7-03 untracked-dir guard disabled for #{root}"
+      )
       nil
     end
   end

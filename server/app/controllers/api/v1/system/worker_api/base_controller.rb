@@ -71,6 +71,23 @@ module Api
           end
 
           attr_reader :current_worker
+
+          # Per-gate counts for sweep summaries a fenced service declined
+          # (IMP-5fee957b75b5 — shared by the fulfillment and CI-lease sweep
+          # controllers). halted outranks the fence in each summary (the
+          # services report it that way); a :gate_error fence status is
+          # broken out from a genuine standby, so an operator hunting "why
+          # is nothing advancing" can tell an emergency stop from a fence
+          # from a failing gate.
+          def gate_breakdown(gated)
+            return {} if gated.empty?
+
+            {
+              halted: gated.count { |s| s[:halted] },
+              standby: gated.count { |s| s[:standby] && s[:gate_status] != :gate_error },
+              gate_error: gated.count { |s| s[:gate_status] == :gate_error }
+            }
+          end
         end
       end
     end

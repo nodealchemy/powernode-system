@@ -44,6 +44,36 @@ module System
     MODULE_INCLUDES = %i[current_version category node_platform
                          module_dependencies dependencies package_module_link].freeze
 
+    # The ONE fail-closed composition-verdict report for whole-template
+    # writers (clone + import) — previously duplicated near-verbatim in both,
+    # where a change to the fail-closed contract in one copy silently
+    # stranded the other (IMP-ba082cb22bda). Logs only on a blocked verdict
+    # or an analysis failure, tagged for the caller. NEVER raises.
+    #
+    # `modules:` takes the LAZY template_modules scope (or a plain id array).
+    # Deliberate: keyword arguments evaluate at the CALL SITE, so a caller
+    # that plucked ids itself would run the query OUTSIDE this rescue and a
+    # DB blip would escape into — and fail — an otherwise-good clone/import,
+    # breaking both callers' advisory-only contracts. The pluck happens here.
+    #
+    # Fail closed, matching #warning?: an analysis that could not run has
+    # cleared nothing, so it reports at blocking severity rather than as an
+    # advisory a caller may ignore.
+    def self.report_for(account:, modules:, log_tag:, subject:)
+      # Explicit relation check — ActiveSupport's Array#pluck makes a bare
+      # respond_to?(:pluck) dispatch treat a plain id array as pluckable.
+      ids = modules.is_a?(ActiveRecord::Relation) ? modules.pluck(:node_module_id) : Array(modules)
+      verdict = new(account).set_verdict(ids)
+      Rails.logger.warn("[#{log_tag}] #{subject}: #{verdict.message}") if verdict.blocked?
+
+      { report: verdict.report_entries, message: verdict.message, blocked: verdict.blocked? }
+    rescue StandardError => e
+      message = "composition analysis failed: #{e.message}"
+      Rails.logger.warn("[#{log_tag}] #{message}")
+      { report: [ { severity: BLOCKING_SEVERITY, kind: "composition_analysis_failed", detail: message } ],
+        message: message, blocked: true }
+    end
+
     # What a write would introduce (or, for #set_verdict, what a module set
     # composes into), split by whether it blocks. `message` is prebuilt
     # because only the analysis can resolve module ids to names.
@@ -210,20 +240,8 @@ module System
     end
 
     def summarize(conflicts)
-      conflicts.map do |conflict|
-        names = module_names(conflict_module_ids(conflict))
-        detail = conflict[:detail].presence || conflict[:kind]
-        names.any? ? "#{conflict[:kind]} — #{detail} (modules: #{names.join(', ')})" : "#{conflict[:kind]} — #{detail}"
-      end.join("; ")
-    end
-
-    def conflict_module_ids(conflict)
-      (conflict.values_at(:source_id, :target_id, :claimer_id, :other_id) +
-        Array(conflict[:module_ids])).compact.uniq
-    end
-
-    def module_names(ids)
-      ids.filter_map { |id| name_lookup[id] }
+      conflicts.map { |conflict| TemplateComposerService.conflict_label(conflict, name_lookup) }
+               .join("; ")
     end
 
     def name_lookup

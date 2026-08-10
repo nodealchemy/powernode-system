@@ -296,5 +296,34 @@ RSpec.describe System::PackageModuleMaterializer do
         expect(result_b.top_level_module.package_module_link.package_repository_id).to eq(shared_repo.id)
       end
     end
+
+    # inc2 §4.3.2 legacy build-routing bridge: build_mode: :gitea skips the
+    # native PackageClosureBuildBridge and instead fires the old fire-and-forget
+    # System::ModuleBuildDispatchService.dispatch_closure path. Pins that
+    # legacy_gitea_dispatch actually reaches the dispatch service with the
+    # closure it just materialized (repository/architectures/requested_by
+    # threaded through, modules = the real created NodeModule rows) — not
+    # just that dispatch_closure_build's :gitea branch is selected.
+    context "with build_mode: :gitea (legacy dispatch bridge)" do
+      it "calls ModuleBuildDispatchService.dispatch_closure with the materialized modules" do
+        received = nil
+        expect(System::ModuleBuildDispatchService).to receive(:dispatch_closure) do |**kwargs|
+          received = kwargs
+          []
+        end
+
+        result = described_class.call(
+          repository: repo, package_name: top_pkg, architectures: [ "amd64" ],
+          account: account, requested_by_user: user,
+          dispatch_build: true, build_mode: :gitea
+        )
+
+        expect(result.errors).to be_empty
+        expect(received[:repository]).to eq(repo)
+        expect(received[:architectures]).to eq([ "amd64" ])
+        expect(received[:requested_by]).to eq(user)
+        expect(received[:modules].map(&:name)).to match_array(result.all_modules.map(&:name))
+      end
+    end
   end
 end

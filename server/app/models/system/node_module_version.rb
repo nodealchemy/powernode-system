@@ -84,7 +84,7 @@ module System
 
     # === Promotion lifecycle (Golden Eclipse M0.M) ===
     # Column-only state machine for now. Full AASM with PromotionCriteria
-    # gates lands in M1 (mirroring Trading::PromotionCriteria pattern).
+    # gates lands in M1 (the platform's standard promotion-criteria pattern).
 
     PROMOTION_STATES.each do |state|
       define_method(:"#{state}?") { promotion_state == state }
@@ -147,6 +147,34 @@ module System
     # True iff this version has a published erofs artifact.
     def published?
       artifact.present?
+    end
+
+    # Could this version actually SERVE the fleet if made current again?
+    #
+    # Stricter than #published?, and the distinction matters: on 2026-08-07 the
+    # versions immediately preceding the two bad builds carried oci_digest nil,
+    # so a naive "roll back to the previous row" would have repointed the fleet
+    # at a version the agent cannot mount. Rollback must walk back to a version
+    # that is genuinely usable, not merely the one before.
+    #
+    # Size is checked against the same floor a fresh publish must clear, so
+    # rollback can't land on a known-empty artifact either. An ABSENT size is
+    # treated as usable: older rows predate size recording, and refusing them
+    # would block rollback to a perfectly good version — matching the
+    # unknown-size-is-allowed call in the publish path.
+    def rollback_usable?
+      data = artifact
+      return false if data.blank?
+      return false if (data["oci_digest"] || data[:oci_digest]).blank?
+
+      # FAIL OPEN on an unknown size, unlike the fresh-publish path: old version
+      # rows predate size recording, and refusing them would block rollback to a
+      # version known to have worked. See artifact_size_promotable?'s comment
+      # for why the two readings differ on purpose.
+      size = data["size"] || data[:size]
+      return true if size.nil?
+
+      ::System::ModulePublicationProcessor.artifact_size_promotable?(size)
     end
 
     private

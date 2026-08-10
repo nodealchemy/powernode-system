@@ -260,6 +260,14 @@ module Ai
         "system_list_disk_image_webhooks"            => "system.modules.read",
         # Campaign 019f5885 inc9 — native module-build batch orchestration.
         "system_dispatch_module_build_batch"         => "system.module_builds.dispatch",
+        # Cancel is deliberately NOT gated on ...dispatch: that permission is
+        # granted only to system_worker, so reusing it would leave the human
+        # operator — the one who notices mid-batch that the wrong thing was
+        # dispatched — unable to stop it, which is the whole finding. Its own
+        # permission is registered to admin/manager alongside ...read.
+        "system_cancel_module_build_batch"           => "system.module_builds.cancel",
+        # Operator recovery after a bad publish — admin-granted, not worker.
+        "system_rollback_module_version"             => "system.modules.rollback",
 
         # === Missing-features slice 6a — GitOps reconciler MCP surface ===
         "system_gitops_register_repository" => "system.modules.update",
@@ -469,8 +477,12 @@ module Ai
             parameters: { module_id: { type: "string", required: true, description: "UUID of the NodeModule to unmark (account-scoped)" } }
           },
           "system_refresh_instance_modules" => {
-            description: "Force re-apply all assigned modules to an instance — queues a reconcile task. Useful when instance has drifted from desired template state.",
-            parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance whose modules to re-apply" } }
+            description: "Queue a module reconcile on an instance. By DEFAULT this is an ordinary reconcile: it applies drift (a module assigned, removed, or pointed at a new version) and does nothing when the node already matches desired state. That is NOT sufficient to repair a root whose files were deleted underneath an UNCHANGED module version — the 2026-08-07 shape, where an empty artifact's hot-prune whiteout-deleted /usr/local/go and /usr/local/bin/gitleaks while the digest stayed the same. Nothing has drifted in that state, so a plain reconcile correctly concludes there is nothing to do. Pass force_resync: true to re-materialize a module's files regardless of drift; add module_id to narrow it to one module, or omit it to resync every module on the node. Recovery for that incident was a hand bind-mount over a root shell — force_resync is the supported, audited equivalent. Note it re-materializes from whatever version is CURRENT, so if the bad version is still current, roll it back first (system_rollback_module_version).",
+            parameters: {
+              instance_id:  { type: "string",  required: true,  description: "UUID of the NodeInstance whose modules to reconcile" },
+              force_resync: { type: "boolean", required: false, description: "Re-materialize module files even when nothing has drifted. Default false." },
+              module_id:    { type: "string",  required: false, description: "With force_resync, resync only this module — the platform NodeModule UUID, which is what the agent keys its attached-module state by (NOT the module slug; a slug is rejected as not-attached). Omit to resync every module on the node." }
+            }
           },
 
           # === Instances ===
@@ -1314,6 +1326,23 @@ module Ai
             }
           },
 
+          "system_rollback_module_version" => {
+            description: "Repoint a module's current_version back to an earlier version after a bad publish — the undo for auto-promotion. Publishing auto-promotes, so a bad build reaches the fleet with no gate; this is how you get the fleet back onto a known-good version. With version_id, rolls back to that specific version; without it, auto-selects the most recent version that is actually USABLE. That distinction is load-bearing: the version immediately preceding a bad build often carries oci_digest null (it was never published), so a naive roll-back-one would point the fleet at something the agent cannot mount — this walks back until it finds a version with a real artifact that also clears the non-empty floor. Refuses when no usable target exists, when the named version has no usable artifact, or when it belongs to another module. Note this changes which version the fleet RUNS; it does not delete or unpublish the bad version, and nodes converge on their next reconcile.",
+            parameters: {
+              module_id:  { type: "string", required: true,  description: "System::NodeModule id to roll back" },
+              version_id: { type: "string", required: false, description: "Explicit System::NodeModuleVersion to roll back to. Omit to auto-select the most recent usable version." },
+              reason:     { type: "string", required: false, description: "Operator-supplied reason, recorded in the log line for audit" }
+            }
+          },
+
+          "system_cancel_module_build_batch" => {
+            description: "Stop a running native module-build batch. This is the operator kill switch: it transitions the batch to `cancelled`, cancels every member ci.module_build task that has not already finished, releases the builder leases those tasks held, and — critically — prevents the orchestrator from leasing a builder for any still-queued module. Cancelling a single task via system_cancel_task does NOT stop a batch: the orchestrator advances on every task completion and simply dispatches the next queued module onto a fresh builder. Already-published module versions are NOT rolled back (a batch that published before you cancelled it has already promoted those versions — use the module rollback path for that); this stops further building only. Refuses when the batch has already reached a terminal state.",
+            parameters: {
+              batch_id: { type: "string", required: true,  description: "System::ModuleBuildBatch id to cancel" },
+              reason:   { type: "string", required: false, description: "Operator-supplied reason, recorded on the batch's error_message for audit" }
+            }
+          },
+
           # === Missing-features slice 6a — GitOps reconciler MCP surface ===
           "system_gitops_register_repository" => {
             description: "Register a new GitopsRepository pointing at a git remote whose contents describe desired fleet state. The reconciler clones + pulls every 5 min by default; operator can trigger immediately via system_gitops_sync_repository.",
@@ -1629,6 +1658,8 @@ module Ai
         when "system_list_disk_image_webhooks"      then list_disk_image_webhooks(params)
         # Campaign 019f5885 inc9 — native module-build batch orchestration
         when "system_dispatch_module_build_batch"   then dispatch_module_build_batch(params)
+        when "system_cancel_module_build_batch"     then cancel_module_build_batch(params)
+        when "system_rollback_module_version"       then rollback_module_version(params)
         # Missing-features slice 6a — GitOps reconciler
         when "system_gitops_register_repository"    then gitops_register_repository(params)
         when "system_gitops_sync_repository"        then gitops_sync_repository(params)
@@ -1877,6 +1908,7 @@ module Ai
         lock_spec init_start init_stop init_restart reboot_required
         mask file_spec package_spec dependency_spec protected_spec
         consent_budget_per_day config
+        auto_promote
       ].freeze
 
       def module_attrs(params)
@@ -1982,13 +2014,33 @@ module Ai
 
       def refresh_instance_modules(params)
         instance = account_instances.find(params[:instance_id])
+        force = params[:force_resync].to_s == "true" || params[:force_resync] == true
+        module_id = params[:module_id].presence
+
+        options = {
+          "source" => force ? "mcp_resync" : "mcp_refresh",
+          "triggered_by_user_id" => @user&.id,
+          "triggered_at" => Time.current.iso8601
+        }
+        if force
+          # The agent clears its attached-state stamps for this scope before
+          # reconciling, so files are re-materialized even though nothing has
+          # drifted. Without it, a root whose files were deleted underneath an
+          # unchanged version is unrepairable by any platform action — the
+          # 2026-08-07 incident was recovered by a hand bind-mount over a root
+          # shell.
+          options["force_resync"] = true
+          options["module_id"] = module_id if module_id
+        end
+
         task = ::System::Task.create!(
           account: @account, operable: instance,
           command: "sync_modules", status: "pending",
           initiated_by: @user,
-          options: { "source" => "mcp_refresh", "triggered_by_user_id" => @user&.id, "triggered_at" => Time.current.iso8601 }
+          options: options
         )
-        success_result(refreshed: true, instance_id: instance.id, task_id: task.id, task_status: task.status)
+        success_result(refreshed: true, resync: force, module_id: module_id,
+                       instance_id: instance.id, task_id: task.id, task_status: task.status)
       rescue ActiveRecord::RecordInvalid => e
         error_result("Failed to queue refresh task: #{e.message}")
       end
@@ -4694,6 +4746,91 @@ module Ai
         error_result(e.message)
       end
 
+      # The undo for auto-promotion. Publishing writes current_version_id with
+      # no gate, so a bad build reaches the fleet immediately; before this there
+      # was no supported way to put it back.
+      def rollback_module_version(params)
+        module_id = params[:module_id].to_s
+        return error_result("module_id is required") if module_id.blank?
+
+        node_module = ::System::NodeModule.where(account: @account).find_by(id: module_id)
+        return error_result("Module '#{module_id}' not found") unless node_module
+
+        target =
+          if params[:version_id].present?
+            explicit_rollback_target(node_module, params[:version_id].to_s)
+          else
+            node_module.latest_rollback_target
+          end
+
+        return target if target.is_a?(Hash) # an error_result from the explicit lookup
+
+        unless target
+          return error_result(
+            "No usable rollback target for '#{node_module.name}': no other version has a mountable artifact. " \
+            "Republish a good build instead."
+          )
+        end
+
+        previous_version_id = node_module.current_version_id
+        node_module.promote_to_version!(target)
+
+        Rails.logger.warn(
+          "[SystemFleetTool] rolled back #{node_module.name} from version #{previous_version_id} " \
+          "to #{target.id} (v#{target.version_number})#{params[:reason].present? ? " — #{params[:reason]}" : ""}"
+        )
+
+        success_result(
+          module_id: node_module.id,
+          module_name: node_module.name,
+          rolled_back_from_version_id: previous_version_id,
+          current_version_id: node_module.reload.current_version_id,
+          current_version_number: node_module.current_version_number
+        )
+      end
+
+      # Returns the version, or an error_result Hash the caller passes straight
+      # through. Both refusals matter: a foreign version would repoint this
+      # module at another module's artifact, and an unusable one recreates the
+      # very failure rollback exists to undo.
+      def explicit_rollback_target(node_module, version_id)
+        version = ::System::NodeModuleVersion.find_by(id: version_id)
+        return error_result("Version '#{version_id}' not found") unless version
+
+        unless version.node_module_id == node_module.id
+          return error_result("Version '#{version_id}' belongs to a different module")
+        end
+
+        unless version.rollback_usable?
+          return error_result(
+            "Version '#{version_id}' (v#{version.version_number}) has no mountable artifact " \
+            "(missing oci_digest, or below the non-empty floor) — rolling back to it would leave the fleet unable to mount the module."
+          )
+        end
+
+        version
+      end
+
+      # The kill switch the 2026-08-07 incident had no equivalent of: aborting
+      # the in-flight task freed a builder and the orchestrator leased another
+      # ~2min later, so the batch ran on for ~15 more minutes. Deleting the
+      # git ref the builders check out did not stop it either.
+      def cancel_module_build_batch(params)
+        batch_id = params[:batch_id].to_s
+        return error_result("batch_id is required") if batch_id.blank?
+
+        batch = ::System::ModuleBuildBatch.where(account: @account).find_by(id: batch_id)
+        return error_result("Module build batch '#{batch_id}' not found") unless batch
+
+        result = ::System::NativeModuleBuildOrchestrator.cancel!(batch: batch, reason: params[:reason].presence)
+
+        unless result.ok?
+          return error_result("Batch is already #{batch.status} and cannot be cancelled")
+        end
+
+        success_result(module_build_batch: serialize_module_build_batch(batch.reload))
+      end
+
       def serialize_module_build_batch(batch)
         {
           id: batch.id,
@@ -4705,7 +4842,8 @@ module Ai
           planned_count: batch.planned_count,
           succeeded_count: batch.succeeded_count,
           failed_count: batch.failed_count,
-          error_message: batch.error_message
+          error_message: batch.error_message,
+          cancelled_at: batch.cancelled_at&.iso8601
         }
       end
 

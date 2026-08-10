@@ -70,6 +70,12 @@ type Dependencies struct {
 // uses. Defined here as an interface to avoid an import cycle.
 type RunOnceAPI interface {
 	RunOnce(ctx context.Context) error
+	// ClearAttachedManifestHashes drops the stamps the reattach gate compares,
+	// forcing the next reconcile to re-materialize a module's files (or every
+	// module's, when the id is empty). Needed because a plain RunOnce cannot
+	// repair a root whose files were removed underneath an UNCHANGED digest —
+	// nothing drifts in that state, so the reconcile correctly does nothing.
+	ClearAttachedManifestHashes(moduleID string) error
 }
 
 // HTTPClient is the minimal interface task client needs. Both

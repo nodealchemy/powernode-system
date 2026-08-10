@@ -565,6 +565,15 @@ module System
       true
     end
 
+    # The newest version that could serve the fleet if promoted, excluding
+    # whatever is current. This is deliberately NOT "the previous row": the
+    # 2026-08-07 incident's bad builds were each preceded by a version with
+    # oci_digest nil, so stepping back exactly one would have pointed the fleet
+    # at something unmountable. Walks back until it finds a usable artifact.
+    def latest_rollback_target
+      versions.ordered.detect { |v| v.id != current_version_id && v.rollback_usable? }
+    end
+
     # Check if module has any versions
     def versioned?
       versions.exists?

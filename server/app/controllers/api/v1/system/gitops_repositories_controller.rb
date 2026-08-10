@@ -70,11 +70,16 @@ module Api
           # worker. For now, inline keeps the API simple.
           result = ::System::Gitops::Reconciler.reconcile!(repository: @repository, sync_run: run)
 
+          # result.ok? — the Result struct's actual predicate; the success?
+          # call here raised NoMethodError on every invocation from 2026-05-10
+          # until IMP-95198e6a57d3. diff_summary is surfaced so gate-skip
+          # markers (e.g. the dual-plane standby note) reach the operator.
           render_success(
             sync_run: serialize_run(run.reload),
-            ok: result.success?,
+            ok: result.ok?,
             diff_count: result.diff_count,
-            proposal_ids: result.proposal_ids
+            proposal_ids: result.proposal_ids,
+            diff_summary: result.diff_summary
           )
         end
 

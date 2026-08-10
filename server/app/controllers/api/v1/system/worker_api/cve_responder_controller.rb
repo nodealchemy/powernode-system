@@ -22,8 +22,17 @@ module Api
             return if performed?
 
             accounts = scope_accounts
+            # Pass-scoped quorum reading (IMP-6ea384a0ee79) — same carry-and-
+            # refresh as the fleet reconcile loop; see fleet_controller.rb.
+            carried_reading = nil
+            armed = ::System::Autonomy::ControlPlaneRole.armed?
             results = accounts.map do |account|
-              tick_result = ::System::CveOps::CveResponderService.tick!(account: account)
+              if armed
+                carried_reading = ::System::Autonomy::ControlPlaneRole.fresh_or_refreshed_reading(carried_reading)
+              end
+              tick_result = ::System::CveOps::CveResponderService.tick!(
+                account: account, control_plane_reading: carried_reading
+              )
               { account_id: account.id }.merge(tick_result)
             rescue StandardError => e
               Rails.logger.error("[CveResponder] account=#{account.id} failed: #{e.class}: #{e.message}")

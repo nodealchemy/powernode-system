@@ -28,7 +28,34 @@ module System
             .where(account_id: account.id, status: "active")
             .find_each.filter_map do |network|
               hubs = network.peers.where(publicly_reachable: true)
-              next if hubs.empty?  # no hub: separate concern (compiler will warn)
+              if hubs.empty?
+                # An active hub-and-spoke network with zero publicly-reachable
+                # hubs cannot form tunnels going forward. This was skipped for
+                # months on an unverified "compiler will warn" claim — the
+                # topology compiler has no such warning; only generated
+                # user-device configs embed a comment (wg_config_renderer),
+                # which reaches nobody unless they read a config file
+                # (IMP-07217a21eaba). Full-mesh topologies are legitimately
+                # hubless and stay exempt. Reuses the bound, policied signal
+                # kind with its own fingerprint: the failover executor's
+                # dry-run plan surfaces "no candidate hubs" on the approval
+                # request, and the operator's remedy is adding a hub peer.
+                next if network.settings.to_h.fetch("topology_strategy", "hub_and_spoke") == "full_mesh"
+
+                next signal(
+                  kind: "system.sdwan_hub_unreachable",
+                  severity: :critical,
+                  payload: {
+                    network_id: network.id,
+                    network_name: network.name,
+                    hub_count: 0,
+                    no_hub_configured: true,
+                    spoke_count: network.peers.where(publicly_reachable: false).count,
+                    remediation_action: "system.sdwan_failover"
+                  },
+                  fingerprint: "sdwan_no_hub:#{network.id}"
+                )
+              end
 
               # If ANY peer in the network has a recent handshake, the network
               # is functionally up — it doesn't matter which hub is alive.

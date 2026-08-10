@@ -121,18 +121,15 @@ module System
     # was holding a blocking verdict or an advisory one (IMP-493db0e5c398). The
     # message is still logged, where it is the useful form.
     def composition_report(template)
-      verdict = ::System::TemplateCompositionAnalysis.new(@account).set_verdict(
-        template.template_modules.enabled.pluck(:node_module_id)
-      )
-      Rails.logger.warn("[TemplateImporter] imported #{template.name}: #{verdict.message}") if verdict.blocked?
-      verdict.report_entries
-    rescue StandardError => e
-      # Fail closed, matching TemplateCompositionAnalysis#warning?: an analysis
-      # that could not run has not cleared anything, so it reports at blocking
-      # severity rather than as an advisory a caller may ignore.
-      [ { severity: ::System::TemplateCompositionAnalysis::BLOCKING_SEVERITY,
-          kind: "composition_analysis_failed",
-          detail: "composition analysis failed: #{e.message}" } ]
+      # Shared fail-closed report (IMP-ba082cb22bda) — one contract with
+      # TemplateCloneService#record_composition!. (This also gains the warn
+      # log on analysis failure the local rescue here never had.)
+      ::System::TemplateCompositionAnalysis.report_for(
+        account: @account,
+        modules: template.template_modules.enabled,
+        log_tag: "TemplateImporter",
+        subject: "imported #{template.name}"
+      )[:report]
     end
 
     def validate_bundle!(bundle)

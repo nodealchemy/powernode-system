@@ -86,18 +86,17 @@ RSpec.describe System::TemplateCloneService do
       expect(service.composition_report).to be_empty
     end
 
-    # copy_template_modules! copies node_module_id verbatim, so a cross-account
-    # clone's joins still point at the SOURCE account's modules. Resolving the
-    # analysis against the destination would find none of them and call every
-    # cross-account clone clean.
-    it "still sees the conflict when cloning into another account" do
-      assign(node_module("inst-a", variety: "instance"))
-      assign(node_module("inst-b", variety: "instance"))
-
-      service.clone!(new_name: "cross-#{SecureRandom.hex(3)}", account: create(:account))
-
-      expect(service.composition_report.map { |e| e[:kind] })
-        .to include("instance_variety_collision")
+    # IMP-90808e05677c: the cross-account clone path was removed as dead code.
+    # No production caller ever supplied account:, and the path was latently
+    # tenant-unsafe — build_template_clone copied node_platform_id verbatim,
+    # so a cross-account clone would point the destination account's template
+    # at the SOURCE account's platform row (NodePlatform belongs_to :account;
+    # NodeTemplate has no cross-model account-consistency validation). A
+    # marketplace-import flow needs a dedicated path that remaps platform AND
+    # modules — not a kwarg that silently cross-wires tenants.
+    it "does not accept a cross-account destination (removed dead path)" do
+      expect { service.clone!(new_name: "x", account: create(:account)) }
+        .to raise_error(ArgumentError, /account/)
     end
 
     # The analysis is advisory here, so it must not make a working clone fail.

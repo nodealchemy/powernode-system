@@ -51,6 +51,7 @@ module System
         publishing_at:         @batch.publishing_at,
         completed_at:          @batch.completed_at,
         failed_at:             @batch.failed_at,
+        cancelled_at:          @batch.cancelled_at,
         error_message:         @batch.error_message,
         modules:                module_rows
       )
