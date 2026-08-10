@@ -1,0 +1,24 @@
+[Unit]
+Description=Persistent bind mount: /var/log/journal -> /persist/var/log/journal (survives reboot/recompose)
+Documentation=https://github.com/nodealchemy/powernode-platform
+# The bind source is created + owned by persist-journal.service, which this unit
+# requires and orders after. It must be in place BEFORE
+# systemd-journal-flush.service, which is the step that migrates the runtime
+# journal out of /run/log/journal onto disk — mount later than that and journald
+# has already decided the node has no persistent journal, which is precisely the
+# failure this module exists to prevent.
+DefaultDependencies=no
+ConditionPathIsMountPoint=/persist
+Requires=persist-journal.service
+After=persist-journal.service
+Before=local-fs.target systemd-journal-flush.service systemd-tmpfiles-setup.service
+Conflicts=umount.target
+
+[Mount]
+What=/persist/var/log/journal
+Where=/var/log/journal
+Type=none
+Options=bind
+
+[Install]
+WantedBy=local-fs.target

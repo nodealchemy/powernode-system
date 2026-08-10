@@ -1,0 +1,21 @@
+[Unit]
+Description=Prepare durable /persist-backed systemd journal before it is bind-mounted
+Documentation=https://github.com/nodealchemy/powernode-platform
+# Runs in early boot alongside the local filesystem mounts (/persist is already
+# mounted by the initramfs pivot before systemd starts), BEFORE
+# var-log-journal.mount binds it and before systemd-journal-flush.service
+# migrates the runtime journal onto disk.
+DefaultDependencies=no
+ConditionPathIsMountPoint=/persist
+After=systemd-remount-fs.service
+Before=var-log-journal.mount local-fs.target systemd-tmpfiles-setup.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/persist-journal.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=local-fs.target

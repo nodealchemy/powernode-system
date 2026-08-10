@@ -1,0 +1,68 @@
+schema_version: 1
+name: persist-journal
+display_name: "persist-journal — durable /persist-backed systemd journal"
+description: >
+  Backs /var/log/journal with the durable /persist partition via an early-boot
+  bind mount, so the systemd journal survives a reboot or recompose. On a pivot
+  node the root overlay upper is tmpfs, so journald's Storage=auto finds no
+  persistent directory and silently falls back to the volatile /run/log/journal
+  — which means a node that fails to boot takes the evidence of why with it.
+  Reusable standalone — any node whose failures you expect to have to diagnose
+  wants this, and that is all of them.
+license: MIT
+category: system-base
+
+# Written after ops-hub's soft-recompose attempt on 2026-08-10 left the node
+# with no userspace for seven minutes and the recovery `qm reset` destroyed
+# every log of the failure window: the journal was volatile, so
+# `journalctl --list-boots` showed only the boot that came after. The attempt
+# cost an outage and produced no diagnostic information at all. See
+# docs/operations/ops-hub-soft-recompose-runbook.md.
+#
+# Complements rather than replaces log-forwarder-vector: that ships logs OFF the
+# node while it is healthy, which is exactly the window a boot failure is not
+# in. This keeps them ON the node across the reboot that follows.
+#
+# NOT mutually exclusive with anything today — no other module ships
+# /etc/systemd/journald.conf.d or a journal mount (checked across modules/).
+# If one ever does, note that a mount unit's name is derived from its mount
+# point, so both would necessarily ship var-log-journal.mount and the
+# higher-priority layer would silently win.
+package_spec: []
+
+file_spec:
+  - "/usr/local/bin/persist-journal.sh"
+  - "/etc/systemd/system/persist-journal.service"
+  - "/etc/systemd/system/var-log-journal.mount"
+  - "/etc/systemd/system/local-fs.target.wants/persist-journal.service"
+  - "/etc/systemd/system/local-fs.target.wants/var-log-journal.mount"
+  - "/etc/systemd/journald.conf.d/90-persist-journal.conf"
+
+mask: []
+dependency_spec: []
+protected_spec: []
+reboot_required: true
+
+dependencies:
+  requires:
+    # systemd, coreutils and the systemd-journal group all come from the OS layer.
+    - capability:os.userland
+  provides:
+    - journal.persistent
+
+# No services: block. Both units ship as raw files with their own
+# local-fs.target.wants symlinks, because they must run in EARLY boot
+# (DefaultDependencies=no, before systemd-journal-flush.service and
+# systemd-tmpfiles-setup) — ordering the agent's generated units cannot express.
+services: []
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: false
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"
