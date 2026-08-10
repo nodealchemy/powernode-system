@@ -42,8 +42,13 @@ PROVISIONING_PHASES = [
     "requires_approval" => false, "job_class" => "AiProvisioningExecuteJob" },
   { "order" => 4, "key" => "verify",          "label" => "Verify SLO Targets",
     "requires_approval" => false, "job_class" => "AiProvisioningVerifyJob" },
+  # job_class nil, like review_plan: this is a pure approval gate. A gate phase
+  # can never dispatch its job — OrchestratorService#dispatch_phase_job! returns
+  # early while awaiting_approval?, and approval advances straight past via
+  # handle_approval! -> advance!. The binding was unreachable, and the job it
+  # named has been deleted.
   { "order" => 5, "key" => "handoff",         "label" => "Hand Off",
-    "requires_approval" => true,  "job_class" => "AiProvisioningHandoffJob",
+    "requires_approval" => true,  "job_class" => nil,
     "gate_name" => "handoff" },
   { "order" => 6, "key" => "adapting",        "label" => "Continuous Adaptation",
     "requires_approval" => false, "job_class" => nil }
