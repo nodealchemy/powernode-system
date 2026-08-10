@@ -86,7 +86,15 @@ module System
     # (ip_allocation_id, ip_association_id, netboot.enabled, ipmi.*) use
     # the explicit `config.merge` pattern at the call site and don't need
     # accessor declarations.
-    store_accessor :config, :cloud_instance_id, :admin_user
+    # provider_guest_name is the name the guest was CREATED with, captured at
+    # provision time. It is deliberately not `name`: PATCH .../node_instances/:id
+    # permits :name and renames only the row — nothing calls `qm set --name` — so
+    # the row's name drifts from the guest's. Terminate's recycled-vmid check
+    # compares against this stable value; using the mutable one would make a
+    # renamed instance's GENUINE migration look like a recycled id and wrongly
+    # report it gone (IMP-708079f866d9). nil on pre-existing rows, which the
+    # check treats conservatively.
+    store_accessor :config, :cloud_instance_id, :admin_user, :provider_guest_name
 
     # SSH target address for the platform→node control channel
     # (SshExecutionService + internal serializer). Preference: SDWAN overlay

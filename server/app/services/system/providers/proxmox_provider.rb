@@ -444,7 +444,7 @@ module System
         )
       end
 
-      def terminate_instance(instance_id)
+      def terminate_instance(instance_id, expected_name: nil)
         log_operation("terminate_instance", instance_id: instance_id)
         node, kind, vmid = parse_instance_id!(instance_id)
         c = require_client!
@@ -488,7 +488,18 @@ module System
         # the DB row, detach the SDWAN peer and revoke deploy keys while the guest
         # is still running elsewhere: a silent orphan, and worse than the error it
         # replaced. Confirm absence across the cluster before believing it.
-        if (live_node = node_hosting_vmid(c, vmid: vmid, kind: kind, excluding_node: node))
+        #
+        # A vmid is not an identity, though: allocate_next_vmid! draws the lowest
+        # FREE id, so reuse is routine. Without a second signal, a stale row whose
+        # vmid was later recycled onto another node refuses FOREVER —
+        # finalize_termination! never runs, the SDWAN peer stays attached, and the
+        # reaper retries indefinitely with no exit but manual intervention. The
+        # guest NAME is that signal: /cluster/resources carries it, and VMs are
+        # created with it (see the "name" body key in the clone/create paths).
+        # Only a KNOWN name that DIFFERS proves recycling — if either side's name
+        # is missing we cannot disprove a migration, so keep refusing.
+        if (live_node = node_hosting_vmid(c, vmid: vmid, kind: kind, excluding_node: node,
+                                          expected_name: expected_name))
           build_error_response(
             "PVE terminate failed: vm #{vmid} is not on #{node} but is present on #{live_node}; " \
             "refusing to treat it as already-gone"
@@ -1932,17 +1943,31 @@ module System
       # change and is queued separately. Until then the failure is loud rather
       # than silent — a wedged terminate, not an invisible orphan — which is the
       # direction to be wrong in, but it does need an operator to break the tie.
-      def node_hosting_vmid(client, vmid:, kind:, excluding_node:)
+      def node_hosting_vmid(client, vmid:, kind:, excluding_node:, expected_name: nil)
         resources = client.get("/api2/json/cluster/resources", { "type" => "vm" }) || []
         hit = resources.find do |r|
           r["vmid"].to_s == vmid.to_s &&
             r["type"].to_s == kind.to_s &&
             r["node"].to_s != excluding_node.to_s
         end
+        return nil if hit && recycled_vmid?(hit, expected_name)
+
         hit && hit["node"].to_s.presence
       rescue StandardError => e
         Rails.logger.warn("[ProxmoxProvider] cluster-wide vmid check failed for #{vmid}: #{e.class}: #{e.message}")
         nil
+      end
+
+      # True only when BOTH names are known and they differ — i.e. the vmid on the
+      # other node belongs to a different guest, so ours really is gone. Missing
+      # either name means we cannot disprove a migration, and declaring "gone"
+      # wrongly is the far worse error (it finalizes the row, detaches the SDWAN
+      # peer and revokes deploy keys while the guest still runs).
+      def recycled_vmid?(hit, expected_name)
+        found_name = hit["name"].to_s.strip
+        return false if expected_name.to_s.strip.empty? || found_name.empty?
+
+        found_name != expected_name.to_s.strip
       end
 
       def allocate_next_vmid!(c)

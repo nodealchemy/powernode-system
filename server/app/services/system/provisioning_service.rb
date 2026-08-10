@@ -154,6 +154,11 @@ module System
 
         instance.update!(
           cloud_instance_id: cloud_result[:cloud_instance_id],
+          # Capture the name the guest was actually created with (provider_params
+          # passes instance.name). The row can be renamed later without renaming
+          # the guest, so terminate's recycled-vmid check needs this stable copy
+          # rather than the live column (IMP-708079f866d9).
+          provider_guest_name: provider_params[:name],
           private_ip_address: cloud_result[:private_ip_address],
           public_ip_address: cloud_result[:public_ip_address],
           status: normalize_status(cloud_result[:status])
@@ -241,7 +246,11 @@ module System
 
       Rails.logger.info("[ProvisioningService] Terminating instance #{instance.name}")
 
-      result = provider_adapter.terminate_instance(instance.cloud_instance_id)
+      # expected_name lets the provider distinguish a migrated guest from a
+      # recycled vmid; without it a stale row whose id was reused elsewhere can
+      # never finish terminating (IMP-708079f866d9).
+      result = provider_adapter.terminate_instance(instance.cloud_instance_id,
+                                                   expected_name: instance.provider_guest_name)
 
       # Idempotent terminate (F4-02): a provider-side NotFound means the
       # resource is already gone (e.g. a prior terminate destroyed it while
@@ -415,6 +424,10 @@ module System
       return unless provider_adapter.respond_to?(:terminate_instance)
 
       Rails.logger.warn("[ProvisioningService] Post-create failure — terminating orphaned cloud instance #{cloud_instance_id} to avoid a billable leak")
+      # No expected_name deliberately: this id was allocated seconds ago in this
+      # same call, so it cannot yet have been recycled onto another node, and the
+      # conservative default (refuse to call a cluster-visible guest gone) is the
+      # right behaviour for a compensating rollback.
       provider_adapter.terminate_instance(cloud_instance_id)
     rescue StandardError => e
       Rails.logger.error("[ProvisioningService] Failed to terminate orphaned cloud instance #{cloud_instance_id}: #{e.class}: #{e.message}")

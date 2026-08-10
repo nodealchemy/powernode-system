@@ -1399,6 +1399,64 @@ RSpec.describe System::Providers::ProxmoxProvider do
       result = provider.terminate_instance("dna/qemu/999")
       expect(result[:success]).to be true
     end
+
+    # IMP-708079f866d9. A vmid is not an identity: allocate_next_vmid! draws the
+    # lowest FREE id, so recycling is routine. Without a guest-name check, a
+    # stale row whose vmid was later reused on another node refuses forever —
+    # finalize_termination! never runs, the SDWAN peer stays attached and the
+    # reaper retries indefinitely.
+    it "treats a RECYCLED vmid as gone when the guest name does not match" do
+      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:wait_task)
+      allow(client).to receive(:put)
+      allow(client).to receive(:delete)
+        .and_raise(System::Providers::Proxmox::Client::NotFoundError,
+                   "Configuration file 'nodes/dna/qemu-server/9009.conf' does not exist")
+      allow(client).to receive(:get)
+        .with("/api2/json/cluster/resources", { "type" => "vm" })
+        .and_return([{ "type" => "qemu", "vmid" => 9009, "node" => "rna",
+                       "name" => "someone-elses-vm", "status" => "running" }])
+
+      result = provider.terminate_instance("dna/qemu/9009", expected_name: "dryrun-web-1")
+
+      expect(result[:success]).to be true
+      expect(result[:status]).to eq("terminated")
+    end
+
+    it "still refuses when the guest name MATCHES (a genuine migration)" do
+      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:wait_task)
+      allow(client).to receive(:put)
+      allow(client).to receive(:delete)
+        .and_raise(System::Providers::Proxmox::Client::NotFoundError,
+                   "Configuration file 'nodes/dna/qemu-server/9009.conf' does not exist")
+      allow(client).to receive(:get)
+        .with("/api2/json/cluster/resources", { "type" => "vm" })
+        .and_return([{ "type" => "qemu", "vmid" => 9009, "node" => "rna",
+                       "name" => "dryrun-web-1", "status" => "running" }])
+
+      result = provider.terminate_instance("dna/qemu/9009", expected_name: "dryrun-web-1")
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include("rna")
+    end
+
+    # Absent evidence is not evidence of absence: if either name is unknown we
+    # cannot disprove a migration, so keep the conservative refusal.
+    it "still refuses when the cluster row carries no name to compare" do
+      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:wait_task)
+      allow(client).to receive(:put)
+      allow(client).to receive(:delete)
+        .and_raise(System::Providers::Proxmox::Client::NotFoundError, "404")
+      allow(client).to receive(:get)
+        .with("/api2/json/cluster/resources", { "type" => "vm" })
+        .and_return([{ "type" => "qemu", "vmid" => 9009, "node" => "rna", "status" => "running" }])
+
+      result = provider.terminate_instance("dna/qemu/9009", expected_name: "dryrun-web-1")
+
+      expect(result[:success]).to be false
+    end
   end
 
   describe "#list_instances" do

@@ -122,7 +122,10 @@ module System
         )
       end
 
-      def terminate_instance(instance_id)
+      # expected_name is accepted and ignored: only Proxmox can recycle a guest id
+      # across nodes, so only it needs the second identity signal. Declared here so
+      # the shared caller (ProvisioningService) can pass it uniformly.
+      def terminate_instance(instance_id, expected_name: nil)
         log_operation("terminate_instance", domain: instance_id)
         runner = self.class.runner
         runner.destroy_domain!(name: instance_id) # best-effort; ignores already-stopped

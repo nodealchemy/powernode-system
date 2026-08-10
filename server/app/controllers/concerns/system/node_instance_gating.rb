@@ -162,7 +162,7 @@ module System
       when :start  then adapter.start_instance(cloud_id)
       when :stop   then adapter.stop_instance(cloud_id)
       when :reboot then adapter.respond_to?(:reboot_instance) ? adapter.reboot_instance(cloud_id) : nil
-      when :terminate then adapter.terminate_instance(cloud_id)
+      when :terminate then adapter.terminate_instance(cloud_id, expected_name: @instance.provider_guest_name)
       end
       return unless result&.dig(:success)
 

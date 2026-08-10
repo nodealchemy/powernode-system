@@ -160,7 +160,7 @@ RSpec.describe System::InstanceControlService do
       # Full build_instance_response shape — real adapters always include the
       # ip keys (as nil) on terminate, which drives the post-success ip write.
       # A bare { success: true } stub would skip that branch and hide bugs in it.
-      allow(adapter).to receive(:terminate_instance).with('i-terminate-1').and_return(
+      allow(adapter).to receive(:terminate_instance).with('i-terminate-1', expected_name: instance.provider_guest_name).and_return(
         success: true, cloud_instance_id: 'i-terminate-1', status: 'terminated',
         private_ip_address: nil, public_ip_address: nil, provider_type: 'proxmox'
       )
@@ -176,7 +176,7 @@ RSpec.describe System::InstanceControlService do
     # machine is gone. Post-success bookkeeping (the ip-field write) can fail
     # transiently; that must surface in the Result, not resurrect the row.
     it 'keeps the row terminated when post-success bookkeeping raises' do
-      allow(adapter).to receive(:terminate_instance).with('i-terminate-1').and_return(
+      allow(adapter).to receive(:terminate_instance).with('i-terminate-1', expected_name: instance.provider_guest_name).and_return(
         success: true, private_ip_address: nil, public_ip_address: nil
       )
       allow(instance).to receive(:update!)
@@ -192,7 +192,7 @@ RSpec.describe System::InstanceControlService do
     # the disk may still exist on the provider side. The row goes to :error so
     # an operator investigates instead of the platform believing it's gone.
     it 'does not stamp the row terminated when the provider reports failure — goes to error instead' do
-      allow(adapter).to receive(:terminate_instance).with('i-terminate-1')
+      allow(adapter).to receive(:terminate_instance).with('i-terminate-1', expected_name: instance.provider_guest_name)
         .and_return(success: false, error: 'guest is locked')
 
       result = described_class.execute(instance: instance, action: :terminate)
@@ -203,7 +203,7 @@ RSpec.describe System::InstanceControlService do
     end
 
     it 'does not stamp the row terminated when the provider raises — goes to error instead' do
-      allow(adapter).to receive(:terminate_instance).with('i-terminate-1')
+      allow(adapter).to receive(:terminate_instance).with('i-terminate-1', expected_name: instance.provider_guest_name)
         .and_raise(System::Providers::BaseProvider::ProviderError, 'api timeout')
 
       result = described_class.execute(instance: instance, action: :terminate)

@@ -197,7 +197,10 @@ module System
         { success: true }
       end
 
-      def terminate_instance(instance_id)
+      # expected_name is accepted and ignored: only Proxmox can recycle a guest id
+      # across nodes, so only it needs the second identity signal. Declared here so
+      # the shared caller (ProvisioningService) can pass it uniformly.
+      def terminate_instance(instance_id, expected_name: nil)
         rg = resource_group
         response = arm_delete(
           "/subscriptions/#{subscription_id}/resourceGroups/#{rg}/providers/Microsoft.Compute/virtualMachines/#{instance_id}",

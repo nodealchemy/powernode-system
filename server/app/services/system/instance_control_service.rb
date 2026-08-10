@@ -217,7 +217,8 @@ module System
         result[:status] = "running" if result[:success]
         result
       when :terminate
-        result = provider_adapter.terminate_instance(instance.cloud_instance_id)
+        result = provider_adapter.terminate_instance(instance.cloud_instance_id,
+                                                     expected_name: instance.provider_guest_name)
         result[:status] = "terminated" if result[:success]
         result
       else

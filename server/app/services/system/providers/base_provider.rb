@@ -197,7 +197,13 @@ module System
       #
       # @param instance_id [String] Cloud instance ID
       # @return [Hash] Result with :success
-      def terminate_instance(instance_id)
+      # @param instance_id [String] Cloud instance ID
+      # @param expected_name [String, nil] The guest name this instance was
+      #   created with. Optional, and providers may ignore it — Proxmox uses it to
+      #   tell a MIGRATED guest (same id, same name, different node: refuse to
+      #   call it gone) from a RECYCLED vmid (same id, different guest: it really
+      #   is gone). Omitting it keeps the conservative behaviour.
+      def terminate_instance(instance_id, expected_name: nil)
         raise NotImplementedError, "#{self.class} must implement #terminate_instance"
       end
 

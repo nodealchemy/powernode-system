@@ -397,7 +397,7 @@ RSpec.describe System::ProvisioningService do
     end
 
     it "terminates an instance still in :starting" do
-      allow(adapter).to receive(:terminate_instance).with("i-123").and_return({ success: true })
+      allow(adapter).to receive(:terminate_instance).with("i-123", expected_name: instance.provider_guest_name).and_return({ success: true })
 
       result = terminate
 
@@ -456,7 +456,7 @@ RSpec.describe System::ProvisioningService do
         from = create(:system_node_instance, node: node, status: from_status,
                       config: { "cloud_instance_id" => "i-#{from_status}" })
         allow(adapter).to receive(:terminate_instance)
-          .with("i-#{from_status}").and_return({ success: true })
+          .with("i-#{from_status}", expected_name: from.provider_guest_name).and_return({ success: true })
 
         result = described_class.terminate_instance(instance: from)
 
