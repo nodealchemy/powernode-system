@@ -273,7 +273,6 @@ rather than polling. The runner (through
 | `provisioning_run_started` | run kicks off | `runner_id`, `step_count`, `layer_count` |
 | `provisioning_step_changed` | each step transition | `step_id`, `step_number`, `status`, `outputs`, `error` |
 | `phase_changed` / `status_changed` | mission phase / status change | `current_phase`, `status`, `phase_progress` |
-| `mission_handed_off` | handoff approved | `ralph_loop_id`, `phase: "adapting"` |
 
 Step `status` values are `executing`, `completed`, `failed`, and `rolled_back`.
 The provisioning UI consumes these via the step-progress stream and the
