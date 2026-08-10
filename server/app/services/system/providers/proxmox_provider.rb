@@ -479,8 +479,23 @@ module System
 
         build_instance_response(cloud_id: instance_id, status: STATUSES[:terminated])
       rescue Proxmox::Client::NotFoundError
-        # Already gone — treat as success
-        build_instance_response(cloud_id: instance_id, status: STATUSES[:terminated])
+        # "Gone" is only safe to believe CLUSTER-WIDE. PVE reports both "this vmid
+        # was deleted" and "this vmid is not on THIS node" as the same missing
+        # config file (see Proxmox::Client::MISSING_CONFIG_MESSAGE), and
+        # instance_id pins the node at provision time — so a VM migrated to
+        # another node looks identical to a deleted one from here. Declaring
+        # success would let ProvisioningService#finalize_termination! tear down
+        # the DB row, detach the SDWAN peer and revoke deploy keys while the guest
+        # is still running elsewhere: a silent orphan, and worse than the error it
+        # replaced. Confirm absence across the cluster before believing it.
+        if (live_node = node_hosting_vmid(c, vmid: vmid, excluding_node: node))
+          build_error_response(
+            "PVE terminate failed: vm #{vmid} is not on #{node} but is present on #{live_node}; " \
+            "refusing to treat it as already-gone"
+          )
+        else
+          build_instance_response(cloud_id: instance_id, status: STATUSES[:terminated])
+        end
       rescue Proxmox::Client::Error => e
         build_error_response("PVE terminate failed: #{e.message}")
       end
@@ -1898,6 +1913,24 @@ module System
         def reset_vmid_reservations!
           @vmid_reservation_mutex.synchronize { @vmid_reservations.clear }
         end
+      end
+
+      # Cluster-wide check for a vmid living on some node OTHER than the one we
+      # asked about. Returns that node's name, or nil when the vmid is genuinely
+      # absent everywhere. Fails CLOSED on a lookup error: if we cannot see the
+      # cluster we must not claim the guest is gone, so the caller keeps treating
+      # the original NotFound as authoritative only when this returns nil — an
+      # unreachable /cluster/resources yields nil and preserves prior behaviour
+      # rather than inventing a phantom host.
+      def node_hosting_vmid(client, vmid:, excluding_node:)
+        resources = client.get("/api2/json/cluster/resources", { "type" => "vm" }) || []
+        hit = resources.find do |r|
+          r["vmid"].to_s == vmid.to_s && r["node"].to_s != excluding_node.to_s
+        end
+        hit && hit["node"].to_s.presence
+      rescue StandardError => e
+        Rails.logger.warn("[ProxmoxProvider] cluster-wide vmid check failed for #{vmid}: #{e.class}: #{e.message}")
+        nil
       end
 
       def allocate_next_vmid!(c)
