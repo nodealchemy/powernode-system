@@ -42,6 +42,11 @@ module System
         class AuthError < Error; end
         class NotFoundError < Error; end
         class RateLimitError < Error; end
+
+        # PVE reports "this vmid has no config" as a 500, not a 404 — see
+        # handle_response. Matched on the message because the status code
+        # carries no way to tell it apart from a genuine server fault.
+        MISSING_CONFIG_MESSAGE = /configuration file .* does not exist/i
         class TaskFailedError < Error
           attr_reader :exit_status, :log_tail
           def initialize(message, exit_status:, log_tail: [])
@@ -275,7 +280,19 @@ module System
           when 429
             raise RateLimitError, extract_error_message(response, "Rate limited")
           else
-            raise Error, "PVE #{response.status}: #{extract_error_message(response, 'API error')}"
+            message = extract_error_message(response, "API error")
+            # PVE answers a request for a vmid it holds no config for with 500 +
+            # "Configuration file '...' does not exist", never 404. Callers key
+            # real behaviour on NotFoundError — terminate_instance's idempotent
+            # "already gone => success" branch, and get_instance's
+            # ResourceNotFoundError, which ProvisionVerifier renders as the
+            # actionable "provider has no record" rather than an opaque failure.
+            # Without this, tearing down an already-deleted VM reports an error
+            # and the verifier cannot tell "gone" from "PVE is broken"
+            # (IMP-019fe64b).
+            raise NotFoundError, message if MISSING_CONFIG_MESSAGE.match?(message)
+
+            raise Error, "PVE #{response.status}: #{message}"
           end
         end
 
