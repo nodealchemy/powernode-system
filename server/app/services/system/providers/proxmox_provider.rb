@@ -488,7 +488,7 @@ module System
         # the DB row, detach the SDWAN peer and revoke deploy keys while the guest
         # is still running elsewhere: a silent orphan, and worse than the error it
         # replaced. Confirm absence across the cluster before believing it.
-        if (live_node = node_hosting_vmid(c, vmid: vmid, excluding_node: node))
+        if (live_node = node_hosting_vmid(c, vmid: vmid, kind: kind, excluding_node: node))
           build_error_response(
             "PVE terminate failed: vm #{vmid} is not on #{node} but is present on #{live_node}; " \
             "refusing to treat it as already-gone"
@@ -1922,10 +1922,22 @@ module System
       # the original NotFound as authoritative only when this returns nil — an
       # unreachable /cluster/resources yields nil and preserves prior behaviour
       # rather than inventing a phantom host.
-      def node_hosting_vmid(client, vmid:, excluding_node:)
+      # KNOWN LIMIT: a vmid is not an identity. /cluster/nextid hands back the
+      # lowest FREE id, so recycling is routine — a stale row for a long-gone
+      # guest can name a vmid that now belongs to somebody else, and this check
+      # cannot tell "our VM migrated" from "a different VM wearing our old
+      # number". Matching `kind` removes the qemu/lxc half of that (free, since
+      # the listing carries type); the same-kind half needs the expected guest
+      # NAME threaded down from the caller, which is a BaseProvider signature
+      # change and is queued separately. Until then the failure is loud rather
+      # than silent — a wedged terminate, not an invisible orphan — which is the
+      # direction to be wrong in, but it does need an operator to break the tie.
+      def node_hosting_vmid(client, vmid:, kind:, excluding_node:)
         resources = client.get("/api2/json/cluster/resources", { "type" => "vm" }) || []
         hit = resources.find do |r|
-          r["vmid"].to_s == vmid.to_s && r["node"].to_s != excluding_node.to_s
+          r["vmid"].to_s == vmid.to_s &&
+            r["type"].to_s == kind.to_s &&
+            r["node"].to_s != excluding_node.to_s
         end
         hit && hit["node"].to_s.presence
       rescue StandardError => e
