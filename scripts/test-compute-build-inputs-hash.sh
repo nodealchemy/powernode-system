@@ -149,6 +149,13 @@ assert_builds "uncomputable local hash -> BUILD"     --module redis --repo "$REP
 assert_builds "unreachable/absent registry -> BUILD" --module redis --repo "$REPO" \
   --registry 127.0.0.1:1 --owner nobody
 
+# Self-protection: modules with out-of-tree inputs must refuse to skip when
+# nothing was declared, so BUILD_SKIP_UNCHANGED=1 is safe to set globally.
+for m in powernode-hub-backend powernode-hub-worker powernode-hub-frontend \
+         powernode-extension-system powernode-system-base module-forge; do
+  assert_builds "$m without declared inputs -> BUILD" --module "$m" --repo "$REPO"
+done
+
 # PATH stripped of oras: the tool being unavailable must not read as "skip".
 if PATH=/nonexistent bash "$SKIP_SH" --module redis --repo "$REPO" >/dev/null 2>&1; then
   fail "oras missing -> BUILD (exited 0 = SKIP)"

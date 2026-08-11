@@ -353,6 +353,26 @@ MOUNTED=("$BUILDENV/proc" "${MOUNTED[@]}")
 bind_mount /dev "$BUILDENV/dev"
 bind_mount /etc/resolv.conf "$BUILDENV/etc/resolv.conf"
 
+# Content-addressed build skip — ON by default from here (019ff2aa). Reverse-
+# dependency expansion legitimately names modules whose own inputs did not
+# change (one agent/ edit plans 22), and rebuilding those costs real minutes.
+# should-skip-build.sh compares a hash of the module's DECLARED inputs against
+# the org.powernode.build-inputs-sha256 annotation on the last published
+# artifact, and fails SAFE to BUILD on every error path.
+#
+# Safe to default ON because the unsafe modules opt THEMSELVES out: the ones
+# that read content outside modules/<slug>/ (the four stage15 needs_parent
+# modules, powernode-system-base which builds agent/, and module-forge which
+# bakes scripts/module-build/) refuse to skip unless BUILD_INPUT_PATHS declares
+# their real inputs. So this enables it exactly for the package-origin modules,
+# whose modules/<slug> tree IS their whole input.
+#
+# Overridable: set BUILD_SKIP_UNCHANGED=0 to force a rebuild of everything.
+# Reaches build-one-module.sh via process-environment inheritance through the
+# chroot below, the same way PARENT_PAT does.
+export BUILD_SKIP_UNCHANGED="${BUILD_SKIP_UNCHANGED:-1}"
+log "content-addressed skip: BUILD_SKIP_UNCHANGED=${BUILD_SKIP_UNCHANGED}"
+
 # --- 4. run build-one-module.sh inside the chroot. HOME=/root is set
 # explicitly (not inherited) so oras (invoked in the push step below)
 # writes its login config under a HOME that actually exists inside this

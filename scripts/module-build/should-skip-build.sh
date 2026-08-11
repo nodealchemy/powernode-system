@@ -40,6 +40,25 @@ set -uo pipefail
 ANNOTATION_KEY="org.powernode.build-inputs-sha256"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Modules whose build reads content OUTSIDE modules/<slug>/, so the default
+# input path is INCOMPLETE for them and a skip would compare an incomplete hash:
+#
+#   hub-backend|hub-worker|hub-frontend|extension-system  stage15's needs_parent
+#                                                         list — they package a
+#                                                         parent-repo subtree
+#   powernode-system-base                                 cross-compiles the Go
+#                                                         agent, reading agent/
+#                                                         (incl. agent/go.mod)
+#   module-forge                                          bakes scripts/module-build/*
+#                                                         into its own rootfs
+#
+# These REFUSE to skip unless the caller declares their real inputs via
+# BUILD_INPUT_PATHS. Encoding it here rather than leaving it to an operator
+# allowlist means BUILD_SKIP_UNCHANGED=1 can be turned on globally and still only
+# skip modules it is actually safe for — the unsafe ones opt themselves out.
+# Keep this list in step with stage15.sh's needs_parent arm.
+NEEDS_DECLARED_INPUTS="powernode-hub-backend powernode-hub-worker powernode-hub-frontend powernode-extension-system powernode-system-base module-forge"
+
 note() { echo "[skip-check] $*" >&2; }
 build() { note "$1 -> BUILD"; exit 1; }
 
@@ -64,6 +83,14 @@ done
 
 [ -n "$MODULE" ] || build "no --module given"
 command -v oras >/dev/null 2>&1 || build "oras not on PATH"
+
+# Self-protection: a module with out-of-tree inputs must have them declared, or
+# its hash cannot see a real input and the skip would reuse a stale artifact.
+if [ ${#HASH_ARGS[@]} -eq 0 ]; then
+  for _m in $NEEDS_DECLARED_INPUTS; do
+    [ "$MODULE" = "$_m" ] && build "$MODULE reads inputs outside modules/$MODULE/ and none were declared (set BUILD_INPUT_PATHS)"
+  done
+fi
 
 # 1. What would this build ship?
 local_args=(--module "$MODULE" --repo "$REPO" --ref "$REF" "${HASH_ARGS[@]+"${HASH_ARGS[@]}"}")
