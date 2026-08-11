@@ -97,25 +97,42 @@ module System
     # necessary but never sufficient; there was no rule to match.
     CORE_SOURCE_REPO_DEFAULT = "powernode/powernode-platform"
 
-    # Core paths that ship in NO module: prose, CI config, and repo hygiene.
-    # A core range touching only these genuinely has nothing to build, so it
-    # stays a quiet no-op — otherwise every docs/reference/auto regeneration
-    # becomes a failed dispatch. Everything else unmapped is treated as a
-    # MISSING RULE and fails loudly (see #guard_against_unmapped_core_change!),
-    # so the safe direction for anything ambiguous is to leave it OUT of here.
-    CORE_UNSHIPPED_PATH_RX = %r{
+    # Paths that ship in NO module, in EITHER repo: prose, CI config, repo
+    # hygiene. Shared deliberately — a file that is an inert no-op in one repo
+    # and a rebuild trigger in the other is exactly the asymmetry that hides a
+    # stale deploy. A range touching only these stays a quiet no-op, otherwise
+    # every docs/reference/auto regeneration becomes a failed dispatch.
+    UNSHIPPED_COMMON_RX = %r{
       \A(?:
-        docs/                                 |
-        \.(?:github|gitea|ci|claude|gitflow)/  |
-        \.[^/]+\z                             |
-        [^/]*\.md\z                           |
+        docs/                                      |
+        \.(?:git|github|gitea|ci|claude|gitflow)/   |
+        \.[^/]+\z                                  |
+        [^/]*\.md\z                                |
         (?:LICENSE|VERSION)\z
       )
     }x.freeze
 
+    # Core: everything else unmapped is a MISSING RULE and fails loudly (see
+    # #guard_against_unmapped_core_change!), so the safe direction for anything
+    # ambiguous is to leave it OUT.
+    CORE_UNSHIPPED_PATH_RX = UNSHIPPED_COMMON_RX
+
     # How many unmapped core paths a PlanningError names before summarizing the
     # rest, for the same reason as EXCLUDED_MESSAGE_SAMPLE_LIMIT above.
     UNMAPPED_CORE_SAMPLE_LIMIT = 20
+
+    # The manifest repo IS the system extension's tree, and
+    # powernode-extension-system's file_spec is /opt/powernode/extensions/system/**
+    # — so a push here changes what that module ships unless the path is masked
+    # out of it. On top of the inert set above, that manifest also masks
+    # initramfs/ and tmp/ (it masks modules/ and agent/dist/ too, but those match
+    # their own rules first and never reach this test).
+    #
+    # Tracking the manifest's mask is the point: inventing extra exclusions here
+    # is how a shipped file silently stops triggering a rebuild, which is the bug
+    # this closes. Prose stays exempt because nothing on a node reads it.
+    MANIFEST_UNSHIPPED_PATH_RX = Regexp.union(UNSHIPPED_COMMON_RX, %r{\A(?:initramfs/|tmp/)}).freeze
+    MANIFEST_EXTENSION_MODULE = "powernode-extension-system"
 
     # Core path -> the module that PACKAGES that tree. Applied ONLY when the diff
     # is taken against the core repo: `server/` exists in BOTH repos and means
@@ -211,6 +228,11 @@ module System
             next
           end
 
+          # agent/ keeps its single system-base target. The agent SOURCE does
+          # ride along in the extension layer (only agent/dist is masked), but
+          # nothing executes it from there — the binary comes from system-base
+          # — so planning a second module would double the fan-out on every
+          # agent change for no functional gain.
           if path.match?(AGENT_PATH_RX)
             dirty << AGENT_FORCED_MODULE
             next
@@ -218,7 +240,10 @@ module System
 
           if (m = path.match(MODULE_PATH_RX))
             dirty << m[1]
+            next
           end
+
+          dirty << MANIFEST_EXTENSION_MODULE unless path.match?(MANIFEST_UNSHIPPED_PATH_RX)
         end
       end
 

@@ -257,10 +257,12 @@ RSpec.describe System::ModuleBuildPlannerService do
           .to include("powernode-hub-backend")
       end
 
-      # The manifest repo has its own legitimate zero-plan cases (a docs-only or
-      # server/** push there). Widening the guard must not change that.
+      # The manifest repo has its own legitimate zero-plan cases. Widening the
+      # guard must not change that. (docs/ is MASKED out of the extension
+      # module's file_spec, so it genuinely ships nowhere — unlike server/**,
+      # which does ship and is covered by the manifest-repo block below.)
       it "leaves a manifest-repo zero-plan silent, exactly as before" do
-        stub_changed_paths([ "server/app/services/system/whatever.rb" ])
+        stub_changed_paths([ "docs/runbooks/whatever.md" ])
         expect(modules_in(described_class.plan(base_sha: base_sha, head_sha: head_sha))).to be_empty
       end
     end
@@ -272,6 +274,89 @@ RSpec.describe System::ModuleBuildPlannerService do
       plan = described_class.plan(base_sha: base_sha, head_sha: head_sha)
 
       expect(modules_in(plan)).not_to include("powernode-hub-backend")
+    end
+  end
+
+  # The mirror image of the core gap. powernode-extension-system's file_spec is
+  # /opt/powernode/extensions/system/** — i.e. THIS repo's whole tree — masking
+  # only modules/, docs/, initramfs/, agent/dist/, tmp/ and .git/. So a push here
+  # touching server/** (or frontend/, scripts/, extension.json …) changes what
+  # that module ships, yet the only manifest-repo rules were modules/<slug>/ and
+  # agent/: it planned nothing and the extension's own repo could not rebuild
+  # itself. Rules mirror the manifest's mask rather than inventing a list, so the
+  # two cannot drift apart.
+  describe "manifest-repo paths that ship in the extension module" do
+    let!(:ext_system_real) do
+      create(:system_node_module, account: account, name: "powernode-extension-system",
+             manifest_yaml: "schema_version: 1")
+    end
+    # The core-diff control below maps server/ -> powernode-hub-backend; without
+    # the row it is unknown and the empty-plan guard fires before the assertion.
+    let!(:hub_backend_real) do
+      create(:system_node_module, account: account, name: "powernode-hub-backend",
+             manifest_yaml: "schema_version: 1")
+    end
+
+    def manifest_plan(paths)
+      stub_changed_paths(paths)
+      described_class.plan(base_sha: base_sha, head_sha: head_sha)
+    end
+
+    it "plans the extension module for a server/ change" do
+      expect(modules_in(manifest_plan([ "server/app/services/system/whatever.rb" ])))
+        .to include("powernode-extension-system")
+    end
+
+    it "plans the extension module for a frontend/ change" do
+      expect(modules_in(manifest_plan([ "frontend/src/pages/Nodes.tsx" ])))
+        .to include("powernode-extension-system")
+    end
+
+    it "plans the extension module for a root file it ships, like extension.json" do
+      expect(modules_in(manifest_plan([ "extension.json" ])))
+        .to include("powernode-extension-system")
+    end
+
+    it "plans it ONCE for several shipped files" do
+      plan = manifest_plan([ "server/a.rb", "server/b.rb", "scripts/c.sh" ])
+      expect(modules_in(plan).count("powernode-extension-system")).to eq(1)
+    end
+
+    # Masked out of the module's file_spec — genuinely ships nowhere.
+    it "does not plan it for docs/, which the manifest masks" do
+      expect(modules_in(manifest_plan([ "docs/runbooks/x.md" ])))
+        .not_to include("powernode-extension-system")
+    end
+
+    it "does not plan it for initramfs/, which the manifest masks" do
+      expect(modules_in(manifest_plan([ "initramfs/build.sh" ])))
+        .not_to include("powernode-extension-system")
+    end
+
+    # modules/ is masked too, and already routes to the module it describes.
+    it "still routes modules/<slug>/ to that slug alone" do
+      plan = modules_in(manifest_plan([ "modules/redis/rootfs/marker" ]))
+      expect(plan).to include("redis")
+      expect(plan).not_to include("powernode-extension-system")
+    end
+
+    # agent/ keeps its existing system-base target. The agent SOURCE does ride
+    # along in the extension layer, but nothing executes it from there (the
+    # binary comes from system-base), so adding a second module would double
+    # the fan-out on every agent change for no functional gain.
+    it "leaves agent/ routed to system-base only" do
+      plan = modules_in(manifest_plan([ "agent/internal/lifecycle/service.go" ]))
+      expect(plan).to include("powernode-system-base")
+      expect(plan).not_to include("powernode-extension-system")
+    end
+
+    # The reverse of the core-rule leak already guarded above: manifest rules
+    # must not fire on a core diff, where extensions/system is a gitlink.
+    it "does not double-plan on a core diff" do
+      stub_changed_paths([ "server/app/models/a.rb" ], source_repo: "powernode/powernode-platform")
+      plan = modules_in(described_class.plan(base_sha: base_sha, head_sha: head_sha,
+                                             source_repo: "powernode/powernode-platform"))
+      expect(plan).not_to include("powernode-extension-system")
     end
   end
 
