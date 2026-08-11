@@ -222,6 +222,22 @@ echo "[push] apt-closure-sha256 for $MODULE: ${APT_HASH:-<empty>}"
 PACKAGES_HASH=$(sha256sum "/tmp/$MODULE.packages.txt" | awk '{print $1}')
 echo "[push] resolved-packages sha256 for $MODULE: $PACKAGES_HASH"
 
+# Content-addressed build skip (019ff2aa): a hash of this module's DECLARED
+# build inputs, so the next run can answer "would this rebuild ship the same
+# files?" without comparing artifact digests — which can never match, because
+# stage2-carve stamps the build sha into SOURCE_DATE_EPOCH and the erofs UUID.
+# BUILD_INPUT_PATHS is a space-separated list of extra input paths for modules
+# whose stage15 arm packages a parent-repo subtree; unset is correct for a
+# package-origin module, whose modules/<slug> tree is its whole input.
+# Best-effort: an empty hash simply omits the annotation, and a missing
+# annotation reads as "cannot skip" downstream, never as "skip".
+PUSH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUILD_INPUTS_ARGS=(--module "$MODULE")
+for _p in ${BUILD_INPUT_PATHS:-}; do BUILD_INPUTS_ARGS+=(--input-path "$_p"); done
+BUILD_INPUTS_HASH=$(bash "$PUSH_SCRIPT_DIR/compute-build-inputs-hash.sh" \
+  "${BUILD_INPUTS_ARGS[@]}" 2>/dev/null || true)
+echo "[push] build-inputs sha256 for $MODULE: ${BUILD_INPUTS_HASH:-<empty>}"
+
 # oras complains about absolute paths in source operands.
 # Run from /tmp so the file operands are bare names; the
 # registry sees them with the same shape it always has
@@ -238,6 +254,9 @@ if [[ -n "$APT_HASH" ]]; then
   ORAS_PUSH_ARGS+=(--annotation "org.powernode.apt-closure-sha256=$APT_HASH")
 fi
 ORAS_PUSH_ARGS+=(--annotation "org.powernode.packages-sha256=$PACKAGES_HASH")
+if [[ -n "$BUILD_INPUTS_HASH" ]]; then
+  ORAS_PUSH_ARGS+=(--annotation "org.powernode.build-inputs-sha256=$BUILD_INPUTS_HASH")
+fi
 # Verifiable built-from-SHA provenance (operator amendment
 # 2026-07-05): every module in this matrix — powernode-system-base
 # in particular, since its ENTIRE payload is the cross-compiled Go

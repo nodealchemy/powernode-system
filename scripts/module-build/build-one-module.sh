@@ -177,6 +177,22 @@ snapshot=$(jq -r '.build.apt_snapshot // "none"' /tmp/manifest.json)
 
 echo "[build-one-module] module=$MODULE sha=$GITHUB_SHA apt_snapshot=$snapshot"
 
+# Content-addressed skip (019ff2aa). DEFAULT OFF, matching the APT_DRIFT_CHECK
+# convention: reverse-dependency expansion legitimately names modules whose own
+# inputs did not change (one agent/ edit plans 22), and rebuilding them costs
+# real minutes. Skipping the WORK leaves planning semantics — and parity between
+# ci-compute-dirty-closure.sh and the Ruby planner — completely untouched.
+# should-skip-build.sh fails SAFE: anything unexpected returns BUILD.
+if [ "${BUILD_SKIP_UNCHANGED:-0}" = "1" ]; then
+  skip_args=(--module "$MODULE" --apt-snapshot "$snapshot")
+  for _p in ${BUILD_INPUT_PATHS:-}; do skip_args+=(--input-path "$_p"); done
+  if bash "$SCRIPT_DIR/should-skip-build.sh" "${skip_args[@]}"; then
+    echo "[build-one-module] SKIPPED $MODULE — declared inputs match the published artifact"
+    echo "[build-one-module] (re-tag the existing digest; nothing rebuilt)"
+    exit 0
+  fi
+fi
+
 echo "[build-one-module] === Stage 1: rootfs bootstrap ==="
 bash "$SCRIPT_DIR/stage1-rootfs.sh" --module "$MODULE" --apt-snapshot "$snapshot"
 
