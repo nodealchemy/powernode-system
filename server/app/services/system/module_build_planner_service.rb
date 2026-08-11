@@ -78,6 +78,38 @@ module System
     AGENT_PATH_RX = %r{\Aagent/}.freeze
     AGENT_FORCED_MODULE = "powernode-system-base"
 
+    # Paths under agent/ that CANNOT change the artifact system-base ships.
+    # Its file_spec is the COMPILED binary (/usr/sbin/powernode-agent,
+    # /sbin/powernode-agent) plus /etc/powernode/** and two drop-ins — and the
+    # /etc/powernode skeleton comes from the module's own rootfs/ (caught by
+    # MODULE_PATH_RX), not from agent source. Verified before narrowing: there is
+    # no `go:embed` anywhere in the tree, so no non-Go file can reach the binary,
+    # and agent/test/ holds only _test.go.
+    #
+    # Why this matters more than it looks: system-base is what nearly everything
+    # depends on, so reverse-dependency expansion turned ONE edit under agent/
+    # into a 22-module batch (measured on the live planner, 2026-08-11). 142 of
+    # the tree's 209 Go files are _test.go and none of them are in the binary.
+    #
+    # Excluded paths are NOT dropped — they fall through to the manifest-repo
+    # rules below and plan powernode-extension-system, which genuinely does ship
+    # agent sources as files (only agent/dist is masked out of that layer). So a
+    # test-only edit rebuilds one module instead of the catalog.
+    #
+    # A comment-only change inside a real .go file still triggers: a path rule
+    # cannot see that the compiled output is unchanged. Over-triggering there is
+    # the safe direction.
+    AGENT_UNSHIPPED_PATH_RX = %r{
+      \Aagent/(?:
+        .*_test\.go\z      |
+        test/              |
+        testdata/          |
+        docs/              |
+        \.[^/]+/           |
+        [^/]*\.md\z
+      )
+    }x.freeze
+
     # Mirrors MODULES_DIR default ("modules") + the bash script's
     # `^${MODULES_DIR}/([^/]+)/` capture.
     MODULE_PATH_RX = %r{\Amodules/([^/]+)/}.freeze
@@ -228,12 +260,16 @@ module System
             next
           end
 
-          # agent/ keeps its single system-base target. The agent SOURCE does
-          # ride along in the extension layer (only agent/dist is masked), but
-          # nothing executes it from there — the binary comes from system-base
-          # — so planning a second module would double the fan-out on every
-          # agent change for no functional gain.
-          if path.match?(AGENT_PATH_RX)
+          # agent/ keeps its single system-base target when the change can reach
+          # the compiled binary. The agent SOURCE also rides along in the
+          # extension layer, but nothing executes it from there, so a shipping
+          # change plans system-base ALONE rather than both.
+          #
+          # A change that cannot reach the binary (tests, docs, CI config) falls
+          # THROUGH deliberately: it still alters what the extension layer ships,
+          # so the rules below plan that one module instead of forcing a
+          # system-base rebuild and its whole dependency closure.
+          if path.match?(AGENT_PATH_RX) && !path.match?(AGENT_UNSHIPPED_PATH_RX)
             dirty << AGENT_FORCED_MODULE
             next
           end

@@ -285,6 +285,63 @@ RSpec.describe System::ModuleBuildPlannerService do
   # agent/: it planned nothing and the extension's own repo could not rebuild
   # itself. Rules mirror the manifest's mask rather than inventing a list, so the
   # two cannot drift apart.
+  # powernode-system-base's file_spec ships the COMPILED agent binary
+  # (/usr/sbin/powernode-agent, /sbin/powernode-agent) plus /etc/powernode/** and
+  # two drop-ins. Nothing else from agent/ ships as files: there is no go:embed
+  # anywhere in the tree, and the /etc/powernode skeleton comes from the module's
+  # own rootfs/ (caught by MODULE_PATH_RX), not from agent source.
+  #
+  # AGENT_PATH_RX was a bare \Aagent/, so ANY file under agent/ forced a
+  # system-base rebuild — and system-base is what nearly everything depends on, so
+  # reverse-dependency expansion turned one edit into a 22-module batch (measured
+  # on the live planner). 142 of the tree's 209 Go files are _test.go, which the
+  # shipped binary never contains.
+  describe "agent paths are scoped to what the binary actually contains" do
+    let!(:ext_system_real) do
+      create(:system_node_module, account: account, name: "powernode-extension-system",
+             manifest_yaml: "schema_version: 1")
+    end
+
+    def plan_for(path)
+      stub_changed_paths([ path ])
+      modules_in(described_class.plan(base_sha: base_sha, head_sha: head_sha))
+    end
+
+    it "still rebuilds system-base for a compiled source file" do
+      expect(plan_for("agent/internal/runtime/softreboot.go")).to include("powernode-system-base")
+    end
+
+    it "still rebuilds system-base for a dependency change" do
+      expect(plan_for("agent/go.mod")).to include("powernode-system-base")
+      expect(plan_for("agent/go.sum")).to include("powernode-system-base")
+    end
+
+    it "does NOT rebuild system-base for a _test.go file" do
+      expect(plan_for("agent/internal/runtime/softreboot_test.go"))
+        .not_to include("powernode-system-base")
+    end
+
+    it "does NOT rebuild system-base for the integration test tree" do
+      expect(plan_for("agent/test/integration/bare_metal_test.go"))
+        .not_to include("powernode-system-base")
+    end
+
+    it "does NOT rebuild system-base for agent docs or CI config" do
+      expect(plan_for("agent/README.md")).not_to include("powernode-system-base")
+      expect(plan_for("agent/.gitea/workflows/build.yaml")).not_to include("powernode-system-base")
+    end
+
+    # THE POINT OF THE CHANGE: a test-only edit must not fan out across the
+    # dependency graph. It still rebuilds the extension module, because agent
+    # sources DO ship in that layer (only agent/dist is masked out of it) — one
+    # module instead of the whole catalog.
+    it "collapses a test-only edit to the extension module alone" do
+      plan = plan_for("agent/internal/runtime/softreboot_test.go")
+
+      expect(plan).to eq([ "powernode-extension-system" ])
+    end
+  end
+
   describe "manifest-repo paths that ship in the extension module" do
     let!(:ext_system_real) do
       create(:system_node_module, account: account, name: "powernode-extension-system",
