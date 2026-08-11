@@ -412,6 +412,66 @@ module System
       nil
     end
 
+    # BUILD_SHA — the ref the builder checks out from the MODULE SOURCE repo (the
+    # one holding modules/<slug>/manifest.yaml). NOT the core sha.
+    #
+    # A core-triggered batch diffs powernode-platform, so head_sha is a core sha
+    # that does not exist in the module source repo; the builder died at
+    # `fatal: remote error: upload-pack: not our ref <core sha>` eight seconds in.
+    # Crucially the core TREE never came from BUILD_SHA anyway — stage15.sh clones
+    # the parent from GitHub's powernode-platform default branch (develop), so the
+    # core content is whatever sits on that branch. head_sha's real jobs here are
+    # the DIFF (which modules to plan) and the TAG; the checkout was a third,
+    # incompatible use it was silently doing as well.
+    #
+    # So for a core-sourced batch: build the module source at its own tip, keep
+    # the core sha as the tag. Failure to resolve that tip falls back to the
+    # previous behaviour — no worse than before — and logs why.
+    def module_source_build_sha
+      return @batch.head_sha unless core_sourced_batch?
+
+      @module_source_build_sha ||= resolve_module_source_tip || @batch.head_sha
+    end
+
+    def core_sourced_batch?
+      repo = @batch.metadata.is_a?(Hash) ? @batch.metadata["source_repo"] : nil
+      repo.to_s.strip.casecmp?(::System::ModuleBuildPlannerService::CORE_SOURCE_REPO_DEFAULT)
+    end
+
+    def resolve_module_source_tip
+      owner, repo = module_source_repo.split("/", 2)
+      credential = ::System::CiRunnerRegistrationResolver.new(account: @batch.account).credential
+      return nil unless credential
+
+      client = ::Devops::Git::ApiClient.for(credential)
+      default_branch = client.get_repository(owner, repo).to_h["default_branch"].presence || "develop"
+      branch = Array(client.list_branches(owner, repo)).find { |b| b.to_h["name"].to_s == default_branch }
+      sha = branch.to_h.dig("commit", "id").presence
+      Rails.logger.info(
+        "[NativeModuleBuildOrchestrator] core-sourced batch #{@batch.id}: building module source " \
+        "#{module_source_repo}@#{default_branch} (#{sha.to_s[0, 7]}), tagged with core sha " \
+        "#{@batch.head_sha.to_s[0, 7]}"
+      )
+      sha
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[NativeModuleBuildOrchestrator] could not resolve #{module_source_repo} tip for batch " \
+        "#{@batch.id} (#{e.class}: #{e.message}) — falling back to head_sha, which will fail the " \
+        "clone if it is a core sha"
+      )
+      nil
+    end
+
+    # Same SiteSetting -> ENV -> default chain the planner uses; duplicated for
+    # the same reason that one documents (no shared config seam yet).
+    def module_source_repo
+      ::SiteSetting.get("ci_build_source_repo").presence ||
+        ENV["CI_BUILD_SOURCE_REPO"].presence ||
+        ::System::ModuleBuildPlannerService::CI_BUILD_SOURCE_REPO_DEFAULT
+    rescue StandardError
+      ::System::ModuleBuildPlannerService::CI_BUILD_SOURCE_REPO_DEFAULT
+    end
+
     # Platform (ci.module_build) tasks carry {module, sha, oci_ref, batch_id}.
     # Package (ci.package_build — campaign 019f6084 inc2 §4.3.2) tasks carry the
     # same four PLUS the mmdebstrap build inputs (package name, arch, repo
@@ -421,7 +481,7 @@ module System
     def build_task_options(slug, entry)
       base = {
         "module"   => slug,
-        "sha"      => @batch.head_sha,
+        "sha"      => module_source_build_sha,
         "oci_ref"  => entry["tag"],
         "batch_id" => @batch.id
       }

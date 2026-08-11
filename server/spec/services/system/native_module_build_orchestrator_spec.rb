@@ -149,6 +149,90 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
     end
   end
 
+  # BUILD_SHA is the ref the builder checks out from the MODULE SOURCE repo
+  # (the one holding modules/<slug>/manifest.yaml). A CORE-triggered batch's
+  # head_sha is a powernode-platform sha that does not exist there — the live
+  # build died at `upload-pack: not our ref`. The core tree does NOT come from
+  # BUILD_SHA anyway: stage15 clones the parent from GitHub's default branch.
+  describe "BUILD_SHA for a core-sourced batch" do
+    def core_batch(head_sha: "409c706ecd758a04f2237fdb8f2a1092106b903d")
+      mod = create_module("powernode-hub-backend")
+      plan = [ { module: mod.name, oci_ref: head_sha[0, 7] } ]
+      System::ModuleBuildBatch.create_for(
+        account: account, plan: plan, trigger: "manual",
+        base_sha: "b3bc6908e9f9078797488f7e48e61970b78718b0", head_sha: head_sha,
+        source_repo: "powernode/powernode-platform"
+      )
+    end
+
+    def stub_module_source_tip(sha)
+      # A real credential fixture, not a stubbed resolver: CiRunnerLeaseService
+      # uses the same resolver, so stubbing the class breaks the lease path.
+      provider = create(:git_provider, :gitea, account: account)
+      create(:git_provider_credential, :gitea, account: account, provider: provider)
+      fake = instance_double(::Devops::Git::ApiClient)
+      allow(::Devops::Git::ApiClient).to receive(:for).and_return(fake)
+      # The lease path shares this client; it only needs to know runners are not
+      # synced here.
+      allow(fake).to receive(:supports_runners?).and_return(false)
+      allow(fake).to receive(:get_repository).and_return({ "default_branch" => "develop" })
+      allow(fake).to receive(:list_branches)
+        .and_return([ { "name" => "develop", "commit" => { "id" => sha } } ])
+      fake
+    end
+
+    it "builds the module source at ITS OWN tip, not the core sha" do
+      seed_pool_member
+      stub_module_source_tip("e8f31a9d1111111111111111111111111111aaaa")
+      batch = core_batch
+
+      described_class.dispatch!(batch: batch)
+
+      task = System::Task.where(command: "ci.module_build", account: account).first
+      expect(task.options["sha"]).to eq("e8f31a9d1111111111111111111111111111aaaa")
+    end
+
+    it "still tags the artifact with the CORE sha" do
+      seed_pool_member
+      stub_module_source_tip("e8f31a9d1111111111111111111111111111aaaa")
+      batch = core_batch
+
+      described_class.dispatch!(batch: batch)
+
+      task = System::Task.where(command: "ci.module_build", account: account).first
+      expect(task.options["oci_ref"]).to eq("409c706")
+    end
+
+    it "falls back to head_sha when the tip cannot be resolved (no worse than before)" do
+      seed_pool_member
+      provider = create(:git_provider, :gitea, account: account)
+      create(:git_provider_credential, :gitea, account: account, provider: provider)
+      fake = instance_double(::Devops::Git::ApiClient)
+      allow(::Devops::Git::ApiClient).to receive(:for).and_return(fake)
+      # The lease path shares this client; it only needs to know runners are not
+      # synced here.
+      allow(fake).to receive(:supports_runners?).and_return(false)
+      allow(fake).to receive(:get_repository).and_raise(StandardError, "gitea down")
+      batch = core_batch
+
+      described_class.dispatch!(batch: batch)
+
+      task = System::Task.where(command: "ci.module_build", account: account).first
+      expect(task.options["sha"]).to eq("409c706ecd758a04f2237fdb8f2a1092106b903d")
+    end
+
+    it "leaves a manifest-repo batch's BUILD_SHA exactly as before" do
+      seed_pool_member
+      mod = create_module("mod-a")
+      batch = build_batch(modules: [ mod ], head_sha: "systemsha987654")
+
+      described_class.dispatch!(batch: batch)
+
+      task = System::Task.where(command: "ci.module_build", account: account).first
+      expect(task.options["sha"]).to eq("systemsha987654")
+    end
+  end
+
   describe "#advance!" do
     def dispatch_single(mod, tag: "abc1234")
       batch = build_batch(modules: [ mod ], tag: tag)
