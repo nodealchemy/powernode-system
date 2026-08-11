@@ -1307,6 +1307,18 @@ RSpec.describe System::Providers::ProxmoxProvider do
         hash_including("ssh-public-keys" => match(/ssh-ed25519[%+]/))
       )
     end
+
+    # IMP-52d99aebeaaf, end-to-end: the postcondition must actually be WIRED into
+    # the create path, not merely exist as a helper. A POST that returns no UPID
+    # means no PVE worker task was submitted, so no guest exists — reporting
+    # success here is what mints a phantom running row.
+    it "does not report success when the create POST returns no UPID" do
+      allow(client).to receive(:post)
+        .with("/api2/json/nodes/dna/lxc", anything).and_return(nil)
+
+      expect { provider.create_instance(params) }
+        .to raise_error(System::Providers::BaseProvider::ProviderError, /never submitted/i)
+    end
   end
 
   describe "#start_instance" do
@@ -1456,6 +1468,33 @@ RSpec.describe System::Providers::ProxmoxProvider do
       result = provider.terminate_instance("dna/qemu/9009", expected_name: "dryrun-web-1")
 
       expect(result[:success]).to be false
+    end
+  end
+
+  # IMP-52d99aebeaaf. A POSITIVE postcondition at the point of creation.
+  # ProvisioningService transitions the row to running on a success response, so
+  # a create that never reached PVE mints a phantom: status=running,
+  # metadata={}, no VM. A submitted PVE create ALWAYS returns a worker UPID —
+  # the original incident's forensics were exactly "no qmclone/qmcreate task on
+  # the node" — so a blank one means nothing was submitted.
+  describe "create postcondition (submitted-task assertion)" do
+    it "raises rather than reporting success when the create POST returns no UPID" do
+      expect {
+        provider.send(:assert_create_submitted!, nil, kind: "qemu", node: "dna", vmid: 9100)
+      }.to raise_error(System::Providers::BaseProvider::ProviderError, /never submitted/i)
+    end
+
+    it "treats a blank/whitespace UPID as not submitted" do
+      expect {
+        provider.send(:assert_create_submitted!, "  ", kind: "lxc", node: "dna", vmid: 9101)
+      }.to raise_error(System::Providers::BaseProvider::ProviderError, /never submitted/i)
+    end
+
+    it "accepts a real UPID" do
+      expect {
+        provider.send(:assert_create_submitted!, "UPID:dna:0000A1B2:qmcreate:9100:root@pam:",
+                      kind: "qemu", node: "dna", vmid: 9100)
+      }.not_to raise_error
     end
   end
 

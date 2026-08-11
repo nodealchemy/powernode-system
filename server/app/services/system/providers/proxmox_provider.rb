@@ -898,6 +898,7 @@ module System
         end
 
         create_upid = c.post("/api2/json/nodes/#{node}/qemu", body)
+        assert_create_submitted!(create_upid, kind: "qemu", node: node, vmid: vmid)
         c.wait_task(node: node, upid: create_upid)
 
         resize_boot_disk!(c, node: node, vmid: vmid, params: params, preset: preset)
@@ -1333,6 +1334,7 @@ module System
         body["args"] = (kernel_args + fw_args).join(" ")
 
         create_upid = c.post("/api2/json/nodes/#{node}/qemu", body)
+        assert_create_submitted!(create_upid, kind: "qemu", node: node, vmid: vmid)
         c.wait_task(node: node, upid: create_upid)
 
         instance_id = "#{node}/qemu/#{vmid}"
@@ -1484,6 +1486,9 @@ module System
             preset: preset
           )
         end
+        # Asserted AFTER the :retry_with_fresh_vmid branch above — that sentinel
+        # is a legitimate control value, not a missing submission.
+        assert_create_submitted!(create_upid, kind: "qemu", node: node, vmid: vmid)
         c.wait_task(node: node, upid: create_upid)
 
         resize_boot_disk!(c, node: node, vmid: vmid, params: params, preset: preset)
@@ -1758,6 +1763,7 @@ module System
         end
 
         create_upid = c.post("/api2/json/nodes/#{node}/lxc", body)
+        assert_create_submitted!(create_upid, kind: "lxc", node: node, vmid: vmid)
         c.wait_task(node: node, upid: create_upid)
 
         # Set protection
@@ -1782,6 +1788,29 @@ module System
         else
           build_instance_response(cloud_id: instance_id, status: STATUSES[:stopped])
         end
+      end
+
+      # IMP-52d99aebeaaf — the POSITIVE postcondition at the point of creation.
+      # ProvisioningService transitions the NodeInstance to running on a success
+      # response, so a create that never reached PVE mints a phantom:
+      # status=running, metadata={}, no VM. The /cluster/nextid race that caused
+      # the original incident is fixed by reserve_vmid!, and verify now
+      # reconciles against the live provider — but verify is LATE. Any future
+      # cause of a non-submitted create (token scope change, storage
+      # precondition, a new boot_mode path, a swallowed 5xx) reproduces the same
+      # symptom and survives until then.
+      #
+      # A submitted PVE create ALWAYS returns a UPID for its worker task; the
+      # original incident's forensics were precisely "no qmclone/qmcreate task
+      # on the node". Asserting it costs no extra API call — we already hold the
+      # POST's return value — which is why this is checked here rather than by
+      # re-reading the guest, and it fails at create instead of at verify.
+      def assert_create_submitted!(upid, kind:, node:, vmid:)
+        return if upid.to_s.strip.present?
+
+        raise ProviderError,
+              "PVE #{kind} create for #{node}/#{vmid} returned no task UPID — the create was " \
+              "never submitted; refusing to report a guest that does not exist"
       end
 
       # ============================================================

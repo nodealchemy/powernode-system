@@ -89,7 +89,7 @@ there until you act.
 | 2 | `review_plan` | Review & Approve | **yes** (`plan_review`) | — (waits for you) |
 | 3 | `execute` | Provision Resources | no | `AiProvisioningExecuteJob` |
 | 4 | `verify` | Verify SLO Targets | no | `AiProvisioningVerifyJob` |
-| 5 | `handoff` | Hand Off | **yes** (`handoff`) | `AiProvisioningHandoffJob` |
+| 5 | `handoff` | Hand Off | **yes** (`handoff`) | — (waits for you) |
 | 6 | `adapting` | Continuous Adaptation | no | — (sensor-driven, long-lived) |
 
 The canonical pipeline is therefore:
