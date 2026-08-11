@@ -285,6 +285,51 @@ RSpec.describe System::ModuleBuildPlannerService do
   # agent/: it planned nothing and the extension's own repo could not rebuild
   # itself. Rules mirror the manifest's mask rather than inventing a list, so the
   # two cannot drift apart.
+  # The shared build scripts are COPIED into module-forge's rootfs at ITS build
+  # time, so a builder runs whichever copy was baked into the erofs it booted.
+  # Until this rule existed, editing build-one-module.sh / push.sh / stage*.sh
+  # matched NO rule at all, so no rebuild was triggered and every builder kept
+  # running the stale copy. Mirrors the bash script's ^scripts/module-build/
+  # special case (test_build_scripts_change_forces_module_forge).
+  describe "shared build-script changes rebuild module-forge" do
+    let!(:module_forge) do
+      create(:system_node_module, account: account, name: "module-forge",
+             manifest_yaml: "schema_version: 1")
+    end
+    # The fall-through control below lands on the extension module; without the
+    # row it is unknown and the empty-plan guard fires before the assertion.
+    let!(:ext_system_real) do
+      create(:system_node_module, account: account, name: "powernode-extension-system",
+             manifest_yaml: "schema_version: 1")
+    end
+
+    def plan_for(path)
+      stub_changed_paths([ path ])
+      modules_in(described_class.plan(base_sha: base_sha, head_sha: head_sha))
+    end
+
+    it "plans module-forge for a build-script change" do
+      expect(plan_for("scripts/module-build/build-one-module.sh")).to include("module-forge")
+    end
+
+    it "plans it for the new skip machinery too" do
+      expect(plan_for("scripts/module-build/should-skip-build.sh")).to include("module-forge")
+      expect(plan_for("scripts/module-build/compute-build-inputs-hash.sh")).to include("module-forge")
+    end
+
+    # It must NOT fall through to the extension module: these scripts reach a
+    # builder only via module-forge's rootfs, so rebuilding the extension layer
+    # would look like a deploy while changing nothing that runs.
+    it "does not merely rebuild the extension module" do
+      expect(plan_for("scripts/module-build/push.sh")).to eq([ "module-forge" ])
+    end
+
+    # A script elsewhere under scripts/ is not baked into module-forge.
+    it "leaves other scripts/ paths on the extension module" do
+      expect(plan_for("scripts/pattern-validation.sh")).not_to include("module-forge")
+    end
+  end
+
   # powernode-system-base's file_spec ships the COMPILED agent binary
   # (/usr/sbin/powernode-agent, /sbin/powernode-agent) plus /etc/powernode/** and
   # two drop-ins. Nothing else from agent/ ships as files: there is no go:embed

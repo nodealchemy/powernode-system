@@ -81,6 +81,13 @@ make_fixture_repo() {
   # Add it so the agent-change test asserts something concrete.
   make_manifest powernode-system-base  ""                                 "agent.binary@1.0"        "ca-certificates"
 
+  # Same shape for the build-script special-case: module-forge bakes
+  # scripts/module-build/*.sh into its own rootfs at build time.
+  make_manifest module-forge           ""                                 "build.forge@1.0"
+
+  mkdir -p scripts/module-build
+  echo "# build-one-module stub" > scripts/module-build/build-one-module.sh
+
   echo "// agent main.go stub" > agent/main.go
   echo "# workflow stub" > .gitea/workflows/build-platform-modules.yaml
   echo "FROM debian:trixie" > templates/module-repo/Containerfile
@@ -192,9 +199,10 @@ test_workflow_change_forces_all() {
   echo "# rev" >> "$repo/.gitea/workflows/build-platform-modules.yaml"
   git -C "$repo" add -A && git -C "$repo" commit -q -m "touch workflow"
   cd "$repo"
-  # All 6 modules should be dirty
+  # All 7 modules should be dirty (module-forge joined the fixture with the
+  # build-script special-case).
   assert_equal "workflow change → all modules" \
-    "base-os,hub-backend,postgres-primary,postgres-replica,powernode-system-base,redis" "$(run_script)"
+    "base-os,hub-backend,module-forge,postgres-primary,postgres-replica,powernode-system-base,redis" "$(run_script)"
 }
 
 test_no_changes() {
@@ -316,7 +324,20 @@ echo "ci-compute-dirty-closure.sh test suite"
 echo "======================================"
 test_single_module_change
 test_source_change_with_dependents
+test_build_scripts_change_forces_module_forge() {
+  local repo="$TMP/buildscripts"; make_fixture_repo "$repo"
+  echo "changed" >> "$repo/scripts/module-build/build-one-module.sh"
+  git -C "$repo" add -A && git -C "$repo" commit -q -m "touch build script"
+  cd "$repo"
+  # module-forge has no dependents → closure is just that one. Before this rule
+  # the change matched NOTHING, so a builder kept running the stale copy baked
+  # into its erofs.
+  assert_equal "build-script change → module-forge only" \
+    "module-forge" "$(run_script)"
+}
+
 test_agent_change_forces_system_base
+test_build_scripts_change_forces_module_forge
 test_workflow_change_forces_all
 test_no_changes
 test_manifest_only_change_still_dirty

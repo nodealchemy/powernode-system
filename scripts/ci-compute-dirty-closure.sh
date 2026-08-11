@@ -4,6 +4,8 @@
 #
 #   1. Source-path filter (git diff): modules whose source files changed
 #      directly, plus the agent special-case (agent/** forces system-base),
+#      plus the build-script special-case (scripts/module-build/** forces
+#      module-forge, which bakes those scripts into its rootfs at build time),
 #      plus catch-all triggers (workflow yaml, Containerfile).
 #   2. Apt-closure drift (oras manifest fetch): modules whose effective
 #      apt-closure version-hash differs from the one annotated on the
@@ -243,6 +245,7 @@ log "git diff $BASE_SHA..$HEAD_SHA: $(echo "$changed_files" | wc -l | xargs) fil
 
 force_all=0
 agent_changed=0
+buildscripts_changed=0
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
   if [[ "$f" =~ $ALL_TRIGGERS_REGEX ]]; then
@@ -252,6 +255,17 @@ while IFS= read -r f; do
   fi
   if [[ "$f" =~ ^agent/ ]]; then
     agent_changed=1
+    continue
+  fi
+  # The shared build scripts are COPIED into module-forge's rootfs at ITS build
+  # time (see modules/module-forge/manifest.yaml), so a builder runs whatever
+  # copy was baked into the module-forge erofs it booted. Editing them therefore
+  # changes nothing until module-forge is rebuilt — and nothing triggered that,
+  # so a fix to build-one-module.sh/push.sh/stage*.sh silently never reached any
+  # builder. The manifest's "every module-forge rebuild re-syncs those scripts
+  # with zero drift risk" is true only if a rebuild actually happens.
+  if [[ "$f" =~ ^scripts/module-build/ ]]; then
+    buildscripts_changed=1
     continue
   fi
   if [[ "$f" =~ ^${MODULES_DIR}/([^/]+)/ ]]; then
@@ -265,6 +279,13 @@ done <<< "$changed_files"
 if [[ "$force_all" -eq 1 ]]; then
   log "catch-all triggered — marking ALL modules dirty"
   for mod in "${ALL_MODULES[@]}"; do DIRTY_SET["$mod"]=1; done
+fi
+
+if [[ "$buildscripts_changed" -eq 1 ]]; then
+  log "shared build scripts changed — forcing module-forge (bakes them at build time) dirty"
+  if [[ -n "${MODULE_REQUIRES[module-forge]+set}" || -n "${MODULE_PACKAGES[module-forge]+set}" ]]; then
+    DIRTY_SET["module-forge"]=1
+  fi
 fi
 
 if [[ "$agent_changed" -eq 1 ]]; then

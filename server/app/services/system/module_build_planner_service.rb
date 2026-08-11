@@ -74,6 +74,18 @@ module System
     # increment needs the override too.)
     CATCH_ALL_TRIGGER_RX = %r{\A(\.gitea/workflows/build-platform-modules\.yaml|templates/module-repo/Containerfile|scripts/ci-compute-dirty-closure\.sh)\z}.freeze
 
+    # Mirrors the bash script's `^scripts/module-build/` special case. Those
+    # scripts are COPIED into module-forge's rootfs at ITS build time (see
+    # modules/module-forge/manifest.yaml), so a builder runs whichever copy was
+    # baked into the module-forge erofs it booted. Editing them therefore changes
+    # nothing until module-forge is rebuilt — and until this rule existed NOTHING
+    # triggered that, so a fix to build-one-module.sh / push.sh / stage*.sh
+    # silently never reached any builder. The manifest's "every module-forge
+    # rebuild re-syncs those scripts with zero drift risk" holds only if a
+    # rebuild is actually triggered.
+    BUILD_SCRIPTS_PATH_RX = %r{\Ascripts/module-build/}.freeze
+    BUILD_SCRIPTS_FORCED_MODULE = "module-forge"
+
     # Mirrors the bash script's `^agent/` special case.
     AGENT_PATH_RX = %r{\Aagent/}.freeze
     AGENT_FORCED_MODULE = "powernode-system-base"
@@ -257,6 +269,11 @@ module System
               # otherwise-empty plan can name it instead of returning success.
               unmapped_core << path
             end
+            next
+          end
+
+          if path.match?(BUILD_SCRIPTS_PATH_RX)
+            dirty << BUILD_SCRIPTS_FORCED_MODULE
             next
           end
 
