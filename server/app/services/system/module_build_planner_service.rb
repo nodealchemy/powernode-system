@@ -90,6 +90,33 @@ module System
     # not fixed here — out of scope for inc9 Part A.
     CI_BUILD_SOURCE_REPO_DEFAULT = "powernode/powernode-system"
 
+    # The CORE repo. Its tree has no modules/<slug>/ at all, so the manifest-repo
+    # rules above match NOTHING in it — a core-only change (server/**) planned
+    # zero modules and returned SILENTLY, because guard_against_empty_plan! only
+    # fires once at least one candidate was named. Passing source_repo was
+    # necessary but never sufficient; there was no rule to match.
+    CORE_SOURCE_REPO_DEFAULT = "powernode/powernode-platform"
+
+    # Core path -> the module that PACKAGES that tree. Applied ONLY when the diff
+    # is taken against the core repo: `server/` exists in BOTH repos and means
+    # different things (core's Rails app vs the extension's), so applying these
+    # unconditionally would mis-plan every manifest-repo diff.
+    #
+    # extensions/system is a submodule in core, so a pointer bump appears as the
+    # bare gitlink path with no trailing slash — hence the (/|\z).
+    CORE_PATH_MODULES = {
+      %r{\Aserver/}                  => "powernode-hub-backend",
+      # hub-backend's file_spec is /opt/powernode/{server/**,scripts/**,
+      # extensions_loader_helper.rb} — all three ship in the layer, so a change
+      # to any of them must rebuild it. Omitting the latter two left exactly the
+      # silent zero-plan this map exists to close.
+      %r{\Ascripts/}                 => "powernode-hub-backend",
+      %r{\Aextensions_loader_helper\.rb\z} => "powernode-hub-backend",
+      %r{\Aworker/}                  => "powernode-hub-worker",
+      %r{\Afrontend/}                => "powernode-hub-frontend",
+      %r{\Aextensions/system(/|\z)}  => "powernode-extension-system"
+    }.freeze
+
     class << self
       # @param base_sha [String] the pre-push commit (diff base)
       # @param head_sha [String] the post-push commit (diff head) — also the
@@ -138,12 +165,23 @@ module System
       changed_file_count = 0
 
       unless catch_all
-        changed_paths = changed_paths_for(account, base_sha, head_sha, source_repo)
+        repo_full_name = source_repo.presence || ci_build_source_repo
+        core_repo = core_source_repo?(repo_full_name)
+        changed_paths = changed_paths_for(account, base_sha, head_sha, repo_full_name)
         changed_file_count = changed_paths.size
 
         changed_paths.each do |path|
           if path.match?(CATCH_ALL_TRIGGER_RX)
             catch_all = true
+            next
+          end
+
+          if core_repo
+            # Core tree: map the packaging module. Neither modules/ nor agent/
+            # exists in the core repo, so those rules are skipped entirely.
+            if (slug = CORE_PATH_MODULES.find { |rx, _| path.match?(rx) }&.last)
+              dirty << slug
+            end
             next
           end
 
@@ -202,6 +240,18 @@ module System
       raise PlanningError, "#{empty_plan_summary(catch_all, candidates, known, changed_file_count)} " \
                            "(#{format_excluded(excluded)}) — refusing to report a successful build that " \
                            "would build nothing.#{retirement_hint(excluded)}"
+    end
+
+    def core_source_repo?(repo_full_name)
+      repo_full_name.to_s.strip.casecmp?(core_source_repo)
+    end
+
+    def core_source_repo
+      ::SiteSetting.get("ci_core_source_repo").presence ||
+        ENV["CI_CORE_SOURCE_REPO"].presence ||
+        CORE_SOURCE_REPO_DEFAULT
+    rescue StandardError
+      CORE_SOURCE_REPO_DEFAULT
     end
 
     # A pure module-deletion push (the modules/<slug>/ tree goes away in the
@@ -348,11 +398,12 @@ module System
     # (#ci_build_source_repo) so a build dispatched for a CORE (powernode-platform)
     # change diffs the repo the change actually lives in — diffing the wrong repo
     # silently planned 0 modules.
-    def changed_paths_for(account, base_sha, head_sha, source_repo)
+    # Takes the ALREADY-RESOLVED repo name — the caller resolves it so the path
+    # rules can branch on which repo is being diffed.
+    def changed_paths_for(account, base_sha, head_sha, repo_full_name)
       credential = ::System::CiRunnerRegistrationResolver.new(account: account).credential
       raise PlanningError, "no active Gitea credential resolvable for account #{account.id}" unless credential
 
-      repo_full_name = source_repo.presence || ci_build_source_repo
       client = ::Devops::Git::ApiClient.for(credential)
       owner, repo = repo_full_name.split("/", 2)
 

@@ -165,13 +165,83 @@ RSpec.describe System::ModuleBuildPlannerService do
     end
   end
 
+  # A CORE (powernode-platform) change never planned anything: the only path
+  # rules were modules/<slug>/ and agent/, so server/** matched nothing and the
+  # planner returned an EMPTY plan with no error — the empty-plan guard stays
+  # silent when zero candidates were named. Two live dispatches planned 0 modules
+  # before this was found.
+  describe "core-repo path mapping" do
+    let!(:hub_backend_real) do
+      create(:system_node_module, account: account, name: "powernode-hub-backend",
+             manifest_yaml: "schema_version: 1")
+    end
+    let!(:hub_worker_real) do
+      create(:system_node_module, account: account, name: "powernode-hub-worker",
+             manifest_yaml: "schema_version: 1")
+    end
+    let!(:ext_system_real) do
+      create(:system_node_module, account: account, name: "powernode-extension-system",
+             manifest_yaml: "schema_version: 1")
+    end
+
+    def core_plan(paths)
+      stub_changed_paths(paths, source_repo: "powernode/powernode-platform")
+      described_class.plan(base_sha: base_sha, head_sha: head_sha,
+                           source_repo: "powernode/powernode-platform")
+    end
+
+    it "plans hub-backend for a core server/ change" do
+      expect(modules_in(core_plan([ "server/app/services/ai/ralph/test_verification_service.rb" ])))
+        .to include("powernode-hub-backend")
+    end
+
+    it "plans hub-worker for a core worker/ change" do
+      expect(modules_in(core_plan([ "worker/app/jobs/some_job.rb" ])))
+        .to include("powernode-hub-worker")
+    end
+
+    it "plans the extension module for a core extensions/system pointer bump" do
+      expect(modules_in(core_plan([ "extensions/system" ])))
+        .to include("powernode-extension-system")
+    end
+
+    it "plans hub-backend ONCE for several core server/ files" do
+      plan = core_plan([ "server/app/models/a.rb", "server/app/models/b.rb", "server/config/routes.rb" ])
+      expect(modules_in(plan).count("powernode-hub-backend")).to eq(1)
+    end
+
+    it "plans hub-backend for the other trees it packages (scripts/, loader helper)" do
+      # hub-backend's file_spec is server/** + scripts/** + extensions_loader_helper.rb.
+      expect(modules_in(core_plan([ "scripts/pattern-validation.sh" ])))
+        .to include("powernode-hub-backend")
+      expect(modules_in(core_plan([ "extensions_loader_helper.rb" ])))
+        .to include("powernode-hub-backend")
+    end
+
+    # `server/` exists in BOTH repos and means different things — core's Rails app
+    # vs the extension's. The core rules must NOT leak into a manifest-repo diff.
+    it "does not apply core rules when diffing the manifest repo" do
+      stub_changed_paths([ "server/app/services/system/whatever.rb" ])
+      plan = described_class.plan(base_sha: base_sha, head_sha: head_sha)
+
+      expect(modules_in(plan)).not_to include("powernode-hub-backend")
+    end
+  end
+
   describe "repo-aware source (imp 019f71e2)" do
     it "diffs the caller-specified source_repo instead of the default manifest repo" do
-      # The stub only answers for powernode-platform; a call against the default
-      # manifest repo (powernode-system) would not match and raise, so this test
-      # fails unless the source_repo is actually threaded through to the compare.
-      stub_changed_paths([ "modules/redis/rootfs/marker" ], source_repo: "powernode/powernode-platform")
-      plan = described_class.plan(base_sha: base_sha, head_sha: head_sha, source_repo: "powernode/powernode-platform")
+      # The stub only answers for this repo; a call against the default manifest
+      # repo (powernode-system) would not match and raise, so this test fails
+      # unless the source_repo is actually threaded through to the compare.
+      #
+      # Uses a manifest-SHAPED fork rather than powernode-platform: this asserts
+      # threading via a modules/<slug>/ path, and the core repo has no modules/
+      # tree at all — feeding it a modules/ path exercised a combination that
+      # cannot occur, and now correctly plans nothing under the core rules.
+      # Core-repo path mapping has its own describe block above.
+      stub_changed_paths([ "modules/redis/rootfs/marker" ], source_repo: "powernode/powernode-system-fork")
+      plan = described_class.plan(base_sha: base_sha, head_sha: head_sha,
+                                  source_repo: "powernode/powernode-system-fork")
       expect(modules_in(plan)).to eq(%w[hub-backend redis])
     end
 
