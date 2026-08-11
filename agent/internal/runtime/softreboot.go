@@ -51,6 +51,37 @@ const MinSoftRebootSystemd = 254
 // soft-reboots without it comes up with no identity and no durable state
 // — and on a self-hosted control plane it cannot re-enroll, because the
 // platform it would enroll against is the node itself.
+//
+// WHY THIS IS /persist AND NOT run-nextroot-persist.mount. prepareNextrootMounts
+// notes that /persist reaches the new root SOLELY via that bind, which reads like
+// an argument for checking the bind instead. It is not, and the reasoning that it
+// would be rested on a premise that is FALSE. Measured on a scratch VM (systemd
+// 255, 2026-08-11), two soft-reboots with /persist on a loop device and a
+// non-recursive bind at /run/nextroot/persist:
+//
+//	stock persist.mount (DefaultDependencies=yes, Conflicts=umount.target):
+//	  "Unmounting persist.mount" -> the ext4 superblock is released -> the CARRIER
+//	  goes with it ("run-nextroot-persist.mount: Deactivated successfully", with no
+//	  Unmounting line of its own). /persist absent afterwards. The claim that a bind
+//	  survives its source being unmounted, so tearing down persist.mount is
+//	  harmless, does not hold here.
+//	persist.mount + DefaultDependencies=no drop-in:
+//	  both /persist and the carrier survive; the marker file is readable afterwards.
+//
+// So the carrier's fate FOLLOWS persist.mount's in both directions, which makes
+// /persist the correct thing to check. Checking the carrier instead would be a
+// regression, not a fix: its unit is generated from mountinfo under /run, and it
+// reported DefaultDependencies=yes in BOTH runs — including the run where /persist
+// demonstrably survived. A guard keyed on it therefore refuses unconditionally and
+// disables the soft-reboot tier permanently. Do not "fix" this list to the bind;
+// TestCriticalSoftRebootMounts_IsPersistNotTheNextrootCarrier fails if you do.
+//
+// Bound on the evidence: the scratch VM's /run/nextroot was a bind of /, and no
+// switch-root line appeared in the journal, so this measures the umount.target
+// survival semantics — the open question — and not a full root swap. Separately,
+// mounts under /run on that VM reported an EMPTY Conflicts, which contradicts the
+// pivot-node reading that run-powernode-scratch.mount and the module mounts carry
+// Conflicts=umount.target; that discrepancy is unresolved and filed separately.
 var CriticalSoftRebootMounts = []string{"/persist"}
 
 // mountSurvivesSoftReboot reports whether the mount unit backing path is

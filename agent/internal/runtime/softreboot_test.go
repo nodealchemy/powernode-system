@@ -188,3 +188,25 @@ func TestSoftRecomposePreflight_UnknownUnitAloneRefuses(t *testing.T) {
 		t.Errorf("an unknown mount unit is unproven and must refuse, got %v", err)
 	}
 }
+
+// Pins the empirically-established target of the preflight. The finding
+// IMP-83a38a35d642 proposed replacing /persist with the run-nextroot-persist
+// bind on the grounds that the bind is the load-bearing carrier. Measurement
+// refuted the premise: the carrier is released together with persist.mount, and
+// its generated unit reports DefaultDependencies=yes even when /persist survives
+// — so a guard keyed on it refuses every time and kills the soft-reboot tier.
+// See the CriticalSoftRebootMounts comment for the two measured runs.
+func TestCriticalSoftRebootMounts_IsPersistNotTheNextrootCarrier(t *testing.T) {
+	if len(CriticalSoftRebootMounts) != 1 || CriticalSoftRebootMounts[0] != "/persist" {
+		t.Fatalf("CriticalSoftRebootMounts = %v, want exactly [/persist]; the nextroot bind is "+
+			"deliberately NOT checked (it reports DefaultDependencies=yes even when /persist "+
+			"survives, so checking it refuses unconditionally)", CriticalSoftRebootMounts)
+	}
+	for _, m := range CriticalSoftRebootMounts {
+		if strings.HasPrefix(m, "/run/") {
+			t.Errorf("CriticalSoftRebootMounts contains %q: a path under /run yields a "+
+				"mountinfo-generated unit that can never satisfy the DefaultDependencies=no "+
+				"half of the guard, so the preflight would never pass", m)
+		}
+	}
+}
