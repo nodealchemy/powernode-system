@@ -218,6 +218,53 @@ RSpec.describe System::ModuleBuildPlannerService do
         .to include("powernode-hub-backend")
     end
 
+    # THE SILENT-ZERO DEFECT. Two hard-fail guards already cover an empty diff
+    # and a failed compare, so the only way to "successfully" build nothing is a
+    # compare that returns files none of which match a rule: candidates is empty,
+    # so guard_against_empty_plan!'s `catch_all || candidates.any?` returns early.
+    # For a CORE range that means a MISSING RULE, and it must be loud.
+    describe "a core range that maps to nothing" do
+      it "raises instead of silently planning 0 modules" do
+        expect { core_plan([ "configs/vault/policy.hcl" ]) }
+          .to raise_error(described_class::PlanningError, /no core path rule/i)
+      end
+
+      it "names the unmapped paths so the missing rule is obvious" do
+        expect { core_plan([ "configs/vault/policy.hcl", "Makefile" ]) }
+          .to raise_error(described_class::PlanningError, /configs\/vault\/policy\.hcl.*Makefile/m)
+      end
+
+      it "points at the core repo it diffed, so a wrong source_repo is visible" do
+        expect { core_plan([ "configs/vault/policy.hcl" ]) }
+          .to raise_error(described_class::PlanningError, %r{powernode/powernode-platform})
+      end
+
+      # Docs and repo hygiene ship in no module. A core push touching only those
+      # genuinely has nothing to build — that must stay a quiet no-op, or every
+      # docs/reference/auto regeneration becomes a failed dispatch.
+      it "stays a silent no-op for a docs-only core push" do
+        expect(modules_in(core_plan([ "docs/operations/runbook.md" ]))).to be_empty
+      end
+
+      it "stays a silent no-op for root markdown and CI config" do
+        expect(modules_in(core_plan([ "README.md", ".github/workflows/ci.yml" ]))).to be_empty
+      end
+
+      # An unmapped path riding along with a mapped one is NOT the silent-zero
+      # bug — something is built and the caller is told what. Out of scope here.
+      it "does not raise when an unmapped path accompanies a mapped one" do
+        expect(modules_in(core_plan([ "configs/vault/policy.hcl", "server/app/models/a.rb" ])))
+          .to include("powernode-hub-backend")
+      end
+
+      # The manifest repo has its own legitimate zero-plan cases (a docs-only or
+      # server/** push there). Widening the guard must not change that.
+      it "leaves a manifest-repo zero-plan silent, exactly as before" do
+        stub_changed_paths([ "server/app/services/system/whatever.rb" ])
+        expect(modules_in(described_class.plan(base_sha: base_sha, head_sha: head_sha))).to be_empty
+      end
+    end
+
     # `server/` exists in BOTH repos and means different things — core's Rails app
     # vs the extension's. The core rules must NOT leak into a manifest-repo diff.
     it "does not apply core rules when diffing the manifest repo" do

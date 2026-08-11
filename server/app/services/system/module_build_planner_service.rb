@@ -97,6 +97,26 @@ module System
     # necessary but never sufficient; there was no rule to match.
     CORE_SOURCE_REPO_DEFAULT = "powernode/powernode-platform"
 
+    # Core paths that ship in NO module: prose, CI config, and repo hygiene.
+    # A core range touching only these genuinely has nothing to build, so it
+    # stays a quiet no-op — otherwise every docs/reference/auto regeneration
+    # becomes a failed dispatch. Everything else unmapped is treated as a
+    # MISSING RULE and fails loudly (see #guard_against_unmapped_core_change!),
+    # so the safe direction for anything ambiguous is to leave it OUT of here.
+    CORE_UNSHIPPED_PATH_RX = %r{
+      \A(?:
+        docs/                                 |
+        \.(?:github|gitea|ci|claude|gitflow)/  |
+        \.[^/]+\z                             |
+        [^/]*\.md\z                           |
+        (?:LICENSE|VERSION)\z
+      )
+    }x.freeze
+
+    # How many unmapped core paths a PlanningError names before summarizing the
+    # rest, for the same reason as EXCLUDED_MESSAGE_SAMPLE_LIMIT above.
+    UNMAPPED_CORE_SAMPLE_LIMIT = 20
+
     # Core path -> the module that PACKAGES that tree. Applied ONLY when the diff
     # is taken against the core repo: `server/` exists in BOTH repos and means
     # different things (core's Rails app vs the extension's), so applying these
@@ -163,6 +183,8 @@ module System
       dirty = Set.new
       catch_all = force_all
       changed_file_count = 0
+      repo_full_name = nil
+      unmapped_core = []
 
       unless catch_all
         repo_full_name = source_repo.presence || ci_build_source_repo
@@ -181,6 +203,10 @@ module System
             # exists in the core repo, so those rules are skipped entirely.
             if (slug = CORE_PATH_MODULES.find { |rx, _| path.match?(rx) }&.last)
               dirty << slug
+            elsif !path.match?(CORE_UNSHIPPED_PATH_RX)
+              # Ships somewhere, but no rule says where — remembered so an
+              # otherwise-empty plan can name it instead of returning success.
+              unmapped_core << path
             end
             next
           end
@@ -208,6 +234,11 @@ module System
       closure = expand_reverse_dependencies(account, dirty)
       excluded = excluded_entries(account, candidates - known)
 
+      guard_against_unmapped_core_change!(
+        closure: closure, catch_all: catch_all,
+        unmapped: unmapped_core, repo_full_name: repo_full_name
+      )
+
       guard_against_empty_plan!(
         closure: closure, catch_all: catch_all, candidates: candidates,
         known: known, excluded: excluded, changed_file_count: changed_file_count
@@ -222,6 +253,31 @@ module System
     end
 
     private
+
+    # THE SILENT-ZERO GUARD. #guard_against_empty_plan! below only fires once at
+    # least one candidate was NAMED, so a core diff whose paths matched no rule
+    # slipped past it and reported a successful build of nothing — the shape that
+    # hid three stacked defects behind a single "success" (two live dispatches
+    # planned 0 modules before it was found). The two guards in
+    # #changed_paths_for already cover an empty diff and a failed compare, so
+    # this closes the last silent path: a compare that returns files none of
+    # which map anywhere.
+    #
+    # Scoped to the CORE repo deliberately. There, an unmapped path is a missing
+    # rule — core ships in modules unless it is docs/CI hygiene. The manifest
+    # repo has legitimate zero-plan pushes and is left exactly as it was.
+    def guard_against_unmapped_core_change!(closure:, catch_all:, unmapped:, repo_full_name:)
+      return if catch_all || !closure.empty? || unmapped.empty?
+
+      shown = unmapped.first(UNMAPPED_CORE_SAMPLE_LIMIT)
+      more  = unmapped.size - shown.size
+      raise PlanningError,
+            "planned 0 modules from #{repo_full_name}: no core path rule covers " \
+            "#{shown.join(', ')}#{more.positive? ? " (+#{more} more)" : ''} — refusing to report a " \
+            "successful build that would build nothing. Either add a CORE_PATH_MODULES rule for the " \
+            "module that packages these files, or if they ship in no module add them to " \
+            "CORE_UNSHIPPED_PATH_RX. If you meant to diff the manifest repo instead, pass source_repo."
+    end
 
     # A request that NAMED modules (or asked for all of them) and resolved to
     # zero builds is the "shipped a successful build that built nothing"
@@ -439,7 +495,10 @@ module System
 
       files
     rescue ::Devops::Git::ApiClient::ApiError => e
-      raise PlanningError, "Gitea compare #{base_sha}..#{head_sha} failed: #{e.class}: #{e.message}"
+      raise PlanningError,
+            "Gitea compare of #{repo_full_name} #{base_sha}..#{head_sha} failed: #{e.class}: #{e.message} " \
+            "— if these shas live in a different repo, pass source_repo (core changes need " \
+            "source_repo: #{CORE_SOURCE_REPO_DEFAULT})"
     end
 
     def ci_build_source_repo

@@ -1322,7 +1322,7 @@ module Ai
               head_sha: { type: "string", required: true, description: "Post-push commit SHA (diff head); also the source of each build's short tag" },
               force_all: { type: "boolean", required: false, description: "Skip the diff and plan every module with a manifest (manual full rebuild / CVE-driven sweep). Default false." },
               trigger: { type: "string", required: false, description: "push | manual | cve (default manual) — recorded on the batch for audit" },
-              source_repo: { type: "string", required: false, description: "\"<owner>/<repo>\" the base_sha..head_sha diff is taken against (default: the ci_build_source_repo manifest repo). Pass the CORE repo (e.g. powernode/powernode-platform) for a core-change build so the planner diffs the tree the change actually lives in — diffing the wrong repo plans 0 modules." }
+              source_repo: { type: "string", required: false, description: "\"<owner>/<repo>\" the base_sha..head_sha diff is taken against (default: the ci_build_source_repo manifest repo). Pass the CORE repo (e.g. powernode/powernode-platform) for a core-change build so the planner diffs the tree the change actually lives in. Getting this wrong can no longer plan 0 silently: the shas are usually absent from the other repo (the compare fails and the error names the repo it diffed), and a core range whose paths match no CORE_PATH_MODULES rule now raises rather than reporting a successful build of nothing. A core range touching only docs/CI hygiene still plans 0 legitimately." }
             }
           },
 
