@@ -123,7 +123,38 @@ RSpec.describe "AI-driven provisioning M2 adaptive evolution smoke", type: :inte
       }
     )
     mission.update_columns(status: "active")
-    mission
+
+    # Production shape: an active infrastructure mission was composed FROM a
+    # provisioning plan, and that plan's provision step is where the
+    # adaptation composer reads the footprint (template / region / instance
+    # type) a scale-out must replicate. Without it the composer declines
+    # rather than emitting an add_replicas step the scaling skill rejects.
+    goal = Ai::AgentGoal.create!(
+      account: account, agent: fleet_agent, title: "Provision",
+      description: "initial provisioning", goal_type: "improvement",
+      status: "pending", priority: 3, progress: 0.0,
+      success_criteria: {}, metadata: {}
+    )
+    plan = Ai::GoalPlan.create!(
+      account: account, goal: goal, agent: fleet_agent, status: "draft",
+      version: 1, plan_data: { "kind" => "provisioning" }
+    )
+    plan.steps.create!(
+      step_number: 1, step_type: "provisioning_skill", status: "pending",
+      description: "Provision full stack",
+      execution_config: {
+        "skill" => "provision_full_stack",
+        "inputs" => { "template_id" => "tmpl-fixture",
+                      "provider_region_id" => "region-fixture",
+                      "provider_instance_type_id" => "itype-fixture" },
+        "on_failure" => "rollback"
+      },
+      dependencies: []
+    )
+    mission.update!(configuration: mission.configuration.merge(
+      "plan" => { "plan_id" => plan.id }
+    ))
+    mission.reload
   end
 
   before do
@@ -269,10 +300,14 @@ RSpec.describe "AI-driven provisioning M2 adaptive evolution smoke", type: :inte
     expect(cost.payload["observed_usd"]).to eq(280.0)
     expect(cost.payload["target_usd"]).to eq(200.0)
 
+    # The sensor still classifies the breach; the PROPOSER now declines to
+    # compose for it. A cost breach implies scaling IN, and `scale_project`
+    # offers only additive strategies — the step this used to compose named
+    # that skill while carrying none of its required kwargs, so it could
+    # only fail at execution ("missing required input: project_id").
+    # INC-4 (IMP-216a6dbc7e32) adds `remove_replicas`; restore actuation then.
     proposer = Ai::Provisioning::AdaptationProposerService.new(account: account, mission: mission)
-    plan = proposer.propose_from_signals(signals: [ cost ])
-    expect(plan.steps.in_order.first.execution_config.dig("inputs", "change_type"))
-      .to eq("cost_control")
+    expect(proposer.propose_from_signals(signals: [ cost ])).to be_nil
   end
 
   it "registers the six project.* intervention policies with the expected defaults" do

@@ -146,6 +146,17 @@ module System
 
         # ----- signal builders ----------------------------------------------
 
+        # `replica_count` rides along on both branches. An SLO breach's
+        # `observed` is the breached METRIC (latency, availability), so a
+        # consumer that needs to know how large the fleet currently is has no
+        # way to get it from this payload — AdaptationProposerService has to
+        # size a scale-out from the live count, and reading the metric rows
+        # itself would both duplicate this sampler and make core depend on
+        # this extension. Carrying it here keeps ONE reader of the telemetry,
+        # so the sensor and the proposer cannot disagree about the fleet
+        # within a single tick. It is nil when unobservable, and a consumer
+        # must treat nil as "cannot see the fleet" rather than substituting a
+        # declared/expected size.
         def slo_violation_signal(mission, targets, obs, correlation)
           # Pick the first violated metric. Latency over-target is the most
           # common signal; availability under-target the most severe.
@@ -160,6 +171,7 @@ module System
                 observed: obs["p99_latency_ms"],
                 target: targets["p99_latency_ms"],
                 breach_pct: breach_pct,
+                replica_count: obs["actual_replica_count"],
                 correlation_id: correlation
               },
               fingerprint: "project_slo_violation:#{mission.id}:p99_latency_ms"
@@ -177,6 +189,7 @@ module System
                 observed: obs["availability_pct"],
                 target: targets["availability_pct"],
                 breach_pct: breach_pct,
+                replica_count: obs["actual_replica_count"],
                 correlation_id: correlation
               },
               fingerprint: "project_slo_violation:#{mission.id}:availability_pct"
