@@ -112,4 +112,59 @@ RSpec.describe System::ProvisionVerifier do
     expect(r[:ok]).to be true
     expect(r[:detail]).to match(/physical|db-only/i)
   end
+
+  # INC-4: the mirror image, for scale-in. A removal's victims are asserted
+  # ABSENT — and the assertion has to reach the provider for the same reason
+  # the presence one does. A DB row that says "terminated" over a guest the
+  # hypervisor is still running is the F2 phantom inverted: nothing in the
+  # platform can see it, and it bills forever.
+  describe ".reconcile_absent_instances" do
+    def reconcile_absent(instance_id)
+      described_class.reconcile_absent_instances(
+        account: account, expectations: [ { node_instance_id: instance_id } ]
+      ).first
+    end
+
+    it "confirms an instance the provider no longer has" do
+      instance = make_instance(cloud_instance_id: "dna/qemu/9200", status: "terminated")
+      stub_adapter(success: false, error_code: "NotFound", error: "not found")
+
+      r = reconcile_absent(instance.id)
+      expect(r[:ok]).to be true
+      expect(r[:detail]).to match(/no record|gone/i)
+    end
+
+    it "FAILS a terminated row whose guest the provider still reports running" do
+      instance = make_instance(cloud_instance_id: "dna/qemu/9201", status: "terminated")
+      stub_adapter(success: true, status: "running")
+
+      r = reconcile_absent(instance.id)
+      expect(r[:ok]).to be false
+      expect(r[:detail]).to match(/still/i)
+    end
+
+    it "FAILS a row the platform never marked terminated" do
+      instance = make_instance(cloud_instance_id: "dna/qemu/9202", status: "running")
+      stub_adapter(success: false, error_code: "NotFound", error: "not found")
+
+      r = reconcile_absent(instance.id)
+      expect(r[:ok]).to be false
+      expect(r[:detail]).to match(/status=running/)
+    end
+
+    it "treats a vanished row as removed" do
+      r = reconcile_absent(SecureRandom.uuid)
+      expect(r[:ok]).to be true
+      expect(r[:detail]).to match(/no NodeInstance row/i)
+    end
+
+    it "fails CLOSED when the provider cannot be reached" do
+      instance = make_instance(cloud_instance_id: "dna/qemu/9203", status: "terminated")
+      stub_adapter { raise StandardError, "connect timeout" }
+
+      r = reconcile_absent(instance.id)
+      expect(r[:ok]).to be false
+      expect(r[:detail]).to match(/timeout|provider check failed/i)
+    end
+  end
 end

@@ -30,6 +30,73 @@ module System
       end
     end
 
+    # The mirror image, for scale-in (INC-4). Core hands the victims a
+    # `remove_replicas` step reported as removed and asks the PROVIDER whether
+    # they are really gone.
+    #
+    # Asking matters for the same reason presence does. A row marked
+    # terminated over a guest the hypervisor still runs is the F2 phantom
+    # inverted: nothing in the platform can see it, no sensor counts it, and
+    # it bills until somebody reads a provider console. Grading a removal on
+    # the executor's own report is exactly the self-certification the presence
+    # half of this reconciler exists to remove.
+    #
+    # A vanished row IS removal — the strongest evidence there is. Everything
+    # else fails closed, same as above.
+    #
+    # expectations: [{ node_instance_id: }, ...]
+    # Returns:      [{ node_instance_id:, ok:, detail: }, ...]
+    def reconcile_absent_instances(account:, expectations:)
+      Array(expectations).map do |exp|
+        exp = exp.is_a?(Hash) ? exp.symbolize_keys : {}
+        id = exp[:node_instance_id].to_s
+        { node_instance_id: id }.merge(reconcile_one_absent(account: account, id: id))
+      end
+    end
+
+    def reconcile_one_absent(account:, id:)
+      instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
+      return { ok: true, detail: "no NodeInstance row for #{id} — removed" } unless instance
+
+      unless instance.status.to_s == "terminated"
+        return { ok: false,
+                 detail: "reported removed but the row is not terminated: status=#{instance.status}" }
+      end
+
+      unless %w[cloud dynamic].include?(instance.variety.to_s)
+        return { ok: true, detail: "physical instance, db-only check: status=#{instance.status}" }
+      end
+
+      # No provider identity to ask about: nothing was ever created there, so
+      # there is nothing that can survive.
+      return { ok: true, detail: "no provider identity to check — nothing to survive" } if instance.cloud_instance_id.blank?
+
+      absence_check(instance)
+    end
+
+    def absence_check(instance)
+      adapter = Providers::Registry.for_instance(instance)
+      result = adapter.get_instance(instance.cloud_instance_id)
+
+      if result[:success]
+        status = result[:status].to_s
+        gone = !LIVE_OK_STATUSES.include?(status)
+        { ok: gone,
+          detail: gone ? "provider reports #{status.presence || 'unknown'} — gone"
+                       : "provider STILL reports #{status} for #{instance.cloud_instance_id} — " \
+                         "terminated in the platform, alive (and billing) at the provider" }
+      elsif result[:error_code].to_s == "NotFound"
+        { ok: true, detail: "provider has no record of #{instance.cloud_instance_id} — gone" }
+      else
+        { ok: false, detail: "provider check failed: #{result[:error].to_s[0, 200]}" }
+      end
+    rescue Providers::BaseProvider::ResourceNotFoundError
+      { ok: true, detail: "provider has no record of #{instance.cloud_instance_id} — gone" }
+    rescue StandardError => e
+      # Unreachable provider must not bless an absence any more than a presence.
+      { ok: false, detail: "provider check failed: #{e.class}: #{e.message[0, 200]}" }
+    end
+
     def reconcile_one(account:, id:, region_id:)
       instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
       return { ok: false, detail: "no NodeInstance row for #{id}" } unless instance
