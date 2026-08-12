@@ -143,6 +143,56 @@ RSpec.describe System::ProvisionVerifier do
       expect(r[:detail]).to match(/still/i)
     end
 
+    it "FAILS a terminated row whose guest the provider still reports STOPPED" do
+      instance = make_instance(cloud_instance_id: "dna/qemu/9204", status: "terminated")
+      # A stopped guest still exists, still holds its disks, and on most
+      # providers still bills. "Not running" is not "gone" — PVE normalizes
+      # paused/suspended to stopped and shutdown to stopping, so treating
+      # anything-but-running as removed certifies the exact survivor this
+      # check was added to catch (a qm destroy that failed after shutdown).
+      stub_adapter(success: true, status: "stopped")
+
+      r = reconcile_absent(instance.id)
+      expect(r[:ok]).to be false
+      expect(r[:detail]).to match(/stopped/)
+    end
+
+    it "confirms a guest the provider reports terminated" do
+      instance = make_instance(cloud_instance_id: "dna/qemu/9205", status: "terminated")
+      stub_adapter(success: true, status: "terminated")
+
+      r = reconcile_absent(instance.id)
+      expect(r[:ok]).to be true
+    end
+
+    it "FAILS an unknown or blank provider status rather than reading it as gone" do
+      instance = make_instance(cloud_instance_id: "dna/qemu/9206", status: "terminated")
+      stub_adapter(success: true, status: nil)
+
+      r = reconcile_absent(instance.id)
+      expect(r[:ok]).to be false
+    end
+
+    it "accepts a message-only not-found, as the platform's own detection does" do
+      instance = make_instance(cloud_instance_id: "dna/qemu/9207", status: "terminated")
+      # Several adapters report not-found without an error_code; matching only
+      # the code fails a correctly-completed removal on those providers.
+      stub_adapter(success: false, error: "VM 9207 not found")
+
+      r = reconcile_absent(instance.id)
+      expect(r[:ok]).to be true
+    end
+
+    it "does not certify another account's instance as removed" do
+      foreign = create(:account)
+      foreign_node = create(:system_node, account: foreign)
+      instance = create(:system_node_instance, node: foreign_node, provider_region: region,
+                                               status: "running", cloud_instance_id: "dna/qemu/9208")
+
+      r = reconcile_absent(instance.id)
+      expect(r[:ok]).to be false
+    end
+
     it "FAILS a row the platform never marked terminated" do
       instance = make_instance(cloud_instance_id: "dna/qemu/9202", status: "running")
       stub_adapter(success: false, error_code: "NotFound", error: "not found")
@@ -152,9 +202,13 @@ RSpec.describe System::ProvisionVerifier do
       expect(r[:detail]).to match(/status=running/)
     end
 
-    it "treats a vanished row as removed" do
+    it "does not certify a row it cannot find at all" do
+      # terminate_instance transitions the row, it never destroys it — so a
+      # genuinely removed victim always HAS a row, and "no row" means the id
+      # was foreign, blank, or hand-destroyed. Blessing it would let a
+      # removal certify itself with no provider call at all.
       r = reconcile_absent(SecureRandom.uuid)
-      expect(r[:ok]).to be true
+      expect(r[:ok]).to be false
       expect(r[:detail]).to match(/no NodeInstance row/i)
     end
 

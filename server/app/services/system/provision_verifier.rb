@@ -19,6 +19,11 @@ module System
 
     LIVE_OK_STATUSES = %w[running].freeze
 
+    # The only live status that PROVES a guest is gone. Not the complement of
+    # LIVE_OK_STATUSES — see #reconcile_absent_instances for why "stopped" is
+    # a survivor, not a removal.
+    GONE_STATUSES = %w[terminated].freeze
+
     # expectations: [{ node_instance_id:, provider_region_id: }, ...]
     # Returns:      [{ node_instance_id:, ok:, detail: }, ...]
     def reconcile_instances(account:, expectations:)
@@ -41,8 +46,20 @@ module System
     # the executor's own report is exactly the self-certification the presence
     # half of this reconciler exists to remove.
     #
-    # A vanished row IS removal — the strongest evidence there is. Everything
-    # else fails closed, same as above.
+    # GONE is proved by exactly two things: the provider has no record, or it
+    # reports the guest terminated. Everything else fails closed, INCLUDING
+    # "stopped" — a stopped guest still exists, still holds its disks and on
+    # most providers still bills, and PVE normalizes paused/suspended to
+    # stopped and shutdown to stopping, so reading anything-but-running as
+    # removed would certify the exact survivor this method exists to catch
+    # (a `qm destroy` that failed after the guest was shut down, with the row
+    # already finalized). A blank status is not evidence of anything.
+    #
+    # A row this account does not have is NOT proof of removal either:
+    # terminate_instance transitions the row, it never destroys it, so a
+    # genuinely removed victim always has one. No row means the id was
+    # foreign, blank, or hand-destroyed — none of which a removal may
+    # certify itself with, and the presence half refuses the same shape.
     #
     # expectations: [{ node_instance_id: }, ...]
     # Returns:      [{ node_instance_id:, ok:, detail: }, ...]
@@ -56,7 +73,11 @@ module System
 
     def reconcile_one_absent(account:, id:)
       instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
-      return { ok: true, detail: "no NodeInstance row for #{id} — removed" } unless instance
+      unless instance
+        return { ok: false,
+                 detail: "no NodeInstance row for #{id.presence || '(blank)'} in this account — " \
+                         "a removed victim keeps its row, so this proves nothing" }
+      end
 
       unless instance.status.to_s == "terminated"
         return { ok: false,
@@ -80,12 +101,13 @@ module System
 
       if result[:success]
         status = result[:status].to_s
-        gone = !LIVE_OK_STATUSES.include?(status)
+        gone = GONE_STATUSES.include?(status)
         { ok: gone,
-          detail: gone ? "provider reports #{status.presence || 'unknown'} — gone"
-                       : "provider STILL reports #{status} for #{instance.cloud_instance_id} — " \
-                         "terminated in the platform, alive (and billing) at the provider" }
-      elsif result[:error_code].to_s == "NotFound"
+          detail: gone ? "provider reports #{status} — gone"
+                       : "provider STILL reports #{status.presence || 'unknown'} for " \
+                         "#{instance.cloud_instance_id} — terminated in the platform, " \
+                         "alive (and billing) at the provider" }
+      elsif provider_not_found?(result)
         { ok: true, detail: "provider has no record of #{instance.cloud_instance_id} — gone" }
       else
         { ok: false, detail: "provider check failed: #{result[:error].to_s[0, 200]}" }
@@ -95,6 +117,15 @@ module System
     rescue StandardError => e
       # Unreachable provider must not bless an absence any more than a presence.
       { ok: false, detail: "provider check failed: #{e.class}: #{e.message[0, 200]}" }
+    end
+
+    # Same detection ProvisioningService#not_found_result? uses. Several
+    # adapters report not-found as a message with no error_code, and matching
+    # only the code fails a correctly-completed removal on those providers.
+    def provider_not_found?(result)
+      return false unless result.is_a?(Hash)
+
+      result[:error_code].to_s.casecmp?("NotFound") || result[:error].to_s.match?(/not found/i)
     end
 
     def reconcile_one(account:, id:, region_id:)
