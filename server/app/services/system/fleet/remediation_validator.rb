@@ -47,6 +47,29 @@ module System
           # ineffective streak trips F3-11, manufacture false fleet.remediation_stuck
           # HIGH escalations + forced approvals. Skip them from the validate arc.
           next if decision[:action_category].to_s == "system.observation"
+          # IMP-4f7f7a0c9d33: same exemption class, different reason. A PROPOSAL
+          # is not a remediation — the remediation is the EXECUTED plan. The
+          # project.* adaptation lane composes a diff plan and deliberately stops,
+          # so the triggering condition cannot clear until an operator approves
+          # that plan AND it runs, which is far beyond SETTLE_WINDOW. Scoring the
+          # proposal by fingerprint disappearance measures the wrong event: it
+          # marks every proposal ineffective on the next tick, and three of those
+          # trip STUCK_STREAK_THRESHOLD into exactly the false
+          # fleet.remediation_stuck HIGH escalation the applier was added to
+          # remove.
+          #
+          # DO NOT "restore" this scoring. The outcome belongs at EXECUTION time —
+          # IMP-8c37b9e5ccd5 records it when the runner dispatches an approved
+          # adaptation_diff plan and flips pending -> effective on fingerprint
+          # clear. Re-adding it here only reintroduces the false escalation.
+          #
+          # Note this pins ineffective_streak at 0 for these fingerprints, which
+          # disables F3-11 as the lane's brake; DecisionEngine#propose_project_adaptation
+          # carries the replacement (one open proposal per mission).
+          #
+          # Keyed off the applier's own proposal flag, not the action_category, so
+          # any future propose-only lane inherits the exemption by declaring it.
+          next if decision.dig(:remediation, :proposal)
 
           fingerprint = (decision[:fingerprint] || signals[i]&.fingerprint).to_s
           next if fingerprint.blank?
