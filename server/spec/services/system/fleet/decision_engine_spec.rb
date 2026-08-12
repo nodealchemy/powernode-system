@@ -1700,6 +1700,201 @@ RSpec.describe System::Fleet::DecisionEngine do
       expect(decision[:remediation]).to include(proposal: true, mission_id: mission.id)
     end
 
+    # THE DEFAULT PATH, not an edge case. The fleet chain runs 4h with
+    # timeout_action "reject", so ANY routed adaptation an operator does not
+    # answer inside that window is auto-rejected. Nothing moved such a plan out
+    # of `draft` — core only transitions on dispatch, and dispatch only happens
+    # on AUTO_APPLY — so the brake stayed engaged forever against a condition
+    # that was still breaching. The gate owns the approval lifecycle, so it now
+    # closes the plan the approval was about.
+    context "when the approval for an in-flight proposal is rejected" do
+      let(:chain) do
+        Ai::ApprovalChain.create!(
+          account: account, name: "Fleet Autonomy Actions", trigger_type: "autonomy_action",
+          status: "active", is_sequential: true, timeout_action: "reject", timeout_hours: 4,
+          steps: [ { "name" => "Operator Approval", "approvers" => [ "*" ], "required_approvals" => 1 } ]
+        )
+      end
+
+      def reject_request_for!(plan_id, status: "rejected")
+        Ai::ApprovalRequest.create!(
+          account: account, approval_chain: chain, request_id: SecureRandom.uuid,
+          source_type: "system_fleet", source_id: agent.id, status: status,
+          description: "adaptation", request_data: { "payload" => { "plan_id" => plan_id } }
+        )
+      end
+
+      it "closes the proposal and lets the mission propose again" do
+        first = decide_slo_violation
+        plan_id = first[:remediation][:plan_id]
+        reject_request_for!(plan_id)
+
+        # Next tick re-offers the plan to the gate, which sees the rejection.
+        second = nil
+        expect {
+          second = engine.decide(kind: "system.project_slo_violation", severity: :high,
+                                 payload: { "mission_id" => mission.id, "metric" => "availability_pct",
+                                            "observed" => 98.0, "target" => 99.5, "breach_pct" => 1.5,
+                                            "replica_count" => 3 },
+                                 fingerprint: "project_slo_violation:#{mission.id}:availability_pct")
+        }.not_to change { Ai::GoalPlan.count }
+
+        expect(Ai::GoalPlan.find(plan_id).status).to eq("rejected")
+        expect(second[:remediation][:reason]).to match(/rejected/)
+
+        # Brake released — the breach is still live, so a LATER tick composes.
+        expect(described_class.new(autonomy_service: service)
+                 .send(:in_flight_adaptation_plan, mission)).to be_nil
+      end
+
+      it "treats an expired approval as terminal too" do
+        first = decide_slo_violation
+        plan_id = first[:remediation][:plan_id]
+        reject_request_for!(plan_id, status: "expired")
+
+        engine.decide(kind: "system.project_slo_violation", severity: :high,
+                      payload: { "mission_id" => mission.id, "metric" => "availability_pct",
+                                 "observed" => 98.0, "target" => 99.5, "breach_pct" => 1.5,
+                                 "replica_count" => 3 },
+                      fingerprint: "project_slo_violation:#{mission.id}:expired")
+
+        expect(Ai::GoalPlan.find(plan_id).status).to eq("rejected")
+      end
+    end
+
+    # THE ALARM, RESTORED. The validate-arc exemption removed F3-11 as this
+    # lane's escalation path, which is only safe because the EXECUTION side now
+    # records failures: AdaptationDispatchService#settle! mints an `ineffective`
+    # outcome on its unhealthy branch, through this same gate seam. Three of
+    # those and the lane escalates like any other.
+    #
+    # Without that recording, an adaptation that ran and broke on every tick was
+    # indistinguishable from one nobody had gotten to — silent, forever.
+    it "escalates a repeatedly-failing adaptation once its failures are recorded" do
+      fingerprint = "project_slo_violation:#{mission.id}:p99_latency_ms"
+      plan = Ai::GoalPlan.create!(
+        account: account, goal: Ai::AgentGoal.create!(
+          account: account, agent: agent, title: "Adapt", description: "d",
+          goal_type: "improvement", status: "pending", priority: 3, progress: 0.0
+        ), agent: agent, status: "failed", version: 1,
+        plan_data: { "kind" => "adaptation_diff", "change_type" => "scale_horizontal",
+                     "mission_id" => mission.id, "signal_kind" => "system.project_slo_violation",
+                     "signal_fingerprint" => fingerprint }
+      )
+
+      # Three failed adaptations, recorded through the SAME seam settle!'s
+      # unhealthy branch calls.
+      described_class::STUCK_STREAK_THRESHOLD.times do
+        System::AdaptationGate.record_adaptation_outcome!(
+          account: account, mission: mission, plan: plan,
+          fingerprint: fingerprint, signal_kind: "system.project_slo_violation",
+          status: "ineffective"
+        )
+      end
+
+      expect(System::Fleet::RemediationOutcome.ineffective_streak(account: account, fingerprint: fingerprint))
+        .to be >= described_class::STUCK_STREAK_THRESHOLD
+
+      # The breach fires again — and now the lane escalates instead of quietly
+      # composing a fourth doomed proposal.
+      decision = nil
+      expect { decision = decide_slo_violation }
+        .to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }.by(1)
+
+      expect(decision[:decision]).to eq(:pending)
+      expect(decision[:remediation_stuck]).to be true
+      expect(decision[:ineffective_streak]).to be >= described_class::STUCK_STREAK_THRESHOLD
+    end
+
+    it "records an ineffective outcome for a failed adaptation, not silence" do
+      fingerprint = "project_slo_violation:#{mission.id}:failed-run"
+      plan = Ai::GoalPlan.create!(
+        account: account, goal: Ai::AgentGoal.create!(
+          account: account, agent: agent, title: "Adapt", description: "d",
+          goal_type: "improvement", status: "pending", priority: 3, progress: 0.0
+        ), agent: agent, status: "failed", version: 1,
+        plan_data: { "kind" => "adaptation_diff", "change_type" => "scale_horizontal",
+                     "mission_id" => mission.id, "signal_kind" => "system.project_slo_violation",
+                     "signal_fingerprint" => fingerprint }
+      )
+
+      outcome = nil
+      expect {
+        outcome = System::AdaptationGate.record_adaptation_outcome!(
+          account: account, mission: mission, plan: plan,
+          fingerprint: fingerprint, signal_kind: "system.project_slo_violation",
+          status: "ineffective"
+        )
+      }.to change { System::Fleet::RemediationOutcome.where(account: account).count }.by(1)
+
+      expect(outcome.status).to eq("ineffective")
+      # validated_at must be set or ineffective_streak, which orders by it,
+      # sorts this row out of the streak it exists to contribute to.
+      expect(outcome.validated_at).to be_present
+      expect(System::Fleet::RemediationOutcome.ineffective_streak(
+        account: account, fingerprint: fingerprint
+      )).to eq(1)
+    end
+
+    # A pending row for the same fingerprint is the SAME unresolved condition —
+    # settle it rather than accumulating a second row for one problem.
+    it "settles an existing pending outcome instead of duplicating it" do
+      fingerprint = "project_slo_violation:#{mission.id}:settling"
+      plan = Ai::GoalPlan.create!(
+        account: account, goal: Ai::AgentGoal.create!(
+          account: account, agent: agent, title: "Adapt", description: "d",
+          goal_type: "improvement", status: "pending", priority: 3, progress: 0.0
+        ), agent: agent, status: "failed", version: 1,
+        plan_data: { "kind" => "adaptation_diff", "change_type" => "scale_horizontal",
+                     "mission_id" => mission.id, "signal_fingerprint" => fingerprint }
+      )
+      now = Time.current
+      pending = System::Fleet::RemediationOutcome.create!(
+        account: account, signal_kind: "system.project_slo_violation", fingerprint: fingerprint,
+        action_category: "project.scale_horizontal", status: "pending",
+        acted_at: now, settle_until: now + 90
+      )
+
+      expect {
+        System::AdaptationGate.record_adaptation_outcome!(
+          account: account, mission: mission, plan: plan,
+          fingerprint: fingerprint, signal_kind: "system.project_slo_violation",
+          status: "ineffective"
+        )
+      }.not_to change { System::Fleet::RemediationOutcome.where(account: account).count }
+
+      expect(pending.reload.status).to eq("ineffective")
+      expect(pending.validated_at).to be_present
+    end
+
+    # The blocked arm had no reader. applied: false is honest but inert, so the
+    # only symptom of a missing policy was a mission that silently never
+    # adapted. It has to say so out loud.
+    it "raises a fleet event when the gate blocks for want of a policy" do
+      expect { decide_slo_violation }
+        .to change { System::FleetEvent.where(kind: "fleet.adaptation_blocked").count }.by(1)
+
+      event = System::FleetEvent.where(kind: "fleet.adaptation_blocked").last
+      expect(event.severity).to eq("high")
+      expect(event.payload["mission_id"]).to eq(mission.id)
+      expect(event.payload["action_category"]).to eq("project.scale_horizontal")
+      expect(event.payload["detail"]).to match(/blocked by policy/)
+    end
+
+    # An unrelated second breach absorbed by the in-flight plan must not be
+    # reported as though that plan addressed it — it gets the scale-out's ids.
+    it "names the in-flight plan's change_type when it absorbs a different breach" do
+      decide_slo_violation
+
+      cost = engine.decide(kind: "system.project_cost_breach", severity: :high,
+                           payload: { "mission_id" => mission.id, "observed_usd" => 260.0,
+                                      "target_usd" => 200.0, "breach_pct" => 30.0 },
+                           fingerprint: "project_cost_breach:#{mission.id}")
+
+      expect(cost[:remediation][:superseded_by_change_type]).to eq("scale_horizontal")
+      expect(cost[:remediation][:reason]).to match(/project_cost_breach folded into the in-flight/)
+    end
+
     # The most dangerous thing this lane could do is create a goal the autonomy
     # scheduler will drive on its own. GoalDrivenSchedulerService only walks
     # ACTIVE goals, and from there it runs draft -> validate -> auto-approve ->

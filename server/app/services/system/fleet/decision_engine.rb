@@ -1073,18 +1073,21 @@ module System
       # CHANGE_TYPES map, so one method serves the whole lane).
       #
       # Reuses AdaptationProposerService rather than reimplementing diff
-      # composition: it already builds the diff-shaped Ai::GoalPlan of
-      # provisioning_skill steps AND routes it through
-      # Ai::Autonomy::ApprovalWorkflowService as project.adapt_<change_type>.
-      # This wiring is engine → proposer only; it deliberately does NOT revive
-      # the deleted AiProvisioningHandoffJob / handoff RalphLoop machinery.
+      # composition: it builds the diff-shaped Ai::GoalPlan of
+      # provisioning_skill steps and STOPS. It does no approval routing of its
+      # own — an earlier version of this comment claimed it routed through
+      # Ai::Autonomy::ApprovalWorkflowService as `project.adapt_<change_type>`,
+      # a category that has never existed. Gating belongs to
+      # AdaptationDispatchService via the `adaptation_gate` seam, which resolves
+      # a real `project.<change_type>` InterventionPolicy category. This wiring
+      # deliberately does NOT revive the deleted AiProvisioningHandoffJob /
+      # handoff RalphLoop machinery.
       #
       # Unlike the mutating appliers this returns proposal: true — the plan is
-      # composed and left for a decision, never executed here. Consuming an
-      # approved diff plan (kind "adaptation_diff") is consumed by
-      # Ai::Provisioning::AdaptationDispatchService, which this applier calls
-      # below — composing without dispatching would leave the lane dead-ended in
-      # a persisted record, exactly where it was before it was wired.
+      # composed here and applied by AdaptationDispatchService, which this
+      # applier calls below. Composing without dispatching would leave the lane
+      # dead-ended in a persisted record, exactly where it was before it was
+      # wired.
       #
       # EVERY return from this lane carries proposal: true. That flag is what
       # RemediationValidator#record_proceeded! reads to keep these decisions out
@@ -1141,7 +1144,7 @@ module System
         # Same shape as the reconcile lanes' in-flight task check: an unsettled
         # proposal IS this mission's outstanding remediation.
         if (in_flight = in_flight_adaptation_plan(mission))
-          return continue_adaptation(mission, in_flight)
+          return continue_adaptation(mission, in_flight, signal)
         end
 
         plan = ::Ai::Provisioning::AdaptationProposerService
@@ -1205,7 +1208,16 @@ module System
         # alarm switched off. Held is only progress when something was minted to
         # hold it.
         held_with_nothing_to_act_on = gate == dispatcher::GATE_ROUTED && request_id.nil?
-        applied = progressing && !held_with_nothing_to_act_on
+
+        # The gate may have CLOSED this plan during the call — a rejected or
+        # expired approval is terminal, and AdaptationGate reflects that onto the
+        # plan so the brake releases. Core's disposition vocabulary has no word
+        # for it (it still reports ROUTED with the request id), so read the plan.
+        # Without this, a REJECTED adaptation reported applied: true.
+        closed = TERMINAL_PLAN_STATUSES.include?(plan.reload.status.to_s)
+        applied = progressing && !held_with_nothing_to_act_on && !closed
+
+        escalate_blocked_adaptation!(mission, plan, result[:detail]) if held_with_nothing_to_act_on
 
         {
           applied: applied,
@@ -1238,18 +1250,85 @@ module System
       # take its RESUME path, which has an open defect (offer 019ff55e-84b1) in
       # how it resolves dependencies across a partial step set — and there is
       # nothing to gain, because the runner already owns the work.
-      def continue_adaptation(mission, plan)
-        if UNDISPATCHED_PROPOSAL_STATUSES.include?(plan.status.to_s)
-          return dispatch_adaptation!(mission, plan)
-        end
+      # EVERY in-flight plan is re-offered to dispatch!, including `executing`.
+      #
+      # `executing` is not "safely under way": #dispatch_appended! calls
+      # start_execution! BEFORE execute_appended!, so a raised dispatch leaves
+      # the plan executing with steps appended, unenqueued and unstamped —
+      # precisely the state the consumer's #resumable_steps exists to recover,
+      # and this lane is the only production caller that could reach it. Holding
+      # those plans back left recovery to a manual operator MCP call.
+      #
+      # dispatch! is idempotent: an already-running adaptation comes back
+      # ALREADY_APPLIED rather than being re-enqueued. It resolves resumability
+      # from the dispatch stamp, whose ordering defect (offer 019ff55e-84b1)
+      # affects CHAINED adaptations; this lane composes single-step diffs, so the
+      # partial-set case it mishandles is not reachable from here.
+      def continue_adaptation(mission, plan, signal)
+        result = dispatch_adaptation!(mission, plan)
+        return result unless plan_change_type(plan) && different_condition?(plan, signal)
 
-        { applied: true, proposal: true, deduped: true, in_flight: true,
-          mission_id: mission.id, plan_id: plan.id, step_count: plan.steps.count }
+        # Finding 5: a SECOND, unrelated breach absorbed by this plan must not be
+        # reported as though the plan addressed it. A cost breach folded into an
+        # outstanding scale-out gets the scale-out's ids, so say whose plan it is.
+        result.merge(
+          superseded_by_change_type: plan_change_type(plan),
+          reason: "#{signal.kind} folded into the in-flight #{plan_change_type(plan)} proposal"
+        )
+      end
+
+      def plan_change_type(plan)
+        data = plan.plan_data.is_a?(Hash) ? plan.plan_data : {}
+        data["change_type"].presence
+      end
+
+      # Did this signal ask for something other than what the in-flight plan is
+      # already doing?
+      def different_condition?(plan, signal)
+        data = plan.plan_data.is_a?(Hash) ? plan.plan_data : {}
+        data["signal_kind"].to_s != signal.kind.to_s
+      end
+
+      # The blocked arm has no reader, so it needs a voice.
+      #
+      # AdaptationGate returns ROUTED with no request minted when the resolved
+      # project.<change_type> category has no permitting policy. Reporting
+      # applied: false is honest but INERT — nothing consumes that flag, and the
+      # validate-arc exemption means F3-11 cannot escalate it either. Without an
+      # event, an operator's only symptom is a mission that silently never
+      # adapts. Deduped by fingerprint through the ordinary fleet event path.
+      #
+      # The brake is deliberately NOT released here: a missing policy is a
+      # configuration gap, and #continue_adaptation re-offers this same plan to
+      # the gate every tick, so adding the policy dispatches the plan that is
+      # already composed. Releasing instead would recompose a fresh plan every
+      # dedup TTL and re-block it — churn in place of a fix.
+      def escalate_blocked_adaptation!(mission, plan, detail)
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: account,
+          kind: "fleet.adaptation_blocked",
+          severity: :high,
+          payload: {
+            "mission_id" => mission.id,
+            "plan_id" => plan.id,
+            "change_type" => plan_change_type(plan),
+            "action_category" => ::System::AdaptationGate.action_category_for(plan_change_type(plan).to_s),
+            "detail" => detail
+          }.compact,
+          source: "decision_engine.adaptation_blocked",
+          correlation_id: plan.id
+        )
+      rescue StandardError => e
+        Rails.logger.warn("[FleetDecisionEngine] blocked-adaptation escalation failed: #{e.message}")
       end
 
       # Composed but never handed to a runner — a re-ask of the gate is exactly
       # what these need.
       UNDISPATCHED_PROPOSAL_STATUSES = %w[draft validated].freeze
+
+      # A plan in one of these is finished and did NOT land, whatever the gate's
+      # last disposition said.
+      TERMINAL_PLAN_STATUSES = %w[rejected failed].freeze
 
       # In flight from composition until the plan settles. `executing` and
       # `approved` HAVE to be here: releasing the brake the instant dispatch

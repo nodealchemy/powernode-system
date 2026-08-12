@@ -72,6 +72,10 @@ module System
       "security_change" => "project.security_change"
     }.freeze
 
+    # Approval states that will never release a plan. Retrying the gate cannot
+    # help, so the proposal has to be CLOSED rather than held — see #close_plan!.
+    TERMINAL_REQUEST_STATUSES = %w[rejected expired cancelled].freeze
+
     FLEET_AGENT_NAME = "Fleet Autonomy"
 
     class << self
@@ -87,7 +91,7 @@ module System
         # Already before the gate? Answer from the standing request instead of
         # minting a second one.
         if (existing = existing_request(account, plan))
-          return from_existing(existing, auto_apply_eligible: auto_apply_eligible)
+          return from_existing(existing, plan: plan, auto_apply_eligible: auto_apply_eligible)
         end
 
         gate = ::System::Fleet::FleetAutonomyService
@@ -134,8 +138,20 @@ module System
       # proposal time marked every proposal ineffective on the next tick.
       #
       # @return [System::Fleet::RemediationOutcome, nil]
-      def record_adaptation_outcome!(account:, mission:, plan:, fingerprint:, signal_kind:)
+      # @param status [String] "pending" for a landed adaptation the validator
+      #   will score on a later tick, or "ineffective" for one that FAILED its
+      #   post-adapt verification.
+      def record_adaptation_outcome!(account:, mission:, plan:, fingerprint:, signal_kind:, status: "pending")
         return nil if fingerprint.blank?
+
+        # A FAILED adaptation is scored NOW, not left pending. Verification has
+        # already answered the question the settle window exists to ask, and
+        # without this row nothing marks the lane as failing: the validator's
+        # proposal exemption means record_proceeded! never scores this lane, so
+        # an adaptation that runs and breaks every time would look identical to
+        # one nobody had gotten to yet. This row is what lets F3-11's
+        # ineffective_streak escalate a persistently failing adaptation.
+        return settle_failed_outcome!(account, plan, fingerprint, signal_kind) if status == "ineffective"
 
         # One pending outcome per fingerprint — same rule record_proceeded!
         # uses. A second adaptation against a still-unresolved condition is the
@@ -168,6 +184,39 @@ module System
             # sensor actually ran.
             "sensor" => payload["_sensor"].presence
           }.compact
+        )
+      end
+
+      # `validated_at` is set because RemediationOutcome.ineffective_streak
+      # orders by it — an unset column would sort the row out of the streak it
+      # is supposed to contribute to. A pending row for the same fingerprint is
+      # the SAME unresolved condition, so it is settled in place rather than
+      # duplicated.
+      def settle_failed_outcome!(account, plan, fingerprint, signal_kind)
+        now = Time.current
+        pending = ::System::Fleet::RemediationOutcome.pending
+                    .find_by(account_id: account.id, fingerprint: fingerprint)
+        if pending
+          pending.update!(status: "ineffective", validated_at: now)
+          return pending
+        end
+
+        data = plan_data(plan)
+        payload = data["signal_payload"].is_a?(Hash) ? data["signal_payload"] : {}
+
+        ::System::Fleet::RemediationOutcome.create!(
+          account: account,
+          agent_id: fleet_agent(account)&.id,
+          signal_kind: signal_kind.presence || data["signal_kind"].to_s,
+          fingerprint: fingerprint.to_s,
+          action_category: action_category_for(data["change_type"]),
+          correlation_id: payload["correlation_id"].presence,
+          resource_ref: data["mission_id"].presence,
+          status: "ineffective",
+          acted_at: now,
+          settle_until: now,
+          validated_at: now,
+          metadata: { "gate" => "adaptation_failed", "plan_id" => plan.id }
         )
       end
 
@@ -206,15 +255,44 @@ module System
       # enforces its bounds against an unattended policy grant, and defers to a
       # human who looked at the plan and said yes. The flag is declared here,
       # never inferred by core from the presence of a request id.
-      def from_existing(request, auto_apply_eligible:)
-        if request.status.to_s == "approved"
+      def from_existing(request, plan:, auto_apply_eligible:)
+        status = request.status.to_s
+
+        if status == "approved"
           return { disposition: AUTO_APPLY, approval_request_id: request.id,
                    authority: AUTHORITY_APPROVAL,
                    detail: "released by operator approval" }
         end
 
+        if TERMINAL_REQUEST_STATUSES.include?(status)
+          close_plan!(plan, status)
+          return { disposition: ROUTED, approval_request_id: request.id,
+                   detail: "request #{status} — proposal closed, the mission may propose again" }
+        end
+
         { disposition: ROUTED, approval_request_id: request.id,
-          detail: "existing request is #{request.status}" }
+          detail: "existing request is #{status}" }
+      end
+
+      # Reflect the decision onto the PLAN, not just the request.
+      #
+      # Nothing else does. Core transitions a plan only on dispatch, and dispatch
+      # only happens on AUTO_APPLY — so a rejected proposal sat in `draft`
+      # forever, and DecisionEngine's one-in-flight-proposal brake stayed engaged
+      # against a condition that was still breaching. The fleet chain is 4h with
+      # timeout_action "reject", so this is the DEFAULT path for any routed
+      # adaptation an operator does not answer in time, not an edge case.
+      #
+      # The gate owns the approval lifecycle, so it owns closing the plan that
+      # approval was about.
+      def close_plan!(plan, status)
+        return if plan.nil? || plan.status.to_s == "rejected"
+
+        plan.reject!(reason: "adaptation approval #{status}")
+      rescue StandardError => e
+        # Never let bookkeeping turn a decided request back into an undecided
+        # one — the disposition above is still the honest answer.
+        Rails.logger.warn("[AdaptationGate] could not close plan #{plan&.id}: #{e.message}")
       end
 
       def metadata_for(mission, plan, change_type)
