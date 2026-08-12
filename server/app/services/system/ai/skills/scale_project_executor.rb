@@ -108,7 +108,11 @@ module System
               detached_sdwan_peer_ids: [ :string ],
               deleted_storage_volume_ids: [ :string ],
               orphans: [ :object ],
-              floor_reached: :boolean
+              floor_reached: :boolean,
+              # Which containment rail actually applied — nil when the mission
+              # declares no prefix, so an unmeasured rail is never read as a
+              # clean one.
+              prefix_enforced: :string
             },
             failures: [ :object ],
             partial: :boolean
@@ -273,6 +277,23 @@ module System
             end
           end
 
+          # The SAME rail, applied to the other destroyable resource class.
+          # A volume this mission provisioned is named after its node, so it
+          # inherits the prefix; one that does not is somebody else's — an
+          # operator's data disk hand-attached to a replica — and deleting it
+          # is irreversible under an approval that only ever described
+          # removing replicas. Refuse the removal rather than destroy
+          # something the rail cannot vouch for.
+          if prefix.present?
+            foreign = victim_volumes(victims).reject { |v| v.name.to_s.start_with?(prefix) }
+            if foreign.any?
+              return failure(
+                "refusing to remove: #{foreign.size} attached volume(s) outside the mission's " \
+                "`#{prefix}` prefix would be deleted: #{foreign.map(&:name).join(', ')}"
+              )
+            end
+          end
+
           if dry_run
             return success(removal_envelope(
               dry_run: true, count: victims.size,
@@ -330,12 +351,23 @@ module System
             break
           end
 
-          # Nothing removed and something went wrong: report a FAILED step.
-          # Returning the partial-success envelope here would have the runner
-          # mark the step completed, skip its `on_failure: rollback`, and
-          # dispatch successors as though capacity had gone away.
-          if removed.empty? && failures.any?
-            return failure("remove_replicas removed nothing: #{failures.inspect[0, 300]}")
+          # Nothing removed: report a FAILED step. Returning the
+          # partial-success envelope here would have the runner mark the step
+          # completed, skip its `on_failure: rollback`, and dispatch
+          # successors as though capacity had gone away. This covers a victim
+          # that vanished between selection and teardown too — that path
+          # records neither an error nor a termination, so keying on
+          # `failures.any?` alone would call it a clean removal of zero.
+          #
+          # Volumes are torn down BEFORE the instance, so a failure here can
+          # sit on top of disks that are already irreversibly gone. Name them:
+          # a bare error message would leave no trace of what was destroyed,
+          # and the step records no outputs when it fails.
+          if removed.empty?
+            destroyed = "destroyed before the failure: " \
+                        "volumes=#{deleted_volumes.inspect} peers=#{detached_peers.inspect}"
+            return failure("remove_replicas removed nothing (#{destroyed}): " \
+                           "#{failures.inspect[0, 300]}")
           end
 
           success(removal_envelope(
@@ -363,6 +395,14 @@ module System
             .active
             .order(created_at: :desc, id: :desc)
             .to_a
+        end
+
+        # Volumes currently attached to the victims — what a removal would
+        # delete. Read once for the pre-flight rail and again per victim
+        # during teardown, so a volume attached in between is still caught by
+        # the orphan sweep rather than silently deleted unchecked.
+        def victim_volumes(victims)
+          ::System::ProviderVolume.where(node_instance_id: victims.map(&:id)).to_a
         end
 
         # Post-teardown ground-truth sweep for ONE victim — the zero-orphan

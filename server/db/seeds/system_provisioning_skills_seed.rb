@@ -69,10 +69,12 @@ PROVISIONING_SKILLS_DATA = [
       Returns the unified outputs envelope so the runner's rollback dispatch can terminate
       new instances and delete new volumes uniformly with the M0 contract.
       remove_replicas is IRREVERSIBLE and approval-bound: it terminates the newest replicas
-      of the mission's OWN set (never fleet-wide, never below one replica), refuses any
-      victim outside the mission's name prefix, and records what it destroyed under
-      removed_node_instance_ids / detached_sdwan_peer_ids / deleted_storage_volume_ids
-      plus a post-teardown orphan sweep. It never auto-applies.
+      of the mission's OWN set (never fleet-wide, never below one replica) and records what
+      it destroyed under removed_node_instance_ids / detached_sdwan_peer_ids /
+      deleted_storage_volume_ids plus a post-teardown orphan sweep. When the mission
+      declares a name prefix it refuses any victim — or attached volume — outside it;
+      when the mission declares none that rail is NOT applied, and outputs.prefix_enforced
+      says which of the two it was. It never auto-applies.
     PROMPT
   },
   {

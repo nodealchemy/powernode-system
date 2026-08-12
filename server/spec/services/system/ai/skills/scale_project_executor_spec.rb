@@ -37,7 +37,8 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
       # the creation keys above.
       expect(d.dig(:outputs, :outputs)).to include(:removed_node_instance_ids,
                                                     :detached_sdwan_peer_ids,
-                                                    :deleted_storage_volume_ids, :orphans)
+                                                    :deleted_storage_volume_ids, :orphans,
+                                                    :floor_reached, :prefix_enforced)
       expect(d[:rollback]).to eq(:rollback_scale_project)
       expect(d[:requires_approval]).to be false
       expect(d[:blast_radius]).to eq(:medium)
@@ -238,13 +239,24 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
       # Reproduces exactly what ProvisionFullStackExecutor#create_node! stamps:
       # mission provenance in node.config, and a prefixed node name the
       # instance name derives from.
+      # The full production naming chain: create_node! prefixes the NODE name,
+      # provision_instance derives the instance name from it, and a
+      # per-instance volume is "<node name>-data". Every containment rail
+      # reads one of those three, so the fixture has to build all three the
+      # way the provisioning path does.
       def replica!(minutes_old:, name: nil, mission_owned: true)
         node = create(:system_node, account: account, node_template: template,
+                                    name: "#{prefix}-web-#{SecureRandom.hex(3)}",
                                     config: mission_owned ? { "mission_id" => mission.id } : {})
         create(:system_node_instance, :running, node: node,
                provider_region: region, provider_instance_type: instance_type,
-               name: name || "#{prefix}-web-#{SecureRandom.hex(3)}",
+               name: name || "#{node.name}-instance-#{SecureRandom.hex(2)}",
                created_at: minutes_old.minutes.ago)
+      end
+
+      def volume_for!(instance, **attrs)
+        create(:system_provider_volume, :attached, account: account, provider_region: region,
+               node_instance: instance, name: "#{instance.node.name}-data", **attrs)
       end
 
       def statuses_of(*instances)
@@ -429,6 +441,22 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
         expect(without[:data][:outputs][:prefix_enforced]).to be_nil
       end
 
+      it "FAILS rather than reporting a clean zero when the victim vanished mid-flight" do
+        replica!(minutes_old: 30)
+        victim = replica!(minutes_old: 10)
+        # Selected, then destroyed by something else before teardown.
+        # teardown_resources skips a row it cannot find, recording neither an
+        # error nor a termination — so nothing removed AND nothing failed
+        # would otherwise read as a successful removal of zero.
+        allow(::System::NodeInstance).to receive(:find_by).and_call_original
+        allow(::System::NodeInstance).to receive(:find_by).with(id: victim.id).and_return(nil)
+
+        r = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "remove_replicas")
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(/removed nothing/i)
+      end
+
       it "FAILS the step when a victim could not be terminated at all" do
         keeper = replica!(minutes_old: 40)
         older  = replica!(minutes_old: 30)
@@ -456,8 +484,7 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
           peer = create(:sdwan_peer, account: account, network: network, node_instance: victim)
           central = create(:system_node_instance_peer, node_instance: victim,
                            capabilities: { "sdwan" => { "networks" => [ { "network_id" => network.id } ] } })
-          volume = create(:system_provider_volume, :attached, account: account,
-                          provider_region: region, node_instance: victim)
+          volume = volume_for!(victim)
 
           r = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "remove_replicas")
 
@@ -478,8 +505,7 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
         it "catches a volume that survived its delete even though detach cleared the FK" do
           replica!(minutes_old: 30)
           victim = replica!(minutes_old: 10)
-          volume = create(:system_provider_volume, :attached, account: account,
-                          provider_region: region, node_instance: victim)
+          volume = volume_for!(victim)
           # ProviderVolume#detach! nulls node_instance_id, so a sweep that
           # re-queries by FK sees nothing and blesses the leak. The victim's
           # volume ids are captured BEFORE teardown for exactly this reason.
@@ -491,6 +517,43 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
           expect(::System::ProviderVolume.where(id: volume.id).count).to eq(1)
           expect(r[:data][:outputs][:orphans].to_s).to include(volume.id)
           expect(r[:data][:failures]).not_to be_empty
+        end
+
+        it "REFUSES to delete a volume that does not carry the mission's prefix" do
+          replica!(minutes_old: 30)
+          victim = replica!(minutes_old: 10)
+          # A volume the mission provisioned is named after its node, so it
+          # inherits the prefix. One that does not is somebody else's — an
+          # operator's data disk hand-attached to a replica — and deleting it
+          # is irreversible under an approval that only described removing
+          # replicas. Same rail as the instance side, same hard error.
+          stray = create(:system_provider_volume, :attached, account: account,
+                         provider_region: region, node_instance: victim,
+                         name: "operator-data-disk")
+
+          r = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "remove_replicas")
+
+          expect(r[:success]).to be false
+          expect(r[:error]).to include("operator-data-disk")
+          expect(::System::ProviderVolume.where(id: stray.id).count).to eq(1)
+          expect(statuses_of(victim)).to eq(%w[running])
+        end
+
+        it "names what it already destroyed when the terminate then fails" do
+          replica!(minutes_old: 30)
+          victim = replica!(minutes_old: 10)
+          volume = volume_for!(victim)
+          # Volumes go first by design, so a terminate failure lands AFTER the
+          # disks are already gone. Returning a bare failure would leave no
+          # machine-readable trace of what was destroyed.
+          allow(provider_adapter).to receive(:terminate_instance)
+            .and_return({ success: false, error: "provider rejected terminate" })
+
+          r = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "remove_replicas")
+
+          expect(r[:success]).to be false
+          expect(r[:error]).to include(volume.id)
+          expect(::System::ProviderVolume.where(id: volume.id).count).to eq(0)
         end
 
         it "HALTS on the first orphan instead of tearing down the next victim" do
