@@ -244,6 +244,21 @@ RSpec.describe "AI-driven provisioning M2 adaptive evolution smoke", type: :inte
     expect(drift.payload["drift_type"]).to eq("region_count")
 
     # ---------- 2. AdaptationProposer routes region_count drift to relocate
+    # relocate_workload declares 8 required inputs; the heuristic composer
+    # supplies none, so an unbindable step would be dropped and no plan
+    # composed. Supply a complete proposal — this example's subject is the
+    # approval ROUTING below, not the composition.
+    allow_any_instance_of(Ai::Provisioning::AdaptationProposerService)
+      .to receive(:diff_from_llm).and_return([
+        { "skill" => "relocate_workload",
+          "inputs" => { "change_type" => "relocate", "project_id" => mission.id,
+                        "from_region_id" => "r1", "to_region_id" => "r2",
+                        "cutover_strategy" => "blue_green", "template_id" => "tmpl-fixture",
+                        "provider_instance_type_id" => "itype-fixture",
+                        "count" => 2, "source_instance_ids" => %w[i-1] },
+          "on_failure" => "rollback" }
+      ])
+
     proposer = Ai::Provisioning::AdaptationProposerService.new(account: account, mission: mission)
     plan = proposer.propose_from_signals(signals: [ drift ])
 
