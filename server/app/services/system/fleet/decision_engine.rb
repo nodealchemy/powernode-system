@@ -1260,10 +1260,28 @@ module System
       # those plans back left recovery to a manual operator MCP call.
       #
       # dispatch! is idempotent: an already-running adaptation comes back
-      # ALREADY_APPLIED rather than being re-enqueued. It resolves resumability
-      # from the dispatch stamp, whose ordering defect (offer 019ff55e-84b1)
-      # affects CHAINED adaptations; this lane composes single-step diffs, so the
-      # partial-set case it mishandles is not reachable from here.
+      # ALREADY_APPLIED rather than being re-enqueued.
+      #
+      # KNOWN EXPOSURE, stated rather than argued away. Re-offering an executing
+      # plan opens a window: step 1 completes and, before its worker enqueues
+      # step 2, a fleet tick resumes the plan — two jobs racing
+      # SkillCompositionRunner#execute_step!, whose in-flight guard is an
+      # unlocked mark_executing → update! (instance 3 of the deferred concurrency
+      # offer 019ff533-8638). Once that single mechanism lands — a partial unique
+      # index or a compare-and-set claim — this degrades to a duplicate enqueue
+      # where one worker wins, which is the correct behaviour. Until then
+      # 019ff533-8638 is a PREREQUISITE for exercising this lane, not optional
+      # hardening. Restoring the old early return is not the fix: it reinstates
+      # the stranding defect (appended, unenqueued, unrecoverable) this replaced.
+      #
+      # An earlier version of this comment claimed the multi-step case was
+      # unreachable "because this lane composes single-step diffs". That was
+      # false: in_flight_adaptation_plan matches ANY adaptation_diff plan for the
+      # mission, including operator/MCP-composed ones; only scale_horizontal and
+      # cost_control take the single-step heuristic path, while relocate /
+      # schema_change / security_change go through the LLM path, which has no
+      # step cap, and persist_diff_plan! chains their dependencies. Chained
+      # adaptations reach the resume path's ordering defect (019ff55e-84b1).
       def continue_adaptation(mission, plan, signal)
         result = dispatch_adaptation!(mission, plan)
         return result unless plan_change_type(plan) && different_condition?(plan, signal)
