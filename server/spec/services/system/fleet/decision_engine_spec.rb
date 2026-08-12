@@ -1145,4 +1145,558 @@ RSpec.describe System::Fleet::DecisionEngine do
       expect(d[:remediation]).to include(applied: false)
     end
   end
+
+  # IMP-4f7f7a0c9d33 — the project.* adaptation lane. SIGNAL_BINDINGS routes
+  # system.project_slo_violation / project_drift / project_cost_breach to the
+  # project.adapt / project.cost_control gates, but REMEDIATION_APPLIERS had no
+  # entry for any of them and AdaptationProposerService#propose_from_signals had
+  # ZERO production call sites — so a proceed recorded applied:false, minted a
+  # RemediationOutcome nothing could ever settle, and surfaced later as a false
+  # fleet.remediation_stuck escalation. Same class as IMP-41eb6ddbc490 /
+  # IMP-555e29eeb4ab / IMP-83471cc28e1a.
+  #
+  # These examples drive engine.decide — the real gate → applier path. The M2
+  # adaptive smoke calls AdaptationProposerService DIRECTLY, so a green M2 run
+  # only ever proved the proposer works when something calls it, which is
+  # precisely what was missing.
+  describe "project.* adaptation lane actuates the adaptation proposer" do
+    let(:owner) { create(:user, account: account) }
+
+    let(:brief) do
+      { "intent" => "3-region web app",
+        "scale" => { "initial" => 3, "target" => 5, "growth_profile" => "linear" },
+        "regions" => %w[us-east-1 eu-west-1 ap-southeast-1] }
+    end
+
+    # ---------------------------------------------------------------------
+    # FIXTURE-ONLY EDIT — IMP-02b4bc9f8bd8 (INC-3), 2026-08-12, authorized by
+    # the campaign lead. No assertion in this file was changed and no
+    # production code in this submodule was touched.
+    #
+    # Why: INC-3 gave AdaptationProposerService a compose-time precondition —
+    # a scale-out is only composed when the mission's own provisioning plan
+    # supplies the footprint (template / region / instance type) the scaling
+    # skill requires. Without it the composer now declines rather than
+    # emitting a step that fails at execution with "missing required input:
+    # project_id". These fixtures predate that precondition, so they built
+    # missions with no provisioning plan and every composition assertion here
+    # went red for a reason unrelated to what it tests.
+    #
+    # This stamps the plan a real mission always has. The assertions below
+    # are unchanged and continue to test the lane, not the fixture.
+    #
+    # Two further fixture-only edits from the same task, same authorization:
+    #
+    #   * `"replica_count" => 3` was added to the SLO payloads below.
+    #     ProjectSloSensor now stamps the observed fleet size onto every SLO
+    #     violation (an SLO payload's `observed` is the breached METRIC, not a
+    #     count), and the proposer reads only that — it will not substitute
+    #     `brief.scale.initial` for a fleet it cannot see, because a constant
+    #     baseline is what made the old proposals ratchet. Hand-built payloads
+    #     here predate that field.
+    #
+    #   * Two account-wide counts in "composes one plan per pass…" were scoped
+    #     to adaptation goals/plans. Those were CORRECTED, not relaxed — see
+    #     the comments at the assertions themselves.
+    #
+    # NOTE: one example in this file — "routes a cost breach through
+    # project.cost_control into a cost_control plan" — remains RED on
+    # purpose. cost_control composes a scale-IN, and no scale-in strategy
+    # exists yet, so INC-3 made it decline. That expectation is genuinely
+    # obsolete and must be revised when INC-4 (IMP-216a6dbc7e32) lands
+    # `remove_replicas`; it was deliberately not "fixed" here.
+    # ---------------------------------------------------------------------
+    def build_mission(status: "active")
+      m = create(:ai_mission, account: account, created_by: owner,
+                 mission_type: "infrastructure",
+                 custom_phases: [ { "key" => "adapting", "label" => "Adapting", "order" => 0 } ],
+                 configuration: {
+                   "brief" => brief,
+                   "slo_targets" => { "p99_latency_ms" => 250, "cost_ceiling_usd" => 200.0 },
+                   "watch_policies" => { "auto_scale_max_replicas" => 5 }
+                 })
+      m.update_columns(status: status)
+      stamp_provisioning_plan!(m.reload)
+    end
+
+    # See the note on #build_mission — the provisioning plan whose provision
+    # step names the footprint an adaptation scale-out replicates.
+    def stamp_provisioning_plan!(target)
+      goal = Ai::AgentGoal.create!(
+        account: account, agent: agent, title: "Provision",
+        description: "initial provisioning", goal_type: "improvement",
+        status: "pending", priority: 3, progress: 0.0,
+        success_criteria: {}, metadata: {}
+      )
+      plan = Ai::GoalPlan.create!(
+        account: account, goal: goal, agent: agent, status: "draft",
+        version: 1, plan_data: { "kind" => "provisioning" }
+      )
+      plan.steps.create!(
+        step_number: 1, step_type: "provisioning_skill", status: "pending",
+        description: "Provision full stack",
+        execution_config: {
+          "skill" => "provision_full_stack",
+          "inputs" => { "template_id" => "tmpl-fixture",
+                        "provider_region_id" => "region-fixture",
+                        "provider_instance_type_id" => "itype-fixture" },
+          "on_failure" => "rollback"
+        },
+        dependencies: []
+      )
+      target.update!(configuration: target.configuration.merge(
+        "plan" => { "plan_id" => plan.id }
+      ))
+      target
+    end
+
+    let!(:mission) { build_mission }
+
+    before do
+      %w[project.adapt project.cost_control].each do |category|
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: category,
+                                       policy: "notify_and_proceed", is_active: true)
+      end
+      # Force the heuristic diff path — the LLM seam is the only stub, matching
+      # the M2 smoke. Everything downstream (plan persistence, step composition,
+      # approval routing) runs for real.
+      allow_any_instance_of(Ai::Provisioning::AdaptationProposerService)
+        .to receive(:diff_from_llm).and_return(nil)
+    end
+
+    def decide_slo_violation(mission_id: mission.id)
+      engine.decide(kind: "system.project_slo_violation", severity: :high,
+                    payload: { "mission_id" => mission_id, "metric" => "p99_latency_ms",
+                               "observed" => 500.0, "target" => 250, "breach_pct" => 100.0,
+                               "replica_count" => 3,
+                               "correlation_id" => "project_slo:#{mission_id}:abc123" },
+                    fingerprint: "project_slo_violation:#{mission_id}:p99_latency_ms")
+    end
+
+    it "persists an adaptation diff plan when the SLO gate proceeds" do
+      decision = nil
+      expect { decision = decide_slo_violation }.to change { Ai::GoalPlan.count }.by(1)
+
+      expect(decision[:decision]).to eq(:proceed)
+      expect(decision[:action_category]).to eq("project.adapt")
+      expect(decision[:remediation]).to include(applied: true, proposal: true, mission_id: mission.id)
+
+      plan = Ai::GoalPlan.find(decision[:remediation][:plan_id])
+      expect(plan.plan_data["kind"]).to eq("adaptation_diff")
+      expect(plan.plan_data["change_type"]).to eq("scale_horizontal")
+      expect(plan.plan_data["signal_kind"]).to eq("system.project_slo_violation")
+      expect(plan.plan_data["mission_id"]).to eq(mission.id)
+
+      expect(plan.steps.count).to eq(1)
+      step = plan.steps.in_order.first
+      expect(step.step_type).to eq("provisioning_skill")
+      expect(step.execution_config["skill"]).to eq("scale_project")
+      expect(step.execution_config.dig("inputs", "change_type")).to eq("scale_horizontal")
+      # initial=3, breach_pct=100 → +2 → 5
+      expect(step.execution_config.dig("inputs", "desired_replica_count")).to eq(5)
+      expect(step.execution_config.dig("inputs", "correlation_id")).to eq("project_slo:#{mission.id}:abc123")
+    end
+
+    # The sanctioned departure from the mutating appliers: a project.*
+    # remediation stops at a PROPOSAL. Nothing scales, relocates or re-shapes
+    # storage here — the diff plan is composed and left gated for a decision.
+    it "gates the proposal instead of mutating the workload" do
+      decision = decide_slo_violation
+
+      # No on-node task is dispatched for this lane — contrast system.module_drift,
+      # which queues a sync_modules Task. Adaptation actuates through the
+      # mission's live plan, never through the on-node reconcile path.
+      expect(System::Task.where(account: account)).to be_empty
+      expect(decision[:remediation]).to include(proposal: true)
+    end
+
+    # The lane must not stop at composition. Without the dispatch call the plan
+    # is a persisted record and the lane dead-ends exactly where it did when it
+    # had no applier at all — the defect this task exists to close.
+    it "hands the composed plan to the adaptation dispatch consumer" do
+      expect_any_instance_of(Ai::Provisioning::AdaptationDispatchService)
+        .to receive(:dispatch!).with(hash_including(:plan)).and_call_original
+
+      decision = decide_slo_violation
+
+      expect(decision[:remediation]).to include(proposal: true, plan_id: kind_of(String))
+      expect(decision[:remediation][:gate])
+        .to be_in(Ai::Provisioning::AdaptationDispatchService::GATE_DISPOSITIONS)
+    end
+
+    # The gate resolves policy by CHANGE TYPE — AdaptationGate maps
+    # scale_horizontal to `project.scale_horizontal`, not to the `project.adapt`
+    # category the SIGNAL binding gates on. With no policy for that category the
+    # fleet chain holds the plan for an operator rather than applying it, and the
+    # plan stays draft. Two distinct gates, deliberately: the signal gate decides
+    # whether to propose, this one whether to apply.
+    it "holds the plan for an operator when no scale_horizontal policy exists" do
+      decision = decide_slo_violation
+
+      expect(decision[:remediation]).to include(
+        proposal: true, dispatched: false,
+        gate: Ai::Provisioning::AdaptationDispatchService::GATE_ROUTED
+      )
+      # Held is progress, not failure — an operator now owns it.
+      expect(decision[:remediation][:applied]).to be true
+      expect(Ai::GoalPlan.find(decision[:remediation][:plan_id]).status).to eq("draft")
+    end
+
+    # The loop closing, end to end: policy clears the plan, the consumer appends
+    # onto the mission's live plan and dispatches, and the plan leaves `draft` —
+    # which is precisely what RELEASES the one-open-proposal brake so the next
+    # genuine breach can propose again. Brake and release are one mechanism,
+    # which is why this lane could not land before the consumer existed.
+    context "when operator policy auto-approves the scale-out" do
+      let(:live_plan) { Ai::GoalPlan.find(mission.configuration.dig("plan", "plan_id")) }
+
+      before do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "project.scale_horizontal",
+                                       policy: "auto_approve", is_active: true)
+        # Seam: the runner's enqueue is its own subject with its own specs.
+        # Asserting through it would test the runner, not this lane.
+        allow_any_instance_of(Ai::Provisioning::SkillCompositionRunner)
+          .to receive(:execute_appended!)
+          .and_return({ dispatched: 1, already_running: false, runner_id: "runner-1" })
+      end
+
+      it "dispatches the adaptation onto the live plan and releases the brake" do
+        decision = decide_slo_violation
+
+        expect(decision[:remediation]).to include(
+          applied: true, proposal: true, dispatched: true,
+          gate: Ai::Provisioning::AdaptationDispatchService::GATE_AUTO_APPLY
+        )
+
+        diff_plan = Ai::GoalPlan.find(decision[:remediation][:plan_id])
+        expect(diff_plan.status).to eq("executing")
+
+        # The steps landed on the LIVE plan, stamped with their provenance —
+        # that plan is what VerificationService walks, so an adaptation run out
+        # of the diff plan would be invisible to its own verification.
+        appended = live_plan.steps.reload.select do |s|
+          s.execution_config["adapted_from_plan_id"].to_s == diff_plan.id
+        end
+        expect(appended).not_to be_empty
+        expect(appended.map(&:step_number)).to all(be > 1)
+
+        # Brake released: the diff plan is no longer an open proposal, so the
+        # next genuine breach composes afresh instead of being deduped forever.
+        # This is the exact condition that made the guard unreleasable before
+        # INC-2 — do not weaken it without a replacement brake.
+        expect(described_class.new(autonomy_service: service)
+                 .send(:open_adaptation_plan, mission)).to be_nil
+      end
+    end
+
+    # DECLINE BY DESIGN, not a gap. `scale_project` offers only additive
+    # strategies, so a cost breach — which implies scaling IN — has no actuator
+    # to bind to; composing one would fail at execution with a missing required
+    # input. INC-4 (IMP-216a6dbc7e32) adds `remove_replicas` and wires this
+    # branch up. Until then the honest composition is none at all.
+    #
+    # The decline still routes through project.cost_control and still carries
+    # proposal: true, which is what keeps it out of the validate arc.
+    it "declines to compose a cost_control plan while no scale-in strategy exists" do
+      decision = nil
+      expect {
+        decision = engine.decide(kind: "system.project_cost_breach", severity: :high,
+                                 payload: { "mission_id" => mission.id, "observed_usd" => 260.0,
+                                            "target_usd" => 200.0, "breach_pct" => 30.0,
+                                            "correlation_id" => "project_slo:#{mission.id}:cost" },
+                                 fingerprint: "project_cost_breach:#{mission.id}")
+      }.not_to change { Ai::GoalPlan.count }
+
+      expect(decision[:action_category]).to eq("project.cost_control")
+      expect(decision[:remediation]).to include(applied: false, proposal: true)
+      expect(decision[:remediation][:reason]).to match(/no diff plan composed/)
+    end
+
+    # Also a decline by design: `relocate_workload` declares required inputs the
+    # heuristic composer cannot supply, so the bindability guard at the single
+    # exit of #build_steps_for drops the step. Missing composers are tracked as
+    # offer 019ff49b-a8e5 — do NOT "fix" this by removing the guard.
+    it "declines region_count drift while relocate_workload has no composer" do
+      decision = nil
+      expect {
+        decision = engine.decide(kind: "system.project_drift", severity: :medium,
+                                 payload: { "mission_id" => mission.id, "drift_type" => "region_count",
+                                            "observed" => 2, "target" => 3,
+                                            "correlation_id" => "project_slo:#{mission.id}:drift" },
+                                 fingerprint: "project_drift:#{mission.id}:region_count")
+      }.not_to change { Ai::GoalPlan.count }
+
+      expect(decision[:remediation]).to include(applied: false, proposal: true)
+      expect(decision[:remediation][:reason]).to match(/no diff plan composed/)
+    end
+
+    # The false-stuck escalation this task exists to remove. A proposal cannot
+    # clear its own signal inside SETTLE_WINDOW — the mission keeps breaching
+    # until an operator approves the diff plan and it executes — so recording a
+    # pending outcome would score INEFFECTIVE on the next tick, and three of
+    # those trip STUCK_STREAK_THRESHOLD into a false fleet.remediation_stuck.
+    # Ground truth: zero rows, not a returned success.
+    it "keeps a proposal remediation out of the validate arc" do
+      decision = decide_slo_violation
+      expect(decision[:remediation]).to include(applied: true, proposal: true)
+
+      signal = System::Fleet::Signal.from_hash(
+        kind: "system.project_slo_violation", severity: :high,
+        payload: { "mission_id" => mission.id, "replica_count" => 3 },
+        fingerprint: "project_slo_violation:#{mission.id}:p99_latency_ms"
+      )
+
+      recorded = nil
+      expect {
+        recorded = System::Fleet::RemediationValidator.new(account: account, agent: agent)
+                                                      .record_proceeded!(decisions: [ decision ], signals: [ signal ])
+      }.not_to change { System::Fleet::RemediationOutcome.where(account: account).count }
+
+      expect(recorded).to eq(0)
+      expect(System::Fleet::RemediationOutcome.find_by(account: account, fingerprint: signal.fingerprint)).to be_nil
+      expect(System::Fleet::RemediationOutcome.ineffective_streak(
+        account: account, fingerprint: signal.fingerprint
+      )).to eq(0)
+    end
+
+    # Guard the exemption against over-reach: a MUTATING proceed must still be
+    # scored, or the whole validate arc silently stops working.
+    it "still records an outcome for a mutating remediation" do
+      mutating = { decision: :proceed, signal_kind: "system.module_drift",
+                   action_category: "system.module_assign",
+                   fingerprint: "module_drift:inst-1",
+                   remediation: { applied: true, command: "sync_modules" } }
+      signal = System::Fleet::Signal.from_hash(
+        kind: "system.module_drift", severity: :medium, payload: {}, fingerprint: "module_drift:inst-1"
+      )
+
+      recorded = System::Fleet::RemediationValidator.new(account: account, agent: agent)
+                                                    .record_proceeded!(decisions: [ mutating ], signals: [ signal ])
+
+      expect(recorded).to eq(1)
+      expect(System::Fleet::RemediationOutcome.find_by(account: account, fingerprint: signal.fingerprint)).to be_present
+    end
+
+    # ProjectSloSensor emits up to three signals per mission per tick, and they
+    # map to DIFFERENT change_types (slo_violation → scale_horizontal,
+    # cost_breach → cost_control). Deciding each in isolation composed one plan
+    # PER SIGNAL — "scale to 5" from the latency breach and "scale to 2" from the
+    # cost breach, contradictory diffs on the SAME AgentGoal in one pass. The
+    # per-mission open-proposal key is what closes this; a (mission, change_type)
+    # key would let exactly this pair through.
+    it "composes one plan per pass even when a mission breaches on two axes" do
+      slo = { kind: "system.project_slo_violation", severity: :critical,
+              payload: { "mission_id" => mission.id, "metric" => "p99_latency_ms",
+                         "observed" => 500.0, "target" => 250, "breach_pct" => 100.0,
+                         "replica_count" => 3 },
+              fingerprint: "project_slo_violation:#{mission.id}:p99_latency_ms" }
+      cost = { kind: "system.project_cost_breach", severity: :medium,
+               payload: { "mission_id" => mission.id, "observed_usd" => 260.0,
+                          "target_usd" => 200.0, "breach_pct" => 30.0 },
+               fingerprint: "project_cost_breach:#{mission.id}" }
+
+      decisions = nil
+      expect { decisions = engine.decide_all([ slo, cost ]) }.to change { Ai::GoalPlan.count }.by(1)
+
+      expect(decisions.map { |d| d[:decision] }).to all(eq(:proceed))
+      remediations = decisions.map { |d| d[:remediation] }
+      expect(remediations).to all(include(applied: true, proposal: true))
+      expect(remediations.map { |r| r[:plan_id] }.uniq.size).to eq(1)
+      # Exactly one signal composes; the second finds the open plan.
+      expect(remediations.count { |r| r[:deduped] }).to eq(1)
+
+      # One goal per mission, not one per signal — intent unchanged, scoped to
+      # ADAPTATION goals (IMP-02b4bc9f8bd8, 2026-08-12, lead-authorized).
+      # CORRECTED, NOT RELAXED: the account-wide count was a proxy that only
+      # held for a mission that had never been provisioned. `Ai::GoalPlan
+      # belongs_to :goal` is required, so any genuinely provisioned mission
+      # also carries a provisioning goal and the account-wide total is 2 after
+      # one adaptation — this example would have been wrong in production.
+      # Scoping to kind=adaptation measures exactly what the line above claims.
+      expect(
+        Ai::AgentGoal.where(account: account)
+                     .where("metadata @> ?", { "kind" => "adaptation" }.to_json)
+                     .count
+      ).to eq(1)
+
+      # No contradictory downscale step was composed alongside the scale-up.
+      plan = Ai::GoalPlan.find(remediations.first[:plan_id])
+      expect(plan.plan_data["change_type"]).to eq("scale_horizontal")
+      expect(plan.steps.in_order.first.execution_config.dig("inputs", "desired_replica_count")).to eq(5)
+      # Same correction as the goal count above, same reason (IMP-02b4bc9f8bd8):
+      # the mission's own provisioning plan is an Ai::GoalPlan too, so an
+      # account-wide total only equalled 1 pre-provisioning. Scoped to the
+      # adaptation diff this example is actually about — corrected, not relaxed.
+      expect(
+        Ai::GoalPlan.where(account: account)
+                    .where("plan_data @> ?", { "kind" => "adaptation_diff" }.to_json)
+                    .count
+      ).to eq(1)
+    end
+
+    it "still composes per mission when one pass carries two different missions" do
+      other = build_mission
+      sig = lambda do |m|
+        { kind: "system.project_slo_violation", severity: :high,
+          payload: { "mission_id" => m.id, "metric" => "p99_latency_ms", "breach_pct" => 100.0,
+                     "replica_count" => 3 },
+          fingerprint: "project_slo_violation:#{m.id}:p99_latency_ms" }
+      end
+
+      decisions = nil
+      expect { decisions = engine.decide_all([ sig.call(mission), sig.call(other) ]) }
+        .to change { Ai::GoalPlan.count }.by(2)
+
+      plan_ids = decisions.map { |d| d[:remediation][:plan_id] }
+      expect(plan_ids.uniq.size).to eq(2)
+      expect(decisions.map { |d| d[:remediation][:mission_id] }).to match_array([ mission.id, other.id ])
+    end
+
+    # Mirrors the in-flight guard the reconcile-task lanes already have ("does
+    # not duplicate an in-flight reconcile task"). A breaching mission re-fires
+    # every dedup TTL, and each metric breaches under its own fingerprint, so
+    # without this every pass composed ANOTHER draft plan — and, wherever the
+    # governance capability is enabled, another operator approval — for a
+    # proposal nobody has decided yet. One condition, an unbounded queue.
+    it "does not compose a second proposal while one is still open" do
+      first = decide_slo_violation
+      expect(first[:remediation]).to include(applied: true, proposal: true)
+      first_plan_id = first[:remediation][:plan_id]
+
+      second = nil
+      expect {
+        second = engine.decide(kind: "system.project_slo_violation", severity: :high,
+                               payload: { "mission_id" => mission.id, "metric" => "availability_pct",
+                                          "observed" => 98.0, "target" => 99.5, "breach_pct" => 1.5,
+                                          "replica_count" => 3 },
+                               fingerprint: "project_slo_violation:#{mission.id}:availability_pct")
+      }.not_to change { Ai::GoalPlan.count }
+
+      expect(second[:decision]).to eq(:proceed)
+      # proposal: true is load-bearing — it keeps this decision out of the
+      # validate arc too, so an open proposal cannot be scored ineffective.
+      expect(second[:remediation]).to include(applied: true, proposal: true, deduped: true,
+                                              plan_id: first_plan_id)
+    end
+
+    it "composes again once the open proposal has been decided" do
+      first = decide_slo_violation
+      Ai::GoalPlan.find(first[:remediation][:plan_id]).update!(status: "approved")
+
+      second = nil
+      expect {
+        second = engine.decide(kind: "system.project_slo_violation", severity: :high,
+                               payload: { "mission_id" => mission.id, "metric" => "availability_pct",
+                                          "observed" => 98.0, "target" => 99.5, "breach_pct" => 1.5,
+                                          "replica_count" => 3 },
+                               fingerprint: "project_slo_violation:#{mission.id}:availability_pct")
+      }.to change { Ai::GoalPlan.count }.by(1)
+
+      expect(second[:remediation]).to include(applied: true, proposal: true)
+    end
+
+    it "does not let another mission's open proposal block this one" do
+      other = build_mission
+      engine.decide(kind: "system.project_slo_violation", severity: :high,
+                    payload: { "mission_id" => other.id, "metric" => "p99_latency_ms", "breach_pct" => 100.0,
+                               "replica_count" => 3 },
+                    fingerprint: "project_slo_violation:#{other.id}:p99_latency_ms")
+
+      decision = nil
+      expect { decision = decide_slo_violation }.to change { Ai::GoalPlan.count }.by(1)
+      expect(decision[:remediation]).to include(applied: true, proposal: true, mission_id: mission.id)
+    end
+
+    # The most dangerous thing this lane could do is create a goal the autonomy
+    # scheduler will drive on its own. GoalDrivenSchedulerService only walks
+    # ACTIVE goals, and from there it runs draft -> validate -> auto-approve ->
+    # execute_step; `can_auto_approve?` fails closed for supervised agents but
+    # the `autonomous` tier has an infinite cost threshold. `pending` is the
+    # whole reason a sensor-composed adaptation cannot self-execute — and
+    # GoalsController#update permits :status, so nothing but this status stands
+    # between a UI edit and unattended destructive provisioning.
+    it "creates the adaptation goal as pending so the scheduler cannot drive it" do
+      decide_slo_violation
+
+      goal = Ai::AgentGoal
+               .where(account_id: account.id)
+               .where("metadata @> ?", { "kind" => "adaptation" }.to_json)
+               .first
+      expect(goal).to be_present
+      expect(goal.status).to eq("pending")
+      # The scheduler's OWN selection query, not the `active` scope — that scope
+      # is `%w[pending active paused]`, so it would pass vacuously while the
+      # scheduler (which matches status: "active" strictly) is what decides
+      # whether this goal gets driven.
+      expect(Ai::AgentGoal.where(ai_agent_id: goal.ai_agent_id, status: "active")).to be_empty
+    end
+
+    it "refuses a mission belonging to another account" do
+      foreign_account = create(:account)
+      foreign_owner = create(:user, account: foreign_account)
+      foreign = create(:ai_mission, account: foreign_account, created_by: foreign_owner,
+                       mission_type: "infrastructure",
+                       custom_phases: [ { "key" => "adapting", "label" => "Adapting", "order" => 0 } ],
+                       configuration: { "brief" => brief })
+      foreign.update_columns(status: "active")
+
+      decision = nil
+      expect { decision = decide_slo_violation(mission_id: foreign.id) }
+        .not_to change { Ai::GoalPlan.count }
+      expect(decision[:remediation]).to include(applied: false)
+      expect(decision[:remediation][:reason]).to match(/mission not found/)
+    end
+
+    it "refuses when the payload carries no mission id" do
+      decision = nil
+      expect {
+        decision = engine.decide(kind: "system.project_slo_violation", severity: :high,
+                                 payload: {}, fingerprint: "project_slo_violation:none")
+      }.not_to change { Ai::GoalPlan.count }
+
+      expect(decision[:remediation]).to include(applied: false)
+      expect(decision[:remediation][:reason]).to match(/mission not found/)
+    end
+
+    # The gate has a TTL, so the mission can finish between the sensor firing
+    # and the proceed landing — the same re-check module_promotion_ready makes.
+    it "refuses to adapt a mission that has reached a terminal status" do
+      mission.update_columns(status: "completed")
+
+      decision = nil
+      expect { decision = decide_slo_violation }.not_to change { Ai::GoalPlan.count }
+      expect(decision[:remediation]).to include(applied: false)
+      expect(decision[:remediation][:reason]).to match(/completed/)
+    end
+
+    it "surfaces an unapplied proceed when the proposer composes no diff" do
+      allow_any_instance_of(Ai::Provisioning::AdaptationProposerService)
+        .to receive(:propose_from_signals).and_return(nil)
+
+      decision = decide_slo_violation
+
+      expect(decision[:decision]).to eq(:proceed)
+      expect(decision[:remediation]).to include(applied: false)
+      expect(decision[:remediation][:reason]).to match(/no diff plan/)
+    end
+  end
+
+  # Structural guard against the finding recurring: the whole project.* lane is
+  # gated, so every one of its bound kinds needs an applier. Without this, a new
+  # project.* binding could re-open the same dead end.
+  describe "REMEDIATION_APPLIERS covers the gated project.* lane" do
+    it "declares an applier for every binding routed to a project.* action category" do
+      project_kinds = described_class::SIGNAL_BINDINGS
+                        .select { |_kind, b| b[:action_category].to_s.start_with?("project.") }
+                        .keys
+      expect(project_kinds).to match_array(
+        %w[system.project_slo_violation system.project_drift system.project_cost_breach]
+      )
+
+      unwired = project_kinds.reject { |kind| described_class::REMEDIATION_APPLIERS.key?(kind) }
+      expect(unwired).to eq([])
+    end
+  end
 end

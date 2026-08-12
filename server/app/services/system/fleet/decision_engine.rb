@@ -239,10 +239,18 @@ module System
           input_mapper: ->(signal) { { virtual_ip_id: signal.dig(:payload, "virtual_ip_id") } }
         },
         # M2 of the AI-driven provisioning conversation — adaptive evolution.
-        # Skills are intentionally `nil` because adaptation is multi-step:
-        # the engine creates a pending approval whose payload triggers
-        # AdaptationProposerService (in the parent platform), which composes
-        # a diff plan composed of one or more provisioning_skill steps.
+        # Skills are intentionally `nil` because adaptation is multi-step: the
+        # remediation is not an on-node task but a diff PLAN, composed by
+        # AdaptationProposerService (in the parent platform) out of one or more
+        # provisioning_skill steps.
+        #
+        # IMP-4f7f7a0c9d33: this comment previously said the pending approval's
+        # payload "triggers AdaptationProposerService". Nothing read that
+        # payload — the proposer had zero production call sites and the lane
+        # dead-ended at the gate. The proposer is invoked by the
+        # #propose_project_adaptation entry in REMEDIATION_APPLIERS, on the
+        # proceed lane, like every other actuated binding.
+        #
         # Routing is to the `project.adapt` / `project.cost_control` action
         # categories — operator policies decide whether to auto-approve
         # (notify_and_proceed) or block via require_approval.
@@ -390,9 +398,12 @@ module System
         # answers; a machine timeout can neither bury it nor count as consent.
         #
         # The flag is declared, never inferred: skill-less + applier-less does
-        # NOT imply advisory (cert_expiring, module_promotion_ready and the
-        # project.* bindings all act through services outside this engine), so
-        # deriving it would silently change consent semantics for them.
+        # NOT imply advisory — cert_expiring and slo_violation are skill-less
+        # yet act through services outside this engine. (This list used to name
+        # module_promotion_ready and the project.* bindings too; both are now
+        # actuated by REMEDIATION_APPLIERS entries — IMP-41eb6ddbc490 and
+        # IMP-4f7f7a0c9d33 respectively.) Deriving the flag would silently
+        # change consent semantics for the genuinely externally-actuated kinds.
         "system.capability_gap" => {
           skill: nil,
           action_category: "system.capability_gap_review",
@@ -838,7 +849,27 @@ module System
         # IMP-555e29eeb4ab and IMP-83471cc28e1a above, and the reason the
         # binding's "invoked directly" comment was wrong rather than merely
         # imprecise.
-        "system.module_promotion_ready" => { method: :apply_module_promotion }
+        "system.module_promotion_ready" => { method: :apply_module_promotion },
+        # IMP-4f7f7a0c9d33: the project.* adaptation lane (M2 adaptive
+        # evolution). ProjectSloSensor emitted these, SIGNAL_BINDINGS gated
+        # them through project.adapt / project.cost_control, and there the lane
+        # STOPPED — no entry here, and AdaptationProposerService#propose_from_signals
+        # had zero production call sites (only its own specs and the M2 smoke,
+        # which drives the proposer directly and so never exercised this path).
+        # A proceed therefore minted a RemediationOutcome no actuation could
+        # ever settle, which the F3-11 streak later mis-read as a stuck
+        # remediation. Same class as the three IMPs above.
+        #
+        # DEPARTURE from the other appliers, and the only one: a project.*
+        # remediation is a PROPOSAL, not a mutation. Its actions (rescale,
+        # relocate, re-shape storage/SDWAN) are destructive and multi-step, so
+        # the applier composes a diff plan + approval request and stops. The
+        # result carries proposal: true so nothing downstream mistakes a minted
+        # plan for a converged workload (same intent as the
+        # requires_reprovision flag on apply_template_closure_drift).
+        "system.project_slo_violation" => { method: :propose_project_adaptation },
+        "system.project_drift" => { method: :propose_project_adaptation },
+        "system.project_cost_breach" => { method: :propose_project_adaptation }
       }.freeze
 
       OPEN_TASK_STATUSES = %w[pending scheduled running].freeze
@@ -1035,6 +1066,163 @@ module System
 
         ::System::Storage::AssignmentReconciliationService.reconcile_assignment!(assignment)
         { applied: true, storage_assignment_id: assignment.id }
+      end
+
+      # IMP-4f7f7a0c9d33 — the project.* adaptation applier, shared by all three
+      # bound kinds (the proposer branches on signal.kind itself via its
+      # CHANGE_TYPES map, so one method serves the whole lane).
+      #
+      # Reuses AdaptationProposerService rather than reimplementing diff
+      # composition: it already builds the diff-shaped Ai::GoalPlan of
+      # provisioning_skill steps AND routes it through
+      # Ai::Autonomy::ApprovalWorkflowService as project.adapt_<change_type>.
+      # This wiring is engine → proposer only; it deliberately does NOT revive
+      # the deleted AiProvisioningHandoffJob / handoff RalphLoop machinery.
+      #
+      # Unlike the mutating appliers this returns proposal: true — the plan is
+      # composed and left for a decision, never executed here. Consuming an
+      # approved diff plan (kind "adaptation_diff") is consumed by
+      # Ai::Provisioning::AdaptationDispatchService, which this applier calls
+      # below — composing without dispatching would leave the lane dead-ended in
+      # a persisted record, exactly where it was before it was wired.
+      #
+      # EVERY return from this lane carries proposal: true. That flag is what
+      # RemediationValidator#record_proceeded! reads to keep these decisions out
+      # of the validate arc, and it has to hold on the DECLINE paths too — a
+      # decline leaves the breach firing, so a pending outcome recorded for it
+      # would score ineffective and rebuild the false fleet.remediation_stuck
+      # this lane exists to remove. The RemediationOutcome for this lane is
+      # minted by the dispatch service at SETTLE time (post-verification), never
+      # at decide time, so decide-time recording would double-count as well.
+      #
+      # The cost, stated: a lane that can never compose stops escalating to an
+      # operator. The decline stays visible in the decision event and in the
+      # proposer's throttled decline log.
+      def propose_project_adaptation(signal, _skill_result)
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        mission_id = payload["mission_id"] || payload[:mission_id]
+        mission = ::Ai::Mission.where(account_id: account.id).find_by(id: mission_id)
+        return adaptation_declined("mission not found: #{mission_id.inspect}") unless mission
+
+        # The gate's approval TTL outlives a mission — it can finish between the
+        # sensor firing and this proceed. Adapting a finished mission would mint
+        # a plan against infrastructure that is no longer being managed, so
+        # re-check the LIVE status (mirrors apply_module_promotion's staging
+        # re-check).
+        if ::Ai::Mission::TERMINAL_STATUSES.include?(mission.status)
+          return adaptation_declined(
+            "mission is #{mission.status} — no adaptation for a terminal mission",
+            mission_id: mission.id
+          )
+        end
+
+        # IDEMPOTENCY — one OPEN proposal per mission. This is the lane's only
+        # brake, and it carries two jobs at once:
+        #
+        #   1. Bounds the churn. Once RemediationValidator stops scoring proposals
+        #      (see below), ineffective_streak is pinned at 0, so F3-11's
+        #      escalate_stuck_remediation! — previously the only thing that capped
+        #      this lane at ~3 plans — can never fire. Nothing else stops the
+        #      repeat: recently_decided? is just a 600s TTL, and the consent budget
+        #      no-ops because ConsentBudgetService#check_and_consume! allows a blank
+        #      module_id, which every project.* payload has. Without this guard a
+        #      single standing breach mints a GoalPlan version (plus, where
+        #      governance is enabled, a pending ApprovalRequest) every dedup TTL —
+        #      ~144/day, indefinitely.
+        #   2. Prevents contradictory diffs in one tick. ProjectSloSensor emits up
+        #      to three signals per mission per tick, and they map to DIFFERENT
+        #      change_types (slo_violation/drift → scale_horizontal, cost_breach →
+        #      cost_control), so the second signal composes "scale to initial-1"
+        #      against the first's "scale to initial+2" on the same AgentGoal.
+        #      Keying on the mission ALONE — not (mission, change_type) — is what
+        #      closes this; a change_type-scoped key would let exactly that pair
+        #      through, since their change_types differ.
+        #
+        # Same shape as the reconcile lanes' in-flight task check: an undecided
+        # proposal IS this mission's outstanding remediation. Returns applied: true
+        # because the remediation stands — it is awaiting a decision, not failed.
+        if (open_plan = open_adaptation_plan(mission))
+          return { applied: true, proposal: true, deduped: true,
+                   mission_id: mission.id, plan_id: open_plan.id,
+                   step_count: open_plan.steps.count }
+        end
+
+        plan = ::Ai::Provisioning::AdaptationProposerService
+                 .new(account: account, mission: mission)
+                 .propose_from_signals(signals: [ signal ])
+        unless plan
+          # Not a failure of the lane. The composer declines by design whenever
+          # it cannot bind a step to its executor's contract — cost_control has
+          # no scale-in strategy until INC-4 (IMP-216a6dbc7e32), and relocate
+          # needs inputs no heuristic supplies (offer 019ff49b-a8e5). Declining
+          # beats composing a step that fails at execution.
+          return adaptation_declined("no diff plan composed for #{signal.kind}", mission_id: mission.id)
+        end
+
+        dispatch_adaptation!(mission, plan)
+      rescue StandardError => e
+        # apply_remediation!'s own rescue would return a hash WITHOUT the
+        # proposal flag, putting this lane back in the validate arc on exactly
+        # the paths least able to clear their signal. Keep the contract here.
+        Rails.logger.error("[FleetDecisionEngine] adaptation lane failed: #{e.class}: #{e.message}")
+        adaptation_declined("adaptation lane error: #{e.class}")
+      end
+
+      def adaptation_declined(reason, mission_id: nil)
+        { applied: false, proposal: true, mission_id: mission_id, reason: reason }.compact
+      end
+
+      # INC-2's consumer (IMP-8c37b9e5ccd5). Composing is only half the lane:
+      # dispatch! takes the diff plan through the `adaptation_gate` seam and, when
+      # operator policy or an approval clears it, appends the steps onto the
+      # mission's LIVE plan and runs them. It is idempotent and re-callable, so a
+      # plan routed on this tick dispatches on a later one without minting a
+      # second request.
+      #
+      # Leaving `draft` is also what RELEASES open_adaptation_plan above — the
+      # brake and its release are the two halves of one mechanism, which is why
+      # this lane could not land before the consumer existed.
+      def dispatch_adaptation!(mission, plan)
+        dispatcher = ::Ai::Provisioning::AdaptationDispatchService
+        result = dispatcher.new(account: account, mission: mission).dispatch!(plan: plan)
+
+        # Dispositions under which the lane did its job: the adaptation is
+        # running, already applied, or legitimately held for an operator. The two
+        # omitted ones — parked_gate_unavailable and applied_dispatch_failed —
+        # mean nothing is progressing and want an operator's eye, so they report
+        # applied: false carrying the gate's own detail as the reason.
+        progressing = [ dispatcher::GATE_ROUTED, dispatcher::GATE_AUTO_APPLY,
+                        dispatcher::GATE_ALREADY_APPLIED ]
+        gate = result[:gate].to_s
+
+        {
+          applied: progressing.include?(gate),
+          proposal: true,
+          mission_id: mission.id,
+          plan_id: plan.id,
+          step_count: plan.steps.count,
+          gate: gate,
+          dispatched: result[:dispatched] == true,
+          reason: (result[:detail] unless progressing.include?(gate))
+        }.compact
+      end
+
+      # A proposal is open until someone decides it. Once it leaves draft/validated
+      # — approved, executing, completed, failed or rejected — this mission may
+      # legitimately propose again on the next breach.
+      OPEN_PROPOSAL_STATUSES = %w[draft validated].freeze
+
+      def open_adaptation_plan(mission)
+        ::Ai::GoalPlan
+          .where(account_id: account.id, status: OPEN_PROPOSAL_STATUSES)
+          .where("plan_data @> ?", { "kind" => "adaptation_diff", "mission_id" => mission.id }.to_json)
+          .order(created_at: :desc)
+          .first
+      rescue StandardError => e
+        # Never let the bookkeeping query block a remediation — worst case is the
+        # pre-existing duplicate-proposal behavior, not a lost decision.
+        Rails.logger.warn("[FleetDecisionEngine] open-proposal lookup failed: #{e.message}")
+        nil
       end
 
       # Campaign 019f6084 §2.4.3 — the approved arm of
