@@ -42,13 +42,34 @@ module System
     AUTHORITY_POLICY   = "policy"
     AUTHORITY_APPROVAL = "approval"
 
-    # change_type -> fleet action category. These are the categories
-    # DecisionEngine::SIGNAL_BINDINGS already routes the project.* lane
-    # through, and the ones seeded as intervention policies on the Fleet
-    # Autonomy agent — the mapping is not invented here.
+    # change_type -> fleet action category.
+    #
+    # NOT invented here: these are the six categories
+    # `system_provisioning_intervention_policies.rb` seeds on the Fleet
+    # Autonomy agent, and the six `Ai::InterventionPolicy::STATIC_CATEGORIES`
+    # declares. Each carries its own seeded policy — scale_horizontal is
+    # `auto_approve` (deliberately paired with core's watch_policies ceiling,
+    # which the seed's own comment names as the re-check), while relocate,
+    # schema_change and security_change are `require_approval`.
+    #
+    # Resolving at CHANGE_TYPE granularity rather than collapsing everything
+    # onto `project.adapt` is what makes those five policies reachable. A
+    # collapsed mapping consulted `project.adapt` (notify_and_proceed) for a
+    # cross-region relocate, so an operator who set `project.relocate` to
+    # require_approval — the seeded default — would have had no effect. Core's
+    # bounds check happens to park a relocate anyway, but that is a guard on a
+    # different branch, not the operator's policy being honored.
+    #
+    # DecisionEngine::SIGNAL_BINDINGS maps to the coarse `project.adapt` /
+    # `project.cost_control` pair because a SIGNAL KIND is coarser than a
+    # change type; here the change type is known, so the specific category is.
     DEFAULT_CATEGORY = "project.adapt"
     CHANGE_TYPE_CATEGORIES = {
-      "cost_control" => "project.cost_control"
+      "scale_horizontal" => "project.scale_horizontal",
+      "cost_control" => "project.cost_control",
+      "relocate" => "project.relocate",
+      "schema_change" => "project.schema_change",
+      "security_change" => "project.security_change"
     }.freeze
 
     FLEET_AGENT_NAME = "Fleet Autonomy"

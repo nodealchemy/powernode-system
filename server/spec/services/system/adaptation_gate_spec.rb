@@ -55,7 +55,11 @@ RSpec.describe System::AdaptationGate do
     )
   end
 
-  def policy!(policy, category: "project.adapt")
+  # Production seeds a policy PER change_type
+  # (system_provisioning_intervention_policies.rb), so a scale_horizontal
+  # adaptation resolves `project.scale_horizontal` — not the coarse
+  # `project.adapt` the signal-level bindings use.
+  def policy!(policy, category: "project.scale_horizontal")
     Ai::InterventionPolicy.create!(
       account: account, ai_agent_id: agent.id, scope: "agent",
       action_category: category, policy: policy, priority: 100, is_active: true
@@ -91,7 +95,7 @@ RSpec.describe System::AdaptationGate do
       expect(request.approval_chain_id).to eq(chain.id)
       # The plan travels with the request so the approved lane can find it.
       expect(request.request_data.dig("payload", "plan_id")).to eq(plan.id)
-      expect(request.request_data["action_category"]).to eq("project.adapt")
+      expect(request.request_data["action_category"]).to eq("project.scale_horizontal")
     end
 
     it "FORCES approval for an out-of-bounds plan even under a proceed policy" do
@@ -111,6 +115,33 @@ RSpec.describe System::AdaptationGate do
       expect(answer[:disposition]).to eq("routed")
       expect(Ai::ApprovalRequest.where(account: account).first.request_data["action_category"])
         .to eq("project.cost_control")
+    end
+
+    # The seeded policy surface is per change_type: relocate, schema_change and
+    # security_change are `require_approval` while scale_horizontal is
+    # `auto_approve`. Collapsing them onto `project.adapt` made five of those
+    # six policies unreachable — an operator setting `project.relocate` to
+    # require_approval would have had no effect, because the coarse category
+    # resolved notify_and_proceed instead.
+    it "honors the operator's per-change_type policy for a relocate" do
+      policy!("notify_and_proceed")                            # project.scale_horizontal
+      policy!("require_approval", category: "project.relocate")
+
+      answer = disposition(change_type: "relocate")
+
+      expect(answer[:disposition]).to eq("routed")
+      expect(Ai::ApprovalRequest.where(account: account).first.request_data["action_category"])
+        .to eq("project.relocate")
+    end
+
+    it "falls back to project.adapt for a change_type with no category of its own" do
+      policy!("require_approval", category: "project.adapt")
+
+      answer = disposition(change_type: "something_new")
+
+      expect(answer[:disposition]).to eq("routed")
+      expect(Ai::ApprovalRequest.where(account: account).first.request_data["action_category"])
+        .to eq("project.adapt")
     end
 
     it "does not mint a second request when the plan is already before the gate" do
@@ -189,7 +220,7 @@ RSpec.describe System::AdaptationGate do
       expect(row.status).to eq("pending")
       expect(row.fingerprint).to eq("slo:mission:p99")
       expect(row.signal_kind).to eq("system.project_slo_violation")
-      expect(row.action_category).to eq("project.adapt")
+      expect(row.action_category).to eq("project.scale_horizontal")
       expect(row.resource_ref).to eq(mission.id)
       expect(row.correlation_id).to eq("corr-1")
       # Sensor provenance is what lets RemediationValidator tell "the signal
