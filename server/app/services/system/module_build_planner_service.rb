@@ -103,10 +103,13 @@ module System
     # into a 22-module batch (measured on the live planner, 2026-08-11). 142 of
     # the tree's 209 Go files are _test.go and none of them are in the binary.
     #
-    # Excluded paths are NOT dropped — they fall through to the manifest-repo
-    # rules below and plan powernode-extension-system, which genuinely does ship
-    # agent sources as files (only agent/dist is masked out of that layer). So a
-    # test-only edit rebuilds one module instead of the catalog.
+    # Excluded paths fall through to the manifest-repo rules below, which now
+    # plan NOTHING for them. (This comment previously claimed they ship in
+    # powernode-extension-system "as files" — that was wrong: stage15's arm
+    # stages only server/, worker/, extension.json and frontend/. A _test.go file
+    # reaches no artifact, so no rebuild is owed.) The saving is the same either
+    # way: a test-only edit no longer drags system-base and its whole dependency
+    # closure through a 22-module batch.
     #
     # A comment-only change inside a real .go file still triggers: a path rule
     # cannot see that the compiled output is unchanged. Over-triggering there is
@@ -175,7 +178,27 @@ module System
     # Tracking the manifest's mask is the point: inventing extra exclusions here
     # is how a shipped file silently stops triggering a rebuild, which is the bug
     # this closes. Prose stays exempt because nothing on a node reads it.
-    MANIFEST_UNSHIPPED_PATH_RX = Regexp.union(UNSHIPPED_COMMON_RX, %r{\A(?:initramfs/|tmp/)}).freeze
+    # ALLOWLIST, not a denylist. stage15's powernode-extension-system arm reads
+    # exactly four sources from this repo — verified by reading the arm:
+    #   rsync server/ ; cp extension.json ; rsync worker/ ; rsync frontend/ (vite)
+    # and the deployed layer agrees: /opt/powernode/extensions/system/ contains
+    # extension.json, server, worker. frontend/ is a real input too, it just
+    # lands under the module's OTHER file_spec entry,
+    # /opt/powernode/frontend/dist/extensions/system/**.
+    #
+    # This was a denylist ("anything not docs/initramfs/tmp/.git ships"), which
+    # rebuilt the extension for scripts/ and agent/ test paths whose content
+    # never reaches its artifact — v48 and v49 were both triggered by a test
+    # script that ships nowhere. The manifest misled that reasoning: its
+    # file_spec is /opt/powernode/extensions/system/** and its mask names
+    # agent/dist and modules/, implying a tree-wide carve the arm never performs.
+    # Trust the arm and the artifact, not the manifest.
+    #
+    # An allowlist also fails in the safe direction for FUTURE paths: a new
+    # top-level directory plans nothing until someone teaches this rule about it,
+    # rather than silently triggering a redundant ~9.5MB build. If the arm gains
+    # a source, add it HERE.
+    MANIFEST_EXTENSION_PATH_RX = %r{\A(?:server/|worker/|frontend/|extension\.json\z)}.freeze
     MANIFEST_EXTENSION_MODULE = "powernode-extension-system"
 
     # Core path -> the module that PACKAGES that tree. Applied ONLY when the diff
@@ -296,7 +319,7 @@ module System
             next
           end
 
-          dirty << MANIFEST_EXTENSION_MODULE unless path.match?(MANIFEST_UNSHIPPED_PATH_RX)
+          dirty << MANIFEST_EXTENSION_MODULE if path.match?(MANIFEST_EXTENSION_PATH_RX)
         end
       end
 

@@ -285,6 +285,74 @@ RSpec.describe System::ModuleBuildPlannerService do
   # agent/: it planned nothing and the extension's own repo could not rebuild
   # itself. Rules mirror the manifest's mask rather than inventing a list, so the
   # two cannot drift apart.
+  # The extension-system arm of stage15 reads exactly FOUR sources from this
+  # repo — verified by reading the arm, not the manifest:
+  #     rsync server/    cp extension.json    rsync worker/    rsync frontend/ (vite)
+  # and the deployed layer confirms it: ls /opt/powernode/extensions/system/
+  # returns "extension.json  server  worker" (frontend lands under the separate
+  # /opt/powernode/frontend/dist/extensions/system/** file_spec entry).
+  #
+  # The fall-through used to be a DENYLIST — anything not docs/initramfs/tmp/.git
+  # planned extension-system — which rebuilt it for scripts/ and agent/ test
+  # paths whose content never reaches its artifact. An ALLOWLIST is used instead
+  # so a NEW top-level path defaults to planning nothing rather than silently
+  # triggering a redundant ~9.5MB build.
+  describe "only paths the extension module actually ships plan it" do
+    let!(:ext_system_real) do
+      create(:system_node_module, account: account, name: "powernode-extension-system",
+             manifest_yaml: "schema_version: 1")
+    end
+    let!(:module_forge) do
+      create(:system_node_module, account: account, name: "module-forge",
+             manifest_yaml: "schema_version: 1")
+    end
+
+    def plan_for(path)
+      stub_changed_paths([ path ])
+      modules_in(described_class.plan(base_sha: base_sha, head_sha: head_sha))
+    end
+
+    # Controls: under-building is the dangerous direction, so each of the four
+    # real inputs must still plan it.
+    it "plans it for server/" do
+      expect(plan_for("server/app/models/ai/skill.rb")).to eq([ "powernode-extension-system" ])
+    end
+
+    it "plans it for worker/" do
+      expect(plan_for("worker/app/jobs/some_job.rb")).to eq([ "powernode-extension-system" ])
+    end
+
+    it "plans it for frontend/ (built into the dist file_spec entry)" do
+      expect(plan_for("frontend/src/pages/Nodes.tsx")).to eq([ "powernode-extension-system" ])
+    end
+
+    it "plans it for extension.json" do
+      expect(plan_for("extension.json")).to eq([ "powernode-extension-system" ])
+    end
+
+    # The fix: paths that reach no artifact plan nothing.
+    it "does NOT plan it for scripts/ outside module-build" do
+      expect(plan_for("scripts/pattern-validation.sh")).to be_empty
+    end
+
+    it "does NOT plan it for an agent test file" do
+      expect(plan_for("agent/internal/runtime/softreboot_test.go")).to be_empty
+    end
+
+    it "does NOT plan it for a top-level file it never stages" do
+      expect(plan_for("Makefile")).to be_empty
+    end
+
+    # Unchanged neighbours.
+    it "still routes scripts/module-build/ to module-forge" do
+      expect(plan_for("scripts/module-build/push.sh")).to eq([ "module-forge" ])
+    end
+
+    it "still plans nothing for docs/" do
+      expect(plan_for("docs/runbooks/x.md")).to be_empty
+    end
+  end
+
   # The shared build scripts are COPIED into module-forge's rootfs at ITS build
   # time, so a builder runs whichever copy was baked into the erofs it booted.
   # Until this rule existed, editing build-one-module.sh / push.sh / stage*.sh
@@ -377,13 +445,14 @@ RSpec.describe System::ModuleBuildPlannerService do
     end
 
     # THE POINT OF THE CHANGE: a test-only edit must not fan out across the
-    # dependency graph. It still rebuilds the extension module, because agent
-    # sources DO ship in that layer (only agent/dist is masked out of it) — one
-    # module instead of the whole catalog.
-    it "collapses a test-only edit to the extension module alone" do
-      plan = plan_for("agent/internal/runtime/softreboot_test.go")
-
-      expect(plan).to eq([ "powernode-extension-system" ])
+    # dependency graph. It now plans NOTHING — corrected from the original
+    # assertion here, which expected the extension module on the false premise
+    # that agent sources ship in that layer. They do not: stage15's
+    # extension-system arm stages only server/, worker/, extension.json and
+    # frontend/, and the deployed layer contains just the first three. A
+    # _test.go file reaches no artifact at all, so no module needs rebuilding.
+    it "collapses a test-only edit to no rebuild at all" do
+      expect(plan_for("agent/internal/runtime/softreboot_test.go")).to be_empty
     end
   end
 
