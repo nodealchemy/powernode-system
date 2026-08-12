@@ -26,8 +26,13 @@ RSpec.describe System::ProvisionVerifier do
     ).first
   end
 
-  def stub_adapter(result = nil, &blk)
-    adapter = double("adapter")
+  # Accepts both call shapes: a bare result hash (stub_adapter(success: true,
+  # status: "running")) and an explicit result plus provider_type
+  # (stub_adapter({success: true, status: "terminated"}, provider_type: "gcp")).
+  def stub_adapter(result = nil, **opts, &blk)
+    provider_type = opts.delete(:provider_type) || "proxmox"
+    result = opts if result.nil? && opts.any?
+    adapter = double("adapter", provider_type: provider_type)
     if blk
       allow(adapter).to receive(:get_instance, &blk)
     else
@@ -173,14 +178,42 @@ RSpec.describe System::ProvisionVerifier do
       expect(r[:ok]).to be false
     end
 
-    it "accepts a message-only not-found, as the platform's own detection does" do
+    it "does not read an arbitrary provider error mentioning 'not found' as removal" do
       instance = make_instance(cloud_instance_id: "dna/qemu/9207", status: "terminated")
-      # Several adapters report not-found without an error_code; matching only
-      # the code fails a correctly-completed removal on those providers.
-      stub_adapter(success: false, error: "VM 9207 not found")
+      # ProxmoxProvider#get_instance raises ResourceNotFoundError for a real
+      # not-found and funnels every OTHER client error into an error response
+      # with no error_code — so matching the message would let "storage 'x'
+      # not found" certify a running guest as deleted. Absence must be proved,
+      # not inferred from error prose.
+      stub_adapter(success: false, error: "PVE get_instance failed: storage 'fast' not found")
+
+      r = reconcile_absent(instance.id)
+      expect(r[:ok]).to be false
+    end
+
+    it "FAILS a GCE guest reported TERMINATED — which on that provider means STOPPED" do
+      instance = make_instance(cloud_instance_id: "gcp/inst-1", status: "terminated")
+      # GCE has no deleted state: a deleted instance 404s, and TERMINATED is
+      # what a STOPPED instance reports (GCP_STATUS_MAP["TERMINATED"]).
+      # Reading it as gone certifies a VM that still holds its disks.
+      stub_adapter({ success: true, status: "terminated" }, provider_type: "gcp")
+
+      r = reconcile_absent(instance.id)
+      expect(r[:ok]).to be false
+      expect(r[:detail]).to match(/gcp|stopped/i)
+    end
+
+    it "accepts a terminate still in flight rather than failing a correct removal" do
+      instance = make_instance(cloud_instance_id: "i-abc", status: "terminated")
+      # EC2 sits in shutting-down (normalized "stopping") for tens of seconds
+      # after a SUCCESSFUL terminate, and verification runs once, immediately,
+      # with no settle window. Failing it would fail every correct AWS
+      # removal — and an unhealthy mission cannot settle its adaptation.
+      stub_adapter({ success: true, status: "stopping" }, provider_type: "aws")
 
       r = reconcile_absent(instance.id)
       expect(r[:ok]).to be true
+      expect(r[:detail]).to match(/in flight|not confirmed/i)
     end
 
     it "does not certify another account's instance as removed" do

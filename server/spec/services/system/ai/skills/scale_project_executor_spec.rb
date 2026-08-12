@@ -556,6 +556,28 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
           expect(::System::ProviderVolume.where(id: volume.id).count).to eq(0)
         end
 
+        it "does not delete a volume that has moved to a SURVIVING instance since selection" do
+          survivor = replica!(minutes_old: 40)
+          older_victim = replica!(minutes_old: 30)
+          newest_victim = replica!(minutes_old: 10)
+          moved = volume_for!(older_victim)
+
+          # Between selection and this victim's turn, an operator reattaches
+          # the volume to a machine that is NOT being removed. Acting on the
+          # stale snapshot would detach and delete it off a survivor —
+          # irreversible loss on a machine nobody approved touching.
+          allow(::System::ProvisioningService).to receive(:terminate_instance).and_wrap_original do |m, instance:|
+            moved.update!(node_instance: survivor) if instance.id == newest_victim.id
+            m.call(instance: instance)
+          end
+
+          r = exec.execute(project_id: mission.id, target_count: 2, scaling_strategy: "remove_replicas")
+
+          expect(::System::ProviderVolume.where(id: moved.id).count).to eq(1)
+          expect(moved.reload.node_instance_id).to eq(survivor.id)
+          expect(r[:data][:outputs][:deleted_storage_volume_ids]).not_to include(moved.id)
+        end
+
         it "HALTS on the first orphan instead of tearing down the next victim" do
           replica!(minutes_old: 40)
           older_victim = replica!(minutes_old: 30)

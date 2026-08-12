@@ -19,10 +19,22 @@ module System
 
     LIVE_OK_STATUSES = %w[running].freeze
 
-    # The only live status that PROVES a guest is gone. Not the complement of
-    # LIVE_OK_STATUSES — see #reconcile_absent_instances for why "stopped" is
-    # a survivor, not a removal.
+    # Live statuses that PROVE a guest is still there. Deliberately NOT the
+    # complement of "gone": the normalized vocabulary is lossy in both
+    # directions and the three buckets below are what it can actually support.
+    SURVIVOR_STATUSES = %w[running stopped pending starting].freeze
+
+    # A terminate the provider is still working through. Common and correct —
+    # EC2 sits in shutting-down (normalized "stopping") for tens of seconds
+    # after a SUCCESSFUL terminate, and verification runs once, immediately.
+    IN_FLIGHT_STATUSES = %w[stopping terminating].freeze
+
+    # Reported gone. AMBIGUOUS on GCE, where TERMINATED is the state of a
+    # STOPPED instance (a deleted one 404s) — see #gone_status?.
     GONE_STATUSES = %w[terminated].freeze
+
+    # Providers whose normalized "terminated" means stopped, not deleted.
+    TERMINATED_MEANS_STOPPED = %w[gcp].freeze
 
     # expectations: [{ node_instance_id:, provider_region_id: }, ...]
     # Returns:      [{ node_instance_id:, ok:, detail: }, ...]
@@ -101,31 +113,53 @@ module System
 
       if result[:success]
         status = result[:status].to_s
-        gone = GONE_STATUSES.include?(status)
-        { ok: gone,
-          detail: gone ? "provider reports #{status} — gone"
-                       : "provider STILL reports #{status.presence || 'unknown'} for " \
-                         "#{instance.cloud_instance_id} — terminated in the platform, " \
-                         "alive (and billing) at the provider" }
-      elsif provider_not_found?(result)
+        if gone_status?(status, adapter)
+          { ok: true, detail: "provider reports #{status} — gone" }
+        elsif IN_FLIGHT_STATUSES.include?(status)
+          { ok: true,
+            detail: "provider reports #{status} — terminate in flight, not confirmed gone" }
+        else
+          { ok: false,
+            detail: "provider STILL reports #{status.presence || 'unknown'} for " \
+                    "#{instance.cloud_instance_id} — terminated in the platform, " \
+                    "alive (and billing) at the provider" }
+        end
+      elsif result[:error_code].to_s.casecmp?("NotFound")
         { ok: true, detail: "provider has no record of #{instance.cloud_instance_id} — gone" }
       else
         { ok: false, detail: "provider check failed: #{result[:error].to_s[0, 200]}" }
       end
     rescue Providers::BaseProvider::ResourceNotFoundError
+      # KNOWN WEAKER EVIDENCE, on PVE specifically: a node-scoped id reports
+      # "this vmid was deleted" and "this vmid is not on THIS node"
+      # identically, which is why ProxmoxProvider#terminate_instance runs a
+      # cluster-wide lookup before believing it. That lookup is adapter
+      # internals; from here a guest live-migrated off its recorded node reads
+      # as gone. Closing it needs an adapter-level absence capability rather
+      # than another guess in this file.
       { ok: true, detail: "provider has no record of #{instance.cloud_instance_id} — gone" }
     rescue StandardError => e
       # Unreachable provider must not bless an absence any more than a presence.
       { ok: false, detail: "provider check failed: #{e.class}: #{e.message[0, 200]}" }
     end
 
-    # Same detection ProvisioningService#not_found_result? uses. Several
-    # adapters report not-found as a message with no error_code, and matching
-    # only the code fails a correctly-completed removal on those providers.
-    def provider_not_found?(result)
-      return false unless result.is_a?(Hash)
+    # `terminated` means DELETED on most adapters and STOPPED on GCE, where a
+    # deleted instance 404s instead. The normalization map cannot express the
+    # difference (GCP_STATUS_MAP["TERMINATED"] => "terminated"), so the one
+    # caller that needs it resolves it from the adapter.
+    #
+    # ProvisioningService#not_found_result? also matches /not found/i on the
+    # error MESSAGE, and that is right where it is used (an idempotent
+    # terminate: guessing "already gone" is safe). Here it inverts the risk —
+    # ProxmoxProvider#get_instance raises ResourceNotFoundError for a real
+    # not-found and funnels every OTHER client error into a message with no
+    # error_code, so "storage 'fast' not found" would certify a running guest
+    # as deleted. Absence is proved, never inferred from error prose.
+    def gone_status?(status, adapter)
+      return false unless GONE_STATUSES.include?(status)
 
-      result[:error_code].to_s.casecmp?("NotFound") || result[:error].to_s.match?(/not found/i)
+      provider = adapter.respond_to?(:provider_type) ? adapter.provider_type.to_s : ""
+      !TERMINATED_MEANS_STOPPED.include?(provider)
     end
 
     def reconcile_one(account:, id:, region_id:)

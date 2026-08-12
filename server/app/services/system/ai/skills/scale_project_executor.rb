@@ -43,10 +43,12 @@ module System
       #      `storage_volume_ids`, and only the rollback path (which has that
       #      list) can clean them up today. The moment a scale-out attaches
       #      what it provisions, this teardown covers them with no change.
-      #   2. Everything attached to the victim is deleted, mission-owned or
-      #      not — the containment rail validates instance names, and volumes
-      #      carry no ownership marker to check. A volume an operator attached
-      #      by hand to a replica goes with the replica.
+      #   2. Volume ownership is judged by NAME, the same rail as instances:
+      #      a mission's volume is named after its node and so carries the
+      #      prefix. That bounds the damage where a prefix exists — but a
+      #      mission that declares none has no volume rail either, and there
+      #      everything attached to a victim is still deleted, mission-owned
+      #      or not. `outputs.prefix_enforced` records which case ran.
       #
       # Reference: AI-Driven Provisioning plan — slice 8 (M2 adaptive
       # evolution); scale-in from the platform-evolution-loop charter (INC-4).
@@ -318,11 +320,18 @@ module System
 
           victims.each do |instance|
             peer_ids = ::Sdwan::Peer.where(node_instance_id: instance.id).pluck(:id)
-            # ONLY the volumes the rail already vouched for. Re-querying here
-            # would delete anything attached between the check and now,
-            # unchecked; a volume that appears in that window instead survives
-            # its instance and the orphan sweep below reports it.
-            volume_ids = volumes.select { |v| v.node_instance_id == instance.id }.map(&:id)
+            # The vetted snapshot INTERSECTED with where each volume actually
+            # sits now. The snapshot alone bounds what may be deleted to what
+            # the rail vouched for; re-reading alone would delete whatever got
+            # attached since, unchecked. Both matter, and in opposite
+            # directions: a volume that MOVED to a surviving instance between
+            # selection and now must not be deleted off it, and one that
+            # arrived in that window survives its instance for the orphan
+            # sweep below to report.
+            volume_ids = volumes.select { |v|
+              v.node_instance_id == instance.id &&
+                ::System::ProviderVolume.where(id: v.id, node_instance_id: instance.id).exists?
+            }.map(&:id)
 
             result = teardown_resources(node_instance_ids: [ instance.id ],
                                         storage_volume_ids: volume_ids)
