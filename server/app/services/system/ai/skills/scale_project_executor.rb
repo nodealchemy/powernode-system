@@ -4,11 +4,14 @@ module System
   module Ai
     module Skills
       # Adaptive evolution skill — scale a provisioning project (Ai::Mission)
-      # along one of three axes:
+      # along one of four axes:
       #
       #   add_replicas      — add N new instances of the project's existing
       #                       template + region (composes ProvisionFullStackExecutor
       #                       in its compute-only mode)
+      #   remove_replicas   — scale IN: terminate the N newest replicas of the
+      #                       mission's OWN set, never below a floor of one,
+      #                       through the same teardown the rollback uses
       #   vertical_resize   — plan a rolling module upgrade or instance-type
       #                       swap (composes RollingModuleUpgradeExecutor —
       #                       returns a batched plan, not in-band mutation)
@@ -21,20 +24,36 @@ module System
       # AdaptationProposer + the runner's rollback dispatch can treat all
       # provisioning skills uniformly.
       #
-      # Reference: AI-Driven Provisioning plan — slice 8 (M2 adaptive evolution).
+      # REMOVAL IS IRREVERSIBLE, and the envelope says so. Its victims are
+      # recorded under `removed_node_instance_ids` — deliberately NOT in
+      # `node_instance_ids`, which means "instances this step brought into
+      # existence" to every reader: the rollback dispatch would try to
+      # terminate them a second time, and VerificationService would grade the
+      # step with an instance-CREATION oracle it can never satisfy. There is
+      # nothing to roll a removal back to, which is exactly why removals never
+      # auto-apply (ratified §4) — see AdaptationProposerService#auto_apply?.
+      #
+      # Reference: AI-Driven Provisioning plan — slice 8 (M2 adaptive
+      # evolution); scale-in from the platform-evolution-loop charter (INC-4).
       class ScaleProjectExecutor < BaseSkillExecutor
-        STRATEGIES = %w[add_replicas vertical_resize add_region].freeze
+        STRATEGIES = %w[add_replicas vertical_resize add_region remove_replicas].freeze
         MAX_DELTA  = 50
+
+        # Never scale a project to zero. A removal that would empty the mission
+        # is clamped to leave this many replicas standing — converging toward
+        # the request instead of refusing it outright, the same way the
+        # composer clamps an oversized scale-out delta.
+        MIN_REPLICAS = 1
 
         skill_descriptor(
           name: "scale_project",
-          description: "Adapt a provisioning project's footprint — add replicas in-region, plan a vertical resize, or expand into a new region. Composes ProvisionFullStackExecutor + RollingModuleUpgradeExecutor.",
+          description: "Adapt a provisioning project's footprint — add replicas in-region, remove the newest replicas, plan a vertical resize, or expand into a new region. Composes ProvisionFullStackExecutor + RollingModuleUpgradeExecutor.",
           category: "devops",
           inputs: {
             project_id: { type: "string", required: true,
                           description: "Ai::Mission id (the provisioning project being scaled)" },
             target_count: { type: "integer", required: true,
-                            description: "Number of new instances (add_replicas / add_region) — bounded 1..#{MAX_DELTA}. Ignored for vertical_resize." },
+                            description: "Number of instances to add (add_replicas / add_region) or remove (remove_replicas) — bounded 1..#{MAX_DELTA}. Ignored for vertical_resize." },
             scaling_strategy: { type: "string", required: true,
                                 description: "One of: #{STRATEGIES.join(', ')}" },
             template_id: { type: "string", required: false,
@@ -51,6 +70,8 @@ module System
                           description: "add_region: optional Sdwan::Network to attach new instances to" },
             with_storage_gb: { type: "integer", required: false,
                                description: "add_region: optional per-instance volume size" },
+            name_prefix: { type: "string", required: false,
+                           description: "remove_replicas: blast-radius marker a victim's name MUST carry. Defaults to the mission's own prefix; a victim without it is a hard error." },
             dry_run: { type: "boolean", required: false, default: false,
                        description: "Plan only — return projected actions without creating any cloud resources" }
           },
@@ -64,7 +85,15 @@ module System
               node_instance_ids: [ :string ],
               sdwan_peer_ids: [ :string ],
               storage_volume_ids: [ :string ],
-              rolling_upgrade_plan: :object
+              rolling_upgrade_plan: :object,
+              # remove_replicas only — what this step DESTROYED, kept out of
+              # the creation keys above so no reader mistakes a teardown for a
+              # provision. `orphans` is the post-teardown ground-truth sweep.
+              removed_node_instance_ids: [ :string ],
+              detached_sdwan_peer_ids: [ :string ],
+              deleted_storage_volume_ids: [ :string ],
+              orphans: [ :object ],
+              floor_reached: :boolean
             },
             failures: [ :object ],
             partial: :boolean
@@ -79,29 +108,10 @@ module System
         # outputs envelope. vertical_resize returns a plan — it has no side
         # effects to reverse, so its outputs are empty and rollback no-ops.
         def rollback_scale_project(node_instance_ids: [], storage_volume_ids: [], **_extras)
-          errors = []
+          result = teardown_resources(node_instance_ids: node_instance_ids,
+                                      storage_volume_ids: storage_volume_ids)
 
-          Array(node_instance_ids).reverse_each do |instance_id|
-            instance = ::System::NodeInstance.find_by(id: instance_id)
-            next unless instance
-
-            result = ::System::ProvisioningService.terminate_instance(instance: instance)
-            errors << { resource: "node_instance", id: instance_id, error: result.error } unless result.success?
-          rescue StandardError => e
-            errors << { resource: "node_instance", id: instance_id, error: e.message }
-          end
-
-          Array(storage_volume_ids).reverse_each do |volume_id|
-            volume = ::System::ProviderVolume.find_by(id: volume_id)
-            next unless volume
-
-            result = ::System::VolumeManagementService.delete(volume: volume)
-            errors << { resource: "provider_volume", id: volume_id, error: result.error } unless result.success?
-          rescue StandardError => e
-            errors << { resource: "provider_volume", id: volume_id, error: e.message }
-          end
-
-          { success: errors.empty?, errors: errors }
+          { success: result[:errors].empty?, errors: result[:errors] }
         end
 
         protected
@@ -112,7 +122,7 @@ module System
                     template_id: nil, provider_region_id: nil,
                     provider_instance_type_id: nil, module_id: nil,
                     target_version_id: nil, network_id: nil,
-                    with_storage_gb: nil, dry_run: false, **_extras)
+                    with_storage_gb: nil, name_prefix: nil, dry_run: false, **_extras)
           strategy = scaling_strategy.to_s
           return failure("scaling_strategy must be one of: #{STRATEGIES.join(', ')}") unless STRATEGIES.include?(strategy)
 
@@ -132,6 +142,13 @@ module System
                           provider_instance_type_id: provider_instance_type_id,
                           network_id: network_id, with_storage_gb: with_storage_gb,
                           dry_run: dry_run)
+
+          when "remove_replicas"
+            count = target_count.to_i
+            return failure("target_count must be between 1 and #{MAX_DELTA}") unless count.between?(1, MAX_DELTA)
+
+            run_remove_replicas(mission: mission, requested: count,
+                                name_prefix: name_prefix, dry_run: dry_run)
 
           when "vertical_resize"
             return failure("template_id is required for vertical_resize") if template_id.blank?
@@ -182,6 +199,183 @@ module System
           )
         end
 
+        # remove_replicas — the scale-IN arm (INC-4).
+        #
+        # Victims are the NEWEST replicas of the mission's own set, so a
+        # scale-in undoes the most recent scale-out first and long-lived
+        # capacity is the last thing to go.
+        def run_remove_replicas(mission:, requested:, name_prefix:, dry_run:)
+          replicas = mission_replicas(mission)
+          removable = [ requested, replicas.size - MIN_REPLICAS ].min
+
+          # At (or below) the floor there is nothing this strategy may do. A
+          # recorded no-op, not a failure: failing the step would trigger the
+          # composed plan's `on_failure: rollback` over a mission that is
+          # simply already as small as it is allowed to be.
+          if removable < 1
+            return success(removal_envelope(
+              dry_run: dry_run, count: 0,
+              actions: [ { step: "remove_replicas_floor", requested: requested,
+                           live_replicas: replicas.size, floor: MIN_REPLICAS } ],
+              outputs: removal_outputs(floor_reached: true)
+            ))
+          end
+
+          victims = replicas.first(removable)
+
+          # CONTAINMENT RAIL — checked across ALL victims BEFORE anything is
+          # torn down, and a hard error rather than a skip.
+          #
+          # The mission-provenance query above and the mission's blast-radius
+          # prefix are two independent markers of the same ownership. When they
+          # disagree we do not know which one is lying, and the failure mode of
+          # guessing is terminating something that belongs to somebody else —
+          # so refuse the whole removal and leave the fleet exactly as it is.
+          # Skipping the stray would silently substitute a different victim.
+          prefix = name_prefix.presence || mission.provenance_name_prefix
+          if prefix.present?
+            stray = victims.reject { |instance| instance.name.to_s.start_with?(prefix) }
+            if stray.any?
+              return failure(
+                "refusing to remove #{stray.size} instance(s) outside the mission's " \
+                "`#{prefix}` prefix: #{stray.map(&:name).join(', ')}"
+              )
+            end
+          end
+
+          if dry_run
+            return success(removal_envelope(
+              dry_run: true, count: victims.size,
+              actions: victims.map { |i| { step: "remove_replica", node_instance_id: i.id, name: i.name } },
+              outputs: removal_outputs
+            ))
+          end
+
+          actuate_removal(victims: victims)
+        end
+
+        # Tears victims down one at a time through the shared teardown, then
+        # re-reads the rows to prove the teardown actually happened.
+        def actuate_removal(victims:)
+          actions = []
+          removed = []
+          detached_peers = []
+          deleted_volumes = []
+          failures = []
+          orphans = []
+
+          victims.each do |instance|
+            peer_ids   = ::Sdwan::Peer.where(node_instance_id: instance.id).pluck(:id)
+            volume_ids = ::System::ProviderVolume.where(node_instance_id: instance.id).pluck(:id)
+
+            result = teardown_resources(node_instance_ids: [ instance.id ],
+                                        storage_volume_ids: volume_ids)
+            failures.concat(result[:errors].map { |e| e.merge(step: "remove_replica") })
+            removed.concat(result[:terminated])
+            deleted_volumes.concat(result[:deleted_volumes])
+            # Ground truth, not "the detacher returned": a peer counts as
+            # detached only once its row is actually gone.
+            detached_peers.concat(peer_ids - ::Sdwan::Peer.where(id: peer_ids).pluck(:id))
+            actions << { step: "remove_replica", node_instance_id: instance.id, name: instance.name }
+
+            found = orphans_for(instance)
+            next if found.empty?
+
+            # STOP CONDITION — an orphan halts the removal before the next
+            # victim is touched, so the operator sees the leak against a fleet
+            # that still matches the plan instead of one already three
+            # teardowns further along.
+            orphans.concat(found)
+            failures << { step: "remove_replica", node_instance_id: instance.id,
+                          error: "orphaned resources survived teardown: #{found.inspect[0, 300]}" }
+            break
+          end
+
+          success(removal_envelope(
+            dry_run: false, count: removed.size, actions: actions,
+            outputs: removal_outputs(removed: removed, detached_peers: detached_peers,
+                                     deleted_volumes: deleted_volumes, orphans: orphans),
+            failures: failures
+          ))
+        end
+
+        # The mission's OWN replicas, newest first.
+        #
+        # Resolved through the provenance ProvisionFullStackExecutor stamps
+        # (`node.config["mission_id"]`), never a fleet-wide instance query: a
+        # bare "newest instances" lookup would happily hand back another
+        # mission's — or another tenant's — machines to terminate. Account
+        # scoping rides along on the node join because that is where the
+        # mission marker lives.
+        def mission_replicas(mission)
+          ::System::NodeInstance
+            .joins(:node)
+            .where(system_nodes: { account_id: @account.id })
+            .where("system_nodes.config @> ?", { mission_id: mission.id }.to_json)
+            .active
+            .order(created_at: :desc, id: :desc)
+            .to_a
+        end
+
+        # Post-teardown ground-truth sweep for ONE victim — the zero-orphan
+        # invariant, asserted rather than assumed. Every resource class here
+        # has produced a real orphan before: the Sdwan::Peer FK orphan whose
+        # instance was gone, the membership mirror left pointing at a dead
+        # peer, and volumes whose optional FK is nullified on cascade rather
+        # than cleaned up.
+        def orphans_for(instance)
+          found = []
+
+          row = ::System::NodeInstance.find_by(id: instance.id)
+          if row && row.status.to_s != "terminated"
+            found << { resource: "node_instance", id: instance.id, detail: "status=#{row.status}" }
+          end
+
+          peers = ::Sdwan::Peer.where(node_instance_id: instance.id).pluck(:id)
+          found << { resource: "sdwan_peer", ids: peers } if peers.any?
+
+          volumes = ::System::ProviderVolume.where(node_instance_id: instance.id).pluck(:id)
+          found << { resource: "provider_volume", ids: volumes } if volumes.any?
+
+          central = ::System::NodeInstancePeer.find_by(node_instance_id: instance.id)
+          if central && central.capabilities.is_a?(Hash) && central.capabilities["sdwan"].present?
+            found << { resource: "node_instance_peer_membership", id: central.id }
+          end
+
+          found
+        end
+
+        def removal_outputs(removed: [], detached_peers: [], deleted_volumes: [],
+                            orphans: [], floor_reached: false)
+          empty_outputs.merge(
+            removed_node_instance_ids: removed,
+            detached_sdwan_peer_ids: detached_peers,
+            deleted_storage_volume_ids: deleted_volumes,
+            orphans: orphans,
+            floor_reached: floor_reached
+          )
+        end
+
+        # `irreversible` + `requires_approval` travel with the RESULT because
+        # the descriptor is class-level and this executor's other three
+        # strategies are neither. They are a classification for the gate and
+        # the audit trail, not the enforcement — that is core's allowlist in
+        # AdaptationProposerService#auto_apply?, which admits only the additive
+        # strategy and so can never approve a removal.
+        def removal_envelope(dry_run:, count:, actions:, outputs:, failures: [])
+          {
+            dry_run: dry_run ? true : false,
+            count: count,
+            scaling_strategy: "remove_replicas",
+            irreversible: true,
+            requires_approval: true,
+            planned_actions: prepend_strategy_marker("remove_replicas", actions),
+            outputs: outputs,
+            failures: failures,
+            partial: failures.any? && count.positive?
+          }
+        end
+
         # vertical_resize produces a plan only — RollingModuleUpgradeExecutor
         # is plan-returning by design (M7 reconciler advances batches one at
         # a time through ApprovalRequest). We surface the plan in
@@ -228,6 +422,69 @@ module System
         def empty_outputs
           { node_ids: [], node_instance_ids: [], sdwan_peer_ids: [],
             storage_volume_ids: [], rolling_upgrade_plan: nil }
+        end
+
+        # THE teardown path — the only one in this executor. Both the rollback
+        # contract and the remove_replicas strategy go through it, so a fix to
+        # either (a missed detach, a swallowed provider error) lands on both;
+        # a second teardown written for the scale-in arm is exactly how the
+        # rollback path would quietly drift into leaking what the removal path
+        # cleans up.
+        #
+        # VOLUMES FIRST, then instances. VolumeManagementService#delete refuses
+        # an attached volume, and after the instance is gone there is nothing
+        # left to detach from — so detach-then-delete has to happen while the
+        # instance still exists. The rollback path only ever recorded
+        # unattached volumes, so this is a no-op reordering there and the
+        # correct order the moment storage attach is threaded through a
+        # scale-out.
+        #
+        # Never raises: both callers collect errors into the outputs envelope.
+        # Returns { errors:, terminated:, deleted_volumes: } — the terminated /
+        # deleted lists are what actually succeeded, so the caller reports
+        # ground truth rather than what it intended.
+        def teardown_resources(node_instance_ids: [], storage_volume_ids: [])
+          errors = []
+          terminated = []
+          deleted_volumes = []
+
+          Array(storage_volume_ids).reverse_each do |volume_id|
+            volume = ::System::ProviderVolume.find_by(id: volume_id)
+            next unless volume
+
+            if volume.attached?
+              detach = ::System::VolumeManagementService.detach(volume: volume)
+              unless detach.success?
+                errors << { resource: "provider_volume", id: volume_id, error: detach.error }
+                next
+              end
+            end
+
+            result = ::System::VolumeManagementService.delete(volume: volume)
+            if result.success?
+              deleted_volumes << volume_id
+            else
+              errors << { resource: "provider_volume", id: volume_id, error: result.error }
+            end
+          rescue StandardError => e
+            errors << { resource: "provider_volume", id: volume_id, error: e.message }
+          end
+
+          Array(node_instance_ids).reverse_each do |instance_id|
+            instance = ::System::NodeInstance.find_by(id: instance_id)
+            next unless instance
+
+            result = ::System::ProvisioningService.terminate_instance(instance: instance)
+            if result.success?
+              terminated << instance_id
+            else
+              errors << { resource: "node_instance", id: instance_id, error: result.error }
+            end
+          rescue StandardError => e
+            errors << { resource: "node_instance", id: instance_id, error: e.message }
+          end
+
+          { errors: errors, terminated: terminated, deleted_volumes: deleted_volumes }
         end
 
         def prepend_strategy_marker(strategy, planned_actions)

@@ -33,6 +33,11 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
       expect(d.dig(:inputs, :module_id, :required)).to be false
       expect(d.dig(:outputs, :outputs)).to include(:node_ids, :node_instance_ids, :sdwan_peer_ids,
                                                     :storage_volume_ids, :rolling_upgrade_plan)
+      # INC-4: removal records what it DESTROYED under its own keys, never in
+      # the creation keys above.
+      expect(d.dig(:outputs, :outputs)).to include(:removed_node_instance_ids,
+                                                    :detached_sdwan_peer_ids,
+                                                    :deleted_storage_volume_ids, :orphans)
       expect(d[:rollback]).to eq(:rollback_scale_project)
       expect(d[:requires_approval]).to be false
       expect(d[:blast_radius]).to eq(:medium)
@@ -199,6 +204,230 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
         expect(r[:data][:outputs][:rolling_upgrade_plan]).to eq(plan)
       end
     end
+
+    # INC-4 (IMP-216a6dbc7e32) — the fourth strategy. Until it landed the
+    # executor's ONLY instance-terminating path was its own rollback, so a
+    # composed downscale had no bindable actuator.
+    #
+    # Every assertion below reads GROUND TRUTH (rows, statuses, membership
+    # mirrors) rather than the returned envelope. The provider adapter — the
+    # one genuinely external dependency — is the only thing stubbed, so
+    # ProvisioningService, Sdwan::PeerDetacher and VolumeManagementService all
+    # really run against the DB. A spec that stubbed
+    # `ProvisioningService.terminate_instance` would assert nothing about the
+    # orphan classes this strategy exists to avoid.
+    context "remove_replicas" do
+      let(:prefix)  { "dryrun-evo-01" }
+      let(:mission) do
+        create(:ai_mission, account: account, mission_type: "infrastructure",
+                            configuration: { "name_prefix" => prefix })
+      end
+
+      let(:provider_adapter) do
+        instance_double(::System::Providers::MockProvider,
+                        terminate_instance: { success: true },
+                        detach_volume: { success: true },
+                        delete_volume: { success: true })
+      end
+
+      before do
+        allow(::System::Providers::Registry).to receive(:for_instance).and_return(provider_adapter)
+        allow(::System::Providers::Registry).to receive(:for_volume).and_return(provider_adapter)
+      end
+
+      # Reproduces exactly what ProvisionFullStackExecutor#create_node! stamps:
+      # mission provenance in node.config, and a prefixed node name the
+      # instance name derives from.
+      def replica!(minutes_old:, name: nil, mission_owned: true)
+        node = create(:system_node, account: account, node_template: template,
+                                    config: mission_owned ? { "mission_id" => mission.id } : {})
+        create(:system_node_instance, :running, node: node,
+               provider_region: region, provider_instance_type: instance_type,
+               name: name || "#{prefix}-web-#{SecureRandom.hex(3)}",
+               created_at: minutes_old.minutes.ago)
+      end
+
+      def statuses_of(*instances)
+        instances.map { |i| ::System::NodeInstance.find(i.id).status }
+      end
+
+      it "is an advertised strategy" do
+        expect(described_class::STRATEGIES).to include("remove_replicas")
+      end
+
+      it "rejects out-of-bounds target_count exactly like the additive strategies" do
+        expect(exec.execute(project_id: mission.id, target_count: 0,
+                            scaling_strategy: "remove_replicas")[:success]).to be false
+        expect(exec.execute(project_id: mission.id, target_count: described_class::MAX_DELTA + 1,
+                            scaling_strategy: "remove_replicas")[:success]).to be false
+      end
+
+      it "terminates the NEWEST replica of the mission's own set" do
+        oldest = replica!(minutes_old: 30)
+        middle = replica!(minutes_old: 20)
+        newest = replica!(minutes_old: 10)
+
+        r = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "remove_replicas")
+
+        expect(r[:success]).to be true
+        expect(r[:data][:scaling_strategy]).to eq("remove_replicas")
+        expect(r[:data][:count]).to eq(1)
+        # Ground truth, not the envelope: only the newest row is terminated.
+        expect(statuses_of(newest)).to eq(%w[terminated])
+        expect(statuses_of(oldest, middle)).to eq(%w[running running])
+        expect(r[:data][:outputs][:removed_node_instance_ids]).to eq([ newest.id ])
+      end
+
+      it "records terminations OUTSIDE node_instance_ids so no creation oracle can grade it" do
+        replica!(minutes_old: 30)
+        victim = replica!(minutes_old: 10)
+
+        outs = exec.execute(project_id: mission.id, target_count: 1,
+                            scaling_strategy: "remove_replicas")[:data][:outputs]
+
+        # VerificationService derives a step's expected instance count from the
+        # step inputs and compares it against outputs.node_instance_ids. A
+        # removal that reported its victims there would be graded by an
+        # instance-CREATION oracle, fail permanently, and — because the
+        # adaptation lane settles on verification — leave every later
+        # adaptation on the mission unable to settle.
+        expect(outs[:node_instance_ids]).to be_empty
+        expect(outs[:storage_volume_ids]).to be_empty
+        expect(outs[:removed_node_instance_ids]).to eq([ victim.id ])
+      end
+
+      it "never scales to zero — the floor clamps an oversized request" do
+        oldest = replica!(minutes_old: 30)
+        newest = replica!(minutes_old: 10)
+
+        r = exec.execute(project_id: mission.id, target_count: 5, scaling_strategy: "remove_replicas")
+
+        expect(r[:success]).to be true
+        expect(r[:data][:count]).to eq(1)
+        expect(statuses_of(newest)).to eq(%w[terminated])
+        expect(statuses_of(oldest)).to eq(%w[running])
+      end
+
+      it "removes NOTHING when the mission is already at the floor" do
+        only_one = replica!(minutes_old: 30)
+
+        r = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "remove_replicas")
+
+        expect(r[:success]).to be true
+        expect(r[:data][:count]).to eq(0)
+        expect(r[:data][:outputs][:floor_reached]).to be true
+        expect(statuses_of(only_one)).to eq(%w[running])
+      end
+
+      it "draws victims ONLY from the mission's own replicas, never fleet-wide" do
+        mine_old   = replica!(minutes_old: 40)
+        mine_new   = replica!(minutes_old: 30)
+        # Newer than every replica of this mission — a fleet-wide "newest
+        # first" query would take these first.
+        foreign_a  = replica!(minutes_old: 5, mission_owned: false)
+        foreign_b  = replica!(minutes_old: 1, mission_owned: false)
+
+        r = exec.execute(project_id: mission.id, target_count: 5, scaling_strategy: "remove_replicas")
+
+        expect(r[:success]).to be true
+        expect(r[:data][:count]).to eq(1)
+        expect(statuses_of(mine_new)).to eq(%w[terminated])
+        expect(statuses_of(mine_old, foreign_a, foreign_b)).to eq(%w[running running running])
+      end
+
+      it "HARD ERRORS on a victim outside the mission's prefix and terminates nothing" do
+        keeper = replica!(minutes_old: 30)
+        stray  = replica!(minutes_old: 10, name: "unprefixed-stray-1")
+
+        r = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "remove_replicas")
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(/prefix/i)
+        expect(r[:error]).to include("unprefixed-stray-1")
+        # The halt is BEFORE teardown so forensics survive.
+        expect(statuses_of(keeper, stray)).to eq(%w[running running])
+      end
+
+      it "plans without terminating anything in dry_run" do
+        victim = replica!(minutes_old: 10)
+        replica!(minutes_old: 30)
+        expect(::System::ProvisioningService).not_to receive(:terminate_instance)
+
+        r = exec.execute(project_id: mission.id, target_count: 1,
+                         scaling_strategy: "remove_replicas", dry_run: true)
+
+        expect(r[:success]).to be true
+        expect(r[:data][:dry_run]).to be true
+        expect(r[:data][:count]).to eq(1)
+        expect(r[:data][:planned_actions].first[:step]).to eq("scale_project")
+        expect(statuses_of(victim)).to eq(%w[running])
+      end
+
+      it "classifies the removal as irreversible and approval-bound" do
+        replica!(minutes_old: 30)
+        replica!(minutes_old: 10)
+
+        d = exec.execute(project_id: mission.id, target_count: 1,
+                         scaling_strategy: "remove_replicas")[:data]
+
+        # Ratified §4: removals never auto-apply, regardless of bounds. The
+        # core-side enforcement is AdaptationProposerService#auto_apply?'s
+        # additive-only allowlist (asserted in its own spec); the envelope
+        # carries the classification so the gate and the audit trail see it.
+        expect(d[:irreversible]).to be true
+        expect(d[:requires_approval]).to be true
+      end
+
+      context "zero-orphan invariant" do
+        let(:network) { create(:sdwan_network, account: account) }
+
+        it "leaves no orphaned peer, membership mirror, volume, or live instance" do
+          replica!(minutes_old: 30)
+          victim = replica!(minutes_old: 10)
+
+          peer = create(:sdwan_peer, account: account, network: network, node_instance: victim)
+          central = create(:system_node_instance_peer, node_instance: victim,
+                           capabilities: { "sdwan" => { "networks" => [ { "network_id" => network.id } ] } })
+          volume = create(:system_provider_volume, :attached, account: account,
+                          provider_region: region, node_instance: victim)
+
+          r = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "remove_replicas")
+
+          expect(r[:success]).to be true
+          # Ground truth for every resource class in the invariant.
+          expect(::Sdwan::Peer.where(id: peer.id).count).to eq(0)
+          expect(::System::ProviderVolume.where(id: volume.id).count).to eq(0)
+          expect(::System::ProviderVolume.where(node_instance_id: victim.id).count).to eq(0)
+          expect(central.reload.capabilities["sdwan"]).to be_nil
+          expect(statuses_of(victim)).to eq(%w[terminated])
+
+          outs = r[:data][:outputs]
+          expect(outs[:orphans]).to be_empty
+          expect(outs[:detached_sdwan_peer_ids]).to eq([ peer.id ])
+          expect(outs[:deleted_storage_volume_ids]).to eq([ volume.id ])
+        end
+
+        it "HALTS on the first orphan instead of tearing down the next victim" do
+          replica!(minutes_old: 40)
+          older_victim = replica!(minutes_old: 30)
+          newest_victim = replica!(minutes_old: 10)
+          orphan_peer = create(:sdwan_peer, account: account, network: network,
+                               node_instance: newest_victim)
+          # A detach that silently does nothing is exactly the FK-orphan class
+          # this invariant exists for — the peer survives its instance.
+          allow(::Sdwan::PeerDetacher).to receive(:call).and_return([])
+
+          r = exec.execute(project_id: mission.id, target_count: 2, scaling_strategy: "remove_replicas")
+
+          expect(::Sdwan::Peer.where(id: orphan_peer.id).count).to eq(1)
+          expect(r[:data][:outputs][:orphans]).not_to be_empty
+          expect(r[:data][:failures]).not_to be_empty
+          # Halted: the second victim is untouched, so an operator can see the
+          # orphan against a fleet that still matches the plan.
+          expect(statuses_of(older_victim)).to eq(%w[running])
+        end
+      end
+    end
   end
 
   describe "#rollback_scale_project" do
@@ -207,7 +436,9 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
 
     it "reverses recorded outputs uniformly with the M0 envelope" do
       instance_a = instance_double("System::NodeInstance", id: instance_id_a)
-      volume     = instance_double("System::ProviderVolume", id: volume_id)
+      # attached? gates the detach the shared teardown does before deleting —
+      # a rollback's volumes were provisioned unattached.
+      volume     = instance_double("System::ProviderVolume", id: volume_id, attached?: false)
 
       allow(::System::NodeInstance).to receive(:find_by).with(id: instance_id_a).and_return(instance_a)
       allow(::System::ProviderVolume).to receive(:find_by).with(id: volume_id).and_return(volume)
