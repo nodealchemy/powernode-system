@@ -1280,7 +1280,10 @@ RSpec.describe System::Fleet::DecisionEngine do
 
       expect(decision[:decision]).to eq(:proceed)
       expect(decision[:action_category]).to eq("project.adapt")
-      expect(decision[:remediation]).to include(applied: true, proposal: true, mission_id: mission.id)
+      # COMPOSITION is what this example pins. Whether the plan then gets
+      # applied is the gate's call and belongs to the dispatch examples — in
+      # this context there is no project.scale_horizontal policy, so it is not.
+      expect(decision[:remediation]).to include(proposal: true, mission_id: mission.id)
 
       plan = Ai::GoalPlan.find(decision[:remediation][:plan_id])
       expect(plan.plan_data["kind"]).to eq("adaptation_diff")
@@ -1327,20 +1330,57 @@ RSpec.describe System::Fleet::DecisionEngine do
 
     # The gate resolves policy by CHANGE TYPE — AdaptationGate maps
     # scale_horizontal to `project.scale_horizontal`, not to the `project.adapt`
-    # category the SIGNAL binding gates on. With no policy for that category the
-    # fleet chain holds the plan for an operator rather than applying it, and the
-    # plan stays draft. Two distinct gates, deliberately: the signal gate decides
-    # whether to propose, this one whether to apply.
-    it "holds the plan for an operator when no scale_horizontal policy exists" do
-      decision = decide_slo_violation
+    # category the SIGNAL binding gates on. An account holding a project.adapt
+    # policy but none for project.scale_horizontal therefore takes the gate's
+    # :blocked arm on every SLO breach, which returns ROUTED with NO request
+    # minted.
+    #
+    # The question this pins is "what would an operator actually see", not "what
+    # did the code return": nothing was minted, so nobody owns this plan. It must
+    # NOT report applied — the plan wedges in draft, and the validate-arc
+    # exemption means F3-11 cannot escalate it either.
+    it "reports a policy-blocked plan as unapplied, with nothing minted to act on" do
+      decision = nil
+      expect { decision = decide_slo_violation }
+        .not_to change { Ai::ApprovalRequest.where(account: account).count }
 
       expect(decision[:remediation]).to include(
-        proposal: true, dispatched: false,
+        applied: false, proposal: true, dispatched: false,
         gate: Ai::Provisioning::AdaptationDispatchService::GATE_ROUTED
       )
-      # Held is progress, not failure — an operator now owns it.
-      expect(decision[:remediation][:applied]).to be true
+      expect(decision[:remediation][:approval_request_id]).to be_nil
+      expect(decision[:remediation][:reason]).to match(/blocked by policy/)
       expect(Ai::GoalPlan.find(decision[:remediation][:plan_id]).status).to eq("draft")
+    end
+
+    # A plan the gate routed is dispatched by NOTHING else in the system, so the
+    # applier has to re-ask on a later tick — that is the only way an operator's
+    # approval ever reaches the runner. Returning early on the in-flight check
+    # (as this once did) left an approved adaptation in draft forever.
+    it "re-asks the gate for an undispatched plan instead of deduping it away" do
+      # Counted across INSTANCES — the applier builds a fresh dispatcher per
+      # decision, so an any_instance message expectation cannot see the second.
+      dispatch_calls = 0
+      allow_any_instance_of(Ai::Provisioning::AdaptationDispatchService)
+        .to receive(:dispatch!).and_wrap_original do |original, **kwargs|
+          dispatch_calls += 1
+          original.call(**kwargs)
+        end
+
+      first = decide_slo_violation
+      second = nil
+      expect {
+        second = engine.decide(kind: "system.project_slo_violation", severity: :high,
+                               payload: { "mission_id" => mission.id, "metric" => "availability_pct",
+                                          "observed" => 98.0, "target" => 99.5, "breach_pct" => 1.5,
+                                          "replica_count" => 3 },
+                               fingerprint: "project_slo_violation:#{mission.id}:availability_pct")
+      }.not_to change { Ai::GoalPlan.count }
+
+      # Same plan re-offered to the gate — the brake still stops a SECOND
+      # composition, it just no longer stops the retry.
+      expect(second[:remediation][:plan_id]).to eq(first[:remediation][:plan_id])
+      expect(dispatch_calls).to eq(2)
     end
 
     # The loop closing, end to end: policy clears the plan, the consumer appends
@@ -1382,12 +1422,43 @@ RSpec.describe System::Fleet::DecisionEngine do
         expect(appended).not_to be_empty
         expect(appended.map(&:step_number)).to all(be > 1)
 
-        # Brake released: the diff plan is no longer an open proposal, so the
-        # next genuine breach composes afresh instead of being deduped forever.
-        # This is the exact condition that made the guard unreleasable before
-        # INC-2 — do not weaken it without a replacement brake.
+        # The brake HOLDS through execution — `executing` is in flight, not
+        # settled. Releasing at dispatch time was a real defect: the second
+        # signal of the same pass would compose a competing scale_project run
+        # and append it onto this same live plan.
         expect(described_class.new(autonomy_service: service)
-                 .send(:open_adaptation_plan, mission)).to be_nil
+                 .send(:in_flight_adaptation_plan, mission)).to eq(diff_plan)
+
+        # It releases once the plan settles, so a later genuine breach proposes.
+        diff_plan.update!(status: "completed")
+        expect(described_class.new(autonomy_service: service)
+                 .send(:in_flight_adaptation_plan, mission)).to be_nil
+      end
+
+      # Finding 3: with auto_approve seeded, the first signal's plan reaches
+      # `executing` inside the same pass. If `executing` were treated as settled,
+      # the second signal would compose plan B and append a CONCURRENT
+      # scale_project run onto the same live plan.
+      it "does not append a concurrent second run when a pass carries two signals" do
+        slo = { kind: "system.project_slo_violation", severity: :critical,
+                payload: { "mission_id" => mission.id, "metric" => "p99_latency_ms",
+                           "observed" => 500.0, "target" => 250, "breach_pct" => 100.0,
+                           "replica_count" => 3 },
+                fingerprint: "project_slo_violation:#{mission.id}:p99_latency_ms" }
+        drift = { kind: "system.project_drift", severity: :medium,
+                  payload: { "mission_id" => mission.id, "drift_type" => "replica_count",
+                             "observed" => 3, "target" => 5 },
+                  fingerprint: "project_drift:#{mission.id}:replica_count" }
+
+        decisions = nil
+        expect { decisions = engine.decide_all([ slo, drift ]) }
+          .to change { Ai::GoalPlan.count }.by(1)
+
+        plan_ids = decisions.map { |d| d[:remediation][:plan_id] }.uniq
+        expect(plan_ids.size).to eq(1)
+
+        appended = live_plan.steps.reload.select { |s| s.execution_config["adapted_from_plan_id"].present? }
+        expect(appended.map { |s| s.execution_config["adapted_from_plan_id"] }.uniq.size).to eq(1)
       end
     end
 
@@ -1440,7 +1511,10 @@ RSpec.describe System::Fleet::DecisionEngine do
     # Ground truth: zero rows, not a returned success.
     it "keeps a proposal remediation out of the validate arc" do
       decision = decide_slo_violation
-      expect(decision[:remediation]).to include(applied: true, proposal: true)
+      # The exemption is keyed on `proposal`, deliberately NOT on `applied` — a
+      # policy-blocked or declined proposal is exactly the case that must not be
+      # scored, since its signal keeps firing with nothing able to clear it.
+      expect(decision[:remediation]).to include(proposal: true)
 
       signal = System::Fleet::Signal.from_hash(
         kind: "system.project_slo_violation", severity: :high,
@@ -1502,10 +1576,10 @@ RSpec.describe System::Fleet::DecisionEngine do
 
       expect(decisions.map { |d| d[:decision] }).to all(eq(:proceed))
       remediations = decisions.map { |d| d[:remediation] }
-      expect(remediations).to all(include(applied: true, proposal: true))
+      expect(remediations).to all(include(proposal: true))
+      # Exactly one plan, and both signals resolve to it — the second finds the
+      # in-flight plan rather than composing a competing diff.
       expect(remediations.map { |r| r[:plan_id] }.uniq.size).to eq(1)
-      # Exactly one signal composes; the second finds the open plan.
-      expect(remediations.count { |r| r[:deduped] }).to eq(1)
 
       # One goal per mission, not one per signal — intent unchanged, scoped to
       # ADAPTATION goals (IMP-02b4bc9f8bd8, 2026-08-12, lead-authorized).
@@ -1560,9 +1634,8 @@ RSpec.describe System::Fleet::DecisionEngine do
     # without this every pass composed ANOTHER draft plan — and, wherever the
     # governance capability is enabled, another operator approval — for a
     # proposal nobody has decided yet. One condition, an unbounded queue.
-    it "does not compose a second proposal while one is still open" do
+    it "does not compose a second proposal while one is still in flight" do
       first = decide_slo_violation
-      expect(first[:remediation]).to include(applied: true, proposal: true)
       first_plan_id = first[:remediation][:plan_id]
 
       second = nil
@@ -1576,14 +1649,32 @@ RSpec.describe System::Fleet::DecisionEngine do
 
       expect(second[:decision]).to eq(:proceed)
       # proposal: true is load-bearing — it keeps this decision out of the
-      # validate arc too, so an open proposal cannot be scored ineffective.
-      expect(second[:remediation]).to include(applied: true, proposal: true, deduped: true,
-                                              plan_id: first_plan_id)
+      # validate arc too, so an in-flight proposal cannot be scored ineffective.
+      expect(second[:remediation]).to include(proposal: true, plan_id: first_plan_id)
     end
 
-    it "composes again once the open proposal has been decided" do
+    # `approved` and `executing` are IN FLIGHT, not settled — the runner owns the
+    # plan and a second composition would append a competing scale_project run
+    # onto the same live plan. Only a settled plan releases the brake.
+    it "still blocks a second proposal while the plan is approved or executing" do
       first = decide_slo_violation
-      Ai::GoalPlan.find(first[:remediation][:plan_id]).update!(status: "approved")
+      plan = Ai::GoalPlan.find(first[:remediation][:plan_id])
+
+      %w[approved executing].each do |status|
+        plan.update!(status: status)
+        expect {
+          engine.decide(kind: "system.project_slo_violation", severity: :high,
+                        payload: { "mission_id" => mission.id, "metric" => "availability_pct",
+                                   "observed" => 98.0, "target" => 99.5, "breach_pct" => 1.5,
+                                   "replica_count" => 3 },
+                        fingerprint: "project_slo_violation:#{mission.id}:#{status}")
+        }.not_to change { Ai::GoalPlan.count }
+      end
+    end
+
+    it "composes again once the in-flight proposal has settled" do
+      first = decide_slo_violation
+      Ai::GoalPlan.find(first[:remediation][:plan_id]).update!(status: "completed")
 
       second = nil
       expect {
@@ -1594,10 +1685,10 @@ RSpec.describe System::Fleet::DecisionEngine do
                                fingerprint: "project_slo_violation:#{mission.id}:availability_pct")
       }.to change { Ai::GoalPlan.count }.by(1)
 
-      expect(second[:remediation]).to include(applied: true, proposal: true)
+      expect(second[:remediation]).to include(proposal: true)
     end
 
-    it "does not let another mission's open proposal block this one" do
+    it "does not let another mission's in-flight proposal block this one" do
       other = build_mission
       engine.decide(kind: "system.project_slo_violation", severity: :high,
                     payload: { "mission_id" => other.id, "metric" => "p99_latency_ms", "breach_pct" => 100.0,
@@ -1606,7 +1697,7 @@ RSpec.describe System::Fleet::DecisionEngine do
 
       decision = nil
       expect { decision = decide_slo_violation }.to change { Ai::GoalPlan.count }.by(1)
-      expect(decision[:remediation]).to include(applied: true, proposal: true, mission_id: mission.id)
+      expect(decision[:remediation]).to include(proposal: true, mission_id: mission.id)
     end
 
     # The most dangerous thing this lane could do is create a goal the autonomy

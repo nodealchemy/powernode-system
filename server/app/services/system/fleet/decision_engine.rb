@@ -1138,13 +1138,10 @@ module System
         #      closes this; a change_type-scoped key would let exactly that pair
         #      through, since their change_types differ.
         #
-        # Same shape as the reconcile lanes' in-flight task check: an undecided
-        # proposal IS this mission's outstanding remediation. Returns applied: true
-        # because the remediation stands — it is awaiting a decision, not failed.
-        if (open_plan = open_adaptation_plan(mission))
-          return { applied: true, proposal: true, deduped: true,
-                   mission_id: mission.id, plan_id: open_plan.id,
-                   step_count: open_plan.steps.count }
+        # Same shape as the reconcile lanes' in-flight task check: an unsettled
+        # proposal IS this mission's outstanding remediation.
+        if (in_flight = in_flight_adaptation_plan(mission))
+          return continue_adaptation(mission, in_flight)
         end
 
         plan = ::Ai::Provisioning::AdaptationProposerService
@@ -1186,42 +1183,94 @@ module System
         dispatcher = ::Ai::Provisioning::AdaptationDispatchService
         result = dispatcher.new(account: account, mission: mission).dispatch!(plan: plan)
 
-        # Dispositions under which the lane did its job: the adaptation is
-        # running, already applied, or legitimately held for an operator. The two
-        # omitted ones — parked_gate_unavailable and applied_dispatch_failed —
-        # mean nothing is progressing and want an operator's eye, so they report
-        # applied: false carrying the gate's own detail as the reason.
-        progressing = [ dispatcher::GATE_ROUTED, dispatcher::GATE_AUTO_APPLY,
-                        dispatcher::GATE_ALREADY_APPLIED ]
         gate = result[:gate].to_s
+        request_id = result[:approval_request_id].presence
+
+        # Dispositions under which the lane did its job: the adaptation is
+        # running, already applied, or genuinely held for an operator. The two
+        # omitted ones — parked_gate_unavailable and applied_dispatch_failed —
+        # mean nothing is progressing.
+        progressing = [ dispatcher::GATE_ROUTED, dispatcher::GATE_AUTO_APPLY,
+                        dispatcher::GATE_ALREADY_APPLIED ].include?(gate)
+
+        # ROUTED normally means "a gate holds this plan", but AdaptationGate's
+        # :blocked arm returns ROUTED with NO request minted — it fires whenever
+        # the resolved project.<change_type> category has no permitting policy.
+        # The SIGNAL binding gates on the coarse project.adapt, so an account
+        # holding a project.adapt policy but none for project.scale_horizontal
+        # takes that arm on every SLO breach. Calling that applied would be the
+        # worst shape available: the plan wedges in draft, NOTHING exists for an
+        # operator to see, and the validate-arc exemption pins ineffective_streak
+        # at 0 so F3-11 cannot escalate it either — a silent failure with its own
+        # alarm switched off. Held is only progress when something was minted to
+        # hold it.
+        held_with_nothing_to_act_on = gate == dispatcher::GATE_ROUTED && request_id.nil?
+        applied = progressing && !held_with_nothing_to_act_on
 
         {
-          applied: progressing.include?(gate),
+          applied: applied,
           proposal: true,
           mission_id: mission.id,
           plan_id: plan.id,
           step_count: plan.steps.count,
           gate: gate,
           dispatched: result[:dispatched] == true,
-          reason: (result[:detail] unless progressing.include?(gate))
+          approval_request_id: request_id,
+          # The gate's own words are the only statement of WHY nothing moved.
+          # Dropping them made a policy-blocked plan indistinguishable from an
+          # approved one in the decision event.
+          reason: (result[:detail].presence unless applied)
         }.compact
       end
 
-      # A proposal is open until someone decides it. Once it leaves draft/validated
-      # — approved, executing, completed, failed or rejected — this mission may
-      # legitimately propose again on the next breach.
-      OPEN_PROPOSAL_STATUSES = %w[draft validated].freeze
+      # An in-flight plan is not a reason to do nothing.
+      #
+      # A ROUTED plan stays `draft` until something asks the gate AGAIN —
+      # AdaptationGate#from_existing answers from the standing request, so the
+      # tick after an operator approves is when it dispatches. Returning early
+      # here meant an approved adaptation sat in draft forever: the replay
+      # through execute_approved! deduped, stamp_execution! then stopped the
+      # poller retrying, and every later tick deduped too. Nothing else in the
+      # system ever calls dispatch! for this plan. It is documented idempotent
+      # and re-callable precisely so this retry is safe.
+      #
+      # An already-dispatched plan is left alone. Re-entering dispatch! would
+      # take its RESUME path, which has an open defect (offer 019ff55e-84b1) in
+      # how it resolves dependencies across a partial step set — and there is
+      # nothing to gain, because the runner already owns the work.
+      def continue_adaptation(mission, plan)
+        if UNDISPATCHED_PROPOSAL_STATUSES.include?(plan.status.to_s)
+          return dispatch_adaptation!(mission, plan)
+        end
 
-      def open_adaptation_plan(mission)
+        { applied: true, proposal: true, deduped: true, in_flight: true,
+          mission_id: mission.id, plan_id: plan.id, step_count: plan.steps.count }
+      end
+
+      # Composed but never handed to a runner — a re-ask of the gate is exactly
+      # what these need.
+      UNDISPATCHED_PROPOSAL_STATUSES = %w[draft validated].freeze
+
+      # In flight from composition until the plan settles. `executing` and
+      # `approved` HAVE to be here: releasing the brake the instant dispatch
+      # claims the plan means that under an auto_approve policy the first signal
+      # of a pass moves its plan to executing, and the second signal — a
+      # different fingerprint, so cross-tick dedup never sees it — composes a
+      # SECOND scale_project run and appends it onto the same live plan.
+      # completed / failed / rejected are settled: the next genuine breach may
+      # propose again.
+      IN_FLIGHT_PROPOSAL_STATUSES = (UNDISPATCHED_PROPOSAL_STATUSES + %w[approved executing]).freeze
+
+      def in_flight_adaptation_plan(mission)
         ::Ai::GoalPlan
-          .where(account_id: account.id, status: OPEN_PROPOSAL_STATUSES)
+          .where(account_id: account.id, status: IN_FLIGHT_PROPOSAL_STATUSES)
           .where("plan_data @> ?", { "kind" => "adaptation_diff", "mission_id" => mission.id }.to_json)
           .order(created_at: :desc)
           .first
       rescue StandardError => e
         # Never let the bookkeeping query block a remediation — worst case is the
         # pre-existing duplicate-proposal behavior, not a lost decision.
-        Rails.logger.warn("[FleetDecisionEngine] open-proposal lookup failed: #{e.message}")
+        Rails.logger.warn("[FleetDecisionEngine] in-flight proposal lookup failed: #{e.message}")
         nil
       end
 
