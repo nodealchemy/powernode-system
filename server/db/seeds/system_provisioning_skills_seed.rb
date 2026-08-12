@@ -53,21 +53,26 @@ PROVISIONING_SKILLS_DATA = [
   {
     name: "Scale Project",
     slug: "system-scale-project",
-    description: "Scale a provisioning project — add replicas in-region, plan a vertical resize via rolling module upgrade, or expand into a new region. Composes ProvisionFullStackExecutor + RollingModuleUpgradeExecutor.",
+    description: "Scale a provisioning project — add replicas in-region, remove the newest replicas, plan a vertical resize via rolling module upgrade, or expand into a new region. Composes ProvisionFullStackExecutor + RollingModuleUpgradeExecutor.",
     category: "devops",
     subdomain: "provisioning",
     executor: "System::Ai::Skills::ScaleProjectExecutor",
     blast_radius: "medium",
     tags: %w[provisioning scaling adaptation fleet],
     system_prompt: <<~PROMPT.strip
-      Scale a provisioning project when the AdaptationProposer detects capacity pressure
-      or region imbalance.
+      Scale a provisioning project when the AdaptationProposer detects capacity pressure,
+      over-provisioning, or region imbalance.
       Inputs: project_id (Ai::Mission id), target_count (1-50),
-      scaling_strategy (add_replicas | vertical_resize | add_region) plus strategy-specific
-      lookups (template_id, provider_region_id, provider_instance_type_id, module_id,
-      target_version_id, network_id, with_storage_gb), dry_run.
+      scaling_strategy (add_replicas | remove_replicas | vertical_resize | add_region) plus
+      strategy-specific lookups (template_id, provider_region_id, provider_instance_type_id,
+      module_id, target_version_id, network_id, with_storage_gb, name_prefix), dry_run.
       Returns the unified outputs envelope so the runner's rollback dispatch can terminate
       new instances and delete new volumes uniformly with the M0 contract.
+      remove_replicas is IRREVERSIBLE and approval-bound: it terminates the newest replicas
+      of the mission's OWN set (never fleet-wide, never below one replica), refuses any
+      victim outside the mission's name prefix, and records what it destroyed under
+      removed_node_instance_ids / detached_sdwan_peer_ids / deleted_storage_volume_ids
+      plus a post-teardown orphan sweep. It never auto-applies.
     PROMPT
   },
   {
