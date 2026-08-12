@@ -113,6 +113,14 @@ module PowernodeSystem
             #     skills run against this template?" checks for
             #     PlanComposerService (overlay requirements today).
             provision_prerequisites: "System::ProvisionPrerequisites",
+            #   * adaptation_gate — the policy gate for `adaptation_diff` plans
+            #     (Ai::Provisioning::AdaptationDispatchService, INC-2), and the
+            #     store for the RemediationOutcome an applied adaptation mints.
+            #     Answers from InterventionPolicy + the Fleet Autonomy agent's
+            #     ApprovalChain — the same gate every fleet remediation passes.
+            #     Nil ⇒ core mode, and core PARKS the plan in draft rather than
+            #     proceeding ungated.
+            adaptation_gate: "System::AdaptationGate",
             ingress_certs: "Acme::TraefikConfigWriter",
             ingress_routers: "Acme::TraefikConfigWriter"
           }
