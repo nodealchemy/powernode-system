@@ -284,8 +284,9 @@ module System
           # is irreversible under an approval that only ever described
           # removing replicas. Refuse the removal rather than destroy
           # something the rail cannot vouch for.
+          volumes = victim_volumes(victims)
           if prefix.present?
-            foreign = victim_volumes(victims).reject { |v| v.name.to_s.start_with?(prefix) }
+            foreign = volumes.reject { |v| v.name.to_s.start_with?(prefix) }
             if foreign.any?
               return failure(
                 "refusing to remove: #{foreign.size} attached volume(s) outside the mission's " \
@@ -302,12 +303,12 @@ module System
             ))
           end
 
-          actuate_removal(victims: victims, prefix: prefix)
+          actuate_removal(victims: victims, prefix: prefix, volumes: volumes)
         end
 
         # Tears victims down one at a time through the shared teardown, then
         # re-reads the rows to prove the teardown actually happened.
-        def actuate_removal(victims:, prefix:)
+        def actuate_removal(victims:, prefix:, volumes:)
           actions = []
           removed = []
           detached_peers = []
@@ -316,8 +317,12 @@ module System
           orphans = []
 
           victims.each do |instance|
-            peer_ids   = ::Sdwan::Peer.where(node_instance_id: instance.id).pluck(:id)
-            volume_ids = ::System::ProviderVolume.where(node_instance_id: instance.id).pluck(:id)
+            peer_ids = ::Sdwan::Peer.where(node_instance_id: instance.id).pluck(:id)
+            # ONLY the volumes the rail already vouched for. Re-querying here
+            # would delete anything attached between the check and now,
+            # unchecked; a volume that appears in that window instead survives
+            # its instance and the orphan sweep below reports it.
+            volume_ids = volumes.select { |v| v.node_instance_id == instance.id }.map(&:id)
 
             result = teardown_resources(node_instance_ids: [ instance.id ],
                                         storage_volume_ids: volume_ids)
@@ -398,9 +403,9 @@ module System
         end
 
         # Volumes currently attached to the victims — what a removal would
-        # delete. Read once for the pre-flight rail and again per victim
-        # during teardown, so a volume attached in between is still caught by
-        # the orphan sweep rather than silently deleted unchecked.
+        # delete. Read ONCE: the same list the rail checks is the list the
+        # teardown acts on, so nothing can slip in between the two and be
+        # deleted unvetted.
         def victim_volumes(victims)
           ::System::ProviderVolume.where(node_instance_id: victims.map(&:id)).to_a
         end
