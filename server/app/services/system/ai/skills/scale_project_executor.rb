@@ -33,6 +33,21 @@ module System
       # nothing to roll a removal back to, which is exactly why removals never
       # auto-apply (ratified §4) — see AdaptationProposerService#auto_apply?.
       #
+      # KNOWN LIMITS OF THE SCALE-IN STORAGE TEARDOWN, stated plainly so
+      # neither is read as a guarantee:
+      #
+      #   1. It reaches a victim's volumes through `ProviderVolume#node_instance_id`.
+      #      `ProvisionFullStackExecutor` PROVISIONS per-instance volumes for
+      #      `with_storage_gb` but never attaches them, so those rows carry a
+      #      nil FK and are out of reach here — they are the creating step's
+      #      `storage_volume_ids`, and only the rollback path (which has that
+      #      list) can clean them up today. The moment a scale-out attaches
+      #      what it provisions, this teardown covers them with no change.
+      #   2. Everything attached to the victim is deleted, mission-owned or
+      #      not — the containment rail validates instance names, and volumes
+      #      carry no ownership marker to check. A volume an operator attached
+      #      by hand to a replica goes with the replica.
+      #
       # Reference: AI-Driven Provisioning plan — slice 8 (M2 adaptive
       # evolution); scale-in from the platform-evolution-loop charter (INC-4).
       class ScaleProjectExecutor < BaseSkillExecutor
@@ -71,7 +86,7 @@ module System
             with_storage_gb: { type: "integer", required: false,
                                description: "add_region: optional per-instance volume size" },
             name_prefix: { type: "string", required: false,
-                           description: "remove_replicas: blast-radius marker a victim's name MUST carry. Defaults to the mission's own prefix; a victim without it is a hard error." },
+                           description: "Blast-radius marker. add_replicas/add_region stamp it onto new node names; remove_replicas refuses any victim whose name lacks it (hard error). Defaults to the mission's own prefix — when the mission declares none the rail is not applied, and outputs.prefix_enforced says so." },
             dry_run: { type: "boolean", required: false, default: false,
                        description: "Plan only — return projected actions without creating any cloud resources" }
           },
@@ -137,11 +152,11 @@ module System
             return failure("provider_region_id is required for #{strategy}") if provider_region_id.blank?
             return failure("provider_instance_type_id is required for #{strategy}") if provider_instance_type_id.blank?
 
-            run_provision(strategy: strategy, count: count, template_id: template_id,
+            run_provision(strategy: strategy, mission: mission, count: count, template_id: template_id,
                           provider_region_id: provider_region_id,
                           provider_instance_type_id: provider_instance_type_id,
                           network_id: network_id, with_storage_gb: with_storage_gb,
-                          dry_run: dry_run)
+                          name_prefix: name_prefix, dry_run: dry_run)
 
           when "remove_replicas"
             count = target_count.to_i
@@ -165,8 +180,16 @@ module System
         # add_replicas + add_region both compose the M0 ProvisionFullStackExecutor.
         # The strategies differ only in semantics (same vs. new region) —
         # both delegate to the same primitive and re-shape the result.
-        def run_provision(strategy:, count:, template_id:, provider_region_id:,
-                          provider_instance_type_id:, network_id:, with_storage_gb:, dry_run:)
+        #
+        # `mission_id` + `name_prefix` are threaded through so the replicas THIS
+        # skill adds carry the same provenance PlanComposerService stamps on the
+        # mission's original ones. Without them the two arms address different
+        # fleets: a later remove_replicas resolves victims by that provenance,
+        # so it would skip everything a scale-out added and eat the mission's
+        # original capacity instead — the inverse of undoing the newest change.
+        def run_provision(strategy:, mission:, count:, template_id:, provider_region_id:,
+                          provider_instance_type_id:, network_id:, with_storage_gb:,
+                          name_prefix:, dry_run:)
           inner = executor(::System::Ai::Skills::ProvisionFullStackExecutor)
           inner_result = inner.execute(
             template_id: template_id,
@@ -175,6 +198,8 @@ module System
             provider_instance_type_id: provider_instance_type_id,
             network_id: network_id,
             with_storage_gb: with_storage_gb,
+            mission_id: mission.id,
+            name_prefix: name_prefix.presence || mission.provenance_name_prefix,
             dry_run: dry_run
           )
           return inner_result unless inner_result[:success]
@@ -207,6 +232,7 @@ module System
         def run_remove_replicas(mission:, requested:, name_prefix:, dry_run:)
           replicas = mission_replicas(mission)
           removable = [ requested, replicas.size - MIN_REPLICAS ].min
+          prefix = name_prefix.presence || mission.provenance_name_prefix
 
           # At (or below) the floor there is nothing this strategy may do. A
           # recorded no-op, not a failure: failing the step would trigger the
@@ -217,7 +243,7 @@ module System
               dry_run: dry_run, count: 0,
               actions: [ { step: "remove_replicas_floor", requested: requested,
                            live_replicas: replicas.size, floor: MIN_REPLICAS } ],
-              outputs: removal_outputs(floor_reached: true)
+              outputs: removal_outputs(prefix: prefix, floor_reached: true)
             ))
           end
 
@@ -232,7 +258,11 @@ module System
           # guessing is terminating something that belongs to somebody else —
           # so refuse the whole removal and leave the fleet exactly as it is.
           # Skipping the stray would silently substitute a different victim.
-          prefix = name_prefix.presence || mission.provenance_name_prefix
+          #
+          # A mission that declares NO prefix leaves this rail unmeasured, not
+          # satisfied — provenance is then the sole ownership marker. Which of
+          # the two it was is recorded as `outputs.prefix_enforced` so a reader
+          # can never mistake "no prefix to check" for "checked and clean".
           if prefix.present?
             stray = victims.reject { |instance| instance.name.to_s.start_with?(prefix) }
             if stray.any?
@@ -247,16 +277,16 @@ module System
             return success(removal_envelope(
               dry_run: true, count: victims.size,
               actions: victims.map { |i| { step: "remove_replica", node_instance_id: i.id, name: i.name } },
-              outputs: removal_outputs
+              outputs: removal_outputs(prefix: prefix)
             ))
           end
 
-          actuate_removal(victims: victims)
+          actuate_removal(victims: victims, prefix: prefix)
         end
 
         # Tears victims down one at a time through the shared teardown, then
         # re-reads the rows to prove the teardown actually happened.
-        def actuate_removal(victims:)
+        def actuate_removal(victims:, prefix:)
           actions = []
           removed = []
           detached_peers = []
@@ -278,7 +308,16 @@ module System
             detached_peers.concat(peer_ids - ::Sdwan::Peer.where(id: peer_ids).pluck(:id))
             actions << { step: "remove_replica", node_instance_id: instance.id, name: instance.name }
 
-            found = orphans_for(instance)
+            # A victim that would not terminate is a FAILED removal, not a
+            # leak, and the two must not be conflated: an orphan means the
+            # instance is gone while its resources survived. Halt either way —
+            # something is wrong with this fleet and the next teardown would
+            # only widen the damage before anyone looks.
+            unless result[:terminated].include?(instance.id)
+              break
+            end
+
+            found = orphans_for(instance, expected_gone_volume_ids: volume_ids)
             next if found.empty?
 
             # STOP CONDITION — an orphan halts the removal before the next
@@ -291,9 +330,18 @@ module System
             break
           end
 
+          # Nothing removed and something went wrong: report a FAILED step.
+          # Returning the partial-success envelope here would have the runner
+          # mark the step completed, skip its `on_failure: rollback`, and
+          # dispatch successors as though capacity had gone away.
+          if removed.empty? && failures.any?
+            return failure("remove_replicas removed nothing: #{failures.inspect[0, 300]}")
+          end
+
           success(removal_envelope(
             dry_run: false, count: removed.size, actions: actions,
-            outputs: removal_outputs(removed: removed, detached_peers: detached_peers,
+            outputs: removal_outputs(prefix: prefix, removed: removed,
+                                     detached_peers: detached_peers,
                                      deleted_volumes: deleted_volumes, orphans: orphans),
             failures: failures
           ))
@@ -323,7 +371,7 @@ module System
         # instance was gone, the membership mirror left pointing at a dead
         # peer, and volumes whose optional FK is nullified on cascade rather
         # than cleaned up.
-        def orphans_for(instance)
+        def orphans_for(instance, expected_gone_volume_ids: [])
           found = []
 
           row = ::System::NodeInstance.find_by(id: instance.id)
@@ -334,8 +382,16 @@ module System
           peers = ::Sdwan::Peer.where(node_instance_id: instance.id).pluck(:id)
           found << { resource: "sdwan_peer", ids: peers } if peers.any?
 
-          volumes = ::System::ProviderVolume.where(node_instance_id: instance.id).pluck(:id)
-          found << { resource: "provider_volume", ids: volumes } if volumes.any?
+          # BY ID, not by FK. ProviderVolume#detach! nulls node_instance_id, so
+          # a volume whose delete then failed is orphaned with nothing left
+          # pointing at the instance — re-querying the FK would find zero rows
+          # and bless the leak. The ids captured before teardown are the only
+          # handle that survives the detach. The FK query stays as well, to
+          # catch anything attached after that snapshot.
+          survivors = ::System::ProviderVolume.where(id: expected_gone_volume_ids).pluck(:id)
+          still_attached = ::System::ProviderVolume.where(node_instance_id: instance.id).pluck(:id)
+          leaked = (survivors + still_attached).uniq
+          found << { resource: "provider_volume", ids: leaked } if leaked.any?
 
           central = ::System::NodeInstancePeer.find_by(node_instance_id: instance.id)
           if central && central.capabilities.is_a?(Hash) && central.capabilities["sdwan"].present?
@@ -345,14 +401,15 @@ module System
           found
         end
 
-        def removal_outputs(removed: [], detached_peers: [], deleted_volumes: [],
+        def removal_outputs(prefix: nil, removed: [], detached_peers: [], deleted_volumes: [],
                             orphans: [], floor_reached: false)
           empty_outputs.merge(
             removed_node_instance_ids: removed,
             detached_sdwan_peer_ids: detached_peers,
             deleted_storage_volume_ids: deleted_volumes,
             orphans: orphans,
-            floor_reached: floor_reached
+            floor_reached: floor_reached,
+            prefix_enforced: prefix
           )
         end
 

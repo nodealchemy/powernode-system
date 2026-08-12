@@ -378,6 +378,74 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
         expect(d[:requires_approval]).to be true
       end
 
+      it "can remove the replicas its own add_replicas arm created" do
+        # Faithful to ProvisioningService#generate_instance_name: the instance
+        # name DERIVES from the node's, which is how the mission's prefix
+        # reaches the substrate. A stub that named instances anything else
+        # would quietly make the containment rail untestable here.
+        allow(::System::ProvisioningService).to receive(:provision_instance) do |node:, **_|
+          inst = create(:system_node_instance, :running, node: node, provider_region: region,
+                        provider_instance_type: instance_type,
+                        name: "#{node.name}-instance-#{SecureRandom.hex(2)}")
+          ::System::Runtime::Result.ok(data: { instance: inst, cloud_instance_id: inst.cloud_instance_id })
+        end
+        seed = replica!(minutes_old: 60)
+
+        added = exec.execute(project_id: mission.id, target_count: 2, scaling_strategy: "add_replicas",
+                             template_id: template.id, provider_region_id: region.id,
+                             provider_instance_type_id: instance_type.id)
+        expect(added[:success]).to be true
+
+        # Scale-out has to stamp the provenance scale-in queries on, or the two
+        # arms address different fleets: the removal would skip everything the
+        # scale-out just created and eat the mission's original capacity
+        # instead — the exact inverse of "undo the most recent scale-out".
+        r = exec.execute(project_id: mission.id, target_count: 2, scaling_strategy: "remove_replicas")
+
+        expect(r[:success]).to be true
+        expect(r[:data][:outputs][:removed_node_instance_ids])
+          .to match_array(added[:data][:outputs][:node_instance_ids])
+        expect(statuses_of(seed)).to eq(%w[running])
+      end
+
+      it "reports WHICH prefix it enforced, so a nil one is never read as a pass" do
+        no_prefix_mission = create(:ai_mission, account: account, mission_type: "infrastructure",
+                                                configuration: {})
+        node = create(:system_node, account: account, node_template: template,
+                                    config: { "mission_id" => no_prefix_mission.id })
+        create(:system_node_instance, :running, node: node, provider_region: region,
+               provider_instance_type: instance_type, created_at: 30.minutes.ago)
+        create(:system_node_instance, :running, node: node, provider_region: region,
+               provider_instance_type: instance_type, created_at: 10.minutes.ago)
+
+        with_prefix = exec.execute(project_id: mission.id, target_count: 1,
+                                   scaling_strategy: "remove_replicas", dry_run: true)
+        without = exec.execute(project_id: no_prefix_mission.id, target_count: 1,
+                               scaling_strategy: "remove_replicas", dry_run: true)
+
+        # A mission that declares no marker leaves the rail unmeasured, not
+        # satisfied — the envelope has to say which of the two it was.
+        expect(with_prefix[:data][:outputs][:prefix_enforced]).to eq(prefix)
+        expect(without[:data][:outputs][:prefix_enforced]).to be_nil
+      end
+
+      it "FAILS the step when a victim could not be terminated at all" do
+        keeper = replica!(minutes_old: 40)
+        older  = replica!(minutes_old: 30)
+        victim = replica!(minutes_old: 10)
+        allow(provider_adapter).to receive(:terminate_instance)
+          .and_return({ success: false, error: "provider rejected terminate" })
+
+        r = exec.execute(project_id: mission.id, target_count: 2, scaling_strategy: "remove_replicas")
+
+        # A removal that removed NOTHING must not come back as a completed
+        # step: the runner would mark it done, skip `on_failure: rollback`, and
+        # dispatch successors as though capacity had gone away.
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(/provider rejected terminate/)
+        expect(statuses_of(keeper, older, victim)).to eq(%w[running running running])
+      end
+
       context "zero-orphan invariant" do
         let(:network) { create(:sdwan_network, account: account) }
 
@@ -405,6 +473,24 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
           expect(outs[:orphans]).to be_empty
           expect(outs[:detached_sdwan_peer_ids]).to eq([ peer.id ])
           expect(outs[:deleted_storage_volume_ids]).to eq([ volume.id ])
+        end
+
+        it "catches a volume that survived its delete even though detach cleared the FK" do
+          replica!(minutes_old: 30)
+          victim = replica!(minutes_old: 10)
+          volume = create(:system_provider_volume, :attached, account: account,
+                          provider_region: region, node_instance: victim)
+          # ProviderVolume#detach! nulls node_instance_id, so a sweep that
+          # re-queries by FK sees nothing and blesses the leak. The victim's
+          # volume ids are captured BEFORE teardown for exactly this reason.
+          allow(provider_adapter).to receive(:delete_volume)
+            .and_return({ success: false, error: "volume busy" })
+
+          r = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "remove_replicas")
+
+          expect(::System::ProviderVolume.where(id: volume.id).count).to eq(1)
+          expect(r[:data][:outputs][:orphans].to_s).to include(volume.id)
+          expect(r[:data][:failures]).not_to be_empty
         end
 
         it "HALTS on the first orphan instead of tearing down the next victim" do
