@@ -185,6 +185,46 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       end
     end
 
+    # IMP-33fa6c51f05d — this plan is built here, but the storage it describes
+    # is provisioned by the executor this one delegates to
+    # (ProvisionFullStackExecutor, via #provision_target!). That executor now
+    # screens a non-positive with_storage_gb, so listing the pair here for a 0
+    # would promise a volume the run will not create — on the approval card of
+    # a :high blast-radius skill. Same guard, one seam.
+    context "in dry_run mode with a non-positive with_storage_gb" do
+      it "plans no storage steps for 0" do
+        r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                         to_region_id: to_region.id, cutover_strategy: "blue_green",
+                         template_id: template.id,
+                         provider_instance_type_id: instance_type.id, count: 2,
+                         source_instance_ids: [ source_instance.id ],
+                         with_storage_gb: 0, dry_run: true)
+
+        expect(r[:success]).to be true
+        expect(r[:data][:planned_actions].map { |a| a[:step] }).to eq(%w[
+          relocate_workload
+          provision_target_instance
+          provision_target_instance
+          terminate_source
+        ])
+      end
+
+      # Positive control: the identical call with a positive value still
+      # carries the pair, so the example above cannot pass off a broken
+      # fixture as the guard working.
+      it "still plans the storage pair for a positive value" do
+        r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                         to_region_id: to_region.id, cutover_strategy: "blue_green",
+                         template_id: template.id,
+                         provider_instance_type_id: instance_type.id, count: 2,
+                         source_instance_ids: [ source_instance.id ],
+                         with_storage_gb: 25, dry_run: true)
+
+        expect(r[:data][:planned_actions].map { |a| a[:step] })
+          .to include("provision_target_storage", "attach_volume")
+      end
+    end
+
     context "blue_green execute (provisioning + termination stubbed at the service layer)" do
       let(:ok_prov) do
         ::System::Runtime::Result.ok(data: { instance: new_instance_stub, cloud_instance_id: "ci-bg" })

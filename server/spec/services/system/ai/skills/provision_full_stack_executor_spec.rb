@@ -277,6 +277,108 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
             expect(d[:failures].map { |f| f[:step] }).to include("attach_volume")
           end
         end
+
+        # IMP-33fa6c51f05d — the guard was `next if with_storage_gb.blank?`,
+        # and `0.blank?` is FALSE in Ruby, so an explicit 0 sailed past it and
+        # reached VolumeManagementService.provision as a real 0 GB volume
+        # request. PlanComposerService#brief_storage_gb drops non-positives
+        # before stamping, so a COMPOSED plan never carried one — the reachable
+        # writers are a hand-authored plan_data, a MissionComposer output, and
+        # an operator-supplied input, i.e. exactly the direct-dispatch paths
+        # the composer's `||=` is documented to let win.
+        #
+        # It did not leak a 0 GB volume — ProviderVolume validates size_gb as
+        # `greater_than: 0`, so the create raised and came back as an err
+        # Result. It produced one fabricated `provision_storage` failure per
+        # node and a `partial: true` envelope, i.e. a run that asked for no
+        # storage reporting itself as partially failed. Meanwhile
+        # CostEstimatorService#declared_gb already clamped non-positive to "not
+        # requested", so the approval card showed no volume line at all — the
+        # quote and the actuator disagreed about the same input.
+        context "with a non-positive with_storage_gb" do
+          # Stubbed to SUCCEED, deliberately. If the guard lets a 0 through,
+          # the example has to fail on "the provisioner was called" and not on
+          # a nil result crashing the leg — a red that points at the wrong
+          # thing is a red that gets fixed the wrong way.
+          before do
+            allow(::System::VolumeManagementService).to receive(:provision)
+              .and_return(::System::Runtime::Result.ok(data: { volume: volume_stub }))
+            allow(::System::VolumeManagementService).to receive(:attach)
+              .and_return(::System::Runtime::Result.ok(data: { device: "/dev/sdb" }))
+          end
+
+          # Each shape is its own example rather than one loop, because they
+          # fail for different reasons and a loop reports only the first.
+          {
+            "integer 0"    => 0,
+            "string \"0\"" => "0",
+            "negative"     => -50,
+            "non-numeric"  => "plenty"
+          }.each do |label, value|
+            it "provisions no volume for #{label}" do
+              r = exec.execute(template_id: template.id, count: 2,
+                               provider_region_id: region.id,
+                               provider_instance_type_id: instance_type.id,
+                               with_storage_gb: value)
+
+              expect(r[:success]).to be true
+              expect(::System::VolumeManagementService).not_to have_received(:provision)
+              expect(r[:data][:outputs][:storage_volume_ids]).to be_empty
+              expect(r[:data][:planned_actions].map { |a| a[:step] })
+                .not_to include("provision_storage", "attach_volume")
+            end
+          end
+
+          # `true` rather than `{}` on purpose: `{}.blank?` was ALREADY true, so
+          # an empty-Hash example would pass identically before and after the
+          # fix and prove nothing about it. `true.blank?` is FALSE, so this
+          # shape used to reach `.to_i`, raise NoMethodError, and fail the
+          # WHOLE step through `failure(...)` — which returns no `:data`, so
+          # the instances the loop had already provisioned were reported to
+          # nobody. Asserting the outputs survive is the point of the example;
+          # it also pins the `respond_to?` screen against a later
+          # simplification that would trade the skip back for a raise.
+          it "skips, rather than crashing the step, on a shape with no numeric reading" do
+            r = exec.execute(template_id: template.id, count: 2,
+                             provider_region_id: region.id,
+                             provider_instance_type_id: instance_type.id,
+                             with_storage_gb: true)
+
+            expect(r[:success]).to be true
+            expect(::System::VolumeManagementService).not_to have_received(:provision)
+            # The orphan hazard: these ids are what rollback and teardown read.
+            expect(r[:data][:outputs][:node_instance_ids].size).to eq(2)
+          end
+
+          # Positive control for the four negatives above: same stubs, same
+          # call shape, only the value differs. Without it a broken harness
+          # (a mis-stubbed provisioner, a raise swallowed into `failures`)
+          # would read as a pass.
+          it "still provisions for a positive value" do
+            r = exec.execute(template_id: template.id, count: 2,
+                             provider_region_id: region.id,
+                             provider_instance_type_id: instance_type.id,
+                             with_storage_gb: 100)
+
+            expect(::System::VolumeManagementService).to have_received(:provision).twice
+            expect(r[:data][:outputs][:storage_volume_ids].size).to eq(2)
+          end
+
+          # The dry run is the operator's approval card. It has to agree with
+          # what execute does, or the card promises a volume the run will not
+          # create (build_plan carried the same defect via `present?`).
+          it "plans no storage steps for 0 in dry_run" do
+            r = exec.execute(template_id: template.id, count: 3,
+                             provider_region_id: region.id,
+                             provider_instance_type_id: instance_type.id,
+                             with_storage_gb: 0, dry_run: true)
+
+            steps = r[:data][:planned_actions].map { |a| a[:step] }
+            expect(steps).not_to include("provision_storage", "attach_volume")
+            # 3 × (create_node + provision_instance) and nothing else.
+            expect(r[:data][:planned_actions].size).to eq(6)
+          end
+        end
       end
 
       # IMP-94f778f92dba — network_id used to only compile a read-only view

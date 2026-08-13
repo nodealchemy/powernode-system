@@ -246,7 +246,7 @@ module System
               end
             end
 
-            next if with_storage_gb.blank?
+            next unless storage_requested?(with_storage_gb)
 
             vol_result = ::System::VolumeManagementService.provision(
               account: @account,
@@ -343,7 +343,7 @@ module System
             steps << { step: "provision_instance", index: i,
                        provider_region_id: region.id, provider_instance_type_id: instance_type.id }
             steps << { step: "attach_sdwan_peer", index: i, network_id: network.id } if network
-            if with_storage_gb.present?
+            if storage_requested?(with_storage_gb)
               steps << { step: "provision_storage", index: i, size_gb: with_storage_gb.to_i }
               # The attach is a separate state change and is planned as one, so
               # the dry run enumerates what execute actually does and an oracle
@@ -353,6 +353,48 @@ module System
             end
           end
           steps
+        end
+
+        # Whether this run was asked for a volume at all — the single answer
+        # both the dry-run plan and the provisioning loop consult, so the
+        # approval card and the actuator cannot disagree about it.
+        #
+        # IMP-33fa6c51f05d — the guards here used to be `blank?`/`present?`, and
+        # in Ruby `0.blank?` is FALSE, so an explicit `with_storage_gb: 0`
+        # passed straight through to VolumeManagementService.provision.
+        #
+        # What that actually produced, verified rather than assumed: NOT a
+        # leaked 0 GB volume. ProviderVolume validates `size_gb` as
+        # `greater_than: 0`, so `create!` raised RecordInvalid and the service's
+        # `rescue StandardError` returned an err Result — every time. The harm
+        # was one fabricated `provision_storage` failure PER NODE and a
+        # `partial: true` envelope, which is exactly what VerificationService
+        # grades as a failing step_N_failures check. A plan that asked for no
+        # storage reported itself as a partially-failed provisioning run.
+        #
+        # `respond_to?(:to_i)` covers a SECOND, worse shape that `blank?` also
+        # let through — `true.blank?`, `{a: 1}.blank?` and `[50].blank?` are all
+        # false, so those reached `.to_i` and raised NoMethodError. That raise
+        # escaped the per-node legs and failed the whole step via `failure(...)`,
+        # which returns no `:data` at all: the nodes and instances this loop had
+        # already created were handed back to nobody. Screening them here turns
+        # an orphan-producing crash into a clean skip. (Only EMPTY Hash/Array
+        # and `false` were ever screened by `blank?`.)
+        #
+        # Non-positive now reads the same way here as in
+        # CostEstimatorService#declared_gb and PlanComposerService
+        # #brief_storage_gb. The composer never ADDS a non-positive, so the
+        # reachable writers are a hand-authored plan_data, a MissionComposer
+        # output, and an operator-supplied input — the direct-dispatch paths the
+        # composer's `||=` is documented to let win. This hardens those.
+        #
+        # Known gap, deliberately not closed here: an UNREADABLE value
+        # ("plenty", true, {a: 1}) is now indistinguishable from "no storage
+        # requested" — silent rather than loud. That is strictly better than the
+        # orphaning crash it replaces, but a caller who asked for storage in a
+        # shape this executor cannot read still deserves a failure entry.
+        def storage_requested?(with_storage_gb)
+          with_storage_gb.respond_to?(:to_i) && with_storage_gb.to_i.positive?
         end
       end
     end

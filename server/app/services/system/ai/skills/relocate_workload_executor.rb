@@ -341,7 +341,13 @@ module System
                                  to_region_id: to_region_id, template_id: template_id,
                                  provider_instance_type_id: provider_instance_type_id }
             provision_steps << { step: "attach_sdwan_peer", index: i, network_id: network_id } if network_id.present?
-            next if with_storage_gb.blank?
+            # Non-positive is "no volume", matching the executor that actually
+            # provisions it (ProvisionFullStackExecutor#storage_requested?,
+            # IMP-33fa6c51f05d). `blank?` did not screen a 0 — and once the
+            # inner executor screens one, listing the pair here would promise a
+            # volume the run will not create, on the approval card of a :high
+            # blast-radius skill.
+            next unless with_storage_gb.respond_to?(:to_i) && with_storage_gb.to_i.positive?
 
             provision_steps << { step: "provision_target_storage", index: i, size_gb: with_storage_gb.to_i }
             provision_steps << { step: "attach_volume", index: i }
