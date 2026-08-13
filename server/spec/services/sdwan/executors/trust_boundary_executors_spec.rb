@@ -22,6 +22,32 @@ RSpec.describe "Sdwan::Executors trust-boundary executors", type: :model do
       expect(result.dig(:data, :revoked)).to be true
       expect(peer.reload.status).to eq("revoked")
     end
+
+    # Both callers that reach this executor collect a revocation reason — the
+    # controller's #revoke passes it into the gate params, and the MCP tool
+    # documents it as "recorded on the peer". FederationPeer#revoke! has always
+    # accepted `reason:`; the executor calling it bare is the single point where
+    # the operator's cause was lost (IMP-8ce2d82065b9).
+    it "records the operator's reason on the peer" do
+      peer = create(:system_federation_peer, account: account, status: "accepted")
+
+      described_class.execute(
+        { federation_peer_id: peer.id, reason: "remote signing key compromised" },
+        deferred_operation: nil
+      )
+
+      expect(peer.reload.metadata["revocation_reason"]).to eq("remote signing key compromised")
+    end
+
+    it "revokes without a reason when none was supplied" do
+      peer = create(:system_federation_peer, account: account, status: "accepted")
+
+      result = described_class.execute({ federation_peer_id: peer.id }, deferred_operation: nil)
+
+      expect(result[:success]).to be true
+      expect(peer.reload.status).to eq("revoked")
+      expect(peer.metadata["revocation_reason"]).to be_nil
+    end
   end
 
   describe Sdwan::Executors::AcceptFederationPeer do

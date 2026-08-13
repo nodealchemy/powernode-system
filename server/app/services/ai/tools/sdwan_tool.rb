@@ -1893,6 +1893,11 @@ module Ai
           remote_prefix_advertisement: p.remote_prefix_advertisement,
           status: p.status,
           data_residency: p.data_residency,
+          # The revocation cause this tool records (system_sdwan_revoke_federation_peer)
+          # would otherwise be write-only over MCP — none of the nine actions
+          # sharing this projection expose peer metadata, so nothing could read
+          # it back.
+          revocation_reason: p.metadata["revocation_reason"],
           v1_allowed_transitions: ::System::FederationPeer::V1_TRANSITIONS.fetch(p.status, []),
           signed_at: p.signed_at&.iso8601,
           expires_at: p.expires_at&.iso8601,

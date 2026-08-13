@@ -116,6 +116,42 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # This tool already threaded `reason` into FederationPeer#revoke!, but its
+  # peer serializer projected no metadata — so the reason it advertises as
+  # "recorded on the peer" could not be read back through any MCP action
+  # (revoke's own response, get, or list). IMP-8ce2d82065b9.
+  describe "system_sdwan_revoke_federation_peer" do
+    let!(:peer) { create(:system_federation_peer, account: account, status: "accepted") }
+
+    it "records the reason and surfaces it in the serialized peer" do
+      r = call("system_sdwan_revoke_federation_peer",
+               federation_peer_id: peer.id,
+               reason: "remote signing key compromised")
+
+      expect(r[:success]).to be true
+      fp = r[:data][:federation_peer]
+      expect(fp[:status]).to eq("revoked")
+      expect(fp[:revocation_reason]).to eq("remote signing key compromised")
+      expect(peer.reload.metadata["revocation_reason"]).to eq("remote signing key compromised")
+    end
+
+    it "reports a nil revocation_reason for a peer revoked without one" do
+      r = call("system_sdwan_revoke_federation_peer", federation_peer_id: peer.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:federation_peer]).to have_key(:revocation_reason)
+      expect(r[:data][:federation_peer][:revocation_reason]).to be_nil
+    end
+
+    it "rejects a peer belonging to a different account" do
+      other_peer = create(:system_federation_peer, account: create(:account), status: "accepted")
+      r = call("system_sdwan_revoke_federation_peer", federation_peer_id: other_peer.id, reason: "x")
+
+      expect(r[:success]).to be false
+      expect(other_peer.reload.status).to eq("accepted")
+    end
+  end
+
   describe "system_sdwan_set_data_residency" do
     let!(:peer) { create(:system_federation_peer, account: account) }
 

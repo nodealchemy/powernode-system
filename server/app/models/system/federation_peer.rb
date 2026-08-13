@@ -362,7 +362,16 @@ module System
       broadcast_peer_state!(
         kind: status,
         severity: severity,
-        previous_status: status_before_last_save
+        previous_status: status_before_last_save,
+        # Revocation is the one transition an operator opens the event for to
+        # ask "why is this peer gone". revoke! writes status and metadata in a
+        # single update!, so this after_update callback reads the cause it just
+        # recorded. Keyed on the NEW status rather than on the key's presence:
+        # metadata is operator-writable (PATCH permits `metadata: {}`), so a
+        # stray revocation_reason must not ride along on a suspend. Scoped to
+        # "revoked" deliberately — degraded/suspended record their own reasons
+        # under different keys, and feeding those is a separate change.
+        reason: (metadata["revocation_reason"] if status == "revoked")
       )
     end
 

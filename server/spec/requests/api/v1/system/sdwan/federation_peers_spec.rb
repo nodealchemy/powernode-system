@@ -170,12 +170,83 @@ RSpec.describe "Api::V1::System::Sdwan::FederationPeers", type: :request do
   end
 
   describe "POST /api/v1/system/sdwan/federation_peers/:id/revoke" do
+    def revoke_peer(peer, as:, **body)
+      post "/api/v1/system/sdwan/federation_peers/#{peer.id}/revoke",
+           params: body.to_json,
+           headers: auth_headers_for(as).merge("Content-Type" => "application/json")
+    end
+
     it "requires sdwan.federation.manage (the approval-gated revoke is behind the manage permission)" do
       peer = create(:system_federation_peer, account: account, status: "accepted")
 
       post "/api/v1/system/sdwan/federation_peers/#{peer.id}/revoke", headers: auth_headers_for(reader)
 
       expect(response).to have_http_status(:forbidden)
+    end
+
+    # Withdrawing cross-instance trust is the audit event where the cause
+    # matters most, and the operator supplies it here. The controller parks it
+    # in the deferred params, but nothing between the request and the record
+    # writes it — only the executor does, and it runs after the approval. So
+    # the assertion that proves the whole chain is the one taken post-approval;
+    # asserting the deferred params alone certifies the half that already
+    # worked (IMP-8ce2d82065b9).
+    it "records the operator's reason on the peer once the revocation is approved" do
+      peer = create(:system_federation_peer, account: account, status: "accepted")
+
+      revoke_peer(peer, as: manager, reason: "remote signing key compromised")
+
+      expect(response).to have_http_status(:accepted)
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred.action_category).to eq("sdwan.federation_peer_revoke")
+      expect(deferred.params["reason"]).to eq("remote signing key compromised")
+
+      approve_latest_deferred!
+
+      expect(peer.reload.status).to eq("revoked")
+      expect(peer.metadata["revocation_reason"]).to eq("remote signing key compromised"),
+                                                       "the reason was dropped between the gate and the peer"
+    end
+
+    it "surfaces the recorded reason when the revoked peer is read back" do
+      peer = create(:system_federation_peer, account: account, status: "accepted")
+
+      revoke_peer(peer, as: manager, reason: "remote signing key compromised")
+      approve_latest_deferred!
+
+      get "/api/v1/system/sdwan/federation_peers/#{peer.id}", headers: auth_headers_for(reader)
+
+      expect(response).to have_http_status(:ok)
+      expect(json_response_data.dig("federation_peer", "metadata", "revocation_reason"))
+        .to eq("remote signing key compromised")
+    end
+
+    # #show projects the full metadata blob, #index does not — and the list is
+    # the federation view an operator actually opens. A reason readable only by
+    # fetching each peer individually is not surfaced.
+    it "surfaces the recorded reason in the peer list, not only on show" do
+      peer = create(:system_federation_peer, account: account, status: "accepted")
+
+      revoke_peer(peer, as: manager, reason: "remote signing key compromised")
+      approve_latest_deferred!
+
+      get "/api/v1/system/sdwan/federation_peers", headers: auth_headers_for(reader)
+
+      expect(response).to have_http_status(:ok)
+      listed = json_response_data["federation_peers"].find { |p| p["id"] == peer.id }
+      expect(listed["revocation_reason"]).to eq("remote signing key compromised")
+    end
+
+    # A revocation with no stated cause stays legal — the param is optional on
+    # both the REST and the MCP surface.
+    it "revokes without a reason when the operator supplies none" do
+      peer = create(:system_federation_peer, account: account, status: "accepted")
+
+      revoke_peer(peer, as: manager)
+      approve_latest_deferred!
+
+      expect(peer.reload.status).to eq("revoked")
+      expect(peer.metadata["revocation_reason"]).to be_nil
     end
   end
 end

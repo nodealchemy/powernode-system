@@ -187,6 +187,12 @@ module Api
               remote_account_id: p.remote_account_id,
               remote_prefix_advertisement: p.remote_prefix_advertisement,
               status: p.status,
+              # #index projects this compact shape and never the full metadata
+              # blob, so without an explicit field the recorded revocation cause
+              # is invisible in the peer LIST — the one federation view the
+              # operator UI actually reads. Promoted rather than widening the
+              # projection to all of metadata.
+              revocation_reason: p.metadata["revocation_reason"],
               signed_at: p.signed_at&.iso8601,
               expires_at: p.expires_at&.iso8601,
               created_at: p.created_at.iso8601
