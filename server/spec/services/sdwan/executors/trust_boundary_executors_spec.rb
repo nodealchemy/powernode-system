@@ -219,8 +219,11 @@ RSpec.describe "Sdwan::Executors trust-boundary executors", type: :model do
     # system_sdwan_access_grants: it would have succeeded wrongly, leaving the
     # grant reading "revoked" while every device stayed live on the fabric and
     # the operator's reason was dropped. Stubbing respond_to? manufactures the
-    # only state that could ever reach that arm; the executor must not consult
-    # it at all.
+    # only state that could ever reach that arm. Precisely: this pins that the
+    # executor takes no DIVERGENT branch when the predicate is false, not that
+    # it never consults it — a reintroduced guard whose else-arm also called
+    # revoke!(reason:) would stay green, and rightly so. The divergent arm was
+    # the defect, not the predicate.
     it "cascades to every device and records the reason even when respond_to?(:revoke!) is false" do
       grant  = create(:sdwan_access_grant, account: account, status: "active")
       device = create(:sdwan_user_device, access_grant: grant)
@@ -239,6 +242,29 @@ RSpec.describe "Sdwan::Executors trust-boundary executors", type: :model do
       expect(persisted.status).to eq("revoked")
       expect(persisted.revocation_reason).to eq("offboarded"), "the fallback arm dropped the operator's reason"
       expect(device.reload.revoked?).to be(true), "the fallback arm skipped the device cascade"
+    end
+
+    # The cascade as the executor's CONTRACT, stated without reference to how it
+    # revokes — so any future non-cascading path fails here by name, not only
+    # the respond_to? fallback deleted in IMP-d21331c2c4a0. It is the effect
+    # worth pinning because nothing downstream re-checks the grant:
+    # Sdwan::UserDevice.active is where(revoked_at: nil) (user_device.rb:39), and
+    # both topology strategies build their device set from
+    # network.user_devices.active (hub_and_spoke.rb:29, full_mesh.rb:46) with no
+    # grant-status filter anywhere in the path. A device the cascade misses stays
+    # in the compiled hub config indefinitely, under a grant that reads
+    # "revoked".
+    it "soft-revokes every device on the grant, stamped revocation_reason grant_revoked" do
+      grant   = create(:sdwan_access_grant, account: account, status: "active")
+      devices = Array.new(3) { create(:sdwan_user_device, access_grant: grant) }
+
+      described_class.execute({ grant_id: grant.id, reason: "offboarded" }, deferred_operation: nil)
+
+      devices.each do |device|
+        device.reload
+        expect(device.revoked_at).to be_present, "device #{device.id} stayed live on the fabric"
+        expect(device.revocation_reason).to eq("grant_revoked"), "device #{device.id} lost its cascade provenance"
+      end
     end
   end
 end
