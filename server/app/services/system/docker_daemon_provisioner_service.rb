@@ -151,22 +151,18 @@ module System
     private
 
     def resolve_overlay_address!
-      # Pick the first peer that has an assigned address. NodeInstances
-      # generally have a single overlay attachment; if multi-network
-      # ever ships, we'd add a parameter to pick the right one.
-      peer = ::Sdwan::Peer.where(node_instance_id: @node_instance.id)
-                          .where.not(assigned_address: nil)
-                          .order(:created_at)
-                          .first
-      unless peer
+      # Peer selection (oldest addressed peer) and stripping the CIDR
+      # prefix length off `assigned_address` both live in the shared
+      # seam. The raise stays here: DockerProvisionExecutor rescues this
+      # error BY CLASS, so the error type must remain ours.
+      address = ::Sdwan::OverlayAddressResolver.address_for(@node_instance)
+      unless address
         raise MissingSdwanPeerError,
               "NodeInstance #{@node_instance.id} has no SDWAN peer with an " \
               "assigned overlay address — assign an Sdwan::Peer before " \
               "provisioning the docker-engine module"
       end
-      # `assigned_address` is stored in CIDR form (`<v6>/128`); the URL
-      # form bracketing doesn't tolerate the prefix length, so strip it.
-      peer.assigned_address.to_s.split("/").first
+      address
     end
 
     def issue_client_tls_pair!

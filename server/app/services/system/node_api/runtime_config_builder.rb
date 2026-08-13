@@ -138,7 +138,9 @@ module System
         pod_cidr = cluster.metadata.is_a?(Hash) ? cluster.metadata["pod_cidr"] : nil
         return payload if pod_cidr.blank?
 
-        peer = ::Sdwan::Peer.where(node_instance_id: instance.id).first
+        # Wants the peer's NETWORK (for the flannel interface name), not
+        # its address — see Sdwan::OverlayAddressResolver.
+        peer = ::Sdwan::OverlayAddressResolver.attachment_peer_for(instance)
         return payload unless peer&.network
 
         payload.merge(
