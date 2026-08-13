@@ -153,9 +153,24 @@ module System
     # provisioning runner's recorded step outputs. The mission soft-links to
     # its Ai::GoalPlan through configuration["plan"]["plan_id"] (stamped by
     # PlanComposerService); each completed step records produced ids under
-    # metadata["last_outputs"]["node_instance_ids"] — the same seam the runner
-    # uses for cross-step data flow. Returns [] (never raises) so a mission
-    # without a resolvable plan degrades to `unavailable`, not a false zero.
+    # metadata["last_outputs"]["outputs"]["node_instance_ids"] — the same seam
+    # the runner uses for cross-step data flow.
+    #
+    # The NESTED `outputs` level is load-bearing and was wrong here until
+    # IMP-3431f73dabe6. SkillCompositionRunner records
+    # `result_outputs(result)` = the executor's `data:` payload, whose own
+    # keys are dry_run/count/planned_actions/`outputs`/failures — so the ids
+    # sit one level below `last_outputs`. Digging them at the top level always
+    # returned nil, so this method always returned [], so replica_count and
+    # region_count always short-circuited to `unavailable` and ProjectSloSensor
+    # never saw a live sample. Every other reader of this envelope already
+    # digs the deeper path — VerificationService#verify (its per-step count
+    # check) and #removed_instance_ids, AdaptationDispatchService#
+    # produced_instance_ids, DryrunHarness#actuator_reported_orphans. This
+    # reader was the only one that disagreed.
+    #
+    # Returns [] (never raises) so a mission without a resolvable plan
+    # degrades to `unavailable`, not a false zero.
     def resolvable_instance_ids
       cfg = @mission.configuration
       plan_id = cfg.is_a?(Hash) ? cfg.dig("plan", "plan_id") : nil
@@ -166,7 +181,7 @@ module System
 
       plan.steps.where(status: "completed").flat_map { |step|
         meta = step.metadata.is_a?(Hash) ? step.metadata : {}
-        Array(meta.dig("last_outputs", "node_instance_ids"))
+        Array(meta.dig("last_outputs", "outputs", "node_instance_ids"))
       }.compact.uniq
     rescue StandardError => e
       Rails.logger.warn("[ProjectMetricsCollector] instance resolution failed for mission=#{@mission&.id}: #{e.class}: #{e.message}")
