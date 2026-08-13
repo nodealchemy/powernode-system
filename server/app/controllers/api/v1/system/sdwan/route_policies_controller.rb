@@ -31,23 +31,66 @@ module Api
             render_success(route_policy: serialize_full(@policy))
           end
 
+          # IMP-3173b0441be2: both writes route through Ai::AutonomyGate.
+          # Sdwan::Executors::{Create,Update}RoutePolicy existed but had no
+          # caller, so the seeded sdwan.route_policy_{create,update} policies
+          # matched nothing — while DELETE below has been gated since slice 9e.
+          # A policy that rewrites a peer's iBGP advertisements is at least as
+          # consequential as removing one.
+          #
+          # Response contract mirrors DELETE: an operator carries no agent, the
+          # seeded sdwan.route_policy_* policies are ai_agent_id-scoped to the
+          # SDWAN Manager, so Ai::InterventionPolicy#agent_matches? rejects them
+          # for an agent-less request and InterventionPolicyService falls through
+          # to require_approval — 202, the row appearing at approval time. The
+          # executor performs the write, since gate! never calls on_proceed on
+          # its :pending branch. 201/200 with the row is the :proceed branch.
           def create
             require_permission("system.sdwan.route_policies.manage")
-            policy = ::Sdwan::RoutePolicy.new(policy_params.merge(account_id: @account.id))
-            if policy.save
-              render_success({ route_policy: serialize_full(policy) }, status: :created)
-            else
-              render_validation_error(policy)
-            end
+            attrs = policy_params.to_h
+            # Validated before the gate so an unsaveable payload keeps its
+            # field-level 422 and opens no audit row for an operation that could
+            # never run. Never saved — CreateRoutePolicy's create! stays the
+            # only writer, and it takes the account from the operation.
+            candidate = ::Sdwan::RoutePolicy.new(attrs.merge(account_id: @account.id))
+            return render_validation_error(candidate) unless candidate.valid?
+
+            gate!(
+              action_category: "sdwan.route_policy_create",
+              executor_class: "Sdwan::Executors::CreateRoutePolicy",
+              params: { attributes: attrs },
+              # Provenance only: RoutePolicy belongs directly to the account, so
+              # there is no parent row to anchor. PHASE 0 no-ops on Account (it
+              # carries no account_id); the executor's `account` is the anchor.
+              source_type: "Account",
+              source_id: @account.id,
+              description: "Create SDWAN route policy #{candidate.name}",
+              on_proceed: lambda { |result|
+                created = ::Sdwan::RoutePolicy.find(result.result&.dig(:data, :policy_id))
+                render_success({ route_policy: serialize_full(created) }, status: :created)
+              }
+            )
           end
 
           def update
             require_permission("system.sdwan.route_policies.manage")
-            if @policy.update(policy_params)
-              render_success(route_policy: serialize_full(@policy))
-            else
-              render_validation_error(@policy)
-            end
+            attrs = policy_params.to_h
+            @policy.assign_attributes(attrs)
+            return render_validation_error(@policy) unless @policy.valid?
+
+            # Discard the un-gated in-memory changes: nothing may reach the row
+            # except through the executor.
+            @policy.reload
+
+            gate!(
+              action_category: "sdwan.route_policy_update",
+              executor_class: "Sdwan::Executors::UpdateRoutePolicy",
+              params: { policy_id: @policy.id, attributes: attrs },
+              source_type: "Sdwan::RoutePolicy",
+              source_id: @policy.id,
+              description: "Update SDWAN route policy #{@policy.name}",
+              on_proceed: ->(_r) { render_success(route_policy: serialize_full(@policy.reload)) }
+            )
           end
 
           def destroy

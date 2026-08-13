@@ -214,6 +214,12 @@ module System
       # into a hard denial of every operator write in the category. Nothing sets
       # it today; check the guard's operand before adding any key.
       #
+      # "quiet_hours" fails the OTHER way, and belongs beside max_daily so a
+      # human tuning conditions sees both directions: conditions_met? returns
+      # false while the current hour is inside the window, so the row stops
+      # matching and resolution falls to the require_approval default — 202,
+      # MORE approval friction, never max_daily's hard 422 denial.
+      #
       # @param account [Account]
       # @param definitions [Hash{String=>String}] action_category → policy verb
       # @return [Integer] number of rows created or updated
