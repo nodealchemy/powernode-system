@@ -75,12 +75,18 @@ module System
         #
         # The peer pass is NOT redundant with terminate_instance's auto-detach.
         # That detach lives in ProvisioningService#finalize_termination!, which
-        # sits behind three early returns — a missing cloud_instance_id, an
-        # UnknownProviderError, and a provider-side terminate failure — so the
-        # runs where rollback matters most are exactly the ones that skip it,
-        # leaving the Sdwan::Peer and its NodeInstancePeer capability mirror
-        # live on the fabric. Detach runs FIRST, while the instance rows still
-        # resolve.
+        # IS unconditional once reached — but terminate_instance reaches it on
+        # only three of its exits (provider NotFound, a successful terminate,
+        # and the ResourceNotFoundError rescue). Four exits return an error
+        # without detaching — a blank cloud_instance_id (:239), an
+        # UnknownProviderError (:243), a provider-side failure (:268), and the
+        # ProviderError rescue (:275) — and a fifth, `rescue ArgumentError`
+        # (:279), re-raises. Every one of those is precisely the branch where
+        # the loop below records a node_instance error, so the invariant fails
+        # exactly where rollback is meant to work, leaving the Sdwan::Peer and
+        # its NodeInstancePeer capability mirror live on the fabric. Detach
+        # runs FIRST, while the instance rows still resolve; PeerDetacher is a
+        # no-op on an already-detached peer, so it is safe unconditionally.
         def rollback_provision_full_stack(node_instance_ids: [], storage_volume_ids: [],
                                           sdwan_peer_ids: [], **_extras)
           errors = []

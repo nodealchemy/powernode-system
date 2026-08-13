@@ -110,10 +110,11 @@ module System
           # IMP-94f778f92dba — these are now peers the target provisioning
           # actually enrolled (they used to be a read-back of the network's
           # pre-existing fleet, which is why this was a no-op). "Released when
-          # the host instance is terminated" holds only on the happy path:
-          # ProvisioningService#finalize_termination!, which performs the
-          # auto-detach, is skipped by three early returns above it. Detach
-          # explicitly rather than assume.
+          # the host instance is terminated" holds only when the terminate
+          # SUCCEEDS: the auto-detach lives in
+          # ProvisioningService#finalize_termination!, and four of
+          # terminate_instance's exits return an error without ever reaching
+          # it. Detach explicitly rather than assume.
           Array(sdwan_peer_ids).reverse_each do |peer_id|
             peer = ::Sdwan::Peer.where(account_id: @account.id).find_by(id: peer_id)
             next unless peer
@@ -195,13 +196,19 @@ module System
 
             # Only tear down the source if we actually have a healthy target.
             #
-            # IMP-94f778f92dba — "healthy" has to include the fabric now. The
-            # inner executor used to RAISE when its network leg failed, which
-            # arrived here as a nil provision_data and stopped the cutover on
-            # its own. It now records the failure and returns success, so a
-            # target that never joined the SDWAN would sail past a bare
-            # instance-count check and we would terminate the source out from
-            # under a workload nobody can reach.
+            # IMP-94f778f92dba — "healthy" has to include the fabric.
+            #
+            # This gap is PRE-EXISTING, not something the enrollment change
+            # introduced: the old network leg called compile_for_network,
+            # which maps the network's existing peers and enrols nothing, so
+            # every blue/green relocate with a network_id already terminated
+            # the source while the targets sat off-fabric — and it reported
+            # success, because a leg that does nothing cannot fail. The bare
+            # instance-count check has never covered the network leg.
+            #
+            # What changed is that the failure is now KNOWABLE: attach_sdwan_peer
+            # entries are real data this executor can gate on. Reading them
+            # here is the whole point of producing them.
             target_instance_ids = provision_data ? Array(provision_data[:outputs][:node_instance_ids]) : []
             attached_peer_ids   = provision_data ? Array(provision_data[:outputs][:sdwan_peer_ids]) : []
             off_fabric = network_id.present? && attached_peer_ids.size < target_instance_ids.size

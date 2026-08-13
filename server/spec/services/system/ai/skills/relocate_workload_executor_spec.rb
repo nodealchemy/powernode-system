@@ -172,12 +172,12 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       end
     end
 
-    # IMP-94f778f92dba — ProvisionFullStackExecutor used to RAISE when its
-    # network leg failed, so an off-fabric target arrived here as a nil
-    # provision_data and the cutover stopped on its own. Enrollment failures
-    # are recorded and swallowed now, so an instance-count check alone would
-    # terminate the source out from under a workload that never joined the
-    # SDWAN and is unreachable.
+    # IMP-94f778f92dba — the instance-count check has NEVER covered the
+    # network leg. Before the enrollment change, compile_for_network enrolled
+    # nothing and so could not fail, and every blue/green relocate with a
+    # network_id terminated the source with its targets off-fabric, reporting
+    # success. The enrollment change does not create that hole; it produces
+    # the attach_sdwan_peer failure data that finally lets the guard see it.
     context "blue_green refusal when the target never joined the requested network" do
       let(:network) { ::Sdwan::Network.create!(account_id: account.id, name: "reloc-net-#{SecureRandom.hex(3)}") }
       let(:ok_prov) do

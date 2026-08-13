@@ -336,10 +336,11 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
 
     # IMP-94f778f92dba — the executor enrols peers now, so rollback owns them.
     # Leaning on terminate_instance's auto-detach is not enough: it lives in
-    # finalize_termination!, which three early returns in ProvisioningService
-    # skip — a missing cloud_instance_id, an unknown provider, and (here) a
-    # provider-side terminate failure. Those are precisely the rollbacks that
-    # matter, and they would leave the peer live on the fabric.
+    # finalize_termination!, and four of terminate_instance's exits return an
+    # error without reaching it — a missing cloud_instance_id, an unknown
+    # provider, the ProviderError rescue, and (exercised here) a provider-side
+    # terminate failure. Those are precisely the rollbacks that matter, and
+    # they would leave the peer live on the fabric.
     it "detaches enrolled peers even when the provider rejects the terminate" do
       inst = sdwan_test_node_instance(node: sdwan_test_node(account: account))
       network = ::Sdwan::Network.create!(account_id: account.id, name: "pfs-rb-#{SecureRandom.hex(3)}")
