@@ -7,8 +7,15 @@
 # v1 transitions: propose (create) → accept → revoke (terminal). The
 # controller honors V1_TRANSITIONS on the model — attempts to flip status
 # outside the allowed set return 422. All three trust-boundary verbs are
-# approval-gated: propose (#create), accept (#update, status → accepted)
-# and revoke (#destroy/#revoke). The remaining transitions are inline.
+# approval-gated on every REST surface that reaches them: propose (#create),
+# accept (#update, status → accepted) and revoke (#destroy, #revoke, and
+# #update with status → revoked). The remaining transitions are inline.
+#
+# REST is not the whole surface, and this comment claims nothing about the
+# rest of it: Ai::Tools::SdwanTool#revoke_federation_peer calls
+# FederationPeer#revoke! directly with no gate (its sibling
+# accept_federation_peer does gate), so an MCP-driven agent still reaches
+# "revoked" ungated. Tracked separately as IMP-2795453255c3.
 #
 # Slice 6 of the SDWAN plan.
 module Api
@@ -66,13 +73,28 @@ module Api
               )
             end
 
-            # Acceptance is the only transition here that EXTENDS trust —
-            # it completes the handshake that starts mutual route advertisement
-            # with a remote instance. Its inverse is approval-gated on both
-            # #destroy and #revoke, so forming the link is gated to match.
+            # Two transitions reachable here cross the trust boundary, and both
+            # are gated:
+            #
+            #   accepted — EXTENDS trust: completes the handshake that starts
+            #     mutual route advertisement with a remote instance.
+            #   revoked  — WITHDRAWS it: cuts cross-instance routing, and is the
+            #     transition whose cause has to be audited. V1_TRANSITIONS lists
+            #     "revoked" from every non-terminal state, so this PATCH reaches
+            #     the same state change as #destroy and #revoke — which have
+            #     gated it all along.
+            #
+            # Gating only acceptance left that third path open (IMP-ca3440a11a9a):
+            # the reasoning was that acceptance is the transition that extends
+            # trust, which is true and beside the point — withdrawing trust is
+            # equally a trust decision, and it was already gated everywhere else.
+            # Being inline, it also never reached FederationPeer#revoke!, so no
+            # revocation_reason was recorded.
+            #
             # Suspend/enroll/activate narrow or track an existing link and stay
             # inline.
             return gated_accept! if new_status == "accepted"
+            return gated_revoke! if new_status == "revoked"
 
             if @peer.update(peer_update_params)
               render_success(federation_peer: serialize_peer_full(@peer.reload))
@@ -155,6 +177,54 @@ module Api
               description: "Accept federation peer #{@peer.remote_instance_url}",
               on_proceed: ->(_r) { render_success(federation_peer: serialize_peer_full(@peer.reload)) }
             )
+          end
+
+          # The revocation leg of #update — same action_category and executor as
+          # #revoke, so one approval policy and one audit trail cover all three
+          # routes to a revoked peer.
+          #
+          # Nothing is mutated here or in on_proceed, for the same reason as
+          # gated_accept!: require_approval is the normal path and gate! never
+          # calls on_proceed on its :pending branch, so
+          # Sdwan::Executors::RevokeFederationPeer owns the state change (it
+          # calls FederationPeer#revoke!, which is what records the reason).
+          #
+          # Unlike gated_accept!, the ride-along fields of the same PATCH are NOT
+          # forwarded: revoked is terminal and the revoke executor applies no
+          # attributes, so there is nowhere for them to land. They are ignored
+          # rather than refused with a 422, because a form-shaped client resends
+          # every permitted field on every PATCH and refusing that would break a
+          # legitimate revocation.
+          #
+          # No up-front guard is added here, unlike gated_accept!'s token check.
+          # The narrow claim that supports that: the only peer on which revoke!
+          # silently does nothing is one already revoked, and can_transition_to?
+          # refused that above (V1_TRANSITIONS["revoked"] is empty). It is NOT
+          # the broader claim that the deferred revocation cannot fail — revoke!
+          # runs update!, so a row that no longer validates (a platform peer with
+          # a blank spawn_role) raises inside the executor, and on the :pending
+          # path that raise is swallowed by the log-only rescue in
+          # ApprovalRequest#notify_source_of_decision. That is pre-existing,
+          # reached identically by #revoke and #destroy, and not inducible from
+          # anything this request carries.
+          def gated_revoke!
+            gate!(
+              action_category: "sdwan.federation_peer_revoke",
+              executor_class: "Sdwan::Executors::RevokeFederationPeer",
+              params: { federation_peer_id: @peer.id, reason: revocation_reason_param },
+              source_type: "System::FederationPeer",
+              source_id: @peer.id,
+              description: "Revoke federation peer #{@peer.remote_instance_url}",
+              on_proceed: ->(_r) { render_success(federation_peer: serialize_peer_full(@peer.reload)) }
+            )
+          end
+
+          # The reason is not a peer column, so a client may send it beside the
+          # peer body (the shape POST /revoke takes) or inside it. Both are read:
+          # the audited cause of a trust withdrawal must not be dropped over a
+          # nesting choice.
+          def revocation_reason_param
+            params[:reason].presence || params.dig(:federation_peer, :reason).presence
           end
 
           def set_peer

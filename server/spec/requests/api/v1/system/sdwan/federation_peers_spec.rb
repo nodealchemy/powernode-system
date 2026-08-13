@@ -22,8 +22,15 @@ RSpec.describe "Api::V1::System::Sdwan::FederationPeers", type: :request do
   # Executes the deferred operation the gate parked — the tail of the approval
   # path (Ai::ApprovalRequest ultimately calls execute_now!), not the whole of
   # it; the approval-chain hop itself is core-owned and untouched here.
+  # The presence check is what names the defect: when a gate is missing, the
+  # action was applied inline and there is nothing parked, so without it every
+  # example downstream fails as `undefined method 'execute_now!' for nil` —
+  # which reads as a broken helper rather than an ungated mutation.
   def approve_latest_deferred!
-    Ai::DeferredOperation.order(created_at: :desc).first.tap(&:execute_now!)
+    deferred = Ai::DeferredOperation.order(created_at: :desc).first
+    expect(deferred).to be_present,
+                        "no deferred operation was parked — the action was applied inline, bypassing the gate"
+    deferred.tap(&:execute_now!)
   end
 
   describe "GET /api/v1/system/sdwan/federation_peers" do
@@ -146,6 +153,86 @@ RSpec.describe "Api::V1::System::Sdwan::FederationPeers", type: :request do
       end
     end
 
+    # The mirror image of acceptance: revocation WITHDRAWS trust, and both
+    # endpoints dedicated to it (#destroy, #revoke) gate on
+    # sdwan.federation_peer_revoke. "revoked" is a legal V1_TRANSITIONS target
+    # from EVERY non-terminal state, so PATCH was a third, ungated route to the
+    # same state change — and being inline it never reached
+    # FederationPeer#revoke!, so no revocation_reason could be recorded either
+    # (IMP-ca3440a11a9a).
+    context "when the status transition is to revoked (trust-withdrawing)" do
+      let(:accepted) { create(:system_federation_peer, account: account, status: "accepted") }
+
+      # The reason is not a peer column, so it can arrive either beside the
+      # peer body (mirroring POST /revoke) or inside it (the natural shape for
+      # a client that wraps everything). Both are threaded.
+      def patch_raw(peer, body, as:)
+        patch "/api/v1/system/sdwan/federation_peers/#{peer.id}",
+              params: body.to_json,
+              headers: auth_headers_for(as).merge("Content-Type" => "application/json")
+      end
+
+      it "defers the revocation through the approval gate instead of writing it inline" do
+        patch_peer(accepted, { status: "revoked" }, as: manager)
+
+        expect(response).to have_http_status(:accepted)
+        expect(accepted.reload.status).to eq("accepted"),
+                                          "revocation was written inline, bypassing the approval gate"
+
+        deferred = Ai::DeferredOperation.order(created_at: :desc).first
+        expect(deferred.action_category).to eq("sdwan.federation_peer_revoke")
+        expect(deferred.executor_class).to eq("Sdwan::Executors::RevokeFederationPeer")
+        expect(deferred.params["federation_peer_id"]).to eq(accepted.id)
+      end
+
+      it "revokes the peer when the deferred op is approved" do
+        patch_peer(accepted, { status: "revoked" }, as: manager)
+        approve_latest_deferred!
+
+        expect(accepted.reload.status).to eq("revoked"), "approved revocation left the peer accepted"
+      end
+
+      it "records a reason sent beside the peer body" do
+        patch_raw(accepted, { federation_peer: { status: "revoked" }, reason: "peer CA rotated out of band" }, as: manager)
+        approve_latest_deferred!
+
+        expect(accepted.reload.metadata["revocation_reason"]).to eq("peer CA rotated out of band")
+      end
+
+      it "records a reason sent inside the peer body" do
+        patch_raw(accepted, { federation_peer: { status: "revoked", reason: "contract ended" } }, as: manager)
+        approve_latest_deferred!
+
+        expect(accepted.reload.metadata["revocation_reason"]).to eq("contract ended")
+      end
+
+      it "revokes without a reason when the operator supplies none" do
+        patch_peer(accepted, { status: "revoked" }, as: manager)
+        approve_latest_deferred!
+
+        expect(accepted.reload.status).to eq("revoked")
+        expect(accepted.metadata["revocation_reason"]).to be_nil
+      end
+
+      # Unlike acceptance, ride-along fields do NOT travel with the deferral:
+      # revoked is terminal and RevokeFederationPeer applies no attributes. They
+      # are ignored rather than 422'd, because a form-shaped client resends
+      # every permitted field on every PATCH and refusing that would break a
+      # legitimate revocation. What must never happen is the edit landing
+      # inline, ahead of the approval.
+      it "ignores ride-along field edits instead of applying them ahead of the approval" do
+        patch_peer(accepted, { status: "revoked", remote_prefix_advertisement: "fd00:beef::/48" }, as: manager)
+
+        expect(accepted.reload.remote_prefix_advertisement).to be_blank,
+                                                               "ride-along field was written before approval"
+
+        approve_latest_deferred!
+
+        expect(accepted.reload.status).to eq("revoked")
+        expect(accepted.remote_prefix_advertisement).to be_blank
+      end
+    end
+
     context "when the status transition does not extend trust" do
       it "suspends inline without an approval gate" do
         accepted = create(:system_federation_peer, account: account, status: "accepted")
@@ -156,6 +243,21 @@ RSpec.describe "Api::V1::System::Sdwan::FederationPeers", type: :request do
 
         expect(response).to have_http_status(:ok)
         expect(accepted.reload.status).to eq("suspended")
+      end
+
+      # Enrollment and activation TRACK an existing link rather than forming or
+      # cutting one, so gating revocation must not sweep them in.
+      it "enrolls and activates inline without an approval gate" do
+        tracked = create(:system_federation_peer, account: account, status: "accepted")
+
+        expect {
+          patch_peer(tracked, { status: "enrolled" }, as: manager)
+          expect(response).to have_http_status(:ok)
+          patch_peer(tracked, { status: "active" }, as: manager)
+        }.not_to change(Ai::DeferredOperation, :count)
+
+        expect(response).to have_http_status(:ok)
+        expect(tracked.reload.status).to eq("active")
       end
 
       it "updates non-status fields inline without an approval gate" do
