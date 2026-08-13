@@ -142,12 +142,31 @@ module Sdwan
     # cards for different destructive operations. The endpoint is the detail
     # rung — used only when the instance carries no operator-facing name.
     def operator_label
+      self.class.operator_label_for(
+        node_instance: node_instance,
+        network_name: network&.name,
+        endpoint_display: endpoint_display,
+        fallback: id
+      )
+    end
+
+    # IMP-1eba7d50d24c: the same ladder expressed over the PARTS rather than a
+    # persisted row. Sdwan::Executors::CreatePeer#summarize has to name the peer
+    # on the approval card BEFORE the row exists, and retyping the ladder there
+    # is precisely how the two delete surfaces came to disagree — so the create
+    # card composes its label here instead of owning a third format.
+    #
+    # Returns nil when no rung resolves (a create request that names no instance
+    # at all), leaving the choice of degraded sentence to the caller rather than
+    # emitting a "label" that is really just the network name.
+    def self.operator_label_for(node_instance:, network_name: nil, endpoint_display: nil, fallback: nil)
       identity = node_instance&.name.presence ||
                  node_instance&.discovered_hostname.presence ||
-                 endpoint_display ||
-                 id
-      network_name = network&.name.presence
-      network_name ? "#{identity} on #{network_name}" : identity
+                 endpoint_display.presence ||
+                 fallback.presence
+      return nil if identity.blank?
+
+      network_name.presence ? "#{identity} on #{network_name}" : identity
     end
 
     # Recompute status from last_handshake_at. Called by the heartbeat
