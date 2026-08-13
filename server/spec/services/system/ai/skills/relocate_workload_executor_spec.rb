@@ -171,13 +171,72 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         expect(r[:data][:failures].any? { |f| f[:step] == "blue_green_cutover" }).to be true
       end
     end
+
+    # IMP-94f778f92dba — ProvisionFullStackExecutor used to RAISE when its
+    # network leg failed, so an off-fabric target arrived here as a nil
+    # provision_data and the cutover stopped on its own. Enrollment failures
+    # are recorded and swallowed now, so an instance-count check alone would
+    # terminate the source out from under a workload that never joined the
+    # SDWAN and is unreachable.
+    context "blue_green refusal when the target never joined the requested network" do
+      let(:network) { ::Sdwan::Network.create!(account_id: account.id, name: "reloc-net-#{SecureRandom.hex(3)}") }
+      let(:ok_prov) do
+        ::System::Runtime::Result.ok(data: { instance: new_instance_stub, cloud_instance_id: "ci-bg" })
+      end
+
+      before do
+        allow(::System::ProvisioningService).to receive(:provision_instance).and_return(ok_prov)
+        allow(::Sdwan::PeerEnroller).to receive(:call).and_raise(StandardError, "vrf table exhausted")
+      end
+
+      it "keeps the source alive and surfaces the enrollment failure in its own envelope" do
+        expect(::System::ProvisioningService).not_to receive(:terminate_instance)
+
+        r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                         to_region_id: to_region.id, cutover_strategy: "blue_green",
+                         template_id: template.id,
+                         provider_instance_type_id: instance_type.id, count: 1,
+                         network_id: network.id,
+                         source_instance_ids: [ source_instance.id ])
+
+        expect(r[:success]).to be true
+        expect(r[:data][:outputs][:terminated_instance_ids]).to be_empty
+        expect(r[:data][:failures].any? do |f|
+          f[:step] == "blue_green_cutover" && f[:error].to_s.include?("off-fabric")
+        end).to be true
+        # The inner executor's own failure must reach the recorded envelope —
+        # the runner records only what this executor returns.
+        expect(r[:data][:failures].any? { |f| f[:step] == "attach_sdwan_peer" }).to be true
+        expect(r[:data][:partial]).to be true
+      end
+    end
   end
 
   describe "#rollback_relocate_workload" do
     let(:new_instance_id) { SecureRandom.uuid }
     let(:volume_id)       { SecureRandom.uuid }
 
-    it "terminates new instances and deletes new volumes; ignores sdwan peer ids" do
+    it "detaches the peers the relocation enrolled, even when the provider rejects the terminate" do
+      inst = sdwan_test_node_instance(node: sdwan_test_node(account: account))
+      network = ::Sdwan::Network.create!(account_id: account.id, name: "reloc-rb-#{SecureRandom.hex(3)}")
+      peer = ::Sdwan::PeerEnroller.call(network: network, node_instance: inst)
+
+      # The path that skips ProvisioningService's own auto-detach: a
+      # provider-side terminate failure returns before finalize_termination!.
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .and_return(::System::Runtime::Result.err(error: "provider rejected terminate"))
+
+      r = exec.rollback_relocate_workload(
+        node_instance_ids: [ inst.id ],
+        storage_volume_ids: [],
+        sdwan_peer_ids: [ peer.id ]
+      )
+
+      expect(::Sdwan::Peer.where(id: peer.id)).to be_empty
+      expect(r[:errors].map { |e| e[:resource] }).to eq([ "node_instance" ])
+    end
+
+    it "terminates new instances and deletes new volumes; tolerates an unknown sdwan peer id" do
       instance = instance_double("System::NodeInstance", id: new_instance_id)
       volume   = instance_double("System::ProviderVolume", id: volume_id)
       allow(::System::NodeInstance).to receive(:find_by).with(id: new_instance_id).and_return(instance)

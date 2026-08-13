@@ -283,9 +283,13 @@ RSpec.describe "AdaptationProposer → ScaleProjectExecutor contract", type: :in
                                "no provision_storage step — scale-out is volume-less: #{steps.inspect}"
     expect(storage_step[:size_gb]).to eq(50)
 
-    sdwan_step = steps.find { |s| s[:step] == "compile_sdwan_topology" }
+    # IMP-94f778f92dba — the step to look for is the ENROLLMENT, not the
+    # old compile_sdwan_topology: that one read back the network's
+    # pre-existing peers, so its presence never meant the scale-out itself
+    # put anything on the fabric.
+    sdwan_step = steps.find { |s| s[:step] == "attach_sdwan_peer" }
     expect(sdwan_step).not_to be_nil,
-                             "no compile_sdwan_topology step — scale-out is peer-less: #{steps.inspect}"
+                             "no attach_sdwan_peer step — scale-out is peer-less: #{steps.inspect}"
     expect(sdwan_step[:network_id]).to eq(network.id)
 
     # And the outputs envelope exposes the keys the runner records.

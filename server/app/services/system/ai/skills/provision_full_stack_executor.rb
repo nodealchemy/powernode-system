@@ -6,9 +6,9 @@ module System
       # Provision a full compute + (optional) network + (optional) storage stack
       # from a NodeTemplate. Composition shape:
       #
-      #   loop(create_node + ProvisioningService.provision_instance)
-      #     [+ VolumeManagementService.provision per instance, when with_storage_gb]
-      #     [+ Sdwan::TopologyCompiler.compile_for_network, when network_id]
+      #   loop(create_node + ProvisioningService.provision_instance
+      #        [+ Sdwan::PeerEnroller.call, when network_id]
+      #        [+ VolumeManagementService.provision, when with_storage_gb])
       #
       # The executor returns a structured *result set* (created nodes,
       # provisioned instances, volumes, sdwan peer ids) plus a planned-actions
@@ -16,9 +16,9 @@ module System
       # reconciler's job — this executor only provisions and returns.
       #
       # Rollback (`self.rollback_provision_full_stack`): reverses the side
-      # effects in last-in / first-out order — terminate node instances,
-      # delete provisioned volumes — using the execution_record's outputs as
-      # the source of truth for what was created.
+      # effects in last-in / first-out order — detach enrolled SDWAN peers,
+      # terminate node instances, delete provisioned volumes — using the
+      # execution_record's outputs as the source of truth for what was created.
       #
       # Reference: AI-Driven Provisioning plan slice 4 (M0).
       class ProvisionFullStackExecutor < BaseSkillExecutor
@@ -28,7 +28,7 @@ module System
 
         skill_descriptor(
           name: "provision_full_stack",
-          description: "Provision a full compute+network+storage stack from a template — composes provision_instance + optional storage volume + optional SDWAN topology compile",
+          description: "Provision a full compute+network+storage stack from a template — composes provision_instance + optional storage volume + optional SDWAN peer enrollment",
           category: "devops",
           inputs: {
             template_id: { type: "string", required: true,
@@ -40,7 +40,7 @@ module System
             provider_instance_type_id: { type: "string", required: true,
                                          description: "System::ProviderInstanceType for each instance" },
             network_id: { type: "string", required: false,
-                          description: "Sdwan::Network — when present, the SDWAN topology is compiled and the resulting peer ids are returned for downstream attach" },
+                          description: "Sdwan::Network — when present, every instance this step provisions is enrolled onto the network and the NEW peer ids are returned" },
             with_storage_gb: { type: "integer", required: false,
                                description: "When present, provision a per-instance ProviderVolume of this size" },
             dry_run: { type: "boolean", required: false, default: false,
@@ -71,9 +71,28 @@ module System
         # without knowing the executor's internals.
         # Nodes themselves are cheap shells — left in place so the operator can
         # inspect the failed run. Only NodeInstances and ProviderVolumes are
-        # reversed.
-        def rollback_provision_full_stack(node_instance_ids: [], storage_volume_ids: [], **_extras)
+        # reversed — plus the peers this executor now enrolls.
+        #
+        # The peer pass is NOT redundant with terminate_instance's auto-detach.
+        # That detach lives in ProvisioningService#finalize_termination!, which
+        # sits behind three early returns — a missing cloud_instance_id, an
+        # UnknownProviderError, and a provider-side terminate failure — so the
+        # runs where rollback matters most are exactly the ones that skip it,
+        # leaving the Sdwan::Peer and its NodeInstancePeer capability mirror
+        # live on the fabric. Detach runs FIRST, while the instance rows still
+        # resolve.
+        def rollback_provision_full_stack(node_instance_ids: [], storage_volume_ids: [],
+                                          sdwan_peer_ids: [], **_extras)
           errors = []
+
+          Array(sdwan_peer_ids).reverse_each do |peer_id|
+            peer = ::Sdwan::Peer.where(account_id: @account.id).find_by(id: peer_id)
+            next unless peer
+
+            ::Sdwan::PeerDetacher.call(node_instance: peer.node_instance, network: peer.network)
+          rescue StandardError => e
+            errors << { resource: "sdwan_peer", id: peer_id, error: e.message }
+          end
 
           Array(node_instance_ids).reverse_each do |instance_id|
             instance = ::System::NodeInstance.find_by(id: instance_id)
@@ -147,6 +166,7 @@ module System
                         name_prefix: nil, mission_id: nil)
           node_ids = []
           node_instance_ids = []
+          sdwan_peer_ids = []
           storage_volume_ids = []
           failures = []
           planned_actions = []
@@ -172,6 +192,29 @@ module System
             node_instance_ids << instance.id
             planned_actions << { step: "provision_instance", node_id: node.id, instance_id: instance.id }
 
+            # IMP-94f778f92dba — this is the only thing that puts a new
+            # instance ON the fabric. The previous implementation compiled
+            # Sdwan::TopologyCompiler.compile_for_network once at the end,
+            # which maps the network's ALREADY-EXISTING peers and creates
+            # nothing: sdwan_peer_ids reported the pre-existing fleet, so a
+            # "scale-out produced a peer" oracle passed vacuously. Enroll
+            # per instance instead, and guard it like every other leg —
+            # push to `failures` and continue, so a raise can't take out the
+            # step (the runner's rollback reads metadata["last_outputs"],
+            # only written by mark_completed, and would orphan the VMs and
+            # volumes this loop already created).
+            if network
+              begin
+                peer = ::Sdwan::PeerEnroller.call(network: network, node_instance: instance)
+                sdwan_peer_ids << peer.id
+                planned_actions << { step: "attach_sdwan_peer", network_id: network.id,
+                                     instance_id: instance.id, peer_id: peer.id }
+              rescue StandardError => e
+                failures << { step: "attach_sdwan_peer", node_id: node.id,
+                              instance_id: instance.id, error: e.message }
+              end
+            end
+
             next if with_storage_gb.blank?
 
             vol_result = ::System::VolumeManagementService.provision(
@@ -189,14 +232,6 @@ module System
             else
               failures << { step: "provision_storage", node_id: node.id, error: vol_result.error }
             end
-          end
-
-          sdwan_peer_ids = []
-          if network
-            topology = ::Sdwan::TopologyCompiler.compile_for_network(network)
-            sdwan_peer_ids = topology.map { |peer_view| peer_view[:peer_id] }.compact
-            planned_actions << { step: "compile_sdwan_topology", network_id: network.id,
-                                 peer_count: sdwan_peer_ids.size }
           end
 
           success(
@@ -237,11 +272,11 @@ module System
             steps << { step: "create_node", index: i, template_id: template.id, template_name: template.name }
             steps << { step: "provision_instance", index: i,
                        provider_region_id: region.id, provider_instance_type_id: instance_type.id }
+            steps << { step: "attach_sdwan_peer", index: i, network_id: network.id } if network
             if with_storage_gb.present?
               steps << { step: "provision_storage", index: i, size_gb: with_storage_gb.to_i }
             end
           end
-          steps << { step: "compile_sdwan_topology", network_id: network.id } if network
           steps
         end
       end

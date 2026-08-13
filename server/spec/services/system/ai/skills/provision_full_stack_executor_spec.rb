@@ -175,29 +175,74 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
         end
       end
 
+      # IMP-94f778f92dba — network_id used to only compile a read-only view
+      # of the network's ALREADY-EXISTING peers and return THOSE ids as
+      # sdwan_peer_ids. Nothing put the instances this step provisioned onto
+      # the fabric, and every "scale-out produced a peer" oracle passed
+      # vacuously off the fleet that was already there. Real records
+      # throughout: an enrollment cannot be proven against a double.
       context "with network_id" do
-        # No :sdwan_network factory exists yet; stub the lookup with a
-        # double so the spec doesn't depend on cidr_64 allocation infra.
-        let(:network_id) { SecureRandom.uuid }
-        let(:network) { instance_double("Sdwan::Network", id: network_id) }
-        let(:peer_view) { { peer_id: SecureRandom.uuid, interface: {}, peers: [] } }
-
-        before do
-          relation = double("network_relation")
-          allow(::Sdwan::Network).to receive(:where).with(account_id: account.id).and_return(relation)
-          allow(relation).to receive(:find_by).with(id: network_id).and_return(network)
-          allow(::Sdwan::TopologyCompiler).to receive(:compile_for_network).and_return([ peer_view, peer_view ])
+        let(:network) do
+          ::Sdwan::Network.create!(account_id: account.id, name: "pfs-net-#{SecureRandom.hex(3)}")
         end
 
-        it "compiles the SDWAN topology and returns peer ids" do
-          r = exec.execute(template_id: template.id, count: 1,
-                           provider_region_id: region.id,
-                           provider_instance_type_id: instance_type.id,
-                           network_id: network_id)
+        # The pre-existing fleet the old implementation reported as its own
+        # output. Its peer id must never appear in sdwan_peer_ids.
+        let(:incumbent_instance) { sdwan_test_node_instance(node: sdwan_test_node(account: account)) }
+        let!(:incumbent_peer) do
+          ::Sdwan::PeerEnroller.call(network: network, node_instance: incumbent_instance)
+        end
+
+        # PeerEnroller needs a persisted host, so this context hands the
+        # provisioning stub real NodeInstance rows rather than instance_stub.
+        let(:provisioned_node) { sdwan_test_node(account: account) }
+        let(:provisioned_instances) do
+          [ sdwan_test_node_instance(node: provisioned_node),
+            sdwan_test_node_instance(node: provisioned_node) ]
+        end
+
+        before do
+          queue = provisioned_instances.dup
+          allow(::System::ProvisioningService).to receive(:provision_instance) do
+            ::System::Runtime::Result.ok(data: { instance: queue.shift,
+                                                 cloud_instance_id: "ci-#{SecureRandom.hex(2)}" })
+          end
+        end
+
+        def provision_two
+          exec.execute(template_id: template.id, count: 2,
+                       provider_region_id: region.id,
+                       provider_instance_type_id: instance_type.id,
+                       network_id: network.id)
+        end
+
+        it "enrolls every instance it provisioned as a peer on the network" do
+          r = provision_two
 
           expect(r[:success]).to be true
-          expect(r[:data][:outputs][:sdwan_peer_ids].size).to eq(2)
-          expect(::Sdwan::TopologyCompiler).to have_received(:compile_for_network).with(network)
+          enrolled = ::Sdwan::Peer.where(node_instance_id: provisioned_instances.map(&:id))
+          expect(enrolled.count).to eq(2)
+          expect(r[:data][:outputs][:sdwan_peer_ids]).to match_array(enrolled.pluck(:id))
+          expect(r[:data][:failures]).to be_empty
+        end
+
+        it "reports only the peers it created — never the network's pre-existing ones" do
+          r = provision_two
+
+          expect(r[:data][:outputs][:sdwan_peer_ids]).not_to include(incumbent_peer.id)
+          expect(r[:data][:planned_actions].select { |a| a[:step] == "attach_sdwan_peer" }.size).to eq(2)
+        end
+
+        it "records an enrollment failure and keeps the provisioned instances instead of raising" do
+          allow(::Sdwan::PeerEnroller).to receive(:call).and_raise(StandardError, "vrf table exhausted")
+
+          r = provision_two
+
+          expect(r[:success]).to be true
+          expect(r[:data][:outputs][:node_instance_ids].size).to eq(2)
+          expect(r[:data][:outputs][:sdwan_peer_ids]).to be_empty
+          expect(r[:data][:failures].map { |f| f[:step] }).to eq([ "attach_sdwan_peer", "attach_sdwan_peer" ])
+          expect(r[:data][:partial]).to be true
         end
       end
     end
@@ -277,7 +322,7 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
       expect(result[:errors].first[:error]).to match(/provider rejected/)
     end
 
-    it "ignores extra kwargs that the runner may forward (sdwan_peer_ids, node_ids, etc.)" do
+    it "ignores extra kwargs that the runner may forward (node_ids, etc.) and unknown peer ids" do
       result = exec.rollback_provision_full_stack(
         node_instance_ids: [],
         storage_volume_ids: [],
@@ -287,6 +332,31 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
 
       expect(result[:success]).to be true
       expect(result[:errors]).to be_empty
+    end
+
+    # IMP-94f778f92dba — the executor enrols peers now, so rollback owns them.
+    # Leaning on terminate_instance's auto-detach is not enough: it lives in
+    # finalize_termination!, which three early returns in ProvisioningService
+    # skip — a missing cloud_instance_id, an unknown provider, and (here) a
+    # provider-side terminate failure. Those are precisely the rollbacks that
+    # matter, and they would leave the peer live on the fabric.
+    it "detaches enrolled peers even when the provider rejects the terminate" do
+      inst = sdwan_test_node_instance(node: sdwan_test_node(account: account))
+      network = ::Sdwan::Network.create!(account_id: account.id, name: "pfs-rb-#{SecureRandom.hex(3)}")
+      peer = ::Sdwan::PeerEnroller.call(network: network, node_instance: inst)
+
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .and_return(::System::Runtime::Result.err(error: "provider rejected terminate"))
+
+      result = exec.rollback_provision_full_stack(
+        node_instance_ids: [ inst.id ],
+        storage_volume_ids: [],
+        sdwan_peer_ids: [ peer.id ]
+      )
+
+      expect(::Sdwan::Peer.where(id: peer.id)).to be_empty
+      expect(result[:success]).to be false
+      expect(result[:errors].map { |e| e[:resource] }).to eq([ "node_instance" ])
     end
   end
 end

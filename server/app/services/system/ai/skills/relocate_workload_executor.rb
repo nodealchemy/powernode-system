@@ -107,10 +107,21 @@ module System
             errors << { resource: "provider_volume", id: volume_id, error: e.message }
           end
 
-          # sdwan peers are typically released when their host instance is
-          # terminated, but we surface a soft no-op here to keep the kwargs
-          # contract uniform with the other adaptation executors.
-          _ = sdwan_peer_ids
+          # IMP-94f778f92dba — these are now peers the target provisioning
+          # actually enrolled (they used to be a read-back of the network's
+          # pre-existing fleet, which is why this was a no-op). "Released when
+          # the host instance is terminated" holds only on the happy path:
+          # ProvisioningService#finalize_termination!, which performs the
+          # auto-detach, is skipped by three early returns above it. Detach
+          # explicitly rather than assume.
+          Array(sdwan_peer_ids).reverse_each do |peer_id|
+            peer = ::Sdwan::Peer.where(account_id: @account.id).find_by(id: peer_id)
+            next unless peer
+
+            ::Sdwan::PeerDetacher.call(node_instance: peer.node_instance, network: peer.network)
+          rescue StandardError => e
+            errors << { resource: "sdwan_peer", id: peer_id, error: e.message }
+          end
 
           { success: errors.empty?, errors: errors }
         end
@@ -183,16 +194,35 @@ module System
                                                failures: failures, planned_actions: planned_actions)
 
             # Only tear down the source if we actually have a healthy target.
+            #
+            # IMP-94f778f92dba — "healthy" has to include the fabric now. The
+            # inner executor used to RAISE when its network leg failed, which
+            # arrived here as a nil provision_data and stopped the cutover on
+            # its own. It now records the failure and returns success, so a
+            # target that never joined the SDWAN would sail past a bare
+            # instance-count check and we would terminate the source out from
+            # under a workload nobody can reach.
             target_instance_ids = provision_data ? Array(provision_data[:outputs][:node_instance_ids]) : []
-            if target_instance_ids.any?
+            attached_peer_ids   = provision_data ? Array(provision_data[:outputs][:sdwan_peer_ids]) : []
+            off_fabric = network_id.present? && attached_peer_ids.size < target_instance_ids.size
+
+            if target_instance_ids.empty?
+              failures << { step: "blue_green_cutover", error: "target stack is empty; refusing to terminate source" }
+            elsif off_fabric
+              failures << { step: "blue_green_cutover",
+                            error: "target stack is off-fabric (#{attached_peer_ids.size}/#{target_instance_ids.size} " \
+                                   "instances enrolled on network #{network_id}); refusing to terminate source" }
+            else
               terminate_step!(source_ids: source_ids, terminated: terminated,
                               failures: failures, planned_actions: planned_actions)
-            else
-              failures << { step: "blue_green_cutover", error: "target stack is empty; refusing to terminate source" }
             end
           end
 
           provision_outputs = provision_data ? (provision_data[:outputs] || {}) : empty_outputs
+          # The inner executor reports per-leg failures in its own envelope and
+          # keeps going; dropping them here left an enrollment or volume error
+          # with nowhere to surface — the runner records only what we return.
+          failures.concat(provision_data ? Array(provision_data[:failures]) : [])
 
           success(
             dry_run: false,
@@ -261,18 +291,22 @@ module System
             { step: "relocate_workload", cutover_strategy: strategy,
               source_count: source_ids.size, target_count: count }
           ]
-          if strategy == "drain"
-            source_ids.each { |id| steps << { step: "terminate_source", instance_id: id } }
-            count.times { |i| steps << { step: "provision_target_instance", index: i,
-                                         to_region_id: to_region_id, template_id: template_id,
-                                         provider_instance_type_id: provider_instance_type_id } }
-          else
-            count.times { |i| steps << { step: "provision_target_instance", index: i,
-                                         to_region_id: to_region_id, template_id: template_id,
-                                         provider_instance_type_id: provider_instance_type_id } }
-            source_ids.each { |id| steps << { step: "terminate_source", instance_id: id } }
+          # One attach per target, inside the provisioning run rather than
+          # trailing the whole plan: the real path enrols each instance as it
+          # is provisioned, so for blue_green that happens BEFORE the source is
+          # terminated. This is the operator's approval card for a :high
+          # blast-radius skill — a single trailing step understated the peer
+          # count and mis-ordered the cutover.
+          provision_steps = []
+          count.times do |i|
+            provision_steps << { step: "provision_target_instance", index: i,
+                                 to_region_id: to_region_id, template_id: template_id,
+                                 provider_instance_type_id: provider_instance_type_id }
+            provision_steps << { step: "attach_sdwan_peer", index: i, network_id: network_id } if network_id.present?
           end
-          steps << { step: "compile_sdwan_topology", network_id: network_id } if network_id.present?
+          terminate_steps = source_ids.map { |id| { step: "terminate_source", instance_id: id } }
+
+          steps.concat(strategy == "drain" ? terminate_steps + provision_steps : provision_steps + terminate_steps)
           if with_storage_gb.present?
             count.times { |i| steps << { step: "provision_target_storage", index: i,
                                          size_gb: with_storage_gb.to_i } }
