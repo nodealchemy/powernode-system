@@ -8,17 +8,21 @@ module Sdwan
       def perform
         reject_device_scoped_params!
         grant = ::Sdwan::AccessGrant.find(params[:grant_id])
-        if grant.respond_to?(:revoke!)
-          # Both callers plumb `reason` into params — AccessGrantsController#revoke
-          # from the request body, Ai::Tools::SdwanTool#revoke_access_grant from the
-          # MCP action that documents it as "recorded on the grant". Dropping it here
-          # left AccessGrant#revocation_reason nil on every gated revoke; the
-          # device-scoped sibling (Sdwan::Executors::RevokeUserDevice) has always
-          # forwarded it.
-          grant.revoke!(reason: params[:reason])
-        else
-          grant.update!(status: "revoked", revoked_at: Time.current)
-        end
+        # Both callers plumb `reason` into params — AccessGrantsController#revoke
+        # from the request body, Ai::Tools::SdwanTool#revoke_access_grant from the
+        # MCP action that documents it as "recorded on the grant". Dropping it here
+        # left AccessGrant#revocation_reason nil on every gated revoke; the
+        # device-scoped sibling (Sdwan::Executors::RevokeUserDevice) has always
+        # forwarded it.
+        #
+        # Called unconditionally: AccessGrant defines revoke!, so the former
+        # `respond_to?(:revoke!)` guard had no reachable else-arm. Its federation
+        # sibling's identical fallback was deleted in 6f2d70c5 for naming a column
+        # system_federation_peers does not have — this one was worse, because
+        # status/revoked_at DO exist here: it would have succeeded, marking the
+        # grant revoked while skipping revoke!'s device cascade and dropping the
+        # reason, leaving every device live on the fabric under a revoked grant.
+        grant.revoke!(reason: params[:reason])
         { grant_id: grant.id, revoked: true }
       end
 

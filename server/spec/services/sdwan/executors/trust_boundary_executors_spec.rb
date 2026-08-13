@@ -209,5 +209,35 @@ RSpec.describe "Sdwan::Executors trust-boundary executors", type: :model do
       expect(grant.reload.status).to eq("active")
       expect(device.reload.revoked?).to be(false)
     end
+
+    # The executor must call revoke! unconditionally. It used to guard the call
+    # with `if grant.respond_to?(:revoke!)`, which AccessGrant satisfies
+    # unconditionally (access_grant.rb:37) — so the else-arm was unreachable.
+    # Unlike the federation sibling's identical fallback (deleted in 6f2d70c5
+    # because it named a revoked_at column system_federation_peers does not
+    # have, so it could only raise), this one wrote columns that DO exist on
+    # system_sdwan_access_grants: it would have succeeded wrongly, leaving the
+    # grant reading "revoked" while every device stayed live on the fabric and
+    # the operator's reason was dropped. Stubbing respond_to? manufactures the
+    # only state that could ever reach that arm; the executor must not consult
+    # it at all.
+    it "cascades to every device and records the reason without consulting respond_to?" do
+      grant  = create(:sdwan_access_grant, account: account, status: "active")
+      device = create(:sdwan_user_device, access_grant: grant)
+
+      def grant.respond_to?(name, include_all = false)
+        return false if name == :revoke!
+
+        super
+      end
+      allow(::Sdwan::AccessGrant).to receive(:find).with(grant.id).and_return(grant)
+
+      described_class.execute({ grant_id: grant.id, reason: "offboarded" }, deferred_operation: nil)
+
+      persisted = ::Sdwan::AccessGrant.find_by!(id: grant.id)
+      expect(persisted.status).to eq("revoked")
+      expect(persisted.revocation_reason).to eq("offboarded"), "the fallback arm dropped the operator's reason"
+      expect(device.reload.revoked?).to be(true), "the fallback arm skipped the device cascade"
+    end
   end
 end
