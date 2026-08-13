@@ -6,7 +6,7 @@ module Sdwan
       protected
 
       def perform
-        network = ::Sdwan::Network.find(params[:network_id])
+        network = resolve_scoped(::Sdwan::Network, params[:network_id])
         vip = network.virtual_ips.create!(attrs)
         { vip_id: vip.id, address: vip.try(:address) }
       end

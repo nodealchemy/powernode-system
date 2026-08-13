@@ -6,7 +6,7 @@ module Sdwan
       protected
 
       def perform
-        network = ::Sdwan::Network.find(params[:network_id])
+        network = resolve_scoped(::Sdwan::Network, params[:network_id])
         rule = network.firewall_rules.create!(attrs)
         { rule_id: rule.id, network_id: network.id }
       end
