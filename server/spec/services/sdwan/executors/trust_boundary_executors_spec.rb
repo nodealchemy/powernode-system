@@ -46,5 +46,22 @@ RSpec.describe "Sdwan::Executors trust-boundary executors", type: :model do
       expect(result.dig(:data, :revoked)).to be true
       expect(grant.reload.status).to eq("revoked")
     end
+
+    # grant.revoke! cascades to every device, so a device-scoped verb reaching
+    # this executor would cut the user's whole VPN access. Device verbs use
+    # Sdwan::Executors::RevokeUserDevice; a deferred operation gated before that
+    # split still names THIS class in its stored executor_class, so the refusal
+    # has to live here rather than only in the controller wiring.
+    it "refuses device-scoped params instead of cascading to every device" do
+      grant  = create(:sdwan_access_grant, account: account, status: "active")
+      device = create(:sdwan_user_device, access_grant: grant)
+
+      expect {
+        described_class.execute({ grant_id: grant.id, device_id: device.id }, deferred_operation: nil)
+      }.to raise_error(ArgumentError, /RevokeUserDevice/)
+
+      expect(grant.reload.status).to eq("active")
+      expect(device.reload.revoked?).to be(false)
+    end
   end
 end

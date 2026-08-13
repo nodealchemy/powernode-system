@@ -61,16 +61,15 @@ module Api
             label = @device.try(:label)
             gate!(
               action_category: "system.sdwan_user_device_revoke",
-              executor_class: "Sdwan::Executors::RevokeAccessGrant",  # device destroy reuses revoke semantics
-              params: { grant_id: @grant.id, device_id: id },
+              executor_class: "Sdwan::Executors::RevokeUserDevice",
+              params: { grant_id: @grant.id, device_id: id, destroy_row: true },
               source_type: "Sdwan::UserDevice",
               source_id: id,
               description: "Delete SDWAN device #{label || id}",
-              on_proceed: ->(_r) {
-                # The executor handles the revoke; explicit destroy still legal.
-                @device.destroy! if @device.persisted? && !@device.revoked?
-                render_success(deleted: true, id: id)
-              }
+              # The executor destroys the row. Doing it here instead would only
+              # cover the :proceed branch — gate! skips on_proceed when the action
+              # is deferred for approval, and this category is require_approval.
+              on_proceed: ->(_r) { render_success(deleted: true, id: id) }
             )
           end
 
@@ -81,7 +80,7 @@ module Api
             label = @device.try(:label)
             gate!(
               action_category: "system.sdwan_user_device_revoke",
-              executor_class: "Sdwan::Executors::RevokeAccessGrant",
+              executor_class: "Sdwan::Executors::RevokeUserDevice",
               params: { grant_id: @grant.id, device_id: id, reason: params[:reason] },
               source_type: "Sdwan::UserDevice",
               source_id: id,
