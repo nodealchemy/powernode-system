@@ -59,6 +59,23 @@ module System
         end
 
         resolve_scoped(type.constantize, id)
+      rescue ActiveRecord::RecordNotFound
+        # An id that exists elsewhere and an id that exists nowhere must be
+        # indistinguishable. resolve_scoped's `find` raises RecordNotFound for
+        # the second and CrossAccountError for the first, and Ai::AutonomyGate
+        # renders both messages to the caller — so the PAIR is an existence
+        # oracle even though neither message names an owner.
+        #
+        # Converted here rather than in resolve_scoped: that seam is shared by
+        # every executor and its RecordNotFound contract is pinned
+        # (base_tenancy_spec.rb:110), so changing it there would be a
+        # behavioural change for callers this task has no business touching.
+        # Re-raised unchanged when there is no anchor to name, matching
+        # resolve_scoped's unscoped passthrough.
+        raise unless account
+
+        raise ::Ai::DeferredOperation::CrossAccountError,
+              "#{type} #{id} is not in account #{account.id}"
       end
 
       def summarize

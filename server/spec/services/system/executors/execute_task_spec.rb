@@ -115,12 +115,31 @@ RSpec.describe System::Executors::ExecuteTask do
 
       expect(error).to be_a(::Ai::DeferredOperation::CrossAccountError)
     end
+  end
 
-    it "does not raise the type refusal for a merely foreign operable" do
+  # What the caller may learn from a refusal, as opposed to what it prevents.
+  describe "what the refusals disclose" do
+    # Neither message names an owner, but the PAIR would still be an oracle: a
+    # caller who can tell "exists elsewhere" from "exists nowhere" learns THAT a
+    # row exists. The two refusals must be identical up to the id the caller
+    # themselves supplied.
+    it "refuses an id that exists nowhere exactly as it refuses a foreign one" do
+      missing_id = SecureRandom.uuid
+      missing = refusal_from(command: "sync", operable_type: "System::Node", operable_id: missing_id)
+      foreign = refusal_from(command: "sync", operable_type: "System::Node", operable_id: foreign_node.id)
+
+      expect(missing).to be_a(::Ai::DeferredOperation::CrossAccountError)
+      expect(missing.class).to eq(foreign.class),
+                               "a missing id and a foreign id raise different classes — a caller can tell them apart"
+      expect(missing.message.sub(missing_id, "<id>"))
+        .to eq(foreign.message.sub(foreign_node.id, "<id>")),
+            "the two refusals differ by more than the caller's own id: #{missing.message.inspect} vs #{foreign.message.inspect}"
+    end
+
+    it "does not report a cross-account refusal as a bad-type refusal" do
       error = refusal_from(command: "sync", operable_type: "System::Node", operable_id: foreign_node.id)
 
-      expect(error).not_to be_a(::System::Task::BadOperableType),
-                           "a cross-account refusal was reported as a bad-type refusal"
+      expect(error).not_to be_a(::System::Task::BadOperableType)
     end
   end
 end
