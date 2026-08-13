@@ -6,7 +6,7 @@ module Sdwan
       protected
 
       def perform
-        rule = ::Sdwan::FirewallRule.find(params[:rule_id])
+        rule = resolve_scoped(::Sdwan::FirewallRule, params[:rule_id])
         rule.update!(attrs)
         { rule_id: rule.id }
       end

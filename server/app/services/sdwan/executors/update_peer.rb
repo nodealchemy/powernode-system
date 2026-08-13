@@ -8,7 +8,7 @@ module Sdwan
       protected
 
       def perform
-        peer = ::Sdwan::Peer.find(params[:peer_id])
+        peer = resolve_scoped(::Sdwan::Peer, params[:peer_id])
         peer.update!(attrs)
         { peer_id: peer.id, updated_attributes: params[:attributes] }
       end

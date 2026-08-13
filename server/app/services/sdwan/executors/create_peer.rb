@@ -9,8 +9,13 @@ module Sdwan
       protected
 
       def perform
-        network = ::Sdwan::Network.find(params[:network_id])
-        peer = network.peers.create!(attrs)
+        network = resolve_scoped(::Sdwan::Network, params[:network_id])
+        # IMP-2d26f7289c38 PHASE 0: the account comes from the resolved network,
+        # never from the request. Sdwan::Peer belongs_to :account with no
+        # inherit-from-network callback, and account_id was mass-assignable
+        # straight out of params[:attributes] — which the gate stores verbatim
+        # and replays unvalidated at approval time.
+        peer = network.peers.create!(attrs.merge(account: network.account))
         # IMP-ee57d0fbe859: record the connectivity tuple in the same shape
         # Sdwan::Executors::DeletePeer records on removal. This read
         # `peer.try(:endpoint)` — Sdwan::Peer has no `endpoint` method or column,
@@ -48,16 +53,17 @@ module Sdwan
 
       private
 
-      # The account the peer will belong to. Deliberately NOT the `account`
-      # helper: that reads deferred_operation.account, and the only path that
-      # reaches this label is Base.preview, which builds the executor with
-      # deferred_operation: nil — consulting it would be an arm nothing can
-      # execute. The create attributes carry the account instead, and must:
-      # Sdwan::Peer belongs_to :account, so `network.peers.create!(attrs)`
-      # without one raises. Absent an account id the lookups are skipped rather
-      # than run unscoped — an approval card must not name another account's rows.
+      # The account this label may name rows from. Deliberately NOT the
+      # `account` helper: that reads deferred_operation.account, and the only
+      # path that reaches this label is Base.preview, which builds the executor
+      # with deferred_operation: nil — consulting it would be an arm nothing can
+      # execute. The request's own attributes are the only anchor available
+      # here, read through `requested_account_id` because `attrs` now strips the
+      # tenancy keys (they are assignment-unsafe; scoping a read by them is not).
+      # Absent an account id the lookups are skipped rather than run unscoped —
+      # an approval card must not name another account's rows.
       def target_account_id
-        attrs[:account_id]
+        requested_account_id
       end
 
       def target_network

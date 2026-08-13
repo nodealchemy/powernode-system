@@ -6,7 +6,7 @@ module Sdwan
       protected
 
       def perform
-        policy = ::Sdwan::RoutePolicy.find(params[:policy_id])
+        policy = resolve_scoped(::Sdwan::RoutePolicy, params[:policy_id])
         policy.update!(attrs)
         { policy_id: policy.id }
       end

@@ -56,6 +56,64 @@ RSpec.describe Sdwan::Executors::CreatePeer do
     end
   end
 
+  # IMP-2d26f7289c38 PHASE 0 — the tenancy anchor for a record the executor
+  # resolves ITSELF. #perform did an unscoped `Sdwan::Network.find`, so a
+  # dispatched create naming a foreign network_id wrote a peer straight into
+  # another account's overlay. There is no source_type/source_id pair on a
+  # create for the central assertion to catch (no row exists yet), and no HTTP
+  # caller today — the HTTP path goes through Sdwan::PeerEnroller and never
+  # opens the gate — so this is exactly the agent/MCP-dispatch surface the
+  # wiring is about to widen.
+  describe "account anchoring" do
+    let(:account)   { create(:account) }
+    let(:operation) do
+      ::Ai::DeferredOperation.create!(
+        account: account, action_category: "sdwan.peer_create",
+        executor_class: described_class.name, params: {}
+      )
+    end
+
+    it "refuses to add a peer to a network belonging to another account" do
+      foreign = create(:sdwan_network)
+      instance = create(:system_node_instance, account: account)
+
+      # Effect first, error identity second: `raise_error` leading would abort
+      # the example on the un-fixed code and never report the planted peer.
+      raised = begin
+        described_class.execute(
+          { network_id: foreign.id,
+            attributes: { account_id: account.id, node_instance_id: instance.id,
+                          listen_port: 51_820 } },
+          deferred_operation: operation
+        )
+        nil
+      rescue StandardError => e
+        e
+      end
+
+      expect(foreign.peers.count).to eq(0),
+                                     "a dispatched create planted a peer in another account's network"
+      expect(raised).to be_a(::Ai::DeferredOperation::CrossAccountError)
+    end
+
+    # The account comes from the resolved network, never from the request: the
+    # attributes are replayed verbatim from a stored row and must not be able to
+    # name somebody else's account.
+    it "takes the peer's account from the network, not from the request attributes" do
+      network = create(:sdwan_network, account: account)
+      instance = create(:system_node_instance, account: account)
+
+      result = described_class.execute(
+        { network_id: network.id,
+          attributes: { account_id: create(:account).id,
+                        node_instance_id: instance.id, listen_port: 51_820 } },
+        deferred_operation: operation
+      )
+
+      expect(::Sdwan::Peer.find(result[:data][:peer_id]).account_id).to eq(account.id)
+    end
+  end
+
   # IMP-1eba7d50d24c — #summarize is the approval/notification BODY:
   # Ai::DeferredOperationApprovalContent.title and .message both render
   # preview[:summary]. It read "Add SDWAN peer to network <uuid>" — a bare

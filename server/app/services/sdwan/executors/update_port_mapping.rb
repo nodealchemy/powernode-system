@@ -6,7 +6,7 @@ module Sdwan
       protected
 
       def perform
-        mapping = ::Sdwan::PortMapping.find(params[:mapping_id])
+        mapping = resolve_scoped(::Sdwan::PortMapping, params[:mapping_id])
         mapping.update!(attrs)
         { mapping_id: mapping.id }
       end

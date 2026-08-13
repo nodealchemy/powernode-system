@@ -6,7 +6,7 @@ module Sdwan
       protected
 
       def perform
-        vip = ::Sdwan::VirtualIp.find(params[:vip_id])
+        vip = resolve_scoped(::Sdwan::VirtualIp, params[:vip_id])
         vip.update!(attrs)
         { vip_id: vip.id }
       end
