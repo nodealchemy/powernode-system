@@ -27,6 +27,33 @@ RSpec.describe Sdwan::Executors::DeletePeer do
       expect(::Sdwan::Peer.find_by(id: peer.id)).to be_nil
     end
 
+    # IMP-ee57d0fbe859 — the contract this executor's payload actually serves is
+    # the PERSISTED ai_deferred_operations.result jsonb, not the hash it hands
+    # back in-process. Ai::DeferredOperation#execute_now! stores the return value
+    # through `complete!`, and jsonb round-trips symbol keys to strings and the
+    # :v6 family symbol to "v6". Asserting the in-memory hash certifies a shape
+    # no auditor ever reads.
+    it 'persists the connectivity tuple on the deferred-operation row an auditor reads' do
+      peer = create(:sdwan_peer, :hub)
+      operation = ::Ai::DeferredOperation.create!(
+        account: peer.account,
+        action_category: 'sdwan.peer_delete',
+        executor_class: described_class.name,
+        params: { peer_id: peer.id }
+      )
+
+      operation.execute_now!
+
+      # find_by! rather than reload — a persisted read, independent of the
+      # in-memory object the executor just mutated.
+      persisted = ::Ai::DeferredOperation.find_by!(id: operation.id)
+      expect(persisted.status).to eq('completed')
+      expect(persisted.result.dig('data', 'endpoint')).to eq(
+        { 'host' => 'fd00:abcd:1::1', 'port' => 51_820, 'family' => 'v6' }
+      )
+      expect(persisted.result.dig('data', 'destroyed')).to be true
+    end
+
     it 'reports a nil endpoint for a spoke that genuinely has none' do
       # A non-hub peer is not required to carry endpoint data
       # (Sdwan::Peer#hub_must_have_endpoint only binds hubs), so nil here is
@@ -41,45 +68,29 @@ RSpec.describe Sdwan::Executors::DeletePeer do
   end
 
   describe '.preview' do
-    it 'names the peer by its node instance, the way an operator recognises it' do
-      peer = create(:sdwan_peer, :hub)
+    # IMP-ee57d0fbe859 — the label is Sdwan::Peer#operator_label, shared with
+    # PeersController#destroy's `description:`. Rung coverage lives in the model
+    # spec; these examples pin what this executor renders around it.
+    let(:network) { create(:sdwan_network, name: 'wan-core') }
+
+    it 'names the peer by its node instance and network, the way an operator recognises it' do
+      peer = create(:sdwan_peer, :hub, account: network.account, network: network)
       peer.node_instance.update!(name: 'edge-lon-01')
 
       preview = described_class.preview({ peer_id: peer.id })
 
-      expect(preview[:summary]).to eq('Delete SDWAN peer edge-lon-01')
+      expect(preview[:summary]).to eq('Delete SDWAN peer edge-lon-01 on wan-core')
       expect(preview[:impact]).to include('SDWAN connectivity')
     end
 
-    it 'falls back to the discovered hostname when the instance is unnamed' do
-      peer = create(:sdwan_peer, :hub)
-      # name is NOT NULL, so blank it at the column level rather than through
-      # validation — this is the shape a partially-enrolled instance presents.
-      peer.node_instance.update_column(:name, '')
-      peer.node_instance.update_column(:discovered_hostname, 'edge-lon-01.local')
-
-      preview = described_class.preview({ peer_id: peer.id })
-
-      expect(preview[:summary]).to eq('Delete SDWAN peer edge-lon-01.local')
-    end
-
     it 'falls back to the endpoint when the instance carries no name at all' do
-      peer = create(:sdwan_peer, :hub)
+      peer = create(:sdwan_peer, :hub, account: network.account, network: network)
       peer.node_instance.update_column(:name, '')
 
       preview = described_class.preview({ peer_id: peer.id })
 
       # v6 literal is bracketed so host and port stay unambiguous.
-      expect(preview[:summary]).to eq('Delete SDWAN peer [fd00:abcd:1::1]:51820')
-    end
-
-    it 'falls back to the bare id only when nothing else identifies the peer' do
-      peer = create(:sdwan_peer)
-      peer.node_instance.update_column(:name, '')
-
-      preview = described_class.preview({ peer_id: peer.id })
-
-      expect(preview[:summary]).to eq("Delete SDWAN peer #{peer.id}")
+      expect(preview[:summary]).to eq('Delete SDWAN peer [fd00:abcd:1::1]:51820 on wan-core')
     end
 
     it 'returns a generic summary when the peer is missing' do

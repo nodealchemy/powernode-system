@@ -110,6 +110,46 @@ module Sdwan
       [ primary_endpoint, fallback_endpoint ].compact
     end
 
+    # "host:port" for the primary endpoint, bracketing the host only when it is
+    # an IPv6 LITERAL. The bracket cannot be keyed on the tuple's :family —
+    # endpoint_host_v6_must_be_v6_or_hostname explicitly accepts a hostname in
+    # the v6 column (DNS hands back the AAAA), so a family of :v6 does not imply
+    # a literal and "[edge.example.net]:51820" is not an address anyone can use.
+    #
+    # The same validation also admits an ALREADY-bracketed literal (its literal
+    # guard is `include?(":")`, which "[fd00::1]" satisfies), and that is the
+    # form an operator pastes out of a WireGuard config — so re-bracketing it
+    # blindly yields "[[fd00::1]]:51820".
+    def endpoint_display
+      endpoint = primary_endpoint
+      return nil if endpoint.blank?
+
+      host = endpoint[:host].to_s
+      host = "[#{host}]" if host.include?(":") && !host.start_with?("[")
+      "#{host}:#{endpoint[:port]}"
+    end
+
+    # The single operator-facing identity for this peer. Both surfaces that name
+    # a peer on a destructive operation consume it — the approval card served by
+    # the approvals API (Api::V1::System::Sdwan::PeersController#destroy passes
+    # it as the gate's `description:`) and the notification body
+    # (Sdwan::Executors::DeletePeer#summarize). They each carried their own copy
+    # of this expression and drifted; one method is what keeps them honest.
+    #
+    # The network is part of the identity, not decoration: the unique index is
+    # [sdwan_network_id, node_instance_id], so one instance is legitimately a
+    # peer in several networks and an instance-name-only label renders identical
+    # cards for different destructive operations. The endpoint is the detail
+    # rung — used only when the instance carries no operator-facing name.
+    def operator_label
+      identity = node_instance&.name.presence ||
+                 node_instance&.discovered_hostname.presence ||
+                 endpoint_display ||
+                 id
+      network_name = network&.name.presence
+      network_name ? "#{identity} on #{network_name}" : identity
+    end
+
     # Recompute status from last_handshake_at. Called by the heartbeat
     # status-report endpoint on every report from the agent.
     def recompute_status_from_handshake!

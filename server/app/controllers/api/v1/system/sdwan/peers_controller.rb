@@ -83,7 +83,13 @@ module Api
               requested_by: current_user,
               source_type: "Sdwan::Peer",
               source_id: @peer.id,
-              description: "Delete SDWAN peer #{@peer.try(:endpoint) || @peer.id}"
+              # IMP-ee57d0fbe859: this is the string the APPROVALS LIST renders —
+              # AutonomyGate copies it onto Ai::ApprovalRequest#description, which
+              # both approval serializers emit. It read `@peer.try(:endpoint)`,
+              # and Sdwan::Peer has no `endpoint` method or column, so the card
+              # always degraded to the bare UUID. Same labeler as the executor's
+              # summarize (the notification body) so the two cannot drift again.
+              description: "Delete SDWAN peer #{@peer.operator_label}"
             )
 
             case gate_result.decision

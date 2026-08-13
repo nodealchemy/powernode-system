@@ -18,38 +18,18 @@ module Sdwan
         { peer_id: params[:peer_id], endpoint: endpoint, destroyed: true }
       end
 
+      # IMP-ee57d0fbe859: the label is Sdwan::Peer#operator_label, shared with
+      # PeersController#destroy's gate `description:`. This executor used to
+      # carry its own copy of the rung ladder, which is how the two surfaces
+      # naming the SAME delete came to disagree.
       def summarize
         peer = ::Sdwan::Peer.find_by(id: params[:peer_id])
         return "Delete SDWAN peer #{params[:peer_id]}" unless peer
-        "Delete SDWAN peer #{peer_label(peer)}"
+        "Delete SDWAN peer #{peer.operator_label}"
       end
 
       def impact
         "Removes peer from network — node loses SDWAN connectivity until re-attached"
-      end
-
-      private
-
-      # Name the peer the way the operator reading the approval card recognizes
-      # it: the node instance it connects, then its reachable endpoint, and the
-      # bare UUID only when nothing else identifies it. IMP-b49dd405502a: this
-      # previously read `peer.try(:endpoint)`, and Sdwan::Peer has no `endpoint`
-      # method or column — so every card degraded to the UUID rung.
-      def peer_label(peer)
-        instance = peer.node_instance
-        operator_name = instance&.name.presence || instance&.discovered_hostname.presence
-        return operator_name if operator_name
-
-        format_endpoint(peer.primary_endpoint) || peer.id
-      end
-
-      # `{ host:, port:, family: }` → "host:port", bracketing v6 literals so the
-      # port stays unambiguous. Sdwan::Peer only ever reports :v4 or :v6.
-      def format_endpoint(endpoint)
-        return nil if endpoint.blank?
-
-        host = endpoint[:family] == :v6 ? "[#{endpoint[:host]}]" : endpoint[:host]
-        "#{host}:#{endpoint[:port]}"
       end
     end
   end

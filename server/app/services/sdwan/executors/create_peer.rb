@@ -11,7 +11,12 @@ module Sdwan
       def perform
         network = ::Sdwan::Network.find(params[:network_id])
         peer = network.peers.create!(attrs)
-        { peer_id: peer.id, network_id: network.id, endpoint: peer.try(:endpoint) }
+        # IMP-ee57d0fbe859: record the connectivity tuple in the same shape
+        # Sdwan::Executors::DeletePeer records on removal. This read
+        # `peer.try(:endpoint)` — Sdwan::Peer has no `endpoint` method or column,
+        # so every create row reported endpoint: nil and no auditor could
+        # correlate "which endpoint was added" with "which endpoint was removed".
+        { peer_id: peer.id, network_id: network.id, endpoint: peer.primary_endpoint }
       end
 
       def summarize
