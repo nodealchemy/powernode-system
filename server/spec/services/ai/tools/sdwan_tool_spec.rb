@@ -1037,6 +1037,115 @@ RSpec.describe Ai::Tools::SdwanTool do
 
   # ─── Registry wiring ─────────────────────────────────────────────────
 
+  # IMP-3686f6c236d9 — MCP/HTTP parity for the device-revoke trust boundary.
+  #
+  # Revoking a Sdwan::UserDevice cuts one user's VPN access.
+  # UserDevicesController#revoke gates it on `system.sdwan_user_device_revoke`
+  # (seeded require_approval in db/seeds/fleet_autonomy_agent.rb, and the
+  # InterventionPolicyService default), so the operator waits for approval —
+  # while this tool called `device.revoke!` inline, giving an agent holding the
+  # MCP tool a strictly wider capability than the same operator over HTTP, with
+  # no Ai::DeferredOperation audit row.
+  #
+  # The params handed to the gate are the cross-seam contract: the tool speaks
+  # `user_device_id`, the executor reads `grant_id`/`device_id`. Nothing is
+  # stubbed between them here — the deferred op is executed for real, so a
+  # key mismatch fails rather than passing on a well-formed-looking hash.
+  describe "system_sdwan_revoke_user_device approval gate (IMP-3686f6c236d9)" do
+    let(:network) { create(:sdwan_network, account: account) }
+    let(:grant)   { create(:sdwan_access_grant, account: account, network: network) }
+    let!(:target)  { create(:sdwan_user_device, access_grant: grant, label: "lost-phone") }
+    let!(:sibling) { create(:sdwan_user_device, access_grant: grant, label: "work-laptop") }
+
+    # Tail of the approval path — Ai::ApprovalRequest ultimately calls
+    # execute_now!. The presence assertion keeps a missing gate failing by
+    # name instead of as `undefined method for nil`.
+    def approve_latest_deferred!
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred).to be_present, "no deferred operation was parked — the revoke was applied inline"
+      deferred.tap(&:execute_now!)
+    end
+
+    # Forces the gate's :proceed branch. The default policy is require_approval,
+    # so nothing else here covers the inline path.
+    def auto_approve_policy!
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+        { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+      )
+    end
+
+    it "defers the revoke through the approval gate rather than mutating inline" do
+      r = call("system_sdwan_revoke_user_device", user_device_id: target.id, reason: "lost")
+
+      expect(r[:success]).to be true
+      expect(r[:data][:pending]).to be true
+      expect(target.reload.revoked?).to be(false),
+                                        "MCP revoke_user_device cut the device without an approval gate"
+    end
+
+    it "parks a device-scoped deferred operation the executor can consume" do
+      call("system_sdwan_revoke_user_device", user_device_id: target.id, reason: "lost")
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred).to be_present, "no deferred operation was parked — the revoke was applied inline"
+      expect(deferred.action_category).to eq("system.sdwan_user_device_revoke")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::RevokeUserDevice")
+      expect(deferred.params["device_id"]).to eq(target.id)
+      expect(deferred.params["grant_id"]).to eq(grant.id)
+    end
+
+    # The seeded require_approval row is scoped to an agent, and
+    # Ai::InterventionPolicy#agent_matches? rejects a scoped row when no agent
+    # is passed — an agent caller that drops its agent routes the approval to
+    # "Manual Operations", unattributed.
+    it "attributes the deferred revoke to the calling agent" do
+      agent = create(:ai_agent, account: account)
+      agent_tool = described_class.new(account: account, agent: agent, internal: true)
+
+      agent_tool.execute(params: {
+        action: "system_sdwan_revoke_user_device", user_device_id: target.id
+      })
+
+      expect(Ai::DeferredOperation.order(created_at: :desc).first.ai_agent_id).to eq(agent.id)
+    end
+
+    it "revokes ONLY the named device when the deferred op is approved" do
+      call("system_sdwan_revoke_user_device", user_device_id: target.id, reason: "lost")
+      approve_latest_deferred!
+
+      expect(target.reload.revoked?).to be(true), "approving the deferred MCP revoke did not revoke the device"
+      expect(target.revocation_reason).to eq("lost"), "the reason did not survive the deferral"
+      expect(sibling.reload.revoked?).to be(false), "sibling device was revoked — device revoke leaked to the whole grant"
+      expect(grant.reload.status).to eq("active"), "access grant was revoked by a DEVICE-level revoke"
+    end
+
+    it "revokes inline and reports it when the policy auto-approves" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_revoke_user_device", user_device_id: target.id, reason: "lost")
+
+      expect(r[:success]).to be true
+      expect(r[:data][:revoked]).to be true
+      expect(r[:data][:device][:revoked_at]).to be_present,
+                                                "answered revoked: true over a device serialized as still active"
+      expect(target.reload.revoked?).to be(true)
+      expect(sibling.reload.revoked?).to be(false)
+    end
+
+    # Account scoping is enforced BEFORE the gate, as it is on the HTTP path
+    # (set_network/set_grant/set_device) — the executor re-resolves from stored
+    # ids and is not an authorization boundary.
+    it "refuses a device outside the caller's account without parking anything" do
+      foreign = create(:sdwan_user_device)
+
+      expect {
+        @result = call("system_sdwan_revoke_user_device", user_device_id: foreign.id)
+      }.not_to change(Ai::DeferredOperation, :count)
+      expect(@result[:success]).to be false
+      expect(foreign.reload.revoked?).to be(false)
+    end
+  end
+
   describe "PlatformApiToolRegistry registration" do
     it "wires every Phase O6 action to SdwanTool" do
       registry = ::Ai::Tools::PlatformApiToolRegistry::TOOLS

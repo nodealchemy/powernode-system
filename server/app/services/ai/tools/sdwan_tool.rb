@@ -17,6 +17,13 @@ module Ai
       # category allowlist.
       FEDERATION_ACCEPT_CATEGORY = "sdwan.federation_peer_accept"
 
+      # Autonomy action category for revoking one user VPN device. Shared
+      # verbatim with Api::V1::System::Sdwan::UserDevicesController (#revoke and
+      # #destroy) so the MCP and HTTP surfaces resolve the SAME policy — seeded
+      # require_approval in db/seeds/fleet_autonomy_agent.rb and registered in
+      # the engine's category allowlist.
+      USER_DEVICE_REVOKE_CATEGORY = "system.sdwan_user_device_revoke"
+
       ACTION_PERMISSIONS = {
         "system_sdwan_list_networks"   => "system.sdwan.networks.read",
         "system_sdwan_get_network"     => "system.sdwan.networks.read",
@@ -281,7 +288,7 @@ module Ai
             }
           },
           "system_sdwan_revoke_user_device" => {
-            description: "Revoke a user device (immediate; agent drops it from the hub view on next reconcile)",
+            description: "Revoke a user device. Approval-gated (system.sdwan_user_device_revoke) — under require_approval this returns pending: true with a deferred_operation_id and the device is cut only once an operator approves. Scoped to the ONE named device: the user's other devices and the access grant are untouched. The hub PULLS its config, so the cut takes effect at its next pull rather than instantly.",
             parameters: {
               user_device_id: { type: "string", required: true, description: "UUID of the SDWAN user device to revoke" },
               reason:         { type: "string", required: false, description: "Optional human-readable revocation reason (recorded on the device)" }
@@ -1084,10 +1091,72 @@ module Ai
         )
       end
 
+      # Revoking a device cuts one user's VPN access, so it goes through
+      # Ai::AutonomyGate (`system.sdwan_user_device_revoke`, seeded
+      # require_approval) exactly as UserDevicesController#revoke does —
+      # otherwise an agent holding this tool has a strictly wider capability
+      # than the operator performing the same revoke over HTTP, and leaves no
+      # Ai::DeferredOperation audit row.
+      #
+      # Sdwan::Executors::RevokeUserDevice performs the revoke server-side —
+      # this method mutates nothing on either branch, so the revoke survives the
+      # :pending path. The executor re-resolves the device from the stored
+      # grant/device id pair; account ownership is enforced HERE, before the
+      # gate, by account_user_devices — the same split the HTTP path uses
+      # (set_network/set_grant/set_device guard, executor re-validates pairing).
+      #
+      # No up-front doomed-action check, unlike accept_federation_peer: the one
+      # refusable condition inducible from the request — an already-revoked
+      # device — is idempotent (UserDevice#revoke! returns early), so it cannot
+      # park an approval that can only fail. A row DELETED during the approval
+      # window does still raise out of the executor's two bang finds (reachable
+      # via Sdwan::Executors::DeleteAccessGrant's `dependent: :destroy` cascade,
+      # or an approved HTTP #destroy under this same category) — but that
+      # happens AFTER parking, so no pre-check reaches it, and it is recorded:
+      # DeferredOperation#execute_now! calls fail!(e) before re-raising, so the
+      # row lands `failed` with the error message. Shared verbatim with the two
+      # HTTP device verbs, which dispatch the same executor on the same params.
       def revoke_user_device(params)
         device = account_user_devices.find(params[:user_device_id])
-        device.revoke!(reason: params[:reason])
-        success_result(device: serialize_user_device(device.reload), revoked: true)
+
+        result = ::Ai::AutonomyGate.evaluate(
+          action_category: USER_DEVICE_REVOKE_CATEGORY,
+          executor_class: "Sdwan::Executors::RevokeUserDevice",
+          # Key names are the executor's contract, not this tool's: it reads
+          # grant_id/device_id (shared with the two HTTP device verbs).
+          params: { grant_id: device.sdwan_access_grant_id, device_id: device.id, reason: params[:reason] },
+          account: @account,
+          # Agent AND user. The seeded row is scoped to Fleet Autonomy
+          # (upsert_policies! passes agent:), and
+          # Ai::InterventionPolicy#agent_matches? rejects a scoped row against a
+          # nil agent — so a Fleet Autonomy caller that dropped @agent would
+          # stop matching its own row. Every other caller falls through to
+          # InterventionPolicyService#default_policy, which is also
+          # require_approval, so the gate holds either way; what @agent
+          # additionally buys is attribution — AutonomyGate#resolve_chain routes
+          # to "<agent name> Actions" and to "Manual Operations" when nil.
+          agent: @agent,
+          requested_by: @user,
+          source_type: "Sdwan::UserDevice",
+          source_id: device.id,
+          description: "Revoke SDWAN device #{device.label || device.id}"
+        )
+
+        case result.decision
+        when :proceed
+          success_result(device: serialize_user_device(device.reload), revoked: true)
+        when :pending
+          success_result(
+            pending: true,
+            action_category: USER_DEVICE_REVOKE_CATEGORY,
+            deferred_operation_id: result.deferred_operation&.id,
+            approval_request_id: result.approval_request&.id,
+            device: serialize_user_device(device),
+            message: "Approval required: #{USER_DEVICE_REVOKE_CATEGORY}"
+          )
+        else
+          error_result(result.error || "Action #{USER_DEVICE_REVOKE_CATEGORY} is blocked by policy")
+        end
       end
 
       def account_access_grants

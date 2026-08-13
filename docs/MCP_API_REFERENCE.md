@@ -406,7 +406,7 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 | `system_sdwan_revoke_access_grant` | Invalidate an unused grant |
 | `system_sdwan_list_user_devices` | List active UserDevices on a Network |
 | `system_sdwan_issue_user_device` | Convert an access grant + user-side public key into a UserDevice |
-| `system_sdwan_revoke_user_device` | Remove a UserDevice (cuts off VPN access) |
+| `system_sdwan_revoke_user_device` | Revoke ONE UserDevice (cuts off that device's VPN access; siblings and the grant are untouched). Approval-gated (`system.sdwan_user_device_revoke`) — returns `pending: true` + a `deferred_operation_id` until approved |
 
 #### Federation peers (slice 11 — live)
 
