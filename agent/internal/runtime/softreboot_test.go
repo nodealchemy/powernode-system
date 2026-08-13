@@ -189,24 +189,42 @@ func TestSoftRecomposePreflight_UnknownUnitAloneRefuses(t *testing.T) {
 	}
 }
 
-// Pins the empirically-established target of the preflight. The finding
+// Pins the target of the PREFLIGHT specifically. The finding
 // IMP-83a38a35d642 proposed replacing /persist with the run-nextroot-persist
-// bind on the grounds that the bind is the load-bearing carrier. Measurement
-// refuted the premise: the carrier is released together with persist.mount, and
-// its generated unit reports DefaultDependencies=yes even when /persist survives
-// — so a guard keyed on it refuses every time and kills the soft-reboot tier.
-// See the CriticalSoftRebootMounts comment for the two measured runs.
+// bind on the grounds that the bind is the load-bearing carrier. /persist stays,
+// for a reason measurement settled: the carrier is released together with
+// persist.mount, so the source's fate governs both directions and /persist is the
+// thing worth checking here.
+//
+// RATIONALE CORRECTED 2026-08-13 (IMP-e4f3b8002de6). This test used to justify
+// itself with the claim that a path under /run "can never satisfy the
+// DefaultDependencies=no half of the guard" because its unit is
+// mountinfo-generated. THAT CLAIM IS FALSE, and it mattered — it was the stated
+// reason the two lethal nextroot mounts went unguarded. persist.mount is ITSELF
+// mountinfo-generated (SourcePath=/proc/self/mountinfo, FragmentPath empty), and
+// the drop-in in powernode-system-base flips it to DefaultDependencies=no with an
+// empty Conflicts — verified on a live node. A generated unit takes drop-ins like
+// any other.
+//
+// The real, and narrower, reason /run/nextroot** must stay out of THIS list is
+// TIMING, not unit provenance: SoftRecomposePreflight runs before ComposeForPivot
+// and prepareNextrootMounts create those mounts, so `systemctl show` reports
+// LoadState=not-found, mountSurvivesSoftReboot's unknown-unit clause reads that as
+// unproven, and the preflight would refuse on every node forever. They ARE guarded
+// — by NextrootSurvivalGate, which runs once the mounts exist, and which the two
+// shipped drop-ins are what allow to pass.
 func TestCriticalSoftRebootMounts_IsPersistNotTheNextrootCarrier(t *testing.T) {
 	if len(CriticalSoftRebootMounts) != 1 || CriticalSoftRebootMounts[0] != "/persist" {
-		t.Fatalf("CriticalSoftRebootMounts = %v, want exactly [/persist]; the nextroot bind is "+
-			"deliberately NOT checked (it reports DefaultDependencies=yes even when /persist "+
-			"survives, so checking it refuses unconditionally)", CriticalSoftRebootMounts)
+		t.Fatalf("CriticalSoftRebootMounts = %v, want exactly [/persist]; the nextroot mounts are "+
+			"checked by NextrootSurvivalGate instead, because they do not exist yet when the "+
+			"preflight runs", CriticalSoftRebootMounts)
 	}
 	for _, m := range CriticalSoftRebootMounts {
 		if strings.HasPrefix(m, "/run/") {
-			t.Errorf("CriticalSoftRebootMounts contains %q: a path under /run yields a "+
-				"mountinfo-generated unit that can never satisfy the DefaultDependencies=no "+
-				"half of the guard, so the preflight would never pass", m)
+			t.Errorf("CriticalSoftRebootMounts contains %q: nothing under /run/nextroot exists at "+
+				"preflight time, so its unit reads LoadState=not-found and the preflight would "+
+				"refuse unconditionally. Guard it in NextrootSurvivalGate, which runs after the "+
+				"mounts are real", m)
 		}
 	}
 }
