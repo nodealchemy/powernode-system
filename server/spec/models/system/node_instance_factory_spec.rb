@@ -15,8 +15,10 @@ require "rails_helper"
 # "never stampable" fixture) had its premise quietly voided.
 #
 # These pin BOTH halves of the contract: the backfill still defaults a valid
-# cloud instance, and the idiom that silently defeated it is now a loud error
-# naming the supported opt-out.
+# cloud instance, and an explicit nil is now HONOURED — no backfill, and any id
+# smuggled in through an explicit `config:` hash is cleared — so the natural
+# spelling produces the shape it names and there is no second flag that can
+# disagree with it.
 #
 # NOTE: this lives under spec/models/, NOT spec/factories/. rails_helper loads
 # every .rb under an extension's spec/factories/ as a factory-DEFINITION file,
@@ -51,51 +53,54 @@ RSpec.describe "system_node_instance factory — provider identity", type: :mode
     end
   end
 
-  describe "provider_identity: false — the supported opt-out" do
-    it "yields an identity-less cloud instance" do
-      instance = create(:system_node_instance, variety: "cloud", provider_identity: false)
+  describe "explicit cloud_instance_id: nil — the identity-less shape" do
+    it "is honoured for a cloud instance rather than backfilled over" do
+      instance = create(:system_node_instance, variety: "cloud", cloud_instance_id: nil)
 
       expect(instance.cloud_instance_id).to be_nil
       expect(instance.config).not_to have_key("cloud_instance_id")
     end
 
-    it "yields an identity-less dynamic instance" do
-      expect(create(:system_node_instance, variety: "dynamic", provider_identity: false)
+    it "is honoured for a dynamic instance" do
+      expect(create(:system_node_instance, variety: "dynamic", cloud_instance_id: nil)
                .cloud_instance_id).to be_nil
     end
-  end
 
-  describe "explicit cloud_instance_id: nil" do
-    it "raises for a cloud instance, naming the opt-out, instead of silently backfilling" do
-      expect { create(:system_node_instance, variety: "cloud", cloud_instance_id: nil) }
-        .to raise_error(ArgumentError, /provider_identity: false/)
-    end
-
-    it "raises for a dynamic instance" do
-      expect { create(:system_node_instance, variety: "dynamic", cloud_instance_id: nil) }
-        .to raise_error(ArgumentError, /provider_identity: false/)
-    end
-
-    # Negative control: the raise must fire ONLY where the nil would have been
-    # silently overridden. A blanket raise would have removed real coverage —
     # provision_verifier_spec passes exactly this shape to assert the
     # physical-variety path, where nil is the honest, surviving value.
-    it "does NOT raise for a physical instance, where nil is honest and survives" do
-      instance = nil
-      expect { instance = create(:system_node_instance, variety: "physical", cloud_instance_id: nil) }
-        .not_to raise_error
-      expect(instance.cloud_instance_id).to be_nil
+    it "is honoured for a physical instance" do
+      expect(create(:system_node_instance, variety: "physical", cloud_instance_id: nil)
+               .cloud_instance_id).to be_nil
     end
 
-    # The caller has stated the intent the raise exists to demand, so it is
-    # not ambiguous and must be accepted.
-    it "does NOT raise when paired with provider_identity: false" do
-      instance = nil
-      expect do
-        instance = create(:system_node_instance, variety: "cloud",
-                                                 cloud_instance_id: nil, provider_identity: false)
-      end.not_to raise_error
+    # An explicit nil beats an id smuggled in through the config hash —
+    # otherwise the identity-less request is silently overridden by the very
+    # column it is about, which is the whole defect this factory contract
+    # exists to prevent.
+    it "clears an id supplied through an explicit config hash" do
+      instance = create(:system_node_instance, variety: "cloud", cloud_instance_id: nil,
+                                               config: { "cloud_instance_id" => "i-smuggled" })
+
       expect(instance.cloud_instance_id).to be_nil
+      expect(instance.reload.config).not_to have_key("cloud_instance_id")
+    end
+
+    it "leaves the rest of an explicit config hash intact while clearing the id" do
+      instance = create(:system_node_instance, variety: "cloud", cloud_instance_id: nil,
+                                               config: { "cloud_instance_id" => "i-smuggled",
+                                                         "admin_user" => "operator" })
+
+      expect(instance.cloud_instance_id).to be_nil
+      expect(instance.reload.config["admin_user"]).to eq("operator")
+    end
+
+    it "survives the round trip to the database" do
+      instance = create(:system_node_instance, variety: "cloud", cloud_instance_id: nil)
+
+      expect(instance.reload.cloud_instance_id).to be_nil
+      # The F1 phantom shape, by the model's own predicate — which is the one
+      # mark_running guards on.
+      expect(instance.reload.provider_identity_present?).to be false
     end
   end
 end

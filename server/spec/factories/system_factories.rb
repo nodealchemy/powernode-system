@@ -146,46 +146,37 @@ FactoryBot.define do
     # as an attribute, others inside an explicit `config:` hash — a plain
     # sequence clobbers one style or the other depending on declaration
     # order); fill only when absent, and only for cloud/dynamic varieties.
-    # Specs probing the identity-less state pass the transient
-    # `provider_identity: false`.
+    # Specs probing the identity-less state pass `cloud_instance_id: nil`,
+    # which is HONOURED: no backfill, and any id carried in an explicit
+    # `config:` hash is cleared, so the natural spelling produces the shape it
+    # names.
     #
-    # An explicit `cloud_instance_id: nil` does NOT produce that state, and
-    # used to be indistinguishable from omitting it (a nil store write drops
-    # the key, so the backfill below simply filled it). That silently handed
-    # four specs the WITH-identity branch — three of them asserting negatives
-    # that could never hold, sitting red for months (IMP-7aedb6f1a5f1). So
-    # cloud_instance_id is declared as a TRANSIENT with a sentinel default:
-    # that is what lets the factory tell "not supplied" from an explicit nil
-    # and refuse the latter loudly. It also makes precedence against an
-    # explicit `config:` deterministic instead of declaration-order dependent.
+    # That needs the sentinel below. cloud_instance_id is a store_accessor
+    # into the config JSONB and a nil store write leaves nothing for an
+    # after(:build) to inspect, so an explicit nil used to be
+    # indistinguishable from omitting the attribute — it was silently
+    # backfilled, handing four specs the WITH-identity branch, three of them
+    # asserting negatives that could never hold (IMP-7aedb6f1a5f1). Declaring
+    # cloud_instance_id as a TRANSIENT with a unique sentinel default is what
+    # lets the factory tell "not supplied" from "explicitly nil". Assigning
+    # here also makes precedence against an explicit `config:` deterministic
+    # rather than declaration-order dependent.
     transient do
-      provider_identity { true }
       cloud_instance_id { SystemFactorySentinels::CLOUD_INSTANCE_ID_UNSET }
     end
     after(:build) do |instance, evaluator|
       supplied = evaluator.cloud_instance_id
-      cloud_ish = %w[cloud dynamic].include?(instance.variety.to_s)
 
       if supplied.equal?(SystemFactorySentinels::CLOUD_INSTANCE_ID_UNSET)
-        # Fill only when absent, and only for cloud/dynamic varieties — an id
-        # supplied inside an explicit `config:` hash counts as present.
-        if evaluator.provider_identity && cloud_ish &&
-           instance.cloud_instance_id.blank? &&
-           !(instance.config || {}).key?("cloud_instance_id")
+        # provider_identity_present? IS the "which varieties need an identity"
+        # rule (it is the same predicate mark_running guards on), so reuse it
+        # rather than restating the variety list here — a third copy would
+        # drift, and a typo'd variety would silently get an unguarded shape.
+        unless instance.provider_identity_present?
           instance.cloud_instance_id = "dna/qemu/#{9000 + SecureRandom.random_number(90_000)}"
         end
       elsif supplied.nil?
-        # Refuse ONLY where the nil would have been silently overridden.
-        # Physical varieties (and an explicit opt-out) mean it honestly: nil
-        # is the surviving value there, and specs depend on that.
-        if evaluator.provider_identity && cloud_ish
-          raise ArgumentError,
-                "create(:system_node_instance, cloud_instance_id: nil) does not produce an " \
-                "identity-less instance: cloud_instance_id is a store_accessor into config, a " \
-                "nil store write drops the key, and the cloud/dynamic backfill then fills a " \
-                "generated id over it. Pass `provider_identity: false` to seed the identity-less " \
-                "(F1 phantom) shape."
-        end
+        instance.config = (instance.config || {}).except("cloud_instance_id")
       else
         instance.cloud_instance_id = supplied
       end

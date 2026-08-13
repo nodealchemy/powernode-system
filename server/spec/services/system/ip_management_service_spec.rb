@@ -134,12 +134,10 @@ RSpec.describe System::IpManagementService do
       end
 
       it "errors when the instance has no cloud instance ID" do
-        # `provider_identity: false` is the factory's opt-out for the
-        # identity-less shape. Omitting cloud_instance_id (or overriding it
-        # to nil) does NOT produce it — the factory backfills a generated id
-        # for cloud/dynamic varieties, which would carry execution past this
+        # The explicit nil is load-bearing: OMITTING cloud_instance_id gets a
+        # backfilled id for a cloud variety, which carries execution past this
         # guard and into Providers::Registry.
-        bare = create(:system_node_instance, node: node, status: "running", provider_identity: false)
+        bare = create(:system_node_instance, node: node, status: "running", cloud_instance_id: nil)
 
         result = described_class.associate_public_ip(instance: bare)
 
