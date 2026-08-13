@@ -76,6 +76,103 @@ RSpec.describe "Api::V1::System::Sdwan::Networks", type: :request do
     end
   end
 
+  describe "PATCH /api/v1/system/sdwan/networks/:id" do
+    # IMP-c159cc6777b1 — gated-CRUD wiring, network resource. UpdateNetwork
+    # existed but had no caller: NetworksController#update wrote through
+    # @network.update(network_params) behind the permission check alone, so the
+    # seeded sdwan.network_update policy matched no gate call — while DELETE
+    # below has been gated since the destructive-ops slice. Flipping status /
+    # routing_protocol / advertise_overlay_subnet rewrites BGP + AllowedIPs for
+    # every peer, so it is at least as consequential as deleting the network.
+
+    let(:reader) { user_with_permissions("system.sdwan.networks.read", account: account) }
+    let!(:network) { create(:sdwan_network, account: account, name: "orig", status: "registered") }
+    let(:payload) { { network: { status: "suspended" } } }
+
+    def member_path = "/api/v1/system/sdwan/networks/#{network.id}"
+
+    def patch_update(as: user)
+      patch member_path, params: payload.to_json,
+            headers: auth_headers_for(as).merge("Content-Type" => "application/json")
+    end
+
+    # Executes the deferred operation the gate parked — the tail of the approval
+    # path (Ai::ApprovalRequest ultimately calls execute_now!). Without it the
+    # 202 examples are vacuous: on the :pending branch the executor never runs
+    # during the request, so "the network is unchanged" proves nothing about the
+    # executor.
+    def approve_latest_deferred!
+      ::Ai::DeferredOperation.order(created_at: :desc).first.tap(&:execute_now!)
+    end
+
+    # Forces the gate's :proceed branch. A fresh spec account has no
+    # InterventionPolicy rows, so InterventionPolicyService falls through to its
+    # require_approval default; stub resolve to reach :proceed.
+    def auto_approve_policy!
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+        { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+      )
+    end
+
+    it "requires system.sdwan.networks.manage" do
+      patch_update(as: reader)
+
+      expect(response).to have_http_status(:forbidden)
+    end
+
+    # The finding: this wrote the network inline behind the permission check, so
+    # sdwan.network_update never resolved against anything.
+    it "defers the update through the autonomy gate instead of writing inline" do
+      patch_update
+
+      expect(response).to have_http_status(:accepted)
+      expect(json_response_data["pending"]).to eq(true)
+      expect(network.reload.status).to eq("registered"),
+                                       "the network was changed without an approval gate"
+
+      deferred = ::Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred).to be_present, "PATCH did not route through the autonomy gate"
+      expect(deferred.action_category).to eq("sdwan.network_update")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::UpdateNetwork")
+      expect(deferred.params["network_id"]).to eq(network.id)
+      expect(deferred.params.dig("attributes", "status")).to eq("suspended")
+    end
+
+    # gate! never calls on_proceed on its :pending branch, so the executor is the
+    # only thing that touches the row.
+    it "applies the update when the deferred operation is approved" do
+      patch_update
+
+      approve_latest_deferred!
+
+      expect(network.reload.status).to eq("suspended"), "approved update left the network unchanged"
+    end
+
+    it "updates inline and renders the row when the policy auto-approves" do
+      auto_approve_policy!
+
+      patch_update
+
+      expect(response).to have_http_status(:ok)
+      expect(json_response_data["network"]["status"]).to eq("suspended")
+      expect(network.reload.status).to eq("suspended"), "answered ok over an unchanged network"
+      # 200-with-the-row is also what the UNGATED controller answered, so
+      # without this the example cannot tell fixed from unfixed.
+      expect(::Ai::DeferredOperation.last&.executor_class).to eq("Sdwan::Executors::UpdateNetwork"),
+                                                              "auto-approved update bypassed the gate entirely"
+    end
+
+    it "still answers 422 with field errors and opens no gate row for an invalid payload" do
+      patch member_path, params: { network: { status: "sideways" } }.to_json,
+            headers: headers.merge("Content-Type" => "application/json")
+
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(network.reload.status).to eq("registered")
+      expect(::Ai::DeferredOperation.count).to eq(0),
+                                               "an unsaveable update still opened an autonomy-gate audit row"
+    end
+  end
+
   describe "DELETE /api/v1/system/sdwan/networks/:id" do
     # Destructive SDWAN ops route through the autonomy gate. The default
     # intervention policy is require_approval, so the request is accepted (202)
