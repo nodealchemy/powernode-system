@@ -221,7 +221,7 @@ RSpec.describe "Sdwan::Executors trust-boundary executors", type: :model do
     # the operator's reason was dropped. Stubbing respond_to? manufactures the
     # only state that could ever reach that arm; the executor must not consult
     # it at all.
-    it "cascades to every device and records the reason without consulting respond_to?" do
+    it "cascades to every device and records the reason even when respond_to?(:revoke!) is false" do
       grant  = create(:sdwan_access_grant, account: account, status: "active")
       device = create(:sdwan_user_device, access_grant: grant)
 
@@ -230,6 +230,7 @@ RSpec.describe "Sdwan::Executors trust-boundary executors", type: :model do
 
         super
       end
+      allow(::Sdwan::AccessGrant).to receive(:find).and_call_original
       allow(::Sdwan::AccessGrant).to receive(:find).with(grant.id).and_return(grant)
 
       described_class.execute({ grant_id: grant.id, reason: "offboarded" }, deferred_operation: nil)
