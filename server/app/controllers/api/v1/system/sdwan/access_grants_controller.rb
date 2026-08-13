@@ -62,10 +62,30 @@ module Api
             end
           end
 
+          # DELETE /access_grants/:id — harder than :revoke below. AccessGrant
+          # declares `has_many :user_devices, dependent: :destroy`, so this
+          # cascades to every VPN device row and, via the VaultCredential
+          # after_destroy hook, removes each device's WireGuard key from Vault —
+          # defeating the 90-day audit retention that #revoke preserves. Gated
+          # through AutonomyGate (require_approval) like every other destructive
+          # SDWAN verb.
           def destroy
             require_permission("system.sdwan.user_devices.manage")
-            @grant.destroy!
-            render_success(deleted: true, id: @grant.id)
+            id = @grant.id
+            user_email = @grant.try(:user)&.email
+            gate!(
+              action_category: "sdwan.access_grant_delete",
+              executor_class: "Sdwan::Executors::DeleteAccessGrant",
+              params: { network_id: @network.id, grant_id: id },
+              source_type: "Sdwan::AccessGrant",
+              source_id: id,
+              description: "Delete SDWAN access grant #{user_email || id}",
+              # The executor destroys the rows. Doing it here instead would only
+              # cover the :proceed branch — gate! skips on_proceed when the
+              # action is deferred for approval, and this category is
+              # require_approval, so :pending is the normal branch.
+              on_proceed: ->(_r) { render_success(deleted: true, id: id) }
+            )
           end
 
           # POST /access_grants/:id/revoke — softer than DELETE; preserves

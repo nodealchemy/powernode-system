@@ -130,9 +130,13 @@ sdwan_policies = {
   "sdwan.port_mapping_update"         => "notify_and_proceed",
   "sdwan.port_mapping_delete"         => "notify_and_proceed",
 
-  # Access grants — granting access notifies, revoking requires approval
+  # Access grants — granting access notifies, revoking requires approval.
+  # Deleting is strictly more destructive than revoking: dependent: :destroy
+  # cascades to every VPN device and their Vault keys, leaving nothing for the
+  # 90-day audit window, so it is gated at least as tightly.
   "sdwan.access_grant_create"         => "notify_and_proceed",
   "sdwan.access_grant_revoke"         => "require_approval",
+  "sdwan.access_grant_delete"         => "require_approval",
 
   # User devices — issuing a VPN config notifies, revoking requires approval
   "sdwan.user_device_create"          => "notify_and_proceed",
