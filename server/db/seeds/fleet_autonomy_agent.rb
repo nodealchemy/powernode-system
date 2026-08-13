@@ -124,6 +124,34 @@ fleet_policies = {
   "system.sdwan_bgp_session_remediate" => "notify_and_proceed",
   "system.sdwan_vip_failover"          => "require_approval",
   "system.sdwan_route_policy_audit"    => "auto_approve",
+  # IMP-c7d663f24a0b — SdwanServiceHealthSensor (sdwan_service_silent +
+  # sdwan_portmap_orphaned). notify_and_proceed: notify-level first, no
+  # auto-remediation until the signal quality is proven in the field.
+  #
+  # Seeded HERE rather than on the SDWAN Manager agent for the same mechanical
+  # reason recorded in the NOTE at the bottom of this file — the sensor fires
+  # from FleetAutonomyService::SENSORS, and #permitted_actions resolves
+  # policies with `where(ai_agent_id: agent.id)` against the agent running the
+  # tick. A policy on SDWAN Manager is invisible to that lookup, so
+  # gate_action! would return :blocked/"not_permitted" and every signal this
+  # sensor produces would die at the gate — a sensor inert at its far end.
+  # Same placement as federation_peer_remediate / gitops_drift_remediate /
+  # disk_image_publication_investigate.
+  #
+  # TRAP, if you add another notify-level category: this one PROCEEDS but never
+  # actuates (skill: nil in SIGNAL_BINDINGS, no REMEDIATION_APPLIERS entry), and
+  # RemediationValidator opens a pending RemediationOutcome for every proceeded
+  # decision. Nothing ever clears it — the triggering condition ends when a
+  # person fixes the workload, not inside the 90s SETTLE_WINDOW — so it scores
+  # ineffective every window until the F3-11 streak manufactures a FALSE
+  # fleet.remediation_stuck HIGH escalation and forces require_approval on a
+  # lane that never acted. That is why the category is also listed in
+  # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES. Membership there is
+  # DECLARED, never inferred: "skill-less and applier-less" does NOT imply
+  # non-remediating (system.cert_rotate and the SLO categories are both and
+  # still actuate elsewhere), so a new notify-only category must be added by
+  # hand or it ships this failure mode.
+  "system.sdwan_service_health_investigate" => "notify_and_proceed",
 
   # Read/notify
   "system.module_assign"           => "notify_and_proceed",

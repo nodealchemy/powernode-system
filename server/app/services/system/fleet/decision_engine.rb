@@ -231,6 +231,22 @@ module System
           skill: nil,
           action_category: "system.observation"
         },
+        # IMP-c7d663f24a0b — SdwanServiceHealthSensor. Both kinds are
+        # notify-level with skill: nil, deliberately: the sensor's whole point
+        # is that the overlay is HEALTHY and the workload is not, so every
+        # existing sdwan_* executor (peer remediate, failover, key rotate)
+        # would act on plumbing this signal has just proven fine. They share
+        # one action_category because they share one disposition — surface to
+        # the operator — while keeping distinct kinds and fingerprints so
+        # dedup and dashboards can tell a dead service from a dead DNAT rule.
+        "system.sdwan_service_silent" => {
+          skill: nil,
+          action_category: "system.sdwan_service_health_investigate"
+        },
+        "system.sdwan_portmap_orphaned" => {
+          skill: nil,
+          action_category: "system.sdwan_service_health_investigate"
+        },
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
           action_category: "system.sdwan_vip_failover",

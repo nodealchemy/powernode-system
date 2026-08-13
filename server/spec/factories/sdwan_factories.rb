@@ -102,6 +102,25 @@ FactoryBot.define do
     settings { {} }
   end
 
+  # One decoded IPFIX 5-tuple. Production rows arrive via
+  # Sdwan::IpfixIngestService#insert_all (which bypasses the model), so this
+  # factory exists for read-side specs — chiefly SdwanServiceHealthSensor,
+  # which correlates dst_ip + dst_port against a service backend.
+  factory :sdwan_flow_sample, class: "Sdwan::FlowSample" do
+    association :account
+    ipfix_collector { association :sdwan_ipfix_collector, account: account }
+    src_ip { "fd00:abcd:1::9" }
+    dst_ip { "fd00:abcd:1::1" }
+    src_port { 40_000 }
+    dst_port { 443 }
+    protocol { ::Sdwan::FlowSample::PROTOCOLS[:tcp] }
+    octet_count { 4_096 }
+    packet_count { 12 }
+    flow_start_at { 2.minutes.ago }
+    flow_end_at { 1.minute.ago }
+    observed_at { 1.minute.ago }
+  end
+
   factory :sdwan_ovn_deployment, class: "Sdwan::OvnDeployment" do
     association :account
     nb_db_endpoint { "tcp:[fd00:abcd:4::1]:6641" }

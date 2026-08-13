@@ -154,6 +154,40 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
         .to change { System::Fleet::RemediationOutcome.pending.count }.by(1)
     end
 
+    # IMP-c7d663f24a0b — same exemption class, second member. The
+    # SdwanServiceHealthSensor lane proceeds at notify level with no skill and
+    # no REMEDIATION_APPLIERS entry: nothing is actuated, and the triggering
+    # condition (a service that stopped serving) clears only when a person
+    # fixes the workload — never inside the 90s SETTLE_WINDOW. Scoring it
+    # would mark it ineffective every window until STUCK_STREAK_THRESHOLD
+    # manufactured a false fleet.remediation_stuck HIGH escalation, ~30 min
+    # after any service went quiet, for a lane that never acted.
+    it "skips PROCEEDED decisions with a declared non-remediating action_category" do
+      investigate_decision = {
+        decision: :proceed, gate: "notify_and_proceed", signal_kind: "system.sdwan_service_silent",
+        fingerprint: "sdwan_service_silent:svc-1",
+        action_category: "system.sdwan_service_health_investigate"
+      }
+      signals = [ sig("sdwan_service_silent:svc-1", kind: "system.sdwan_service_silent") ]
+
+      expect { validator.record_proceeded!(decisions: [ investigate_decision ], signals: signals) }
+        .not_to change { System::Fleet::RemediationOutcome.count }
+    end
+
+    # The list is DECLARED, not derived — a category that merely looks
+    # notify-shaped must still be scored, or a real remediation silently
+    # stops being validated.
+    it "still records a notify_and_proceed decision whose category is not declared" do
+      undeclared = {
+        decision: :proceed, gate: "notify_and_proceed", signal_kind: "system.sdwan_peer_drift",
+        fingerprint: "peer-1", action_category: "system.sdwan_peer_remediate"
+      }
+      signals = [ sig("peer-1", kind: "system.sdwan_peer_drift") ]
+
+      expect { validator.record_proceeded!(decisions: [ undeclared ], signals: signals) }
+        .to change { System::Fleet::RemediationOutcome.pending.count }.by(1)
+    end
+
     it "mixes observation and normal decisions correctly" do
       observation = {
         decision: :proceed, fingerprint: "boot:i-1", signal_kind: "system.boot_image_drift",

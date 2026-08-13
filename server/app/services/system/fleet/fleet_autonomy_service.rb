@@ -263,7 +263,16 @@ module System
         # owning the tick it runs in) → system.disk_image_publication_investigate
         # gate, which is seeded on THIS agent (fleet_autonomy_agent.rb) for
         # the same reason federation_peer_remediate/sdwan_* live there.
-        ::System::Fleet::Sensors::DiskImagePublicationFailureStreakSensor
+        ::System::Fleet::Sensors::DiskImagePublicationFailureStreakSensor,
+        # IMP-c7d663f24a0b — the first SERVICE-level SDWAN sensor. The other
+        # five sdwan_* sensors answer "is the pipe up?"; this one correlates
+        # already-ingested IPFIX FlowSamples against each active service's
+        # backend VIP+port to answer "is the thing at the end serving?", and
+        # flags enabled DNAT rules whose target no longer resolves. Emits
+        # system.sdwan_service_silent / system.sdwan_portmap_orphaned →
+        # system.sdwan_service_health_investigate (notify-level; no
+        # auto-remediation until the signal quality is proven).
+        ::System::Fleet::Sensors::SdwanServiceHealthSensor
       ].freeze
 
       def permitted_actions
