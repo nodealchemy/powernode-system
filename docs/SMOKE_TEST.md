@@ -86,7 +86,7 @@ listed in [Pass 1](#pass-1--single-node-qemu).
 | `smoke_test_k3s_ha_control_plane.rb` | 9 | K3s lifecycle ph.2 | 3-server HA cluster + VIP failover candidates + synthetic `VirtualIp#failover!` | site+ (db tier: synth) |
 | `smoke_test_k3s_agent_join.rb` | 9 | K3s lifecycle ph.3 | 2 k3s-agents join via target_cluster_id + CniProfileMismatch negative test | site+ (db tier: synth) |
 | `smoke_test_k3s_pod_plane.rb` | 9 | K3s lifecycle ph.4 | runtime bootstrap_config payload + (site+) nginx deploy + tcpdump on wg-sdwan-* | site+ (db tier: contract only) |
-| `smoke_test_k3s_federation.rb` | 9 | K3s lifecycle ph.5 | System::FederationPeer propose/accept incl. the single-use acceptance-token round-trip (Site A ↔ Site B) + (site+) cross-site API plane | full (db tier: skip-clean) |
+| `smoke_test_k3s_federation.rb` | 9 | K3s lifecycle ph.5 | System::FederationPeer propose/accept incl. the single-use acceptance-token round-trip (Site A ↔ Site B) + cross-site API plane | full (below full: skip-clean) |
 | `smoke_test_k3s_rolling_upgrade.rb` | 9 | K3s lifecycle ph.6 | rolling_module_upgrade executor descriptor + plan synthesis (canary-first batch sequencing) | site+ (db tier: plan only) |
 | `smoke_test_k3s_cve_drill.rb` | 9 | K3s lifecycle ph.7 | Synthetic CVE → CveResponseExecutor triage + CveRunbookGenerateExecutor runbook | no |
 | `smoke_test_k3s_drain_reprovision.rb` | 9 | K3s lifecycle ph.8 | drain (mark_node_stopped) → terminate → reprovision → re-join → node_count restored | site+ (db tier: synth) |

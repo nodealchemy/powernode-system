@@ -13,7 +13,7 @@ require Rails.root.join("../extensions/system/server/db/seeds/_smoke_k3s_helpers
 # The seed is a straight-line script, so this runs it — nothing about the
 # federation legs is re-implemented here. Only the host-dependent parts are
 # stubbed (tier gate, the 8-item preflight, the /tmp state sidecar, and the
-# site+ kubectl leg, which needs a live Site B and a kubectl binary).
+# cross-site kubectl leg, which needs a live Site B and a kubectl binary).
 # Everything from "Propose federation peer" down executes for real against
 # the test DB, which is what makes this red on the stale constructor.
 RSpec.describe "smoke_test_k3s_federation seed (IMP-de7b0ec66dea)" do
@@ -46,8 +46,17 @@ RSpec.describe "smoke_test_k3s_federation seed (IMP-de7b0ec66dea)" do
     allow(helpers).to receive(:state_read).and_return(sidecar)
     allow(helpers).to receive(:state_write)
 
-    # The cross-site API-plane leg shells out to kubectl against a live Site B.
-    allow(helpers).to receive(:tier_at_least?).with("site").and_return(false)
+    # The cross-site API-plane leg used to be skipped here by stubbing
+    # tier_at_least?("site") false — impossible in a real run, since the phase
+    # gates at full (IMP-c75106b72ef8 deleted that guard). The leg now always
+    # runs, so it is neutered at its three host-dependent seams instead: a
+    # kubeconfig fetch that would call the provisioning tool against a live
+    # Site B, and a kubectl that would need a binary and a route to it.
+    # /bin/false stands in for the binary: it exits non-zero without a network,
+    # so the leg deterministically takes its soft-fail path.
+    allow(helpers).to receive(:kubectl_available?).and_return(true)
+    allow(helpers).to receive(:fetch_kubeconfig!)
+    allow(helpers).to receive(:kubectl_binary).and_return("/bin/false")
 
     # #fail_with aborts the process, which RSpec deliberately does not rescue
     # (SystemExit is in AVOID_RESCUING). Re-raise as a StandardError so a
@@ -111,5 +120,119 @@ RSpec.describe "smoke_test_k3s_federation seed (IMP-de7b0ec66dea)" do
       expect(peer.status).to eq("revoked")
       expect(peer.metadata["revocation_reason"]).to be_present
     end
+  end
+end
+
+# IMP-c75106b72ef8 — the seed gates the whole phase at `full`, but its header
+# tier table advertised propose/accept from "site+" up, and it wrapped the
+# cross-site API-plane leg in `if h.tier_at_least?("site")` — a condition that
+# cannot be false once the full-tier gate has passed. Gate and prose disagreed
+# about which tiers get federation coverage; the gate is authoritative.
+#
+# Both halves are source-level properties — a branch with no reachable false arm,
+# and prose that contradicts the gate above it — so the oracle reads the seed and
+# the catalog instead of running them. The gate tier is parsed OUT of the seed
+# rather than hardcoded, so if the gate is ever lowered deliberately the check
+# relaxes with it instead of pinning today's answer.
+#
+# Deliberately scoped to this one seed. Of the nine smoke_test_k3s_*.rb, seven
+# gate at "db" and smoke_test_k3s_runtime.rb has no tier_gate at all, so every
+# tier_at_least?("single"/"site") guard outside this file sits above (or without)
+# its gate and keeps a reachable false arm. This one was the only dead guard.
+RSpec.describe "smoke_test_k3s_federation tier gate vs. documentation (IMP-c75106b72ef8)" do
+  let(:seed_source) do
+    File.read(Rails.root.join("../extensions/system/server/db/seeds/smoke_test_k3s_federation.rb"))
+  end
+  let(:catalog_source) do
+    File.read(Rails.root.join("../extensions/system/docs/SMOKE_TEST.md"))
+  end
+
+  let(:tier_index) { ::System::Seeds::SmokeK3sHelpers::TIER_INDEX }
+  let(:gate_tier)  { seed_source[/h\.tier_gate\(required: "(\w+)"\)/, 1] }
+  let(:gate_rank)  { tier_index.fetch(gate_tier) }
+
+  it "gates the phase at a tier the helper actually knows" do
+    expect(gate_tier).to be_present, "no h.tier_gate(required: ...) found in the seed"
+    expect(tier_index).to have_key(gate_tier)
+  end
+
+  it "has no tier_at_least? guard that the gate already guarantees" do
+    dead = seed_source.scan(/h\.tier_at_least\?\(["'](\w+)["']\)/).flatten
+                      .select { |tier| tier_index.fetch(tier) <= gate_rank }
+
+    expect(dead).to be_empty,
+                    "dead tier guard(s) #{dead.inspect}: tier_gate(required: #{gate_tier.inspect}) " \
+                    "has already returned by then, so tier_at_least? can never be false there"
+  end
+
+  # The header's tier table is the run of `#   <tiers>: <description>` rows
+  # directly under the "Tier semantics:" line, ending at the first bare "#".
+  # Any tier ranked BELOW the gate is skipped by the gate itself, so its row must
+  # say so — a row promising work at such a tier is prose the script cannot
+  # honour. The character class is [ \t] rather than \s on purpose: \s matches
+  # newlines, which would let the run swallow the bare "#" separator and keep
+  # going through the whole header comment, scanning prose that is not the table
+  # (the "cross-site API plane" line below it reads as a "site" claim).
+  it "documents every sub-gate tier as skipped in the header tier table" do
+    table = seed_source[/^# Tier semantics:\n((?:#[ \t]+\S.*\n)+)/, 1].to_s
+    rows = table.lines.filter_map do |line|
+      match = line.match(/^#\s+(?<tiers>[^:]+):\s*(?<description>.+)$/)
+      match && [match[:tiers], match[:description]]
+    end
+
+    expect(rows).not_to be_empty, "could not parse the header 'Tier semantics:' table"
+
+    overclaimed = rows.reject { |_tiers, description| description.match?(/skipped/i) }
+                      .flat_map { |tiers, _description| tiers.scan(/db|single|site|full/) }
+                      .select { |tier| tier_index.fetch(tier) < gate_rank }
+
+    expect(overclaimed).to be_empty,
+                           "header promises work at #{overclaimed.inspect}, but the phase gates at " \
+                           "#{gate_tier.inspect} and exits 0 below it"
+  end
+
+  # Same disagreement, restated one file over. The catalog's convention for a
+  # tier claim is a bare or parenthesised tier token, usually suffixed "+"
+  # ("(site+)", "site+ (db tier: synth)"). The lookbehind matters: "cross-site"
+  # ends in a legitimate, non-tier "site" that must not read as a claim, and the
+  # scan is case-sensitive so the prose "Site A ↔ Site B" does not either.
+  it "does not advertise sub-gate tier coverage in the smoke catalog row" do
+    row = catalog_source.lines.find do |line|
+      line.start_with?("|") && line.include?("`smoke_test_k3s_federation.rb`")
+    end
+    expect(row).to be_present, "no smoke_test_k3s_federation.rb row in docs/SMOKE_TEST.md"
+
+    # Guards the vacuity path: if the table ever gains or loses a column, [4]
+    # would silently be nil and every scan below would find nothing to object to.
+    description = row.split("|").map(&:strip)[4].to_s
+    expect(description).not_to be_empty, "catalog row has no description column: #{row.inspect}"
+
+    overclaimed = description.scan(/(?<![\w-])(db|single|site|full)\+?(?=\)|\s|\z)/).flatten
+                             .select { |tier| tier_index.fetch(tier) < gate_rank }
+
+    expect(overclaimed).to be_empty,
+                           "catalog row claims #{overclaimed.inspect} coverage for a phase gated at " \
+                           "#{gate_tier.inspect}: #{description.inspect}"
+  end
+
+  # The description above is prose; THIS column is the catalog's authoritative
+  # statement of the gate ("site+ (db tier: synth)" on the sibling rows), so it
+  # is the cell that has to agree with tier_gate. Checked separately because a
+  # sub-gate tier here is not an overclaim in the description's sense — it is
+  # the catalog naming the wrong gate outright.
+  it "names the seed's gate tier in the catalog's tier column" do
+    row = catalog_source.lines.find do |line|
+      line.start_with?("|") && line.include?("`smoke_test_k3s_federation.rb`")
+    end
+    expect(row).to be_present, "no smoke_test_k3s_federation.rb row in docs/SMOKE_TEST.md"
+
+    tier_cell = row.split("|").map(&:strip)[5].to_s
+    expect(tier_cell).not_to be_empty, "catalog row has no tier column: #{row.inspect}"
+
+    declared = tier_cell[/\A(db|single|site|full)\+?/, 1]
+
+    expect(declared).to eq(gate_tier),
+                        "catalog tier column #{tier_cell.inspect} declares #{declared.inspect}, " \
+                        "but the seed gates at #{gate_tier.inspect}"
   end
 end

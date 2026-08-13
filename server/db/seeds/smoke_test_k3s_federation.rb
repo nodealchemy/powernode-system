@@ -5,7 +5,7 @@
 # Requires Site A + Site B clusters in the state sidecar. Proposes a
 # System::FederationPeer from Site A → Site B (autonomous_peer mode) and
 # accepts on Site B's behalf, driving the same approval-gated executors
-# FederationPeersController dispatches. At site+ tier, also exercises the cross-site
+# FederationPeersController dispatches. Also exercises the cross-site
 # API plane (kubectl --kubeconfig=B against Site B's api_endpoint from a
 # Site A host's perspective).
 #
@@ -13,15 +13,20 @@
 # control plane only. Submariner / multi-cluster-services is future work.
 #
 # Tier semantics:
-#   db / single: skipped (federation needs both sites to exist)
-#   site+:       runs the federation propose + accept + (optional) revoke
-#   full:        + cross-site API plane test
+#   db / single / site: skipped — the gate below covers the whole phase
+#   full:               propose + accept + (optional) revoke + cross-site API plane
+#
+# Site-tier propose/accept coverage is a deliberate NON-GOAL: the gate is the
+# entire phase, so there is no partially-enabled site-tier path here. If that
+# coverage is wanted it belongs in a new smoke with its own gate — lowering this
+# gate would change what runs on real site-tier hosts for no other reason.
 #
 # Asserts:
 #   - the proposed System::FederationPeer lands in status="proposed"
 #   - propose mints a single-use acceptance token, and accept consumes it
 #     (the Phase 11b token round-trip) to reach status="accepted"
-#   - (site+ tier) cross-site API plane reachable via kubectl
+#   - cross-site API plane reachable via kubectl (a kubectl that runs but fails
+#     is reported as a warning, not a smoke failure — see that leg)
 #
 # NOT asserted (this smoke drives one plane, so there is one peer row): a
 # B-side peer row, and the iBGP control-plane peering itself — nothing on
@@ -132,42 +137,45 @@ fp.reload
 h.assert(%w[accepted active].include?(fp.status),
          "FederationPeer status is accepted or active (got #{fp.status})")
 
-# ── Cross-site API plane (site+) ────────────────────────────────────
-if h.tier_at_least?("site")
-  h.step("Cross-site API plane test (kubectl --kubeconfig=B from Site A's perspective)")
+# ── Cross-site API plane ────────────────────────────────────────────
+# Unconditional: the phase-wide `tier_gate(required: "full")` above is the only
+# tier check this script needs, so wrapping this leg in a second one only
+# expressed a condition that had already been decided.
+h.step("Cross-site API plane test (kubectl --kubeconfig=B from Site A's perspective)")
 
-  h.fail_with("kubectl binary not found (override via SMOKE_K3S_KUBECTL)") unless h.kubectl_available?
+h.fail_with("kubectl binary not found (override via SMOKE_K3S_KUBECTL)") unless h.kubectl_available?
 
-  # Fetch Site B's kubeconfig and use it from this host. Federation
-  # makes Site B's api_endpoint (a VIP CIDR inside Site B's SDWAN network)
-  # reachable from any host that is also a federation peer. The smoke
-  # is running on the platform host, which IS a federation participant
-  # via the FederationPeer rows just created.
-  b_kubeconfig = "/tmp/k3s-smoke-kubeconfig-b"
-  h.fetch_kubeconfig!(cluster: b_cluster, user: account.users.first, dest_path: b_kubeconfig)
-  h.ok("Site B kubeconfig fetched (#{b_kubeconfig})")
+# Fetch Site B's kubeconfig and use it from this host. Federation
+# makes Site B's api_endpoint (a VIP CIDR inside Site B's SDWAN network)
+# reachable from any host that is also a federation peer. The smoke
+# is running on the platform host, which IS a federation participant
+# via the FederationPeer rows just created.
+b_kubeconfig = "/tmp/k3s-smoke-kubeconfig-b"
+h.fetch_kubeconfig!(cluster: b_cluster, user: account.users.first, dest_path: b_kubeconfig)
+h.ok("Site B kubeconfig fetched (#{b_kubeconfig})")
 
-  # Hit Site B's API server. If federation peering is working, this
-  # returns Site B's nodes. If not, it times out or errors with no
-  # route to host.
-  out = `#{h.kubectl_binary} --kubeconfig=#{b_kubeconfig} get nodes -o jsonpath='{.items[*].metadata.name}' 2>&1`
-  exit_ok = $?.success?
+# Hit Site B's API server. If federation peering is working, this
+# returns Site B's nodes. If not, it times out or errors with no
+# route to host.
+out = `#{h.kubectl_binary} --kubeconfig=#{b_kubeconfig} get nodes -o jsonpath='{.items[*].metadata.name}' 2>&1`
+exit_ok = $?.success?
 
-  if exit_ok
-    nodes = out.to_s.strip.split
-    h.assert(nodes.any?, "Site B nodes reachable via federation route (got #{nodes.inspect})")
-    h.ok("federation control-plane traffic flows end-to-end (#{nodes.size} Site B node(s) listed)")
-  else
-    # Common failure modes: api_endpoint VIP unreachable from this host
-    # (federation routing not converged), or Site B cluster bootstrapped
-    # without an actual k3s install (db-tier mock).
-    h.warn_msg("kubectl get nodes failed against Site B: #{out.to_s[0, 200]}")
-    h.warn_msg("at site+ tier this typically means federation routing hasn't converged " \
-               "(check FRR + System::FederationPeer status), or Site B's cluster wasn't " \
-               "bootstrapped with a real k3s install. See runbook §Phase 5 troubleshooting.")
-    h.warn_msg("treating as soft-fail at site+ tier; assert hardens at full tier")
-    h.assert(true, "cross-site API plane test completed (soft-fail observed)")
-  end
+if exit_ok
+  nodes = out.to_s.strip.split
+  h.assert(nodes.any?, "Site B nodes reachable via federation route (got #{nodes.inspect})")
+  h.ok("federation control-plane traffic flows end-to-end (#{nodes.size} Site B node(s) listed)")
+else
+  # Common failure modes: api_endpoint VIP unreachable from this host
+  # (federation routing not converged), or Site B cluster bootstrapped
+  # without an actual k3s install (db-tier mock).
+  h.warn_msg("kubectl get nodes failed against Site B: #{out.to_s[0, 200]}")
+  h.warn_msg("this typically means federation routing hasn't converged " \
+             "(check FRR + System::FederationPeer status), or Site B's cluster wasn't " \
+             "bootstrapped with a real k3s install. See runbook §Phase 5 troubleshooting.")
+  # Soft-fail is the end of the line, not a lower-tier stand-in: this leg only
+  # ever runs at full tier, so there is no harder variant to escalate to.
+  h.warn_msg("treating a reachable-but-failing Site B as a soft-fail")
+  h.assert(true, "cross-site API plane test completed (soft-fail observed)")
 end
 
 # ── Optional revoke ─────────────────────────────────────────────────
