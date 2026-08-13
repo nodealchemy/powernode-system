@@ -96,9 +96,13 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
         expect(d[:dry_run]).to be true
         expect(d[:count]).to eq(3)
         expect(d[:outputs]).to eq(node_ids: [], node_instance_ids: [], sdwan_peer_ids: [], storage_volume_ids: [])
-        # 3 nodes × (create + provision + storage) = 9 planned steps
-        expect(d[:planned_actions].size).to eq(9)
+        # 3 nodes × (create + provision + storage + attach) = 12 planned steps.
+        # The attach is planned because it is performed (IMP-093378034fb4) — a
+        # dry run that under-lists what execute does is how a plan stops being
+        # a preview of it.
+        expect(d[:planned_actions].size).to eq(12)
         expect(d[:planned_actions].first[:step]).to eq("create_node")
+        expect(d[:planned_actions].map { |a| a[:step] }).to include("attach_volume")
       end
     end
 
@@ -161,6 +165,8 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
 
         before do
           allow(::System::VolumeManagementService).to receive(:provision).and_return(ok_vol)
+          allow(::System::VolumeManagementService).to receive(:attach)
+            .and_return(::System::Runtime::Result.ok(data: { device: "/dev/sdb" }))
         end
 
         it "provisions a per-instance volume" do
@@ -172,6 +178,104 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
           expect(r[:success]).to be true
           expect(r[:data][:outputs][:storage_volume_ids].size).to eq(2)
           expect(::System::VolumeManagementService).to have_received(:provision).twice
+        end
+
+        # IMP-093378034fb4 — the volume was provisioned and never attached, so
+        # ProviderVolume#node_instance_id stayed nil. That FK is how BOTH the
+        # scale-in teardown (ScaleProjectExecutor#victim_volumes) and its
+        # zero-orphan sweep (#orphans_for) reach a victim's volumes, so the
+        # check built to catch a leaked volume could not see one: scale-in
+        # reported zero orphans while the volume billed on.
+        #
+        # Real rows throughout, and the real VolumeManagementService.attach —
+        # only the provider adapter is stubbed. A nil FK is a fact about a
+        # persisted row; it cannot be observed on a double, and a spec that
+        # asserted `have_received(:attach)` would prove the call was made, not
+        # that anything now points at the instance.
+        context "attachment (real rows — the FK the teardown reads)" do
+          let(:storage_node) { create(:system_node, account: account, node_template: template) }
+          let(:provisioned_instance) do
+            create(:system_node_instance, :running, node: storage_node,
+                   provider_region: region, provider_instance_type: instance_type)
+          end
+          let(:real_volume) do
+            create(:system_provider_volume, account: account, provider_region: region,
+                   status: "available", external_id: "vol-#{SecureRandom.hex(6)}")
+          end
+          let(:volume_adapter) do
+            instance_double(::System::Providers::MockProvider,
+                            attach_volume: { success: true, device: "/dev/sdb" })
+          end
+
+          before do
+            allow(::System::ProvisioningService).to receive(:provision_instance).and_return(
+              ::System::Runtime::Result.ok(
+                data: { instance: provisioned_instance,
+                        cloud_instance_id: provisioned_instance.cloud_instance_id }
+              )
+            )
+            allow(::System::VolumeManagementService).to receive(:provision)
+              .and_return(::System::Runtime::Result.ok(data: { volume: real_volume }))
+            allow(::System::VolumeManagementService).to receive(:attach).and_call_original
+            allow(::System::Providers::Registry).to receive(:for_volume).and_return(volume_adapter)
+          end
+
+          def provision_one_with_storage
+            exec.execute(template_id: template.id, count: 1,
+                         provider_region_id: region.id,
+                         provider_instance_type_id: instance_type.id,
+                         with_storage_gb: 100)
+          end
+
+          it "attaches the volume to the instance it provisioned it for" do
+            r = provision_one_with_storage
+
+            expect(r[:success]).to be true
+            expect(r[:data][:failures]).to be_empty
+            # Ground truth: the persisted FK, not the call.
+            expect(real_volume.reload.node_instance_id).to eq(provisioned_instance.id)
+            expect(real_volume).to be_attached
+            expect(real_volume.device_name).to eq("/dev/sdb")
+          end
+
+          it "records the attach as its own planned action, so a plan can be graded on it" do
+            r = provision_one_with_storage
+
+            attach = r[:data][:planned_actions].find { |a| a[:step] == "attach_volume" }
+            expect(attach).not_to be_nil,
+                                  "no attach_volume action: #{r[:data][:planned_actions].inspect}"
+            expect(attach[:volume_id]).to eq(real_volume.id)
+            expect(attach[:instance_id]).to eq(provisioned_instance.id)
+          end
+
+          it "reports a FAILURE rather than a clean provision when the attach fails" do
+            allow(volume_adapter).to receive(:attach_volume)
+              .and_return({ success: false, error: "no free device" })
+
+            r = provision_one_with_storage
+            d = r[:data]
+
+            # An unattached volume bills and is out of reach of scale-in. The
+            # only thing that surfaces it is a loud partial — silence here is
+            # the failure mode this task exists to remove.
+            expect(d[:failures].map { |f| f[:step] }).to include("attach_volume")
+            expect(d[:partial]).to be true
+            # Still recorded, so the rollback path can reclaim it.
+            expect(d[:outputs][:storage_volume_ids]).to eq([ real_volume.id ])
+            expect(real_volume.reload.node_instance_id).to be_nil
+          end
+
+          it "does not let an attach raise take out the step and orphan what it created" do
+            allow(::System::VolumeManagementService).to receive(:attach)
+              .and_raise(::System::VolumeManagementService::VolumeError, "No available device paths")
+
+            r = provision_one_with_storage
+            d = r[:data]
+
+            expect(r[:success]).to be true
+            expect(d[:outputs][:node_instance_ids]).to eq([ provisioned_instance.id ])
+            expect(d[:failures].map { |f| f[:step] }).to include("attach_volume")
+          end
         end
       end
 
@@ -282,7 +386,7 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
     it "terminates instances and deletes volumes in reverse order, returning success when all clear" do
       instance_a = instance_double("System::NodeInstance", id: instance_id_a)
       instance_b = instance_double("System::NodeInstance", id: instance_id_b)
-      volume     = instance_double("System::ProviderVolume", id: volume_id)
+      volume     = instance_double("System::ProviderVolume", id: volume_id, attached?: false)
 
       allow(::System::NodeInstance).to receive(:find_by).with(id: instance_id_a).and_return(instance_a)
       allow(::System::NodeInstance).to receive(:find_by).with(id: instance_id_b).and_return(instance_b)
@@ -359,6 +463,43 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
       expect(::Sdwan::Peer.where(id: peer.id)).to be_empty
       expect(result[:success]).to be false
       expect(result[:errors].map { |e| e[:resource] }).to eq([ "node_instance" ])
+    end
+
+    # IMP-093378034fb4 — the executor attaches what it provisions now, so
+    # rollback owns the detach too. VolumeManagementService#delete REFUSES an
+    # attached volume ("Volume is attached, detach first"), and once the
+    # instance is terminated there is nothing left to detach from — so the
+    # volume pass has to be detach-then-delete AND has to run BEFORE the
+    # instances. Same order, for the same reason, as
+    # ScaleProjectExecutor#teardown_resources. Without both, adding the attach
+    # would simply move the leak from scale-in to rollback.
+    it "detaches an attached volume and deletes it BEFORE terminating its instance" do
+      inst = create(:system_node_instance, :running,
+                    node: create(:system_node, account: account, node_template: template),
+                    provider_region: region, provider_instance_type: instance_type)
+      volume = create(:system_provider_volume, :attached, account: account,
+                      provider_region: region, node_instance: inst)
+
+      adapter = instance_double(::System::Providers::MockProvider,
+                                detach_volume: { success: true },
+                                delete_volume: { success: true })
+      allow(::System::Providers::Registry).to receive(:for_volume).and_return(adapter)
+
+      volume_gone_at_terminate = nil
+      allow(::System::ProvisioningService).to receive(:terminate_instance) do
+        volume_gone_at_terminate = ::System::ProviderVolume.where(id: volume.id).none?
+        ::System::Runtime::Result.ok
+      end
+
+      result = exec.rollback_provision_full_stack(
+        node_instance_ids: [ inst.id ], storage_volume_ids: [ volume.id ]
+      )
+
+      expect(result[:errors]).to be_empty
+      expect(::System::ProviderVolume.where(id: volume.id)).to be_empty
+      # Ordering IS the assertion: a delete attempted after the terminate
+      # would have had nothing left to detach from.
+      expect(volume_gone_at_terminate).to be(true)
     end
   end
 end

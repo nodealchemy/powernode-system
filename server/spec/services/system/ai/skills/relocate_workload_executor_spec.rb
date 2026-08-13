@@ -236,9 +236,45 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       expect(r[:errors].map { |e| e[:resource] }).to eq([ "node_instance" ])
     end
 
+    # IMP-093378034fb4 — this rollback takes its storage_volume_ids straight
+    # from ProvisionFullStackExecutor's envelope, and relocate composes that
+    # executor WITH with_storage_gb. Once the inner executor started attaching
+    # what it provisions, a terminate-first / delete-without-detach rollback
+    # failed every volume with "Volume is attached, detach first" and left the
+    # row alive — the same leak the attach fix closed elsewhere, reopened here.
+    # Real rows: the refusal is a fact about a persisted volume's FK and cannot
+    # be observed on a double.
+    it "detaches an attached volume and deletes it BEFORE terminating its instance" do
+      inst = create(:system_node_instance, :running,
+                    node: create(:system_node, account: account, node_template: template))
+      volume = create(:system_provider_volume, :attached, account: account,
+                      provider_region: to_region, node_instance: inst)
+
+      adapter = instance_double(::System::Providers::MockProvider,
+                                detach_volume: { success: true },
+                                delete_volume: { success: true })
+      allow(::System::Providers::Registry).to receive(:for_volume).and_return(adapter)
+
+      volume_gone_at_terminate = nil
+      allow(::System::ProvisioningService).to receive(:terminate_instance) do
+        volume_gone_at_terminate = ::System::ProviderVolume.where(id: volume.id).none?
+        ::System::Runtime::Result.ok
+      end
+
+      r = exec.rollback_relocate_workload(
+        node_instance_ids: [ inst.id ], storage_volume_ids: [ volume.id ], sdwan_peer_ids: []
+      )
+
+      expect(r[:errors]).to be_empty
+      expect(::System::ProviderVolume.where(id: volume.id)).to be_empty
+      # A delete attempted after the terminate would have had nothing left to
+      # detach from on the provider side.
+      expect(volume_gone_at_terminate).to be(true)
+    end
+
     it "terminates new instances and deletes new volumes; tolerates an unknown sdwan peer id" do
       instance = instance_double("System::NodeInstance", id: new_instance_id)
-      volume   = instance_double("System::ProviderVolume", id: volume_id)
+      volume   = instance_double("System::ProviderVolume", id: volume_id, attached?: false)
       allow(::System::NodeInstance).to receive(:find_by).with(id: new_instance_id).and_return(instance)
       allow(::System::ProviderVolume).to receive(:find_by).with(id: volume_id).and_return(volume)
 

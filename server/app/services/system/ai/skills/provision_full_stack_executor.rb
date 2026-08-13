@@ -8,7 +8,7 @@ module System
       #
       #   loop(create_node + ProvisioningService.provision_instance
       #        [+ Sdwan::PeerEnroller.call, when network_id]
-      #        [+ VolumeManagementService.provision, when with_storage_gb])
+      #        [+ VolumeManagementService.provision then .attach, when with_storage_gb])
       #
       # The executor returns a structured *result set* (created nodes,
       # provisioned instances, volumes, sdwan peer ids) plus a planned-actions
@@ -16,9 +16,12 @@ module System
       # reconciler's job — this executor only provisions and returns.
       #
       # Rollback (`self.rollback_provision_full_stack`): reverses the side
-      # effects in last-in / first-out order — detach enrolled SDWAN peers,
-      # terminate node instances, delete provisioned volumes — using the
-      # execution_record's outputs as the source of truth for what was created.
+      # effects — detach enrolled SDWAN peers, detach-and-delete provisioned
+      # volumes, then terminate node instances — using the execution_record's
+      # outputs as the source of truth for what was created. Volumes precede
+      # instances because delete refuses an attached volume, and detaching one
+      # after its instance is terminated asks the provider to detach it from a
+      # machine it no longer has.
       #
       # Reference: AI-Driven Provisioning plan slice 4 (M0).
       class ProvisionFullStackExecutor < BaseSkillExecutor
@@ -101,6 +104,37 @@ module System
             errors << { resource: "sdwan_peer", id: peer_id, error: e.message }
           end
 
+          # VOLUMES BEFORE INSTANCES, detach-then-delete (IMP-093378034fb4).
+          # The DETACH is what `VolumeManagementService#delete` requires — it
+          # refuses an attached volume outright — so it became load-bearing the
+          # moment run_execute started attaching what it provisions; without it
+          # this rollback fails every volume with "Volume is attached, detach
+          # first", moving the leak rather than closing it. The ORDER is for
+          # the provider rather than the row: `terminate!` is a status
+          # transition, so the NodeInstance row still resolves afterwards, but
+          # the provider-side machine is gone and detaching from it is no
+          # longer meaningful.
+          # Deliberately the same shape as ScaleProjectExecutor#teardown_resources,
+          # which reached this order first; the two rollbacks are separate
+          # methods on separate executors, so this is stated rather than shared.
+          Array(storage_volume_ids).reverse_each do |volume_id|
+            volume = ::System::ProviderVolume.find_by(id: volume_id)
+            next unless volume
+
+            if volume.attached?
+              detach = ::System::VolumeManagementService.detach(volume: volume)
+              unless detach.success?
+                errors << { resource: "provider_volume", id: volume_id, error: detach.error }
+                next
+              end
+            end
+
+            result = ::System::VolumeManagementService.delete(volume: volume)
+            errors << { resource: "provider_volume", id: volume_id, error: result.error } unless result.success?
+          rescue StandardError => e
+            errors << { resource: "provider_volume", id: volume_id, error: e.message }
+          end
+
           Array(node_instance_ids).reverse_each do |instance_id|
             instance = ::System::NodeInstance.find_by(id: instance_id)
             next unless instance
@@ -109,16 +143,6 @@ module System
             errors << { resource: "node_instance", id: instance_id, error: result.error } unless result.success?
           rescue StandardError => e
             errors << { resource: "node_instance", id: instance_id, error: e.message }
-          end
-
-          Array(storage_volume_ids).reverse_each do |volume_id|
-            volume = ::System::ProviderVolume.find_by(id: volume_id)
-            next unless volume
-
-            result = ::System::VolumeManagementService.delete(volume: volume)
-            errors << { resource: "provider_volume", id: volume_id, error: result.error } unless result.success?
-          rescue StandardError => e
-            errors << { resource: "provider_volume", id: volume_id, error: e.message }
           end
 
           { success: errors.empty?, errors: errors }
@@ -231,13 +255,52 @@ module System
               size_gb: with_storage_gb.to_i,
               options: { name: "#{node.name}-data" }
             )
-            if vol_result.success?
-              volume = vol_result.data[:volume]
-              storage_volume_ids << volume.id
-              planned_actions << { step: "provision_storage", instance_id: instance.id,
-                                   volume_id: volume.id, size_gb: with_storage_gb.to_i }
-            else
+            unless vol_result.success?
               failures << { step: "provision_storage", node_id: node.id, error: vol_result.error }
+              next
+            end
+
+            volume = vol_result.data[:volume]
+            storage_volume_ids << volume.id
+            planned_actions << { step: "provision_storage", instance_id: instance.id,
+                                 volume_id: volume.id, size_gb: with_storage_gb.to_i }
+
+            # IMP-093378034fb4 — provisioning without attaching left every
+            # volume carrying a nil `node_instance_id`, and that FK is how BOTH
+            # the scale-in teardown (ScaleProjectExecutor#victim_volumes) and
+            # its zero-orphan sweep (#orphans_for) reach a victim's volumes. So
+            # the check built to catch a leaked volume was structurally unable
+            # to see one: scale-in reported ZERO orphans while the volume
+            # billed on indefinitely. Attaching is what puts the row in reach
+            # of the teardown — and of every operator view keyed on the same FK.
+            #
+            # Guarded like the peer leg above, and for the same reason: attach
+            # re-raises ArgumentError and VolumeError (no free device paths), so
+            # an unguarded call would take out the whole step and orphan the
+            # instances and volumes this loop already created.
+            begin
+              att_result = ::System::VolumeManagementService.attach(volume: volume, instance: instance)
+              if att_result.success?
+                planned_actions << { step: "attach_volume", instance_id: instance.id,
+                                     volume_id: volume.id, device: att_result.data[:device] }
+              else
+                # Recorded LOUDLY, because nothing reclaims this volume on its
+                # own. The step still returns success — one failed attach must
+                # not terminate a whole provisioned fleet — so the runner marks
+                # it completed and never dispatches the rollback hook that
+                # holds these ids (SkillCompositionRunner#rollback_step! is
+                # reachable only from handle_failure). Its FK is nil, so
+                # scale-in cannot see it either. What surfaces it is the
+                # envelope: `partial` plus this recorded failure, which
+                # VerificationService grades as a failing step_N_failures
+                # check. Silence here is the failure mode this guard exists
+                # to end.
+                failures << { step: "attach_volume", node_id: node.id, instance_id: instance.id,
+                              volume_id: volume.id, error: att_result.error }
+              end
+            rescue StandardError => e
+              failures << { step: "attach_volume", node_id: node.id, instance_id: instance.id,
+                            volume_id: volume.id, error: e.message }
             end
           end
 
@@ -282,6 +345,11 @@ module System
             steps << { step: "attach_sdwan_peer", index: i, network_id: network.id } if network
             if with_storage_gb.present?
               steps << { step: "provision_storage", index: i, size_gb: with_storage_gb.to_i }
+              # The attach is a separate state change and is planned as one, so
+              # the dry run enumerates what execute actually does and an oracle
+              # can grade "the scale-out attached storage" rather than only
+              # "a volume was created" (IMP-093378034fb4).
+              steps << { step: "attach_volume", index: i }
             end
           end
           steps

@@ -227,6 +227,7 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
       let(:provider_adapter) do
         instance_double(::System::Providers::MockProvider,
                         terminate_instance: { success: true },
+                        attach_volume: { success: true, device: "/dev/sdb" },
                         detach_volume: { success: true },
                         delete_volume: { success: true })
       end
@@ -418,6 +419,52 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
         expect(r[:data][:outputs][:removed_node_instance_ids])
           .to match_array(added[:data][:outputs][:node_instance_ids])
         expect(statuses_of(seed)).to eq(%w[running])
+      end
+
+      # IMP-093378034fb4 — the leak this arm was structurally unable to see.
+      # The scale-out provisioned a per-instance volume and never attached it,
+      # so node_instance_id stayed nil; victim_volumes AND the zero-orphan
+      # sweep both reach a victim's volumes through exactly that FK. The
+      # removal therefore deleted nothing and the sweep certified the result
+      # as clean while the volume billed on — the quietest possible failure.
+      # Both arms run for real here: the scale-out writes the row, the
+      # scale-in is the only thing that reads it.
+      it "deletes the volumes its own add_replicas arm provisioned" do
+        allow(::System::ProvisioningService).to receive(:provision_instance) do |node:, **_|
+          inst = create(:system_node_instance, :running, node: node, provider_region: region,
+                        provider_instance_type: instance_type,
+                        name: "#{node.name}-instance-#{SecureRandom.hex(2)}")
+          ::System::Runtime::Result.ok(data: { instance: inst, cloud_instance_id: inst.cloud_instance_id })
+        end
+        # Faithful to VolumeManagementService#provision: the row is persisted
+        # `available` with a provider id, and NAMED from options[:name] — the
+        # containment rail judges a volume by that name, so a stub that
+        # renamed it would make the rail refuse the removal for the wrong
+        # reason and hide the very deletion under test.
+        allow(::System::VolumeManagementService).to receive(:provision) do |account:, region:, options: {}, **_|
+          vol = create(:system_provider_volume, account: account, provider_region: region,
+                       name: options[:name], status: "available",
+                       external_id: "vol-#{SecureRandom.hex(6)}")
+          ::System::Runtime::Result.ok(data: { volume: vol })
+        end
+        replica!(minutes_old: 60)
+
+        added = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "add_replicas",
+                             template_id: template.id, provider_region_id: region.id,
+                             provider_instance_type_id: instance_type.id, with_storage_gb: 100)
+        expect(added[:success]).to be true
+        expect(added[:data][:failures]).to be_empty
+        volume_ids = added[:data][:outputs][:storage_volume_ids]
+        expect(volume_ids.size).to eq(1)
+
+        r = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "remove_replicas")
+
+        expect(r[:success]).to be true
+        # Ground truth first, envelope second: the row is gone, and the sweep
+        # that would have blessed a surviving one agrees.
+        expect(::System::ProviderVolume.where(id: volume_ids).count).to eq(0)
+        expect(r[:data][:outputs][:deleted_storage_volume_ids]).to match_array(volume_ids)
+        expect(r[:data][:outputs][:orphans]).to be_empty
       end
 
       it "reports WHICH prefix it enforced, so a nil one is never read as a pass" do

@@ -37,12 +37,17 @@ module System
       # neither is read as a guarantee:
       #
       #   1. It reaches a victim's volumes through `ProviderVolume#node_instance_id`.
-      #      `ProvisionFullStackExecutor` PROVISIONS per-instance volumes for
-      #      `with_storage_gb` but never attaches them, so those rows carry a
-      #      nil FK and are out of reach here — they are the creating step's
-      #      `storage_volume_ids`, and only the rollback path (which has that
-      #      list) can clean them up today. The moment a scale-out attaches
-      #      what it provisions, this teardown covers them with no change.
+      #      As of IMP-093378034fb4 `ProvisionFullStackExecutor` ATTACHES the
+      #      per-instance volumes it provisions for `with_storage_gb`, so they
+      #      carry that FK and this teardown covers them — which it did not
+      #      before: a nil FK put them out of reach of the teardown AND of the
+      #      orphan sweep below, so a scale-in reported zero orphans while the
+      #      volumes billed on. The residual: a volume whose ATTACH failed
+      #      still carries a nil FK and is still out of reach here, and nothing
+      #      reclaims it automatically. It is not SILENT, though — the creating
+      #      step records an `attach_volume` failure and returns `partial`,
+      #      which VerificationService grades as a failing step_N_failures
+      #      check.
       #   2. Volume ownership is judged by NAME, the same rail as instances:
       #      a mission's volume is named after its node and so carries the
       #      prefix. That bounds the damage where a prefix exists — but a

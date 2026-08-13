@@ -78,14 +78,43 @@ module System
 
         binds_to "Fleet Autonomy"
 
-        # Rollback contract: terminate the *new* (target-region) instances
-        # we provisioned + delete their volumes. The source instances may
+        # Rollback contract: detach-and-delete the volumes provisioned for the
+        # *new* (target-region) instances, then terminate those instances (see
+        # the ordering note below). The source instances may
         # already be gone — we cannot un-terminate them — so they are not
         # in this kwargs-set. This is best-effort: a failed relocation
         # should be re-driven manually after rollback.
         def rollback_relocate_workload(node_instance_ids: [], storage_volume_ids: [],
                                        sdwan_peer_ids: [], **_extras)
           errors = []
+
+          # VOLUMES BEFORE INSTANCES, detach-then-delete (IMP-093378034fb4).
+          # These ids come straight from ProvisionFullStackExecutor's envelope
+          # and relocate composes that executor WITH with_storage_gb, so the
+          # volumes arrive ATTACHED. `VolumeManagementService#delete` refuses an
+          # attached volume outright, and detaching one whose instance has
+          # already been terminated asks the provider to detach from a machine
+          # it no longer has. Terminate-first therefore failed every volume
+          # with "Volume is attached, detach first" and left the row alive.
+          # Same shape as ProvisionFullStackExecutor#rollback_provision_full_stack
+          # and ScaleProjectExecutor#teardown_resources.
+          Array(storage_volume_ids).reverse_each do |volume_id|
+            volume = ::System::ProviderVolume.find_by(id: volume_id)
+            next unless volume
+
+            if volume.attached?
+              detach = ::System::VolumeManagementService.detach(volume: volume)
+              unless detach.success?
+                errors << { resource: "provider_volume", id: volume_id, error: detach.error }
+                next
+              end
+            end
+
+            result = ::System::VolumeManagementService.delete(volume: volume)
+            errors << { resource: "provider_volume", id: volume_id, error: result.error } unless result.success?
+          rescue StandardError => e
+            errors << { resource: "provider_volume", id: volume_id, error: e.message }
+          end
 
           Array(node_instance_ids).reverse_each do |instance_id|
             instance = ::System::NodeInstance.find_by(id: instance_id)
@@ -95,16 +124,6 @@ module System
             errors << { resource: "node_instance", id: instance_id, error: result.error } unless result.success?
           rescue StandardError => e
             errors << { resource: "node_instance", id: instance_id, error: e.message }
-          end
-
-          Array(storage_volume_ids).reverse_each do |volume_id|
-            volume = ::System::ProviderVolume.find_by(id: volume_id)
-            next unless volume
-
-            result = ::System::VolumeManagementService.delete(volume: volume)
-            errors << { resource: "provider_volume", id: volume_id, error: result.error } unless result.success?
-          rescue StandardError => e
-            errors << { resource: "provider_volume", id: volume_id, error: e.message }
           end
 
           # IMP-94f778f92dba — these are now peers the target provisioning
@@ -315,8 +334,15 @@ module System
 
           steps.concat(strategy == "drain" ? terminate_steps + provision_steps : provision_steps + terminate_steps)
           if with_storage_gb.present?
-            count.times { |i| steps << { step: "provision_target_storage", index: i,
-                                         size_gb: with_storage_gb.to_i } }
+            # The attach is listed for the same reason the per-instance peer
+            # step above is: the inner executor attaches each volume as it
+            # provisions it (IMP-093378034fb4), and this card is what the
+            # operator approves. `attach_volume` mirrors the inner step name
+            # so a plan and a run can be graded against each other.
+            count.times do |i|
+              steps << { step: "provision_target_storage", index: i, size_gb: with_storage_gb.to_i }
+              steps << { step: "attach_volume", index: i }
+            end
           end
           steps
         end
