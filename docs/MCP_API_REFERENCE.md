@@ -403,7 +403,7 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 |---|---|
 | `system_sdwan_list_access_grants` | List active access grants |
 | `system_sdwan_create_access_grant` | Issue a single-use bootstrap URL for a user device (15-min default expiry) |
-| `system_sdwan_revoke_access_grant` | Invalidate an unused grant |
+| `system_sdwan_revoke_access_grant` | Revoke a grant — cascades to revoke EVERY device on it. Approval-gated (`sdwan.access_grant_revoke`) — returns `pending: true` + a `deferred_operation_id` until approved |
 | `system_sdwan_list_user_devices` | List active UserDevices on a Network |
 | `system_sdwan_issue_user_device` | Convert an access grant + user-side public key into a UserDevice |
 | `system_sdwan_revoke_user_device` | Revoke ONE UserDevice (cuts off that device's VPN access; siblings and the grant are untouched). Approval-gated (`system.sdwan_user_device_revoke`) — returns `pending: true` + a `deferred_operation_id` until approved |

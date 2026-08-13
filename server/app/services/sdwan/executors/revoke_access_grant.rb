@@ -9,7 +9,13 @@ module Sdwan
         reject_device_scoped_params!
         grant = ::Sdwan::AccessGrant.find(params[:grant_id])
         if grant.respond_to?(:revoke!)
-          grant.revoke!
+          # Both callers plumb `reason` into params — AccessGrantsController#revoke
+          # from the request body, Ai::Tools::SdwanTool#revoke_access_grant from the
+          # MCP action that documents it as "recorded on the grant". Dropping it here
+          # left AccessGrant#revocation_reason nil on every gated revoke; the
+          # device-scoped sibling (Sdwan::Executors::RevokeUserDevice) has always
+          # forwarded it.
+          grant.revoke!(reason: params[:reason])
         else
           grant.update!(status: "revoked", revoked_at: Time.current)
         end

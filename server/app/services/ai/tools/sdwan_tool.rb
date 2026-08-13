@@ -24,6 +24,14 @@ module Ai
       # the engine's category allowlist.
       USER_DEVICE_REVOKE_CATEGORY = "system.sdwan_user_device_revoke"
 
+      # Autonomy action category for revoking a whole access grant — which
+      # cascades to every device on it. Shared verbatim with
+      # Api::V1::System::Sdwan::AccessGrantsController#revoke so the MCP and HTTP
+      # surfaces resolve the SAME policy — seeded require_approval on the SDWAN
+      # Manager (db/seeds/system_sdwan_manager_agent.rb) and registered in the
+      # engine's category allowlist.
+      ACCESS_GRANT_REVOKE_CATEGORY = "sdwan.access_grant_revoke"
+
       ACTION_PERMISSIONS = {
         "system_sdwan_list_networks"   => "system.sdwan.networks.read",
         "system_sdwan_get_network"     => "system.sdwan.networks.read",
@@ -270,7 +278,7 @@ module Ai
             }
           },
           "system_sdwan_revoke_access_grant" => {
-            description: "Revoke an access grant — cascades to revoke all the user's devices on this network",
+            description: "Revoke an access grant — cascades to revoke ALL the user's devices on this network. Approval-gated (sdwan.access_grant_revoke) — under require_approval this returns pending: true with a deferred_operation_id and nothing is cut until an operator approves. One-way in practice: access must be re-granted and every device re-issued. To cut a single device instead, use system_sdwan_revoke_user_device.",
             parameters: {
               access_grant_id: { type: "string", required: true, description: "UUID of the SDWAN access grant to revoke" },
               reason:          { type: "string", required: false, description: "Optional human-readable revocation reason (recorded on the grant)" }
@@ -1067,10 +1075,80 @@ module Ai
         success_result(grant: serialize_grant(grant))
       end
 
+      # Revoking a grant cuts a user's VPN access AND cascades to every device
+      # on it (AccessGrant#revoke! soft-revokes each non-revoked device), so it
+      # goes through Ai::AutonomyGate (`sdwan.access_grant_revoke`, seeded
+      # require_approval) exactly as AccessGrantsController#revoke does. Both
+      # this action and the device-scoped one map to the same required
+      # permission (system.sdwan.user_devices.manage), so leaving this ungated
+      # would have let an agent refused the narrow device revoke reach for the
+      # wide one instead — unapproved, and with no Ai::DeferredOperation row.
+      #
+      # Sdwan::Executors::RevokeAccessGrant performs the revoke server-side —
+      # this method mutates nothing on either branch, so the revoke survives the
+      # :pending path. Account ownership is enforced HERE, before the gate, by
+      # account_access_grants — the same split the HTTP path uses
+      # (set_network/set_grant guard, executor re-resolves from the stored id).
+      #
+      # The params hash is GRANT-scoped on purpose: the executor's
+      # reject_device_scoped_params! guard raises on any device_id, because a
+      # grant revoke cascading out of a device-scoped verb would cut a user's
+      # whole access. Passing only grant_id/reason keeps this the guard's one
+      # legitimate shape, alongside the HTTP caller.
+      #
+      # No up-front doomed-action check: the one refusable condition inducible
+      # from the request — an already-revoked grant — is idempotent
+      # (AccessGrant#revoke! is `return if revoked?`), so it cannot park an
+      # approval that can only fail. A grant DELETED inside the approval window
+      # still raises out of the executor's bang find (reachable via an approved
+      # HTTP #destroy under sdwan.access_grant_delete), but that happens AFTER
+      # parking, so no pre-check reaches it, and it is recorded:
+      # DeferredOperation#execute_now! calls fail!(e) before re-raising.
       def revoke_access_grant(params)
         grant = account_access_grants.find(params[:access_grant_id])
-        grant.revoke!(reason: params[:reason], by_user: @user)
-        success_result(grant: serialize_grant(grant.reload), revoked: true)
+
+        result = ::Ai::AutonomyGate.evaluate(
+          action_category: ACCESS_GRANT_REVOKE_CATEGORY,
+          executor_class: "Sdwan::Executors::RevokeAccessGrant",
+          # Key names are the executor's contract, not this tool's — grant_id
+          # and reason, shared verbatim with AccessGrantsController#revoke.
+          params: { grant_id: grant.id, reason: params[:reason] },
+          account: @account,
+          # Agent AND user. The seeded row is scoped to the SDWAN Manager
+          # (upsert_policies! passes agent:), and
+          # Ai::InterventionPolicy#agent_matches? rejects a scoped row against a
+          # nil agent — so an SDWAN Manager caller that dropped @agent would
+          # stop matching its own row. Every other caller falls through to
+          # InterventionPolicyService#default_policy, which is also
+          # require_approval, so the gate holds either way; what @agent
+          # additionally buys is attribution — AutonomyGate#resolve_chain routes
+          # to "<agent name> Actions" and to "Manual Operations" when nil.
+          agent: @agent,
+          # Replaces the `by_user:` this method used to pass to
+          # AccessGrant#revoke!, which the model accepts and never persists
+          # (there is no revoked_by column) — attribution now lands on the
+          # DeferredOperation instead, where the approver can see it.
+          requested_by: @user,
+          source_type: "Sdwan::AccessGrant",
+          source_id: grant.id,
+          description: "Revoke SDWAN access for #{grant.user&.email || grant.id}"
+        )
+
+        case result.decision
+        when :proceed
+          success_result(grant: serialize_grant(grant.reload), revoked: true)
+        when :pending
+          success_result(
+            pending: true,
+            action_category: ACCESS_GRANT_REVOKE_CATEGORY,
+            deferred_operation_id: result.deferred_operation&.id,
+            approval_request_id: result.approval_request&.id,
+            grant: serialize_grant(grant),
+            message: "Approval required: #{ACCESS_GRANT_REVOKE_CATEGORY}"
+          )
+        else
+          error_result(result.error || "Action #{ACCESS_GRANT_REVOKE_CATEGORY} is blocked by policy")
+        end
       end
 
       # === User Devices ===

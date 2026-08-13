@@ -1146,6 +1146,123 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # IMP-d172ed7435a2 — MCP/HTTP parity for the GRANT-revoke trust boundary,
+  # one blast radius above the device verb gated in IMP-3686f6c236d9.
+  #
+  # AccessGrant#revoke! cascades: it soft-revokes every non-revoked device on
+  # the grant (access_grant.rb:49-51). AccessGrantsController#revoke gates that
+  # on `sdwan.access_grant_revoke` (seeded require_approval on the SDWAN Manager
+  # in db/seeds/system_sdwan_manager_agent.rb:138, and the
+  # InterventionPolicyService default), while this tool called `grant.revoke!`
+  # inline. Since both device- and grant-revoke map to the SAME permission
+  # (system.sdwan.user_devices.manage), an agent refused the narrow device
+  # revoke could reach for this one and cut every sibling device instead.
+  #
+  # Nothing is stubbed between the tool and the executor: the deferred op is
+  # executed for real, so a params-key mismatch fails as RecordNotFound rather
+  # than passing on a well-formed-looking hash.
+  describe "system_sdwan_revoke_access_grant approval gate (IMP-d172ed7435a2)" do
+    let(:network)  { create(:sdwan_network, account: account) }
+    let(:grant)    { create(:sdwan_access_grant, account: account, network: network) }
+    let!(:phone)   { create(:sdwan_user_device, access_grant: grant, label: "phone") }
+    let!(:laptop)  { create(:sdwan_user_device, access_grant: grant, label: "work-laptop") }
+
+    # Tail of the approval path — Ai::ApprovalRequest ultimately calls
+    # execute_now!. The presence assertion keeps a missing gate failing by name
+    # instead of as `undefined method for nil`.
+    def approve_latest_deferred!
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred).to be_present, "no deferred operation was parked — the revoke was applied inline"
+      deferred.tap(&:execute_now!)
+    end
+
+    # Forces the gate's :proceed branch. The default policy is require_approval,
+    # so nothing else here covers the inline path.
+    def auto_approve_policy!
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+        { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+      )
+    end
+
+    it "defers the grant revoke through the approval gate rather than cascading inline" do
+      r = call("system_sdwan_revoke_access_grant", access_grant_id: grant.id, reason: "offboarded")
+
+      expect(r[:success]).to be true
+      expect(r[:data][:pending]).to be true
+      expect(grant.reload.revoked?).to be(false),
+                                       "MCP revoke_access_grant revoked the grant without an approval gate"
+      expect(phone.reload.revoked?).to be(false),
+                                       "the ungated grant revoke cascaded to every device on the grant"
+      expect(laptop.reload.revoked?).to be(false)
+    end
+
+    # The executor refuses device-scoped params (reject_device_scoped_params!),
+    # so the parked hash must carry grant_id and NO device_id — otherwise every
+    # approval of an MCP-filed revoke raises ArgumentError at execute time.
+    it "parks a grant-scoped deferred operation the executor can consume" do
+      call("system_sdwan_revoke_access_grant", access_grant_id: grant.id, reason: "offboarded")
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred).to be_present, "no deferred operation was parked — the revoke was applied inline"
+      expect(deferred.action_category).to eq("sdwan.access_grant_revoke")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::RevokeAccessGrant")
+      expect(deferred.params["grant_id"]).to eq(grant.id)
+      expect(deferred.params).not_to have_key("device_id")
+    end
+
+    # The seeded require_approval row is scoped to the SDWAN Manager agent, and
+    # Ai::InterventionPolicy#agent_matches? rejects a scoped row when no agent is
+    # passed — an agent caller that drops its agent routes the approval to
+    # "Manual Operations", unattributed.
+    it "attributes the deferred revoke to the calling agent" do
+      agent = create(:ai_agent, account: account)
+      agent_tool = described_class.new(account: account, agent: agent, internal: true)
+
+      agent_tool.execute(params: {
+        action: "system_sdwan_revoke_access_grant", access_grant_id: grant.id
+      })
+
+      expect(Ai::DeferredOperation.order(created_at: :desc).first.ai_agent_id).to eq(agent.id)
+    end
+
+    it "revokes the grant and every device on it when the deferred op is approved" do
+      call("system_sdwan_revoke_access_grant", access_grant_id: grant.id, reason: "offboarded")
+      approve_latest_deferred!
+
+      expect(grant.reload.revoked?).to be(true), "approving the deferred MCP revoke did not revoke the grant"
+      expect(grant.revocation_reason).to eq("offboarded"), "the reason did not survive the deferral"
+      expect(phone.reload.revoked?).to be(true), "the grant revoke did not cascade to the user's devices"
+      expect(laptop.reload.revoked?).to be(true)
+      expect(phone.revocation_reason).to eq("grant_revoked")
+    end
+
+    it "revokes inline and reports it when the policy auto-approves" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_revoke_access_grant", access_grant_id: grant.id, reason: "offboarded")
+
+      expect(r[:success]).to be true
+      expect(r[:data][:revoked]).to be true
+      expect(r[:data][:grant][:status]).to eq("revoked"),
+                                           "answered revoked: true over a grant serialized as still active"
+      expect(grant.reload.revoked?).to be(true)
+      expect(phone.reload.revoked?).to be(true)
+    end
+
+    # Account scoping is enforced BEFORE the gate, as it is on the HTTP path
+    # (set_network/set_grant) — the executor re-resolves from the stored id and
+    # is not an authorization boundary.
+    it "refuses a grant outside the caller's account without parking anything" do
+      foreign = create(:sdwan_access_grant)
+
+      expect {
+        @result = call("system_sdwan_revoke_access_grant", access_grant_id: foreign.id)
+      }.not_to change(Ai::DeferredOperation, :count)
+      expect(@result[:success]).to be false
+      expect(foreign.reload.revoked?).to be(false)
+    end
+  end
+
   describe "PlatformApiToolRegistry registration" do
     it "wires every Phase O6 action to SdwanTool" do
       registry = ::Ai::Tools::PlatformApiToolRegistry::TOOLS
