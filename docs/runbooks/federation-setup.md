@@ -121,6 +121,14 @@ platform.system_sdwan_accept_federation_peer
   acceptance_token: "<token from A>"
 ```
 
+Acceptance is approval-gated (`sdwan.federation_peer_accept`,
+`require_approval` on the SDWAN Manager) on both the MCP action and
+`PATCH /federation_peers/:id` with `status: "accepted"` — forming a
+federation link is gated as tightly as cutting one. A bad or missing token is
+rejected up front, but a valid request returns `pending: true` with a
+`deferred_operation_id` and the peer stays `proposed` until an operator
+approves at `/ai/autonomy/approvals`.
+
 The accept flow:
 1. B already has its own `System::FederationPeer` row pointing at A (created above)
 2. B calls A's `POST /api/v1/system/federation_api/accept` with the token

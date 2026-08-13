@@ -415,7 +415,7 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 | `system_sdwan_list_federation_peers` | List federation peers on a Network |
 | `system_sdwan_get_federation_peer` | Fetch a federation peer |
 | `system_sdwan_propose_federation_peer` | Account A proposes peering with Account B (out-of-band — does NOT spawn a child platform; use the children-spawn REST endpoint for that) |
-| `system_sdwan_accept_federation_peer` | Account B accepts a proposed peering (moves the row to `status: "active"`) |
+| `system_sdwan_accept_federation_peer` | Account B accepts a proposed peering (moves the row to `status: "accepted"`). Approval-gated (`sdwan.federation_peer_accept`) — returns `pending: true` + a `deferred_operation_id` until approved |
 | `system_sdwan_update_federation_peer` | Update a federation peer (e.g. its priority-ordered `endpoints` list) |
 | `system_sdwan_revoke_federation_peer` | Cancel a federation relationship from either side |
 | `system_sdwan_federation_scan` | Scan for proposed-but-not-accepted peers (for operator review) |

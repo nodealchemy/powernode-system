@@ -4,10 +4,11 @@
 # sdwan.federation.read (slice 1 seed); mutate endpoints on
 # sdwan.federation.manage (slice 6 seed).
 #
-# v1 transitions: propose (create) → revoke (terminal). Accept/suspend
-# transitions ship in the future federation slice once cross-CA
-# verification is implemented. The controller honors V1_TRANSITIONS on
-# the model — attempts to flip status outside the allowed set return 422.
+# v1 transitions: propose (create) → accept → revoke (terminal). The
+# controller honors V1_TRANSITIONS on the model — attempts to flip status
+# outside the allowed set return 422. All three trust-boundary verbs are
+# approval-gated: propose (#create), accept (#update, status → accepted)
+# and revoke (#destroy/#revoke). The remaining transitions are inline.
 #
 # Slice 6 of the SDWAN plan.
 module Api
@@ -65,6 +66,14 @@ module Api
               )
             end
 
+            # Acceptance is the only transition here that EXTENDS trust —
+            # it completes the handshake that starts mutual route advertisement
+            # with a remote instance. Its inverse is approval-gated on both
+            # #destroy and #revoke, so forming the link is gated to match.
+            # Suspend/enroll/activate narrow or track an existing link and stay
+            # inline.
+            return gated_accept! if new_status == "accepted"
+
             if @peer.update(peer_update_params)
               render_success(federation_peer: serialize_peer_full(@peer.reload))
             else
@@ -103,6 +112,50 @@ module Api
           end
 
           private
+
+          # The acceptance leg of #update. Every field the same PATCH carried
+          # rides along to the executor rather than being written ahead of the
+          # approval — they are one operator intent, and applying half of it now
+          # would let an unapproved caller edit the peer.
+          #
+          # Nothing is mutated in on_proceed: `sdwan.federation_peer_accept`
+          # resolves to require_approval, gate! never calls on_proceed on its
+          # :pending branch, and the acceptance must survive that path — so
+          # Sdwan::Executors::AcceptFederationPeer owns the state change and
+          # this lambda only renders (IMP-322999495307).
+          #
+          # The REST surface collects no acceptance token, so a peer carrying a
+          # Phase 11b acceptance_token_digest cannot be accepted here at all —
+          # #create mints one by default (ProposeFederationPeer generates unless
+          # attributes[:generate_token] is false), so that is the COMMON case,
+          # not an edge one. The inline `@peer.update(status: "accepted")` this
+          # replaces never reached accept! and so skipped that verification
+          # entirely; routing through the executor closes the bypass.
+          #
+          # It has to be refused UP FRONT rather than at execution: on the
+          # :pending path the executor runs from
+          # Ai::ApprovalRequest#notify_source_of_decision, which rescues and only
+          # logs — an operator would approve, get 200, and never learn the peer
+          # stayed proposed.
+          def gated_accept!
+            if (token_error = @peer.acceptance_token_error(nil))
+              return render_error(
+                "#{token_error}; accept it through system_sdwan_accept_federation_peer, " \
+                "which carries the token",
+                status: :unprocessable_content
+              )
+            end
+
+            gate!(
+              action_category: "sdwan.federation_peer_accept",
+              executor_class: "Sdwan::Executors::AcceptFederationPeer",
+              params: { federation_peer_id: @peer.id, attributes: peer_update_params.to_h.except("status") },
+              source_type: "System::FederationPeer",
+              source_id: @peer.id,
+              description: "Accept federation peer #{@peer.remote_instance_url}",
+              on_proceed: ->(_r) { render_success(federation_peer: serialize_peer_full(@peer.reload)) }
+            )
+          end
 
           def set_peer
             @peer = ::System::FederationPeer.where(account_id: @account.id).find(params[:id])

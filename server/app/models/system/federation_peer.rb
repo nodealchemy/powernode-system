@@ -272,20 +272,9 @@ module System
       return false unless can_transition_to?("accepted")
 
       # Phase 11b: token verification when digest is set
-      if acceptance_token_digest.present?
-        if acceptance_token.blank?
-          errors.add(:base, "acceptance_token required (peer has acceptance_token_digest set)")
-          return false
-        end
-        if acceptance_token_expires_at.present? && acceptance_token_expires_at < Time.current
-          errors.add(:base, "acceptance_token has expired (expired_at #{acceptance_token_expires_at.iso8601})")
-          return false
-        end
-        provided_digest = ::Digest::SHA256.hexdigest(acceptance_token.to_s)
-        unless ::ActiveSupport::SecurityUtils.secure_compare(provided_digest, acceptance_token_digest)
-          errors.add(:base, "acceptance_token does not match stored digest")
-          return false
-        end
+      if (token_error = acceptance_token_error(acceptance_token))
+        errors.add(:base, token_error)
+        return false
       end
 
       update!(
@@ -300,6 +289,30 @@ module System
         )
       )
       true
+    end
+
+    # Verification-only counterpart to the Phase 11b token leg of accept!.
+    # Returns nil when the token is acceptable — including when this peer
+    # carries no digest at all (Phase 11a drill mode) — or the human-readable
+    # reason it is not. Consumes nothing.
+    #
+    # Acceptance is approval-gated (sdwan.federation_peer_accept), so callers
+    # check this BEFORE evaluating the gate: a request that can only ever fail
+    # should not park an approval request an operator has to dispose of. That
+    # is fail-fast, not enforcement — accept! re-runs the same check when the
+    # deferred operation finally executes, which is the check that counts.
+    def acceptance_token_error(acceptance_token)
+      return nil if acceptance_token_digest.blank?
+      return "acceptance_token required (peer has acceptance_token_digest set)" if acceptance_token.blank?
+
+      if acceptance_token_expires_at.present? && acceptance_token_expires_at < Time.current
+        return "acceptance_token has expired (expired_at #{acceptance_token_expires_at.iso8601})"
+      end
+
+      provided_digest = ::Digest::SHA256.hexdigest(acceptance_token.to_s)
+      return nil if ::ActiveSupport::SecurityUtils.secure_compare(provided_digest, acceptance_token_digest)
+
+      "acceptance_token does not match stored digest"
     end
 
     # Phase 11b — generates a high-entropy single-use acceptance token.

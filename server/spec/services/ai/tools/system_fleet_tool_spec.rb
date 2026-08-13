@@ -19,6 +19,16 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     tool.execute(params: { action: action }.merge(rest))
   end
 
+  # Forces Ai::AutonomyGate's :proceed branch, where the executor runs inline.
+  # Approval-gated tool actions resolve to require_approval by default (no
+  # seeded policy in a spec account), so anything asserting the post-action
+  # state — rather than the deferral itself — has to opt into this.
+  def auto_approve_policy!
+    allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+      { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+    )
+  end
+
   describe ".action_definitions" do
     it "registers all 17 system_* actions" do
       keys = described_class.action_definitions.keys
@@ -3610,7 +3620,46 @@ end
       )
     end
 
+    # Acceptance extends trust to a remote instance — the same weight as the
+    # revoke this tool exposes — so it goes through Ai::AutonomyGate on the MCP
+    # surface exactly as it does on FederationPeersController#update.
+    it "defers acceptance through the approval gate rather than mutating inline" do
+      r = sdwan_tool.execute(params: {
+        action: "system_sdwan_accept_federation_peer",
+        federation_peer_id: proposed_peer.id
+      })
+
+      expect(r[:success]).to be true
+      expect(r[:data][:pending]).to be true
+      expect(proposed_peer.reload.status).to eq("proposed"),
+                                             "MCP acceptance mutated the peer without an approval gate"
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred.action_category).to eq("sdwan.federation_peer_accept")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::AcceptFederationPeer")
+      expect(deferred.params["federation_peer_id"]).to eq(proposed_peer.id)
+    end
+
+    # The seeded require_approval row is scoped to the SDWAN Manager agent, and
+    # Ai::InterventionPolicy#agent_matches? rejects a scoped row when no agent is
+    # passed — so an agent caller that does not forward its agent silently falls
+    # through to the account default and its approval routes to "Manual
+    # Operations" instead of the agent's own chain, unattributed.
+    it "attributes the deferred acceptance to the calling agent" do
+      agent = create(:ai_agent, account: account)
+      agent_tool = ::Ai::Tools::SdwanTool.new(account: account, agent: agent, internal: true)
+
+      agent_tool.execute(params: {
+        action: "system_sdwan_accept_federation_peer",
+        federation_peer_id: proposed_peer.id
+      })
+
+      expect(Ai::DeferredOperation.order(created_at: :desc).first.ai_agent_id).to eq(agent.id)
+    end
+
     it "transitions proposed → accepted with signed_at populated" do
+      auto_approve_policy!
+
       r = sdwan_tool.execute(params: {
         action: "system_sdwan_accept_federation_peer",
         federation_peer_id: proposed_peer.id
@@ -3634,6 +3683,8 @@ end
     end
 
     it "records acceptance_token usage in metadata when token provided (no digest set, drill mode)" do
+      auto_approve_policy!
+
       sdwan_tool.execute(params: {
         action: "system_sdwan_accept_federation_peer",
         federation_peer_id: proposed_peer.id,
@@ -3684,6 +3735,8 @@ end
       let(:plaintext) { propose_result[:data][:acceptance_token_plaintext] }
 
       it "accepts when correct plaintext token provided" do
+        auto_approve_policy!
+
         r = sdwan_tool.execute(params: {
           action: "system_sdwan_accept_federation_peer",
           federation_peer_id: peer_id,
@@ -3727,6 +3780,22 @@ end
         })
         expect(r[:success]).to be false
         expect(r[:error]).to include("expired")
+      end
+
+      # The token is checked BEFORE the gate so an unacceptable request fails
+      # immediately instead of parking an approval request that can only ever
+      # fail. Sdwan::Executors::AcceptFederationPeer re-checks it at execution
+      # time — that re-check, not this one, is the enforcement.
+      it "parks no approval request when the token is wrong" do
+        target = peer_id # force the propose round-trip outside the expectation
+
+        expect {
+          sdwan_tool.execute(params: {
+            action: "system_sdwan_accept_federation_peer",
+            federation_peer_id: target,
+            acceptance_token: "wrong-token"
+          })
+        }.not_to change(Ai::DeferredOperation, :count)
       end
     end
   end

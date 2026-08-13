@@ -11,6 +11,12 @@ module Ai
     class SdwanTool < BaseTool
       REQUIRED_PERMISSION = "system.sdwan.networks.read"
 
+      # Autonomy action category for federation acceptance. Seeded
+      # require_approval on the SDWAN Manager
+      # (db/seeds/system_sdwan_manager_agent.rb) and registered in the engine's
+      # category allowlist.
+      FEDERATION_ACCEPT_CATEGORY = "sdwan.federation_peer_accept"
+
       ACTION_PERMISSIONS = {
         "system_sdwan_list_networks"   => "system.sdwan.networks.read",
         "system_sdwan_get_network"     => "system.sdwan.networks.read",
@@ -302,7 +308,7 @@ module Ai
             }
           },
           "system_sdwan_accept_federation_peer" => {
-            description: "Transition a proposed federation peer to accepted. When the proposing operator generated a single-use acceptance token, pass it as acceptance_token — it is verified (digest match + not expired + single-use) before the transition is allowed. Sets signed_at + audit metadata and (for platform peers) chains into enroll. Returns the updated peer.",
+            description: "Transition a proposed federation peer to accepted. Approval-gated (sdwan.federation_peer_accept) — under require_approval this returns pending: true with a deferred_operation_id and the peer is accepted only once an operator approves. When the proposing operator generated a single-use acceptance token, pass it as acceptance_token — it is verified (digest match + not expired + single-use) before the request is gated, and again before the transition is written. Performs the status transition only (sets signed_at + audit metadata); it does NOT run the enroll / node-enrollment / SDWAN-attach chain — that is the federation_acceptance skill.",
             parameters: {
               federation_peer_id: { type: "string", required: true, description: "UUID of the federation peer to accept (must be in 'proposed' status)" },
               acceptance_token:   { type: "string", required: false, description: "Single-use token from the proposing-account operator (from propose with generate_token: true). Verified against the stored digest; consumed on success." }
@@ -1163,6 +1169,17 @@ module Ai
         success_result(federation_peer: serialize_federation_peer(peer.reload), revoked: true)
       end
 
+      # Accepting completes the cross-instance handshake and starts mutual route
+      # advertisement — the same trust weight as the revoke this tool exposes —
+      # so it goes through Ai::AutonomyGate (`sdwan.federation_peer_accept`,
+      # seeded require_approval for the SDWAN Manager) exactly as
+      # FederationPeersController#update does. Sdwan::Executors::AcceptFederationPeer
+      # performs the acceptance server-side, so it survives the :pending path.
+      #
+      # The transition matrix and the token are checked BEFORE the gate so an
+      # unacceptable request fails immediately rather than parking an approval
+      # request that can only ever fail. Neither check is the enforcement — the
+      # executor re-runs both when the deferred operation executes.
       def accept_federation_peer(params)
         peer = account_federation_peers.find(params[:federation_peer_id])
 
@@ -1172,21 +1189,49 @@ module Ai
           )
         end
 
-        success = peer.accept!(
-          accepted_by_user: @user,
-          acceptance_token: params[:acceptance_token]
-        )
-
-        unless success
-          # accept! sets errors on the model and returns false (Phase 11b
-          # token verification path); surface to operator.
-          return error_result(peer.errors.full_messages.join("; "))
+        if (token_error = peer.acceptance_token_error(params[:acceptance_token]))
+          return error_result(token_error)
         end
 
-        success_result(
-          federation_peer: serialize_federation_peer(peer.reload),
-          accepted: true
+        result = ::Ai::AutonomyGate.evaluate(
+          action_category: FEDERATION_ACCEPT_CATEGORY,
+          executor_class: "Sdwan::Executors::AcceptFederationPeer",
+          # The single-use token has to outlive the approval window to be
+          # verified and consumed by the executor, so it is carried on the
+          # deferred operation. Note that Ai::AutonomyGate copies these params
+          # into the ApprovalRequest's request_data, which the approvals API
+          # serializes verbatim — so under require_approval the plaintext token
+          # is readable by any holder of ai.autonomy.approve, a wider audience
+          # than system.sdwan.federation.manage.
+          params: { federation_peer_id: peer.id, acceptance_token: params[:acceptance_token] },
+          account: @account,
+          # Agent AND user: an agent-scoped intervention policy (the seeded
+          # SDWAN Manager row) only matches when the agent is passed —
+          # Ai::InterventionPolicy#agent_matches? rejects a nil agent against a
+          # scoped row — and the gate uses the agent to route the approval to
+          # that agent's chain rather than to "Manual Operations".
+          agent: @agent,
+          requested_by: @user,
+          source_type: "System::FederationPeer",
+          source_id: peer.id,
+          description: "Accept federation peer #{peer.remote_instance_url}"
         )
+
+        case result.decision
+        when :proceed
+          success_result(federation_peer: serialize_federation_peer(peer.reload), accepted: true)
+        when :pending
+          success_result(
+            pending: true,
+            action_category: FEDERATION_ACCEPT_CATEGORY,
+            deferred_operation_id: result.deferred_operation&.id,
+            approval_request_id: result.approval_request&.id,
+            federation_peer: serialize_federation_peer(peer),
+            message: "Approval required: #{FEDERATION_ACCEPT_CATEGORY}"
+          )
+        else
+          error_result(result.error || "Action #{FEDERATION_ACCEPT_CATEGORY} is blocked by policy")
+        end
       end
 
       def federation_scan(_params)

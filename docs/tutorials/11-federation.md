@@ -512,9 +512,12 @@ attempted a cross-region action prohibited by the policy. Either:
 **`federation_acceptance` skill ran but nothing happened** — the skill is
 `requires_approval: true`. It sits in the approval queue until you approve it
 at `/ai/autonomy/approvals` (needs `system.infra_tasks.control`); the accept
-chain runs only on approval. For a plain out-of-band peer you can skip the
-gate by using the `system_sdwan_accept_federation_peer` MCP action directly —
-same `FederationAcceptanceService` chain, no skill approval.
+chain runs only on approval. `system_sdwan_accept_federation_peer` is **not**
+a way around that: it is approval-gated too (`sdwan.federation_peer_accept`,
+`require_approval`) and returns `pending: true` with a `deferred_operation_id`
+until an operator approves. It also performs only the bare status transition —
+`FederationPeer#accept!` — not the `FederationAcceptanceService` chain
+(enroll, node enrollment, SDWAN attach) the skill runs.
 
 **Accept succeeded but returned `sdwan_attach` / `governance` warnings** —
 those are **soft** steps. A warning there (e.g. `skipped` with reason
