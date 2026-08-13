@@ -77,11 +77,12 @@ module System
         # That detach lives in ProvisioningService#finalize_termination!, which
         # IS unconditional once reached — but terminate_instance reaches it on
         # only three of its exits (provider NotFound, a successful terminate,
-        # and the ResourceNotFoundError rescue). Four exits return an error
-        # without detaching — a blank cloud_instance_id (:239), an
+        # and the ResourceNotFoundError rescue). FIVE of its exits never
+        # detach: four return Result.err — a blank cloud_instance_id (:239), an
         # UnknownProviderError (:243), a provider-side failure (:268), and the
-        # ProviderError rescue (:275) — and a fifth, `rescue ArgumentError`
-        # (:279), re-raises. Every one of those is precisely the branch where
+        # ProviderError rescue (:275) — and the fifth, `rescue ArgumentError`
+        # (:279), propagates instead of returning, which matters to a caller
+        # deciding whether to clean up. Every one of those is the branch where
         # the loop below records a node_instance error, so the invariant fails
         # exactly where rollback is meant to work, leaving the Sdwan::Peer and
         # its NodeInstancePeer capability mirror live on the fabric. Detach

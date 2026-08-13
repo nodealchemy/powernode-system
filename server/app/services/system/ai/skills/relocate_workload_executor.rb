@@ -112,9 +112,9 @@ module System
           # pre-existing fleet, which is why this was a no-op). "Released when
           # the host instance is terminated" holds only when the terminate
           # SUCCEEDS: the auto-detach lives in
-          # ProvisioningService#finalize_termination!, and four of
-          # terminate_instance's exits return an error without ever reaching
-          # it. Detach explicitly rather than assume.
+          # ProvisioningService#finalize_termination!, and five of
+          # terminate_instance's exits never reach it — four return Result.err
+          # and the fifth re-raises. Detach explicitly rather than assume.
           Array(sdwan_peer_ids).reverse_each do |peer_id|
             peer = ::Sdwan::Peer.where(account_id: @account.id).find_by(id: peer_id)
             next unless peer
