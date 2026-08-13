@@ -12,6 +12,8 @@ module Api
     module System
       module Sdwan
         class PeersController < ::Api::V1::System::BaseController
+          include ::System::GatedActions
+
           before_action :set_account
           before_action :set_network
           before_action :set_peer, only: %i[show update destroy]
@@ -58,13 +60,42 @@ module Api
             render_error(e.message, status: :unprocessable_content)
           end
 
+          # IMP-c159cc6777b1: routes through Ai::AutonomyGate. Sdwan::Executors::
+          # UpdatePeer existed and was tenancy-hardened but had no caller, so the
+          # seeded sdwan.peer_update policy matched no gate call — while DELETE on
+          # this same controller has been gated (sdwan.peer_delete) since slice 1.
+          # Changing a peer's endpoint / lan_subnets / publicly_reachable rewrites
+          # AllowedIPs and BGP for every session it participates in, so it is at
+          # least as consequential as removing the peer.
+          #
+          # Response contract mirrors DELETE: an operator request carries no agent
+          # and (for an account with no agent-less policy row) falls through
+          # InterventionPolicyService to its require_approval default — 202, the
+          # change applied only at approval time by the executor, which is the sole
+          # writer since gate! never calls on_proceed on its :pending branch. 200
+          # with the serialized row is the :proceed branch.
           def update
             require_permission("system.sdwan.peers.manage")
-            if @peer.update(peer_update_params)
-              render_success(peer: serialize_peer_full(@peer.reload))
-            else
-              render_validation_error(@peer)
-            end
+            attrs = peer_update_params.to_h
+            # Validated before the gate so an unsaveable payload keeps its
+            # field-level 422 and opens no audit row for an operation that could
+            # never run. Never saved — UpdatePeer's update! stays the only writer.
+            @peer.assign_attributes(attrs)
+            return render_validation_error(@peer) unless @peer.valid?
+
+            # Discard the un-gated in-memory changes: nothing may reach the row
+            # except through the executor.
+            @peer.reload
+
+            gate!(
+              action_category: "sdwan.peer_update",
+              executor_class: "Sdwan::Executors::UpdatePeer",
+              params: { peer_id: @peer.id, attributes: attrs },
+              source_type: "Sdwan::Peer",
+              source_id: @peer.id,
+              description: "Update SDWAN peer #{@peer.operator_label}",
+              on_proceed: ->(_r) { render_success(peer: serialize_peer_full(@peer.reload)) }
+            )
           end
 
           # Gated through Ai::AutonomyGate — sdwan.peer_delete defaults to
