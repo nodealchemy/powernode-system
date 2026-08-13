@@ -1,5 +1,11 @@
 # frozen_string_literal: true
 
+module SystemFactorySentinels
+  # Distinguishes "cloud_instance_id was not supplied" from an explicit
+  # `cloud_instance_id: nil`. A unique object, so no id value can collide.
+  CLOUD_INSTANCE_ID_UNSET = Object.new.freeze unless defined?(CLOUD_INSTANCE_ID_UNSET)
+end
+
 FactoryBot.define do
   # System::Provider
   factory :system_provider, class: "System::Provider" do
@@ -140,16 +146,48 @@ FactoryBot.define do
     # as an attribute, others inside an explicit `config:` hash — a plain
     # sequence clobbers one style or the other depending on declaration
     # order); fill only when absent, and only for cloud/dynamic varieties.
-    # An explicit `cloud_instance_id: nil` override is invisible here (a nil
-    # store write drops the key), so specs probing the identity-less state
-    # pass the transient `provider_identity: false` instead.
-    transient { provider_identity { true } }
+    # Specs probing the identity-less state pass the transient
+    # `provider_identity: false`.
+    #
+    # An explicit `cloud_instance_id: nil` does NOT produce that state, and
+    # used to be indistinguishable from omitting it (a nil store write drops
+    # the key, so the backfill below simply filled it). That silently handed
+    # four specs the WITH-identity branch — three of them asserting negatives
+    # that could never hold, sitting red for months (IMP-7aedb6f1a5f1). So
+    # cloud_instance_id is declared as a TRANSIENT with a sentinel default:
+    # that is what lets the factory tell "not supplied" from an explicit nil
+    # and refuse the latter loudly. It also makes precedence against an
+    # explicit `config:` deterministic instead of declaration-order dependent.
+    transient do
+      provider_identity { true }
+      cloud_instance_id { SystemFactorySentinels::CLOUD_INSTANCE_ID_UNSET }
+    end
     after(:build) do |instance, evaluator|
-      if evaluator.provider_identity &&
-         %w[cloud dynamic].include?(instance.variety.to_s) &&
-         instance.cloud_instance_id.blank? &&
-         !(instance.config || {}).key?("cloud_instance_id")
-        instance.cloud_instance_id = "dna/qemu/#{9000 + SecureRandom.random_number(90_000)}"
+      supplied = evaluator.cloud_instance_id
+      cloud_ish = %w[cloud dynamic].include?(instance.variety.to_s)
+
+      if supplied.equal?(SystemFactorySentinels::CLOUD_INSTANCE_ID_UNSET)
+        # Fill only when absent, and only for cloud/dynamic varieties — an id
+        # supplied inside an explicit `config:` hash counts as present.
+        if evaluator.provider_identity && cloud_ish &&
+           instance.cloud_instance_id.blank? &&
+           !(instance.config || {}).key?("cloud_instance_id")
+          instance.cloud_instance_id = "dna/qemu/#{9000 + SecureRandom.random_number(90_000)}"
+        end
+      elsif supplied.nil?
+        # Refuse ONLY where the nil would have been silently overridden.
+        # Physical varieties (and an explicit opt-out) mean it honestly: nil
+        # is the surviving value there, and specs depend on that.
+        if evaluator.provider_identity && cloud_ish
+          raise ArgumentError,
+                "create(:system_node_instance, cloud_instance_id: nil) does not produce an " \
+                "identity-less instance: cloud_instance_id is a store_accessor into config, a " \
+                "nil store write drops the key, and the cloud/dynamic backfill then fills a " \
+                "generated id over it. Pass `provider_identity: false` to seed the identity-less " \
+                "(F1 phantom) shape."
+        end
+      else
+        instance.cloud_instance_id = supplied
       end
     end
 

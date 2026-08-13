@@ -25,7 +25,13 @@ RSpec.describe System::InstancePoolService, type: :service do
 
   # Helper — seed a fully-warm pool member at a given state, bypassing
   # the standard provisioning flow (which would dispatch worker jobs).
-  def seed_pool_member(state:, warming_started_at: 1.minute.ago, acquired_at: nil, last_heartbeat_at: nil)
+  #
+  # `provider_identity: false` seeds the identity-less shape (a member whose
+  # VM the provider never created). It is the factory's documented opt-out
+  # from the cloud/dynamic cloud_instance_id backfill — an omitted or
+  # explicitly-nil cloud_instance_id does NOT produce that shape.
+  def seed_pool_member(state:, warming_started_at: 1.minute.ago, acquired_at: nil, last_heartbeat_at: nil,
+                       provider_identity: true)
     node = create(:system_node, account: account, node_template: node_template,
                                  lifecycle_class: "ephemeral")
     create(:system_node_instance,
@@ -39,7 +45,8 @@ RSpec.describe System::InstancePoolService, type: :service do
            pool_state: state,
            pool_warming_started_at: warming_started_at,
            pool_acquired_at: acquired_at,
-           last_heartbeat_at: last_heartbeat_at)
+           last_heartbeat_at: last_heartbeat_at,
+           provider_identity: provider_identity)
   end
 
   # IMP-71c852bffc37 / offer 019fcc59 — the reuse-without-reset release path
@@ -639,8 +646,13 @@ RSpec.describe System::InstancePoolService, type: :service do
     # useless across ticks), and exhausting the bound is loud (error log +
     # high-severity FleetEvent), never silent.
     context "errored members → terminated cleanup (bounded retry)" do
+      # `cloud_instance_id: nil` means "the provider never created a VM for
+      # this member". Skipping the config write below is NOT enough to seed
+      # that shape — the factory backfills a generated id for cloud members,
+      # and merging over it here leaves that id in place — so the nil case
+      # has to opt out of the backfill via `provider_identity: false`.
       def seed_errored_member(cloud_instance_id: "dna/qemu/#{SecureRandom.hex(3)}", config_extra: {})
-        m = seed_pool_member(state: "errored")
+        m = seed_pool_member(state: "errored", provider_identity: cloud_instance_id.present?)
         cfg = m.config.merge(config_extra)
         cfg["cloud_instance_id"] = cloud_instance_id if cloud_instance_id
         m.update!(config: cfg)
@@ -934,7 +946,7 @@ RSpec.describe System::InstancePoolService, type: :service do
     end
 
     it "does not cycle a warming member with no cloud_instance_id yet (VM not created)" do
-      m = seed_pool_member(state: "warming", warming_started_at: 3.minutes.ago)
+      m = seed_pool_member(state: "warming", warming_started_at: 3.minutes.ago, provider_identity: false)
 
       count = reload_pending_seeds!(pool)
 

@@ -16,8 +16,14 @@ RSpec.describe System::Fleet::Sensors::InstanceStateDriftSensor do
 
   before { allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter) }
 
+  # `cloud_instance_id: nil` seeds the never-stampable shape (no provider
+  # identity, so no adapter read can ever succeed). That needs the factory's
+  # `provider_identity: false` opt-out — the cloud/dynamic backfill fills a
+  # generated id over an omitted OR explicitly-nil cloud_instance_id, which
+  # would make these instances stampable and quietly void the premise.
   def running_instance(cloud_instance_id: "i-#{SecureRandom.hex(4)}")
-    create(:system_node_instance, node: node, status: "running", cloud_instance_id: cloud_instance_id)
+    create(:system_node_instance, node: node, status: "running",
+           cloud_instance_id: cloud_instance_id, provider_identity: cloud_instance_id.present?)
   end
 
   describe "#sense" do
