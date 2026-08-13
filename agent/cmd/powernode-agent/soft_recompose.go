@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
 	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
@@ -43,9 +45,16 @@ set at /run/nextroot, ready for a userspace-only reboot:
   - refused while an A/B boot-image upgrade is armed, on non-pivot nodes,
     and on systemd older than 254.
 
-Without --execute this only prepares and reports; each prepare mounts a
-fresh nextroot scratch tmpfs (superseded ones are reclaimed at the next
-full reboot).`,
+Without --execute this only prepares and reports (a dry run). Its one side
+effect is a "systemctl daemon-reload": the survival gate rescans units to read
+the mount drop-ins before probing them — no boot state is changed. Each prepare
+mounts a fresh nextroot scratch tmpfs (superseded ones are reclaimed at the next
+full reboot).
+
+Exit codes: 0 if --execute would be accepted, 11 (ExitDryRunWouldRefuse) if the
+survival gate would refuse --execute — distinct from 0 and from a generic error
+(1) so CI can gate a soft-reboot on the dry run. With --execute the gate is
+enforced (fail-closed): a refusal is a hard error and no soft-reboot happens.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
@@ -124,19 +133,7 @@ full reboot).`,
 			}
 
 			if !execute {
-				fmt.Fprintln(out, "\nPREPARED — /run/nextroot holds the freshly composed union.")
-				if gateErr != nil {
-					fmt.Fprintf(out, "\nBUT --execute WOULD BE REFUSED:\n  %v\n\n", gateErr)
-					fmt.Fprintln(out, "Nothing about the next boot has changed and no breadcrumb was written,")
-					fmt.Fprintln(out, "so this prepared root is safe to abandon; a full reboot clears it.")
-					fmt.Fprintln(out, "Fix the mount survival above, then re-run with --execute.")
-					return nil
-				}
-				fmt.Fprintln(out, "Pass --execute to apply it now via `systemctl soft-reboot`")
-				fmt.Fprintln(out, "(userspace-only restart: services bounce once, kernel and enrollment stay).")
-				fmt.Fprintln(out, "The boot breadcrumb was deliberately NOT written; abandoning this")
-				fmt.Fprintln(out, "prepared root is safe and a full reboot clears it entirely.")
-				return nil
+				return writePrepareReport(out, gateErr)
 			}
 
 			// Commit point. Preserve the prior breadcrumb so a failed
@@ -180,6 +177,42 @@ full reboot).`,
 	}
 	c.Flags().BoolVar(&execute, "execute", false, "apply the prepared composition now via `systemctl soft-reboot` (default: prepare + report only)")
 	return c
+}
+
+// writePrepareReport renders the dry-run report (no --execute) and returns the
+// error RunE must propagate. Two honesty properties are enforced here and
+// pinned by TestWritePrepareReport_* in soft_recompose_test.go:
+//
+//   - SIDE-EFFECT HONESTY. Reaching this point means NextrootSurvivalGate has
+//     already run, and its first act is `systemctl daemon-reload` — a global
+//     systemd unit rescan on the live node (it needs fresh unit state to probe
+//     the mount drop-ins accurately). That rescan is a real change to running
+//     systemd state, so the report NAMES it rather than claiming nothing
+//     happened. It does NOT change any boot state: no breadcrumb is written and
+//     the composed union is only staged, so the next boot is untouched.
+//   - CI-GATABLE EXIT CODE. When the survival gate would refuse --execute, this
+//     returns a DISTINCT non-zero code (cli.ExitDryRunWouldRefuse) instead of
+//     nil. The dry run exists so a CI wrapper (or an operator) can learn
+//     `--execute` would be refused WITHOUT running it; returning nil made that
+//     outcome exit 0 and indistinguishable from "would succeed".
+func writePrepareReport(out io.Writer, gateErr error) error {
+	fmt.Fprintln(out, "\nPREPARED — /run/nextroot holds the freshly composed union.")
+	fmt.Fprintln(out, "(Side effect of this dry run: the survival gate re-scanned systemd units via")
+	fmt.Fprintln(out, "`systemctl daemon-reload` to read the mount drop-ins. That rescan is the only")
+	fmt.Fprintln(out, "change made — no breadcrumb was written and no boot state changed.)")
+	if gateErr != nil {
+		fmt.Fprintf(out, "\nBUT --execute WOULD BE REFUSED:\n  %v\n\n", gateErr)
+		fmt.Fprintln(out, "No breadcrumb was written and no boot state changed, so this prepared root")
+		fmt.Fprintln(out, "is safe to abandon; a full reboot clears it.")
+		fmt.Fprintln(out, "Fix the mount survival above, then re-run with --execute.")
+		return cli.Errorf(cli.ExitDryRunWouldRefuse, "soft-recompose",
+			"--execute would be refused by the nextroot survival gate: %w", gateErr)
+	}
+	fmt.Fprintln(out, "Pass --execute to apply it now via `systemctl soft-reboot`")
+	fmt.Fprintln(out, "(userspace-only restart: services bounce once, kernel and enrollment stay).")
+	fmt.Fprintln(out, "The boot breadcrumb was deliberately NOT written; abandoning this")
+	fmt.Fprintln(out, "prepared root is safe and a full reboot clears it entirely.")
+	return nil
 }
 
 // nextrootBindSources are the ONLY mounts bound into a soft-reboot
