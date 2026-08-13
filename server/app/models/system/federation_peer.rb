@@ -390,7 +390,17 @@ module System
         severity: severity,
         source: "federation_peer",
         payload: {
-          peer_id: id,
+          # federation_peer_id, NOT peer_id — the key all three per-peer
+          # readers filter on (`payload->>'federation_peer_id'`):
+          # Ai::Tools::SdwanTool#get_audit_log,
+          # Federation::AuditShipmentService#events_for_peer (WORM sealing) and
+          # FederationApi::AuditExcerptsController#events_for_peer. The other
+          # peer-scoped federation.* emitters stamp it too; the account-rollup
+          # ones (FederationManagerExecutor, GrantReviewService) carry no peer
+          # id at all. Under the old `peer_id` these status events were
+          # persisted but reachable by none of the readers, so a peer's audit
+          # history looked complete while omitting every transition it emitted.
+          federation_peer_id: id,
           peer_kind: peer_kind,
           status: status,
           previous_status: previous_status,

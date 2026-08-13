@@ -236,6 +236,29 @@ RSpec.describe Ai::Tools::SdwanTool do
       expect(r[:data][:events].size).to eq(2)
     end
 
+    # IMP-a9fbf64c3e7a. Every other example in this block fabricates its
+    # FleetEvent with the payload key the reader already queries, so they
+    # exercise the reader against a synthetic writer and cannot see a
+    # writer/reader key mismatch. This one drives the REAL writer:
+    # FederationPeer#broadcast_status_transition! → #broadcast_peer_state!,
+    # fired by the after_update callback. Revocation is the transition an
+    # operator opens the audit log to explain, and it is severity "high".
+    it "returns the peer-state event the model itself emits on revocation" do
+      platform_peer = create(:system_federation_peer, :active, account: account)
+      platform_peer.revoke!(reason: "operator drill")
+
+      emitted = ::System::FleetEvent.where(account: account, kind: "federation.peer.revoked").last
+      expect(emitted).to be_present,
+                         "expected FederationPeer#revoke! to emit a federation.peer.revoked FleetEvent"
+
+      r = call("system_sdwan_get_audit_log", federation_peer_id: platform_peer.id)
+      expect(r[:success]).to be true
+      expect(r[:data][:events].map { |e| e[:id] }).to include(emitted.id),
+                                                      "model-emitted peer-state events are missing from get_audit_log — " \
+                                                      "broadcast_peer_state! stamps payload #{emitted.payload.keys.sort.inspect}, " \
+                                                      "the query filters on federation_peer_id"
+    end
+
     it "rejects a peer belonging to a different account" do
       other_peer = create(:system_federation_peer, account: create(:account))
       r = call("system_sdwan_get_audit_log", federation_peer_id: other_peer.id)
