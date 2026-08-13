@@ -36,6 +36,13 @@
 module System
   module Seeds
     module AgentSetupHelpers
+      # Shared by the agent-scoped and operator-path upserts. It has to be ONE
+      # value, not two copies: an agent dispatch that fails this condition on its
+      # own row falls through to the agent-less row, so if the two ever drift the
+      # weaker one silently becomes the effective policy for a demoted agent.
+      # See `upsert_operator_policies!` for the full argument.
+      DEFAULT_TRUST_CONDITIONS = { "trust_tier_minimum" => "monitored" }.freeze
+
       module_function
 
       # Resolve the admin account, admin user, and a provider for agent
@@ -134,7 +141,7 @@ module System
       # @param channels [Array<String>] preferred_channels (default ["notification"])
       # @param priority [Integer] policy priority (default 10)
       # @return [Integer] number of rows created or updated
-      def upsert_policies!(account:, agent:, definitions:, conditions: { "trust_tier_minimum" => "monitored" },
+      def upsert_policies!(account:, agent:, definitions:, conditions: DEFAULT_TRUST_CONDITIONS,
                             channels: %w[notification], priority: 10)
         return 0 unless agent
 
@@ -161,6 +168,99 @@ module System
         changed
       end
 
+      # Idempotent upsert for OPERATOR-path (agent-less) intervention policies.
+      #
+      # `Ai::GatedActions#gate!` passes no `agent:`, so an operator HTTP request
+      # resolves with `agent = nil`, and `Ai::InterventionPolicy#agent_matches?`
+      # is `return true if ai_agent_id.nil?; agent_record && ...` — an
+      # agent-SCOPED row can never match an agent-less caller. Without a row of
+      # this shape every gated operator request falls through
+      # `Ai::InterventionPolicyService` to its require_approval default, no
+      # matter what the agent-scoped seed recorded for the same verb.
+      #
+      # Seeded with `scope: "action_type"` and a nil ai_agent_id, so this set and
+      # the agent-scoped set are disjoint by construction and each seed's stale
+      # cleanup can only reach its own rows.
+      #
+      # An agent-less row is NOT operator-only — `agent_matches?` returns true
+      # for it unconditionally, so an agent dispatch sees it too, as a fallback
+      # below its own row. That is why it carries the same trust_tier_minimum
+      # condition as `upsert_policies!` even though the operator path never
+      # evaluates it (`conditions_met?` skips the tier check when agent_record is
+      # nil). Without the condition this row would out-live the agent-scoped one
+      # exactly when the agent-scoped one is designed to stop matching: after
+      # `Ai::AgentTrustScore#emergency_demote!` drops the agent to "supervised",
+      # the demotion currently escalates that agent to the require_approval
+      # default, and an unconditioned fallback would silently keep it on
+      # notify_and_proceed. Carrying the condition makes both rows fail together,
+      # preserving the escalation.
+      #
+      # Priority is lower than the agent set's for defense in depth:
+      # `specificity_score` already gives an agent-scoped row +5, so the agent
+      # row out-ranks this one at equal priority, and the lower value keeps that
+      # ordering if the priorities are ever tuned. Together with `resolve`'s
+      # explicit agent preference and the shared condition above, that is the
+      # third and last thing keeping the two audiences apart.
+      #
+      # WARNING before adding a condition key here: the two paths do not see the
+      # same keys, and "trust_tier_minimum" is not the only asymmetric one.
+      # "max_daily_notifications" is guarded on `user`, not `agent`
+      # (InterventionPolicyService#notification_limit_reached?), so it is the
+      # MIRROR of this case — near-inert for agent dispatch, live on the operator
+      # path, which always carries a requested_by. It is also not a
+      # notification-volume control despite the name: exceeding it downgrades the
+      # resolution to "silent", and Ai::AutonomyGate treats "silent" as "block" —
+      # a 422 refusal. Setting it here would turn "stop emailing me about this"
+      # into a hard denial of every operator write in the category. Nothing sets
+      # it today; check the guard's operand before adding any key.
+      #
+      # @param account [Account]
+      # @param definitions [Hash{String=>String}] action_category → policy verb
+      # @return [Integer] number of rows created or updated
+      def upsert_operator_policies!(account:, definitions:,
+                                    conditions: DEFAULT_TRUST_CONDITIONS,
+                                    channels: %w[notification], priority: 5)
+        changed = 0
+        definitions.each do |action_category, policy_verb|
+          policy = ::Ai::InterventionPolicy.find_or_initialize_by(
+            account: account,
+            action_category: action_category,
+            scope: "action_type",
+            ai_agent_id: nil
+          )
+          policy.assign_attributes(
+            policy:             policy_verb,
+            priority:           priority,
+            is_active:          true,
+            conditions:         conditions,
+            preferred_channels: channels
+          )
+          if policy.new_record? || policy.changed?
+            policy.save!
+            changed += 1
+          end
+        end
+        changed
+      end
+
+      # Destroy operator-path (agent-less) policies whose action_category is no
+      # longer declared. The mirror of `clean_stale_policies!` for the set
+      # `upsert_operator_policies!` owns; `owned_prefixes` is what stops one
+      # extension's operator seed from reaping another's.
+      #
+      # @return [Integer] number of rows destroyed
+      def clean_stale_operator_policies!(account:, keep_keys:, owned_prefixes: nil,
+                                         excluded_prefixes: [])
+        stale = ::Ai::InterventionPolicy
+          .where(account: account, ai_agent_id: nil, scope: "action_type")
+          .where.not(action_category: keep_keys)
+        stale = restrict_to_prefixes(stale, owned_prefixes, excluded_prefixes)
+
+        count = stale.count
+        stale.destroy_all if count.positive?
+        count
+      end
+
       # Destroy agent-scoped intervention policies whose action_category is
       # not in the current seed's definitions. Idempotent — destroy_all
       # returns 0 rows after the first run.
@@ -185,24 +285,32 @@ module System
         stale = ::Ai::InterventionPolicy
           .where(account: account, ai_agent_id: agent.id, scope: "agent")
           .where.not(action_category: keep_keys)
+        stale = restrict_to_prefixes(stale, owned_prefixes, excluded_prefixes)
 
+        count = stale.count
+        stale.destroy_all if count.positive?
+        count
+      end
+
+      # Narrow a stale-policy relation to an owned action_category namespace,
+      # minus any carve-outs. Shared by the agent-scoped and operator-path
+      # cleanups so both answer namespace ownership the same way.
+      def restrict_to_prefixes(relation, owned_prefixes, excluded_prefixes)
         if owned_prefixes.present?
           owned = Array(owned_prefixes)
-          stale = stale.where(
+          relation = relation.where(
             owned.map { "action_category LIKE ?" }.join(" OR "),
             *owned.map { |p| "#{::Ai::InterventionPolicy.sanitize_sql_like(p)}%" }
           )
         end
 
         Array(excluded_prefixes).each do |prefix|
-          stale = stale.where.not(
+          relation = relation.where.not(
             "action_category LIKE ?", "#{::Ai::InterventionPolicy.sanitize_sql_like(prefix)}%"
           )
         end
 
-        count = stale.count
-        stale.destroy_all if count.positive?
-        count
+        relation
       end
     end
   end

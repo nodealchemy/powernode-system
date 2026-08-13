@@ -45,15 +45,16 @@ module Api
           # never calls on_proceed on :pending. 201/200 with the serialized row
           # is the answer on :proceed.
           #
-          # Which branch an operator gets: gate! passes no `agent:`, and the
-          # seeded sdwan.port_mapping_{create,update} => notify_and_proceed
-          # policies are ai_agent_id-scoped (db/seeds/system_sdwan_manager_agent.rb
-          # upserts them against the SDWAN Manager), so Ai::InterventionPolicy
-          # #agent_matches? rejects them for an agent-less request and
-          # InterventionPolicyService falls through to its require_approval
-          # default — 202, exactly like the DELETE below. Those seeded values
-          # take effect on the agent-dispatch path; an account wanting inline
-          # operator writes configures an agent-less policy for the category.
+          # Which branch an operator gets is a per-account policy question.
+          # gate! passes no `agent:`, so Ai::InterventionPolicy#agent_matches?
+          # admits only agent-less rows. db/seeds/system_sdwan_manager_agent.rb
+          # seeds the recorded per-verb table twice — agent-scoped for the SDWAN
+          # Manager, agent-less for the operator path (IMP-187124ca2984) — so a
+          # seeded account resolves sdwan.port_mapping_{create,update} to
+          # notify_and_proceed and lands on :proceed. An account with no operator
+          # policy for the category falls through InterventionPolicyService to
+          # its require_approval default and gets 202, exactly like the DELETE
+          # below. Either way the executor owns the write.
           def create
             require_permission("system.sdwan.port_mappings.manage")
             attrs = mapping_params.to_h

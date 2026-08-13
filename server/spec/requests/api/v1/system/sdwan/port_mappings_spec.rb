@@ -15,15 +15,25 @@ require "rails_helper"
 # asymmetry was: removing a DNAT entry needed approval, publishing one to the
 # public internet did not.
 #
-# Response-contract note (202 semantics): a gated create no longer answers 201
-# with the row. An operator request carries no agent, and the seeded
-# sdwan.port_mapping_* policies are ai_agent_id-scoped to the SDWAN Manager, so
-# InterventionPolicyService falls through to its require_approval default: 202
-# with the deferred-operation id, and the row appears only at approval time.
-# That is why the :proceed examples below have to stub the policy service —
-# nothing in a spec account (or in a default deployment's operator path)
-# resolves to auto_approve/notify_and_proceed on its own. Field-level
-# validation errors are still 422 and still never open a gate row.
+# Response-contract note — BOTH branches are reachable for an operator, and
+# which one they get is decided by whether their account carries an operator
+# policy for the category.
+#
+# An operator request carries no agent (Ai::GatedActions#gate! passes no
+# `agent:`). With no matching policy row, InterventionPolicyService falls
+# through to its require_approval default and the answer is 202 with the
+# deferred-operation id, the row appearing only at approval time — that is the
+# state of a bare spec account, and of any account whose policies were never
+# seeded. IMP-187124ca2984 then had the SDWAN seed mirror the recorded per-verb
+# table onto agent-less rows, so a seeded account resolves
+# sdwan.port_mapping_{create,update,delete} to notify_and_proceed and gets the
+# :proceed branch: 201/200 with the serialized row, written by the executor
+# inside the gate.
+#
+# The :proceed examples below therefore build that row rather than stubbing
+# InterventionPolicyService — the resolution they would stub out IS the
+# mechanism the operator-path ruling turns on. Field-level validation errors are
+# still 422 either way, and still never open a gate row.
 RSpec.describe "Api::V1::System::Sdwan::PortMappings", type: :request do
   let(:account) { create(:account) }
   let(:manager) { user_with_permissions("system.sdwan.port_mappings.manage", account: account) }
@@ -43,13 +53,17 @@ RSpec.describe "Api::V1::System::Sdwan::PortMappings", type: :request do
     Ai::DeferredOperation.order(created_at: :desc).first.tap(&:execute_now!)
   end
 
-  # Forces the gate's :proceed branch, where the executor runs inline and the
-  # controller's on_proceed lambda renders. No InterventionPolicy rows exist in
-  # a spec account, so InterventionPolicyService falls through to its
-  # require_approval default and nothing else here covers :proceed.
-  def auto_approve_policy!
-    allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
-      { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+  # Reproduces exactly the row the SDWAN seed now writes for the operator path
+  # (db/seeds/system_sdwan_manager_agent.rb via
+  # AgentSetupHelpers.upsert_operator_policies!): agent-less, so
+  # Ai::InterventionPolicy#agent_matches? admits the agent-less request the
+  # controller makes, and scope "action_type" so it never collides with the
+  # agent-scoped set. Resolution runs for real from here on.
+  def seed_operator_policy!(action_category)
+    ::Ai::InterventionPolicy.create!(
+      account: account, ai_agent_id: nil, scope: "action_type",
+      action_category: action_category, policy: "notify_and_proceed",
+      priority: 5, is_active: true
     )
   end
 
@@ -107,8 +121,8 @@ RSpec.describe "Api::V1::System::Sdwan::PortMappings", type: :request do
       expect(mapping.account_id).to eq(account.id)
     end
 
-    it "creates inline and renders the row when the policy auto-approves" do
-      auto_approve_policy!
+    it "creates inline and renders the row under the seeded operator policy" do
+      seed_operator_policy!("sdwan.port_mapping_create")
 
       post_create
 
@@ -118,7 +132,7 @@ RSpec.describe "Api::V1::System::Sdwan::PortMappings", type: :request do
       # 201-with-the-row is also what the UNGATED controller answered, so
       # without this the example cannot tell fixed from unfixed.
       expect(::Ai::DeferredOperation.last&.executor_class).to eq("Sdwan::Executors::CreatePortMapping"),
-                                                              "auto-approved create bypassed the gate entirely"
+                                                              "notify_and_proceed create bypassed the gate entirely"
     end
 
     # Gating must not cost the caller its field-level errors: an invalid
@@ -177,8 +191,8 @@ RSpec.describe "Api::V1::System::Sdwan::PortMappings", type: :request do
       expect(mapping.reload.listen_port).to eq(30_200), "approved update left the mapping unchanged"
     end
 
-    it "updates inline and renders the row when the policy auto-approves" do
-      auto_approve_policy!
+    it "updates inline and renders the row under the seeded operator policy" do
+      seed_operator_policy!("sdwan.port_mapping_update")
 
       patch_update
 
@@ -187,7 +201,7 @@ RSpec.describe "Api::V1::System::Sdwan::PortMappings", type: :request do
       expect(mapping.reload.listen_port).to eq(30_200), "answered ok over an unchanged mapping"
       # 200-with-the-row is also what the UNGATED controller answered.
       expect(::Ai::DeferredOperation.last&.executor_class).to eq("Sdwan::Executors::UpdatePortMapping"),
-                                                              "auto-approved update bypassed the gate entirely"
+                                                              "notify_and_proceed update bypassed the gate entirely"
     end
 
     it "still answers 422 with field errors and opens no gate row for an invalid payload" do
