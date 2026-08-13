@@ -95,6 +95,96 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       end
     end
 
+    # IMP-9fff24306a2c — the dry-run plan IS the approval card for a :high
+    # blast_radius skill, so its ordering has to match the path it describes.
+    # The real run provisions and attaches each volume INSIDE the target
+    # provisioning loop (ProvisionFullStackExecutor#run_execute), which for
+    # blue_green completes in full before terminate_step! touches the source.
+    context "in dry_run mode with storage" do
+      let(:storage_steps) { %w[provision_target_storage attach_volume] }
+      let(:plan) do
+        r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                         to_region_id: to_region.id, cutover_strategy: strategy,
+                         template_id: template.id,
+                         provider_instance_type_id: instance_type.id, count: 2,
+                         source_instance_ids: [ source_instance.id ],
+                         with_storage_gb: 25, dry_run: true)
+        expect(r[:success]).to be true
+        r[:data][:planned_actions]
+      end
+      let(:step_names) { plan.map { |a| a[:step] } }
+
+      context "with the blue_green strategy" do
+        let(:strategy) { "blue_green" }
+
+        it "places every storage step before the first terminate_source" do
+          first_terminate = step_names.index("terminate_source")
+          expect(first_terminate).not_to be_nil
+
+          storage_positions = step_names.each_index.select { |i| storage_steps.include?(step_names[i]) }
+          expect(storage_positions.size).to eq(4) # provision + attach, per target
+          expect(storage_positions.max).to be < first_terminate
+        end
+
+        it "groups each target's storage with that target's own provision step" do
+          expect(step_names).to eq(%w[
+            relocate_workload
+            provision_target_instance provision_target_storage attach_volume
+            provision_target_instance provision_target_storage attach_volume
+            terminate_source
+          ])
+
+          # The pair carries the index of the instance it belongs to, so the
+          # card reads per-target rather than as an undifferentiated tail.
+          expect(plan.select { |a| storage_steps.include?(a[:step]) }.map { |a| a[:index] })
+            .to eq([ 0, 0, 1, 1 ])
+          expect(plan.select { |a| a[:step] == "provision_target_storage" }.map { |a| a[:size_gb] })
+            .to eq([ 25, 25 ])
+        end
+
+        it "orders each target's steps instance -> peer -> storage -> attach, as the run does" do
+          network = ::Sdwan::Network.create!(account_id: account.id, name: "reloc-net-#{SecureRandom.hex(3)}")
+
+          r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                           to_region_id: to_region.id, cutover_strategy: "blue_green",
+                           template_id: template.id,
+                           provider_instance_type_id: instance_type.id, count: 2,
+                           source_instance_ids: [ source_instance.id ],
+                           network_id: network.id, with_storage_gb: 25, dry_run: true)
+
+          expect(r[:success]).to be true
+          expect(r[:data][:planned_actions].map { |a| a[:step] }).to eq(%w[
+            relocate_workload
+            provision_target_instance attach_sdwan_peer provision_target_storage attach_volume
+            provision_target_instance attach_sdwan_peer provision_target_storage attach_volume
+            terminate_source
+          ])
+        end
+      end
+
+      context "with the drain strategy" do
+        let(:strategy) { "drain" }
+
+        it "places every storage step after the last terminate_source" do
+          last_terminate = step_names.rindex("terminate_source")
+          expect(last_terminate).not_to be_nil
+
+          storage_positions = step_names.each_index.select { |i| storage_steps.include?(step_names[i]) }
+          expect(storage_positions.size).to eq(4)
+          expect(storage_positions.min).to be > last_terminate
+        end
+
+        it "terminates the source before provisioning any target resource" do
+          expect(step_names).to eq(%w[
+            relocate_workload
+            terminate_source
+            provision_target_instance provision_target_storage attach_volume
+            provision_target_instance provision_target_storage attach_volume
+          ])
+        end
+      end
+    end
+
     context "blue_green execute (provisioning + termination stubbed at the service layer)" do
       let(:ok_prov) do
         ::System::Runtime::Result.ok(data: { instance: new_instance_stub, cloud_instance_id: "ci-bg" })

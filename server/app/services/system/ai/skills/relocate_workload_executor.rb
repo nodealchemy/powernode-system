@@ -317,33 +317,38 @@ module System
             { step: "relocate_workload", cutover_strategy: strategy,
               source_count: source_ids.size, target_count: count }
           ]
-          # One attach per target, inside the provisioning run rather than
-          # trailing the whole plan: the real path enrols each instance as it
-          # is provisioned, so for blue_green that happens BEFORE the source is
-          # terminated. This is the operator's approval card for a :high
-          # blast-radius skill — a single trailing step understated the peer
-          # count and mis-ordered the cutover.
+          # One peer attach and one storage pair per target, inside the
+          # provisioning run rather than trailing the whole plan: the real path
+          # enrols each instance and provisions-then-attaches its volume as that
+          # instance comes up (ProvisionFullStackExecutor#run_execute), so under
+          # blue_green all of it completes BEFORE the source is terminated. This
+          # is the operator's approval card for a :high blast-radius skill — a
+          # single trailing step understated the peer count, and trailing
+          # storage placed the volumes after a terminate_source that blue_green
+          # does not reach until provisioning is done (IMP-9fff24306a2c). Under
+          # drain the trailing placement was order-correct by accident, but
+          # still listed the volumes apart from the targets they belong to.
+          #
+          # The attach is its own step because it is its own state change
+          # (IMP-093378034fb4), and `attach_volume` is the inner executor's own
+          # emitted step name, so the card names the operation the run performs.
+          # That is a naming correspondence ONLY: this executor lifts just the
+          # inner outputs and failures (never its planned_actions), so a
+          # relocate plan and a relocate run cannot be graded step-for-step.
           provision_steps = []
           count.times do |i|
             provision_steps << { step: "provision_target_instance", index: i,
                                  to_region_id: to_region_id, template_id: template_id,
                                  provider_instance_type_id: provider_instance_type_id }
             provision_steps << { step: "attach_sdwan_peer", index: i, network_id: network_id } if network_id.present?
+            next if with_storage_gb.blank?
+
+            provision_steps << { step: "provision_target_storage", index: i, size_gb: with_storage_gb.to_i }
+            provision_steps << { step: "attach_volume", index: i }
           end
           terminate_steps = source_ids.map { |id| { step: "terminate_source", instance_id: id } }
 
           steps.concat(strategy == "drain" ? terminate_steps + provision_steps : provision_steps + terminate_steps)
-          if with_storage_gb.present?
-            # The attach is listed for the same reason the per-instance peer
-            # step above is: the inner executor attaches each volume as it
-            # provisions it (IMP-093378034fb4), and this card is what the
-            # operator approves. `attach_volume` mirrors the inner step name
-            # so a plan and a run can be graded against each other.
-            count.times do |i|
-              steps << { step: "provision_target_storage", index: i, size_gb: with_storage_gb.to_i }
-              steps << { step: "attach_volume", index: i }
-            end
-          end
           steps
         end
 
