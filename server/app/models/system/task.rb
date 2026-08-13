@@ -32,6 +32,35 @@ module System
       custom
     ].freeze
 
+    # Records that may legitimately carry a task.
+    #
+    # operable_type is free text on an open polymorphic belongs_to, and
+    # `optional: true` means an unresolvable pair persists silently, so without
+    # this a caller naming any model at all (Account, User, Ai::Agent) gets it
+    # stored verbatim.
+    #
+    # The enumeration is the UNION of two sources, and neither alone is
+    # complete: the models declaring the inverse `has_many :tasks, as: :operable`,
+    # plus the types the runtime dispatchers actually accept —
+    # System::Runtime::SyncCloudState:28 handles a ProviderRegion, which declares
+    # no inverse at all. Adding a type here without the corresponding dispatch
+    # arm buys nothing; adding a dispatch arm without listing it here fails
+    # closed at validation.
+    OPERABLE_TYPES = %w[
+      System::Node
+      System::NodeInstance
+      System::Provider
+      System::ProviderNetwork
+      System::ProviderRegion
+      System::ProviderVolume
+      System::ProviderVolumeSnapshot
+    ].freeze
+
+    # Raised instead of a bare CrossAccountError when the TYPE is refused
+    # rather than the owner. It subclasses so existing rescues and log greps
+    # keep working, while a genuine cross-tenant signal stays undiluted.
+    BadOperableType = Class.new(::Ai::DeferredOperation::CrossAccountError)
+
     # === Associations ===
     belongs_to :account
     belongs_to :operable, polymorphic: true, optional: true
@@ -39,6 +68,18 @@ module System
 
     # === Validations ===
     validates :command, presence: true
+    # Guarded on the CHANGE, not on every save. operable_type has been free text
+    # for the table's lifetime and ~15 non-gated producers wrote it unchecked, so
+    # validating unconditionally would make any pre-existing row carrying an
+    # unlisted type unsaveable — bricking progress ticks, `fail!`, and every
+    # other status transition on tasks a worker is already mid-flight on. The
+    # security property is unchanged: every write that SETS or CHANGES the
+    # operable is still validated (on create the attribute goes nil -> value, so
+    # it reads as changed), and a legacy row can never be re-pointed at an
+    # unlisted type. Preferred over a point-in-time production survey because it
+    # holds whatever the existing data turns out to be.
+    validates :operable_type, inclusion: { in: OPERABLE_TYPES }, allow_blank: true,
+                              if: :operable_type_changed?
     validates :status, presence: true, inclusion: { in: STATUSES }
     validates :progress, numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
 

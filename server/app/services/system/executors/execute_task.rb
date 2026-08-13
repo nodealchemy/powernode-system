@@ -23,8 +23,11 @@ module System
           :initiated_by_id
         )
 
+        operable = resolve_operable(attrs.delete(:operable_type), attrs.delete(:operable_id))
+
         task = ::System::Task.new(attrs)
         task.account = account
+        task.operable = operable if operable
         task.initiated_by_id ||= deferred_operation&.requested_by_id
         task.save!
 
@@ -33,6 +36,29 @@ module System
           status: task.status,
           command: task.command
         }
+      end
+
+      # The operable arrives as a caller-supplied type/id pair that the gate
+      # stored verbatim and replays at approval time with no re-validation, and
+      # System::Task's polymorphic belongs_to is `optional: true` with no
+      # ownership check — so mass-assigning the pair let a caller attach another
+      # account's record to a task executing under their own account.
+      #
+      # Two independent refusals: the allowlist decides WHAT may be an operable
+      # (System::Task validates it too, but constantizing an arbitrary
+      # caller-supplied string to reach that validation is itself the thing to
+      # avoid), and resolve_scoped decides WHOSE row it may be. The resolved
+      # record — not the raw pair — is what gets attached, so the check and the
+      # assignment cannot drift apart.
+      def resolve_operable(type, id)
+        return nil if type.blank? || id.blank?
+
+        unless ::System::Task::OPERABLE_TYPES.include?(type)
+          raise ::System::Task::BadOperableType,
+                "#{type} is not a valid task operable"
+        end
+
+        resolve_scoped(type.constantize, id)
       end
 
       def summarize
