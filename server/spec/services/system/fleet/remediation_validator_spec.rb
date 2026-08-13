@@ -188,6 +188,23 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
         .to change { System::Fleet::RemediationOutcome.pending.count }.by(1)
     end
 
+    # The control above is SKILL-backed (sdwan_peer_remediate has a skill but
+    # no REMEDIATION_APPLIERS entry). This one is strictly APPLIER-backed —
+    # system.module_drift is a real key in REMEDIATION_APPLIERS — so the
+    # exemption is proven not to hole the case where something genuinely
+    # actuates and therefore genuinely must be scored.
+    it "still records a proceeded decision whose category has a real remediation applier" do
+      applier_backed = {
+        decision: :proceed, gate: "notify_and_proceed", signal_kind: "system.module_drift",
+        fingerprint: "module-drift-1", action_category: "system.module_drift"
+      }
+      signals = [ sig("module-drift-1", kind: "system.module_drift") ]
+
+      expect(System::Fleet::DecisionEngine::REMEDIATION_APPLIERS).to have_key("system.module_drift")
+      expect { validator.record_proceeded!(decisions: [ applier_backed ], signals: signals) }
+        .to change { System::Fleet::RemediationOutcome.pending.count }.by(1)
+    end
+
     it "mixes observation and normal decisions correctly" do
       observation = {
         decision: :proceed, fingerprint: "boot:i-1", signal_kind: "system.boot_image_drift",

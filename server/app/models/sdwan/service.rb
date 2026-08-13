@@ -24,7 +24,14 @@ module Sdwan
     # "unknown" is the honest default and the only state a service can hold
     # before IPFIX telemetry has been correlated to it — it is deliberately
     # NOT "serving", because an unobserved service is not a healthy one.
-    HEALTH_STATES = %w[unknown serving silent].freeze
+    #
+    # "unobservable" is a DIFFERENT claim from "unknown" and the distinction is
+    # the point: unknown means "no data yet, ask again next tick"; unobservable
+    # means "this backend can never be correlated" — a backend_host holding a
+    # hostname rather than an address, which cannot be matched against the
+    # inet-typed flow records at all. Collapsing the two would hide a
+    # permanently unmeasurable service inside the transient state.
+    HEALTH_STATES = %w[unknown serving silent unobservable].freeze
     HTTP_PROTOCOLS = %w[https http].freeze
     # Path B (public TLS-carrying TCP via Traefik SNI) requires a protocol that
     # actually carries a TLS ClientHello with SNI. Plain "tcp" does not — that

@@ -50,12 +50,14 @@ RSpec.describe System::Fleet::Sensors::SdwanServiceHealthSensor do
                            created_at: 2.hours.ago)
   end
 
-  # Any flow at all proves the IPFIX pipeline is delivering; without one the
-  # sensor refuses to infer anything (see "telemetry gating" below).
+  # Coverage for THIS service: its VIP holder is visible in the flow record
+  # (here on an unrelated port), proving the exporter covering that host is
+  # alive while nothing arrived for the service's own port. Without such a
+  # sample the sensor refuses to infer anything — see "telemetry gating".
   def deliver_unrelated_flow!
     create(:sdwan_flow_sample, account: account, ipfix_collector: collector,
-                              dst_ip: "fd00:dead::1", dst_port: 9999,
-                              observed_at: 1.minute.ago)
+                              dst_ip: holder.assigned_address.to_s.split("/").first,
+                              dst_port: 22, observed_at: 1.minute.ago)
   end
 
   def deliver_flow_to_service!(observed_at: 1.minute.ago)
@@ -154,9 +156,81 @@ RSpec.describe System::Fleet::Sensors::SdwanServiceHealthSensor do
     end
   end
 
+  # backend_host is a free-text column and a hostname is an ordinary value in
+  # it. Compared against the inet-typed dst_ip this RAISES rather than missing
+  # quietly, and FleetAutonomyService rescues per sensor — so the sensor would
+  # be marked failed and drop ALL its signals (orphans included) on every tick
+  # for the whole account, permanently.
+  describe "a backend that cannot be correlated at all" do
+    let!(:hostname_service) do
+      create(:sdwan_service, account: account, backend_vip: nil,
+                             backend_host: "backend.example.com",
+                             backend_port: 443, created_at: 2.hours.ago)
+    end
+
+    it "does not raise, and marks the service unobservable rather than unknown" do
+      deliver_unrelated_flow!
+
+      expect { sensor.sense }.not_to raise_error
+      expect(hostname_service.reload.health_state).to eq("unobservable")
+    end
+
+    it "still emits the orphan half despite the uncorrelatable service" do
+      hub = create(:sdwan_peer, account: account, network: network)
+      create(:sdwan_port_mapping, account: account, network: network,
+                                  hub_peer: hub, target_peer: nil,
+                                  target_virtual_ip: vip)
+      vip.update!(holder_peer_ids: [])
+
+      expect(sensor.sense.map(&:kind)).to include("system.sdwan_portmap_orphaned")
+    end
+  end
+
   # Absence of telemetry is not evidence of silence. This is the guard that
   # keeps one collector outage from alarming on every service at once.
   describe "telemetry gating" do
+    # The account-wide form of this guard defended only the all-collectors-down
+    # case. Traffic to somebody ELSE's host is not evidence that the exporter
+    # covering THIS service is alive — that gap is the two-site false alarm.
+    it "does not treat another host's traffic as coverage of this service" do
+      other_peer = create(:sdwan_peer, account: account, network: network,
+                                       assigned_address: "fd00:abcd:9::9")
+      create(:sdwan_flow_sample, account: account, ipfix_collector: collector,
+                                 dst_ip: other_peer.assigned_address,
+                                 dst_port: 22, observed_at: 1.minute.ago)
+
+      expect(silent_signals(sensor.sense)).to be_empty
+      expect(service.reload.health_state).to eq("unknown")
+
+      # Positive control: the SAME fixture alarms once this service's own
+      # holder appears in the flow record.
+      deliver_unrelated_flow!
+      expect(silent_signals(described_class.new(account: account).sense).size).to eq(1)
+    end
+
+    it "reverts a stale serving claim when telemetry stops arriving" do
+      deliver_flow_to_service!
+      sensor.sense
+      expect(service.reload.health_state).to eq("serving")
+
+      Sdwan::FlowSample.where(account_id: account.id).delete_all
+
+      expect(described_class.new(account: account).sense).to be_empty
+      expect(service.reload.health_state).to eq("unknown")
+    end
+
+    it "clears a health claim off a service that is no longer active" do
+      deliver_flow_to_service!
+      sensor.sense
+      expect(service.reload.health_state).to eq("serving")
+
+      service.update!(status: "disabled")
+      described_class.new(account: account).sense
+
+      expect(service.reload.health_state).to eq("unknown")
+      expect(Sdwan::Service.silent).not_to include(service)
+    end
+
     it "emits nothing when no flow has been delivered in the window" do
       collector # an active collector exists, but it has delivered nothing
       service
@@ -260,6 +334,60 @@ RSpec.describe System::Fleet::Sensors::SdwanServiceHealthSensor do
       # the service that `let!` put in front of the same sweep.
       expect(kinds).not_to include("system.sdwan_service_silent")
       expect(sensor.sense.first.payload["port_mapping_id"]).to eq(mapping.id)
+    end
+
+    # Orphans arrive in herds — draining one hub strands every rule behind it,
+    # and this half runs on every account regardless of IPFIX. Uncapped, that
+    # is one notification per rule per dedup window.
+    it "caps itemised orphans per tick and summarises the remainder" do
+      cap = described_class::MAX_ORPHANS_PER_TICK
+      (cap + 3).times do
+        create(:sdwan_port_mapping, account: account, network: network,
+                                    hub_peer: hub, target_peer: nil,
+                                    target_virtual_ip: vip)
+      end
+      vip.update!(holder_peer_ids: [])
+
+      orphans = sensor.sense.select { |s| s.kind == "system.sdwan_portmap_orphaned" }
+      itemised, overflow = orphans.partition { |s| s.payload["overflow"].blank? }
+
+      expect(itemised.size).to eq(cap)
+      expect(overflow.size).to eq(1)
+      expect(overflow.first.payload["emitted_count"]).to eq(cap)
+      expect(overflow.first.fingerprint).to eq("sdwan_portmap_orphaned_overflow:#{account.id}")
+    end
+
+    # The reason names the object the operator should go look at. A review
+    # asked for a "target row was deleted" reason too; that state is
+    # unreachable — both target FKs are RESTRICT, so the delete is refused
+    # outright. This pins the guarantee, so if anyone ever adds
+    # on_delete: :nullify the sensor's reasoning is revisited rather than
+    # silently starting to lie.
+    it "cannot be reached by a deleted target: the FK refuses the delete" do
+      create(:sdwan_port_mapping, account: account, network: network,
+                                  hub_peer: hub, target_peer: nil,
+                                  target_virtual_ip: vip)
+
+      expect { Sdwan::VirtualIp.where(id: vip.id).delete_all }
+        .to raise_error(ActiveRecord::InvalidForeignKey)
+    end
+
+    # Defensive branch: assigned_address is NOT NULL, presence-validated, and
+    # auto-allocated by a callback, so only a blank written straight past the
+    # model reaches it. resolved_target_address guards with .presence, so the
+    # branch exists — this pins that it is labelled for the PEER rather than
+    # inheriting the VIP wording.
+    it "names the peer, not the VIP, when the target peer has no overlay address" do
+      target = create(:sdwan_peer, account: account, network: network)
+      target.update_column(:assigned_address, "")
+      mapping = create(:sdwan_port_mapping, account: account, network: network,
+                                            hub_peer: hub, target_peer: target,
+                                            target_virtual_ip: nil)
+      deliver_unrelated_flow!
+
+      sig = sensor.sense.find { |s| s.payload["port_mapping_id"] == mapping.id }
+
+      expect(sig.payload["reason"]).to eq("target_peer_unaddressed")
     end
 
     it "does not flag a mapping whose target still resolves" do
