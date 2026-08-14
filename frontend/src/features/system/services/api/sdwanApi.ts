@@ -1,5 +1,6 @@
 import { apiClient } from '@/shared/services/apiClient';
-import { extractData, extractPaginated } from './helpers';
+import { extractData, extractGated, extractPaginated } from './helpers';
+import type { Deleted, Gated } from './helpers';
 import type {
   ApiEnvelope,
   PaginatedEnvelope,
@@ -85,6 +86,23 @@ export interface SdwanPeerCreate {
   bgp_route_reflector_client?: boolean;
 }
 
+// Slice 7a fields a peer edit may change. Address + listen_port are
+// immutable post-creation; `null` clears an endpoint column.
+export interface SdwanPeerUpdate {
+  publicly_reachable?: boolean;
+  lan_subnets?: string[];
+  endpoint_host?: string | null;
+  endpoint_host_v6?: string | null;
+  endpoint_host_v4?: string | null;
+  endpoint_port?: number | null;
+}
+
+// NOTE on mutation return types (IMP-87ec6f651f07): every mutating verb
+// below returns `Gated<...>` — gated verbs answer 202 with a pending-approval
+// marker when the autonomy gate parks them, and callers MUST branch on
+// `isPendingApproval` before toasting success. Ungated verbs share the shape
+// so a verb gaining a gate server-side never silently regresses the UI.
+
 export interface SdwanFirewallRuleCreate {
   name: string;
   priority?: number;
@@ -114,24 +132,27 @@ export const sdwanApi = {
     return extractData(response).network;
   },
 
-  createNetwork: async (data: SdwanNetworkCreate): Promise<SdwanNetwork> => {
+  createNetwork: async (data: SdwanNetworkCreate): Promise<Gated<SdwanNetwork>> => {
     const response = await apiClient.post<ApiEnvelope<{ network: SdwanNetwork }>>(
       '/system/sdwan/networks',
       { network: data }
     );
-    return extractData(response).network;
+    return extractGated(response, (d) => d.network);
   },
 
-  updateNetwork: async (id: string, data: Partial<SdwanNetworkCreate & { status: string }>): Promise<SdwanNetwork> => {
+  updateNetwork: async (id: string, data: Partial<SdwanNetworkCreate & { status: string }>): Promise<Gated<SdwanNetwork>> => {
     const response = await apiClient.put<ApiEnvelope<{ network: SdwanNetwork }>>(
       `/system/sdwan/networks/${id}`,
       { network: data }
     );
-    return extractData(response).network;
+    return extractGated(response, (d) => d.network);
   },
 
-  deleteNetwork: async (id: string): Promise<void> => {
-    await apiClient.delete(`/system/sdwan/networks/${id}`);
+  deleteNetwork: async (id: string): Promise<Gated<Deleted>> => {
+    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
+      `/system/sdwan/networks/${id}`
+    );
+    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
   getTopology: async (id: string): Promise<SdwanTopologyResponse> => {
@@ -150,16 +171,33 @@ export const sdwanApi = {
     return { peers: data.peers ?? [] };
   },
 
-  attachPeer: async (networkId: string, data: SdwanPeerCreate): Promise<SdwanPeer> => {
+  attachPeer: async (networkId: string, data: SdwanPeerCreate): Promise<Gated<SdwanPeer>> => {
     const response = await apiClient.post<ApiEnvelope<{ peer: SdwanPeer }>>(
       `/system/sdwan/networks/${networkId}/peers`,
       { peer: data }
     );
-    return extractData(response).peer;
+    return extractGated(response, (d) => d.peer);
   },
 
-  detachPeer: async (networkId: string, peerId: string): Promise<void> => {
-    await apiClient.delete(`/system/sdwan/networks/${networkId}/peers/${peerId}`);
+  // sdwan.peer_update is gated server-side; this shared-layer helper replaces
+  // PeerEditModal's direct apiClient.put so the pending contract covers it.
+  updatePeer: async (
+    networkId: string,
+    peerId: string,
+    data: SdwanPeerUpdate
+  ): Promise<Gated<SdwanPeer>> => {
+    const response = await apiClient.put<ApiEnvelope<{ peer: SdwanPeer }>>(
+      `/system/sdwan/networks/${networkId}/peers/${peerId}`,
+      { peer: data }
+    );
+    return extractGated(response, (d) => d.peer);
+  },
+
+  detachPeer: async (networkId: string, peerId: string): Promise<Gated<Deleted>> => {
+    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
+      `/system/sdwan/networks/${networkId}/peers/${peerId}`
+    );
+    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
   // -------- Firewall Rules --------
@@ -174,28 +212,31 @@ export const sdwanApi = {
   createFirewallRule: async (
     networkId: string,
     data: SdwanFirewallRuleCreate
-  ): Promise<SdwanFirewallRule> => {
+  ): Promise<Gated<SdwanFirewallRule>> => {
     const response = await apiClient.post<ApiEnvelope<{ firewall_rule: SdwanFirewallRule }>>(
       `/system/sdwan/networks/${networkId}/firewall_rules`,
       { firewall_rule: data }
     );
-    return extractData(response).firewall_rule;
+    return extractGated(response, (d) => d.firewall_rule);
   },
 
   updateFirewallRule: async (
     networkId: string,
     ruleId: string,
     data: Partial<SdwanFirewallRuleCreate>
-  ): Promise<SdwanFirewallRule> => {
+  ): Promise<Gated<SdwanFirewallRule>> => {
     const response = await apiClient.put<ApiEnvelope<{ firewall_rule: SdwanFirewallRule }>>(
       `/system/sdwan/networks/${networkId}/firewall_rules/${ruleId}`,
       { firewall_rule: data }
     );
-    return extractData(response).firewall_rule;
+    return extractGated(response, (d) => d.firewall_rule);
   },
 
-  deleteFirewallRule: async (networkId: string, ruleId: string): Promise<void> => {
-    await apiClient.delete(`/system/sdwan/networks/${networkId}/firewall_rules/${ruleId}`);
+  deleteFirewallRule: async (networkId: string, ruleId: string): Promise<Gated<Deleted>> => {
+    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
+      `/system/sdwan/networks/${networkId}/firewall_rules/${ruleId}`
+    );
+    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
   // ──── Slice 4: User VPN — access grants ────────────────────────────
@@ -210,40 +251,43 @@ export const sdwanApi = {
   createAccessGrant: async (
     networkId: string,
     data: { user_id: string; tags?: string[] }
-  ): Promise<SdwanAccessGrant> => {
+  ): Promise<Gated<SdwanAccessGrant>> => {
     const response = await apiClient.post<ApiEnvelope<{ access_grant: SdwanAccessGrant }>>(
       `/system/sdwan/networks/${networkId}/access_grants`,
       { access_grant: data }
     );
-    return extractData(response).access_grant;
+    return extractGated(response, (d) => d.access_grant);
   },
 
   updateAccessGrant: async (
     networkId: string,
     grantId: string,
     data: { status?: string; tags?: string[] }
-  ): Promise<SdwanAccessGrant> => {
+  ): Promise<Gated<SdwanAccessGrant>> => {
     const response = await apiClient.put<ApiEnvelope<{ access_grant: SdwanAccessGrant }>>(
       `/system/sdwan/networks/${networkId}/access_grants/${grantId}`,
       { access_grant: data }
     );
-    return extractData(response).access_grant;
+    return extractGated(response, (d) => d.access_grant);
   },
 
   revokeAccessGrant: async (
     networkId: string,
     grantId: string,
     reason?: string
-  ): Promise<SdwanAccessGrant> => {
+  ): Promise<Gated<SdwanAccessGrant>> => {
     const response = await apiClient.post<ApiEnvelope<{ access_grant: SdwanAccessGrant }>>(
       `/system/sdwan/networks/${networkId}/access_grants/${grantId}/revoke`,
       { reason }
     );
-    return extractData(response).access_grant;
+    return extractGated(response, (d) => d.access_grant);
   },
 
-  deleteAccessGrant: async (networkId: string, grantId: string): Promise<void> => {
-    await apiClient.delete(`/system/sdwan/networks/${networkId}/access_grants/${grantId}`);
+  deleteAccessGrant: async (networkId: string, grantId: string): Promise<Gated<Deleted>> => {
+    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
+      `/system/sdwan/networks/${networkId}/access_grants/${grantId}`
+    );
+    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
   // ──── Slice 4: User VPN — user devices ─────────────────────────────
@@ -259,12 +303,12 @@ export const sdwanApi = {
     networkId: string,
     grantId: string,
     data: { label: string }
-  ): Promise<SdwanIssueUserDeviceResponse> => {
+  ): Promise<Gated<SdwanIssueUserDeviceResponse>> => {
     const response = await apiClient.post<ApiEnvelope<SdwanIssueUserDeviceResponse>>(
       `/system/sdwan/networks/${networkId}/access_grants/${grantId}/user_devices`,
       { user_device: data }
     );
-    return extractData(response);
+    return extractGated(response, (d) => d);
   },
 
   revokeUserDevice: async (
@@ -272,16 +316,19 @@ export const sdwanApi = {
     grantId: string,
     deviceId: string,
     reason?: string
-  ): Promise<SdwanUserDevice> => {
+  ): Promise<Gated<SdwanUserDevice>> => {
     const response = await apiClient.post<ApiEnvelope<{ user_device: SdwanUserDevice }>>(
       `/system/sdwan/networks/${networkId}/access_grants/${grantId}/user_devices/${deviceId}/revoke`,
       { reason }
     );
-    return extractData(response).user_device;
+    return extractGated(response, (d) => d.user_device);
   },
 
-  deleteUserDevice: async (networkId: string, grantId: string, deviceId: string): Promise<void> => {
-    await apiClient.delete(`/system/sdwan/networks/${networkId}/access_grants/${grantId}/user_devices/${deviceId}`);
+  deleteUserDevice: async (networkId: string, grantId: string, deviceId: string): Promise<Gated<Deleted>> => {
+    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
+      `/system/sdwan/networks/${networkId}/access_grants/${grantId}/user_devices/${deviceId}`
+    );
+    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
   // ──── Slice 6: Federation peers ────────────────────────────────────
@@ -305,24 +352,27 @@ export const sdwanApi = {
     remote_instance_id?: string;
     remote_account_id?: string;
     remote_prefix_advertisement?: string;
-  }): Promise<SdwanFederationPeer> => {
+  }): Promise<Gated<SdwanFederationPeer>> => {
     const response = await apiClient.post<ApiEnvelope<{ federation_peer: SdwanFederationPeer }>>(
       '/system/sdwan/federation_peers',
       { federation_peer: data }
     );
-    return extractData(response).federation_peer;
+    return extractGated(response, (d) => d.federation_peer);
   },
 
-  revokeFederationPeer: async (id: string, reason?: string): Promise<SdwanFederationPeer> => {
+  revokeFederationPeer: async (id: string, reason?: string): Promise<Gated<SdwanFederationPeer>> => {
     const response = await apiClient.post<ApiEnvelope<{ federation_peer: SdwanFederationPeer }>>(
       `/system/sdwan/federation_peers/${id}/revoke`,
       { reason }
     );
-    return extractData(response).federation_peer;
+    return extractGated(response, (d) => d.federation_peer);
   },
 
-  deleteFederationPeer: async (id: string): Promise<void> => {
-    await apiClient.delete(`/system/sdwan/federation_peers/${id}`);
+  deleteFederationPeer: async (id: string): Promise<Gated<Deleted>> => {
+    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
+      `/system/sdwan/federation_peers/${id}`
+    );
+    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
   // ──── Slice 9b: Virtual IPs ───────────────────────────────────────
@@ -347,36 +397,39 @@ export const sdwanApi = {
     return extractData(response).virtual_ip;
   },
 
-  createVirtualIp: async (networkId: string, data: SdwanVirtualIpCreate): Promise<SdwanVirtualIp> => {
+  createVirtualIp: async (networkId: string, data: SdwanVirtualIpCreate): Promise<Gated<SdwanVirtualIp>> => {
     const response = await apiClient.post<ApiEnvelope<{ virtual_ip: SdwanVirtualIp }>>(
       `/system/sdwan/networks/${networkId}/virtual_ips`,
       { virtual_ip: data }
     );
-    return extractData(response).virtual_ip;
+    return extractGated(response, (d) => d.virtual_ip);
   },
 
   updateVirtualIp: async (
     networkId: string,
     vipId: string,
     data: SdwanVirtualIpUpdate
-  ): Promise<SdwanVirtualIp> => {
+  ): Promise<Gated<SdwanVirtualIp>> => {
     const response = await apiClient.patch<ApiEnvelope<{ virtual_ip: SdwanVirtualIp }>>(
       `/system/sdwan/networks/${networkId}/virtual_ips/${vipId}`,
       { virtual_ip: data }
     );
-    return extractData(response).virtual_ip;
+    return extractGated(response, (d) => d.virtual_ip);
   },
 
-  deleteVirtualIp: async (networkId: string, vipId: string): Promise<void> => {
-    await apiClient.delete(`/system/sdwan/networks/${networkId}/virtual_ips/${vipId}`);
+  deleteVirtualIp: async (networkId: string, vipId: string): Promise<Gated<Deleted>> => {
+    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
+      `/system/sdwan/networks/${networkId}/virtual_ips/${vipId}`
+    );
+    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
-  failoverVirtualIp: async (networkId: string, vipId: string): Promise<SdwanVirtualIp> => {
+  failoverVirtualIp: async (networkId: string, vipId: string): Promise<Gated<SdwanVirtualIp>> => {
     const response = await apiClient.post<ApiEnvelope<{ virtual_ip: SdwanVirtualIp }>>(
       `/system/sdwan/networks/${networkId}/virtual_ips/${vipId}/failover`,
       {}
     );
-    return extractData(response).virtual_ip;
+    return extractGated(response, (d) => d.virtual_ip);
   },
 
   // ──── Slice 9c: iBGP routing control plane ────────────────────────
@@ -388,14 +441,14 @@ export const sdwanApi = {
     return extractData(response);
   },
 
-  allocateAccountAs: async (): Promise<{
+  allocateAccountAs: async (): Promise<Gated<{
     account_bgp: SdwanAccountBgp;
     allocated: boolean;
-  }> => {
+  }>> => {
     const response = await apiClient.post<
       ApiEnvelope<{ account_bgp: SdwanAccountBgp; allocated: boolean }>
     >('/system/sdwan/routing/bgp', {});
-    return extractData(response);
+    return extractGated(response, (d) => d);
   },
 
   getBgpSessions: async (filters?: {
@@ -441,25 +494,28 @@ export const sdwanApi = {
     return extractData(response).route_policy;
   },
 
-  createRoutePolicy: async (data: SdwanRoutePolicyCreate): Promise<SdwanRoutePolicy> => {
+  createRoutePolicy: async (data: SdwanRoutePolicyCreate): Promise<Gated<SdwanRoutePolicy>> => {
     const response = await apiClient.post<
       ApiEnvelope<{ route_policy: SdwanRoutePolicy }>
     >('/system/sdwan/route_policies', { route_policy: data });
-    return extractData(response).route_policy;
+    return extractGated(response, (d) => d.route_policy);
   },
 
   updateRoutePolicy: async (
     id: string,
     data: SdwanRoutePolicyUpdate
-  ): Promise<SdwanRoutePolicy> => {
+  ): Promise<Gated<SdwanRoutePolicy>> => {
     const response = await apiClient.patch<
       ApiEnvelope<{ route_policy: SdwanRoutePolicy }>
     >(`/system/sdwan/route_policies/${id}`, { route_policy: data });
-    return extractData(response).route_policy;
+    return extractGated(response, (d) => d.route_policy);
   },
 
-  deleteRoutePolicy: async (id: string): Promise<void> => {
-    await apiClient.delete(`/system/sdwan/route_policies/${id}`);
+  deleteRoutePolicy: async (id: string): Promise<Gated<Deleted>> => {
+    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
+      `/system/sdwan/route_policies/${id}`
+    );
+    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
   compileRoutePolicy: async (
@@ -498,28 +554,31 @@ export const sdwanApi = {
   createPortMapping: async (
     networkId: string,
     data: SdwanPortMappingCreate
-  ): Promise<SdwanPortMapping> => {
+  ): Promise<Gated<SdwanPortMapping>> => {
     const response = await apiClient.post<ApiEnvelope<{ port_mapping: SdwanPortMapping }>>(
       `/system/sdwan/networks/${networkId}/port_mappings`,
       { port_mapping: data }
     );
-    return extractData(response).port_mapping;
+    return extractGated(response, (d) => d.port_mapping);
   },
 
   updatePortMapping: async (
     networkId: string,
     id: string,
     data: SdwanPortMappingUpdate
-  ): Promise<SdwanPortMapping> => {
+  ): Promise<Gated<SdwanPortMapping>> => {
     const response = await apiClient.patch<ApiEnvelope<{ port_mapping: SdwanPortMapping }>>(
       `/system/sdwan/networks/${networkId}/port_mappings/${id}`,
       { port_mapping: data }
     );
-    return extractData(response).port_mapping;
+    return extractGated(response, (d) => d.port_mapping);
   },
 
-  deletePortMapping: async (networkId: string, id: string): Promise<void> => {
-    await apiClient.delete(`/system/sdwan/networks/${networkId}/port_mappings/${id}`);
+  deletePortMapping: async (networkId: string, id: string): Promise<Gated<Deleted>> => {
+    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
+      `/system/sdwan/networks/${networkId}/port_mappings/${id}`
+    );
+    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
   // Governance scan is exposed through the MCP tool (system_sdwan_federation_scan).
@@ -584,8 +643,11 @@ export const sdwanApi = {
     return extractData(response).host_bridge;
   },
 
-  deleteHostBridge: async (id: string): Promise<void> => {
-    await apiClient.delete(`/system/sdwan/host_bridges/${id}`);
+  deleteHostBridge: async (id: string): Promise<Gated<Deleted>> => {
+    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
+      `/system/sdwan/host_bridges/${id}`
+    );
+    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
   // -------- Phase O6: OVN Deployments (read-only) --------
@@ -623,16 +685,19 @@ export const sdwanApi = {
   setIpfixCollectorState: async (
     id: string,
     state: 'active' | 'disabled'
-  ): Promise<SdwanIpfixCollector> => {
+  ): Promise<Gated<SdwanIpfixCollector>> => {
     const response = await apiClient.patch<ApiEnvelope<{ ipfix_collector: SdwanIpfixCollector }>>(
       `/system/sdwan/ipfix_collectors/${id}`,
       { ipfix_collector: { state } }
     );
-    return extractData(response).ipfix_collector;
+    return extractGated(response, (d) => d.ipfix_collector);
   },
 
-  deleteIpfixCollector: async (id: string): Promise<void> => {
-    await apiClient.delete(`/system/sdwan/ipfix_collectors/${id}`);
+  deleteIpfixCollector: async (id: string): Promise<Gated<Deleted>> => {
+    const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
+      `/system/sdwan/ipfix_collectors/${id}`
+    );
+    return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
   // -------- Phase O6 follow-up: Flow Samples (read-only) --------

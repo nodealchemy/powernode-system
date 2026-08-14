@@ -3,7 +3,9 @@ import { Users } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
-import { apiClient } from '@/shared/services/apiClient';
+import { sdwanApi } from '../../services/api/sdwanApi';
+import { isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import type { SdwanPeer } from '../../types/sdwan.types';
 
 interface PeerEditModalProps {
@@ -80,18 +82,23 @@ export const PeerEditModal: React.FC<PeerEditModalProps> = ({ isOpen, networkId,
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
 
-      await apiClient.put(`/system/sdwan/networks/${networkId}/peers/${peer.id}`, {
-        peer: {
-          publicly_reachable: publiclyReachable,
-          lan_subnets: parsedSubnets,
-          endpoint_host_v6: publiclyReachable && endpointHostV6.trim() ? endpointHostV6.trim() : null,
-          endpoint_host_v4: publiclyReachable && endpointHostV4.trim() ? endpointHostV4.trim() : null,
-          // Clear the legacy column when switching to dual-stack — the new
-          // split fields are the canonical source going forward.
-          endpoint_host: null,
-          endpoint_port: publiclyReachable ? endpointPort : null,
-        },
+      // Routed through the shared API layer (sdwan.peer_update is
+      // approval-gated) so a parked update surfaces as pending, not success.
+      const result = await sdwanApi.updatePeer(networkId, peer.id, {
+        publicly_reachable: publiclyReachable,
+        lan_subnets: parsedSubnets,
+        endpoint_host_v6: publiclyReachable && endpointHostV6.trim() ? endpointHostV6.trim() : null,
+        endpoint_host_v4: publiclyReachable && endpointHostV4.trim() ? endpointHostV4.trim() : null,
+        // Clear the legacy column when switching to dual-stack — the new
+        // split fields are the canonical source going forward.
+        endpoint_host: null,
+        endpoint_port: publiclyReachable ? endpointPort : null,
       });
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`updating peer ${peer.assigned_address}`, result));
+        onClose();
+        return;
+      }
       addNotification({ type: 'success', message: 'Peer updated' });
       onSaved();
       onClose();

@@ -46,6 +46,59 @@ export function extractPaginated<T extends Record<string, unknown>>(
   return { ...data, meta };
 }
 
+// ─── Approval-gated mutations (IMP-87ec6f651f07) ────────────────────────────
+//
+// Mutations routed through Ai::AutonomyGate answer 202 on the :pending branch
+// with `{pending: true, deferred_operation_id, action_category,
+// approval_request_id, message}` inside the standard envelope (core
+// `render_pending_approval`). Axios resolves 2xx normally, so pre-fix code
+// reached for `extractData(response).<resource>` and silently got `undefined`
+// — and the UI toasted "saved"/"deleted" for an operation that is actually
+// parked awaiting approval. Every gated (or gateable) mutation must therefore
+// return `Gated<T>` and callers must branch on `isPendingApproval`.
+
+/** The gate's 202 pending-approval marker. */
+export interface PendingApproval {
+  pending: true;
+  deferred_operation_id: string;
+  action_category: string;
+  approval_request_id: string | null;
+  message: string;
+}
+
+/** A mutation result that may have been parked pending approval. */
+export type Gated<T> = T | PendingApproval;
+
+/** Non-pending branch of a gated delete (the body carries no resource). */
+export interface Deleted {
+  deleted: true;
+}
+
+export function isPendingApproval(value: unknown): value is PendingApproval {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { pending?: unknown }).pending === true
+  );
+}
+
+/**
+ * Extract a gated mutation response: the pending marker passes through
+ * untouched; otherwise `pick` maps the payload to the resource.
+ *
+ * @example
+ *   const r = await apiClient.post<ApiEnvelope<{ network: SdwanNetwork }>>(url, body);
+ *   return extractGated(r, (d) => d.network);  // SdwanNetwork | PendingApproval
+ */
+export function extractGated<T, R>(
+  response: AxiosResponse<{ data?: T; success?: boolean } & Partial<T>>,
+  pick: (data: T) => R
+): Gated<R> {
+  const data = extractData(response) as T | PendingApproval;
+  if (isPendingApproval(data)) return data;
+  return pick(data);
+}
+
 /** Synthesize a meta block for endpoints that don't paginate but still
  *  return collections (e.g., the bare-array catalog endpoints). */
 export function defaultMeta(count: number): PaginationMeta {

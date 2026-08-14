@@ -1074,4 +1074,41 @@ describe('PeerAttachModal', () => {
       screen.getByText(/provide at least one\. both = v6 preferred with v4 fallback/i),
     ).toBeInTheDocument();
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  it('shows the pending-approval notification (not success) and skips onAttached when the attach is parked', async () => {
+    mockAttachPeer.mockResolvedValue({
+      pending: true,
+      deferred_operation_id: 'dop-1',
+      action_category: 'sdwan.peer_attach',
+      approval_request_id: 'ar-1',
+      message: 'Approval required',
+    });
+    const onAttached = jest.fn();
+
+    renderModal({ onAttached });
+
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: /alpha-instance-1/i })).toBeInTheDocument(),
+    );
+    fireEvent.change(getInstanceSelect(), { target: { value: INSTANCE_A.id } });
+    fireEvent.click(getAttachButton());
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+    expect(onAttached).not.toHaveBeenCalled();
+  });
 });

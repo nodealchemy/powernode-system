@@ -5,6 +5,8 @@ import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
+import { isPendingApproval } from '../../../services/api/helpers';
+import { pendingApprovalNotice } from '../../../utils/pendingApproval';
 import type { SdwanVirtualIp } from '../../../types/sdwan.types';
 import { VirtualIpList } from './VirtualIpList';
 import { VirtualIpCreateModal } from './VirtualIpCreateModal';
@@ -42,7 +44,12 @@ export const NetworkVipsTab: React.FC<NetworkVipsTabProps> = ({ networkId, onAct
   const handleDelete = async () => {
     if (!vipToDelete) return;
     try {
-      await sdwanApi.deleteVirtualIp(networkId, vipToDelete.id);
+      const result = await sdwanApi.deleteVirtualIp(networkId, vipToDelete.id);
+      if (isPendingApproval(result)) {
+        addNotification?.(pendingApprovalNotice(`deleting VIP '${vipToDelete.name}'`, result));
+        setVipToDelete(null);
+        return;
+      }
       addNotification?.({ type: 'success', message: `VIP '${vipToDelete.name}' deleted.` });
       setVipToDelete(null);
       triggerRefresh();

@@ -480,4 +480,42 @@ describe('FederationPeerProposeModal', () => {
     expect(screen.getByLabelText(/remote instance url/i)).toHaveValue('');
     expect(screen.getByLabelText(/remote instance id/i)).toHaveValue('');
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  it('shows the pending-approval notification (not success) and skips onProposed when the proposal is parked', async () => {
+    mockProposeFederationPeer.mockResolvedValue({
+      pending: true,
+      deferred_operation_id: 'dop-1',
+      action_category: 'sdwan.federation_peer_propose',
+      approval_request_id: 'ar-1',
+      message: 'Approval required',
+    });
+    const onProposed = jest.fn();
+    const onClose = jest.fn();
+
+    renderModal({ onProposed, onClose });
+
+    fireEvent.change(screen.getByLabelText(/remote instance url/i), {
+      target: { value: 'https://other.powernode.example.org' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^propose$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+    expect(onProposed).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
 });

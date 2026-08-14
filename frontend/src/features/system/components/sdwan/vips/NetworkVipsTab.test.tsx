@@ -870,4 +870,53 @@ describe('NetworkVipsTab', () => {
       expect(screen.getByText('webapp-vip')).toBeInTheDocument()
     );
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  it('shows the pending-approval notification (not success) when the VIP delete is parked', async () => {
+    mockGet
+      .mockResolvedValueOnce(vipListEnvelope([VIP_ACTIVE]))
+      .mockResolvedValueOnce(peerListEnvelope([]));
+
+    mockDelete.mockResolvedValueOnce({
+      status: 202,
+      data: {
+        success: true,
+        data: {
+          pending: true,
+          deferred_operation_id: 'dop-1',
+          action_category: 'sdwan.virtual_ip_delete',
+          approval_request_id: 'ar-1',
+          message: 'Approval required',
+        },
+      },
+    });
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('webapp-vip')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Delete'));
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Delete Virtual IP' })).toBeInTheDocument()
+    );
+
+    const deleteModal = screen.getByRole('dialog');
+    fireEvent.click(within(deleteModal).getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        })
+      )
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' })
+    );
+  });
 });

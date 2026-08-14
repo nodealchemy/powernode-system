@@ -866,4 +866,36 @@ describe('VirtualIpCreateModal', () => {
       expect(failoverCheckboxes[0]).not.toBeChecked();
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  it('shows the pending-approval notification and skips onCreated when the create is parked', async () => {
+    mockCreateVirtualIp.mockResolvedValue({
+      pending: true,
+      deferred_operation_id: 'dop-1',
+      action_category: 'sdwan.virtual_ip_create',
+      approval_request_id: 'ar-1',
+      message: 'Approval required',
+    });
+    const onCreated = jest.fn();
+    const onClose = jest.fn();
+
+    renderModal({ onCreated, onClose });
+    await fillUnicastForm();
+    fireEvent.click(screen.getByRole('button', { name: /create virtual ip/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
 });

@@ -4,6 +4,8 @@ import { useArmedConfirm } from '@/shared/hooks/useArmedConfirm';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
+import { isPendingApproval } from '@system/features/system/services/api/helpers';
+import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import type {
   SdwanHostBridge,
   SdwanHostBridgeState,
@@ -56,7 +58,11 @@ export const HostBridgesTab: React.FC = () => {
 
   const handleDelete = useCallback(async (bridge: SdwanHostBridge) => {
     try {
-      await sdwanApi.deleteHostBridge(bridge.id);
+      const result = await sdwanApi.deleteHostBridge(bridge.id);
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`removing bridge ${bridge.bridge_name}`, result));
+        return;
+      }
       addNotification({ type: 'success', message: `Bridge ${bridge.bridge_name} removed` });
       setRefreshKey((k) => k + 1);
     } catch (err) {

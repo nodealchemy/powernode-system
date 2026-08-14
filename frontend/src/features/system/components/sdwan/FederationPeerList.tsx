@@ -5,6 +5,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import type {
   SdwanFederationPeer,
   SdwanFederationStatus,
@@ -260,7 +262,12 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
               <Button variant="secondary" onClick={closeRevoke}>Cancel</Button>
               <Button variant="danger" onClick={async () => {
                 try {
-                  await sdwanApi.revokeFederationPeer(revokeConfirm.id, revokeReason.trim() || undefined);
+                  const result = await sdwanApi.revokeFederationPeer(revokeConfirm.id, revokeReason.trim() || undefined);
+                  if (isPendingApproval(result)) {
+                    addNotification(pendingApprovalNotice(`revoking federation peer ${revokeConfirm.remote_instance_url}`, result));
+                    closeRevoke();
+                    return;
+                  }
                   addNotification({ type: 'success', message: 'Peer revoked' });
                   closeRevoke();
                   triggerLocal();
@@ -286,7 +293,12 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
               <Button variant="secondary" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
               <Button variant="danger" onClick={async () => {
                 try {
-                  await sdwanApi.deleteFederationPeer(deleteConfirm.id);
+                  const result = await sdwanApi.deleteFederationPeer(deleteConfirm.id);
+                  if (isPendingApproval(result)) {
+                    addNotification(pendingApprovalNotice(`deleting federation peer ${deleteConfirm.remote_instance_url}`, result));
+                    setDeleteConfirm(null);
+                    return;
+                  }
                   addNotification({ type: 'success', message: 'Peer deleted' });
                   setDeleteConfirm(null);
                   triggerLocal();

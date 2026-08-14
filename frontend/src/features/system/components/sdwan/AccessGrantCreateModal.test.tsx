@@ -580,4 +580,42 @@ describe('AccessGrantCreateModal', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(mockCreateAccessGrant).toHaveBeenCalledTimes(1);
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  it('shows the pending-approval notification (not success) and skips onCreated when the create is parked', async () => {
+    mockCreateAccessGrant.mockResolvedValue({
+      pending: true,
+      deferred_operation_id: 'dop-1',
+      action_category: 'sdwan.access_grant_create',
+      approval_request_id: 'ar-1',
+      message: 'Approval required',
+    });
+    const onCreated = jest.fn();
+    const onClose = jest.fn();
+
+    renderModal({ onCreated, onClose });
+
+    fireEvent.change(getUserIdInput(), {
+      target: { value: '019d1111-2222-7000-a000-000000000001' },
+    });
+    fireEvent.click(getGrantButton());
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
 });

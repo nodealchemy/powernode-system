@@ -4,6 +4,8 @@ import { Button } from '@/shared/components/ui/Button';
 import { Modal } from '@/shared/components/ui/Modal';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
+import { isPendingApproval } from '../../../services/api/helpers';
+import { pendingApprovalNotice } from '../../../utils/pendingApproval';
 import type { SdwanNetwork, SdwanPeer } from '../../../types/sdwan.types';
 import { BgpSessionsTable } from './BgpSessionsTable';
 
@@ -58,6 +60,11 @@ export const NetworkRoutingTab: React.FC<NetworkRoutingTabProps> = ({ network, o
         network.id,
         { routing_protocol: newMode } as unknown as Parameters<typeof sdwanApi.updateNetwork>[1]
       );
+      if (isPendingApproval(updated)) {
+        addNotification?.(pendingApprovalNotice(`changing routing mode of network '${network.name}' to ${newMode}`, updated));
+        setShowModeToggle(false);
+        return;
+      }
       onNetworkUpdated?.(updated);
       setShowModeToggle(false);
       addNotification?.({

@@ -412,6 +412,76 @@ describe('NetworkPortMappingsTab', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07): gated verbs answer 202 with a
+  // pending marker — the tab must surface "awaiting approval", never "deleted".
+  // ---------------------------------------------------------------------------
+
+  const PENDING = {
+    pending: true,
+    deferred_operation_id: 'dop-1',
+    action_category: 'sdwan.port_mapping_delete',
+    approval_request_id: 'ar-1',
+    message: 'Approval required: sdwan.port_mapping_delete',
+  };
+
+  it('shows a pending-approval notification (not the success toast) when delete is parked for approval', async () => {
+    mockDeletePortMapping.mockResolvedValue(PENDING);
+    renderTab();
+
+    const dialog = await openDeleteModal();
+    fireEvent.click(within(dialog).getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval/i),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+    // The request was accepted — the confirm modal closes either way.
+    await waitFor(() =>
+      expect(screen.queryByText('Delete port mapping')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('links the pending-approval notification to the approvals surface and names the mapping', async () => {
+    mockDeletePortMapping.mockResolvedValue(PENDING);
+    renderTab();
+
+    const dialog = await openDeleteModal();
+    fireEvent.click(within(dialog).getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringContaining('my-mapping'),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+  });
+
+  it('shows a pending-approval notification when the enable toggle is parked for approval', async () => {
+    mockUpdatePortMapping.mockResolvedValue({ ...PENDING, action_category: 'sdwan.port_mapping_update' });
+    renderTab();
+
+    fireEvent.click(screen.getByTestId('trigger-toggle'));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval/i),
+        }),
+      ),
+    );
+  });
+
   it('shows an error notification and leaves modal open when delete fails', async () => {
     mockDeletePortMapping.mockRejectedValue(new Error('Network error'));
     renderTab();

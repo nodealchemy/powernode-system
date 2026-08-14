@@ -4,6 +4,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import type { SdwanNetwork } from '../../types/sdwan.types';
 
 interface NetworkEditModalProps {
@@ -45,12 +47,17 @@ export const NetworkEditModal: React.FC<NetworkEditModalProps> = ({ isOpen, netw
     setSubmitting(true);
     try {
       const settings = { ...(network.settings ?? {}), firewall_default_policy: defaultPolicy };
-      await sdwanApi.updateNetwork(network.id, {
+      const result = await sdwanApi.updateNetwork(network.id, {
         name: name.trim(),
         description: description.trim() || undefined,
         status,
         settings,
       });
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`updating network "${name}"`, result));
+        onClose();
+        return;
+      }
       addNotification({ type: 'success', message: `Network "${name}" updated` });
       onSaved();
       onClose();

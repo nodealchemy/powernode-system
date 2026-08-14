@@ -625,4 +625,45 @@ describe('RoutePolicyEditModal', () => {
       expect(screen.getByRole('checkbox', { name: /enabled/i })).not.toBeChecked();
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  describe('pending-approval branch', () => {
+    it('shows the pending-approval notification and skips onSaved when the create is parked', async () => {
+      mockPost.mockResolvedValueOnce({
+        status: 202,
+        data: {
+          success: true,
+          data: {
+            pending: true,
+            deferred_operation_id: 'dop-1',
+            action_category: 'sdwan.route_policy_create',
+            approval_request_id: 'ar-1',
+            message: 'Approval required',
+          },
+        },
+      });
+
+      renderModal();
+
+      fireEvent.change(screen.getByPlaceholderText(/prefer-internal-routes/i), {
+        target: { value: 'my-new-policy' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /create policy/i }));
+
+      await waitFor(() =>
+        expect(mockAddNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'info',
+            message: expect.stringMatching(/approval required/i),
+            link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+          }),
+        ),
+      );
+      expect(mockOnSaved).not.toHaveBeenCalled();
+      expect(mockOnClose).toHaveBeenCalled();
+    });
+  });
 });

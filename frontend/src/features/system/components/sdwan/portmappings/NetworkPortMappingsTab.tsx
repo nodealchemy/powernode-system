@@ -5,6 +5,8 @@ import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
+import { isPendingApproval } from '../../../services/api/helpers';
+import { pendingApprovalNotice } from '../../../utils/pendingApproval';
 import type { SdwanPortMapping } from '../../../types/sdwan.types';
 import { PortMappingList } from './PortMappingList';
 import { PortMappingCreateModal } from './PortMappingCreateModal';
@@ -39,7 +41,12 @@ export const NetworkPortMappingsTab: React.FC<NetworkPortMappingsTabProps> = ({
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
-      await sdwanApi.deletePortMapping(networkId, deleteTarget.id);
+      const result = await sdwanApi.deletePortMapping(networkId, deleteTarget.id);
+      if (isPendingApproval(result)) {
+        addNotification?.(pendingApprovalNotice(`deleting port mapping '${deleteTarget.name}'`, result));
+        setDeleteTarget(null);
+        return;
+      }
       addNotification?.({ type: 'success', message: `Port mapping '${deleteTarget.name}' deleted.` });
       setDeleteTarget(null);
       triggerRefresh();
@@ -53,7 +60,11 @@ export const NetworkPortMappingsTab: React.FC<NetworkPortMappingsTabProps> = ({
 
   const handleToggle = async (m: SdwanPortMapping) => {
     try {
-      await sdwanApi.updatePortMapping(networkId, m.id, { enabled: !m.enabled });
+      const result = await sdwanApi.updatePortMapping(networkId, m.id, { enabled: !m.enabled });
+      if (isPendingApproval(result)) {
+        addNotification?.(pendingApprovalNotice(`updating port mapping '${m.name}'`, result));
+        return;
+      }
       triggerRefresh();
     } catch (err) {
       addNotification?.({

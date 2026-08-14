@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
 import { Cpu, CheckCircle } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
+import { isPendingApproval } from '../../../services/api/helpers';
+import { pendingApprovalNotice } from '../../../utils/pendingApproval';
 import type { SdwanAccountBgp } from '../../../types/sdwan.types';
 
 interface AsNumberSetupBannerProps {
@@ -15,6 +18,7 @@ export const AsNumberSetupBanner: React.FC<AsNumberSetupBannerProps> = ({
   onAllocated,
   canManage = false,
 }) => {
+  const { addNotification } = useNotifications();
   const [allocating, setAllocating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,6 +44,10 @@ export const AsNumberSetupBanner: React.FC<AsNumberSetupBannerProps> = ({
     setError(null);
     try {
       const result = await sdwanApi.allocateAccountAs();
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice('allocating the account AS number', result));
+        return;
+      }
       onAllocated?.(result.account_bgp);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'AS allocation failed');

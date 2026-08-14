@@ -10,6 +10,8 @@ import {
   NetworkDetailModal,
 } from '@system/features/system/components/sdwan';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
+import { isPendingApproval } from '@system/features/system/services/api/helpers';
+import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import type { SdwanNetwork } from '@system/features/system/types/sdwan.types';
 
 interface NetworksTabProps {
@@ -45,7 +47,12 @@ export const NetworksTab: React.FC<NetworksTabProps> = ({ onActionsReady }) => {
     if (!deleteConfirm) return;
     setDeleting(true);
     try {
-      await sdwanApi.deleteNetwork(deleteConfirm.id);
+      const result = await sdwanApi.deleteNetwork(deleteConfirm.id);
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`deleting network "${deleteConfirm.name}"`, result));
+        setDeleteConfirm(null);
+        return;
+      }
       addNotification({ type: 'success', message: `Network "${deleteConfirm.name}" deleted` });
       setDeleteConfirm(null);
       triggerRefresh();

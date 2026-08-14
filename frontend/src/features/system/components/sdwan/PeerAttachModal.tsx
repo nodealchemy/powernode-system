@@ -4,6 +4,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import { systemApi } from '../../services/systemApi';
 import type { SystemNodeInstance } from '../../types/system.types';
 
@@ -80,13 +82,19 @@ export const PeerAttachModal: React.FC<PeerAttachModalProps> = ({ isOpen, networ
     }
     setSubmitting(true);
     try {
-      await sdwanApi.attachPeer(networkId, {
+      const result = await sdwanApi.attachPeer(networkId, {
         node_instance_id: nodeInstanceId,
         publicly_reachable: publiclyReachable,
         endpoint_host_v6: publiclyReachable && endpointHostV6.trim() ? endpointHostV6.trim() : undefined,
         endpoint_host_v4: publiclyReachable && endpointHostV4.trim() ? endpointHostV4.trim() : undefined,
         endpoint_port: publiclyReachable ? endpointPort : undefined,
       });
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice('attaching the peer', result));
+        reset();
+        onClose();
+        return;
+      }
       addNotification({ type: 'success', message: 'Peer attached' });
       onAttached();
       reset();

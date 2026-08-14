@@ -4,6 +4,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 
 interface FederationPeerProposeModalProps {
   isOpen: boolean;
@@ -39,12 +41,18 @@ export const FederationPeerProposeModal: React.FC<FederationPeerProposeModalProp
     }
     setSubmitting(true);
     try {
-      await sdwanApi.proposeFederationPeer({
+      const result = await sdwanApi.proposeFederationPeer({
         remote_instance_url: remoteInstanceUrl.trim(),
         remote_instance_id: remoteInstanceId.trim() || undefined,
         remote_account_id: remoteAccountId.trim() || undefined,
         remote_prefix_advertisement: remotePrefix.trim() || undefined,
       });
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`proposing federation peer ${remoteInstanceUrl.trim()}`, result));
+        reset();
+        onClose();
+        return;
+      }
       addNotification({ type: 'success', message: 'Federation peer proposed' });
       onProposed();
       reset();

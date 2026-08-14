@@ -732,4 +732,42 @@ describe('PeerEditModal', () => {
     renderModal({ peer: SPOKE_PEER });
     expect(screen.queryByText(/Provide at least one/i)).not.toBeInTheDocument();
   });
+
+  // ──── Pending-approval branch (IMP-87ec6f651f07) ──────────────────────────
+
+  it('shows the pending-approval notification (not success) and skips onSaved when the update is parked', async () => {
+    mockPut.mockResolvedValueOnce({
+      status: 202,
+      data: {
+        success: true,
+        data: {
+          pending: true,
+          deferred_operation_id: 'dop-1',
+          action_category: 'sdwan.peer_update',
+          approval_request_id: 'ar-1',
+          message: 'Approval required',
+        },
+      },
+    });
+
+    const { onSaved, onClose } = renderModal({ peer: SPOKE_PEER });
+
+    const form = screen.getByRole('button', { name: /save/i }).closest('form')!;
+    fireEvent.submit(form);
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        })
+      )
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' })
+    );
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
 });

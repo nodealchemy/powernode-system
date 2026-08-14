@@ -5,6 +5,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import type {
   SdwanAccessGrant,
   SdwanUserDevice,
@@ -230,7 +232,12 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
               <Button variant="secondary" onClick={() => setRevokeGrantConfirm(null)}>Cancel</Button>
               <Button variant="danger" onClick={async () => {
                 try {
-                  await sdwanApi.revokeAccessGrant(networkId, revokeGrantConfirm.id);
+                  const result = await sdwanApi.revokeAccessGrant(networkId, revokeGrantConfirm.id);
+                  if (isPendingApproval(result)) {
+                    addNotification(pendingApprovalNotice('revoking the access grant', result));
+                    setRevokeGrantConfirm(null);
+                    return;
+                  }
                   addNotification({ type: 'success', message: 'Grant revoked' });
                   setRevokeGrantConfirm(null);
                   triggerLocalRefresh();
@@ -263,7 +270,12 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
               <Button variant="danger" onClick={async () => {
                 try {
                   const grantId = revokeDeviceConfirm.access_grant_id;
-                  await sdwanApi.revokeUserDevice(networkId, grantId, revokeDeviceConfirm.id);
+                  const result = await sdwanApi.revokeUserDevice(networkId, grantId, revokeDeviceConfirm.id);
+                  if (isPendingApproval(result)) {
+                    addNotification(pendingApprovalNotice(`revoking device "${revokeDeviceConfirm.label}"`, result));
+                    setRevokeDeviceConfirm(null);
+                    return;
+                  }
                   addNotification({ type: 'success', message: 'Device revoked' });
                   setRevokeDeviceConfirm(null);
                   triggerLocalRefresh();

@@ -15,6 +15,14 @@ jest.mock('@system/features/system/services/api/sdwanApi', () => ({
   },
 }));
 
+const mockAddNotification = jest.fn();
+jest.mock('@/shared/hooks/useNotifications', () => ({
+  useNotifications: () => ({
+    addNotification: mockAddNotification,
+    showNotification: jest.fn(),
+  }),
+}));
+
 // =============================================================================
 // Fixtures
 // =============================================================================
@@ -35,6 +43,7 @@ const ACCOUNT_BGP: SdwanAccountBgp = {
 describe('AsNumberSetupBanner', () => {
   beforeEach(() => {
     mockAllocateAccountAs.mockReset();
+    mockAddNotification.mockReset();
   });
 
   // ── Allocated state ────────────────────────────────────────────────────────
@@ -228,6 +237,37 @@ describe('AsNumberSetupBanner', () => {
       await waitFor(() =>
         expect(screen.queryByText('timeout')).not.toBeInTheDocument(),
       );
+    });
+  });
+
+  // ── Pending-approval branch (IMP-87ec6f651f07) ─────────────────────────────
+
+  describe('pending-approval branch', () => {
+    const PENDING_APPROVAL = {
+      pending: true,
+      deferred_operation_id: 'dop-1',
+      action_category: 'sdwan.account_as_allocate',
+      approval_request_id: 'ar-1',
+      message: 'Approval required',
+    };
+
+    it('shows the pending-approval notification and does not call onAllocated', async () => {
+      mockAllocateAccountAs.mockResolvedValue(PENDING_APPROVAL);
+      const onAllocated = jest.fn();
+
+      render(<AsNumberSetupBanner accountBgp={null} canManage onAllocated={onAllocated} />);
+      fireEvent.click(screen.getByRole('button', { name: /allocate as/i }));
+
+      await waitFor(() =>
+        expect(mockAddNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'info',
+            message: expect.stringMatching(/approval required/i),
+            link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+          }),
+        ),
+      );
+      expect(onAllocated).not.toHaveBeenCalled();
     });
   });
 });

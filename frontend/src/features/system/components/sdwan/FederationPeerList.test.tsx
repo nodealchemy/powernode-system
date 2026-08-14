@@ -647,4 +647,81 @@ describe('FederationPeerList', () => {
       ).toBe(2),
     );
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  const pendingEnvelope = (action_category: string) => ({
+    status: 202,
+    data: {
+      success: true,
+      data: {
+        pending: true,
+        deferred_operation_id: 'dop-1',
+        action_category,
+        approval_request_id: 'ar-1',
+        message: 'Approval required',
+      },
+    },
+  });
+
+  it('shows the pending-approval notification (not success) when the revoke is parked', async () => {
+    mockGet.mockResolvedValue(peersResponse([PEER_PROPOSED]));
+    mockPost.mockResolvedValue(pendingEnvelope('sdwan.federation_peer_revoke'));
+
+    render(<FederationPeerList />);
+
+    fireEvent.click(
+      await waitFor(() =>
+        screen.getByLabelText('Revoke peer https://remote-a.example.com'),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByText('Revoke federation peer')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^revoke$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
+
+  it('shows the pending-approval notification (not success) when the delete is parked', async () => {
+    mockGet.mockResolvedValue(peersResponse([PEER_ACTIVE]));
+    mockDelete.mockResolvedValue(pendingEnvelope('sdwan.federation_peer_revoke'));
+
+    render(<FederationPeerList />);
+
+    fireEvent.click(
+      await waitFor(() =>
+        screen.getByLabelText('Delete peer https://remote-b.example.com'),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByText('Delete federation peer')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
 });

@@ -716,4 +716,72 @@ describe('SdwanRoutingPage', () => {
     // The modal shows `route-map {slug}-{direction}` — check the slug portion
     expect(screen.getByText(/test-policy-import/)).toBeInTheDocument();
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  const pendingEnvelope = (action_category: string) => ({
+    status: 202,
+    data: {
+      success: true,
+      data: {
+        pending: true,
+        deferred_operation_id: 'dop-1',
+        action_category,
+        approval_request_id: 'ar-1',
+        message: 'Approval required',
+      },
+    },
+  });
+
+  it('shows the pending-approval notification (not success) when the policy delete is parked', async () => {
+    mockGet.mockResolvedValue(envelope(ROUTING_OVERVIEW));
+    mockDelete.mockResolvedValue(pendingEnvelope('sdwan.route_policy_delete'));
+
+    renderPage('/app/system/sdwan/routing/policies');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('route-policies-list')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('mock-delete-policy'));
+
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
+
+  it('shows the pending-approval notification when the enable toggle is parked', async () => {
+    mockGet.mockResolvedValue(envelope(ROUTING_OVERVIEW));
+    mockPatch.mockResolvedValue(pendingEnvelope('sdwan.route_policy_update'));
+
+    renderPage('/app/system/sdwan/routing/policies');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('route-policies-list')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('mock-toggle-policy'));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+        }),
+      ),
+    );
+  });
 });
