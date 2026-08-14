@@ -544,6 +544,210 @@ RSpec.describe System::ProvisioningService do
       end
     end
 
+    # IMP-8e1ac4a09e82 — the account-default arm of the resolution.
+    #
+    # IMP-94728a788498 gave the COMPOSER three-arm resolution (template
+    # explicit → account default → networkless), so an AI-composed plan puts
+    # every instance on the fabric by default. This service is the platform's
+    # other network resolver — instance-pool replenishment/acquisition,
+    # `system_provision_instance`, every direct caller — and it consulted only
+    # pool + template. One bare template therefore produced two classes of
+    # node (composed → on fabric, direct → networkless), invisible until an
+    # overlay connection to the networkless one failed.
+    #
+    # These examples drive the REAL consumer (`provision`), so they assert on
+    # Sdwan::Peer rows rather than on the private resolver's return value.
+    context "when the ACCOUNT configures a default sdwan network" do
+      let(:default_network) { create(:sdwan_network, account: account) }
+
+      before do
+        account.update!(
+          settings: (account.settings || {}).merge(
+            Account::DEFAULT_SDWAN_NETWORK_SETTING => default_network.id
+          )
+        )
+        node.reload
+      end
+
+      it "enrolls via the account default when neither pool nor template declares one" do
+        result = provision
+
+        instance = result.data[:instance]
+        expect(Sdwan::Peer.exists?(node_instance_id: instance.id,
+                                   sdwan_network_id: default_network.id)).to be(true)
+      end
+
+      # The swallowed-null guard, one config surface over: builders and forms
+      # emit `""`/`null` routinely and both must keep meaning "no opinion",
+      # inheriting the default rather than silently detaching from it.
+      it "treats a blank template value as no opinion and still inherits the default" do
+        node.node_template.update!(config: { "sdwan_network_id" => "" })
+        node.reload
+
+        result = provision
+
+        expect(Sdwan::Peer.exists?(node_instance_id: result.data[:instance].id,
+                                   sdwan_network_id: default_network.id)).to be(true)
+      end
+
+      # The inverse arm: an explicit opt-out must BEAT the account default,
+      # or an operator has no way to provision deliberate bare compute on an
+      # account that has a default. Same "none" sentinel the composer uses —
+      # one vocabulary across both resolvers.
+      it "leaves the instance networkless when the template opts out with \"none\"" do
+        node.node_template.update!(config: { "sdwan_network_id" => "none" })
+        node.reload
+
+        expect { provision }.not_to change(Sdwan::Peer, :count)
+      end
+
+      # The pool arm used to SHORT-CIRCUIT on any present value and never
+      # reach the template; it now falls through on :absent like every other
+      # arm. These four pin both halves of that conversion — an opinion on the
+      # pool arm still wins, and a non-opinion still falls through — because
+      # flipping either direction is a one-line edit away and would otherwise
+      # go unnoticed.
+      def pool_with(metadata, name:)
+        System::InstancePool.create!(
+          account: account, node_template: node.node_template, name: name,
+          target_size: 1, min_size: 0, max_size: 2, lifecycle_class: "ephemeral",
+          status: "active", provider_region: create(:system_provider_region),
+          provider_instance_type: create(:system_provider_instance_type),
+          metadata: metadata
+        )
+      end
+
+      it "leaves the instance networkless when pool metadata opts out with \"none\"" do
+        pool = pool_with({ "sdwan_network_id" => "none" }, name: "opt-out-pool")
+        node.update!(config: { "instance_pool_id" => pool.id })
+        node.reload
+
+        expect { provision }.not_to change(Sdwan::Peer, :count)
+      end
+
+      it "prefers the pool's own network over the account default" do
+        pool_network = create(:sdwan_network, account: account)
+        pool = pool_with({ "sdwan_network_id" => pool_network.id }, name: "bound-pool")
+        node.update!(config: { "instance_pool_id" => pool.id })
+        node.reload
+
+        instance = provision.data[:instance]
+
+        expect(Sdwan::Peer.exists?(node_instance_id: instance.id,
+                                   sdwan_network_id: pool_network.id)).to be(true)
+        expect(Sdwan::Peer.exists?(node_instance_id: instance.id,
+                                   sdwan_network_id: default_network.id)).to be(false)
+      end
+
+      it "falls through to the account default when the pool declares nothing" do
+        pool = pool_with({ "ready_ttl_seconds" => 900 }, name: "unconfigured-pool")
+        node.update!(config: { "instance_pool_id" => pool.id })
+        node.reload
+
+        instance = provision.data[:instance]
+
+        expect(Sdwan::Peer.exists?(node_instance_id: instance.id,
+                                   sdwan_network_id: default_network.id)).to be(true)
+      end
+
+      # A pool row that was reaped out from under the node must read as "no
+      # opinion", not as an opt-out — otherwise deleting a pool would silently
+      # detach every node that referenced it from the fabric.
+      it "falls through to the account default when the referenced pool is gone" do
+        pool = pool_with({ "sdwan_network_id" => "none" }, name: "doomed-pool")
+        node.update!(config: { "instance_pool_id" => pool.id })
+        pool.destroy!
+        node.reload
+
+        instance = provision.data[:instance]
+
+        expect(Sdwan::Peer.exists?(node_instance_id: instance.id,
+                                   sdwan_network_id: default_network.id)).to be(true)
+      end
+
+      it "prefers an explicit template network over the account default" do
+        template_network = create(:sdwan_network, account: account)
+        node.node_template.update!(config: { "sdwan_network_id" => template_network.id })
+        node.reload
+
+        result = provision
+
+        instance = result.data[:instance]
+        expect(Sdwan::Peer.exists?(node_instance_id: instance.id,
+                                   sdwan_network_id: template_network.id)).to be(true)
+        expect(Sdwan::Peer.exists?(node_instance_id: instance.id,
+                                   sdwan_network_id: default_network.id)).to be(false)
+      end
+
+      # A configured default that could never be a network id must not
+      # silently compose bare compute — the composer fails LOUD at compose
+      # time; this path has no clarification channel, so "loud" is an error
+      # log. Networkless either way, but never silent.
+      it "logs loudly and provisions networkless when the default could never be an id" do
+        account.update!(
+          settings: (account.settings || {}).merge(
+            Account::DEFAULT_SDWAN_NETWORK_SETTING => 12_345
+          )
+        )
+        node.reload
+        allow(Rails.logger).to receive(:error)
+
+        expect { provision }.not_to change(Sdwan::Peer, :count)
+        expect(Rails.logger).to have_received(:error).with(/not a usable network id/)
+      end
+
+      # A deleted network is a legitimately-configured id that stopped
+      # resolving, NOT a misconfiguration: it must not raise (the rescue in
+      # #auto_enroll_sdwan_peer! would hide a raise from the peer-count
+      # assertion, so the log is asserted too) and must not be reported as an
+      # unusable value.
+      it "provisions networkless and quietly when the configured default no longer resolves" do
+        dangling = default_network.id
+        default_network.destroy!
+        account.update!(
+          settings: (account.settings || {}).merge(
+            Account::DEFAULT_SDWAN_NETWORK_SETTING => dangling
+          )
+        )
+        node.reload
+        allow(Rails.logger).to receive(:error)
+
+        result = nil
+        expect { result = provision }.not_to change(Sdwan::Peer, :count)
+
+        expect(result.success?).to be(true)
+        expect(Rails.logger).not_to have_received(:error).with(/SDWAN auto-enroll failed/)
+        expect(Rails.logger).not_to have_received(:error).with(/not a usable network id/)
+      end
+    end
+
+    # Frozen-at-provisioning: the account default is read AT PROVISION TIME
+    # and never applied retroactively. Both halves matter and they fail in
+    # opposite directions — a resolver that cached the value would leave the
+    # second instance networkless, and a backfill would retro-enroll the
+    # first.
+    context "when the account default is set AFTER an instance was provisioned" do
+      let(:late_network) { create(:sdwan_network, account: account) }
+
+      it "leaves the earlier instance alone and applies the default only to the next provision" do
+        first = provision.data[:instance]
+        expect(Sdwan::Peer.exists?(node_instance_id: first.id)).to be(false)
+
+        account.update!(
+          settings: (account.settings || {}).merge(
+            Account::DEFAULT_SDWAN_NETWORK_SETTING => late_network.id
+          )
+        )
+        node.reload
+
+        second = provision.data[:instance]
+
+        expect(Sdwan::Peer.exists?(node_instance_id: second.id,
+                                   sdwan_network_id: late_network.id)).to be(true)
+        expect(Sdwan::Peer.exists?(node_instance_id: first.id)).to be(false)
+      end
+    end
+
     context "when the instance belongs to a pool whose metadata declares sdwan_network_id" do
       let(:pool_region)   { create(:system_provider_region) }
       let(:pool_type)     { create(:system_provider_instance_type) }
