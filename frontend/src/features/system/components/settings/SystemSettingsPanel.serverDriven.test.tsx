@@ -196,7 +196,10 @@ describe('SystemSettingsPanel — renders the server\'s policy rows', () => {
 
     expect(screen.getByText('system.runtime_docker_provision')).toBeInTheDocument();
     // Removed from the seeds by the 2026-05-19 audit — no executor ever backed
-    // it — yet still registered, so only a ROW-driven modal drops it.
+    // it. It stayed REGISTERED for another three months (removed under
+    // IMP-6e52d6aa53da), which is why this guard is worth keeping even now:
+    // it holds for a ROW-driven modal whatever the registry says, and the
+    // registry is a second source that has already drifted once.
     expect(screen.queryByText('system.runtime_docker_tls_rotate')).not.toBeInTheDocument();
   });
 

@@ -214,7 +214,7 @@ articles = [
 
       ## Docker
 
-      - TLS verification fails → rotate cert via `system.runtime_docker_tls_rotate`
+      - TLS verification fails → rotate the daemon cert through the broader `system.cert_rotate` flow, or re-run the daemon provisioner (there is no dedicated TLS-rotate action today)
       - Daemon listens on wrong address → check `Sdwan::Peer.host_address` is the source of truth
       - daemon.json overrides not applied (slice 10) → verify higher `effective_priority`
 

@@ -196,5 +196,44 @@ RSpec.describe "Api::V1::System::Autonomy", type: :request do
         expect(persisted).to match_array(previously_unregistered)
       end
     end
+
+    # IMP-6e52d6aa53da — the inverse of the context above, and the reason
+    # registration is worth removing rather than leaving as tidy-up.
+    # `system.runtime_docker_tls_rotate` was registered but seeded nowhere: the
+    # 2026-05-19 audit deleted its policy row because no executor backed it and
+    # left the registration standing, so this endpoint — whose only category
+    # check is `category_registered?` — would `find_or_initialize_by` and
+    # CREATE a row for it on demand, giving the operator a durable control for
+    # an action nothing can execute.
+    #
+    # Asserts the EFFECT (no row exists afterwards), not just the message: the
+    # concern collects errors and keeps going, so a batch can be rejected as a
+    # whole while individual rows in it have already been written.
+    context "with a category whose capability was removed" do
+      let(:removed_category) { "system.runtime_docker_tls_rotate" }
+      let(:live_sibling)     { "system.runtime_docker_provision" }
+
+      it "rejects the update and creates no policy row for it" do
+        patch "/api/v1/system/autonomy",
+              params: { updates: [
+                { action_category: removed_category, policy: "auto_approve" },
+                { action_category: live_sibling,     policy: "auto_approve" }
+              ] }.to_json,
+              headers: auth_headers_for(manage_user).merge("Content-Type" => "application/json")
+
+        expect(response).to have_http_status(:unprocessable_content)
+        expect(Array(json_response.dig("details", "errors")).join(" "))
+          .to include("unknown category #{removed_category}")
+
+        expect(Ai::InterventionPolicy.where(account: account, action_category: removed_category))
+          .to be_empty
+
+        # Positive twin: the batch was otherwise well-formed and its live
+        # sibling persisted, so the rejection is about THIS category and not
+        # about the request shape or the account setup.
+        expect(Ai::InterventionPolicy.where(account: account, action_category: live_sibling))
+          .to exist
+      end
+    end
   end
 end

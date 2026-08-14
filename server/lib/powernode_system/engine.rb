@@ -687,10 +687,34 @@ module PowernodeSystem
           system.disk_image_publication_investigate
         ])
 
-        # Runtime Manager domain
+        # Runtime Manager domain.
+        #
+        # `system.runtime_docker_tls_rotate` is deliberately ABSENT and must not
+        # be re-added. The 2026-05-19 doc-accuracy audit deleted its seeded
+        # policy because nothing executes it — operators rotate Docker daemon
+        # TLS through the broader `system.cert_rotate` flow (see
+        # db/seeds/system_runtime_manager_agent.rb) — but the registration
+        # survived here for three months.
+        #
+        # A class NAMED for it does exist and is not evidence to the contrary:
+        # app/services/system/executors/runtime/rotate_docker_tls.rb is a
+        # deliberate raising stub whose `perform` always raises
+        # NotYetImplementedError (IMP-967901b9d2e1 made it refuse rather than
+        # keep reporting `rotated: true` without touching TLS material). No
+        # call site names it — executors are dispatched by an explicit
+        # `executor_class:` string at the gating site, and nothing passes this
+        # one. Re-register only alongside a real implementation AND a seeded
+        # policy row.
+        #
+        # Registration is not cosmetic: it is
+        # the gate System::AutonomyActions#update passes, so a
+        # registered-but-unseeded category is one the bulk
+        # PATCH /api/v1/system/autonomy will `find_or_initialize_by` a policy
+        # row for, giving an operator a durable control over an action nothing
+        # can execute. Pinned by
+        # spec/lib/powernode_system/autonomy_categories_registration_spec.rb.
         categories.concat(%w[
           system.runtime_docker_provision system.runtime_docker_decommission
-          system.runtime_docker_tls_rotate
           system.runtime_k8s_cluster_bootstrap system.runtime_k8s_cluster_decommission
           system.runtime_k8s_node_join system.runtime_k8s_node_drain
           system.runtime_k8s_runtime_upgrade
