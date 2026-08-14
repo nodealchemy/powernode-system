@@ -135,6 +135,31 @@ module System
               "#{model.name} #{id} is not in account #{anchor.id}"
       end
 
+      # Guard for update executors whose attributes can carry a NEW parent id.
+      # `attrs` drops account/account_id (the tenancy MOVE), but a
+      # caller-supplied parent foreign key is equally tenancy-bearing — the
+      # RE-PARENT (IMP-bf996c7abcb4 ruling): the SDWAN models' own validations
+      # are RELATIVE to the row's parent (holders/hub/target/name-uniqueness
+      # compare against the row's network, never against this operation's
+      # account), so a payload naming a foreign parent satisfies every model
+      # validation while account_id stays the caller's — and the per-network
+      # compilers then file the row into the victim's overlay.
+      #
+      # Resolving the named parent through resolve_scoped is the whole guard:
+      # in-account re-parents still work, a foreign parent raises
+      # CrossAccountError before the write, and when no new parent is named
+      # the row's existing parent is already covered by the executor's own
+      # resolve_scoped. Hoisted here (IMP-0e44cf2fc80b) because the copy had
+      # reached four executors byte-identical — and an update executor that
+      # forgets this call is a silent tenancy hole; see the per-resource
+      # compile-path rationale at each call site.
+      def anchor_reparent!(attribute, model)
+        parent_id = attrs[attribute]
+        return if parent_id.blank?
+
+        resolve_scoped(model, parent_id)
+      end
+
       def initiator
         deferred_operation&.requested_by || deferred_operation&.ai_agent
       end
