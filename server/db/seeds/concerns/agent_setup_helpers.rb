@@ -209,12 +209,15 @@ module System
       # "max_daily_notifications" is guarded on `user`, not `agent`
       # (InterventionPolicyService#notification_limit_reached?), so it is the
       # MIRROR of this case — near-inert for agent dispatch, live on the operator
-      # path, which always carries a requested_by. It is also not a
-      # notification-volume control despite the name: exceeding it downgrades the
-      # resolution to "silent", and Ai::AutonomyGate treats "silent" as "block" —
-      # a 422 refusal. Setting it here would turn "stop emailing me about this"
-      # into a hard denial of every operator write in the category. Nothing sets
-      # it today; check the guard's operand before adding any key.
+      # path, which always carries a requested_by. It now behaves as its name
+      # promises (IMP-73dff8186c1e): exhausting the budget suppresses the
+      # NOTIFICATION and degrades the verb only as far as require_approval — a
+      # 202 park, never a denial. Until that fix it rewrote the resolution to
+      # "silent", which Ai::AutonomyGate folds into its "block" branch, so
+      # setting it here would have turned "stop emailing me about this" into a
+      # hard 422 refusal of every operator write in the category for the rest of
+      # the day. Nothing sets it today; still check the guard's operand — the
+      # asymmetry above is unchanged — before adding any key.
       #
       # "quiet_hours" fails the OTHER way, and belongs beside max_daily so a
       # human tuning conditions sees both directions: conditions_met? returns
