@@ -15,9 +15,7 @@ module System
       protected
 
       def perform
-        attrs = params[:task_attributes] || params[:attributes] || params
-        attrs = attrs.respond_to?(:to_unsafe_h) ? attrs.to_unsafe_h : attrs.to_h
-        attrs = attrs.symbolize_keys.slice(
+        attrs = task_attrs.slice(
           :command, :description, :scheduled_at, :exclusive,
           :operable_type, :operable_id, :idempotency_key, :options,
           :initiated_by_id
@@ -78,13 +76,80 @@ module System
               "#{type} #{id} is not in account #{account.id}"
       end
 
+      # IMP-a449bc347e94: summarize/impact read the same normalized shape
+      # perform inserts. They previously read params[:command] and
+      # params[:operable_type]/[:operable_id] at the TOP level while both gate
+      # call sites nest under :task_attributes — so every deferred task's card
+      # read "Execute system task: " with impact " on system", naming neither
+      # the command nor the target the approver is deciding about.
       def summarize
-        "Execute system task: #{params[:command]}"
+        "Execute system task: #{task_attrs[:command]}"
       end
 
       def impact
-        operable = params[:operable_type] && params[:operable_id] ? "#{params[:operable_type]}##{params[:operable_id]}" : "system"
-        "#{params[:command]} on #{operable}"
+        attrs = task_attrs
+        "#{attrs[:command]} on #{operable_display(attrs[:operable_type], attrs[:operable_id])}"
+      end
+
+      private
+
+      # The row attributes, wherever the caller put them. Both gate call sites
+      # nest under :task_attributes (tasks_controller#create and
+      # NodeInstanceGating's gate_or_execute / gate_ip_action); :attributes and
+      # the bare top level cover direct callers. One ladder shared by perform
+      # and the card pair keeps the shapes from drifting apart again.
+      def task_attrs
+        raw = params[:task_attributes] || params[:attributes] || params
+        raw = raw.respond_to?(:to_unsafe_h) ? raw.to_unsafe_h : raw.to_h
+        raw.symbolize_keys
+      end
+
+      # Names the operable for the approval card — the approver decides "stop
+      # WHICH node", so the card leads with the record's name and degrades to
+      # the caller's own Type#id pair when nothing better resolves.
+      #
+      # Resolution is DELEGATED to resolve_operable — the same allowlist,
+      # scoping, and oracle-collapsing perform uses — so what the card will
+      # name and what the executor will touch cannot drift apart (the exact
+      # drift resolve_operable's own comment exists to prevent). The card
+      # degrades where perform refuses: every refusal renders as the caller's
+      # own bare pair, because a preview must render, not raise.
+      def operable_display(type, id)
+        return "system" if type.blank? || id.blank?
+
+        fallback = "#{type}##{id}"
+        record = resolve_operable(type, id)
+        return fallback unless name_disclosable?(record)
+
+        name = record.respond_to?(:name) ? record.name : nil
+        name.present? ? "#{type} #{name}" : fallback
+      rescue ::System::Task::BadOperableType, ::Ai::DeferredOperation::CrossAccountError,
+             ActiveRecord::RecordNotFound
+        fallback
+      end
+
+      # Whether the resolved record's name may appear on the card. With the
+      # operation present (the execute path — and preview too, once
+      # IMP-4a5094b22df0 threads it through), resolve_operable already
+      # anchored the record to the operation's account and this passes. But
+      # Base.preview hardcodes deferred_operation: nil, so at preview time
+      # resolve_scoped passes ANY existing row through unscoped — and the only
+      # trusted anchor left is the initiator both HTTP gate surfaces force
+      # into task_attrs after their permit lists (tasks_controller#create
+      # merges current_user.id over the permitted keys; NodeInstanceGating
+      # writes it directly). Without this check the card would hand a
+      # caller-named foreign UUID's name back at REQUEST time, before any
+      # approval: a cross-account disclosure and an existence oracle in one.
+      # Records that carry no account anchor at all are not tenant-owned and
+      # disclose freely, mirroring resolve_scoped's own passthrough.
+      def name_disclosable?(record)
+        return true if account.present?
+
+        owner_id = record.account_id if record.respond_to?(:account_id)
+        owner_id ||= record.account&.id if record.respond_to?(:account)
+        return true if owner_id.nil?
+
+        owner_id == ::User.find_by(id: task_attrs[:initiated_by_id])&.account_id
       end
     end
   end

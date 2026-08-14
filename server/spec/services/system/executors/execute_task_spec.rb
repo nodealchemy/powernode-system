@@ -142,4 +142,155 @@ RSpec.describe System::Executors::ExecuteTask do
       expect(error).not_to be_a(::System::Task::BadOperableType)
     end
   end
+
+  # IMP-a449bc347e94 — the approval card for a gated task dispatch.
+  #
+  # Both gate call sites nest the row attributes under :task_attributes
+  # (tasks_controller#create and NodeInstanceGating's gate_or_execute /
+  # gate_ip_action), but summarize read params[:command] and impact read
+  # params[:operable_type]/[:operable_id] at the TOP level — so every deferred
+  # task's card read "Execute system task: " with impact " on system", naming
+  # neither the command nor the target the approver is deciding about.
+  #
+  # These examples drive the ACTUAL preview a gated request produces: the gate
+  # stores the caller's params shape on the DeferredOperation row, and the card
+  # renders from a FRESH load of that row (JSONB round-trip — string keys), not
+  # from a hand-built symbol-keyed hash.
+  describe "the approval card for a gated request" do
+    let(:user) { create(:user, account: account) }
+
+    # Mirrors tasks_controller#create verbatim — nesting, source anchors,
+    # description. NodeInstanceGating's gate_or_execute/gate_ip_action dispatch
+    # the identical :task_attributes nesting.
+    def gated_card(attrs)
+      result = ::Ai::AutonomyGate.evaluate(
+        action_category: "system.task.#{attrs[:command]}",
+        executor_class: described_class.name,
+        params: { task_attributes: attrs },
+        account: account,
+        requested_by: user,
+        source_type: attrs[:operable_type].presence,
+        source_id: attrs[:operable_id].presence,
+        description: "#{attrs[:command]} on #{attrs[:operable_type]}##{attrs[:operable_id]}".strip
+      )
+      operation = result.deferred_operation
+      expect(operation).to be_present,
+                           "gate returned no deferred operation (decision=#{result.decision}, error=#{result.error})"
+      ::Ai::DeferredOperation.find(operation.id).preview
+    end
+
+    it "names the command on the summary line" do
+      node.update!(name: "edge-lon-01")
+      card = gated_card(command: "sync", operable_type: "System::Node",
+                        operable_id: node.id, initiated_by_id: user.id)
+
+      expect(card[:summary]).to eq("Execute system task: sync")
+    end
+
+    it "names the command and the operable's name on the impact line" do
+      node.update!(name: "edge-lon-01")
+      card = gated_card(command: "sync", operable_type: "System::Node",
+                        operable_id: node.id, initiated_by_id: user.id)
+
+      expect(card[:impact]).to eq("sync on System::Node edge-lon-01")
+    end
+
+    # The lifecycle dispatch shape — an operable with no account_id column of
+    # its own (NodeInstance's account flows through node), so the name lookup
+    # cannot depend on a uniform account_id.
+    it "names the instance for a NodeInstanceGating lifecycle dispatch" do
+      instance = create(:system_node_instance, account: account, name: "web-1")
+      card = gated_card(command: "stop", operable_type: "System::NodeInstance",
+                        operable_id: instance.id, initiated_by_id: user.id)
+
+      expect(card[:impact]).to eq("stop on System::NodeInstance web-1")
+    end
+
+    it "reads 'on system' when no operable is named, but still names the command" do
+      card = gated_card(command: "sync", initiated_by_id: user.id)
+
+      expect(card[:summary]).to eq("Execute system task: sync")
+      expect(card[:impact]).to eq("sync on system")
+    end
+
+    # A preview must render, never refuse — but it must not constantize its way
+    # to a name either. A type outside OPERABLE_TYPES degrades to the caller's
+    # own bare pair (perform refuses the same pair later, at execution).
+    it "degrades an unallowlisted operable type to the caller's bare pair" do
+      card = gated_card(command: "sync", operable_type: "Kernel", operable_id: account.id)
+
+      expect(card[:impact]).to eq("sync on Kernel##{account.id}")
+      expect(card[:error]).to be_nil
+    end
+
+    it "falls back to the bare pair when the operable row is gone" do
+      missing = SecureRandom.uuid
+      card = gated_card(command: "sync", operable_type: "System::Node", operable_id: missing)
+
+      expect(card[:impact]).to eq("sync on System::Node##{missing}")
+    end
+
+    # Positive twin for the fallback rung: a flat direct-caller shape keeps a
+    # working card, so supporting the controllers' nesting cannot have cost the
+    # shape perform already accepted.
+    it "still names the command and operable for a flat direct-caller params shape" do
+      node.update!(name: "edge-lon-01")
+      card = described_class.preview(
+        { command: "sync", operable_type: "System::Node", operable_id: node.id,
+          initiated_by_id: user.id }
+      )
+
+      expect(card[:summary]).to eq("Execute system task: sync")
+      expect(card[:impact]).to eq("sync on System::Node edge-lon-01")
+    end
+
+    # What the card may DISCLOSE. Base.preview runs with deferred_operation:
+    # nil, so resolve_scoped has no account anchor at preview time and passes
+    # any existing row through — an unguarded name lookup would hand a caller-
+    # supplied foreign UUID's name to the card at REQUEST time, before any
+    # approval. The only trusted anchor at preview is the initiator both HTTP
+    # gate surfaces force into task_attrs after permit (tasks_controller
+    # merges current_user.id over the permitted keys; NodeInstanceGating
+    # writes it directly).
+    context "when the caller names a record it does not own as the operable" do
+      it "does not disclose the foreign record's name on the card" do
+        foreign_node.update!(name: "victim-payroll-node")
+        card = gated_card(command: "sync", operable_type: "System::Node",
+                          operable_id: foreign_node.id, initiated_by_id: user.id)
+
+        expect(card[:impact]).not_to include("victim-payroll-node"),
+                                     "the approval card leaked another account's record name: #{card[:impact].inspect}"
+        expect(card[:impact]).to eq("sync on System::Node##{foreign_node.id}")
+      end
+
+      # The negation twin of the disclosure check: naming OWN records while
+      # bare-pairing foreign ones must not let the caller distinguish "exists
+      # elsewhere" from "exists nowhere" — the two cards must be identical up
+      # to the id the caller themselves supplied.
+      it "renders a foreign id exactly as it renders a missing id" do
+        missing_id = SecureRandom.uuid
+        foreign = gated_card(command: "sync", operable_type: "System::Node",
+                             operable_id: foreign_node.id, initiated_by_id: user.id)
+        missing = gated_card(command: "sync", operable_type: "System::Node",
+                             operable_id: missing_id, initiated_by_id: user.id)
+
+        expect(foreign[:impact].sub(foreign_node.id, "<id>"))
+          .to eq(missing[:impact].sub(missing_id, "<id>")),
+              "the card distinguishes a foreign id from a missing one: " \
+              "#{foreign[:impact].inspect} vs #{missing[:impact].inspect}"
+      end
+
+      # Without an initiator there is no anchor at all, so the card must not
+      # name anything — a direct caller that wants names on its cards passes
+      # the initiator, as both HTTP surfaces already do.
+      it "falls back to the bare pair for a flat shape with no initiator" do
+        node.update!(name: "edge-lon-01")
+        card = described_class.preview(
+          { command: "sync", operable_type: "System::Node", operable_id: node.id }
+        )
+
+        expect(card[:impact]).to eq("sync on System::Node##{node.id}")
+      end
+    end
+  end
 end
