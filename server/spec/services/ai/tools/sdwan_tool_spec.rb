@@ -41,6 +41,51 @@ RSpec.describe Ai::Tools::SdwanTool do
     )
   end
 
+  # IMP-c9798d9d5671 harness: resolve the parked operation by the
+  # RESPONSE's own deferred_operation_id (exact — immune to the
+  # two-ops-in-one-example latest-row footgun), assert its routing identity
+  # (category + executor), yield it for park-shape assertions, then execute
+  # it — the one approval motion every update-gate describe repeats.
+  def approve_parked_update!(response, category:, executor:)
+    deferred = Ai::DeferredOperation.find_by(id: response.dig(:data, :deferred_operation_id))
+    expect(deferred).to be_present, "no deferred operation was parked — the update was applied inline"
+    expect(deferred.action_category).to eq(category)
+    expect(deferred.executor_class).to eq(executor)
+    yield deferred if block_given?
+    deferred.execute_now!
+  end
+
+  # IMP-c9798d9d5671 template (Angle-D): a typo'd or empty payload must
+  # fail LOUD naming the permitted fields — never park a no-op approval an
+  # operator has to dispose of. Consumers define gate_action and
+  # noop_request (a payload whose recognized-field set is empty).
+  shared_examples "a loud no-op update refusal" do
+    it "refuses a payload with no recognized fields without parking anything" do
+      expect {
+        @result = call(gate_action, **noop_request)
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to include("no recognized fields to update"),
+                                 "a no-op payload must fail loud, not park an empty approval"
+    end
+  end
+
+  # IMP-c9798d9d5671 template: a gated update arm answers pending WITHOUT
+  # touching the row. The record-unchanged probe is part of the template so
+  # no arm's describe can omit it. Consumers define gate_action,
+  # gate_request, pristine_probe (lambda over the persisted value),
+  # pristine_value, and pristine_failure_hint.
+  shared_examples "an approval-gated sdwan update" do
+    it "defers the update through the approval gate rather than writing inline" do
+      r = call(gate_action, **gate_request)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:pending]).to be true
+      expect(instance_exec(&pristine_probe)).to eq(pristine_value), pristine_failure_hint
+    end
+  end
+
   describe ".action_definitions" do
     it "registers all 8 Phase O6 actions" do
       keys = described_class.action_definitions.keys
@@ -77,7 +122,10 @@ RSpec.describe Ai::Tools::SdwanTool do
     let(:instance) { create(:system_node_instance, node: node, name: "ti-#{SecureRandom.hex(3)}") }
     let!(:peer)    { Sdwan::PeerEnroller.call(network: network, node_instance: instance) }
 
+    # Value semantics ride the gate's :proceed branch since IMP-c9798d9d5671
+    # (sdwan.peer_update — the approval-path behaviour has its own describe).
     it "sets + normalizes (trim/dedup/drop-blank) the peer's tags" do
+      auto_approve_policy!
       r = call("system_sdwan_set_peer_tags", peer_id: peer.id, tags: [ " database ", "edge", "database", "" ])
       expect(r[:success]).to be true
       expect(r[:data][:tags]).to eq(%w[database edge])
@@ -85,6 +133,7 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "clears tags with an empty array" do
+      auto_approve_policy!
       peer.update!(tags: %w[old])
       r = call("system_sdwan_set_peer_tags", peer_id: peer.id, tags: [])
       expect(r[:success]).to be true
@@ -1203,7 +1252,11 @@ RSpec.describe Ai::Tools::SdwanTool do
     let(:network)  { create(:sdwan_network, account: account) }
     let!(:mapping) { create(:sdwan_port_mapping, account: account, network: network) }
 
+    # Value semantics ride the gate's :proceed branch since IMP-c9798d9d5671
+    # (sdwan.port_mapping_update — the approval-path behaviour has its own
+    # describe below).
     it "updates rate_limit, max_connections, and source_cidrs via options" do
+      auto_approve_policy!
       r = call(
         "system_sdwan_update_port_mapping",
         port_mapping_id: mapping.id,
@@ -1217,6 +1270,7 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "clears hardening back to unrestricted with nil/[]" do
+      auto_approve_policy!
       mapping.update!(rate_limit: 50, max_connections: 10, source_cidrs: [ "203.0.113.0/24" ])
 
       r = call(
@@ -1231,14 +1285,16 @@ RSpec.describe Ai::Tools::SdwanTool do
       expect(pm[:source_cidrs]).to eq([])
     end
 
-    it "rejects an invalid CIDR through the update path without persisting it" do
-      r = call(
-        "system_sdwan_update_port_mapping",
-        port_mapping_id: mapping.id,
-        options: { source_cidrs: [ "999.999.999.999/24" ] }
-      )
-      expect(r[:success]).to be false
-      expect(r[:error]).to match(/invalid CIDR entry/)
+    it "rejects an invalid CIDR before the gate without persisting or parking anything" do
+      expect {
+        @result = call(
+          "system_sdwan_update_port_mapping",
+          port_mapping_id: mapping.id,
+          options: { source_cidrs: [ "999.999.999.999/24" ] }
+        )
+      }.not_to change(Ai::DeferredOperation, :count)
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to match(/invalid CIDR entry/)
       expect(mapping.reload.source_cidrs).to eq([])
     end
 
@@ -1646,6 +1702,346 @@ RSpec.describe Ai::Tools::SdwanTool do
 
       expect(@result[:success]).to be false
       expect(foreign.virtual_ips.count).to eq(0)
+    end
+  end
+
+  # IMP-c9798d9d5671 — MCP/HTTP parity for the UPDATE verbs: every REST
+  # update path in this family now parks behind Ai::AutonomyGate
+  # (sdwan.{firewall_rule,virtual_ip,route_policy,port_mapping,peer,network}
+  # _update) while these MCP arms applied the identical mutations inline —
+  # an agent refused on the REST surface could reach for the MCP twin.
+  # Mirrors the IMP-6c482005db87 create-gate blocks above: nothing is
+  # stubbed between the tool and the executor, so a params-key mismatch
+  # fails as RecordNotFound / RecordInvalid rather than passing on a
+  # well-formed-looking hash.
+  describe "system_sdwan_update_firewall_rule approval gate (IMP-c9798d9d5671)" do
+    let(:network) { create(:sdwan_network, account: account) }
+    let!(:rule)   { create(:sdwan_firewall_rule, account: account, network: network, name: "old-rule", priority: 100) }
+
+    let(:gate_action)  { "system_sdwan_update_firewall_rule" }
+    let(:gate_request) { { firewall_rule_id: rule.id, name: "renamed" } }
+    let(:pristine_probe) { -> { rule.reload.name } }
+    let(:pristine_value) { "old-rule" }
+    let(:pristine_failure_hint) { "MCP update_firewall_rule rewrote the nftables rule without an approval gate" }
+
+    let(:noop_request) { { firewall_rule_id: rule.id, bogus_field: "x" } }
+
+    it_behaves_like "an approval-gated sdwan update"
+    it_behaves_like "a loud no-op update refusal"
+
+    it "parks a deferred operation the executor consumes on approval (port re-key included)" do
+      r = call("system_sdwan_update_firewall_rule",
+               firewall_rule_id: rule.id, priority: 7, port_from: 5432, port_to: 5433)
+
+      approve_parked_update!(r, category: "sdwan.firewall_rule_update",
+                             executor: "Sdwan::Executors::UpdateFirewallRule") do |deferred|
+        expect(deferred.params["rule_id"]).to eq(rule.id)
+        expect(deferred.params.dig("attributes", "port_range_hash", "from")).to eq(5432)
+      end
+
+      expect(rule.reload.priority).to eq(7)
+      expect(rule.port_range_hash).to eq({ from: 5432, to: 5433 })
+    end
+
+    it "updates inline and serializes the rule when the policy auto-approves" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_update_firewall_rule", firewall_rule_id: rule.id, name: "renamed")
+
+      expect(r[:success]).to be true
+      expect(r[:data][:firewall_rule][:name]).to eq("renamed"),
+                                                 "answered success over a rule that was not serialized back"
+      expect(rule.reload.name).to eq("renamed")
+    end
+
+    it "rejects an invalid update before the gate without parking anything" do
+      expect {
+        @result = call("system_sdwan_update_firewall_rule",
+                       firewall_rule_id: rule.id, firewall_action: "explode")
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(rule.reload.action).to eq("accept")
+    end
+
+    it "refuses a rule outside the caller's account without parking anything" do
+      foreign = create(:sdwan_firewall_rule, name: "foreign-rule")
+
+      expect {
+        @result = call("system_sdwan_update_firewall_rule", firewall_rule_id: foreign.id, name: "stolen")
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(foreign.reload.name).to eq("foreign-rule")
+    end
+  end
+
+  describe "system_sdwan_update_virtual_ip approval gate (IMP-c9798d9d5671)" do
+    let(:network) { create(:sdwan_network, account: account) }
+    # Lazy: only the holder-change examples pay the peer-allocator cost.
+    let(:holder)  { create(:sdwan_peer, account: account, network: network) }
+    let!(:vip)    { create(:sdwan_virtual_ip, account: account, network: network, holder_peer_ids: []) }
+
+    let(:gate_action)  { "system_sdwan_update_virtual_ip" }
+    let(:gate_request) { { virtual_ip_id: vip.id, holder_peer_ids: [ holder.id ] } }
+    let(:pristine_probe) { -> { vip.reload.holder_peer_ids } }
+    let(:pristine_value) { [] }
+    let(:pristine_failure_hint) { "MCP update_virtual_ip moved the VIP without an approval gate" }
+
+    let(:noop_request) { { virtual_ip_id: vip.id, bogus_field: "x" } }
+
+    it_behaves_like "an approval-gated sdwan update"
+    it_behaves_like "a loud no-op update refusal"
+
+    # The holder audit sync migrated INTO UpdateVirtualIp#perform
+    # (IMP-0e44cf2fc80b) — approving the parked op must both apply the
+    # holder change AND write the slice-9b assignment history row ("no
+    # phantom current state without a history row").
+    it "parks a deferred operation whose approval applies the holder change with its audit row" do
+      r = call("system_sdwan_update_virtual_ip", virtual_ip_id: vip.id, holder_peer_ids: [ holder.id ])
+
+      approve_parked_update!(r, category: "sdwan.virtual_ip_update",
+                             executor: "Sdwan::Executors::UpdateVirtualIp") do |deferred|
+        expect(deferred.params["vip_id"]).to eq(vip.id)
+        expect(deferred.params.dig("attributes", "holder_peer_ids")).to eq([ holder.id ])
+      end
+
+      expect(vip.reload.holder_peer_ids).to eq([ holder.id ])
+      expect(vip.assignments.where(sdwan_peer_id: holder.id, reason: "holder_changed").count).to eq(1),
+                                                                                                "approved holder change left phantom current state with no assignment history row"
+    end
+
+    it "updates inline and serializes the vip when the policy auto-approves" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_update_virtual_ip", virtual_ip_id: vip.id, description: "edge vip")
+
+      expect(r[:success]).to be true
+      expect(r[:data][:virtual_ip][:description]).to eq("edge vip"),
+                                                     "answered success over a VIP that was not serialized back"
+      expect(vip.reload.description).to eq("edge vip")
+    end
+
+    it "refuses a vip outside the caller's account without parking anything" do
+      foreign = create(:sdwan_virtual_ip)
+
+      expect {
+        @result = call("system_sdwan_update_virtual_ip", virtual_ip_id: foreign.id, description: "stolen")
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(foreign.reload.description).to be_nil
+    end
+  end
+
+  describe "system_sdwan_update_route_policy approval gate (IMP-c9798d9d5671)" do
+    let!(:policy) { create(:sdwan_route_policy, account: account, name: "old-policy") }
+
+    let(:gate_action)  { "system_sdwan_update_route_policy" }
+    let(:gate_request) { { route_policy_id: policy.id, options: { name: "renamed" } } }
+    let(:pristine_probe) { -> { policy.reload.name } }
+    let(:pristine_value) { "old-policy" }
+    let(:pristine_failure_hint) { "MCP update_route_policy rewrote the policy without an approval gate" }
+
+    let(:noop_request) { { route_policy_id: policy.id, options: { bogus_field: "x" } } }
+
+    it_behaves_like "an approval-gated sdwan update"
+    it_behaves_like "a loud no-op update refusal"
+
+    it "parks a deferred operation the executor consumes on approval" do
+      r = call("system_sdwan_update_route_policy", route_policy_id: policy.id, options: { name: "renamed", enabled: false })
+
+      approve_parked_update!(r, category: "sdwan.route_policy_update",
+                             executor: "Sdwan::Executors::UpdateRoutePolicy") do |deferred|
+        expect(deferred.params["policy_id"]).to eq(policy.id)
+      end
+
+      expect(policy.reload.name).to eq("renamed")
+      expect(policy.enabled).to be false
+    end
+
+    it "updates inline and serializes the policy when the policy auto-approves" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_update_route_policy", route_policy_id: policy.id, options: { name: "renamed" })
+
+      expect(r[:success]).to be true
+      expect(r[:data][:route_policy][:name]).to eq("renamed"),
+                                                "answered success over a policy that was not serialized back"
+    end
+
+    it "keeps the not-found contract for a bogus id" do
+      r = call("system_sdwan_update_route_policy",
+               route_policy_id: SecureRandom.uuid, options: { name: "x" })
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq("route policy not found")
+    end
+  end
+
+  describe "system_sdwan_update_port_mapping approval gate (IMP-c9798d9d5671)" do
+    let(:network)  { create(:sdwan_network, account: account) }
+    let!(:mapping) { create(:sdwan_port_mapping, account: account, network: network) }
+
+    let(:gate_action)  { "system_sdwan_update_port_mapping" }
+    let(:gate_request) { { port_mapping_id: mapping.id, options: { rate_limit: 200 } } }
+    let(:pristine_probe) { -> { mapping.reload.rate_limit } }
+    let(:pristine_value) { nil }
+    let(:pristine_failure_hint) { "MCP update_port_mapping rewrote the DNAT mapping without an approval gate" }
+
+    let(:noop_request) { { port_mapping_id: mapping.id, options: { bogus_field: "x" } } }
+
+    it_behaves_like "an approval-gated sdwan update"
+    it_behaves_like "a loud no-op update refusal"
+
+    it "parks a deferred operation the executor consumes on approval" do
+      r = call("system_sdwan_update_port_mapping",
+               port_mapping_id: mapping.id, options: { rate_limit: 200, max_connections: 40 })
+
+      approve_parked_update!(r, category: "sdwan.port_mapping_update",
+                             executor: "Sdwan::Executors::UpdatePortMapping") do |deferred|
+        expect(deferred.params["mapping_id"]).to eq(mapping.id)
+      end
+
+      expect(mapping.reload.rate_limit).to eq(200)
+      expect(mapping.max_connections).to eq(40)
+    end
+
+    it "refuses a mapping outside the caller's account without parking anything" do
+      foreign = create(:sdwan_port_mapping)
+
+      expect {
+        @result = call("system_sdwan_update_port_mapping",
+                       port_mapping_id: foreign.id, options: { rate_limit: 1 })
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(foreign.reload.rate_limit).to be_nil
+    end
+  end
+
+  describe "system_sdwan_update_peer_lan_subnets approval gate (IMP-c9798d9d5671)" do
+    let(:network)  { create(:sdwan_network, account: account) }
+    let!(:peer)    { create(:sdwan_peer, account: account, network: network) }
+
+    let(:gate_action)  { "system_sdwan_update_peer_lan_subnets" }
+    let(:gate_request) { { peer_id: peer.id, lan_subnets: [ "10.9.0.0/24" ] } }
+    let(:pristine_probe) { -> { peer.reload.lan_subnets } }
+    let(:pristine_value) { [] }
+    let(:pristine_failure_hint) { "MCP update_peer_lan_subnets rewrote AllowedIPs routing without an approval gate" }
+
+    it_behaves_like "an approval-gated sdwan update"
+
+    it "parks a sdwan.peer_update operation the executor consumes on approval" do
+      r = call("system_sdwan_update_peer_lan_subnets", peer_id: peer.id, lan_subnets: [ "10.9.0.0/24" ])
+
+      approve_parked_update!(r, category: "sdwan.peer_update",
+                             executor: "Sdwan::Executors::UpdatePeer") do |deferred|
+        expect(deferred.params["peer_id"]).to eq(peer.id)
+        expect(deferred.params.dig("attributes", "lan_subnets")).to eq([ "10.9.0.0/24" ])
+      end
+
+      expect(peer.reload.lan_subnets).to eq([ "10.9.0.0/24" ])
+    end
+
+    it "updates inline and answers the routing payload when the policy auto-approves" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_update_peer_lan_subnets", peer_id: peer.id, lan_subnets: [ "10.9.0.0/24" ])
+
+      expect(r[:success]).to be true
+      expect(r[:data][:lan_subnets]).to eq([ "10.9.0.0/24" ])
+      expect(r[:data]).to have_key(:advertisement_count)
+      expect(peer.reload.lan_subnets).to eq([ "10.9.0.0/24" ])
+    end
+  end
+
+  describe "system_sdwan_update_network_routing_mode approval gate (IMP-c9798d9d5671)" do
+    let!(:network) { create(:sdwan_network, account: account) }
+
+    let(:gate_action)  { "system_sdwan_update_network_routing_mode" }
+    let(:gate_request) { { network_id: network.id, routing_protocol: "ibgp" } }
+    let(:pristine_probe) { -> { network.reload.routing_protocol } }
+    let(:pristine_value) { "static" }
+    let(:pristine_failure_hint) { "MCP update_network_routing_mode flipped the control plane without an approval gate" }
+
+    it_behaves_like "an approval-gated sdwan update"
+
+    # The old inline arm ALWAYS returned the iBGP capability warning; behind
+    # the gate it must survive both audiences — the caller's pending
+    # response (pending_extra) and the approver-facing description — or the
+    # mode being approved silently loses its "not fully functional yet"
+    # caveat.
+    it "carries the iBGP capability note to the pending caller AND the approver" do
+      r = call("system_sdwan_update_network_routing_mode", network_id: network.id, routing_protocol: "ibgp")
+
+      expect(r[:data][:pending]).to be true
+      expect(r[:data][:note]).to include("FRR"), "the pending caller lost the iBGP capability warning"
+      approval = Ai::ApprovalRequest.find_by(id: r.dig(:data, :approval_request_id))
+      expect(approval).to be_present
+      expect(approval.description).to include("FRR"), "the approver never sees the iBGP capability warning"
+    end
+
+    it "parks a sdwan.network_update operation the executor consumes on approval" do
+      r = call("system_sdwan_update_network_routing_mode", network_id: network.id, routing_protocol: "ibgp")
+
+      approve_parked_update!(r, category: "sdwan.network_update",
+                             executor: "Sdwan::Executors::UpdateNetwork") do |deferred|
+        expect(deferred.params["network_id"]).to eq(network.id)
+        expect(deferred.params.dig("attributes", "routing_protocol")).to eq("ibgp")
+      end
+
+      expect(network.reload.routing_protocol).to eq("ibgp")
+    end
+
+    it "updates inline and answers the routing payload when the policy auto-approves" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_update_network_routing_mode", network_id: network.id, routing_protocol: "ibgp")
+
+      expect(r[:success]).to be true
+      expect(r[:data][:routing_protocol]).to eq("ibgp")
+      expect(r[:data][:note]).to include("FRR")
+    end
+
+    it "rejects an unknown protocol before the gate without parking anything" do
+      expect {
+        @result = call("system_sdwan_update_network_routing_mode", network_id: network.id, routing_protocol: "ospf")
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(network.reload.routing_protocol).to eq("static")
+    end
+  end
+
+  describe "system_sdwan_set_peer_tags approval gate (IMP-c9798d9d5671)" do
+    let(:network)  { create(:sdwan_network, account: account) }
+    let!(:peer)    { create(:sdwan_peer, account: account, network: network) }
+
+    # tags ride the SAME REST permit list (peer_update_params) as
+    # lan_subnets, so leaving this arm inline would keep the
+    # sdwan.peer_update category bypassable through MCP.
+    let(:gate_action)  { "system_sdwan_set_peer_tags" }
+    let(:gate_request) { { peer_id: peer.id, tags: %w[database] } }
+    let(:pristine_probe) { -> { peer.reload.tags } }
+    let(:pristine_value) { [] }
+    let(:pristine_failure_hint) { "MCP set_peer_tags relabeled firewall selectors without an approval gate" }
+
+    it_behaves_like "an approval-gated sdwan update"
+
+    # The approval card renders the parked attributes, so the gate parks
+    # the NORMALIZED tag set — what the approver sees must be what the
+    # executor persists, not the raw [" database ", "", ...] input.
+    it "parks the NORMALIZED tag set the executor persists on approval" do
+      r = call("system_sdwan_set_peer_tags", peer_id: peer.id, tags: [ " database ", "edge", "database", "" ])
+
+      approve_parked_update!(r, category: "sdwan.peer_update",
+                             executor: "Sdwan::Executors::UpdatePeer") do |deferred|
+        expect(deferred.params.dig("attributes", "tags")).to eq(%w[database edge]),
+                                                             "the approval card would show a tag set the executor does not persist"
+      end
+
+      expect(peer.reload.tags).to eq(%w[database edge])
     end
   end
 

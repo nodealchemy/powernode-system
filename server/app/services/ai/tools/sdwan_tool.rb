@@ -51,6 +51,24 @@ module Ai
       FIREWALL_RULE_CREATE_CATEGORY = "sdwan.firewall_rule_create"
       VIRTUAL_IP_CREATE_CATEGORY = "sdwan.virtual_ip_create"
 
+      # Autonomy action categories for the UPDATE verbs (IMP-c9798d9d5671).
+      # Shared verbatim with the REST twins (NetworksController#update,
+      # PeersController#update, FirewallRulesController#update,
+      # VirtualIpsController#update, RoutePoliciesController#update,
+      # PortMappingsController#update) so both surfaces resolve the SAME
+      # policy — an agent refused on one surface cannot reach for the other.
+      # PEER_UPDATE covers BOTH slice-9a peer arms (update_peer_lan_subnets,
+      # set_peer_tags): lan_subnets and tags ride the same REST permit list
+      # (peer_update_params). NETWORK_UPDATE covers update_network_routing_mode
+      # (routing_protocol is in the REST network_params permit list);
+      # update_network itself is queued separately (IMP-2ff1980f7813).
+      NETWORK_UPDATE_CATEGORY = "sdwan.network_update"
+      PEER_UPDATE_CATEGORY = "sdwan.peer_update"
+      FIREWALL_RULE_UPDATE_CATEGORY = "sdwan.firewall_rule_update"
+      VIRTUAL_IP_UPDATE_CATEGORY = "sdwan.virtual_ip_update"
+      ROUTE_POLICY_UPDATE_CATEGORY = "sdwan.route_policy_update"
+      PORT_MAPPING_UPDATE_CATEGORY = "sdwan.port_mapping_update"
+
       ACTION_PERMISSIONS = {
         "system_sdwan_list_networks"   => "system.sdwan.networks.read",
         "system_sdwan_get_network"     => "system.sdwan.networks.read",
@@ -264,7 +282,7 @@ module Ai
             }
           },
           "system_sdwan_update_firewall_rule" => {
-            description: "Update a firewall rule (any field). Pass port_from/port_to as null to clear the port range.",
+            description: "Update a firewall rule (any field). Pass port_from/port_to as null to clear the port range. Approval-gated (sdwan.firewall_rule_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               firewall_rule_id: { type: "string", required: true, description: "UUID of the SDWAN firewall rule to update" },
               name: { type: "string", required: false, description: "New display name for the rule" },
@@ -434,21 +452,21 @@ module Ai
           },
           # Slice 9a — routing layer (static subnet routing baseline)
           "system_sdwan_update_peer_lan_subnets" => {
-            description: "Declare the external LAN prefixes a peer can route to. In static mode, the topology compiler folds these into AllowedIPs so other peers route across the SDWAN to reach them. CIDR strings (v4 or v6).",
+            description: "Declare the external LAN prefixes a peer can route to. In static mode, the topology compiler folds these into AllowedIPs so other peers route across the SDWAN to reach them. CIDR strings (v4 or v6). Approval-gated (sdwan.peer_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer whose LAN subnets to declare" },
               lan_subnets: { type: "array", required: true, description: "Array of CIDR strings. Empty array clears." }
             }
           },
           "system_sdwan_set_peer_tags" => {
-            description: "Set the firewall tag labels on a peer. A FirewallRule whose src/dst selector is { \"tag\": \"<label>\" } matches every peer carrying that label (Sdwan::SelectorResolver compiles it to an nft set of their addresses). Replaces the peer's whole tag set; empty array clears it.",
+            description: "Set the firewall tag labels on a peer. A FirewallRule whose src/dst selector is { \"tag\": \"<label>\" } matches every peer carrying that label (Sdwan::SelectorResolver compiles it to an nft set of their addresses). Replaces the peer's whole tag set; empty array clears it. Approval-gated (sdwan.peer_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer to label" },
               tags: { type: "array", required: true, description: "Array of tag label strings (whitespace-trimmed, de-duped). Empty array clears all tags." }
             }
           },
           "system_sdwan_update_network_routing_mode" => {
-            description: "Set a network's routing protocol: 'static' (declarative AllowedIPs, no daemon) or 'ibgp' (slice 9c FRR + dynamic distribution). Until slice 9c lands, only 'static' is fully functional.",
+            description: "Set a network's routing protocol: 'static' (declarative AllowedIPs, no daemon) or 'ibgp' (slice 9c FRR + dynamic distribution). Until slice 9c lands, only 'static' is fully functional. Approval-gated (sdwan.network_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose routing mode to set" },
               routing_protocol: { type: "string", required: true, description: "static | ibgp" }
@@ -494,7 +512,7 @@ module Ai
             parameters: { virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP to fetch" } }
           },
           "system_sdwan_update_virtual_ip" => {
-            description: "Update a Virtual IP's holders, failover candidates, anycast mode, advertised_med/local_pref, etc. Holder changes are recorded as 'holder_changed' assignment rows.",
+            description: "Update a Virtual IP's holders, failover candidates, anycast mode, advertised_med/local_pref, etc. Holder changes are recorded as 'holder_changed' assignment rows. Approval-gated (sdwan.virtual_ip_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP to update" },
               holder_peer_ids: { type: "array", required: false, description: "Ordered holder peer UUIDs; first is primary when anycast=false" },
@@ -563,7 +581,7 @@ module Ai
             }
           },
           "system_sdwan_update_route_policy" => {
-            description: "Update a route policy's name, scope, statements, or enabled state.",
+            description: "Update a route policy's name, scope, statements, or enabled state. Approval-gated (sdwan.route_policy_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               route_policy_id: { type: "string", required: true, description: "UUID of the SDWAN route policy to update" },
               options: { type: "object", required: true, description: "Hash of fields to update: name, description, scope, scope_resource_id, direction, enabled, statements, metadata" }
@@ -608,7 +626,7 @@ module Ai
             }
           },
           "system_sdwan_update_port_mapping" => {
-            description: "Update a port mapping's name, target, ports, protocol, enabled state, or hardening (rate_limit/max_connections/source_cidrs).",
+            description: "Update a port mapping's name, target, ports, protocol, enabled state, or hardening (rate_limit/max_connections/source_cidrs). Approval-gated (sdwan.port_mapping_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               port_mapping_id: { type: "string", required: true, description: "UUID of the SDWAN port mapping to update" },
               options: { type: "object", required: true, description: "Hash of fields to update: name, description, target_peer_id, target_virtual_ip_id, listen_port, target_port, protocol, enabled, metadata, rate_limit, max_connections, source_cidrs. Pass rate_limit/max_connections as null or source_cidrs as [] to clear back to unrestricted." }
@@ -986,6 +1004,27 @@ module Ai
         end
       end
 
+      # Validate-before-gate ceremony shared by every gated update arm
+      # (IMP-c9798d9d5671): assign the caller's attributes so the MODEL
+      # produces the field errors (one wording with the REST twin), surface
+      # them immediately when the update could only ever fail — a doomed
+      # change must not park an approval an operator has to dispose of —
+      # then restore_attributes (the zero-query equivalent of reload,
+      # ActiveModel::Dirty) so nothing reaches the row except through the
+      # executor. Returns the error_result to bubble, or nil when the
+      # update is gateable. The optional block runs on the VALID path only,
+      # before restore — the one window where normalization callbacks
+      # (before_validation) have run but the row is untouched, for callers
+      # that answer the normalized value without re-reading it later.
+      def validation_error_before_gate(record, attrs)
+        record.assign_attributes(attrs)
+        return error_result(record.errors.full_messages.join("; ")) unless record.valid?
+
+        yield record if block_given?
+        record.restore_attributes
+        nil
+      end
+
       # === Networks ===
 
       def list_networks(_params)
@@ -1138,11 +1177,36 @@ module Ai
         ) { |result| { firewall_rule: serialize_rule(network.firewall_rules.find(result.result&.dig(:data, :rule_id))) } }
       end
 
+      # IMP-c9798d9d5671 — routed through Ai::AutonomyGate, mirroring the
+      # REST twin (FirewallRulesController#update): the update executor
+      # gained its REST caller in IMP-0e44cf2fc80b while this arm kept
+      # writing inline, so an agent refused on the HTTP surface could apply
+      # the identical mutation here. The executor's update! stays the only
+      # writer (validation_error_before_gate ceremony). The parked
+      # attributes carry :port_range_hash (the model's mass-assignable
+      # accessor), same shape the create arm parks.
       def update_firewall_rule(params)
         rule = account_firewall_rules.find(params[:firewall_rule_id])
-        rule.assign_attributes(firewall_rule_attrs(params))
-        rule.save!
-        success_result(firewall_rule: serialize_rule(rule.reload))
+        attrs = firewall_rule_attrs(params)
+        # Requested-but-unusable fails LOUD: a typo'd payload maps to an
+        # empty attrs hash, and parking it would open a no-op approval an
+        # operator has to dispose of while the caller's intent vanishes.
+        if attrs.empty?
+          return error_result("no recognized fields to update — permitted: name, priority, firewall_action, direction, protocol, src_selector, dst_selector, enabled, port_from+port_to")
+        end
+        error = validation_error_before_gate(rule, attrs)
+        return error if error
+
+        gated_result(
+          action_category: FIREWALL_RULE_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdateFirewallRule",
+          executor_params: { rule_id: rule.id, attributes: attrs },
+          source_type: "Sdwan::FirewallRule",
+          source_id: rule.id,
+          # Matches UpdateFirewallRule#summarize so both surfaces of the
+          # approval speak one sentence (IMP-3a563becb7d7).
+          description: "Update firewall rule '#{rule.name}' on SDWAN network #{rule.network.name}"
+        ) { |_result| { firewall_rule: serialize_rule(rule.reload) } }
       end
 
       def delete_firewall_rule(params)
@@ -1668,37 +1732,108 @@ module Ai
 
       # === Slice 9a — Routing (static subnet routing) ===
 
+      # IMP-c9798d9d5671 — routed through Ai::AutonomyGate as sdwan.peer_update,
+      # mirroring the REST twin: lan_subnets is in PeersController's
+      # peer_update_params permit list, so the gated REST path and this arm
+      # mutate the same category (changing lan_subnets rewrites AllowedIPs for
+      # every peer routing to this one). UpdatePeer's update! is the only
+      # writer; the proceed payload keeps this arm's routing-shaped response.
       def set_peer_lan_subnets(params)
         peer = account_peers.find(params[:peer_id])
-        peer.update!(lan_subnets: Array(params[:lan_subnets]).map(&:to_s))
-        success_result(
-          peer_id: peer.id,
-          lan_subnets: peer.lan_subnets,
-          advertisement_count: peer.subnet_advertisements.active.count
-        )
+        attrs = { lan_subnets: Array(params[:lan_subnets]).map(&:to_s) }
+        error = validation_error_before_gate(peer, attrs)
+        return error if error
+
+        gated_result(
+          action_category: PEER_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdatePeer",
+          executor_params: { peer_id: peer.id, attributes: attrs },
+          source_type: "Sdwan::Peer",
+          source_id: peer.id,
+          # Matches UpdatePeer#summarize (Sdwan::Peer#operator_label — the
+          # ladder every peer surface renders, IMP-ee57d0fbe859).
+          description: "Update SDWAN peer #{peer.operator_label}"
+        ) { |_result|
+          {
+            peer_id: peer.id,
+            # The executor persisted exactly attrs (no callback transforms
+            # lan_subnets) — answering it saves the reload SELECT; the
+            # advertisement count reflects the executor's after_save sync,
+            # so that query is unavoidable.
+            lan_subnets: attrs[:lan_subnets],
+            advertisement_count: peer.subnet_advertisements.active.count
+          }
+        }
       end
 
       # D8 — set the firewall tag labels on a peer (the model normalizes:
       # trim/dedup). Firewall { "tag": "x" } selectors then resolve to it.
+      # IMP-c9798d9d5671 — gated as sdwan.peer_update like set_peer_lan_subnets:
+      # tags ride the SAME REST permit list (peer_update_params), so leaving
+      # this arm inline would keep the category bypassable through MCP.
       def set_peer_tags(params)
         peer = account_peers.find(params[:peer_id])
-        peer.update!(tags: Array(params[:tags]).map(&:to_s))
-        success_result(peer_id: peer.id, tags: peer.tags)
+        # The valid? pass runs the model's before_validation normalize
+        # (trim/dedup/drop-blank) — capture it in the helper's valid-path
+        # window and park THAT, not the raw input: the approval card renders
+        # the parked attributes, so what the approver sees must be what the
+        # executor persists. Same capture answers the proceed payload
+        # without a reload SELECT.
+        normalized_tags = nil
+        error = validation_error_before_gate(peer, { tags: Array(params[:tags]).map(&:to_s) }) do |p|
+          normalized_tags = p.tags.dup
+        end
+        return error if error
+
+        gated_result(
+          action_category: PEER_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdatePeer",
+          executor_params: { peer_id: peer.id, attributes: { tags: normalized_tags } },
+          source_type: "Sdwan::Peer",
+          source_id: peer.id,
+          description: "Update SDWAN peer #{peer.operator_label}"
+        ) { |_result| { peer_id: peer.id, tags: normalized_tags } }
       end
 
+      # IMP-c9798d9d5671 — routed through Ai::AutonomyGate as
+      # sdwan.network_update: routing_protocol is in NetworksController's
+      # network_params permit list, so the gated REST update and this arm flip
+      # the same control-plane knob. The mode check is the MODEL's inclusion
+      # validation via the shared pre-gate ceremony (one wording with the
+      # REST twin, and a doomed change parks no approval); UpdateNetwork's
+      # update! is the only writer. The general update_network arm is
+      # IMP-2ff1980f7813's.
       def set_network_routing_mode(params)
         network = account_networks.find(params[:network_id])
         mode = params[:routing_protocol].to_s
-        unless ::Sdwan::Network::ROUTING_PROTOCOLS.include?(mode)
-          return error_result("routing_protocol must be one of: #{::Sdwan::Network::ROUTING_PROTOCOLS.join(', ')}")
-        end
+        attrs = { routing_protocol: mode }
+        error = validation_error_before_gate(network, attrs)
+        return error if error
 
-        network.update!(routing_protocol: mode)
-        success_result(
-          network_id: network.id,
-          routing_protocol: network.routing_protocol,
-          note: mode == "ibgp" ? "iBGP mode requires slice 9c (FRR daemon) — peers won't propagate routes via BGP yet." : nil
-        )
+        # The iBGP capability warning must survive BOTH branches: the caller
+        # sees it on :pending via pending_extra (the old inline arm always
+        # returned it), and the APPROVER sees it in the description — neither
+        # would otherwise learn the mode they are approving isn't fully
+        # functional yet.
+        note = mode == "ibgp" ? "iBGP mode requires slice 9c (FRR daemon) — peers won't propagate routes via BGP yet." : nil
+
+        gated_result(
+          action_category: NETWORK_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdateNetwork",
+          executor_params: { network_id: network.id, attributes: attrs },
+          source_type: "Sdwan::Network",
+          source_id: network.id,
+          # Base sentence matches NetworksController#update's gate description.
+          description: "Update SDWAN network '#{network.name}'#{" — #{note}" if note}",
+          pending_extra: note ? { note: note } : {}
+        ) { |_result|
+          {
+            network_id: network.id,
+            # The executor persisted exactly attrs — no reload needed.
+            routing_protocol: mode,
+            note: note
+          }
+        }
       end
 
       def list_subnet_advertisements(params)
@@ -1800,24 +1935,43 @@ module Ai
         ))
       end
 
+      # IMP-c9798d9d5671 — routed through Ai::AutonomyGate, mirroring the
+      # REST twin (VirtualIpsController#update). This verb was NOT a clean
+      # drop-in wiring: the holder audit sync ran inline here (a hand copy of
+      # what became Sdwan::VirtualIp#sync_holder_assignments!), and gated_result
+      # never invokes its proceed block on :pending — the executor is the sole
+      # writer there — so the whole update+sync transaction now lives ONLY in
+      # UpdateVirtualIp#perform (which also anchors sdwan_network_id via
+      # Base#anchor_reparent!, a tenancy guard the inline body never had).
+      # Attribution rides the DeferredOperation's requested_by (this @user).
       def update_virtual_ip(params)
         vip = account_virtual_ips.find(params[:virtual_ip_id])
-        ::Sdwan::VirtualIp.transaction do
-          previous_holders = Array(vip.holder_peer_ids).dup
-          updates = {}
-          %i[holder_peer_ids failover_holder_peer_ids tags].each do |k|
-            updates[k] = Array(params[k]) if params.key?(k)
-          end
-          %i[anycast description advertised_med advertised_local_pref].each do |k|
-            updates[k] = params[k] if params.key?(k) && !params[k].nil?
-          end
-          vip.update!(updates)
-
-          # Canonical diff-based sync (Sdwan::VirtualIp#sync_holder_assignments!,
-          # IMP-0e44cf2fc80b); this surface attributes the MCP session user.
-          vip.sync_holder_assignments!(previous_holders, triggered_by_user: @user)
-          success_result(virtual_ip: serialize_virtual_ip(vip.reload))
+        updates = {}
+        %i[holder_peer_ids failover_holder_peer_ids tags].each do |k|
+          updates[k] = Array(params[k]) if params.key?(k)
         end
+        %i[anycast description advertised_med advertised_local_pref].each do |k|
+          updates[k] = params[k] if params.key?(k) && !params[k].nil?
+        end
+
+        # Requested-but-unusable fails LOUD rather than parking a no-op
+        # approval (see update_firewall_rule).
+        if updates.empty?
+          return error_result("no recognized fields to update — permitted: holder_peer_ids, failover_holder_peer_ids, tags, anycast, description, advertised_med, advertised_local_pref")
+        end
+        error = validation_error_before_gate(vip, updates)
+        return error if error
+
+        gated_result(
+          action_category: VIRTUAL_IP_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdateVirtualIp",
+          executor_params: { vip_id: vip.id, attributes: updates },
+          source_type: "Sdwan::VirtualIp",
+          source_id: vip.id,
+          # Matches UpdateVirtualIp#summarize so both surfaces of the
+          # approval speak one sentence (IMP-3a563becb7d7).
+          description: "Update SDWAN VIP '#{vip.name}' on network #{vip.network.name}"
+        ) { |_result| { virtual_ip: serialize_virtual_ip(vip.reload) } }
       end
 
       def delete_virtual_ip(params)
@@ -1950,15 +2104,31 @@ module Ai
         end
       end
 
+      # IMP-c9798d9d5671 — routed through Ai::AutonomyGate, mirroring the
+      # REST twin (RoutePoliciesController#update). UpdateRoutePolicy's
+      # update! stays the only writer (validation_error_before_gate ceremony).
       def update_route_policy(params)
-        p = ::Sdwan::RoutePolicy.where(account_id: @account.id).find(params[:route_policy_id])
+        policy = ::Sdwan::RoutePolicy.where(account_id: @account.id).find(params[:route_policy_id])
         opts = params[:options] || {}
-        if p.update(opts.slice(:name, :description, :scope, :scope_resource_id, :direction,
-                                :enabled, :statements, :metadata))
-          success_result(route_policy: serialize_route_policy_full(p))
-        else
-          error_result(p.errors.full_messages.join("; "))
+        attrs = opts.slice(:name, :description, :scope, :scope_resource_id, :direction,
+                           :enabled, :statements, :metadata)
+        # Requested-but-unusable fails LOUD rather than parking a no-op
+        # approval (see update_firewall_rule).
+        if attrs.empty?
+          return error_result("no recognized fields to update — permitted (options): name, description, scope, scope_resource_id, direction, enabled, statements, metadata")
         end
+        error = validation_error_before_gate(policy, attrs)
+        return error if error
+
+        gated_result(
+          action_category: ROUTE_POLICY_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdateRoutePolicy",
+          executor_params: { policy_id: policy.id, attributes: attrs },
+          source_type: "Sdwan::RoutePolicy",
+          source_id: policy.id,
+          # Matches RoutePoliciesController#update's gate description.
+          description: "Update SDWAN route policy #{policy.name}"
+        ) { |_result| { route_policy: serialize_route_policy_full(policy.reload) } }
       rescue ActiveRecord::RecordNotFound
         error_result("route policy not found")
       end
@@ -2045,18 +2215,35 @@ module Ai
         error_result("network not found in account scope")
       end
 
+      # IMP-c9798d9d5671 — routed through Ai::AutonomyGate, mirroring the
+      # REST twin (PortMappingsController#update). UpdatePortMapping's
+      # update! stays the only writer (validation_error_before_gate ceremony).
       def update_port_mapping(params)
         m = port_mapping_in_account(params[:port_mapping_id])
         return error_result("port mapping not found") unless m
 
         opts = params[:options] || {}
-        if m.update(opts.slice(:name, :description, :target_peer_id, :target_virtual_ip_id,
-                                :listen_port, :target_port, :protocol, :enabled, :metadata,
-                                :rate_limit, :max_connections, :source_cidrs))
-          success_result(port_mapping: serialize_port_mapping_full(m))
-        else
-          error_result(m.errors.full_messages.join("; "))
+        attrs = opts.slice(:name, :description, :target_peer_id, :target_virtual_ip_id,
+                           :listen_port, :target_port, :protocol, :enabled, :metadata,
+                           :rate_limit, :max_connections, :source_cidrs)
+        # Requested-but-unusable fails LOUD rather than parking a no-op
+        # approval (see update_firewall_rule).
+        if attrs.empty?
+          return error_result("no recognized fields to update — permitted (options): name, description, target_peer_id, target_virtual_ip_id, listen_port, target_port, protocol, enabled, metadata, rate_limit, max_connections, source_cidrs")
         end
+        error = validation_error_before_gate(m, attrs)
+        return error if error
+
+        gated_result(
+          action_category: PORT_MAPPING_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdatePortMapping",
+          executor_params: { mapping_id: m.id, attributes: attrs },
+          source_type: "Sdwan::PortMapping",
+          source_id: m.id,
+          # Matches UpdatePortMapping#summarize so both surfaces of the
+          # approval speak one sentence (IMP-3a563becb7d7).
+          description: "Update SDWAN port mapping #{m.name} on #{m.network.name}"
+        ) { |_result| { port_mapping: serialize_port_mapping_full(m.reload) } }
       end
 
       def delete_port_mapping(params)
