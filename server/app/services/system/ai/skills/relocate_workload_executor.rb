@@ -281,6 +281,14 @@ module System
 
           if result[:success]
             data = result[:data] || {}
+            # IMP-666a6e904650 — lift the inner executor's own planned_actions
+            # into this envelope (detail steps in execution order, then the
+            # provision_target_stack rollup for the leg). The envelope used to
+            # carry only the inner outputs and failures, so the run never
+            # recorded the create_node/provision_instance/attach_* steps the
+            # approval card promised — plan-vs-run grading was structurally
+            # impossible.
+            planned_actions.concat(Array(data[:planned_actions]))
             planned_actions << { step: "provision_target_stack",
                                  to_region_id: to_region_id,
                                  instance_count: Array(data.dig(:outputs, :node_instance_ids)).size }
@@ -329,16 +337,24 @@ module System
           # drain the trailing placement was order-correct by accident, but
           # still listed the volumes apart from the targets they belong to.
           #
-          # The attach is its own step because it is its own state change
-          # (IMP-093378034fb4), and `attach_volume` is the inner executor's own
-          # emitted step name, so the card names the operation the run performs.
-          # That is a naming correspondence ONLY: this executor lifts just the
-          # inner outputs and failures (never its planned_actions), so a
-          # relocate plan and a relocate run cannot be graded step-for-step.
+          # Every per-target step uses the inner executor's own emitted step
+          # name: creating the Node and provisioning its instance are two state
+          # changes, so they are two steps (a collapsed provision_target_instance
+          # understated the run by one step per target, IMP-666a6e904650), and
+          # the attach is its own step because it is its own state change
+          # (IMP-093378034fb4). Since #run_execute concatenates the inner
+          # envelope's planned_actions into this executor's own
+          # (#provision_target!), a relocate plan and a relocate run CAN be
+          # graded step-for-step. The run additionally records one
+          # provision_target_stack rollup after the provisioning leg, and
+          # records terminate_source only for sources actually terminated —
+          # blue_green's refusals surface as blue_green_cutover failures, which
+          # is why the terminate steps below carry that guard.
           provision_steps = []
           count.times do |i|
-            provision_steps << { step: "provision_target_instance", index: i,
-                                 to_region_id: to_region_id, template_id: template_id,
+            provision_steps << { step: "create_node", index: i, template_id: template_id }
+            provision_steps << { step: "provision_instance", index: i,
+                                 to_region_id: to_region_id,
                                  provider_instance_type_id: provider_instance_type_id }
             provision_steps << { step: "attach_sdwan_peer", index: i, network_id: network_id } if network_id.present?
             # Non-positive is "no volume", matching the executor that actually
@@ -349,10 +365,29 @@ module System
             # blast-radius skill.
             next unless with_storage_gb.respond_to?(:to_i) && with_storage_gb.to_i.positive?
 
-            provision_steps << { step: "provision_target_storage", index: i, size_gb: with_storage_gb.to_i }
+            provision_steps << { step: "provision_storage", index: i, size_gb: with_storage_gb.to_i }
             provision_steps << { step: "attach_volume", index: i }
           end
           terminate_steps = source_ids.map { |id| { step: "terminate_source", instance_id: id } }
+          if strategy == "blue_green"
+            # IMP-666a6e904650 — blue_green refuses the teardown when the
+            # target stack comes up empty or off-fabric (the blue_green_cutover
+            # guard in #run_execute), so an unconditional entry promised a
+            # destruction the run may (correctly) decline. The step stays — the
+            # operator consents to the intent — marked with the guard that may
+            # refuse it, so the card shows both the intent and the safety.
+            condition = if network_id.present?
+                          "skipped when the target stack is empty or off-fabric " \
+                          "(not fully enrolled on network #{network_id})"
+                        else
+                          "skipped when the target stack is empty"
+                        end
+            terminate_steps.each do |step|
+              step[:conditional] = true
+              step[:guard] = "blue_green_cutover"
+              step[:condition] = condition
+            end
+          end
 
           steps.concat(strategy == "drain" ? terminate_steps + provision_steps : provision_steps + terminate_steps)
           steps

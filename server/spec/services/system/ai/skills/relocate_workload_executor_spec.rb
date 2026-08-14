@@ -90,7 +90,8 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         d = r[:data]
         expect(d[:dry_run]).to be true
         expect(d[:cutover_strategy]).to eq("blue_green")
-        expect(d[:planned_actions].any? { |a| a[:step] == "provision_target_instance" }).to be true
+        expect(d[:planned_actions].any? { |a| a[:step] == "create_node" }).to be true
+        expect(d[:planned_actions].any? { |a| a[:step] == "provision_instance" }).to be true
         expect(d[:planned_actions].any? { |a| a[:step] == "terminate_source" }).to be true
       end
     end
@@ -101,7 +102,7 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
     # provisioning loop (ProvisionFullStackExecutor#run_execute), which for
     # blue_green completes in full before terminate_step! touches the source.
     context "in dry_run mode with storage" do
-      let(:storage_steps) { %w[provision_target_storage attach_volume] }
+      let(:storage_steps) { %w[provision_storage attach_volume] }
       let(:plan) do
         r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
                          to_region_id: to_region.id, cutover_strategy: strategy,
@@ -126,11 +127,16 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
           expect(storage_positions.max).to be < first_terminate
         end
 
-        it "groups each target's storage with that target's own provision step" do
+        it "groups each target's storage with that target's own provision steps" do
+          # IMP-666a6e904650 — the card names the run's own emitted steps:
+          # the real path creates the Node, then provisions its instance
+          # (two state changes, two steps), and its storage step is
+          # provision_storage. One collapsed provision_target_instance
+          # understated the run by a step per target.
           expect(step_names).to eq(%w[
             relocate_workload
-            provision_target_instance provision_target_storage attach_volume
-            provision_target_instance provision_target_storage attach_volume
+            create_node provision_instance provision_storage attach_volume
+            create_node provision_instance provision_storage attach_volume
             terminate_source
           ])
 
@@ -138,11 +144,11 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
           # card reads per-target rather than as an undifferentiated tail.
           expect(plan.select { |a| storage_steps.include?(a[:step]) }.map { |a| a[:index] })
             .to eq([ 0, 0, 1, 1 ])
-          expect(plan.select { |a| a[:step] == "provision_target_storage" }.map { |a| a[:size_gb] })
+          expect(plan.select { |a| a[:step] == "provision_storage" }.map { |a| a[:size_gb] })
             .to eq([ 25, 25 ])
         end
 
-        it "orders each target's steps instance -> peer -> storage -> attach, as the run does" do
+        it "orders each target's steps node -> instance -> peer -> storage -> attach, as the run does" do
           network = ::Sdwan::Network.create!(account_id: account.id, name: "reloc-net-#{SecureRandom.hex(3)}")
 
           r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
@@ -155,8 +161,8 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
           expect(r[:success]).to be true
           expect(r[:data][:planned_actions].map { |a| a[:step] }).to eq(%w[
             relocate_workload
-            provision_target_instance attach_sdwan_peer provision_target_storage attach_volume
-            provision_target_instance attach_sdwan_peer provision_target_storage attach_volume
+            create_node provision_instance attach_sdwan_peer provision_storage attach_volume
+            create_node provision_instance attach_sdwan_peer provision_storage attach_volume
             terminate_source
           ])
         end
@@ -178,10 +184,57 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
           expect(step_names).to eq(%w[
             relocate_workload
             terminate_source
-            provision_target_instance provision_target_storage attach_volume
-            provision_target_instance provision_target_storage attach_volume
+            create_node provision_instance provision_storage attach_volume
+            create_node provision_instance provision_storage attach_volume
           ])
         end
+      end
+    end
+
+    # IMP-666a6e904650 — blue_green's run refuses the teardown when the target
+    # stack comes up empty or off-fabric (the blue_green_cutover guard in
+    # #run_execute), so an unconditional terminate_source promised a
+    # destruction the run may (correctly) decline. The step stays on the card
+    # — the operator consents to the intent — but marked conditional with the
+    # guard named, so the operator sees both the intent and the safety.
+    context "terminate_source marking on the approval card" do
+      def card(strategy:, network_id: nil)
+        r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                         to_region_id: to_region.id, cutover_strategy: strategy,
+                         template_id: template.id,
+                         provider_instance_type_id: instance_type.id, count: 2,
+                         source_instance_ids: [ source_instance.id ],
+                         network_id: network_id, dry_run: true)
+        expect(r[:success]).to be true
+        r[:data][:planned_actions]
+      end
+
+      it "marks blue_green terminate steps conditional, naming the guard and the empty-stack refusal" do
+        terminate = card(strategy: "blue_green").select { |a| a[:step] == "terminate_source" }
+
+        expect(terminate).not_to be_empty
+        expect(terminate).to all(include(conditional: true, guard: "blue_green_cutover"))
+        expect(terminate.map { |a| a[:condition] }).to all(match(/target stack is empty/))
+      end
+
+      it "names the requested network in the condition when enrollment also gates the cutover" do
+        network = ::Sdwan::Network.create!(account_id: account.id, name: "reloc-net-#{SecureRandom.hex(3)}")
+        terminate = card(strategy: "blue_green", network_id: network.id)
+                      .select { |a| a[:step] == "terminate_source" }
+
+        expect(terminate).not_to be_empty
+        expect(terminate).to all(include(conditional: true, guard: "blue_green_cutover"))
+        expect(terminate.map { |a| a[:condition] }).to all(match(/off-fabric/).and(include(network.id)))
+      end
+
+      # Negative control (positive twins above): drain terminates FIRST — no
+      # guard exists on its path, so a conditional marker would promise a
+      # safety the run does not have.
+      it "leaves drain terminate steps unconditional" do
+        terminate = card(strategy: "drain").select { |a| a[:step] == "terminate_source" }
+
+        expect(terminate).not_to be_empty
+        expect(terminate).to all(eq({ step: "terminate_source", instance_id: source_instance.id }))
       end
     end
 
@@ -203,8 +256,8 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         expect(r[:success]).to be true
         expect(r[:data][:planned_actions].map { |a| a[:step] }).to eq(%w[
           relocate_workload
-          provision_target_instance
-          provision_target_instance
+          create_node provision_instance
+          create_node provision_instance
           terminate_source
         ])
       end
@@ -221,7 +274,7 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
                          with_storage_gb: 25, dry_run: true)
 
         expect(r[:data][:planned_actions].map { |a| a[:step] })
-          .to include("provision_target_storage", "attach_volume")
+          .to include("provision_storage", "attach_volume")
       end
     end
 
@@ -253,6 +306,34 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         expect(::System::ProvisioningService).to have_received(:provision_instance).ordered
         expect(::System::ProvisioningService).to have_received(:terminate_instance).ordered
       end
+
+      # IMP-666a6e904650 — the envelope used to lift only the inner
+      # executor's outputs and failures, never its planned_actions, so the
+      # run could not be graded against the approval card it was consented
+      # on. The envelope now carries the inner steps in execution order,
+      # followed by the provision_target_stack rollup for the leg.
+      it "records the inner executor's own steps in the envelope, in run order" do
+        r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                         to_region_id: to_region.id, cutover_strategy: "blue_green",
+                         template_id: template.id,
+                         provider_instance_type_id: instance_type.id, count: 1,
+                         source_instance_ids: [ source_instance.id ])
+
+        expect(r[:success]).to be true
+        steps = r[:data][:planned_actions]
+        expect(steps.map { |a| a[:step] }).to eq(%w[
+          relocate_workload
+          create_node provision_instance
+          provision_target_stack
+          terminate_source
+        ])
+
+        # The concatenated steps are the inner envelope itself, not a
+        # re-synthesized card: they carry the ids the run produced.
+        expect(steps.find { |a| a[:step] == "provision_instance" }[:instance_id])
+          .to eq(new_instance_stub.id)
+        expect(steps.find { |a| a[:step] == "create_node" }[:node_id]).to be_present
+      end
     end
 
     context "drain execute" do
@@ -277,6 +358,25 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         expect(r[:data][:cutover_strategy]).to eq("drain")
         expect(::System::ProvisioningService).to have_received(:terminate_instance).ordered
         expect(::System::ProvisioningService).to have_received(:provision_instance).ordered
+      end
+
+      # IMP-666a6e904650 — exact-sequence twin of the blue_green envelope
+      # example: under drain the terminate is recorded BEFORE the inner
+      # provisioning steps, exactly as the run performed them.
+      it "records terminate before the inner provisioning steps, in run order" do
+        r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                         to_region_id: to_region.id, cutover_strategy: "drain",
+                         template_id: template.id,
+                         provider_instance_type_id: instance_type.id, count: 1,
+                         source_instance_ids: [ source_instance.id ])
+
+        expect(r[:success]).to be true
+        expect(r[:data][:planned_actions].map { |a| a[:step] }).to eq(%w[
+          relocate_workload
+          terminate_source
+          create_node provision_instance
+          provision_target_stack
+        ])
       end
     end
 
