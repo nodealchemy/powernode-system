@@ -95,11 +95,17 @@ RSpec.describe Ai::Tools::SdwanTool do
       expect(peer.reload.metadata["note"]).to eq("updated")
     end
 
-    it "allows an in-matrix status transition (proposed → accepted)" do
-      r = call("system_sdwan_update_federation_peer", federation_peer_id: peer.id, status: "accepted")
-      expect(r[:success]).to be true
-      expect(r[:data][:federation_peer][:status]).to eq("accepted")
-      expect(peer.reload.status).to eq("accepted")
+    # Negative control for the trust-boundary routing below: transitions that
+    # neither extend nor withdraw cross-instance trust stay inline, per the
+    # REST ruling on FederationPeersController#update.
+    it "applies a non-trust-boundary in-matrix transition inline (accepted → suspended)" do
+      peer.update!(status: "accepted")
+      expect {
+        r = call("system_sdwan_update_federation_peer", federation_peer_id: peer.id, status: "suspended")
+        expect(r[:success]).to be true
+        expect(r[:data][:federation_peer][:status]).to eq("suspended")
+      }.not_to change(Ai::DeferredOperation, :count)
+      expect(peer.reload.status).to eq("suspended")
     end
 
     it "rejects an out-of-matrix status transition (proposed → active)" do
@@ -113,6 +119,174 @@ RSpec.describe Ai::Tools::SdwanTool do
       other_peer = create(:system_federation_peer, account: create(:account))
       r = call("system_sdwan_update_federation_peer", federation_peer_id: other_peer.id, status: "accepted")
       expect(r[:success]).to be false
+    end
+  end
+
+  # IMP-796bde368789 — the MCP twin of the REST PATCH-status bypass
+  # (bc2ef162 gated_revoke!, e655659f gated_accept!). update_federation_peer
+  # wrote status via bare update! after only can_transition_to?, so
+  # status:"accepted" completed the cross-instance handshake with no approval
+  # gate, no signed_at, and WITHOUT consuming the Phase 11b single-use
+  # acceptance token (it bypassed FederationPeer#accept! entirely);
+  # status:"revoked" likewise skipped revoke!, recording no revocation_reason.
+  #
+  # Contract mirrored from FederationPeersController#update: token verified
+  # BEFORE the gate (a doomed accept must not park an approval), accepted →
+  # sdwan.federation_peer_accept → AcceptFederationPeer with the token
+  # threaded, revoked → sdwan.federation_peer_revoke → RevokeFederationPeer
+  # with the reason threaded. Other transitions stay inline (pinned above).
+  describe "system_sdwan_update_federation_peer trust-boundary status routing (IMP-796bde368789)" do
+    let!(:peer) { create(:system_federation_peer, account: account, status: "proposed") }
+
+    # Tail of the approval path — Ai::ApprovalRequest ultimately calls
+    # execute_now!. The presence assertion keeps a missing gate failing by
+    # name instead of as `undefined method for nil`.
+    def approve_latest_deferred!
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred).to be_present, "no deferred operation was parked — the status write was applied inline"
+      deferred.tap(&:execute_now!)
+    end
+
+    # Forces the gate's :proceed branch. The default policy is require_approval,
+    # so nothing else here covers the inline path.
+    def auto_approve_policy!
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+        { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+      )
+    end
+
+    describe "status: accepted" do
+      it "defers the acceptance through the approval gate rather than completing the handshake inline" do
+        r = call("system_sdwan_update_federation_peer", federation_peer_id: peer.id, status: "accepted")
+
+        expect(r[:success]).to be true
+        expect(r[:data][:pending]).to be true
+        expect(peer.reload.status).to eq("proposed"),
+                                      "MCP update completed the federation handshake without an approval gate"
+
+        deferred = Ai::DeferredOperation.order(created_at: :desc).first
+        expect(deferred).to be_present
+        expect(deferred.action_category).to eq("sdwan.federation_peer_accept")
+        expect(deferred.executor_class).to eq("Sdwan::Executors::AcceptFederationPeer")
+        expect(deferred.params["federation_peer_id"]).to eq(peer.id)
+      end
+
+      # The Phase 11b single-use token is the cross-account authentication of
+      # the handshake. The bare update! bypassed it entirely: the digest was
+      # never verified and never consumed.
+      it "refuses up front — parking nothing — when the peer requires a token and none is supplied" do
+        peer.generate_acceptance_token!
+
+        expect {
+          @result = call("system_sdwan_update_federation_peer", federation_peer_id: peer.id, status: "accepted")
+        }.not_to change(Ai::DeferredOperation, :count)
+
+        expect(@result[:success]).to be false
+        expect(@result[:error]).to include("acceptance_token")
+        expect(peer.reload.status).to eq("proposed")
+        expect(peer.acceptance_token_digest).to be_present, "the unconsumed token digest was cleared"
+      end
+
+      it "threads the verified token to the executor and consumes it on approval" do
+        plaintext = peer.generate_acceptance_token!
+
+        r = call("system_sdwan_update_federation_peer",
+                 federation_peer_id: peer.id, status: "accepted", acceptance_token: plaintext)
+        expect(r[:data][:pending]).to be true
+
+        deferred = Ai::DeferredOperation.order(created_at: :desc).first
+        expect(deferred.params["acceptance_token"]).to eq(plaintext),
+                                                       "the token did not survive to the executor's replay params"
+        # The approval-audience copy must NOT carry the plaintext token
+        # (Ai::SensitiveParams filters the request_data mirror).
+        expect(deferred.approval_request.request_data.dig("params", "acceptance_token")).to eq("[FILTERED]")
+
+        approve_latest_deferred!
+
+        peer.reload
+        expect(peer.status).to eq("accepted")
+        expect(peer.signed_at).to be_present, "the deferred acceptance skipped accept!'s signed_at stamp"
+        expect(peer.acceptance_token_digest).to be_nil, "the single-use token was not consumed"
+      end
+
+      it "carries ride-along fields to the executor instead of writing them ahead of the approval" do
+        r = call("system_sdwan_update_federation_peer",
+                 federation_peer_id: peer.id, status: "accepted",
+                 remote_prefix_advertisement: "fd00:aa:1::/48")
+        expect(r[:data][:pending]).to be true
+
+        expect(peer.reload.remote_prefix_advertisement).to be_nil,
+                                                           "an unapproved caller edited the peer ahead of the gate"
+
+        deferred = Ai::DeferredOperation.order(created_at: :desc).first
+        expect(deferred.params.dig("attributes", "remote_prefix_advertisement")).to eq("fd00:aa:1::/48")
+
+        approve_latest_deferred!
+        peer.reload
+        expect(peer.status).to eq("accepted")
+        expect(peer.remote_prefix_advertisement).to eq("fd00:aa:1::/48")
+      end
+
+      it "completes the acceptance inline when the policy auto-approves" do
+        auto_approve_policy!
+
+        r = call("system_sdwan_update_federation_peer", federation_peer_id: peer.id, status: "accepted")
+
+        expect(r[:success]).to be true
+        expect(r[:data][:federation_peer][:status]).to eq("accepted")
+        peer.reload
+        expect(peer.status).to eq("accepted")
+        expect(peer.signed_at).to be_present, "the accepted transition skipped accept!'s signed_at stamp"
+      end
+    end
+
+    describe "status: revoked" do
+      let!(:peer) { create(:system_federation_peer, account: account, status: "accepted") }
+
+      it "defers the revocation through the approval gate with the reason threaded" do
+        r = call("system_sdwan_update_federation_peer",
+                 federation_peer_id: peer.id, status: "revoked", reason: "remote key compromised")
+
+        expect(r[:success]).to be true
+        expect(r[:data][:pending]).to be true
+        expect(peer.reload.status).to eq("accepted"),
+                                      "MCP update withdrew cross-instance trust without an approval gate"
+
+        deferred = Ai::DeferredOperation.order(created_at: :desc).first
+        expect(deferred).to be_present
+        expect(deferred.action_category).to eq("sdwan.federation_peer_revoke")
+        expect(deferred.executor_class).to eq("Sdwan::Executors::RevokeFederationPeer")
+        expect(deferred.params["reason"]).to eq("remote key compromised")
+      end
+
+      it "records the revocation reason when the deferred op is approved" do
+        call("system_sdwan_update_federation_peer",
+             federation_peer_id: peer.id, status: "revoked", reason: "remote key compromised")
+        approve_latest_deferred!
+
+        peer.reload
+        expect(peer.status).to eq("revoked")
+        expect(peer.metadata["revocation_reason"]).to eq("remote key compromised"),
+                                                      "the inline status write skipped revoke!'s reason recording"
+      end
+
+      # Mirrors gated_revoke!: revoked is terminal and the revoke executor
+      # applies no attributes, so ride-along fields are ignored, not applied.
+      it "ignores ride-along fields on the revoke arm" do
+        original_url = peer.remote_instance_url
+
+        call("system_sdwan_update_federation_peer",
+             federation_peer_id: peer.id, status: "revoked",
+             remote_instance_url: "https://smuggled.example.com")
+
+        deferred = Ai::DeferredOperation.order(created_at: :desc).first
+        expect(deferred.params).not_to have_key("attributes")
+
+        approve_latest_deferred!
+        peer.reload
+        expect(peer.status).to eq("revoked")
+        expect(peer.remote_instance_url).to eq(original_url)
+      end
     end
   end
 

@@ -17,6 +17,15 @@ module Ai
       # category allowlist.
       FEDERATION_ACCEPT_CATEGORY = "sdwan.federation_peer_accept"
 
+      # Autonomy action category for revoking a federation peer — the trust
+      # withdrawal twin of the accept above. Shared verbatim with
+      # FederationPeersController (#destroy, #revoke, and #update with
+      # status → revoked) so the MCP and HTTP surfaces resolve the SAME
+      # policy — seeded require_approval on the SDWAN Manager
+      # (db/seeds/system_sdwan_manager_agent.rb) and registered in the
+      # engine's category allowlist.
+      FEDERATION_REVOKE_CATEGORY = "sdwan.federation_peer_revoke"
+
       # Autonomy action category for revoking one user VPN device. Shared
       # verbatim with Api::V1::System::Sdwan::UserDevicesController (#revoke and
       # #destroy) so the MCP and HTTP surfaces resolve the SAME policy — seeded
@@ -341,10 +350,12 @@ module Ai
             parameters: {}
           },
           "system_sdwan_update_federation_peer" => {
-            description: "Update a federation peer's mutable fields. When `status` is supplied it is gated by the v1 transition matrix (FederationPeer#can_transition_to?) — disallowed transitions return an error. Mirrors the FederationPeersController#update permitted keys.",
+            description: "Update a federation peer's mutable fields. When `status` is supplied it is gated by the v1 transition matrix (FederationPeer#can_transition_to?) — disallowed transitions return an error. The two trust-boundary transitions are approval-gated exactly as on the REST surface: status 'accepted' routes through sdwan.federation_peer_accept (a peer carrying an acceptance token digest requires acceptance_token, verified up front) and status 'revoked' routes through sdwan.federation_peer_revoke (reason recorded on the peer); under require_approval these return pending: true with a deferred_operation_id and nothing changes until an operator approves. Other transitions apply inline. Mirrors the FederationPeersController#update permitted keys.",
             parameters: {
               federation_peer_id: { type: "string", required: true, description: "UUID of the federation peer to update" },
-              status: { type: "string", required: false, description: "Target status — must be an allowed v1 transition from the current status" },
+              status: { type: "string", required: false, description: "Target status — must be an allowed v1 transition from the current status. 'accepted' and 'revoked' are approval-gated; other transitions apply inline" },
+              acceptance_token: { type: "string", required: false, description: "Single-use token from the proposing-account operator — required when transitioning to 'accepted' on a peer that carries an acceptance token digest. Verified before the request is gated; consumed on success." },
+              reason: { type: "string", required: false, description: "Human-readable revocation reason, recorded on the peer when transitioning to 'revoked'" },
               remote_instance_url: { type: "string", required: false, description: "Base URL of the remote Powernode instance" },
               remote_instance_id: { type: "string", required: false, description: "Identifier of the remote Powernode instance" },
               remote_account_id: { type: "string", required: false, description: "Identifier of the remote account on the peer instance" },
@@ -895,6 +906,76 @@ module Ai
         @user.has_permission?(required_perm_for(action))
       end
 
+      # === Approval gate seam ===
+      #
+      # The one shape every destructive verb on this tool routes through —
+      # the MCP twin of ::System::GatedActions#gate! on the REST controllers.
+      # Never hand-copy the AutonomyGate plumbing into an action; call this.
+      #
+      # Contract (mirrors the REST gate! semantics, IMP-322999495307):
+      #
+      #   * Validate BEFORE calling — account scoping (account_* finders),
+      #     transition matrices, and token checks all run first, so a request
+      #     that can only ever fail parks no approval an operator has to
+      #     dispose of. None of that is enforcement: the executor re-runs the
+      #     checks that count when the deferred operation executes.
+      #   * The EXECUTOR is the sole writer. On :pending the gate never calls
+      #     the proceed block — the action itself must mutate NOTHING, so the
+      #     operation survives the approval window and is performed
+      #     server-side (constantized at approval) with `executor_params`
+      #     replayed verbatim. Key names are each executor's contract.
+      #   * `pending_extra` carries the resource serialization for the 202-
+      #     shaped response; the block builds the :proceed payload and is only
+      #     called after the executor ran synchronously (auto-approve /
+      #     notify_and_proceed / core mode), receiving the gate Result — an
+      #     executor that mints material revealed exactly once (federation
+      #     propose) surfaces it from result.result there.
+      #
+      # Agent AND user are both forwarded: a seeded agent-scoped
+      # require_approval row only matches when the agent is passed
+      # (Ai::InterventionPolicy#agent_matches? rejects a scoped row against a
+      # nil agent), every other caller falls through to
+      # InterventionPolicyService#default_policy (also require_approval), and
+      # @agent additionally buys attribution — AutonomyGate#resolve_chain
+      # routes to "<agent name> Actions" and to "Manual Operations" when nil.
+      # Attribution for the requesting user lands on the DeferredOperation.
+      #
+      # Ai::AutonomyGate copies executor_params into the ApprovalRequest's
+      # request_data through Ai::SensitiveParams.filter, so secret-named keys
+      # (acceptance_token, …) reach the approval audience masked while the
+      # operation's own params keep the plaintext the executor replays.
+      def gated_result(action_category:, executor_class:, executor_params:,
+                       description:, source_type: nil, source_id: nil,
+                       pending_extra: {})
+        result = ::Ai::AutonomyGate.evaluate(
+          action_category: action_category,
+          executor_class: executor_class,
+          params: executor_params,
+          account: @account,
+          agent: @agent,
+          requested_by: @user,
+          source_type: source_type,
+          source_id: source_id,
+          description: description
+        )
+
+        case result.decision
+        when :proceed
+          success_result(**yield(result))
+        when :pending
+          success_result(
+            pending: true,
+            action_category: action_category,
+            deferred_operation_id: result.deferred_operation&.id,
+            approval_request_id: result.approval_request&.id,
+            **pending_extra,
+            message: "Approval required: #{action_category}"
+          )
+        else
+          error_result(result.error || "Action #{action_category} is blocked by policy")
+        end
+      end
+
       # === Networks ===
 
       def list_networks(_params)
@@ -1107,48 +1188,21 @@ module Ai
       def revoke_access_grant(params)
         grant = account_access_grants.find(params[:access_grant_id])
 
-        result = ::Ai::AutonomyGate.evaluate(
+        gated_result(
           action_category: ACCESS_GRANT_REVOKE_CATEGORY,
           executor_class: "Sdwan::Executors::RevokeAccessGrant",
-          # Key names are the executor's contract, not this tool's — grant_id
-          # and reason, shared verbatim with AccessGrantsController#revoke.
-          params: { grant_id: grant.id, reason: params[:reason] },
-          account: @account,
-          # Agent AND user. The seeded row is scoped to the SDWAN Manager
-          # (upsert_policies! passes agent:), and
-          # Ai::InterventionPolicy#agent_matches? rejects a scoped row against a
-          # nil agent — so an SDWAN Manager caller that dropped @agent would
-          # stop matching its own row. Every other caller falls through to
-          # InterventionPolicyService#default_policy, which is also
-          # require_approval, so the gate holds either way; what @agent
-          # additionally buys is attribution — AutonomyGate#resolve_chain routes
-          # to "<agent name> Actions" and to "Manual Operations" when nil.
-          agent: @agent,
-          # Replaces the `by_user:` this method used to pass to
-          # AccessGrant#revoke!, which the model accepts and never persists
-          # (there is no revoked_by column) — attribution now lands on the
-          # DeferredOperation instead, where the approver can see it.
-          requested_by: @user,
+          # grant_id and reason, shared verbatim with
+          # AccessGrantsController#revoke. `reason` replaces the `by_user:`
+          # this method used to pass to AccessGrant#revoke!, which the model
+          # accepts and never persists (there is no revoked_by column) —
+          # requester attribution lands on the DeferredOperation instead,
+          # where the approver can see it.
+          executor_params: { grant_id: grant.id, reason: params[:reason] },
           source_type: "Sdwan::AccessGrant",
           source_id: grant.id,
-          description: "Revoke SDWAN access for #{grant.user&.email || grant.id}"
-        )
-
-        case result.decision
-        when :proceed
-          success_result(grant: serialize_grant(grant.reload), revoked: true)
-        when :pending
-          success_result(
-            pending: true,
-            action_category: ACCESS_GRANT_REVOKE_CATEGORY,
-            deferred_operation_id: result.deferred_operation&.id,
-            approval_request_id: result.approval_request&.id,
-            grant: serialize_grant(grant),
-            message: "Approval required: #{ACCESS_GRANT_REVOKE_CATEGORY}"
-          )
-        else
-          error_result(result.error || "Action #{ACCESS_GRANT_REVOKE_CATEGORY} is blocked by policy")
-        end
+          description: "Revoke SDWAN access for #{grant.user&.email || grant.id}",
+          pending_extra: { grant: serialize_grant(grant) }
+        ) { { grant: serialize_grant(grant.reload), revoked: true } }
       end
 
       # === User Devices ===
@@ -1197,44 +1251,16 @@ module Ai
       def revoke_user_device(params)
         device = account_user_devices.find(params[:user_device_id])
 
-        result = ::Ai::AutonomyGate.evaluate(
+        gated_result(
           action_category: USER_DEVICE_REVOKE_CATEGORY,
           executor_class: "Sdwan::Executors::RevokeUserDevice",
-          # Key names are the executor's contract, not this tool's: it reads
-          # grant_id/device_id (shared with the two HTTP device verbs).
-          params: { grant_id: device.sdwan_access_grant_id, device_id: device.id, reason: params[:reason] },
-          account: @account,
-          # Agent AND user. The seeded row is scoped to Fleet Autonomy
-          # (upsert_policies! passes agent:), and
-          # Ai::InterventionPolicy#agent_matches? rejects a scoped row against a
-          # nil agent — so a Fleet Autonomy caller that dropped @agent would
-          # stop matching its own row. Every other caller falls through to
-          # InterventionPolicyService#default_policy, which is also
-          # require_approval, so the gate holds either way; what @agent
-          # additionally buys is attribution — AutonomyGate#resolve_chain routes
-          # to "<agent name> Actions" and to "Manual Operations" when nil.
-          agent: @agent,
-          requested_by: @user,
+          # grant_id/device_id, shared with the two HTTP device verbs.
+          executor_params: { grant_id: device.sdwan_access_grant_id, device_id: device.id, reason: params[:reason] },
           source_type: "Sdwan::UserDevice",
           source_id: device.id,
-          description: "Revoke SDWAN device #{device.label || device.id}"
-        )
-
-        case result.decision
-        when :proceed
-          success_result(device: serialize_user_device(device.reload), revoked: true)
-        when :pending
-          success_result(
-            pending: true,
-            action_category: USER_DEVICE_REVOKE_CATEGORY,
-            deferred_operation_id: result.deferred_operation&.id,
-            approval_request_id: result.approval_request&.id,
-            device: serialize_user_device(device),
-            message: "Approval required: #{USER_DEVICE_REVOKE_CATEGORY}"
-          )
-        else
-          error_result(result.error || "Action #{USER_DEVICE_REVOKE_CATEGORY} is blocked by policy")
-        end
+          description: "Revoke SDWAN device #{device.label || device.id}",
+          pending_extra: { device: serialize_user_device(device) }
+        ) { { device: serialize_user_device(device.reload), revoked: true } }
       end
 
       def account_access_grants
@@ -1340,45 +1366,20 @@ module Ai
           return error_result(token_error)
         end
 
-        result = ::Ai::AutonomyGate.evaluate(
+        gated_result(
           action_category: FEDERATION_ACCEPT_CATEGORY,
           executor_class: "Sdwan::Executors::AcceptFederationPeer",
           # The single-use token has to outlive the approval window to be
           # verified and consumed by the executor, so it is carried on the
-          # deferred operation. Note that Ai::AutonomyGate copies these params
-          # into the ApprovalRequest's request_data, which the approvals API
-          # serializes verbatim — so under require_approval the plaintext token
-          # is readable by any holder of ai.autonomy.approve, a wider audience
-          # than system.sdwan.federation.manage.
-          params: { federation_peer_id: peer.id, acceptance_token: params[:acceptance_token] },
-          account: @account,
-          # Agent AND user: an agent-scoped intervention policy (the seeded
-          # SDWAN Manager row) only matches when the agent is passed —
-          # Ai::InterventionPolicy#agent_matches? rejects a nil agent against a
-          # scoped row — and the gate uses the agent to route the approval to
-          # that agent's chain rather than to "Manual Operations".
-          agent: @agent,
-          requested_by: @user,
+          # deferred operation (whose params stay plaintext for the replay);
+          # the ApprovalRequest's request_data copy reaches the approval
+          # audience with the token masked (Ai::SensitiveParams).
+          executor_params: { federation_peer_id: peer.id, acceptance_token: params[:acceptance_token] },
           source_type: "System::FederationPeer",
           source_id: peer.id,
-          description: "Accept federation peer #{peer.remote_instance_url}"
-        )
-
-        case result.decision
-        when :proceed
-          success_result(federation_peer: serialize_federation_peer(peer.reload), accepted: true)
-        when :pending
-          success_result(
-            pending: true,
-            action_category: FEDERATION_ACCEPT_CATEGORY,
-            deferred_operation_id: result.deferred_operation&.id,
-            approval_request_id: result.approval_request&.id,
-            federation_peer: serialize_federation_peer(peer),
-            message: "Approval required: #{FEDERATION_ACCEPT_CATEGORY}"
-          )
-        else
-          error_result(result.error || "Action #{FEDERATION_ACCEPT_CATEGORY} is blocked by policy")
-        end
+          description: "Accept federation peer #{peer.remote_instance_url}",
+          pending_extra: { federation_peer: serialize_federation_peer(peer) }
+        ) { { federation_peer: serialize_federation_peer(peer.reload), accepted: true } }
       end
 
       def federation_scan(_params)
@@ -1396,6 +1397,27 @@ module Ai
       # row. Permitted keys match the controller's peer_update_params (no
       # endpoints — that's outside the REST surface). RecordNotFound /
       # RecordInvalid bubble to the dispatch rescue.
+      #
+      # Two transitions reachable here cross the trust boundary, and both are
+      # routed through the approval gate exactly as the REST twin routes them
+      # (FederationPeersController#update → gated_accept!/gated_revoke!):
+      #
+      #   accepted — EXTENDS trust: completes the handshake that starts
+      #     mutual route advertisement with a remote instance.
+      #   revoked  — WITHDRAWS it: cuts cross-instance routing, and is the
+      #     transition whose cause has to be audited. V1_TRANSITIONS lists
+      #     "revoked" from every non-terminal state, so this update reaches
+      #     the same state change as system_sdwan_revoke_federation_peer.
+      #
+      # The bare update! this replaces was the MCP twin of the REST
+      # PATCH-status bypass (bc2ef162/e655659f): status:"accepted" completed
+      # the handshake with no gate, no signed_at, and without verifying or
+      # consuming the Phase 11b single-use acceptance token (it bypassed
+      # FederationPeer#accept! entirely); status:"revoked" skipped revoke!,
+      # so no revocation_reason was ever recorded. IMP-796bde368789.
+      #
+      # Suspend/enroll/activate narrow or track an existing link and stay
+      # inline, per the REST ruling.
       def update_federation_peer(params)
         peer = account_federation_peers.find(params[:federation_peer_id])
 
@@ -1415,8 +1437,71 @@ module Ai
         update_attrs[:expires_at]                  = params[:expires_at]                  if params.key?(:expires_at)
         update_attrs[:metadata]                    = params[:metadata]                    if params[:metadata].is_a?(Hash)
 
+        case params[:status].to_s
+        when "accepted" then return update_gated_accept(peer, params, update_attrs)
+        when "revoked"  then return update_gated_revoke(peer, params)
+        end
+
         peer.update!(update_attrs) if update_attrs.any?
         success_result(federation_peer: serialize_federation_peer(peer.reload))
+      end
+
+      # The acceptance leg of update_federation_peer. Every field the same
+      # update carried rides along to the executor rather than being written
+      # ahead of the approval — they are one caller intent, and applying half
+      # of it now would let an unapproved caller edit the peer (the executor
+      # applies them in one transaction with the acceptance, excluding
+      # signed_at, which accept! stamps itself).
+      #
+      # The token is checked BEFORE the gate, like accept_federation_peer: a
+      # doomed accept must fail immediately rather than park an approval
+      # request that can only ever fail (on the :pending path the executor
+      # runs from Ai::ApprovalRequest#notify_source_of_decision, which rescues
+      # and only logs — an operator would approve and never learn the peer
+      # stayed proposed). Not enforcement: the executor re-runs accept!'s own
+      # verification when the deferred operation executes.
+      def update_gated_accept(peer, params, update_attrs)
+        if (token_error = peer.acceptance_token_error(params[:acceptance_token]))
+          return error_result(
+            "#{token_error} — pass acceptance_token (or accept through system_sdwan_accept_federation_peer)"
+          )
+        end
+
+        gated_result(
+          action_category: FEDERATION_ACCEPT_CATEGORY,
+          executor_class: "Sdwan::Executors::AcceptFederationPeer",
+          executor_params: {
+            federation_peer_id: peer.id,
+            acceptance_token: params[:acceptance_token],
+            attributes: update_attrs.except(:status)
+          },
+          source_type: "System::FederationPeer",
+          source_id: peer.id,
+          description: "Accept federation peer #{peer.remote_instance_url}",
+          pending_extra: { federation_peer: serialize_federation_peer(peer) }
+        ) { { federation_peer: serialize_federation_peer(peer.reload) } }
+      end
+
+      # The revocation leg of update_federation_peer — same action category
+      # and executor as system_sdwan_revoke_federation_peer, so one approval
+      # policy and one audit trail cover every route to a revoked peer.
+      #
+      # Unlike the accept leg, ride-along fields are NOT forwarded: revoked is
+      # terminal and the revoke executor applies no attributes, so there is
+      # nowhere for them to land. They are ignored rather than refused, the
+      # same choice gated_revoke! makes on the REST twin — a form-shaped
+      # client resends every field on every update, and refusing that would
+      # break a legitimate revocation.
+      def update_gated_revoke(peer, params)
+        gated_result(
+          action_category: FEDERATION_REVOKE_CATEGORY,
+          executor_class: "Sdwan::Executors::RevokeFederationPeer",
+          executor_params: { federation_peer_id: peer.id, reason: params[:reason] },
+          source_type: "System::FederationPeer",
+          source_id: peer.id,
+          description: "Revoke federation peer #{peer.remote_instance_url}",
+          pending_extra: { federation_peer: serialize_federation_peer(peer) }
+        ) { { federation_peer: serialize_federation_peer(peer.reload) } }
       end
 
       # Set a federation peer's data residency region tag (scalar
