@@ -25,12 +25,17 @@ import { SystemSettingsPanel } from './SystemSettingsPanel';
 //
 //   * What can be DISPLAYED is the policy ROWS the GET returns — the by_domain
 //     pivot. That is what these examples drive.
-//   * What can be SAVED is `Ai::InterventionPolicy.registered_categories` (138),
-//     a strict SUPERSET of the seeded rows: it also carries core's generic
+//   * What can be SAVED is `Ai::InterventionPolicy.registered_categories` (134
+//     as of IMP-eb60db901f5f; it was 138 when this was written, before the
+//     docker-TLS ghost and three duplicate spellings were deregistered), a
+//     strict SUPERSET of the seeded rows: it also carries core's generic
 //     `approval` / `proposal` / `dev.*` categories, which have no business in a
 //     System-extension modal. So "drive it from the registry" would be wrong —
-//     the rows are the right source, and the ghost's continued registration is
-//     exactly why a registry-driven modal would still show it.
+//     the rows are the right source. When this was written the registry still
+//     carried `system.runtime_docker_tls_rotate`, whose seed had been deleted,
+//     so a registry-driven modal would have shown a control for an action
+//     nothing could execute; that registration is gone now, but the reason the
+//     rows are the right source is unchanged.
 //
 // So: no assertion below names a category the component knows about. Every
 // rendered string has to arrive from the mocked HTTP payload, and a category
