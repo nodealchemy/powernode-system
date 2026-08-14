@@ -140,6 +140,54 @@ System::Seeds::AgentSetupHelpers.clean_stale_policies!(
 )
 puts "  ✅ Runtime Manager policies: #{count} changed (#{runtime_policies.size} total)"
 
+# ── Operator-path policies ────────────────────────────────────────────
+#
+# IMP-9b9653e6514e. The rows above are scope "agent", and
+# `Ai::InterventionPolicy#agent_matches?` is
+# `return true if ai_agent_id.nil?; agent_record && ai_agent_id == agent_record.id`
+# — so they bind ONLY when a caller passes `agent:`. Every operator-initiated
+# path resolves with `agent = nil` (`Ai::GatedActions#gate!` never passes one;
+# neither does an operator MCP call), and without a row of this shape it falls
+# through `Ai::InterventionPolicyService` to its require_approval default no
+# matter what the table above records. Same ruling as the SDWAN Manager's
+# (IMP-187124ca2984) — see that seed for the full rationale on why the two row
+# sets are disjoint by construction (scope "action_type" here, "agent" above)
+# and why each carries its own stale cleanup.
+#
+# That default is why the ONE runtime category that was already gated
+# (system.runtime_k8s_cluster_decommission, at
+# server/app/controllers/api/v1/devops/kubernetes/clusters_controller.rb)
+# looked correct while being inert: the default it fell to happens to equal the
+# seeded verb, so an operator EDITING that row changed nothing. It is in the
+# set below for that reason, at its seeded verb — no behaviour change today,
+# but the control now binds.
+#
+# DELIBERATELY THE GATED SUBSET, NOT ALL SEVEN. Seeding an operator row for a
+# category no gate site passes would manufacture the very defect this task
+# removes — a row that renders as a working control and is read by nothing —
+# one layer further out. The other four
+# (k8s_cluster_bootstrap, k8s_node_join, k8s_node_drain, k8s_runtime_upgrade)
+# stay agent-scoped-only until a surface exists to gate; each is tracked as its
+# own improvement offer. `system_runtime_operator_policies_spec.rb` pins both
+# halves: the three that must resolve, and the four that must NOT.
+gated_runtime_policies = runtime_policies.slice(
+  "system.runtime_docker_provision",
+  "system.runtime_docker_decommission",
+  "system.runtime_k8s_cluster_decommission"
+)
+
+operator_count = System::Seeds::AgentSetupHelpers.upsert_operator_policies!(
+  account: admin_account,
+  definitions: gated_runtime_policies
+)
+System::Seeds::AgentSetupHelpers.clean_stale_operator_policies!(
+  account: admin_account,
+  keep_keys: gated_runtime_policies.keys,
+  owned_prefixes: [ "system.runtime_" ]
+)
+puts "  ✅ Runtime Manager operator-path policies: #{operator_count} changed " \
+     "(#{gated_runtime_policies.size} of #{runtime_policies.size} gated)"
+
 # ── Runtime Manager Approval Chain ────────────────────────────────────
 # Single-step chain for runtime require_approval actions. Surfaces in
 # the same operator approval UI as Fleet Autonomy via
