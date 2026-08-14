@@ -309,11 +309,15 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
 
           # Each shape is its own example rather than one loop, because they
           # fail for different reasons and a loop reports only the first.
+          # (`"plenty"` used to sit in this map as a fourth silent shape —
+          # IMP-f85254148755 moved every unreadable declaration to the loud
+          # lane; see the unreadable-declaration context below. These three
+          # are the shapes that stay LEGITIMATELY silent: explicit numbers
+          # that request nothing.)
           {
             "integer 0"    => 0,
             "string \"0\"" => "0",
-            "negative"     => -50,
-            "non-numeric"  => "plenty"
+            "negative"     => -50
           }.each do |label, value|
             it "provisions no volume for #{label}" do
               r = exec.execute(template_id: template.id, count: 2,
@@ -324,6 +328,9 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
               expect(r[:success]).to be true
               expect(::System::VolumeManagementService).not_to have_received(:provision)
               expect(r[:data][:outputs][:storage_volume_ids]).to be_empty
+              # The positive twin of the loud unreadable fork: an explicit
+              # non-positive is "no storage requested", never a failure.
+              expect(r[:data][:failures]).to be_empty
               expect(r[:data][:planned_actions].map { |a| a[:step] })
                 .not_to include("provision_storage", "attach_volume")
             end
@@ -335,10 +342,13 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
           # shape used to reach `.to_i`, raise NoMethodError, and fail the
           # WHOLE step through `failure(...)` — which returns no `:data`, so
           # the instances the loop had already provisioned were reported to
-          # nobody. Asserting the outputs survive is the point of the example;
-          # it also pins the `respond_to?` screen against a later
-          # simplification that would trade the skip back for a raise.
-          it "skips, rather than crashing the step, on a shape with no numeric reading" do
+          # nobody. The `respond_to?` screen turned that crash into a skip
+          # (IMP-33fa6c51f05d); IMP-f85254148755 then turned the skip into a
+          # per-node failure entry (asserted in the unreadable-declaration
+          # context). What THIS example pins is the invariant both revisions
+          # preserve: the shape must never take out the step or orphan what
+          # the loop created.
+          it "does not let a shape with no numeric reading take out the step" do
             r = exec.execute(template_id: template.id, count: 2,
                              provider_region_id: region.id,
                              provider_instance_type_id: instance_type.id,
@@ -378,6 +388,152 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
             # 3 × (create_node + provision_instance) and nothing else.
             expect(r[:data][:planned_actions].size).to eq(6)
           end
+        end
+      end
+
+      # IMP-f85254148755 — storage declaration coherence. Two halves of the
+      # same declaration surface:
+      #
+      #   (1) `storage_gb` is a tolerated alias on every quote surface —
+      #       CostEstimatorService#declared_gb reads it (`with_storage_gb`
+      #       first, first PRESENT value wins) and PlanSnapshotService labels
+      #       it — but this executor dropped it into `**_extras`, so a
+      #       hand-authored plan carrying the alias alone was QUOTED for a
+      #       volume nothing provisioned: the same quote/actuator key
+      #       disagreement class IMP-051509357291 removed.
+      #   (2) an UNREADABLE declaration ("plenty", true, a Hash) read as "no
+      #       storage requested" — silent. Ruled by the ratified 4db30efae
+      #       fork: requested-but-unusable fails LOUD (a per-node
+      #       provision_storage failure entry, partial envelope); absent and
+      #       explicit non-positive stay silent, because those are the shapes
+      #       that genuinely request nothing.
+      context "with the storage_gb alias (IMP-f85254148755)" do
+        # Capture the requested sizes rather than matching kwargs through
+        # `have_received(...).with` — the size ASKED FOR is the assertion.
+        let(:provisioned_sizes) { [] }
+
+        before do
+          allow(::System::VolumeManagementService).to receive(:provision) do |**kw|
+            provisioned_sizes << kw[:size_gb]
+            ::System::Runtime::Result.ok(data: { volume: volume_stub })
+          end
+          allow(::System::VolumeManagementService).to receive(:attach)
+            .and_return(::System::Runtime::Result.ok(data: { device: "/dev/sdb" }))
+        end
+
+        it "provisions a per-instance volume for a plan declaring storage_gb alone" do
+          r = exec.execute(template_id: template.id, count: 2,
+                           provider_region_id: region.id,
+                           provider_instance_type_id: instance_type.id,
+                           storage_gb: 50)
+
+          expect(r[:success]).to be true
+          expect(provisioned_sizes).to eq([ 50, 50 ])
+          expect(r[:data][:outputs][:storage_volume_ids].size).to eq(2)
+          expect(r[:data][:failures]).to be_empty
+        end
+
+        it "lets with_storage_gb win when both keys are present (the estimator's read order)" do
+          r = exec.execute(template_id: template.id, count: 1,
+                           provider_region_id: region.id,
+                           provider_instance_type_id: instance_type.id,
+                           with_storage_gb: 20, storage_gb: 50)
+
+          expect(r[:success]).to be true
+          expect(provisioned_sizes).to eq([ 20 ])
+        end
+
+        it "reads an explicit with_storage_gb 0 as no-storage even when the alias is positive" do
+          # 0 is PRESENT, so it wins the alias resolution — exactly what
+          # declared_gb quotes (no volume line). The alias must not resurrect
+          # a request the canonical key explicitly zeroed.
+          r = exec.execute(template_id: template.id, count: 1,
+                           provider_region_id: region.id,
+                           provider_instance_type_id: instance_type.id,
+                           with_storage_gb: 0, storage_gb: 50)
+
+          expect(r[:success]).to be true
+          expect(provisioned_sizes).to be_empty
+          expect(r[:data][:failures]).to be_empty
+        end
+
+        it "plans the storage steps for the alias in dry_run, at the declared size" do
+          r = exec.execute(template_id: template.id, count: 1,
+                           provider_region_id: region.id,
+                           provider_instance_type_id: instance_type.id,
+                           storage_gb: 50, dry_run: true)
+
+          storage = r[:data][:planned_actions].find { |a| a[:step] == "provision_storage" }
+          expect(storage).not_to be_nil,
+                                 "no provision_storage planned: #{r[:data][:planned_actions].inspect}"
+          expect(storage[:size_gb]).to eq(50)
+          expect(r[:data][:planned_actions].map { |a| a[:step] }).to include("attach_volume")
+        end
+      end
+
+      context "with an unreadable storage declaration (IMP-f85254148755)" do
+        before do
+          allow(::System::VolumeManagementService).to receive(:provision)
+            .and_return(::System::Runtime::Result.ok(data: { volume: volume_stub }))
+          allow(::System::VolumeManagementService).to receive(:attach)
+            .and_return(::System::Runtime::Result.ok(data: { device: "/dev/sdb" }))
+        end
+
+        # Each shape is its own example: `"plenty"` HAS a to_i reading that
+        # lies (== 0), while `true` and a Hash have none at all — they take
+        # different guards to the same loud answer.
+        {
+          "a non-numeric string" => "plenty",
+          "true"                 => true,
+          "a Hash"               => { "size" => 50 }
+        }.each do |label, value|
+          it "records a per-node provision_storage failure for #{label} without failing the step" do
+            r = exec.execute(template_id: template.id, count: 2,
+                             provider_region_id: region.id,
+                             provider_instance_type_id: instance_type.id,
+                             with_storage_gb: value)
+
+            expect(r[:success]).to be true
+            expect(::System::VolumeManagementService).not_to have_received(:provision)
+            expect(r[:data][:outputs][:storage_volume_ids]).to be_empty
+            # One entry PER NODE, the same shape as every other per-node leg
+            # failure — requested-but-unusable fails loud (4db30efae fork).
+            storage_failures = r[:data][:failures].select { |f| f[:step] == "provision_storage" }
+            expect(storage_failures.size).to eq(2)
+            expect(storage_failures.map { |f| f[:node_id] }).to all(be_present)
+            expect(storage_failures.first[:error]).to include(value.inspect)
+            expect(r[:data][:partial]).to be true
+            # The loud entry must not cost the caller the compute it DID get.
+            expect(r[:data][:outputs][:node_instance_ids].size).to eq(2)
+          end
+        end
+
+        it "fails loud for an unreadable value arriving via the storage_gb alias" do
+          r = exec.execute(template_id: template.id, count: 1,
+                           provider_region_id: region.id,
+                           provider_instance_type_id: instance_type.id,
+                           storage_gb: "plenty")
+
+          expect(r[:success]).to be true
+          expect(r[:data][:failures].map { |f| f[:step] }).to eq([ "provision_storage" ])
+          expect(r[:data][:partial]).to be true
+        end
+
+        it "surfaces the unreadable declaration on the dry-run card too" do
+          # The card and the actuator consult the same answer —
+          # storage_requested?'s documented single-answer contract — so a run
+          # that will record failures must not preview as a clean plan.
+          r = exec.execute(template_id: template.id, count: 2,
+                           provider_region_id: region.id,
+                           provider_instance_type_id: instance_type.id,
+                           with_storage_gb: "plenty", dry_run: true)
+
+          expect(r[:data][:planned_actions].map { |a| a[:step] })
+            .not_to include("provision_storage", "attach_volume")
+          expect(r[:data][:failures].size).to eq(2)
+          expect(r[:data][:failures]).to all(include(step: "provision_storage"))
+          # Nothing was created, so the envelope is not partial.
+          expect(r[:data][:partial]).to be false
         end
       end
 

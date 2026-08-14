@@ -154,10 +154,22 @@ module System
         # into every step's inputs (notably `brief`) so the runner's
         # `executor.execute(**inputs)` invocation doesn't raise ArgumentError.
         def perform(template_id:, count:, provider_region_id:, provider_instance_type_id:,
-                    network_id: nil, with_storage_gb: nil, dry_run: false,
+                    network_id: nil, with_storage_gb: nil, storage_gb: nil, dry_run: false,
                     name_prefix: nil, mission_id: nil, **_extras)
           count = count.to_i
           return failure("count must be between 1 and #{MAX_COUNT}") unless count.between?(1, MAX_COUNT)
+
+          # `storage_gb` is a tolerated alias for hand-authored plan_data,
+          # resolved in exactly CostEstimatorService#declared_gb's read order:
+          # `with_storage_gb` first, first PRESENT value wins — so an explicit
+          # `with_storage_gb: 0` beats a positive alias, and both surfaces
+          # read "no storage requested" for it. Before IMP-f85254148755 the
+          # alias fell into `**_extras`, so a plan carrying it alone was
+          # QUOTED for a volume this executor never provisioned — the same
+          # quote/actuator key disagreement class IMP-051509357291 removed.
+          # `with_storage_gb` stays the only ADVERTISED input; the alias is a
+          # compatibility read on both sides, not a descriptor entry.
+          storage_declared = [ with_storage_gb, storage_gb ].find(&:present?)
 
           template = ::System::NodeTemplate.where(account_id: @account.id).find_by(id: template_id)
           return failure("template not found: #{template_id}") unless template
@@ -178,16 +190,22 @@ module System
             return success(
               dry_run: true,
               count: count,
-              planned_actions: build_plan(template, count, region, instance_type, network, with_storage_gb),
+              planned_actions: build_plan(template, count, region, instance_type, network, storage_declared),
               outputs: { node_ids: [], node_instance_ids: [], sdwan_peer_ids: [], storage_volume_ids: [] },
-              failures: [],
+              # The dry run is the operator's approval card, and it consults
+              # the same storage answer as the loop (storage_requested?'s
+              # documented single-answer contract) — so a declaration the
+              # real run would record failure entries for must not preview
+              # as a clean plan. Nothing is created here, so `partial`
+              # stays false.
+              failures: dry_run_storage_failures(count, storage_declared),
               partial: false
             )
           end
 
           run_execute(template: template, count: count, region: region,
                       instance_type: instance_type, network: network,
-                      with_storage_gb: with_storage_gb,
+                      with_storage_gb: storage_declared,
                       name_prefix: name_prefix, mission_id: mission_id)
         end
 
@@ -244,6 +262,19 @@ module System
                 failures << { step: "attach_sdwan_peer", node_id: node.id,
                               instance_id: instance.id, error: e.message }
               end
+            end
+
+            # Requested-but-unusable fails LOUD, per node — the ratified
+            # 4db30efae network-declaration fork, mapped onto the same
+            # declaration class (IMP-f85254148755): a caller who DECLARED
+            # storage in a shape this executor cannot read gets a failure
+            # entry, not a silent "none requested". Absent and explicit
+            # non-positive stay silent below — those genuinely request
+            # nothing (IMP-33fa6c51f05d) and the estimator quotes no line.
+            if storage_unreadable?(with_storage_gb)
+              failures << { step: "provision_storage", node_id: node.id,
+                            error: unreadable_storage_error(with_storage_gb) }
+              next
             end
 
             next unless storage_requested?(with_storage_gb)
@@ -388,13 +419,52 @@ module System
         # output, and an operator-supplied input — the direct-dispatch paths the
         # composer's `||=` is documented to let win. This hardens those.
         #
-        # Known gap, deliberately not closed here: an UNREADABLE value
-        # ("plenty", true, {a: 1}) is now indistinguishable from "no storage
-        # requested" — silent rather than loud. That is strictly better than the
-        # orphaning crash it replaces, but a caller who asked for storage in a
-        # shape this executor cannot read still deserves a failure entry.
+        # An UNREADABLE value ("plenty", true, {a: 1}) is NOT silent: it takes
+        # the loud lane via #storage_unreadable? (IMP-f85254148755, closing
+        # the gap this comment used to record) — this predicate only answers
+        # the SIZE question for values that read as numbers.
         def storage_requested?(with_storage_gb)
           with_storage_gb.respond_to?(:to_i) && with_storage_gb.to_i.positive?
+        end
+
+        # The loud half of the storage fork (IMP-f85254148755, ruled by the
+        # 4db30efae precedent): a value that was DECLARED (present after the
+        # alias resolution in #perform) but has no trustworthy numeric
+        # reading is requested-but-unusable. An explicit non-positive number
+        # (0, "0", -50) is NOT unreadable — it is a legitimate "no storage"
+        # answer (IMP-33fa6c51f05d) and stays silent, matching
+        # CostEstimatorService#declared_gb's quote of no line.
+        def storage_unreadable?(value)
+          return false unless value.present?         # absent — genuinely not requested
+          return false if storage_requested?(value)  # readable and positive — provisions
+          !numeric_reading?(value)
+        end
+
+        # Shapes with a trustworthy numeric reading: real numbers, and strings
+        # that parse as one ("0", "-50"). `"plenty".to_i == 0` is why `to_i`
+        # alone cannot tell an explicit zero from a shape that merely failed
+        # to parse.
+        def numeric_reading?(value)
+          value.is_a?(Numeric) ||
+            (value.is_a?(String) && !Float(value, exception: false).nil?)
+        end
+
+        def unreadable_storage_error(value)
+          "storage declared but unreadable: #{value.inspect.truncate(120)} — " \
+            "with_storage_gb must be a positive integer count of GB; no volume provisioned"
+        end
+
+        # Per-index failure entries for the dry-run envelope when the storage
+        # declaration is unreadable — the preview of the per-node entries the
+        # real run records. No nodes exist yet, so entries carry the loop
+        # index instead of a node_id.
+        def dry_run_storage_failures(count, storage_declared)
+          return [] unless storage_unreadable?(storage_declared)
+
+          Array.new(count) do |i|
+            { step: "provision_storage", index: i,
+              error: unreadable_storage_error(storage_declared) }
+          end
         end
       end
     end
