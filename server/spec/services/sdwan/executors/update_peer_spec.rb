@@ -86,4 +86,41 @@ RSpec.describe Sdwan::Executors::UpdatePeer do
                                       "attrs failed to strip account_id — the peer was moved"
     expect(peer.tags).to eq(["edge"])
   end
+
+  # IMP-3a563becb7d7 — #summarize is the approval/notification body
+  # (Ai::DeferredOperationApprovalContent.title and .message both render
+  # preview[:summary]). It read "Update SDWAN peer <uuid>" — a bare UUID —
+  # while the delete card for the same peer reads
+  # "Delete SDWAN peer edge-lon-01 on wan-core". The label is
+  # Sdwan::Peer#operator_label, the same ladder both delete surfaces render
+  # (IMP-ee57d0fbe859).
+  describe ".preview" do
+    it "names the peer an operator recognises, not a bare UUID" do
+      peer.node_instance.update!(name: "edge-lon-01")
+      network.update!(name: "wan-core")
+
+      preview = described_class.preview({ peer_id: peer.id })
+
+      expect(preview[:summary]).to eq("Update SDWAN peer edge-lon-01 on wan-core")
+    end
+
+    # A shared ladder only constrains the fragment both surfaces share, so the
+    # oracle asserts the equality itself: one peer, two cards, one identity.
+    it "renders the same identity fragment the delete card renders for the same peer" do
+      peer.node_instance.update!(name: "edge-lon-01")
+
+      update_summary = described_class.preview({ peer_id: peer.id })[:summary]
+      delete_summary = ::Sdwan::Executors::DeletePeer.preview({ peer_id: peer.id })[:summary]
+
+      expect(update_summary.delete_prefix("Update SDWAN peer "))
+        .to eq(delete_summary.delete_prefix("Delete SDWAN peer ")),
+            "update/delete cards must name the same peer identically"
+    end
+
+    it "falls back to the bare id when the peer is gone" do
+      preview = described_class.preview({ peer_id: "gone" })
+
+      expect(preview[:summary]).to eq("Update SDWAN peer gone")
+    end
+  end
 end

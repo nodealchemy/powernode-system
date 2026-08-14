@@ -14,8 +14,15 @@ module Sdwan
         { peer_id: peer.id, updated_attributes: params[:attributes] }
       end
 
+      # IMP-3a563becb7d7: the label is Sdwan::Peer#operator_label — the same
+      # ladder both peer-delete surfaces render (IMP-ee57d0fbe859). This card
+      # read a bare peer UUID, so the update and delete rows for one peer did
+      # not visibly concern the same subject.
       def summarize
-        "Update SDWAN peer #{params[:peer_id]}"
+        peer = ::Sdwan::Peer.find_by(id: params[:peer_id])
+        return "Update SDWAN peer #{params[:peer_id]}" unless peer
+
+        "Update SDWAN peer #{peer.operator_label}"
       end
 
       private
