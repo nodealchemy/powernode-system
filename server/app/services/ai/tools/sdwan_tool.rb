@@ -69,6 +69,19 @@ module Ai
       ROUTE_POLICY_UPDATE_CATEGORY = "sdwan.route_policy_update"
       PORT_MAPPING_UPDATE_CATEGORY = "sdwan.port_mapping_update"
 
+      # Autonomy action category for manual VIP failover (IMP-7c911ca26585).
+      # Shared verbatim with VirtualIpsController#failover AND the fleet
+      # autonomy remediation path (SdwanVipReachabilitySensor →
+      # FleetAutonomyService), and registered in the engine's category
+      # allowlist. The category STRING is the parity contract; the resolved
+      # policy row differs by audience: the seeded require_approval row
+      # (db/seeds/fleet_autonomy_agent.rb) is scoped to the Fleet Autonomy
+      # agent (the sensor path), so this arm (calling agent / nil) and the
+      # agent-less REST twin both fall through to
+      # InterventionPolicyService#default_policy — also require_approval —
+      # and per-audience operator rows tune each surface independently.
+      VIP_FAILOVER_CATEGORY = "system.sdwan_vip_failover"
+
       ACTION_PERMISSIONS = {
         "system_sdwan_list_networks"   => "system.sdwan.networks.read",
         "system_sdwan_get_network"     => "system.sdwan.networks.read",
@@ -529,7 +542,7 @@ module Ai
             parameters: { virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP to delete" } }
           },
           "system_sdwan_failover_virtual_ip" => {
-            description: "Manual failover for a non-anycast VIP — promotes the head of failover_holder_peer_ids to holder. Anycast VIPs don't fail over (all holders are active simultaneously).",
+            description: "Manual failover for a non-anycast VIP — promotes the head of failover_holder_peer_ids to holder. Anycast VIPs don't fail over (all holders are active simultaneously). Approval-gated (system.sdwan_vip_failover, the same category as the REST surface) — under require_approval this returns pending: true with a deferred_operation_id and the standby is promoted only once an operator approves.",
             parameters: { virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP to fail over" } }
           },
           "system_sdwan_list_vip_assignments" => {
@@ -1984,12 +1997,38 @@ module Ai
         end
       end
 
+      # IMP-7c911ca26585 — routed through Ai::AutonomyGate with the REST
+      # twin's exact category (VirtualIpsController#failover): promoting the
+      # failover holder rewrites BGP/AllowedIPs reachability, so an agent
+      # refused approval on the REST surface must not get it inline here.
+      # The model's StateError guards are mirrored PRE-gate so a doomed
+      # failover (anycast, or no candidates) fails loud instead of parking
+      # an approval that can only fail on execution — wording kept identical
+      # to Sdwan::VirtualIp#failover!, whose semantics IMP-43cf1e6b5541
+      # owns. gated_result never invokes its proceed block on :pending, so
+      # the rotate + audit transaction runs ONLY in FailoverVirtualIp#perform;
+      # attribution rides the DeferredOperation's requested_by (this @user —
+      # the executor credits deferred_operation.requested_by, replacing the
+      # inline body's triggered_by_user: @user).
       def failover_virtual_ip(params)
         vip = account_virtual_ips.find(params[:virtual_ip_id])
-        vip.failover!(reason: "manual_failover", triggered_by_user: @user)
-        success_result(virtual_ip: serialize_virtual_ip(vip.reload), failed_over: true)
-      rescue ::Sdwan::VirtualIp::StateError => e
-        error_result(e.message)
+        if vip.anycast?
+          return error_result("anycast VIPs don't fail over (all holders active simultaneously)")
+        end
+        if Array(vip.failover_holder_peer_ids).empty?
+          return error_result("no failover candidates configured")
+        end
+
+        gated_result(
+          action_category: VIP_FAILOVER_CATEGORY,
+          executor_class: "Sdwan::Executors::FailoverVirtualIp",
+          executor_params: { vip_id: vip.id },
+          source_type: "Sdwan::VirtualIp",
+          source_id: vip.id,
+          # Matches the REST twin's wording (VirtualIpsController#failover)
+          # so both surfaces of the approval speak one sentence.
+          description: "Manual failover of VIP #{vip.try(:cidr) || vip.id}"
+        ) { |_result| { virtual_ip: serialize_virtual_ip(vip.reload), failed_over: true } }
       end
 
       def list_vip_assignments(params)

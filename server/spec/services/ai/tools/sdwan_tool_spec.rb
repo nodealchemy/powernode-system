@@ -1834,6 +1834,104 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # IMP-7c911ca26585 — the failover arm was the one VIP mutation left
+  # writing inline after the create/update parity waves: REST gates the
+  # identical action as system.sdwan_vip_failover through
+  # Sdwan::Executors::FailoverVirtualIp, so under require_approval an agent
+  # refused on the REST surface could promote the failover holder (a BGP /
+  # AllowedIPs reachability rewrite) through this arm with no approval and
+  # no DeferredOperation.
+  describe "system_sdwan_failover_virtual_ip approval gate (IMP-7c911ca26585)" do
+    let(:network)  { create(:sdwan_network, account: account) }
+    # Lazy like the sibling update-VIP describe: only the examples that
+    # exercise the default vip pay the peer-allocator (node-instance chain)
+    # cost — the refusal examples build their own rows.
+    let(:primary) { create(:sdwan_peer, account: account, network: network) }
+    let(:standby) { create(:sdwan_peer, account: account, network: network) }
+    let(:vip) do
+      create(:sdwan_virtual_ip, account: account, network: network, state: "active",
+             holder_peer_ids: [ primary.id ], failover_holder_peer_ids: [ standby.id ])
+    end
+
+    let(:gate_action)  { "system_sdwan_failover_virtual_ip" }
+    let(:gate_request) { { virtual_ip_id: vip.id } }
+    let(:pristine_probe) { -> { vip.reload.holder_peer_ids } }
+    let(:pristine_value) { [ primary.id ] }
+    let(:pristine_failure_hint) { "MCP failover_virtual_ip promoted the failover holder without an approval gate" }
+
+    it_behaves_like "an approval-gated sdwan update"
+
+    it "parks a system.sdwan_vip_failover operation whose approval promotes the standby with its audit row" do
+      r = call("system_sdwan_failover_virtual_ip", virtual_ip_id: vip.id)
+
+      approve_parked_update!(r, category: "system.sdwan_vip_failover",
+                             executor: "Sdwan::Executors::FailoverVirtualIp") do |deferred|
+        expect(deferred.params["vip_id"]).to eq(vip.id)
+      end
+
+      expect(vip.reload.holder_peer_ids.first).to eq(standby.id)
+      expect(vip.failover_holder_peer_ids).to eq([ primary.id ])
+      expect(vip.assignments.where(sdwan_peer_id: standby.id, reason: "manual_failover").count).to eq(1),
+                                                                                                   "approved failover left phantom holder state with no assignment history row"
+    end
+
+    it "fails over inline and serializes the vip when the policy auto-approves" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_failover_virtual_ip", virtual_ip_id: vip.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:failed_over]).to be true
+      expect(r[:data][:virtual_ip][:holder_peer_ids].first).to eq(standby.id),
+                                                               "answered success over a VIP that was not serialized back"
+      expect(vip.reload.holder_peer_ids.first).to eq(standby.id)
+    end
+
+    # Positive twins for the two pre-gate refusals below are the gated
+    # examples above (a failover the model would accept parks / executes).
+    # Refusal wording is the model's own (Sdwan::VirtualIp#failover!
+    # StateError guards) so the arm's error contract is unchanged.
+    it "refuses an anycast failover pre-gate without parking a doomed approval" do
+      anycast = create(:sdwan_virtual_ip, account: account, network: network, anycast: true,
+                       holder_peer_ids: [ primary.id, standby.id ])
+
+      expect {
+        @result = call("system_sdwan_failover_virtual_ip", virtual_ip_id: anycast.id)
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to include("anycast")
+    end
+
+    it "refuses a candidate-less failover pre-gate without parking a doomed approval" do
+      bare = create(:sdwan_virtual_ip, account: account, network: network,
+                    holder_peer_ids: [ primary.id ], failover_holder_peer_ids: [])
+
+      expect {
+        @result = call("system_sdwan_failover_virtual_ip", virtual_ip_id: bare.id)
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to include("no failover candidates")
+    end
+
+    # The foreign VIP carries a real failover candidate so this control stays
+    # sharp: if the account scope broke, the arm would park/promote rather
+    # than fall through to a pre-gate refusal for the wrong reason.
+    it "refuses a vip outside the caller's account without parking anything" do
+      foreign_standby = create(:sdwan_peer)
+      foreign = create(:sdwan_virtual_ip, network: foreign_standby.network,
+                       holder_peer_ids: [], failover_holder_peer_ids: [ foreign_standby.id ])
+
+      expect {
+        @result = call("system_sdwan_failover_virtual_ip", virtual_ip_id: foreign.id)
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(foreign.reload.holder_peer_ids).to eq([])
+    end
+  end
+
   describe "system_sdwan_update_route_policy approval gate (IMP-c9798d9d5671)" do
     let!(:policy) { create(:sdwan_route_policy, account: account, name: "old-policy") }
 
