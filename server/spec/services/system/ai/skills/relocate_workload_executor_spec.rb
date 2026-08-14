@@ -198,12 +198,22 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
     # — the operator consents to the intent — but marked conditional with the
     # guard named, so the operator sees both the intent and the safety.
     context "terminate_source marking on the approval card" do
-      def card(strategy:, network_id: nil)
+      # IMP-4e5b78f0b737 — the marking is applied by a loop over EVERY source
+      # (build_plan#terminate_steps), so the card must be built from more than
+      # one source or the `all(...)` sweeps below run over a one-element array
+      # and a regression that marks only the first entry passes green. The
+      # sources are a per-call-site argument for the same reason: an example
+      # that wants a different source set says so rather than inheriting one.
+      let(:second_source_node)     { create(:system_node, account: account, node_template: template, name: "src-2") }
+      let(:second_source_instance) { create(:system_node_instance, :running, node: second_source_node) }
+      let(:both_source_ids)        { [ source_instance.id, second_source_instance.id ] }
+
+      def card(strategy:, network_id: nil, source_ids: both_source_ids)
         r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
                          to_region_id: to_region.id, cutover_strategy: strategy,
                          template_id: template.id,
                          provider_instance_type_id: instance_type.id, count: 2,
-                         source_instance_ids: [ source_instance.id ],
+                         source_instance_ids: source_ids,
                          network_id: network_id, dry_run: true)
         expect(r[:success]).to be true
         r[:data][:planned_actions]
@@ -214,13 +224,27 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       # guard that may decline the terminate (now undersized, subsuming
       # empty, per the :233 undercount hole) AND what happens to the fresh
       # target stack when it does (reclaimed; sources untouched).
-      it "marks blue_green terminate steps conditional, naming the guard, the undersized refusal, and the reclaim" do
+      it "marks EVERY blue_green terminate step conditional, naming the guard, the undersized refusal, and the reclaim" do
         terminate = card(strategy: "blue_green").select { |a| a[:step] == "terminate_source" }
 
-        expect(terminate).not_to be_empty
+        # One entry per source, in the order they were given: this is what
+        # makes the sweeps below sweep (IMP-4e5b78f0b737).
+        expect(terminate.map { |a| a[:instance_id] }).to eq(both_source_ids)
         expect(terminate).to all(include(conditional: true, guard: "blue_green_cutover"))
-        expect(terminate.map { |a| a[:condition] })
-          .to all(match(/undersized/).and(match(/target stack is reclaimed/)).and(match(/sources are left untouched/)))
+
+        # ANCHORED, and pinned by what this branch must NOT say. The network
+        # flavor reads "...comes up undersized or off-fabric (not fully
+        # enrolled on network <id>)...", which CONTAINS every substring the
+        # no-network flavor was matched on, so an unanchored /undersized/
+        # could not tell the two branches apart: collapsing build_plan's
+        # ternary to always emit the network flavor — dangling nil
+        # interpolation and all — passed. The exclusion below is what kills
+        # that mutant; the anchor keeps the opening wording from drifting
+        # without pinning the operator prose word for word.
+        conditions = terminate.map { |a| a[:condition] }
+        expect(conditions).to all(match(/\Askipped when the target stack comes up undersized/))
+        expect(conditions).to all(match(/target stack is reclaimed/).and(match(/sources are left untouched/)))
+        expect(conditions.join(" | ")).not_to match(/off-fabric|network/)
       end
 
       it "names the requested network in the condition when enrollment also gates the cutover" do
@@ -228,7 +252,7 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         terminate = card(strategy: "blue_green", network_id: network.id)
                       .select { |a| a[:step] == "terminate_source" }
 
-        expect(terminate).not_to be_empty
+        expect(terminate.map { |a| a[:instance_id] }).to eq(both_source_ids)
         expect(terminate).to all(include(conditional: true, guard: "blue_green_cutover"))
         expect(terminate.map { |a| a[:condition] })
           .to all(match(/off-fabric/).and(include(network.id)).and(match(/target stack is reclaimed/)))
@@ -237,11 +261,20 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       # Negative control (positive twins above): drain terminates FIRST — no
       # guard exists on its path, so a conditional marker would promise a
       # safety the run does not have.
-      it "leaves drain terminate steps unconditional" do
-        terminate = card(strategy: "drain").select { |a| a[:step] == "terminate_source" }
+      it "leaves every drain terminate step unconditional, one per source" do
+        # THREE sources against count: 2 targets, so the entries are counted
+        # per SOURCE and cannot be coming from the target loop — with two of
+        # each, "one terminate per target" is indistinguishable from "one per
+        # source". Exact shape, in order: a marker leaking onto any entry, or
+        # a step going missing, reds this.
+        terminate = card(strategy: "drain", source_ids: both_source_ids + [ source_instance.id ])
+                      .select { |a| a[:step] == "terminate_source" }
 
-        expect(terminate).not_to be_empty
-        expect(terminate).to all(eq({ step: "terminate_source", instance_id: source_instance.id }))
+        expect(terminate).to eq([
+          { step: "terminate_source", instance_id: source_instance.id },
+          { step: "terminate_source", instance_id: second_source_instance.id },
+          { step: "terminate_source", instance_id: source_instance.id }
+        ])
       end
     end
 
@@ -461,6 +494,78 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
           create_node provision_instance
           provision_target_stack
         ])
+      end
+
+      # IMP-4e5b78f0b737 — every exact-sequence example above runs count: 1
+      # with all legs succeeding, and on that shape a LIFTED inner envelope and
+      # a re-SYNTHESIZED card are indistinguishable (one create_node, one
+      # provision_instance, either way). The partial run is what tells them
+      # apart: the failed leg contributes its create_node and NOT its
+      # provision_instance, in the position the run actually performed it —
+      # the record an operator grades a half-finished relocate from.
+      #
+      # Drain rather than blue_green for a failing PROVISIONING leg: that is
+      # exactly what blue_green's guard refuses (undersized ⇒ failure
+      # envelope, no planned_actions at all — see "blue_green refusal when the
+      # target stack comes up undersized"), so this shape cannot be observed
+      # there.
+      #
+      # That guard reads instance COUNT and fabric enrollment only
+      # (#run_execute), so it is NOT the case that blue_green refuses every
+      # partial run: a blue_green run whose STORAGE leg fails leaves
+      # undersized=false and off_fabric=false, passes the guard, terminates
+      # the sources, and returns a partial envelope of this same shape
+      # (verified by execution, IMP-4e5b78f0b737). Whether tearing the source
+      # down against a target stack whose data volume never attached is
+      # CORRECT is an open question on the guard itself, so that arm is
+      # deliberately left unpinned here rather than specced into place.
+      context "when one of several provisioning legs fails" do
+        let(:surviving_instance) { instance_double("System::NodeInstance", id: SecureRandom.uuid) }
+
+        before do
+          # First leg fails, second succeeds — so the missing provision_instance
+          # sits in the MIDDLE of the sequence. A tail-truncated or
+          # append-at-end recording of the same run would not look like this.
+          results = [
+            ::System::Runtime::Result.err(error: "region quota exhausted"),
+            ::System::Runtime::Result.ok(data: { instance: surviving_instance, cloud_instance_id: "ci-dr-2" })
+          ]
+          allow(::System::ProvisioningService).to receive(:provision_instance) { results.shift }
+        end
+
+        it "records the failed leg's create_node with no provision_instance, in run order" do
+          r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                           to_region_id: to_region.id, cutover_strategy: "drain",
+                           template_id: template.id,
+                           provider_instance_type_id: instance_type.id, count: 2,
+                           source_instance_ids: [ source_instance.id ])
+
+          expect(r[:success]).to be true
+          steps = r[:data][:planned_actions]
+          expect(steps.map { |a| a[:step] }).to eq(%w[
+            relocate_workload
+            terminate_source
+            create_node create_node provision_instance
+            provision_target_stack
+          ])
+
+          # The surviving leg's steps pair up by node: the one provision belongs
+          # to the SECOND node created, and the failed leg's node has none.
+          created_node_ids = steps.select { |a| a[:step] == "create_node" }.map { |a| a[:node_id] }
+          provisioned      = steps.select { |a| a[:step] == "provision_instance" }
+          expect(created_node_ids.uniq.size).to eq(2)
+          expect(provisioned.map { |a| a[:node_id] }).to eq([ created_node_ids.last ])
+          expect(provisioned.map { |a| a[:instance_id] }).to eq([ surviving_instance.id ])
+
+          # The rollup counts what CAME UP, not what was asked for, and the
+          # failed leg surfaces on the envelope rather than only in the steps.
+          expect(steps.last).to include(step: "provision_target_stack", instance_count: 1)
+          expect(r[:data][:partial]).to be true
+          expect(r[:data][:failures]).to include(
+            hash_including(step: "provision_instance", node_id: created_node_ids.first,
+                           error: "region quota exhausted")
+          )
+        end
       end
     end
 
