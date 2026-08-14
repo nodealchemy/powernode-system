@@ -129,8 +129,13 @@ FactoryBot.define do
   factory :system_node_instance, class: "System::NodeInstance" do
     # `account` is a transient so callers can write
     #   create(:system_node_instance, account: account)
-    # and have it routed through the node (NodeInstance has no account_id
-    # column — account flows through node).
+    # and have it routed through the NODE, which is where the value has to
+    # agree: system_node_instances carries account_id as a NOT NULL column of
+    # its own, and System::NodeInstance#account_matches_node rejects a row whose
+    # account_id differs from its node's (#inherit_account_from_node fills it in
+    # when the caller omits it). An earlier form of this comment said the model
+    # had no account_id column at all and delegated to the node; that predates
+    # the denormalization and is why callers still route through the node here.
     transient { account { nil } }
 
     association :provider_region, factory: :system_provider_region
@@ -216,9 +221,10 @@ FactoryBot.define do
 
   # System::NodeInstancePeer — central peer registry row for a node-instance
   # that has self-announced as an agent peer (mention picker, fleet autonomy,
-  # SDWAN capability mirroring). account_id is a real column here (unlike
-  # NodeInstance, it is NOT delegated), so it defaults from node_instance
-  # but can be overridden directly.
+  # SDWAN capability mirroring). account_id is a real column here — as it also
+  # is on NodeInstance, which this comment used to contrast against on the
+  # strength of a delegation that no longer exists — so it defaults from
+  # node_instance but can be overridden directly.
   factory :system_node_instance_peer, class: "System::NodeInstancePeer" do
     association :node_instance, factory: :system_node_instance
     account { node_instance.account }
