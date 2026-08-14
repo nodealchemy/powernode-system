@@ -132,7 +132,8 @@ module System
         end
 
         # A configured active collector proves intent. It is only a
-        # PRECONDITION, never the whole gate — see #network_telemetry_live?.
+        # PRECONDITION, never the whole gate — see #silence_provable? /
+        # #holders_observed? for the per-service liveness that completes it.
         def collectors_active?
           return @collectors_active if defined?(@collectors_active)
 
