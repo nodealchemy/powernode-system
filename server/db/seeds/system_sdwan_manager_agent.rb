@@ -175,14 +175,16 @@ puts "  ✅ SDWAN Manager policies: #{count} changed (#{sdwan_policies.size} tot
 # decision.
 #
 # Mirroring the same table onto agent-less rows makes the recorded intent govern
-# both audiences, and changes nothing about what the SDWAN Manager itself is
-# allowed to do. Three separate things hold that line, and all three are needed:
-# `resolve` prefers agent-scoped matches for an agent caller; an agent-scoped row
-# out-ranks these on specificity_score if that preference is ever removed; and
-# both sets carry the SAME trust_tier_minimum condition, so an emergency trust
-# demotion knocks out the agent row and this fallback together. Drop that last
-# one and a demoted agent stops escalating to require_approval — it lands here
-# instead.
+# both audiences, and changes nothing about what any agent is allowed to do:
+# since IMP-bfbf8052e179, `resolve` considers ONLY agent-scoped rows for an
+# agent caller, so these rows bind exclusively on the operator path — an agent
+# without its own row for a verb (Fleet Autonomy, Concierge, Topology Designer
+# on sdwan.*) lands on the require_approval default, never here. Two further
+# guards remain as defense in depth should that resolution contract ever
+# regress: an agent-scoped row out-ranks these on specificity_score, and both
+# sets carry the SAME trust_tier_minimum condition so an emergency trust
+# demotion knocks out the agent row and this row together, preserving the
+# escalation to require_approval.
 #
 # Note this is per-account: only accounts whose policies are seeded get the
 # recorded intent. Any other account still lands on the require_approval

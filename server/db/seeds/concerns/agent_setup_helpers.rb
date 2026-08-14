@@ -36,10 +36,13 @@
 module System
   module Seeds
     module AgentSetupHelpers
-      # Shared by the agent-scoped and operator-path upserts. It has to be ONE
-      # value, not two copies: an agent dispatch that fails this condition on its
-      # own row falls through to the agent-less row, so if the two ever drift the
-      # weaker one silently becomes the effective policy for a demoted agent.
+      # Shared by the agent-scoped and operator-path upserts. Since
+      # IMP-bfbf8052e179, InterventionPolicyService#resolve never lets an agent
+      # caller land on an agent-less row at all, so the primary reason to keep
+      # this ONE value (a demoted agent falling through to the weaker row) is
+      # structurally closed. It stays shared as defense in depth: if the
+      # resolution-level audience split ever regresses, two drifted copies
+      # would silently hand a demoted agent the weaker policy again.
       # See `upsert_operator_policies!` for the full argument.
       DEFAULT_TRUST_CONDITIONS = { "trust_tier_minimum" => "monitored" }.freeze
 
@@ -182,25 +185,24 @@ module System
       # the agent-scoped set are disjoint by construction and each seed's stale
       # cleanup can only reach its own rows.
       #
-      # An agent-less row is NOT operator-only — `agent_matches?` returns true
-      # for it unconditionally, so an agent dispatch sees it too, as a fallback
-      # below its own row. That is why it carries the same trust_tier_minimum
-      # condition as `upsert_policies!` even though the operator path never
-      # evaluates it (`conditions_met?` skips the tier check when agent_record is
-      # nil). Without the condition this row would out-live the agent-scoped one
-      # exactly when the agent-scoped one is designed to stop matching: after
-      # `Ai::AgentTrustScore#emergency_demote!` drops the agent to "supervised",
-      # the demotion currently escalates that agent to the require_approval
-      # default, and an unconditioned fallback would silently keep it on
-      # notify_and_proceed. Carrying the condition makes both rows fail together,
-      # preserving the escalation.
+      # An agent-less row IS operator-only by resolution contract
+      # (IMP-bfbf8052e179): `agent_matches?` still admits it for any caller,
+      # but `InterventionPolicyService#resolve` considers ONLY agent-scoped
+      # rows when an agent is present — an agent with no matching scoped row
+      # falls to the require_approval default rather than catching this row.
+      # Before that cut, any agent WITHOUT its own row for a category (Fleet
+      # Autonomy, Concierge, Topology Designer on sdwan.*) inherited these
+      # rows' laxer verbs — human intent silently widening agent autonomy.
       #
-      # Priority is lower than the agent set's for defense in depth:
-      # `specificity_score` already gives an agent-scoped row +5, so the agent
-      # row out-ranks this one at equal priority, and the lower value keeps that
-      # ordering if the priorities are ever tuned. Together with `resolve`'s
-      # explicit agent preference and the shared condition above, that is the
-      # third and last thing keeping the two audiences apart.
+      # The row still carries the same trust_tier_minimum condition as
+      # `upsert_policies!` even though the operator path never evaluates it
+      # (`conditions_met?` skips the tier check when agent_record is nil), and
+      # its priority stays lower than the agent set's (`specificity_score`
+      # already gives an agent-scoped row +5). Both are defense in depth for
+      # the same regression: if the resolution-level audience split is ever
+      # removed, the shared condition keeps an emergency-demoted agent
+      # escalating to require_approval instead of landing here, and the
+      # ranking keeps an agent's own row winning over this one.
       #
       # WARNING before adding a condition key here: the two paths do not see the
       # same keys, and "trust_tier_minimum" is not the only asymmetric one.

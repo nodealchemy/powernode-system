@@ -109,13 +109,36 @@ RSpec.describe "SDWAN operator-path intervention policies" do
                          "operator rows displaced the agent-scoped policy for: #{displaced.inspect}"
   end
 
-  # An agent-less row is not operator-only: agent_matches? admits it for ANY
-  # caller, so it also sits under the SDWAN Manager as a fallback. The
-  # agent-scoped rows are conditioned on trust_tier_minimum "monitored", which
-  # is what makes an emergency demotion escalate — conditions_met? stops
-  # matching them and resolution falls to the require_approval default. An
-  # unconditioned operator row would have caught that fall and kept a demoted
-  # agent on notify_and_proceed, quietly disarming the demotion.
+  # IMP-bfbf8052e179 — the operator rows must bind the operator audience ONLY.
+  # agent_matches? admits a nil-agent row for any caller, and resolve used to
+  # prefer agent-scoped rows only when the calling agent HAD matching ones — so
+  # an agent that carries NO sdwan.* rows of its own (Fleet Autonomy,
+  # Concierge, Topology Designer) at normal tier caught these operator rows and
+  # dropped from the require_approval default to notify_and_proceed on writes
+  # like port-mapping create/delete and VPN-device minting. Resolution now
+  # skips nil-agent rows for agent callers entirely: unmatched by scoped rows
+  # means the default applies.
+  it "keeps an unrelated monitored-tier agent on the require_approval default" do
+    other_agent = create(:ai_agent, account: account, provider: provider,
+                         name: "Unrelated Fleet Agent")
+    create(:ai_agent_trust_score, :monitored, account: account, agent: other_agent)
+
+    %w[sdwan.port_mapping_create sdwan.port_mapping_delete sdwan.user_device_create]
+      .each do |category|
+      result = service.resolve(action_category: category, agent: other_agent)
+
+      expect(result[:policy]).to eq("require_approval"),
+                                 "#{category} resolved to #{result[:policy]} for an unrelated agent"
+      expect(result[:record]).to be_nil,
+                                 "an operator row bound an unrelated agent on #{category}"
+    end
+  end
+
+  # Post-IMP-bfbf8052e179 an agent caller never sees a nil-agent row at all,
+  # so the demotion escalation holds structurally. The shared
+  # trust_tier_minimum condition on both row sets stays as defense in depth —
+  # if the resolution-level audience split ever regressed, conditions_met?
+  # would still stop a demoted agent from landing on the operator row.
   it "still escalates a demoted agent instead of catching it on the operator row" do
     Ai::AgentTrustScore.find_by!(agent_id: sdwan_agent.id).emergency_demote!(reason: "spec")
 
@@ -126,11 +149,11 @@ RSpec.describe "SDWAN operator-path intervention policies" do
                                "the operator-path row became a fallback for an emergency-demoted agent"
   end
 
-  # Defense in depth. InterventionPolicyService#resolve prefers agent-scoped
-  # matches explicitly (`agent_scoped = matching.select { ... }`), but that is
-  # only one of the two things keeping the audiences apart: the agent row must
-  # also out-rank the operator row on specificity_score, which is what decides
-  # `matching.max_by(&:specificity_score)` if that preference ever goes away.
+  # Defense in depth. InterventionPolicyService#resolve restricts an agent
+  # caller to rows scoped to that agent (IMP-bfbf8052e179), but the agent row
+  # must also out-rank the operator row on specificity_score, which is what
+  # decides `matching.max_by(&:specificity_score)` if that restriction ever
+  # goes away.
   it "ranks the agent-scoped row above the operator row on specificity alone" do
     category = "sdwan.peer_create"
     agent_row    = Ai::InterventionPolicy.find_by!(account: account, action_category: category,
