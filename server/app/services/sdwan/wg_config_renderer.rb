@@ -62,6 +62,11 @@ module Sdwan
         fallback = hub.fallback_endpoint
         out.puts "[Peer]"
         out.puts "# Hub: #{hub_label(hub)} (#{primary[:family]} primary)"
+        # IMP-651ec6336654: WireGuard requires PublicKey in every [Peer]
+        # section — clients reject the config without it. This is the hub's
+        # PUBLIC key (column-stored, non-secret); the private half never
+        # leaves Vault.
+        out.puts "PublicKey  = #{key.public_key}"
         # Slice 7a: when both v6 and v4 endpoints are configured, the v6
         # one is the canonical Endpoint; the v4 alternative is documented
         # in a comment so operators (or a smart WG client) can swap to

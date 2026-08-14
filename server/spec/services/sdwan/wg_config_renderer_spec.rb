@@ -66,4 +66,56 @@ RSpec.describe Sdwan::WgConfigRenderer do
       expect(rendered_lines).to include("PrivateKey = #{fake_private_key}")
     end
   end
+
+  # IMP-651ec6336654 — WireGuard requires `PublicKey = <base64>` in every
+  # [Peer] section; without it wg setconf / every WG client rejects the
+  # config outright. Only the hub's PUBLIC key (column-stored, non-secret)
+  # may ever appear here — never the private half.
+  describe "[Peer] PublicKey line" do
+    def peer_sections(text)
+      # Everything before the first [Peer] is the [Interface] preamble.
+      preamble, *sections = text.split("[Peer]")
+      [preamble, sections]
+    end
+
+    it "emits each hub's own active public key inside its [Peer] section" do
+      hub_a = create(:sdwan_peer, :hub, account: network.account, network: network)
+      hub_b = create(:sdwan_peer, :hub, account: network.account, network: network,
+                                        endpoint_host_v6: "fd00:abcd:1::2")
+      key_a = add_active_key!(hub_a)
+      key_b = add_active_key!(hub_b)
+
+      _preamble, sections = peer_sections(described_class.render(device))
+      expect(sections.length).to eq(2)
+
+      section_a = sections.find { |s| s.include?("[fd00:abcd:1::1]:51820") }
+      section_b = sections.find { |s| s.include?("[fd00:abcd:1::2]:51820") }
+      expect(section_a).to include("PublicKey  = #{key_a.public_key}")
+      expect(section_b).to include("PublicKey  = #{key_b.public_key}")
+    end
+
+    it "never places a peer PublicKey in the [Interface] preamble (wg semantics)" do
+      hub = create(:sdwan_peer, :hub, account: network.account, network: network)
+      key = add_active_key!(hub)
+
+      preamble, sections = peer_sections(described_class.render(device))
+
+      expect(preamble).not_to include("PublicKey")
+      expect(sections.length).to eq(1)
+      expect(sections.first).to include("PublicKey  = #{key.public_key}")
+    end
+
+    it "still omits the whole [Peer] section for a hub with only a revoked key" do
+      # Negative control for the guard the fix makes load-bearing: with no
+      # active key there is nothing to put on the PublicKey line, so the
+      # renderer must skip the section rather than emit an unusable one.
+      # (Positive twin: the examples above, where an active key exists.)
+      hub = create(:sdwan_peer, :hub, account: network.account, network: network)
+      add_active_key!(hub).revoke!(reason: "test rotation")
+
+      _preamble, sections = peer_sections(described_class.render(device))
+
+      expect(sections).to be_empty
+    end
+  end
 end
