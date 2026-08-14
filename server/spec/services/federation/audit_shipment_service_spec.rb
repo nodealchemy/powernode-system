@@ -128,5 +128,47 @@ RSpec.describe ::Federation::AuditShipmentService, type: :service do
       expect(result.shipped).to eq(0)
       expect(::System::FederationAuditShipment.where(federation_peer: peer)).to be_empty
     end
+
+    # IMP-79b5bb5fee24 cross-seam: every other example fabricates its
+    # FleetEvents with the payload key this reader already queries, so
+    # they exercise the reader against a synthetic writer and cannot see
+    # a writer/reader key mismatch. This one drives the REAL writer —
+    # System::ClusterMember::PgReplicaSetupService#emit_event! — and
+    # asserts its pg_replica_ready event enters the sealed WORM archive.
+    # The compliance contract (operator ruling): WORM sealing captures
+    # ALL events referencing a federation peer regardless of kind.
+    it "seals the pg_replica_ready event the cluster_member setup service emits" do
+      member_peer = create(:system_federation_peer, :platform,
+                           account: account,
+                           spawn_mode: "cluster_member",
+                           spawn_role: "parent",
+                           status: "proposed",
+                           remote_instance_url: "https://child.example.com")
+      vault = instance_double(::Security::VaultCredentialProvider, store_credential: true)
+      result = ::System::ClusterMember::PgReplicaSetupService.new(
+        peer: member_peer,
+        sql_executor: ->(_sql, _binds = []) { [] },
+        vault: vault
+      ).run!
+      expect(result.ok?).to be(true)
+
+      emitted = ::System::FleetEvent.where(
+        account: account, kind: "platform.cluster_member.pg_replica_ready"
+      ).last
+      expect(emitted).to be_present,
+                         "expected PgReplicaSetupService#run! to emit a pg_replica_ready FleetEvent"
+
+      # Sweep from 31 days in the future so the just-emitted event is
+      # older than the 30-day retention boundary.
+      described_class.run!(account: account, now: ::Time.current + 31.days)
+
+      emitted.reload
+      expect(emitted.payload["worm_shipped_at"]).to be_present,
+                                                    "pg_replica_ready event was not WORM-sealed — the writer stamps payload " \
+                                                    "#{emitted.payload.keys.sort.inspect}, events_for_peer filters on federation_peer_id"
+      shipment = ::System::FederationAuditShipment.where(federation_peer: member_peer).last
+      expect(shipment).to be_present
+      expect(emitted.payload["shipment_id"]).to eq(shipment.id)
+    end
   end
 end

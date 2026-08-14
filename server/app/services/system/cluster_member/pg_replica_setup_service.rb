@@ -218,7 +218,21 @@ module System
           severity: "low",
           source: "cluster_member_pg_replica_setup",
           payload: {
-            peer_id: @peer.id,
+            # federation_peer_id, NOT peer_id — the three-reader contract for
+            # peer-scoped FleetEvents (IMP-79b5bb5fee24, same class as
+            # IMP-a9fbf64c3e7a):
+            #   - Federation::AuditShipmentService#events_for_peer (WORM
+            #     sealing) and FederationApi::AuditExcerptsController#
+            #     events_for_peer are the COMPLIANCE readers. They are
+            #     kind-agnostic BY DESIGN (completeness bias): they capture
+            #     ALL events stamping this key, whatever the kind.
+            #   - Ai::Tools::SdwanTool#get_audit_log is a filtered OPERATOR
+            #     VIEW (kind LIKE 'federation.%'); this event is intentionally
+            #     outside it — the WORM archive is the complete record.
+            # A new peer-scoped emitter MUST stamp federation_peer_id, or its
+            # events are persisted but invisible to sealing and the excerpt
+            # API. Under the old `peer_id` key this event was exactly that.
+            federation_peer_id: @peer.id,
             slot_name: slot_name,
             primary_host: resolve_primary_host
           }
