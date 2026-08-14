@@ -148,7 +148,21 @@ module System
                     template_id: nil, provider_region_id: nil,
                     provider_instance_type_id: nil, module_id: nil,
                     target_version_id: nil, network_id: nil,
-                    with_storage_gb: nil, name_prefix: nil, dry_run: false, **_extras)
+                    with_storage_gb: nil, storage_gb: nil,
+                    name_prefix: nil, dry_run: false, **_extras)
+          # IMP-01a774a80f7a — same alias drop as RelocateWorkloadExecutor's,
+          # non-destructive but live and metered: `scale_project` IS in
+          # CostEstimatorService::COMPUTE_SKILLS, and that service reads
+          # [with_storage_gb, storage_gb] — so a scale-out declaring only
+          # `storage_gb: 500` was QUOTED 500 GB per replica and provisioned
+          # none, the quote-vs-actuator disagreement IMP-051509357291 and
+          # IMP-f85254148755 exist to eliminate. Resolved ONCE here, in
+          # ProvisionFullStackExecutor's published order (class scope, not a
+          # copy), and forwarded to the arm that composes it — which is both
+          # the plan surface and the provisioning surface for this skill.
+          with_storage_gb = ::System::Ai::Skills::ProvisionFullStackExecutor
+                            .resolve_storage_gb(with_storage_gb, storage_gb)
+
           strategy = scaling_strategy.to_s
           return failure("scaling_strategy must be one of: #{STRATEGIES.join(', ')}") unless STRATEGIES.include?(strategy)
 
