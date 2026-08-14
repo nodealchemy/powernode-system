@@ -176,13 +176,27 @@ puts "  ✅ SDWAN Manager policies: #{count} changed (#{sdwan_policies.size} tot
 #
 # Mirroring the same table onto agent-less rows makes the recorded intent govern
 # both audiences, and changes nothing about what any agent is allowed to do:
-# since IMP-bfbf8052e179, `resolve` considers ONLY agent-scoped rows for an
-# agent caller, so these rows bind exclusively on the operator path — an agent
-# without its own row for a verb (Fleet Autonomy, Concierge, Topology Designer
-# on sdwan.*) lands on the require_approval default, never here. Two further
-# guards remain as defense in depth should that resolution contract ever
-# regress: an agent-scoped row out-ranks these on specificity_score, and both
-# sets carry the SAME trust_tier_minimum condition so an emergency trust
+# since IMP-bfbf8052e179, `resolve` skips agent-less rows for an agent caller,
+# so these rows bind exclusively on the operator path — an agent without its own
+# row for a verb (Fleet Autonomy, Concierge, Topology Designer on sdwan.*) lands
+# on the require_approval default, never here.
+#
+# CORRECTION (IMP-bfbf8052e179 follow-up, queued as IMP-d21b4c0cd5fd): the
+# discriminator between the two audiences is `scope`, NOT ai_agent_id nil-ness.
+# SCOPES = %w[global agent action_type]: these operator rows are
+# scope "action_type" (upsert_operator_policies!), while scope "global" rows are
+# agent-binding by design — db/seeds/system_manual_operation_policies.rb seeds
+# global auto_approve for system.task.start/stop/restart/… and an operator's
+# account-wide block row lives there too. The landed cut keys on ai_agent_id, so
+# it over-catches those global rows: verified by execution, an agent resolving a
+# global auto_approve row now gets require_approval (fail-safe) and a global
+# block row no longer binds an agent at all (fail-OPEN). IMP-d21b4c0cd5fd
+# narrows the cut to non-global agent-less rows; do not restate the ai_agent_id
+# rationale here until it lands.
+#
+# Two further guards remain as defense in depth should the resolution contract
+# ever regress: an agent-scoped row out-ranks these on specificity_score, and
+# both sets carry the SAME trust_tier_minimum condition so an emergency trust
 # demotion knocks out the agent row and this row together, preserving the
 # escalation to require_approval.
 #
