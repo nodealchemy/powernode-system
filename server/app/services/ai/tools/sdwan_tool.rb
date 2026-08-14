@@ -2224,7 +2224,7 @@ module Ai
           endpoint_host_v6: p.endpoint_host_v6,
           endpoint_host_v4: p.endpoint_host_v4,
           endpoint_port: p.endpoint_port,
-          effective_endpoint: primary && "#{primary[:host]}:#{primary[:port]}",
+          effective_endpoint: primary && ::Sdwan::Peer.format_host_port(primary[:host], primary[:port]),
           effective_endpoint_family: primary && primary[:family].to_s,
           fallback_endpoint: fallback && "#{fallback[:host]}:#{fallback[:port]}",
           listen_port: p.listen_port,

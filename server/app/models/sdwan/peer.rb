@@ -110,8 +110,15 @@ module Sdwan
       [ primary_endpoint, fallback_endpoint ].compact
     end
 
-    # "host:port" for the primary endpoint, bracketing the host only when it is
-    # an IPv6 LITERAL. The bracket cannot be keyed on the tuple's :family —
+    # Pure "host:port" formatter, bracketing the host only when it is an IPv6
+    # LITERAL. Shared by the operator-facing #endpoint_display AND the
+    # data-plane consumers routed through it (WgConfigRenderer's Endpoint
+    # line, the peer serializers' effective_endpoint) — one function, so a
+    # readability edit to the operator label can never corrupt the config
+    # text those consumers emit. (The compiled topology plans still hand-roll
+    # their endpoint strings — tracked as a separate offer.)
+    #
+    # The bracket cannot be keyed on the tuple's :family —
     # endpoint_host_v6_must_be_v6_or_hostname explicitly accepts a hostname in
     # the v6 column (DNS hands back the AAAA), so a family of :v6 does not imply
     # a literal and "[edge.example.net]:51820" is not an address anyone can use.
@@ -120,13 +127,19 @@ module Sdwan
     # guard is `include?(":")`, which "[fd00::1]" satisfies), and that is the
     # form an operator pastes out of a WireGuard config — so re-bracketing it
     # blindly yields "[[fd00::1]]:51820".
+    def self.format_host_port(host, port)
+      host = host.to_s
+      host = "[#{host}]" if host.include?(":") && !host.start_with?("[")
+      "#{host}:#{port}"
+    end
+
+    # "host:port" for the primary endpoint (operator-facing label rung).
+    # Bracketing rationale lives on .format_host_port.
     def endpoint_display
       endpoint = primary_endpoint
       return nil if endpoint.blank?
 
-      host = endpoint[:host].to_s
-      host = "[#{host}]" if host.include?(":") && !host.start_with?("[")
-      "#{host}:#{endpoint[:port]}"
+      self.class.format_host_port(endpoint[:host], endpoint[:port])
     end
 
     # The single operator-facing identity for this peer. Both surfaces that name

@@ -187,7 +187,7 @@ module Api
               endpoint_port: p.endpoint_port,
               # Slice 7a: derived view of which endpoint the compiler will use
               # (primary) and which it ships as fallback to the agent.
-              effective_endpoint: primary && "#{primary[:host]}:#{primary[:port]}",
+              effective_endpoint: primary && ::Sdwan::Peer.format_host_port(primary[:host], primary[:port]),
               effective_endpoint_family: primary && primary[:family].to_s,
               fallback_endpoint: fallback && "#{fallback[:host]}:#{fallback[:port]}",
               listen_port: p.listen_port,

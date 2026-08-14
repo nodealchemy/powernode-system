@@ -29,6 +29,7 @@ module Sdwan
                       .where(publicly_reachable: true)
                       .includes(:keys)
                       .to_a
+                      # NOTE: the render loop below dereferences primary_endpoint without a nil guard — it depends on this filter.
                       .select(&:primary_endpoint)
     end
 
@@ -66,7 +67,7 @@ module Sdwan
         # in a comment so operators (or a smart WG client) can swap to
         # it manually if v6 reachability breaks. Stock WG itself only
         # reads one Endpoint line; the comment is operator-facing.
-        out.puts "Endpoint   = #{primary[:host]}:#{primary[:port]}"
+        out.puts "Endpoint   = #{Peer.format_host_port(primary[:host], primary[:port])}"
         out.puts "# Fallback (IPv4): #{fallback[:host]}:#{fallback[:port]}" if fallback
         out.puts "AllowedIPs = #{@network.cidr_64}"
         out.puts "PersistentKeepalive = #{DEFAULT_PERSISTENT_KEEPALIVE}"

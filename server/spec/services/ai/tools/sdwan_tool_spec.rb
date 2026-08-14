@@ -76,6 +76,25 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # ─── IMP-1c08ab7f5ecd: v6-literal endpoint bracketing ────────────────
+
+  describe "system_sdwan_list_peers effective_endpoint bracketing" do
+    let(:network) { create(:sdwan_network, account: account) }
+
+    it "brackets an IPv6-literal primary endpoint and leaves a hostname bare" do
+      v6_hub   = create(:sdwan_peer, :hub, account: account, network: network)
+      name_hub = create(:sdwan_peer, :hub, account: account, network: network,
+                                           endpoint_host_v6: "edge.example.net")
+
+      r = call("system_sdwan_list_peers", network_id: network.id)
+      expect(r[:success]).to be true
+
+      by_id = r[:data][:peers].index_by { |p| p[:id] }
+      expect(by_id.fetch(v6_hub.id)[:effective_endpoint]).to eq("[fd00:abcd:1::1]:51820")
+      expect(by_id.fetch(name_hub.id)[:effective_endpoint]).to eq("edge.example.net:51820")
+    end
+  end
+
   # ─── Federation peer mutation + residency + audit ────────────────────
 
   describe "system_sdwan_update_federation_peer" do
