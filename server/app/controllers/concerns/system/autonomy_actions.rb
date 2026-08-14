@@ -7,8 +7,17 @@ module System
   # for each of the 5 system agents (Fleet Autonomy, SDWAN Manager, CVE
   # Responder, Disk Image Manager, Runtime Manager) plus Manual Operations.
   #
-  # The frontend pivots whichever way it wants — this concern returns the
-  # full payload with three views: by_domain, by_agent, by_action.
+  # This concern returns the full payload with three views: by_domain,
+  # by_agent, by_action.
+  #
+  # `by_domain` is no longer a spare view. Since IMP-0874acd5b50c the Settings
+  # modal builds its sections AND its per-action rows from it; it used to render
+  # a list literal-ed into SystemSettingsPanel.tsx, which is how it came to omit
+  # 28 of the 119 seeded categories and to show one control whose seed had been
+  # deleted. So a category reaches an operator only through THIS payload — an
+  # addition here is visible with no frontend change, and a row that lands in
+  # the "other" catch-all now surfaces as an "Other" section rather than
+  # disappearing.
   module AutonomyActions
     extend ActiveSupport::Concern
 
@@ -151,6 +160,17 @@ module System
       ::Ai::InterventionPolicy.where(account: current_account).includes(:agent, :approval_chain)
     end
 
+    # The by_agent bucket a row belongs to. Single authority: `by_agent_pivot`
+    # groups by it, and `serialize_policy` ships it, so a client rendering from
+    # ANY pivot can key a policy the same way the by_agent view did without
+    # re-deriving the rule (scope + agent presence) in its own language. Note
+    # `by_agent_pivot` then drops rows whose bucket is not a SYSTEM_AGENT_NAMES
+    # entry — this value is still correct for those, which is what lets a
+    # by_domain-driven client show them.
+    def agent_bucket_for(policy)
+      policy.scope == "agent" && policy.agent ? policy.agent.name : "Manual Operations"
+    end
+
     def serialize_policy(p)
       {
         id: p.id,
@@ -161,6 +181,7 @@ module System
         is_active: p.is_active,
         agent_id: p.ai_agent_id,
         agent_name: p.agent&.name,
+        agent_bucket: agent_bucket_for(p),
         approval_chain_id: p.approval_chain_id,
         approval_chain_name: p.approval_chain&.name,
         conditions: p.conditions,
@@ -179,11 +200,7 @@ module System
       result["Manual Operations"] = []
 
       all_policies.each do |p|
-        bucket = if p.scope == "agent" && p.agent
-                   p.agent.name
-        else
-                   "Manual Operations"
-        end
+        bucket = agent_bucket_for(p)
         next unless result.key?(bucket)
         result[bucket] << serialize_policy(p)
       end

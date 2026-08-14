@@ -37,6 +37,90 @@ RSpec.describe "Api::V1::System::Autonomy", type: :request do
       expect(data["policies"]).to have_key("by_agent")
       expect(data["policies"]).to have_key("by_domain")
     end
+
+    # IMP-0874acd5b50c. The Autonomy modal now renders its rows from `by_domain`
+    # instead of a list literal-ed into SystemSettingsPanel.tsx, which had
+    # drifted to omit 28 of the 119 seeded categories. To show a row's CURRENT
+    # verb the client has to know which by_agent bucket that row belongs to, and
+    # re-deriving the rule (scope == "agent" && agent present) in TypeScript
+    # would reintroduce the very second-source-of-truth this change removes. So
+    # every serialized row carries `agent_bucket`, produced by the same method
+    # `by_agent_pivot` groups with.
+    #
+    # These examples assert the EFFECT — the emitted value and its agreement
+    # with the other pivot — not that a particular branch was taken.
+    context "agent_bucket on serialized rows" do
+      let!(:fleet_agent) { create(:ai_agent, account: account, name: "Fleet Autonomy") }
+      # NOT a member of SYSTEM_AGENT_NAMES, so `by_agent_pivot` builds no bucket
+      # for it and drops its rows entirely — the case that makes shipping the
+      # bucket on the row load-bearing rather than convenient.
+      let!(:unlisted_agent) { create(:ai_agent, account: account, name: "GitOps Reconciler") }
+
+      def policy!(category, scope:, agent: nil)
+        Ai::InterventionPolicy.create!(
+          account: account, action_category: category, scope: scope,
+          ai_agent_id: agent&.id, policy: "notify_and_proceed", priority: 5, is_active: true
+        )
+      end
+
+      def payload
+        get "/api/v1/system/autonomy", headers: auth_headers_for(read_user)
+        expect(response).to have_http_status(:ok)
+        json_response_data["policies"]
+      end
+
+      def domain_rows(pivot)
+        pivot["by_domain"].values.flatten
+      end
+
+      it "names the owning agent for an agent-scoped row and Manual Operations for an agent-less one" do
+        agent_row  = policy!("system.cert_rotate", scope: "agent", agent: fleet_agent)
+        global_row = policy!("system.task.start", scope: "global")
+
+        buckets = domain_rows(payload).to_h { |r| [ r["id"], r["agent_bucket"] ] }
+
+        expect(buckets[agent_row.id]).to eq("Fleet Autonomy")
+        expect(buckets[global_row.id]).to eq("Manual Operations")
+      end
+
+      it "still carries the bucket for a row by_agent drops" do
+        row = policy!("system.gitops_apply_proposal", scope: "agent", agent: unlisted_agent)
+
+        pivot = payload
+
+        expect(pivot["by_agent"]).not_to have_key("GitOps Reconciler")
+        expect(pivot["by_agent"].values.flatten.map { |r| r["id"] }).not_to include(row.id)
+
+        dropped = domain_rows(pivot).find { |r| r["id"] == row.id }
+        expect(dropped).to be_present
+        expect(dropped["agent_bucket"]).to eq("GitOps Reconciler")
+        expect(dropped["policy"]).to eq("notify_and_proceed")
+      end
+
+      it "partitions by_agent exactly as agent_bucket says, for every bucket that view keeps" do
+        policy!("system.cert_rotate", scope: "agent", agent: fleet_agent)
+        policy!("system.instance_reboot", scope: "agent", agent: fleet_agent)
+        policy!("system.task.start", scope: "global")
+        policy!("system.gitops_apply_proposal", scope: "agent", agent: unlisted_agent)
+
+        pivot = payload
+        rows  = domain_rows(pivot)
+
+        mismatched = pivot["by_agent"].reject do |bucket, kept|
+          kept.map { |r| r["id"] }.sort ==
+            rows.select { |r| r["agent_bucket"] == bucket }.map { |r| r["id"] }.sort
+        end
+
+        expect(mismatched.keys).to be_empty,
+                                   "by_agent bucket(s) #{mismatched.keys.join(', ')} hold a different set of " \
+                                   "rows than agent_bucket claims — a modal reading by_domain would show the " \
+                                   "wrong current verb for them"
+        # Positive twin: the comparison above is vacuous if every kept bucket is
+        # empty, which is the state the endpoint returns for a bare account.
+        expect(pivot["by_agent"]["Fleet Autonomy"].size).to eq(2)
+        expect(pivot["by_agent"]["Manual Operations"].size).to eq(1)
+      end
+    end
   end
 
   describe "PATCH /api/v1/system/autonomy" do
