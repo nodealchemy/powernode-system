@@ -573,8 +573,26 @@ module PowernodeSystem
     end
 
     # Register all action_categories the system extension owns with the core
-    # AutonomyGate registry. Without this, InterventionPolicy seeds for these
-    # categories would fail validation (Phase 5 — Action Category Registry).
+    # AutonomyGate registry (Phase 5 — Action Category Registry).
+    #
+    # IMP-097a267b50b7: what an unregistered category actually breaks. NOT
+    # seed validation — `Ai::InterventionPolicy` validates action_category for
+    # presence only, never against the registry, so an unregistered category
+    # seeds, resolves and gates perfectly well. The one consumer that fails is
+    # operator-facing: System::AutonomyActions#update (the bulk PATCH
+    # /api/v1/system/autonomy behind the Autonomy modal) rejects any update
+    # whose category is not `category_registered?`. A seeded row for an
+    # unregistered category is therefore VISIBLE in the modal — the by_action
+    # pivot reads policy rows, not this registry — and un-saveable. Five
+    # sensor-gated categories shipped in exactly that state.
+    #
+    # INVARIANT, enforced by
+    # spec/lib/powernode_system/autonomy_categories_registration_spec.rb:
+    # every action_category in DecisionEngine::SIGNAL_BINDINGS must appear
+    # below. Both of the engine's `gate_action!` call sites pass
+    # `binding[:action_category]`, so that constant is the complete set of
+    # categories the sensor pipeline can put in front of an operator. Adding a
+    # signal binding without its category here reds that spec.
     #
     # IMP-8d444c6437a3: this used to run in `config.after_initialize`, which
     # fires exactly once at boot. `Ai::InterventionPolicy.@category_registry`
@@ -603,6 +621,10 @@ module PowernodeSystem
           system.capability_gap_review
           system.gitops_drift_remediate system.storage_assignment_reconcile
           system.template_closure_apply
+          system.node_boot_image_drift system.package_repository.sync
+          system.package_module.create system.package_module.refresh
+          system.architecture.propose system.architecture.create
+          system.architecture.update system.architecture.delete
         ])
 
         # SDWAN Manager domain
@@ -619,14 +641,16 @@ module PowernodeSystem
           sdwan.access_grant_create sdwan.access_grant_revoke sdwan.access_grant_delete
           sdwan.user_device_create
           sdwan.federation_peer_propose sdwan.federation_peer_accept sdwan.federation_peer_revoke
+          system.sdwan_service_health_investigate
         ])
 
         # Phase 3 (Federation & Multi-Site) — SDWAN-first federation actions.
         # `system.federation_peer_remediate` is the autonomy action the
         # DecisionEngine gates off the FederationPeerLivenessSensor (routed
         # through FleetAutonomyService#gate_action!) — registering it here is
-        # REQUIRED or the SDWAN Manager InterventionPolicy seed row for it
-        # fails validation. The three compose categories
+        # REQUIRED or an operator cannot retune the SDWAN Manager policy row
+        # for it (see the header: the seed itself saves fine; the bulk PATCH
+        # endpoint is what refuses). The three compose categories
         # (federation_compose / multi_tenant_isolation / service_discovery_compose)
         # are approval-gated, operator/Concierge-driven composer skills (bound
         # to the System Topology Designer assistant, not autonomy reconcilers);
@@ -639,10 +663,20 @@ module PowernodeSystem
           system.service_discovery_compose
         ])
 
+        # GitOps Reconciler domain — operator-initiated gitops actions, seeded
+        # by db/seeds/system_gitops_reconciler_agent.rb. (The AUTONOMOUS
+        # system.gitops_drift_remediate lives on Fleet Autonomy above, because
+        # GitopsDriftSensor runs in FleetAutonomyService::SENSORS.)
+        categories.concat(%w[
+          system.gitops_apply_proposal system.gitops_register_repository
+          system.gitops_sync_repository
+        ])
+
         # CVE Responder domain
         categories.concat(%w[
           system.cve_remediate system.cve_sbom_ingest
           system.cve_exposure_scan system.cve_auto_remediate
+          system.module_critical_upgrade_ready
         ])
 
         # Disk Image Manager domain
@@ -650,6 +684,7 @@ module PowernodeSystem
           system.disk_image_publication_promote system.disk_image_publication_rollback
           system.disk_image_retention_update system.disk_image_webhook_trigger
           system.disk_image_webhook_revoke system.disk_image_webhook_rotate_secret
+          system.disk_image_publication_investigate
         ])
 
         # Runtime Manager domain
