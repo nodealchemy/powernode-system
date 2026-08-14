@@ -97,14 +97,28 @@ jest.mock('@/shared/components/approval-chains/ApprovalChainList', () => ({
 // `node_lifecycle` and `instance_pool` each carry two agent buckets, which is
 // the live shape — a category is commonly seeded twice, once agent-scoped and
 // once for the operator path, and those two rows can hold different verbs.
+//
+// KEY ORDER IS THE SERVER'S, and that is load-bearing. `by_domain` is keyed in
+// DOMAIN_PREFIXES' order, which is ordered so that a prefix extending another
+// is declared first (a correctness constraint) — so live, `instance_pool` comes
+// FIRST and `node_lifecycle` LAST. A fixture that led with node_lifecycle would
+// make "the modal opens on Node Lifecycle" pass while the live modal opened on
+// Instance Pools, which is exactly the regression this order lets these
+// examples see.
+//
+// `other` is POPULATED for the same reason: the endpoint is an account-wide
+// policy view and core seeds six of its own global rows into it
+// (server/db/seeds/autonomy_data_seed.rb), so an empty catch-all is not the
+// live shape either.
 // =============================================================================
 
 const DOMAINS = {
-  node_lifecycle: [
-    { action_category: 'system.cert_rotate', agent_bucket: 'Fleet Autonomy', policy: 'require_approval' },
-    { action_category: 'system.instance_terminate', agent_bucket: 'Fleet Autonomy', policy: 'require_approval' },
-    { action_category: 'system.task.ssh_command', agent_bucket: 'Manual Operations', policy: 'require_approval' },
-    { action_category: 'system.task.terminate', agent_bucket: 'Manual Operations', policy: 'require_approval' },
+  instance_pool: [
+    { action_category: 'system.instance_pool_create', agent_bucket: 'Fleet Autonomy', policy: 'require_approval' },
+    { action_category: 'system.instance_pool_create', agent_bucket: 'Manual Operations', policy: 'auto_approve' },
+  ],
+  cve: [
+    { action_category: 'system.cve_remediate', agent_bucket: 'CVE Responder', policy: 'notify_and_proceed' },
   ],
   sdwan: [
     { action_category: 'sdwan.network_create', agent_bucket: 'SDWAN Manager', policy: 'auto_approve' },
@@ -117,17 +131,19 @@ const DOMAINS = {
   disk_image: [
     { action_category: 'system.disk_image_publication_promote', agent_bucket: 'Disk Image Manager', policy: 'require_approval' },
   ],
-  instance_pool: [
-    { action_category: 'system.instance_pool_create', agent_bucket: 'Fleet Autonomy', policy: 'require_approval' },
-    { action_category: 'system.instance_pool_create', agent_bucket: 'Manual Operations', policy: 'auto_approve' },
+  node_lifecycle: [
+    { action_category: 'system.cert_rotate', agent_bucket: 'Fleet Autonomy', policy: 'require_approval' },
+    { action_category: 'system.instance_terminate', agent_bucket: 'Fleet Autonomy', policy: 'require_approval' },
+    { action_category: 'system.task.ssh_command', agent_bucket: 'Manual Operations', policy: 'require_approval' },
+    { action_category: 'system.task.terminate', agent_bucket: 'Manual Operations', policy: 'require_approval' },
   ],
-  cve: [
-    { action_category: 'system.cve_remediate', agent_bucket: 'CVE Responder', policy: 'notify_and_proceed' },
+  other: [
+    { action_category: 'status_update', agent_bucket: 'Manual Operations', policy: 'notify_and_proceed' },
+    { action_category: 'proposal', agent_bucket: 'Manual Operations', policy: 'require_approval' },
   ],
-  other: [],
 };
 
-/** Sidebar labels the fixture should produce, in the fixture's own key order. */
+/** Sidebar labels the fixture should produce, in PRESENTATION order. */
 const EXPECTED_SECTIONS = [
   'Node Lifecycle',
   'SDWAN',
@@ -213,11 +229,28 @@ describe('SystemSettingsPanel', () => {
     for (const label of EXPECTED_SECTIONS) {
       expect(screen.getByRole('button', { name: new RegExp(label, 'i') })).toBeInTheDocument();
     }
-    // "other" is in the fixture but empty — an empty bucket has nothing to tune.
+    // The catch-all holds rows this extension does not own — core's own
+    // notification categories. The endpoint is right to return them; the modal
+    // is wrong to offer them.
     expect(screen.queryByRole('button', { name: /^other/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('status_update')).not.toBeInTheDocument();
     // Manual Operations is an agent BUCKET now, not a domain of its own, so it
     // must not appear as a sidebar section.
     expect(screen.queryByRole('button', { name: /manual operations/i })).not.toBeInTheDocument();
+  });
+
+  it('lists sections in presentation order, not the server\'s key order', async () => {
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
+    );
+
+    const labels = screen
+      .getAllByRole('button')
+      .map((b) => (b.textContent || '').replace(/\d+$/, '').trim())
+      .filter((t) => EXPECTED_SECTIONS.includes(t));
+
+    expect(labels).toEqual(EXPECTED_SECTIONS);
   });
 
   it('renders the Approval Chains item in the sidebar', async () => {
@@ -246,7 +279,7 @@ describe('SystemSettingsPanel', () => {
   // Default active section
   // ---------------------------------------------------------------------------
 
-  it('defaults to the first section the server returned', async () => {
+  it('opens on Node Lifecycle even though the server keys instance_pool first', async () => {
     renderPanel();
     await waitFor(() =>
       expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),

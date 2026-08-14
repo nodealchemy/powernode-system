@@ -71,9 +71,20 @@ jest.mock('@/shared/components/approval-chains/ApprovalChainList', () => ({
 //   container_runtime — present, but WITHOUT the ghost the literal list carried.
 //   node_lifecycle    — a domain the literal list did cover, returning ONE of
 //                       its ten literals, so "the list is gone" is observable.
+//                       Placed LAST, as the live server places it.
 //   quarantine        — a domain key this component has never heard of; it has
 //                       to render anyway, or the drift returns the day the
 //                       server declares a new bucket.
+//   other             — the pivot's catch-all, POPULATED. This is not a
+//                       hypothetical: the endpoint is an account-wide policy
+//                       view, and core seeds six of its own global rows
+//                       (server/db/seeds/autonomy_data_seed.rb), none of which
+//                       matches a DOMAIN_PREFIXES entry.
+//
+// Key order here is deliberately the SERVER's (DOMAIN_PREFIXES' order), which
+// is ordered for prefix-shadowing correctness rather than operator priority —
+// a fixture that led with node_lifecycle would make a default-section
+// assertion pass while the live modal opened somewhere else.
 // ---------------------------------------------------------------------------
 
 const GITOPS_ROW = {
@@ -83,9 +94,6 @@ const GITOPS_ROW = {
 };
 
 const byDomainFixture = {
-  node_lifecycle: [
-    { action_category: 'system.cert_rotate', agent_bucket: 'Fleet Autonomy', policy: 'require_approval' },
-  ],
   container_runtime: [
     { action_category: 'system.runtime_docker_provision', agent_bucket: 'Runtime Manager', policy: 'auto_approve' },
   ],
@@ -93,7 +101,13 @@ const byDomainFixture = {
   quarantine: [
     { action_category: 'system.made_up_future_action', agent_bucket: 'Manual Operations', policy: 'block' },
   ],
-  other: [],
+  node_lifecycle: [
+    { action_category: 'system.cert_rotate', agent_bucket: 'Fleet Autonomy', policy: 'require_approval' },
+  ],
+  other: [
+    { action_category: 'status_update', agent_bucket: 'Manual Operations', policy: 'notify_and_proceed' },
+    { action_category: 'proposal', agent_bucket: 'Manual Operations', policy: 'require_approval' },
+  ],
 };
 
 function autonomyResponse(byDomain: unknown = byDomainFixture) {
@@ -200,12 +214,45 @@ describe('SystemSettingsPanel — renders the server\'s policy rows', () => {
 
   // Guards against a wrong FIX rather than against the old behaviour: reverting
   // the change leaves this green (the literal list had no "Other" section
-  // either). It reds on a fix that renders every key the pivot ships, which
-  // always includes the empty "other" catch-all.
-  it('offers no section for a domain the payload returns empty', async () => {
+  // either). It reds on a fix that renders every key the pivot ships.
+  it('offers no section for the catch-all bucket of rows this extension does not own', async () => {
     await renderPanel();
 
     expect(screen.queryByRole('button', { name: /Other/ })).not.toBeInTheDocument();
+    // The endpoint is an ACCOUNT-WIDE policy view and correctly returns these;
+    // core's own notification categories are simply not the System extension's
+    // to configure, so the modal must not offer them.
+    expect(screen.queryByText('status_update')).not.toBeInTheDocument();
+    expect(screen.queryByText('proposal')).not.toBeInTheDocument();
+  });
+
+  it('opens on the first section in presentation order, not the server\'s key order', async () => {
+    await renderPanel();
+
+    // The payload leads with container_runtime and puts node_lifecycle LAST —
+    // DOMAIN_PREFIXES is ordered so that a prefix extending another is declared
+    // first, which is a correctness constraint, not a running order. Reading it
+    // as one opens the modal on whichever domain happens to be declared first.
+    expect(
+      screen.getByRole('heading', { name: 'Node Lifecycle' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('system.cert_rotate')).toBeInTheDocument();
+  });
+
+  it('appends a domain key it does not recognise after the ones it does', async () => {
+    await renderPanel();
+
+    const labels = screen
+      .getAllByRole('button')
+      .map((b) => b.textContent || '')
+      .filter((t) => /Node Lifecycle|Container Runtimes|GitOps|Quarantine/.test(t));
+
+    expect(labels.map((t) => t.replace(/\d+$/, '').trim())).toEqual([
+      'Node Lifecycle',
+      'Container Runtimes',
+      'GitOps',
+      'Quarantine',
+    ]);
   });
 
   // Vacuity guard. No mutant of the fix reds this one — it fails only if the

@@ -14,10 +14,19 @@ module System
   # modal builds its sections AND its per-action rows from it; it used to render
   # a list literal-ed into SystemSettingsPanel.tsx, which is how it came to omit
   # 28 of the 119 seeded categories and to show one control whose seed had been
-  # deleted. So a category reaches an operator only through THIS payload — an
-  # addition here is visible with no frontend change, and a row that lands in
-  # the "other" catch-all now surfaces as an "Other" section rather than
-  # disappearing.
+  # deleted. So a SYSTEM category reaches an operator only through this payload:
+  # add a prefix to DOMAIN_PREFIXES and it renders with no frontend change.
+  #
+  # This stays an ACCOUNT-WIDE view and must keep returning every row: `all_policies`
+  # is deliberately unfiltered, so core's own rows (`approval`, `proposal`,
+  # `escalation`, `status_update`, `issue_alert`, `feedback` from
+  # server/db/seeds/autonomy_data_seed.rb, plus every `dev.*`) come back too and
+  # land in the "other" catch-all, since no prefix here claims them. Do NOT
+  # filter them out at this layer — hiding rows from an account-wide view is the
+  # same defect class as by_agent silently dropping agents. The System modal
+  # skips the "other" bucket on its own side, which it can do safely only
+  # because autonomy_domain_pivot_spec.rb pins that no seeded system category
+  # ever reaches it.
   module AutonomyActions
     extend ActiveSupport::Concern
 

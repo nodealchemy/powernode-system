@@ -111,6 +111,46 @@ const DOMAIN_PRESENTATION: Record<string, DomainPresentation> = {
   },
 };
 
+/**
+ * The pivot's catch-all bucket, which this modal does not render.
+ *
+ * GET /api/v1/system/autonomy is an ACCOUNT-WIDE policy view: it returns every
+ * `Ai::InterventionPolicy` row on the account, and it must keep doing so —
+ * filtering rows out of an account-wide view is the same defect class as the
+ * by_agent pivot silently dropping agents. Core seeds six of its own global
+ * rows (`approval`, `proposal`, `escalation`, `status_update`, `issue_alert`,
+ * `feedback` — server/db/seeds/autonomy_data_seed.rb) and every `dev.*`
+ * category is core's too; none matches a DOMAIN_PREFIXES entry, so all of them
+ * land here. They are not the System extension's to configure.
+ *
+ * So the split is: the API returns everything, and the extension's modal picks
+ * what it owns. Do NOT move this filter into the endpoint.
+ *
+ * Dropping the bucket wholesale is safe only because no SYSTEM category can
+ * reach it — spec/controllers/api/v1/system/autonomy_domain_pivot_spec.rb pins
+ * that every seeded category files under a named domain, and that spec is what
+ * fails if a new family ever lands without a prefix.
+ */
+const FOREIGN_DOMAIN_KEY = 'other';
+
+/**
+ * Sidebar order.
+ *
+ * The server's key order is DOMAIN_PREFIXES' order, which exists for
+ * prefix-shadowing CORRECTNESS — an entry whose prefix extends another's has to
+ * be declared first, which is why `instance_pool` leads and `node_lifecycle`
+ * comes last. That is not operator priority, and reading it as a running order
+ * opens the modal on Instance Pools. Order by this file's presentation order
+ * instead and append anything it does not recognise; `sort` is stable, so
+ * unknown keys keep the server's relative order among themselves.
+ */
+const SECTION_ORDER = Object.keys(DOMAIN_PRESENTATION);
+
+function sectionRank(key: string): number {
+  const index = SECTION_ORDER.indexOf(key);
+  return index === -1 ? SECTION_ORDER.length : index;
+}
+
 /** Title-cases an unknown domain key so a new server bucket still reads as a name. */
 function humanizeDomainKey(key: string): string {
   return key
@@ -167,13 +207,19 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
   const autonomy = useSystemAutonomyConfig();
   const [activeKey, setActiveKey] = useState<string>('');
 
-  // Sections follow the server's key order. An EMPTY bucket is dropped: the
-  // pivot always ships every declared domain plus the "other" catch-all, and a
-  // domain with no policy rows has nothing for an operator to tune.
+  // Which domains become sections: everything the server sent EXCEPT the
+  // foreign catch-all, minus the empties (the pivot ships every declared domain
+  // whether or not the account has a row in it, and a domain with no rows has
+  // nothing for an operator to tune). Presented in SECTION_ORDER, not the
+  // server's key order — see both constants for why each rule exists.
   const sections = useMemo<DomainSection[]>(
     () =>
       Object.entries(autonomy.domains)
-        .filter(([, rows]) => Array.isArray(rows) && rows.length > 0)
+        .filter(
+          ([key, rows]) =>
+            key !== FOREIGN_DOMAIN_KEY && Array.isArray(rows) && rows.length > 0
+        )
+        .sort(([a], [b]) => sectionRank(a) - sectionRank(b))
         .map(([key, rows]) => {
           const groups = buildGroups(rows);
           return {
