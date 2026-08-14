@@ -76,6 +76,40 @@ RSpec.describe Sdwan::TopologyCompiler, type: :service do
     end
   end
 
+  # IMP-d182a8e6e19c — the compiled entry's :endpoint string is written
+  # verbatim by the Go agent as `Endpoint = ...` into `wg setconf`
+  # (agent/internal/sdwan/state.go → wg_applier.go), so an IPv6 literal
+  # MUST arrive bracketed: unbracketed "fd00::1:51820" is ambiguous
+  # (parsers split at the last colon) and diverges from the bracketed
+  # form `wg show` reports, poisoning desired-vs-actual comparison.
+  # The v4 twin above ("203.0.113.10:51820") pins that v4 stays bare.
+  describe "IPv6-literal hub endpoint bracketing (hub-and-spoke)" do
+    let!(:hub_peer) do
+      Sdwan::PeerEnroller.call(
+        network: network,
+        node_instance: hub_instance,
+        publicly_reachable: true,
+        endpoint_host_v6: "fd00:abcd:1::1",
+        endpoint_port: 51820
+      )
+    end
+
+    let!(:spoke_peer) do
+      Sdwan::PeerEnroller.call(
+        network: network,
+        node_instance: spoke_instance,
+        publicly_reachable: false
+      )
+    end
+
+    it "brackets the v6 literal in the spoke's compiled hub endpoint" do
+      view = described_class.compile_for_peer(spoke_peer)
+      hub_view = view[:peers].first
+      expect(hub_view[:endpoint_family]).to eq("v6")
+      expect(hub_view[:endpoint]).to eq("[fd00:abcd:1::1]:51820")
+    end
+  end
+
   describe "compile_for_network" do
     it "returns one view per peer in the network" do
       Sdwan::PeerEnroller.call(
