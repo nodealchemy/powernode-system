@@ -373,7 +373,7 @@ module Ai
             }
           },
           "system_sdwan_get_audit_log" => {
-            description: "Read-only audit trail for a federation peer: WORM audit shipments (P9.2 sealed FleetEvent batches) plus recent federation.* FleetEvents pertaining to this peer. Secret fields (sealed_path, error_message) are not surfaced.",
+            description: "Read-only audit trail for a federation peer: WORM audit shipments (P9.2 sealed FleetEvent batches) plus recent federation.* FleetEvents pertaining to this peer. The events list is a FILTERED operator view (kind federation.* only); the sealed WORM archive captures ALL events referencing the peer regardless of kind and is the complete compliance record. Secret fields (sealed_path, error_message) are not surfaced.",
             parameters: {
               federation_peer_id: { type: "string", required: true, description: "UUID of the federation peer whose audit trail to read" },
               limit: { type: "integer", required: false, description: "Max rows per collection (default 50)" }
