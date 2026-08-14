@@ -151,15 +151,33 @@ var CriticalSoftRebootMounts = []string{"/persist"}
 // rather than a re-derivation of the source list, so adding a bind source cannot
 // quietly add an unchecked carrier.
 //
-// KNOWN LIMIT — RECURSIVE SUBMOUNTS. Each bind destination is checked as ONE unit.
-// prepareNextrootMounts uses `mount --rbind`, so if a bind source ever acquires
-// child mounts, the rbind reproduces them as separate generated units beneath the
-// destination, each with its own survival properties, and this gate would not see
-// them. That is latent rather than live: /persist has no child mounts (verified on
-// a pivot node 2026-08-13, zero entries under /persist in /proc/self/mountinfo),
-// and it is the only bind source. Mounting anything under /persist — a storage
-// volume, a separate durable /var — makes this real, and the gate must then walk
-// the mount table beneath each destination instead of probing one unit.
+// RECURSIVE SUBMOUNTS — WALKED, AND REFUSED LIKE THE CARRIER. Probing a bind
+// destination as one unit is not enough: prepareNextrootMounts uses
+// `mount --rbind`, which reproduces every child mount of the source as a
+// separate mount beneath the destination, each with its own
+// mountinfo-generated unit and its own survival properties. A drop-in on the
+// destination's unit reaches NONE of them. /persist had zero child mounts when
+// this gate first shipped (verified on a pivot node 2026-08-13), but
+// mount.ReconcileStorageVolume mounts a volume at an arbitrary MountPoint, so
+// the first volume placed under /persist would have been an unguarded submount
+// whose teardown the gate could not predict. So the gate walks the live table
+// beneath each destination (mount.SubmountsBeneath — parent-id walk, same
+// parser as the layer enumeration) and probes every submount it finds as a
+// hard refusal — on BOTH sides of the rbind, the copy's generated unit and
+// the source mount's unit, because the measured semantics above say the
+// copy's fate follows the source's. The walk itself fails closed: an
+// unreadable table, an unparseable line, or a destination with no mountinfo
+// entry is an error, not an empty result — only "destination mounted, kernel
+// holds nothing beneath it" reads as no submounts.
+//
+// Submounts refuse rather than advise because they are the carrier's failure
+// mode, not the layers': what sits under /persist is durable data reached by
+// absolute path in the new root, losing it is silent data loss, and — unlike
+// the digest-named layers — an operator can always act on the refusal
+// (unmount the volume, ship a drop-in when the name is stable, or take the
+// full-reboot path). When a submount's unit name is dynamic and no drop-in
+// can cover it, the refusal NAMES the mount and the reason, and the operator
+// decides; the gate never silently waives it.
 //
 // WHY THE LAYER MOUNTS ARE REPORTED, NOT REFUSED — AND WHY THAT IS NOT A CLAIM
 // THAT THEY ARE SAFE. The union's erofs lowerdirs and its scratch upperdir also
@@ -217,6 +235,56 @@ func NextrootSurvivalGate(ctx context.Context, run mount.Runner, layout mount.La
 				lethalRole(path, layout.SysRoot),
 				lethalConsequence(path, layout.SysRoot),
 				MountUnitName(path))
+		}
+	}
+
+	// The submounts each rbind carried beneath its destination — every one
+	// its own generated unit that the destination's probe above cannot
+	// vouch for. Hard refusals, like the carrier itself; the walk fails
+	// closed on any table it cannot fully read. Each submount is probed on
+	// BOTH sides of the rbind: the nextroot copy's own unit AND the source
+	// mount's unit, because the measured persist.mount semantics above
+	// (the CriticalSoftRebootMounts comment) show the copy's fate FOLLOWS
+	// the source's — unmounting the source releases the filesystem and
+	// takes the copy with it, whatever the copy's unit is configured to
+	// do. Probing only the copy would turn the gate green the moment an
+	// operator ships the copy-side drop-in, while the source unit still
+	// tears the data down. See RECURSIVE SUBMOUNTS in the doc comment.
+	for _, dest := range bindDests {
+		subs, err := mount.SubmountsBeneath(dest)
+		if err != nil {
+			return nil, fmt.Errorf("walk the live mount table for submounts beneath %s: %w "+
+				"(what the rbind carried under it is unknown, and unknown is not a state to soft-reboot from)", dest, err)
+		}
+		for _, sub := range subs {
+			// The source-side path: bind destinations are established at
+			// <sysroot>/<source>, so stripping the sysroot maps the copy
+			// back to the mount it mirrors (/persist/volumes/pgdata for
+			// /run/nextroot/persist/volumes/pgdata). A submount the walk
+			// found that does NOT sit under the sysroot has no derivable
+			// source, and a submount whose origin is unknown cannot be
+			// proven to survive — refuse rather than guess.
+			srcSub := strings.TrimPrefix(sub, strings.TrimSuffix(layout.SysRoot, "/"))
+			if srcSub == sub || !strings.HasPrefix(srcSub, "/") {
+				return nil, fmt.Errorf("submount %s beneath bind destination %s does not sit under the nextroot %s, so its source mount cannot be derived — "+
+					"a submount whose origin is unknown cannot be proven to survive, and unknown is not a state to soft-reboot from", sub, dest, layout.SysRoot)
+			}
+			for _, side := range []struct{ path, role, consequence string }{
+				{srcSub, "the SOURCE mount of a submount the rbind carried beneath " + dest,
+					"tearing the source down releases the filesystem and takes the nextroot copy with it, whatever the copy's unit says (the carrier-follows-source semantics measured for persist.mount)"},
+				{sub, "the nextroot COPY of the submount at " + srcSub,
+					"it is a separate mountinfo-generated unit, which no drop-in on the destination's or the source's unit reaches"},
+			} {
+				if ok, why := mountSurvivesSoftReboot(ctx, run, side.path); !ok {
+					return nil, fmt.Errorf("%s would not survive the soft-reboot (%s). "+
+						"It is %s — %s — so soft-rebooting now would land in the new root with %s present but %s GONE from under it. "+
+						"Unmount it first, ship a drop-in for %s (and daemon-reload) if its name is stable, or apply this composition with a full reboot. "+
+						"If its unit name is dynamic, no drop-in can cover it and this refusal is the decision point — yours, not the gate's to waive",
+						side.path, why, side.role, side.consequence,
+						strings.TrimPrefix(dest, strings.TrimSuffix(layout.SysRoot, "/")), srcSub,
+						MountUnitName(side.path))
+				}
+			}
 		}
 	}
 
@@ -311,7 +379,13 @@ func MountUnitName(path string) string {
 		switch {
 		case c == '/':
 			b.WriteByte('-')
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_':
+		// ':' stays verbatim: systemd's own path escaping keeps it
+		// (systemd-escape --path '/persist/volumes/pg:main' ->
+		// 'persist-volumes-pg:main', verified 2026-08-14). Hex-escaping it
+		// would probe a unit name systemd has never generated, read
+		// "unknown to systemd", and refuse a correctly configured mount —
+		// while prescribing a drop-in filename that can never match.
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == ':':
 			b.WriteByte(c)
 		case c == '.' && i > 0:
 			b.WriteByte(c)

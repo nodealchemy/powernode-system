@@ -168,6 +168,11 @@ func TestMountUnitName(t *testing.T) {
 		"/":              "-.mount",
 		"/var/lib/thing": "var-lib-thing.mount",
 		"/my-dir":        `my\x2ddir.mount`,
+		// systemd keeps ':' verbatim in unit names (systemd-escape --path
+		// '/persist/volumes/pg:main' -> 'persist-volumes-pg:main', verified
+		// 2026-08-14); hex-escaping it would probe a unit systemd does not
+		// know and spuriously refuse a correctly configured submount.
+		"/persist/volumes/pg:main": "persist-volumes-pg:main.mount",
 	}
 	for path, want := range cases {
 		if got := MountUnitName(path); got != want {

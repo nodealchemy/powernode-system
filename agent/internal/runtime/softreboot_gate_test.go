@@ -25,18 +25,26 @@ func writeMountInfoFixture(t *testing.T, body string) string {
 }
 
 // pinNoNextrootUnion points the mount-table parser at a fixture holding NO
-// overlay at /run/nextroot, so the gate enumerates zero layers.
+// overlay at /run/nextroot (so the gate enumerates zero layers) and a
+// childless /persist carrier bind (so the submount walk finds its
+// destination and, correctly, nothing beneath it).
 //
 // EVERY gate test must pin the table, including the ones that do not care
-// about layers. NextrootSurvivalGate calls mount.LiveUnionLowerDirs
-// unconditionally, so an unpinned test reads the HOST's
-// /proc/self/mountinfo — green on a machine with no prepared nextroot, red
+// about layers or submounts. NextrootSurvivalGate reads it unconditionally
+// — mount.LiveUnionLowerDirs for the layer report, mount.SubmountsBeneath
+// for each bind destination — so an unpinned test reads the HOST's
+// /proc/self/mountinfo: green on a machine with no prepared nextroot, red
 // on a pivot node that currently holds one, which is precisely the machine
-// and moment this feature targets. Host-dependent green is not green.
+// and moment this feature targets. Host-dependent green is not green. And
+// a fixture that omits the carrier bind refuses in the walk (fail closed,
+// pinned by ...RefusesWhenABindDestinationIsAbsentFromTheMountTable), so
+// the carrier line here is load-bearing for every passing-path test.
 func pinNoNextrootUnion(t *testing.T) {
 	t.Helper()
 	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
-		"27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"))
+		"27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"+
+			"40 27 8:2 / /persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"+
+			"90 27 8:2 / /run/nextroot/persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"))
 	t.Cleanup(restore)
 }
 
@@ -191,7 +199,8 @@ func TestNextrootSurvivalGate_UnknownLayerUnitIsAdvisoryNotFatal(t *testing.T) {
 func TestNextrootSurvivalGate_LayerTeardownIsReportedNotRefused(t *testing.T) {
 	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
 		"27 1 0:24 / / rw,relatime shared:1 - overlay overlay rw,lowerdir=/run/powernode/modules/sha256_live,upperdir=/run/powernode/scratch/upper,workdir=/run/powernode/scratch/work\n"+
-			"88 27 0:99 / /run/nextroot rw,relatime shared:9 - overlay overlay rw,lowerdir=/run/powernode/modules/sha256_aaa:/run/powernode/modules/sha256_bbb,upperdir=/run/powernode/nextroot-scratch-gen1/upper,workdir=/run/powernode/nextroot-scratch-gen1/work\n"))
+			"88 27 0:99 / /run/nextroot rw,relatime shared:9 - overlay overlay rw,lowerdir=/run/powernode/modules/sha256_aaa:/run/powernode/modules/sha256_bbb,upperdir=/run/powernode/nextroot-scratch-gen1/upper,workdir=/run/powernode/nextroot-scratch-gen1/work\n"+
+			"90 88 8:2 / /run/nextroot/persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"))
 	defer restore()
 
 	run := gateRunner(map[string]string{
@@ -224,7 +233,8 @@ func TestNextrootSurvivalGate_LayerTeardownIsReportedNotRefused(t *testing.T) {
 // detach path before (union_lowers.go).
 func TestNextrootSurvivalGate_ReadsLowerdirsFromTheLiveTableNotTheLayout(t *testing.T) {
 	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
-		"88 27 0:99 / /run/nextroot rw,relatime shared:9 - overlay overlay rw,lowerdir=/run/powernode/modules/sha256_unexpected,upperdir=/run/powernode/nextroot-scratch-gen1/upper,workdir=/run/powernode/nextroot-scratch-gen1/work\n"))
+		"88 27 0:99 / /run/nextroot rw,relatime shared:9 - overlay overlay rw,lowerdir=/run/powernode/modules/sha256_unexpected,upperdir=/run/powernode/nextroot-scratch-gen1/upper,workdir=/run/powernode/nextroot-scratch-gen1/work\n"+
+			"90 88 8:2 / /run/nextroot/persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"))
 	defer restore()
 
 	run := gateRunner(map[string]string{
@@ -281,6 +291,174 @@ func TestNextrootSurvivalGate_RefusesWhenDaemonReloadFails(t *testing.T) {
 	run.StubErr = map[string]error{"systemctl daemon-reload": errStubReload}
 	if _, err := NextrootSurvivalGate(context.Background(), run, gateLayout(), gateBindDests); err == nil {
 		t.Error("a failed daemon-reload leaves the drop-ins unproven and must refuse, got nil")
+	}
+}
+
+// RBIND-CARRIED SUBMOUNTS. prepareNextrootMounts uses `mount --rbind`, so
+// every child mount of a bind source is reproduced beneath the destination
+// as its OWN mountinfo-generated unit with its own survival properties — a
+// drop-in on the destination's unit does not reach it. A gate that probes
+// the destination as one unit passes while a nested submount (say, a
+// storage volume ReconcileStorageVolume mounted under /persist) is torn
+// down at umount.target, and the new root comes up with /persist present
+// but the volume's data gone from under it.
+func TestNextrootSurvivalGate_RefusesWhenAnRbindCarriedSubmountWouldBeTornDown(t *testing.T) {
+	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
+		"27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"+
+			"40 27 8:2 / /persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"+
+			"90 27 8:2 / /run/nextroot/persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"+
+			"95 90 8:16 / /run/nextroot/persist/volumes/pgdata rw,relatime shared:12 - ext4 /dev/sdb1 rw\n"))
+	defer restore()
+
+	run := gateRunner(map[string]string{
+		unionUnit:                      propsSurvive,
+		carrierUnit:                    propsSurvive,
+		"persist-volumes-pgdata.mount": propsSurvive, // the SOURCE is configured...
+		"run-nextroot-persist-volumes-pgdata.mount": propsDoomed, // ...but the COPY is not
+	})
+	_, err := NextrootSurvivalGate(context.Background(), run, gateLayout(), gateBindDests)
+	if err == nil || !strings.Contains(err.Error(), "/run/nextroot/persist/volumes/pgdata") {
+		t.Fatalf("a doomed submount beneath a bind destination must refuse, naming the submount; got %v", err)
+	}
+}
+
+// A submount must be proven on BOTH sides of the rbind. The nextroot COPY
+// has its own generated unit, but this file's own measurement (the
+// persist.mount runs in the CriticalSoftRebootMounts comment) shows the
+// copy's fate FOLLOWS the source's: unmounting the source releases the
+// filesystem and takes the copy with it, whatever the copy's unit says.
+// A gate that probes only the copy goes green once the operator ships the
+// copy-side drop-in, while the un-drop-inned SOURCE unit still tears the
+// volume down at umount.target — the exact silent data loss this gate
+// exists to refuse.
+func TestNextrootSurvivalGate_RefusesWhenASubmountSourceUnitWouldBeTornDown(t *testing.T) {
+	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
+		"27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"+
+			"40 27 8:2 / /persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"+
+			"90 27 8:2 / /run/nextroot/persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"+
+			"95 90 8:16 / /run/nextroot/persist/volumes/pgdata rw,relatime shared:12 - ext4 /dev/sdb1 rw\n"))
+	defer restore()
+
+	run := gateRunner(map[string]string{
+		unionUnit:   propsSurvive,
+		carrierUnit: propsSurvive,
+		"run-nextroot-persist-volumes-pgdata.mount": propsSurvive, // the COPY is configured
+		"persist-volumes-pgdata.mount":              propsDoomed,  // the SOURCE is not
+	})
+	_, err := NextrootSurvivalGate(context.Background(), run, gateLayout(), gateBindDests)
+	if err == nil || !strings.Contains(err.Error(), "/persist/volumes/pgdata") {
+		t.Fatalf("a doomed SOURCE unit must refuse even when the copy survives, naming the source; got %v", err)
+	}
+}
+
+// A submount's unit systemd has never heard of REFUSES — submounts get
+// the carrier's fail-closed treatment, not the layers' advisory one. The
+// same LoadState on the scratch is advice
+// (TestNextrootSurvivalGate_UnknownLayerUnitIsAdvisoryNotFatal); here it
+// is durable data under /persist, and unproven means do not proceed.
+func TestNextrootSurvivalGate_RefusesWhenASubmountUnitIsUnknownToSystemd(t *testing.T) {
+	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
+		"27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"+
+			"90 27 8:2 / /run/nextroot/persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"+
+			"95 90 8:16 / /run/nextroot/persist/volumes/pgdata rw,relatime shared:12 - ext4 /dev/sdb1 rw\n"))
+	defer restore()
+
+	run := gateRunner(map[string]string{
+		unionUnit:                      propsSurvive,
+		carrierUnit:                    propsSurvive,
+		"persist-volumes-pgdata.mount": propsSurvive,
+	}) // the COPY's unit deliberately unstubbed -> unknown to systemd
+	_, err := NextrootSurvivalGate(context.Background(), run, gateLayout(), gateBindDests)
+	if err == nil || !strings.Contains(err.Error(), "/run/nextroot/persist/volumes/pgdata") {
+		t.Fatalf("an unprovable submount must refuse naming it, got %v", err)
+	}
+}
+
+// The green path with submounts present must be reachable: a submount
+// whose unit IS configured to survive passes, and is not smuggled into
+// the advisory teardown report either.
+func TestNextrootSurvivalGate_PassesWhenEverySubmountSurvives(t *testing.T) {
+	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
+		"27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"+
+			"90 27 8:2 / /run/nextroot/persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"+
+			"95 90 8:16 / /run/nextroot/persist/volumes/pgdata rw,relatime shared:12 - ext4 /dev/sdb1 rw\n"))
+	defer restore()
+
+	run := gateRunner(map[string]string{
+		unionUnit:   propsSurvive,
+		carrierUnit: propsSurvive,
+		// BOTH sides of the rbind must be stubbed surviving — the gate
+		// probes the source unit and the copy unit, and either alone is
+		// insufficient (...RefusesWhenASubmountSourceUnitWouldBeTornDown).
+		"persist-volumes-pgdata.mount":                    propsSurvive,
+		"run-nextroot-persist-volumes-pgdata.mount":       propsSurvive,
+		`run-powernode-nextroot\x2dscratch\x2dgen1.mount`: propsSurvive,
+	})
+	doomed, err := NextrootSurvivalGate(context.Background(), run, gateLayout(), gateBindDests)
+	if err != nil {
+		t.Fatalf("a surviving submount must not refuse, got %v", err)
+	}
+	if len(doomed) != 0 {
+		t.Errorf("nothing is scheduled for teardown, so the report should be empty, got %v", doomed)
+	}
+}
+
+// FAIL CLOSED when the source side cannot be derived: the source-unit
+// probe maps a submount back to its origin by stripping the sysroot from
+// its path, which only works for destinations established under the
+// sysroot (as prepareNextrootMounts does). A submount outside it has no
+// derivable source, and a submount whose origin is unknown must refuse —
+// every unit that IS derivable surviving (as stubbed here) must not
+// rescue it.
+func TestNextrootSurvivalGate_RefusesASubmountWhoseSourceCannotBeDerived(t *testing.T) {
+	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
+		"27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"+
+			"60 27 8:7 / /elsewhere rw,relatime shared:6 - ext4 /dev/sda7 rw\n"+
+			"61 60 8:8 / /elsewhere/x rw,relatime shared:7 - ext4 /dev/sda8 rw\n"))
+	defer restore()
+
+	run := gateRunner(map[string]string{
+		unionUnit:           propsSurvive,
+		"elsewhere.mount":   propsSurvive,
+		"elsewhere-x.mount": propsSurvive,
+	})
+	_, err := NextrootSurvivalGate(context.Background(), run, gateLayout(), []string{"/elsewhere"})
+	if err == nil || !strings.Contains(err.Error(), "/elsewhere/x") {
+		t.Fatalf("a submount outside the sysroot has no derivable source and must refuse naming it, got %v", err)
+	}
+}
+
+// FAIL CLOSED on the walk itself: a bind destination the mount table does
+// not contain is not "no submounts" — it means the table cannot be
+// trusted about what the rbind carried, and the gate must refuse rather
+// than pass on ignorance. (This is the shape the LiveUnionLowerDirs
+// ([], nil) defect taught: an empty answer is not a clean bill.)
+func TestNextrootSurvivalGate_RefusesWhenABindDestinationIsAbsentFromTheMountTable(t *testing.T) {
+	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
+		"27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n")) // no carrier entry
+	defer restore()
+
+	run := gateRunner(map[string]string{unionUnit: propsSurvive, carrierUnit: propsSurvive})
+	_, err := NextrootSurvivalGate(context.Background(), run, gateLayout(), gateBindDests)
+	if err == nil || !strings.Contains(err.Error(), "/run/nextroot/persist") {
+		t.Fatalf("a bind destination absent from the mount table must refuse naming it, got %v", err)
+	}
+}
+
+// FAIL CLOSED on a table the walk cannot fully parse. LiveUnionLowerDirs
+// skips lines it cannot read (the advisory arm tolerates it); the
+// submount walk must not, because the skipped line could be the doomed
+// submount itself.
+func TestNextrootSurvivalGate_RefusesWhenTheMountTableHasAnUnparseableLine(t *testing.T) {
+	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
+		"27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"+
+			"90 27 8:2 / /run/nextroot/persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"+
+			"THIS LINE IS NOT MOUNTINFO\n"))
+	defer restore()
+
+	run := gateRunner(map[string]string{unionUnit: propsSurvive, carrierUnit: propsSurvive})
+	if _, err := NextrootSurvivalGate(context.Background(), run, gateLayout(), gateBindDests); err == nil {
+		t.Fatal("an unparseable mount table proves nothing about submounts and must refuse, got nil")
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -33,6 +34,107 @@ import (
 // overlay-rooted host.
 var mountInfoPath = "/proc/self/mountinfo"
 
+// mountInfoEntry is one parsed mountinfo line — just the fields this
+// package's readers consult. There is deliberately ONE parser
+// (parseMountInfoLine) shared by LiveUnionLowerDirs and SubmountsBeneath;
+// two parsers of the same table is how they drift apart.
+type mountInfoEntry struct {
+	id         int
+	parentID   int
+	mountPoint string // unescaped and cleaned
+	fstype     string
+	superOpts  string
+}
+
+// parseMountInfoLine parses one /proc/self/mountinfo line:
+//
+//	<id> <parent> <maj:min> <root> <mountpoint> <opts> [optional...] - <fstype> <source> <super opts>
+//
+// Callers decide what an unparseable line MEANS. LiveUnionLowerDirs skips
+// it (its question — "which lowers does the overlay at X hold" — is
+// answered by the one line that does parse); SubmountsBeneath errors (its
+// question — "what is mounted beneath X" — is falsified by any line it
+// cannot read).
+//
+// The LEFT half (id, parent, mount point) is strict — those fields are
+// what the submount walk stands on. The RIGHT half is deliberately
+// tolerant beyond the fstype: real kernels emit lines whose right half
+// collapses under strings.Fields — `mount -t tmpfs "" /x` (an empty
+// source, accepted by mount(2)) renders a double space and leaves two
+// fields — and hard-erroring on that would let one unrelated exotic mount
+// anywhere on the node fail every strict reader of the table. A missing
+// right half loses only superOpts, which no left-half question needs.
+func parseMountInfoLine(line string) (mountInfoEntry, error) {
+	left, right, ok := strings.Cut(line, " - ")
+	if !ok {
+		return mountInfoEntry{}, fmt.Errorf("no ' - ' separator in %q", line)
+	}
+	lf := strings.Fields(left)
+	if len(lf) < 5 {
+		return mountInfoEntry{}, fmt.Errorf("%d fields before the separator in %q (want at least 5: id, parent, major:minor, root, mount point)", len(lf), line)
+	}
+	id, err := strconv.Atoi(lf[0])
+	if err != nil {
+		return mountInfoEntry{}, fmt.Errorf("mount id %q is not a number in %q", lf[0], line)
+	}
+	parent, err := strconv.Atoi(lf[1])
+	if err != nil {
+		return mountInfoEntry{}, fmt.Errorf("parent id %q is not a number in %q", lf[1], line)
+	}
+	rf := strings.Fields(right)
+	if len(rf) == 0 {
+		return mountInfoEntry{}, fmt.Errorf("nothing after the separator in %q (want at least a filesystem type)", line)
+	}
+	e := mountInfoEntry{
+		id:         id,
+		parentID:   parent,
+		mountPoint: filepath.Clean(unescapeMountInfo(lf[4])),
+		fstype:     rf[0],
+	}
+	if len(rf) >= 3 {
+		e.superOpts = rf[2]
+	}
+	return e, nil
+}
+
+// readMountInfoEntries reads the whole table at mountInfoPath. strict
+// decides what a line that fails to parse means: false skips it
+// (LiveUnionLowerDirs — the one matching line answers its question),
+// true errors (SubmountsBeneath — the skipped line could be the very
+// mount the caller needs to know about). An unreadable or truncated
+// table errors in both modes.
+func readMountInfoEntries(strict bool) ([]mountInfoEntry, error) {
+	f, err := os.Open(mountInfoPath)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", mountInfoPath, err)
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	// Mount tables stay well under the default 64KiB token cap, but a
+	// long lowerdir list is exactly the field that could approach it —
+	// a 20-layer union of sha256-named paths runs to ~1.6KiB — so give
+	// the scanner room rather than silently truncating the one line we
+	// actually care about.
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	var entries []mountInfoEntry
+	for lineNo := 1; sc.Scan(); lineNo++ {
+		e, perr := parseMountInfoLine(sc.Text())
+		if perr != nil {
+			if strict {
+				return nil, fmt.Errorf("%s line %d: %w", mountInfoPath, lineNo, perr)
+			}
+			continue
+		}
+		entries = append(entries, e)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("read %s: %w", mountInfoPath, err)
+	}
+	return entries, nil
+}
+
 // LiveUnionLowerDirs returns the lowerdir entries of the overlay mounted at
 // mountPoint, in the order the kernel holds them (highest-priority first,
 // matching LowerDirString).
@@ -42,38 +144,16 @@ var mountInfoPath = "/proc/self/mountinfo"
 // mount table could not be read at all, which callers must treat as "I do
 // not know", never as "no layers".
 func LiveUnionLowerDirs(mountPoint string) ([]string, error) {
-	f, err := os.Open(mountInfoPath)
+	entries, err := readMountInfoEntries(false)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", mountInfoPath, err)
+		return nil, err
 	}
-	defer f.Close()
-
 	want := filepath.Clean(mountPoint)
-	sc := bufio.NewScanner(f)
-	// Mount tables stay well under the default 64KiB token cap, but a
-	// long lowerdir list is exactly the field that could approach it —
-	// a 20-layer union of sha256-named paths runs to ~1.6KiB — so give
-	// the scanner room rather than silently truncating the one line we
-	// actually care about.
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
-	for sc.Scan() {
-		line := sc.Text()
-		// mountinfo: <id> <parent> <maj:min> <root> <mountpoint> <opts>
-		// [optional fields...] - <fstype> <source> <super options>
-		left, right, ok := strings.Cut(line, " - ")
-		if !ok {
+	for _, e := range entries {
+		if e.mountPoint != want || e.fstype != "overlay" {
 			continue
 		}
-		lf := strings.Fields(left)
-		if len(lf) < 5 || unescapeMountInfo(lf[4]) != want {
-			continue
-		}
-		rf := strings.Fields(right)
-		if len(rf) < 3 || rf[0] != "overlay" {
-			continue
-		}
-		for _, opt := range strings.Split(rf[2], ",") {
+		for _, opt := range strings.Split(e.superOpts, ",") {
 			val, found := strings.CutPrefix(opt, "lowerdir=")
 			if !found {
 				continue
@@ -91,9 +171,6 @@ func LiveUnionLowerDirs(mountPoint string) ([]string, error) {
 			return out, nil
 		}
 		return []string{}, nil // overlay at this point, but no lowerdir opt
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("read %s: %w", mountInfoPath, err)
 	}
 	return []string{}, nil
 }
