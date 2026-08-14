@@ -209,15 +209,23 @@ module System
       # "max_daily_notifications" is guarded on `user`, not `agent`
       # (InterventionPolicyService#notification_limit_reached?), so it is the
       # MIRROR of this case — near-inert for agent dispatch, live on the operator
-      # path, which always carries a requested_by. It now behaves as its name
-      # promises (IMP-73dff8186c1e): exhausting the budget suppresses the
-      # NOTIFICATION and degrades the verb only as far as require_approval — a
-      # 202 park, never a denial. Until that fix it rewrote the resolution to
+      # path, which always carries a requested_by. Since IMP-73dff8186c1e it no
+      # longer DENIES: exhausting the budget degrades the verb only as far as
+      # require_approval, a 202 park. Until that fix it rewrote resolution to
       # "silent", which Ai::AutonomyGate folds into its "block" branch, so
       # setting it here would have turned "stop emailing me about this" into a
       # hard 422 refusal of every operator write in the category for the rest of
-      # the day. Nothing sets it today; still check the guard's operand — the
-      # asymmetry above is unchanged — before adding any key.
+      # the day.
+      #
+      # It still does not do what its name promises ON THIS PATH, so read the
+      # rest before setting it. The suppression half of that fix reaches
+      # Ai::AgentOutreachService only; parking emits an approval notification of
+      # its own — one per approver, and the default chain's ["*"] resolves to
+      # every active user. Setting this key on an operator row therefore does
+      # not reduce notification volume in the category, it INCREASES it, while
+      # the healthy under-cap path emits none. Nothing sets it today; still
+      # check the guard's operand — the asymmetry above is unchanged — before
+      # adding any key.
       #
       # "quiet_hours" fails the OTHER way, and belongs beside max_daily so a
       # human tuning conditions sees both directions: conditions_met? returns
