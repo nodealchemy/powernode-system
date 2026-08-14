@@ -53,8 +53,10 @@ module Api
             attrs = rule_params
 
             # Never saved — the executor's create! stays the authority.
+            # Plain assignment: Sdwan::FirewallRule#port_range= accepts the
+            # API's {from:, to:} shape directly (IMP-0e44cf2fc80b).
             candidate = @network.firewall_rules.new(account_id: @account.id)
-            assign_with_port_range(candidate, attrs)
+            candidate.assign_attributes(attrs)
             return render_validation_error(candidate) unless candidate.valid?
 
             gate!(
@@ -73,15 +75,39 @@ module Api
             )
           end
 
+          # IMP-0e44cf2fc80b: routed through Ai::AutonomyGate, matching the
+          # gated update verbs (network/peer/route_policy/port_mapping). This
+          # verb was NOT a clean drop-in wiring: the port_range →
+          # port_range_hash transform (normalize_port_range) ran inline here,
+          # and gate! never calls on_proceed on :pending — the executor is the
+          # sole writer there — so the transform migrated INTO
+          # UpdateFirewallRule#perform first. The gate parks the API-shaped
+          # attributes verbatim; the executor owns the re-key on both paths.
           def update
             require_permission("system.sdwan.firewall.manage")
             attrs = rule_params
-            assign_with_port_range(@rule, attrs)
-            if @rule.save
-              render_success(firewall_rule: serialize_rule_full(@rule.reload))
-            else
-              render_validation_error(@rule)
-            end
+            # Validated before the gate so an unsaveable payload keeps its
+            # field-level 422 and opens no audit row. Never saved —
+            # UpdateFirewallRule's update! stays the only writer. Plain
+            # assignment: Sdwan::FirewallRule#port_range= accepts the API's
+            # {from:, to:} shape directly (IMP-0e44cf2fc80b).
+            @rule.assign_attributes(attrs)
+            return render_validation_error(@rule) unless @rule.valid?
+
+            # Discard the un-gated in-memory changes: nothing may reach the row
+            # except through the executor. restore_attributes is the zero-query
+            # equivalent of reload here (ActiveModel::Dirty).
+            @rule.restore_attributes
+
+            gate!(
+              action_category: "sdwan.firewall_rule_update",
+              executor_class: "Sdwan::Executors::UpdateFirewallRule",
+              params: { rule_id: @rule.id, attributes: attrs.to_h },
+              source_type: "Sdwan::FirewallRule",
+              source_id: @rule.id,
+              description: "Update firewall rule '#{@rule.name}' on SDWAN network #{@network.name}",
+              on_proceed: ->(_r) { render_success(firewall_rule: serialize_rule_full(@rule.reload)) }
+            )
           end
 
           def destroy
@@ -119,20 +145,18 @@ module Api
             )
           end
 
-          # The :port_range param uses {from:, to:} JSON shape — re-key it to
-          # the model's mass-assignable port_range_hash accessor (the raw
-          # column is an int4range a Hash cannot set). ONE normalization for
-          # both consumers: model assignment (candidate + update) and the
-          # executor replay hash (IMP-6c482005db87).
+          # SOLE remaining consumer: create's executor replay hash, which
+          # keeps the re-keyed :port_range_hash shape both create surfaces
+          # park (IMP-6c482005db87 — pinned by the REST and MCP specs). The
+          # validation candidates and update's replay hash need no re-key:
+          # Sdwan::FirewallRule#port_range= accepts the {from:, to:} API
+          # shape directly (IMP-0e44cf2fc80b), so update deliberately parks
+          # the RAW shape and mass assignment routes it through the model.
           def normalize_port_range(attrs)
             attrs = attrs.to_h.with_indifferent_access
             port_range = attrs.delete(:port_range)
             attrs[:port_range_hash] = port_range unless port_range.nil?
             attrs
-          end
-
-          def assign_with_port_range(rule, attrs)
-            rule.assign_attributes(normalize_port_range(attrs))
           end
 
           # account_id rides along ONLY for the approval card's scoped

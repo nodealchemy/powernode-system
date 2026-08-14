@@ -68,6 +68,10 @@ module Sdwan
       { from: from, to: to }
     end
 
+    # nil contract: nil (like {} and "") CLEARS the range — this writer is
+    # the canonical "set the column to exactly this" accessor. The API-shaped
+    # #port_range= writer below has the OPPOSITE nil semantic (nil = leave
+    # untouched); pick the writer whose nil contract matches the call site.
     def port_range_hash=(value)
       if value.nil? || value == {} || value == ""
         self.dst_port_range = nil
@@ -80,6 +84,20 @@ module Sdwan
       raise ArgumentError, "port_range_hash requires :from and :to" if from.nil? || to.nil?
 
       self.dst_port_range = (from..to)
+    end
+
+    # IMP-0e44cf2fc80b — API-shaped writer: the surfaces speak :port_range in
+    # the same {from:, to:} JSON shape, so ANY writer path (REST candidate
+    # assignment, gated-executor replay, a future GitOps sync or bulk import)
+    # can mass-assign it without discovering the re-key convention. The
+    # {}/nil clearing nuance (IMP-32978416b9d3) differs from port_range_hash=
+    # ON PURPOSE: in an update payload, nil means "not provided — leave the
+    # column untouched", while {} and "" flow through to port_range_hash=
+    # which clears the range.
+    def port_range=(value)
+      return if value.nil?
+
+      self.port_range_hash = value
     end
 
     private
