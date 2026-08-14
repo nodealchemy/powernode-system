@@ -20,13 +20,37 @@ module System
       "Runtime Manager"
     ].freeze
 
+    # ORDER IS SIGNIFICANT. `by_domain_pivot` resolves with `find`, so the FIRST
+    # matching entry wins and any prefix that EXTENDS another entry's prefix has
+    # to be declared before it. Two such pairs exist today:
+    #
+    #   system.instance_pool_           ⊂ system.instance_  (node_lifecycle)
+    #   system.module_critical_upgrade_ ⊂ system.module_    (node_lifecycle)
+    #
+    # Both were mis-filed until this map was ordered specific-first: the whole
+    # `instance_pool` domain was unreachable, and the CVE Responder's
+    # `system.module_critical_upgrade_ready` landed under node_lifecycle. Note
+    # that category is NOT prefixed `system.cve_`, so moving "cve" ahead of
+    # "node_lifecycle" does not on its own file it correctly — the specific
+    # prefix has to be listed too.
+    #
+    # Every category the extension's agent seeds create a policy row for must
+    # match some entry here; "other" is the catch-all for rows seeded outside
+    # this extension. spec/controllers/api/v1/system/autonomy_domain_pivot_spec.rb
+    # pins both properties (nothing seeded reaches "other"; no declared domain is
+    # left unreachable) so a new family or a reorder cannot regress silently.
     DOMAIN_PREFIXES = {
-      "node_lifecycle"  => %w[system.cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.observation system.task.],
-      "sdwan"           => %w[system.sdwan_ sdwan.],
+      "instance_pool"     => %w[system.instance_pool_],
+      "cve"               => %w[system.cve_ system.module_critical_upgrade_],
+      "sdwan"             => %w[system.sdwan_ sdwan. system.federation_peer_],
       "container_runtime" => %w[system.runtime_],
-      "disk_image"      => %w[system.disk_image_],
-      "instance_pool"   => %w[system.instance_pool_],
-      "cve"             => %w[system.cve_]
+      "disk_image"        => %w[system.disk_image_],
+      "gitops"            => %w[system.gitops_],
+      "packages"          => %w[system.package_module. system.package_repository.],
+      "architecture"      => %w[system.architecture.],
+      "storage"           => %w[system.storage_],
+      "project"           => %w[project.],
+      "node_lifecycle"    => %w[system.cert_ system.acme_cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.capability_gap_ system.observation system.task. system.template_closure_ system.node_boot_image_]
     }.freeze
 
     # GET /api/v1/system/autonomy
