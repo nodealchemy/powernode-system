@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Server,
   Network,
@@ -6,150 +6,189 @@ import {
   HardDrive,
   Layers,
   ShieldAlert,
-  UserCog,
   GitBranch,
+  Package,
+  Boxes,
+  Database,
+  FolderKanban,
   Settings,
 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { AutonomyPolicyGroup } from '@/shared/components/autonomy/AutonomyPolicyGroup';
 import { ApprovalChainList } from '@/shared/components/approval-chains/ApprovalChainList';
 import { useSystemAutonomyConfig } from '@system/features/system/hooks/useSystemAutonomyConfig';
+import type { AutonomyDomainPolicy } from '@/shared/types/autonomy';
 
 interface SystemSettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-interface DomainSection {
-  key: string;
+interface DomainPresentation {
   label: string;
-  agentName: string;
   icon: React.ElementType;
   description: string;
-  actions: string[];
 }
 
 /**
- * 7-domain Settings modal for the System extension's autonomy framework.
- * Sidebar nav (left) + content pane (right) — at 5xl width with 8 sections
- * the horizontal tab strip wrapped awkwardly. Sidebar gives every section
- * the full content area for its policy table without cramming icons into
- * a 100%-width nav.
+ * PRESENTATION ONLY — label, icon and blurb per domain key.
+ *
+ * This map is deliberately NOT the source of truth for which actions exist. The
+ * action categories are defined and seeded server-side; the modal's sections
+ * and their rows come from the `by_domain` view of GET /api/v1/system/autonomy
+ * (see `System::AutonomyActions::DOMAIN_PREFIXES`, which owns the bucketing).
+ *
+ * That split is the whole point. Until IMP-0874acd5b50c this file carried a
+ * literal `actions: string[]` per section, and it had drifted to omit 28 of the
+ * 119 seeded categories — every `project.*`, every `system.gitops_*`, every
+ * `system.architecture.*` — while still rendering one control
+ * (`system.runtime_docker_tls_rotate`) whose seed the 2026-05-19 audit deleted.
+ * An operator could not view, tune or save any of the 28 from this modal, and
+ * the ghost mapped to nothing. A hardcoded copy of a server-owned set drifts
+ * again the day someone seeds a policy, so it is gone.
+ *
+ * A MISSING entry here is now cosmetic: an unrecognised domain key still renders
+ * under a humanised label (see `presentationFor`), because losing the pretty
+ * name is survivable and losing the rows is not. If a domain should be hidden
+ * from operators, that curation belongs in DOMAIN_PREFIXES where the categories
+ * are defined — not here.
  */
-const DOMAIN_SECTIONS: DomainSection[] = [
-  {
-    key: 'node_lifecycle',
+const DOMAIN_PRESENTATION: Record<string, DomainPresentation> = {
+  node_lifecycle: {
     label: 'Node Lifecycle',
-    agentName: 'Fleet Autonomy',
     icon: Server,
-    description: 'Cert rotation, module assignment, instance reboot/reprovision/terminate, fleet-wide upgrades.',
-    actions: [
-      'system.cert_rotate', 'system.cert_revoke',
-      'system.module_assign', 'system.module_promote_to_live',
-      'system.instance_reboot', 'system.instance_reprovision', 'system.instance_terminate',
-      'system.fleet_rolling_upgrade', 'system.region_expansion', 'system.capacity_resize',
-    ],
+    description: 'Cert rotation, module assignment, instance reboot/reprovision/terminate, fleet-wide upgrades, operator tasks.',
   },
-  {
-    key: 'sdwan',
+  sdwan: {
     label: 'SDWAN',
-    agentName: 'SDWAN Manager',
     icon: Network,
     description: 'Networks, peers, firewall rules, VIPs, route policies, port mappings, access grants, federation.',
-    actions: [
-      'system.sdwan_peer_remediate', 'system.sdwan_key_rotate', 'system.sdwan_failover',
-      'system.sdwan_user_device_revoke', 'system.sdwan_bgp_session_remediate',
-      'system.sdwan_vip_failover', 'system.sdwan_route_policy_audit',
-      'sdwan.network_create', 'sdwan.network_update', 'sdwan.network_delete',
-      'sdwan.peer_create', 'sdwan.peer_update', 'sdwan.peer_delete',
-      'sdwan.firewall_rule_create', 'sdwan.firewall_rule_update', 'sdwan.firewall_rule_delete',
-      'sdwan.virtual_ip_create', 'sdwan.virtual_ip_update', 'sdwan.virtual_ip_delete',
-      'sdwan.route_policy_create', 'sdwan.route_policy_update', 'sdwan.route_policy_delete',
-      'sdwan.port_mapping_create', 'sdwan.port_mapping_update', 'sdwan.port_mapping_delete',
-      'sdwan.access_grant_create', 'sdwan.access_grant_revoke',
-      'sdwan.user_device_create',
-      'sdwan.federation_peer_propose', 'sdwan.federation_peer_accept', 'sdwan.federation_peer_revoke',
-    ],
   },
-  {
-    key: 'runtime',
+  container_runtime: {
     label: 'Container Runtimes',
-    agentName: 'Runtime Manager',
     icon: Container,
-    description: 'Docker daemon + K3s cluster lifecycle. TLS rotation, node join/drain, runtime upgrades.',
-    actions: [
-      'system.runtime_docker_provision', 'system.runtime_docker_decommission',
-      'system.runtime_docker_tls_rotate',
-      'system.runtime_k8s_cluster_bootstrap', 'system.runtime_k8s_cluster_decommission',
-      'system.runtime_k8s_node_join', 'system.runtime_k8s_node_drain',
-      'system.runtime_k8s_runtime_upgrade',
-    ],
+    description: 'Docker daemon + K3s cluster lifecycle. Node join/drain, runtime upgrades.',
   },
-  {
-    key: 'disk_image',
+  disk_image: {
     label: 'Disk Image CI',
-    agentName: 'Disk Image Manager',
     icon: HardDrive,
     description: 'Publication promotion, rollback, retention, webhook lifecycle.',
-    actions: [
-      'system.disk_image_publication_promote',
-      'system.disk_image_publication_rollback',
-      'system.disk_image_retention_update',
-      'system.disk_image_webhook_trigger',
-      'system.disk_image_webhook_revoke',
-      'system.disk_image_webhook_rotate_secret',
-    ],
   },
-  {
-    key: 'instance_pool',
+  instance_pool: {
     label: 'Instance Pools',
-    agentName: 'Fleet Autonomy',
     icon: Layers,
     description: 'Warm-pool create / update / delete / replenish / drain / acquire.',
-    actions: [
-      'system.instance_pool_create', 'system.instance_pool_update', 'system.instance_pool_delete',
-      'system.instance_pool_replenish', 'system.instance_pool_drain', 'system.instance_pool_acquire',
-    ],
   },
-  {
-    key: 'cve',
+  cve: {
     label: 'CVE & Compliance',
-    agentName: 'CVE Responder',
     icon: ShieldAlert,
-    description: 'SBOM ingest, exposure scan, remediation orchestration.',
-    actions: [
-      'system.cve_remediate', 'system.cve_sbom_ingest',
-      'system.cve_exposure_scan', 'system.cve_auto_remediate',
-    ],
+    description: 'SBOM ingest, exposure scan, remediation orchestration, critical-upgrade rollout.',
   },
-  {
-    key: 'manual',
-    label: 'Manual Operations',
-    agentName: 'Manual Operations',
-    icon: UserCog,
-    description: 'Operator-initiated System::Task commands (terminate, deprovision, snapshot, ssh_command, etc.).',
-    actions: [
-      'system.task.start', 'system.task.stop', 'system.task.restart', 'system.task.reboot',
-      'system.task.terminate', 'system.task.provision', 'system.task.deprovision',
-      'system.task.associate_public_ip', 'system.task.disassociate_public_ip',
-      'system.task.create_volume', 'system.task.delete_volume',
-      'system.task.attach_volume', 'system.task.detach_volume',
-      'system.task.create_snapshot', 'system.task.delete_snapshot', 'system.task.restore_snapshot',
-      'system.task.create_network', 'system.task.delete_network',
-      'system.task.sync', 'system.task.sync_modules', 'system.task.apply_config',
-      'system.task.build_module', 'system.task.commit_module',
-      'system.task.ssh_command', 'system.task.backup', 'system.task.restore', 'system.task.custom',
-    ],
+  gitops: {
+    label: 'GitOps',
+    icon: GitBranch,
+    description: 'Declarative fleet state: repository registration, sync, drift proposals and their application.',
   },
-];
+  packages: {
+    label: 'Packages',
+    icon: Package,
+    description: 'Package repository sync and package-backed module create / refresh.',
+  },
+  architecture: {
+    label: 'Architectures',
+    icon: Boxes,
+    description: 'Reference architecture catalog: propose, create, update, delete.',
+  },
+  storage: {
+    label: 'Storage',
+    icon: Database,
+    description: 'Volume assignment reconciliation and storage ownership.',
+  },
+  project: {
+    label: 'Project Adaptation',
+    icon: FolderKanban,
+    description: 'Provisioned-workload evolution: scale, cost control, relocation, schema and security changes.',
+  },
+};
+
+/** Title-cases an unknown domain key so a new server bucket still reads as a name. */
+function humanizeDomainKey(key: string): string {
+  return key
+    .split('_')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function presentationFor(key: string): DomainPresentation {
+  return (
+    DOMAIN_PRESENTATION[key] || {
+      label: humanizeDomainKey(key),
+      icon: Settings,
+      description: 'Policies the server groups under this domain.',
+    }
+  );
+}
+
+interface AgentGroup {
+  bucket: string;
+  actions: string[];
+}
+
+interface DomainSection extends DomainPresentation {
+  key: string;
+  actionCount: number;
+  groups: AgentGroup[];
+}
+
+/**
+ * One editor group per agent bucket present in the domain, because a policy row
+ * is per (category, scope, agent): the same category is commonly seeded twice —
+ * once agent-scoped and once for the operator path — and they can hold
+ * different verbs. `agent_bucket` is the server's own by_agent grouping key,
+ * shipped on the row so this does not re-derive it.
+ */
+function buildGroups(rows: AutonomyDomainPolicy[]): AgentGroup[] {
+  const byBucket = new Map<string, string[]>();
+
+  rows.forEach((row) => {
+    const bucket = row.agent_bucket || 'Manual Operations';
+    const actions = byBucket.get(bucket) || [];
+    if (!actions.includes(row.action_category)) actions.push(row.action_category);
+    byBucket.set(bucket, actions);
+  });
+
+  return Array.from(byBucket, ([bucket, actions]) => ({ bucket, actions }));
+}
 
 const CHAINS_KEY = 'chains';
 
 export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen, onClose }) => {
   const autonomy = useSystemAutonomyConfig();
-  const [activeKey, setActiveKey] = useState<string>('node_lifecycle');
+  const [activeKey, setActiveKey] = useState<string>('');
 
-  const activeSection = DOMAIN_SECTIONS.find((s) => s.key === activeKey);
+  // Sections follow the server's key order. An EMPTY bucket is dropped: the
+  // pivot always ships every declared domain plus the "other" catch-all, and a
+  // domain with no policy rows has nothing for an operator to tune.
+  const sections = useMemo<DomainSection[]>(
+    () =>
+      Object.entries(autonomy.domains)
+        .filter(([, rows]) => Array.isArray(rows) && rows.length > 0)
+        .map(([key, rows]) => {
+          const groups = buildGroups(rows);
+          return {
+            key,
+            ...presentationFor(key),
+            actionCount: groups.reduce((sum, g) => sum + g.actions.length, 0),
+            groups,
+          };
+        }),
+    [autonomy.domains]
+  );
+
+  const activeSection =
+    activeKey === CHAINS_KEY ? undefined : sections.find((s) => s.key === activeKey) || sections[0];
+
   const handleSave = async () => {
     await autonomy.save();
   };
@@ -168,9 +207,9 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
         {/* Sidebar nav */}
         <nav className="w-56 shrink-0 border-r border-theme pr-2 -mr-2">
           <ul className="space-y-0.5">
-            {DOMAIN_SECTIONS.map((s) => {
+            {sections.map((s) => {
               const Icon = s.icon;
-              const isActive = activeKey === s.key;
+              const isActive = activeSection?.key === s.key;
               return (
                 <li key={s.key}>
                   <button
@@ -186,7 +225,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
                     <Icon size={16} className={isActive ? 'text-theme-info-fg' : 'text-theme-tertiary'} />
                     <span className="flex-1 truncate">{s.label}</span>
                     <span className="text-[10px] text-theme-tertiary tabular-nums">
-                      {s.actions.length}
+                      {s.actionCount}
                     </span>
                   </button>
                 </li>
@@ -218,34 +257,34 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
         <div className="flex-1 min-w-0">
           {activeKey === CHAINS_KEY ? (
             <ApprovalChainList />
+          ) : autonomy.loading ? (
+            <p className="text-sm text-theme-tertiary py-6 text-center">Loading…</p>
           ) : activeSection ? (
             <div className="space-y-3">
               <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-semibold text-theme-primary">{activeSection.label}</h3>
-                  <span className="text-xs px-2 py-0.5 rounded bg-theme-background-secondary text-theme-tertiary">
-                    {activeSection.agentName}
-                  </span>
-                </div>
+                <h3 className="text-sm font-semibold text-theme-primary">{activeSection.label}</h3>
                 <p className="text-xs text-theme-tertiary mt-1">{activeSection.description}</p>
               </div>
 
-              {autonomy.loading ? (
-                <p className="text-sm text-theme-tertiary py-6 text-center">Loading…</p>
-              ) : (
+              {activeSection.groups.map((group) => (
                 <AutonomyPolicyGroup
-                  label={`${activeSection.label} policies`}
-                  agentName={activeSection.agentName}
-                  actions={activeSection.actions}
+                  key={group.bucket}
+                  label={`${activeSection.label} · ${group.bucket}`}
+                  agentName={group.bucket}
+                  actions={group.actions}
                   getPolicy={autonomy.getPolicy}
                   updatePolicy={autonomy.updatePolicy}
                   onDirty={() => { /* tracked via autonomy.isDirty */ }}
                   onSave={handleSave}
                   isDirty={autonomy.isDirty}
                 />
-              )}
+              ))}
             </div>
-          ) : null}
+          ) : (
+            <p className="text-sm text-theme-tertiary py-6 text-center">
+              No autonomy policies are configured for this account yet.
+            </p>
+          )}
         </div>
       </div>
     </Modal>
