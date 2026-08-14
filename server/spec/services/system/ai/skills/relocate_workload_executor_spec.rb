@@ -343,6 +343,83 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       end
     end
 
+    # IMP-df4e3a7d71e5 — the relocated fleet has to stay the MISSION's fleet.
+    # The full argument (why BOTH ownership markers travel, and what the
+    # containment rail does with each) lives at the seam it constrains:
+    # RelocateWorkloadExecutor#provision_target!. These examples pin its
+    # observable half — what a later scale-in can actually find and vouch for.
+    context "mission provenance on the relocated fleet" do
+      let(:mission) do
+        create(:ai_mission, account: account, mission_type: "infrastructure",
+                            configuration: { "name_prefix" => "reloc-prov" })
+      end
+
+      before do
+        # Real Node + NodeInstance rows: the contract under test is a database
+        # predicate (`config @> {mission_id}`), so a doubled instance would
+        # prove nothing about what a scale-in can find.
+        allow(::System::ProvisioningService).to receive(:provision_instance) do |node:, **_rest|
+          ::System::Runtime::Result.ok(
+            data: { instance: create(:system_node_instance, :running, node: node,
+                                     name: "#{node.name}-instance"),
+                    cloud_instance_id: "ci-#{node.name}" }
+          )
+        end
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+          .and_return(::System::Runtime::Result.ok)
+      end
+
+      def relocate!(count: 2)
+        exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                     to_region_id: to_region.id, cutover_strategy: "blue_green",
+                     template_id: template.id,
+                     provider_instance_type_id: instance_type.id, count: count,
+                     source_instance_ids: [ source_instance.id ])
+      end
+
+      it "stamps mission_id so the mission's own provenance query returns exactly the new fleet" do
+        r = relocate!
+        expect(r[:success]).to be true
+        new_ids = r[:data][:outputs][:node_instance_ids]
+        expect(new_ids.size).to eq(2)
+
+        # ScaleProjectExecutor#mission_replicas, verbatim.
+        found = ::System::NodeInstance
+                  .joins(:node)
+                  .where(system_nodes: { account_id: account.id })
+                  .where("system_nodes.config @> ?", { mission_id: mission.id }.to_json)
+                  .active
+        expect(found.pluck(:id)).to match_array(new_ids)
+        # Negative control: the un-stamped source instance is not swept in.
+        expect(found.pluck(:id)).not_to include(source_instance.id)
+      end
+
+      it "carries the mission's blast-radius prefix onto the node names the rail reads" do
+        r = relocate!(count: 1)
+        expect(r[:success]).to be true
+
+        node = ::System::Node.find(r[:data][:outputs][:node_ids].first)
+        expect(node.name).to start_with("reloc-prov-")
+        expect(node.config["mission_id"]).to eq(mission.id)
+      end
+
+      it "leaves the relocated capacity resolvable as scale-in victims" do
+        expect(relocate!(count: 2)[:success]).to be true
+
+        scale = ::System::Ai::Skills::ScaleProjectExecutor.new(account: account)
+        r = scale.execute(project_id: mission.id, scaling_strategy: "remove_replicas",
+                          target_count: 1, dry_run: true)
+
+        expect(r[:success]).to be true
+        d = r[:data]
+        expect(d[:count]).to eq(1)
+        expect(d[:planned_actions].map { |a| a[:step] }).to include("remove_replica")
+        expect(d[:planned_actions].map { |a| a[:step] }).not_to include("remove_replicas_floor")
+        # The rail measured the removal rather than skipping it.
+        expect(d[:outputs][:prefix_enforced]).to eq("reloc-prov")
+      end
+    end
+
     context "drain execute" do
       let(:ok_prov) do
         ::System::Runtime::Result.ok(data: { instance: new_instance_stub, cloud_instance_id: "ci-dr" })

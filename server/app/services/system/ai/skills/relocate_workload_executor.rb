@@ -206,13 +206,15 @@ module System
                                                count: count, to_region_id: to_region_id,
                                                provider_instance_type_id: provider_instance_type_id,
                                                network_id: network_id, with_storage_gb: with_storage_gb,
-                                               failures: failures, planned_actions: planned_actions)
+                                               failures: failures, planned_actions: planned_actions,
+                                               mission: mission)
           else # blue_green
             provision_data = provision_target!(template_id: template_id,
                                                count: count, to_region_id: to_region_id,
                                                provider_instance_type_id: provider_instance_type_id,
                                                network_id: network_id, with_storage_gb: with_storage_gb,
-                                               failures: failures, planned_actions: planned_actions)
+                                               failures: failures, planned_actions: planned_actions,
+                                               mission: mission)
 
             # Only tear down the source if we actually have a healthy target.
             #
@@ -407,15 +409,53 @@ module System
           shown.join("; ") + (overflow.positive? ? " (+#{overflow} more)" : "")
         end
 
+        # IMP-df4e3a7d71e5 — the target stack is still the MISSION's fleet, and
+        # has to be created saying so.
+        #
+        # ProvisionFullStackExecutor stamps two independent ownership markers
+        # when it is told about the mission: `node.config["mission_id"]` (what
+        # ScaleProjectExecutor#mission_replicas resolves scale-in victims by)
+        # and the mission's blast-radius prefix on the node name (what that
+        # executor's containment rail vouches those victims against). Relocate
+        # composes the very same primitive over a mission it has already
+        # resolved in #perform, so forwarding neither handed back capacity
+        # nothing could address: the source instances it terminates carry the
+        # provenance, the targets it creates did not, and after a relocate the
+        # mission's live fleet was entirely unstamped — a later scale-in
+        # resolved zero victims for it, and every provenance query (the
+        # dryrun blast-radius prefix included) missed the fleet.
+        #
+        # Both markers travel together on purpose. mission_id alone would make
+        # the new instances resolvable but nameless to the rail, which refuses
+        # the whole removal on a prefix mismatch rather than skipping the
+        # stray — strictly worse than the miss it replaces.
+        #
+        # That rail has a SECOND half, and this leg satisfies it only by
+        # inheritance: a scale-in also hard-refuses when any attached volume's
+        # name lacks the prefix (ScaleProjectExecutor#run_remove_replicas), and
+        # the volumes this leg provisions are named "#{node.name}-data" by
+        # ProvisionFullStackExecutor — so they carry the prefix because the node
+        # does, not because anything here says so. The coupling is worth
+        # naming: were volume names to stop deriving from the node's, a
+        # relocated fleet would flip from invisible-to-scale-in straight to
+        # every-scale-in-refuses — the strictly-worse outcome above, arriving
+        # through the volume rail instead of the mission one.
+        #
+        # Sourced from the mission itself (ScaleProjectExecutor's fallback when
+        # its caller names no prefix) rather than a new skill input: relocate
+        # advertises no prefix of its own, and `Ai::Mission#provenance_name_prefix`
+        # is the single derivation both sides of the rail already read.
         def provision_target!(template_id:, count:, to_region_id:,
                               provider_instance_type_id:, network_id:, with_storage_gb:,
-                              failures:, planned_actions:)
+                              failures:, planned_actions:, mission:)
           inner = executor(::System::Ai::Skills::ProvisionFullStackExecutor)
           result = inner.execute(
             template_id: template_id, count: count,
             provider_region_id: to_region_id,
             provider_instance_type_id: provider_instance_type_id,
             network_id: network_id, with_storage_gb: with_storage_gb,
+            mission_id: mission.id,
+            name_prefix: mission.provenance_name_prefix,
             dry_run: false
           )
 
