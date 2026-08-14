@@ -611,8 +611,8 @@ module System
       Rails.logger.warn("[ProvisioningService] meter #{event} failed: #{e.class}: #{e.message}")
     end
 
-    # Increment 13 — resolves the opt-in SDWAN overlay for a just-provisioned
-    # node. Precedence: instance-pool metadata (System::InstancePool#metadata
+    # Increment 13 — resolves the SDWAN overlay for a just-provisioned node.
+    # Precedence: instance-pool metadata (System::InstancePool#metadata
     # ["sdwan_network_id"]) overrides the NodeTemplate default, so a single
     # shared template can seed pools bound to different overlays. Neither
     # NodeTemplate nor InstancePool need a migration — both already carry a
@@ -620,26 +620,78 @@ module System
     # ["init_script"] / pool.metadata["ready_ttl_seconds"] idiom used
     # elsewhere in this file and in InstancePoolService).
     #
-    # Returns nil when no opt-in is configured, or when the configured id
-    # doesn't resolve to an Sdwan::Network in this node's account (a
-    # cross-account id can never come from this account's own UI/API, but a
-    # dangling id after a network was deleted must not raise here).
+    # IMP-8e1ac4a09e82 adds the third arm — the ACCOUNT DEFAULT — so fabric
+    # membership is an account posture rather than a per-template opt-in.
+    # IMP-94728a788498 gave the composer that arm; this service is the
+    # platform's OTHER network resolver (instance-pool replenishment and
+    # acquisition, `system_provision_instance`, every direct caller), and
+    # without it one bare template produced two classes of node — composed →
+    # on fabric, direct → networkless — invisible until an overlay connection
+    # to the networkless one failed.
+    #
+    # The value semantics are NOT restated here: Shared::SdwanNetworkResolution
+    # is the single classifier both resolvers read, so "" and null keep meaning
+    # "no opinion" (inherit the next arm), and the "none" sentinel keeps meaning
+    # deliberate bare compute that BEATS the account default. Forking that
+    # vocabulary is how the two resolvers drifted apart in the first place.
+    #
+    # Frozen at provisioning: this runs from the provision success path only
+    # (see #auto_enroll_sdwan_peer!'s single call site), so the default binds
+    # the instances provisioned after it is set and is never applied
+    # retroactively to instances that already exist.
+    #
+    # Returns nil when no arm declares a network, when an arm opts out, or
+    # when the declared id doesn't resolve to an Sdwan::Network in this node's
+    # account (a cross-account id can never come from this account's own
+    # UI/API, but a dangling id after a network was deleted must not raise).
     def sdwan_network_for(node)
-      pool_config = node.config.is_a?(Hash) ? node.config : {}
-      pool_id = pool_config["instance_pool_id"] || pool_config[:instance_pool_id]
+      surface, state, value = sdwan_declaration_for(node)
 
-      if pool_id.present?
-        pool = ::System::InstancePool.find_by(id: pool_id)
-        pool_metadata = pool&.metadata.is_a?(Hash) ? pool.metadata : {}
-        pool_network_id = pool_metadata["sdwan_network_id"] || pool_metadata[:sdwan_network_id]
-        return ::Sdwan::Network.find_by(id: pool_network_id, account_id: node.account_id) if pool_network_id.present?
+      case state
+      when :usable
+        ::Sdwan::Network.find_by(id: value, account_id: node.account_id)
+      when :unusable
+        # The composer turns this bucket into a compose-time clarification.
+        # There is no clarification channel on a direct provision, so "loud"
+        # is an error log: the instance still comes up networkless, but a
+        # misconfigured id never does so silently.
+        Rails.logger.error(
+          "[ProvisioningService] #{surface} is #{value.inspect[0, 120]}, which is not a usable " \
+            "network id — provisioning node #{node.id} with no SDWAN peer."
+        )
+        nil
+      end
+    end
+
+    # Which config surface decides this node's fabric membership, as
+    # `[surface_label, state, value]`. Pool metadata → node-template config →
+    # account default; the first arm with an OPINION (anything but :absent)
+    # wins, so an opt-out or a misconfiguration on an early arm is honoured
+    # rather than skipped over.
+    def sdwan_declaration_for(node)
+      network_key = ::Shared::SdwanNetworkResolution::NETWORK_CONFIG_KEY
+
+      pool_state, pool_value = pool_network_declaration(node)
+      return [ "instance-pool metadata #{network_key}", pool_state, pool_value ] unless pool_state == :absent
+
+      template_state, template_value =
+        ::Shared::SdwanNetworkResolution.classify_config(node.node_template&.config)
+      unless template_state == :absent
+        return [ "node-template config #{network_key}", template_state, template_value ]
       end
 
-      template_config = node.node_template&.config.is_a?(Hash) ? node.node_template.config : {}
-      template_network_id = template_config["sdwan_network_id"] || template_config[:sdwan_network_id]
-      return nil if template_network_id.blank?
+      account_state, account_value =
+        ::Shared::SdwanNetworkResolution.classify_account_default(node.account)
+      [ "account setting #{::Account::DEFAULT_SDWAN_NETWORK_SETTING}", account_state, account_value ]
+    end
 
-      ::Sdwan::Network.find_by(id: template_network_id, account_id: node.account_id)
+    def pool_network_declaration(node)
+      node_config = node.config.is_a?(Hash) ? node.config : {}
+      pool_id = node_config["instance_pool_id"] || node_config[:instance_pool_id]
+      return [ :absent, nil ] if pool_id.blank?
+
+      pool = ::System::InstancePool.find_by(id: pool_id)
+      ::Shared::SdwanNetworkResolution.classify_config(pool&.metadata)
     end
 
     # Best-effort — an overlay-join failure (or the Sdwan extension being
