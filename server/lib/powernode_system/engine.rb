@@ -549,6 +549,29 @@ module PowernodeSystem
       end
     end
 
+    # IMP-8880bc817ea3 — OVN container-fabric hook. Core fires :created /
+    # :removed for every Devops::DockerContainer record from its
+    # ContainerLifecycleRegistry seam (no-op in core mode); this registers the
+    # SDWAN switch-port allocator so labeled containers on heavyweight hosts
+    # get their OVN logical switch port at creation and lose it at removal.
+    # `to_prepare` (not `after_initialize`): the registry is an autoloaded
+    # core service, so a dev-mode reload replaces the constant and drops its
+    # handler map — to_prepare re-registers after every reload (and still runs
+    # once at boot elsewhere). Registration is replace-by-name, so re-running
+    # is idempotent. The allocator constant resolves lazily at call time for
+    # the same reload-safety reason.
+    initializer "powernode_system.container_lifecycle_hooks", after: :load_config_initializers do
+      config.to_prepare do
+        next unless defined?(::Devops::ContainerLifecycleRegistry)
+
+        ::Devops::ContainerLifecycleRegistry.register(:sdwan_switch_port) do |event, container|
+          ::Sdwan::ContainerSwitchPortAllocator.call(event, container)
+        end
+      rescue StandardError => e
+        Rails.logger.warn "[PowernodeSystem] Could not register container lifecycle hook: #{e.message}"
+      end
+    end
+
     # Register all action_categories the system extension owns with the core
     # AutonomyGate registry. Without this, InterventionPolicy seeds for these
     # categories would fail validation (Phase 5 — Action Category Registry).
