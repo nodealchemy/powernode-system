@@ -21,10 +21,33 @@
 #
 # Separate migration rather than an edit to 20260813170000: that one is already
 # applied, and an applied migration never re-runs.
+#
+# Built CONCURRENTLY because system_sdwan_flow_samples is the IPFIX ingest
+# firehose. A plain CREATE INDEX holds a SHARE lock for the whole build, which
+# blocks every ingest INSERT behind it; live installs auto-apply migrations, so
+# that lock window lands as a hole in the flow record — and the hole is read by
+# SdwanServiceHealthSensor as "no flows correlated", the exact input its
+# service-silence half gates on. `if_not_exists: true` is load-bearing, not
+# decoration: without it this migration raises PG::DuplicateTable over an index
+# an operator pre-built by hand, which is precisely what makes "build it
+# concurrently ahead of the deploy" unavailable as a mitigation today.
+#
+# Concurrency was added by EDITING this already-applied migration rather than by
+# shipping a follow-up (lead decision, 2026-08-14). A follow-up cannot fix this:
+# pending migrations run in ascending order, so a later-dated one runs AFTER the
+# blocking build wherever this is still pending, and is redundant wherever it
+# already ran. The "never edit an applied migration" rule guards DIVERGENCE
+# BETWEEN INSTALLS, and that hazard is nil here — this has only ever been applied
+# on the unmerged dev-loop/dev-improve checkout, and concurrency changes only HOW
+# the index is built, never WHAT exists afterward.
 class AddServiceCorrelationIndexToSdwanFlowSamples < ActiveRecord::Migration[8.0]
+  disable_ddl_transaction!
+
   def change
     add_index :system_sdwan_flow_samples,
               %i[account_id dst_ip dst_port observed_at],
-              name: "index_system_sdwan_flow_samples_on_service_correlation"
+              name: "index_system_sdwan_flow_samples_on_service_correlation",
+              algorithm: :concurrently,
+              if_not_exists: true
   end
 end
