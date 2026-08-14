@@ -12,7 +12,19 @@ module Sdwan
         { mapping_id: mapping.id }
       end
 
-      def summarize = "Update port mapping #{params[:mapping_id]}"
+      # IMP-3a563becb7d7: name the mapping on the approval card
+      # (Ai::DeferredOperationApprovalContent renders preview[:summary]) — the
+      # row still exists when the card is composed, and PortMapping validates
+      # a name. The sentence matches PortMappingsController#update's gate
+      # description verbatim, so the two surfaces naming this one operation
+      # cannot disagree (the IMP-ee57d0fbe859 lesson). The bare id is only
+      # the floor for a row already gone.
+      def summarize
+        mapping = ::Sdwan::PortMapping.find_by(id: params[:mapping_id])
+        return "Update SDWAN port mapping #{params[:mapping_id]}" unless mapping
+
+        "Update SDWAN port mapping #{mapping.name} on #{mapping.network.name}"
+      end
 
       private
 

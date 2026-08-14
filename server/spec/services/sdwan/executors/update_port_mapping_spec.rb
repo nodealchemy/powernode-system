@@ -98,4 +98,28 @@ RSpec.describe Sdwan::Executors::UpdatePortMapping do
     expect(error).to be_nil
     expect(mapping.reload.sdwan_network_id).to eq(sibling.id)
   end
+
+  # IMP-3a563becb7d7 — #summarize is the approval/notification body
+  # (Ai::DeferredOperationApprovalContent.title and .message both render
+  # preview[:summary]). It read "Update port mapping <uuid>" — a bare UUID —
+  # while PortMappingsController#update's gate description for the SAME
+  # operation reads "Update SDWAN port mapping ssh-ingress on wan-core". The
+  # card renders the controller's sentence verbatim so the two surfaces
+  # cannot disagree; the bare id is only the floor for a row already gone.
+  describe ".preview" do
+    it "names the mapping and network an operator recognises, not a bare UUID" do
+      mapping.update!(name: "ssh-ingress")
+      network.update!(name: "wan-core")
+
+      preview = described_class.preview({ mapping_id: mapping.id })
+
+      expect(preview[:summary]).to eq("Update SDWAN port mapping ssh-ingress on wan-core")
+    end
+
+    it "falls back to the bare id when the mapping is gone" do
+      preview = described_class.preview({ mapping_id: "gone" })
+
+      expect(preview[:summary]).to eq("Update SDWAN port mapping gone")
+    end
+  end
 end
