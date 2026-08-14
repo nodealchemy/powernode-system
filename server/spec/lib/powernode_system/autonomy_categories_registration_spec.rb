@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require "ripper"
 
 # Confirms the system extension's engine initializer
 # ("powernode_system.autonomy_categories", lib/powernode_system/engine.rb)
@@ -99,5 +100,114 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
     expect(seeded_categories).to include("system.instance_reboot")
     expect(Ai::InterventionPolicy.registered_categories)
       .to include("system.instance_reprovision", "sdwan.network_create")
+  end
+
+  # INVERSE enumeration, and the guard the two examples above cannot be: they
+  # ask "is everything reachable registered?", which no amount of dead
+  # vocabulary can fail. This asks the other question — "is everything
+  # registered still real?" — which `system.runtime_docker_tls_rotate` failed
+  # for three months (IMP-6e52d6aa53da).
+  #
+  # Registration is not cosmetic. It is the gate System::AutonomyActions#update
+  # passes (`category_registered?`), so a category registered here but seeded
+  # nowhere is one the bulk PATCH /api/v1/system/autonomy will happily
+  # `find_or_initialize_by` a policy row for — a persisted operator control for
+  # an action nothing can execute. The 2026-05-19 audit deleted that category's
+  # seed because no executor backed it, and left the registration standing.
+  #
+  # The remainder is PINNED rather than derived because "has a backing
+  # executor" is not mechanically decidable from here. Three are registered on
+  # purpose — they reach an operator through the Concierge/MCP path rather than
+  # through an agent seed, and the engine says so above their `concat`:
+  #
+  #   system.sdwan_federation_compose  -> Skills::SdwanFederationComposeExecutor
+  #   system.multi_tenant_isolation    -> Skills::MultiTenantIsolationExecutor
+  #   system.service_discovery_compose -> Skills::ServiceDiscoveryComposerExecutor
+  #
+  # The other three are listed to keep this example green, NOT to ratify them:
+  #
+  #   system.runtime_docker_host_provision
+  #   system.runtime_docker_host_decommission
+  #   system.runtime_k8s_cluster_create
+  #
+  # A full-tree grep finds all three ONLY in the engine's registration block —
+  # the same shape the ghost had — but deleting them is a decision, not a
+  # sweep, so they are tracked as recommendation
+  # 01a001ee-c755-76fb-82b8-a536a05fef4e. If you add a name to this list, say
+  # which executor backs it or why it is reserved.
+  #
+  # ASSUMPTION, stated because it is invisible in the code: the registry is
+  # process-global, so this selects `system.`/`sdwan.`-prefixed names from
+  # EVERY engine that ran, not just this one. Today that is exactly this
+  # extension — `register_categories!` has one production call site (the
+  # `concat` block below this file's subject) and core's STATIC_CATEGORIES
+  # holds no such prefix — but a sibling extension registering one would red
+  # this example in a maintainer checkout while public CI stayed green. That is
+  # the correct failure (the bulk PATCH accepts those names too); it just needs
+  # to be read as "who else registered this?", not as a bug here.
+  it "registers no system category that nothing seeds, executes or gates" do
+    deliberately_unseeded = %w[
+      system.multi_tenant_isolation
+      system.runtime_docker_host_decommission
+      system.runtime_docker_host_provision
+      system.runtime_k8s_cluster_create
+      system.sdwan_federation_compose
+      system.service_discovery_compose
+    ].sort
+
+    extension_registered = Ai::InterventionPolicy.registered_categories
+                                                 .select { |cat| cat.start_with?("system.", "sdwan.") }
+
+    expect((extension_registered - seeded_categories).sort).to eq(deliberately_unseeded),
+                                                              "the set of extension categories that are REGISTERED but seeded nowhere changed. " \
+                                                              "Each one is a control PATCH /api/v1/system/autonomy will create a policy row for; " \
+                                                              "a new entry needs a backing executor (and a note above), a removed entry needs " \
+                                                              "this list updated."
+  end
+
+  # Coupling guard for the two halves of a category removal. Deleting a
+  # category's registration is only half the job: the seeded KB article
+  # `container-runtime-troubleshooting` went on telling operators to "rotate
+  # cert via `system.runtime_docker_tls_rotate`" for three months after the
+  # seed that created its policy row was deleted, and that article is shipped
+  # into the knowledge base — and into Concierge RAG — on every seed run.
+  #
+  # Scans the seed SOURCES because the seeds ARE the shipped text, and LEXES
+  # them with Ripper rather than dropping lines that start with `#`. A
+  # line-based comment filter is wrong here in both directions: KB articles are
+  # markdown heredocs, so it silently discards every `#`/`##` heading
+  # (system_kb_seed.rb's own "## Docker" among them) and a future article
+  # naming the action in a heading would walk straight past. Keeping only
+  # `:on_tstring_content` takes every string and heredoc body — the
+  # operator-facing prose AND the seeded policy keys, so a re-seeded row is
+  # caught too — while excluding Ruby comments exactly, which matters because
+  # system_runtime_manager_agent.rb correctly RECORDS the removal in a `#`
+  # block. Recording history is the opposite of instructing someone to use it.
+  it "ships no seeded operator-facing text naming the removed docker-TLS action" do
+    seed_strings = Dir[File.join(seed_dir, "*.rb")].sort.flat_map do |path|
+      Ripper.lex(File.read(path))
+            .select { |(_pos, type, _tok, _state)| type == :on_tstring_content }
+            .map { |(_pos, _type, tok, _state)| [ File.basename(path), tok ] }
+    end
+
+    offenders = seed_strings.select { |(_file, text)| text.include?("system.runtime_docker_tls_rotate") }
+                            .map(&:first).uniq
+
+    expect(offenders).to be_empty,
+                         "seed file(s) #{offenders.join(', ')} still ship operator-facing text naming " \
+                         "system.runtime_docker_tls_rotate, which the 2026-05-19 audit removed because " \
+                         "nothing executes it"
+
+    # Positive twin, scoped to the file that carried the bad advice: the same
+    # scan sees the KB article's REPLACEMENT sentence, so an empty `offenders`
+    # means the text was corrected rather than that the scan reads nothing (a
+    # moved seed dir, a lexer returning no string tokens). Scoped deliberately
+    # — counting `system.cert_rotate` across ALL seeds is satisfied by
+    # fleet_autonomy_agent.rb's policy key on its own, and would stay green
+    # with the article's replacement sentence deleted outright.
+    kb_replacement = seed_strings.count do |(file, text)|
+      file == "system_kb_seed.rb" && text.include?("system.cert_rotate")
+    end
+    expect(kb_replacement).to be >= 1
   end
 end
