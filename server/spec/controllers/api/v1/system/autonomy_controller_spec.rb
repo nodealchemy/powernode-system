@@ -235,5 +235,88 @@ RSpec.describe "Api::V1::System::Autonomy", type: :request do
           .to exist
       end
     end
+
+    # IMP-eb60db901f5f — three more registrations of the same shape, decided
+    # per-category rather than swept. Each turned out to be a second SPELLING of
+    # a capability that already had one, not a capability of its own: the
+    # 2026-05-10 five-agent split (d579be93) wrote BOTH the seeded policy name
+    # and the executor CLASS name for the same action into one `concat`, so
+    # `system.runtime_docker_host_provision` (the shape of
+    # System::Executors::Runtime::ProvisionDockerHost) shipped beside the seeded
+    # `system.runtime_docker_provision` that names the same operation.
+    #
+    # Those executor classes DO exist and are real implementations, not stubs —
+    # `git grep -l ProvisionDockerHost` returns
+    # app/services/system/executors/runtime/{provision,decommission}_docker_host.rb
+    # and bootstrap_k3s_cluster.rb. They are named here because that is the
+    # trap: the removed category names grep to nothing, but the CLASS names grep
+    # to working code, and a maintainer could read that as evidence the removed
+    # spelling was backed. It is not. An executor declares no category — the
+    # link is the `executor_class:` string at a gate site — and nothing in the
+    # tree passes any of those three class names, so they are evidence of the
+    # vocabulary, not of a backing. (The seeded spellings below have no gate
+    # site either; the only runtime executor with a call site is
+    # DecommissionK3sCluster, under system.runtime_k8s_cluster_decommission.
+    # That gap is a separate finding — it does not make either spelling more
+    # backed than the other, and the seeded one is the survivor because it is
+    # the one with policy rows.)
+    #
+    # `git log -S <name> --all` over every path finds each of the three in
+    # exactly two commits: d579be93 (added) and eac08d0b (annotated in
+    # autonomy_categories_registration_spec.rb). Never seeded, never gated,
+    # never executed. Live powernode_production held zero
+    # ai_intervention_policies / ai_deferred_operations /
+    # system_fleet_remediation_outcomes rows for any of them at removal time
+    # (its 7 `system.runtime_%` policy rows match the seed exactly), so no
+    # operator data was stranded.
+    context "with categories that were duplicate spellings of a live capability" do
+      # removed duplicate => the seeded spelling of the SAME capability, which
+      # must keep working. Pairing them makes the twin per-NAME: a mutant that
+      # deletes the wrong side of a pair reds on the surviving half.
+      let(:duplicate_to_live) do
+        {
+          "system.runtime_docker_host_provision"    => "system.runtime_docker_provision",
+          "system.runtime_docker_host_decommission" => "system.runtime_docker_decommission",
+          "system.runtime_k8s_cluster_create"       => "system.runtime_k8s_cluster_bootstrap"
+        }
+      end
+
+      it "rejects every duplicate spelling, persists none of them, and still accepts each live one" do
+        updates = duplicate_to_live.flat_map do |duplicate, live|
+          [ { action_category: duplicate, policy: "auto_approve" },
+            { action_category: live,      policy: "auto_approve" } ]
+        end
+
+        patch "/api/v1/system/autonomy",
+              params: { updates: updates }.to_json,
+              headers: auth_headers_for(manage_user).merge("Content-Type" => "application/json")
+
+        expect(response).to have_http_status(:unprocessable_content)
+
+        reported = Array(json_response.dig("details", "errors")).join(" ")
+        unreported = duplicate_to_live.keys.reject { |cat| reported.include?("unknown category #{cat}") }
+        expect(unreported).to be_empty,
+                              "PATCH /api/v1/system/autonomy did not reject #{unreported.join(', ')} as an " \
+                              "unknown category, so the registry still accepts a spelling nothing can execute"
+
+        # The EFFECT, not the message: the concern collects errors and keeps
+        # going, so a 422 for the batch is compatible with rows having been
+        # written for individual entries in it.
+        persisted_duplicates = Ai::InterventionPolicy
+          .where(account: account, action_category: duplicate_to_live.keys)
+          .pluck(:action_category)
+        expect(persisted_duplicates).to be_empty,
+                                        "the bulk PATCH created durable operator controls for #{persisted_duplicates.join(', ')} " \
+                                        "— actions no executor, seed or gate site backs"
+
+        # Positive twin, one per removed name: each live spelling in the same
+        # batch persisted, so the rejections are about those three names and not
+        # about the request shape, the account, or a registry that lost the
+        # whole `system.runtime_` family.
+        expect(Ai::InterventionPolicy.where(account: account, action_category: duplicate_to_live.values)
+                                     .pluck(:action_category))
+          .to match_array(duplicate_to_live.values)
+      end
+    end
   end
 end

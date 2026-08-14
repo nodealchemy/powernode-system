@@ -116,25 +116,24 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
   # seed because no executor backed it, and left the registration standing.
   #
   # The remainder is PINNED rather than derived because "has a backing
-  # executor" is not mechanically decidable from here. Three are registered on
-  # purpose — they reach an operator through the Concierge/MCP path rather than
-  # through an agent seed, and the engine says so above their `concat`:
+  # executor" is not mechanically decidable from here. All three that remain are
+  # registered on purpose — they reach an operator through the Concierge/MCP
+  # path rather than through an agent seed, and the engine says so above their
+  # `concat`:
   #
   #   system.sdwan_federation_compose  -> Skills::SdwanFederationComposeExecutor
   #   system.multi_tenant_isolation    -> Skills::MultiTenantIsolationExecutor
   #   system.service_discovery_compose -> Skills::ServiceDiscoveryComposerExecutor
   #
-  # The other three are listed to keep this example green, NOT to ratify them:
-  #
-  #   system.runtime_docker_host_provision
-  #   system.runtime_docker_host_decommission
-  #   system.runtime_k8s_cluster_create
-  #
-  # A full-tree grep finds all three ONLY in the engine's registration block —
-  # the same shape the ghost had — but deleting them is a decision, not a
-  # sweep, so they are tracked as recommendation
-  # 01a001ee-c755-76fb-82b8-a536a05fef4e. If you add a name to this list, say
-  # which executor backs it or why it is reserved.
+  # This list held three more until IMP-eb60db901f5f — runtime_docker_host_
+  # provision / _decommission and runtime_k8s_cluster_create — annotated here
+  # rather than decided. They turned out to be duplicate SPELLINGS of three
+  # seeded categories (docker_provision, docker_decommission,
+  # k8s_cluster_bootstrap) rather than reserved capabilities, so their
+  # registrations were deleted; the engine records why, and
+  # spec/controllers/api/v1/system/autonomy_controller_spec.rb pins the
+  # consequence at the endpoint. If you add a name to this list, say which
+  # executor backs it or why it is reserved.
   #
   # ASSUMPTION, stated because it is invisible in the code: the registry is
   # process-global, so this selects `system.`/`sdwan.`-prefixed names from
@@ -148,9 +147,6 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
   it "registers no system category that nothing seeds, executes or gates" do
     deliberately_unseeded = %w[
       system.multi_tenant_isolation
-      system.runtime_docker_host_decommission
-      system.runtime_docker_host_provision
-      system.runtime_k8s_cluster_create
       system.sdwan_federation_compose
       system.service_discovery_compose
     ].sort

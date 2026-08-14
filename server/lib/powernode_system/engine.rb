@@ -706,20 +706,51 @@ module PowernodeSystem
         # one. Re-register only alongside a real implementation AND a seeded
         # policy row.
         #
+        # Three further names are ABSENT for a different reason (IMP-eb60db901f5f)
+        # — they were never capabilities, only second SPELLINGS of the three
+        # seeded ones directly below:
+        #
+        #   system.runtime_docker_host_provision    -> system.runtime_docker_provision
+        #   system.runtime_docker_host_decommission -> system.runtime_docker_decommission
+        #   system.runtime_k8s_cluster_create       -> system.runtime_k8s_cluster_bootstrap
+        #
+        # The 2026-05-10 five-agent split (d579be93) added this whole block and
+        # wrote both spellings of each action into it: the seeded policy name AND
+        # the executor CLASS name. `git log -S` over every path finds each of the
+        # three in that commit and nowhere else — never seeded, never gated,
+        # never executed — and live powernode_production held zero policy /
+        # deferred-operation / remediation-outcome rows for them when they were
+        # removed on 2026-08-14.
+        #
+        # The executor classes they were spelled after are REAL and are not
+        # evidence to the contrary: app/services/system/executors/runtime/
+        # {provision_docker_host,decommission_docker_host,bootstrap_k3s_cluster}.rb
+        # are working implementations. An executor declares no action_category —
+        # the binding is the `executor_class:` string a gate site passes — and
+        # today NO gate site names any of those three (the only runtime executor
+        # with a call site is DecommissionK3sCluster, from core's
+        # Api::V1::Devops::Kubernetes::ClustersController#destroy under
+        # system.runtime_k8s_cluster_decommission). So the classes are evidence
+        # of the vocabulary, never of a backing for the removed names. When a
+        # Docker/K3s surface does get gated — e.g.
+        # Devops::Docker::HostsController#create, which is permission-gated
+        # (`devops.docker.manage`) but NOT autonomy-gated today — cite the
+        # SEEDED spelling above; do not re-add a second one.
+        #
         # Registration is not cosmetic: it is
         # the gate System::AutonomyActions#update passes, so a
         # registered-but-unseeded category is one the bulk
         # PATCH /api/v1/system/autonomy will `find_or_initialize_by` a policy
         # row for, giving an operator a durable control over an action nothing
         # can execute. Pinned by
-        # spec/lib/powernode_system/autonomy_categories_registration_spec.rb.
+        # spec/lib/powernode_system/autonomy_categories_registration_spec.rb and,
+        # through the endpoint itself, by
+        # spec/controllers/api/v1/system/autonomy_controller_spec.rb.
         categories.concat(%w[
           system.runtime_docker_provision system.runtime_docker_decommission
           system.runtime_k8s_cluster_bootstrap system.runtime_k8s_cluster_decommission
           system.runtime_k8s_node_join system.runtime_k8s_node_drain
           system.runtime_k8s_runtime_upgrade
-          system.runtime_docker_host_provision system.runtime_docker_host_decommission
-          system.runtime_k8s_cluster_create
         ])
 
         # Instance pools (slice 7)
