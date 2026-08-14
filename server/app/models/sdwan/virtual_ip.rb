@@ -80,6 +80,16 @@ module Sdwan
 
     # ---- Mutating ops ----------------------------------------------
 
+    # IMP-6c482005db87 — the create-activation rule as ONE symbol for the
+    # three sites that must agree: Sdwan::Executors::CreateVirtualIp#perform
+    # (the write) and the REST/MCP surfaces' never-saved validation
+    # candidates, which must see exactly the row the executor would persist.
+    # A VIP created naming holders starts life "active"; a holderless VIP
+    # keeps the column-default "pending" until a holder is assigned.
+    def activate_if_held
+      self.state = "active" if Array(holder_peer_ids).any?
+    end
+
     # Slice 9b — manual failover for non-anycast VIPs. Pops the head of
     # `holder_peer_ids` (current primary), pushes it to the back of
     # `failover_holder_peer_ids`, and promotes the head of failover to

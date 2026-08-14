@@ -21,6 +21,26 @@ RSpec.describe Ai::Tools::SdwanTool do
     tool.execute(params: { action: action }.merge(rest))
   end
 
+  # Shared approval-gate harness (IMP-6c482005db87). Tail of the approval
+  # path — Ai::ApprovalRequest ultimately calls execute_now!; the presence
+  # assertion keeps a missing gate failing by name instead of as `undefined
+  # method for nil`. Older gate describes below still carry local copies
+  # with action-specific failure messages; the cross-file extraction is
+  # queued separately (IMP-b8e8e9d6e4d9).
+  def approve_latest_deferred!
+    deferred = Ai::DeferredOperation.order(created_at: :desc).first
+    expect(deferred).to be_present, "no deferred operation was parked — the action was applied inline"
+    deferred.execute_now!
+  end
+
+  # Forces the gate's :proceed branch — the default policy resolution is
+  # require_approval, so nothing else exercises the inline path.
+  def auto_approve_policy!
+    allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+      { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+    )
+  end
+
   describe ".action_definitions" do
     it "registers all 8 Phase O6 actions" do
       keys = described_class.action_definitions.keys
@@ -1453,6 +1473,179 @@ RSpec.describe Ai::Tools::SdwanTool do
       }.not_to change(Ai::DeferredOperation, :count)
       expect(@result[:success]).to be false
       expect(foreign.reload.revoked?).to be(false)
+    end
+  end
+
+  # IMP-6c482005db87 — MCP/HTTP parity for the two ADDITIVE data-plane writes
+  # whose executors existed but had no caller: create_firewall_rule and
+  # create_virtual_ip both persisted inline, so the seeded
+  # sdwan.{firewall_rule,virtual_ip}_create policies matched nothing this tool
+  # did while the REST twins now gate the same categories.
+  #
+  # Nothing is stubbed between the tool and the executor: the deferred op is
+  # executed for real, so a params-key mismatch fails as RecordNotFound /
+  # RecordInvalid rather than passing on a well-formed-looking hash.
+  describe "system_sdwan_create_firewall_rule approval gate (IMP-6c482005db87)" do
+    let(:network) { create(:sdwan_network, account: account) }
+
+    let(:create_params) do
+      { network_id: network.id, name: "allow-db", firewall_action: "accept",
+        direction: "ingress", protocol: "tcp", priority: 42,
+        port_from: 5432, port_to: 5433 }
+    end
+
+    it "defers the create through the approval gate rather than writing inline" do
+      r = call("system_sdwan_create_firewall_rule", **create_params)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:pending]).to be true
+      expect(::Sdwan::FirewallRule.count).to eq(0),
+                                             "MCP create_firewall_rule wrote the nftables rule without an approval gate"
+    end
+
+    # port_from/port_to must be re-keyed to port_range_hash for the executor's
+    # create! — the raw column is an int4range a Hash cannot mass-assign —
+    # and the card scopes its network label by attributes[:account_id]
+    # (stripped again by Base#attrs before perform).
+    it "parks a deferred operation the executor can consume" do
+      call("system_sdwan_create_firewall_rule", **create_params)
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred).to be_present, "no deferred operation was parked — the create was applied inline"
+      expect(deferred.action_category).to eq("sdwan.firewall_rule_create")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::CreateFirewallRule")
+      expect(deferred.params["network_id"]).to eq(network.id)
+      expect(deferred.params.dig("attributes", "action")).to eq("accept")
+      expect(deferred.params.dig("attributes", "port_range_hash", "from")).to eq(5432)
+      expect(deferred.params.dig("attributes", "account_id")).to eq(account.id)
+    end
+
+    it "creates the rule when the deferred op is approved" do
+      call("system_sdwan_create_firewall_rule", **create_params)
+
+      expect { approve_latest_deferred! }.to change(::Sdwan::FirewallRule, :count).by(1)
+
+      rule = ::Sdwan::FirewallRule.order(created_at: :desc).first
+      expect(rule.name).to eq("allow-db")
+      expect(rule.action).to eq("accept")
+      expect(rule.port_range_hash).to eq({ from: 5432, to: 5433 })
+      expect(rule.account_id).to eq(account.id)
+    end
+
+    it "creates inline and serializes the rule when the policy auto-approves" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_create_firewall_rule", **create_params)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:firewall_rule][:name]).to eq("allow-db"),
+                                                 "answered success over a rule that was not serialized back"
+      expect(::Sdwan::FirewallRule.count).to eq(1)
+    end
+
+    # Validated BEFORE the gate, like accept_federation_peer's up-front
+    # checks: a doomed create must fail with its field errors immediately
+    # rather than park an approval that can only ever fail.
+    it "rejects an invalid rule before the gate without parking anything" do
+      expect {
+        @result = call("system_sdwan_create_firewall_rule",
+                       network_id: network.id, name: "bad", firewall_action: "explode")
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to include("Action"), "the field-level error must survive pre-gate validation"
+    end
+
+    it "refuses a network outside the caller's account without parking anything" do
+      foreign = create(:sdwan_network)
+
+      expect {
+        @result = call("system_sdwan_create_firewall_rule", **create_params.merge(network_id: foreign.id))
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(foreign.firewall_rules.count).to eq(0)
+    end
+  end
+
+  describe "system_sdwan_create_virtual_ip approval gate (IMP-6c482005db87)" do
+    let(:network) { create(:sdwan_network, account: account) }
+    let!(:holder) { create(:sdwan_peer, account: account, network: network) }
+
+    let(:create_params) do
+      { network_id: network.id, name: "svc-vip", cidr: "fd00:beef::9/128",
+        holder_peer_ids: [ holder.id ] }
+    end
+
+    it "defers the create through the approval gate rather than writing inline" do
+      r = call("system_sdwan_create_virtual_ip", **create_params)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:pending]).to be true
+      expect(::Sdwan::VirtualIp.count).to eq(0),
+                                          "MCP create_virtual_ip allocated the VIP without an approval gate"
+    end
+
+    it "parks a deferred operation the executor can consume" do
+      call("system_sdwan_create_virtual_ip", **create_params)
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred).to be_present, "no deferred operation was parked — the create was applied inline"
+      expect(deferred.action_category).to eq("sdwan.virtual_ip_create")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::CreateVirtualIp")
+      expect(deferred.params["network_id"]).to eq(network.id)
+      expect(deferred.params.dig("attributes", "holder_peer_ids")).to eq([ holder.id ])
+      expect(deferred.params.dig("attributes", "account_id")).to eq(account.id)
+    end
+
+    # The executor owns the whole create ceremony (activation + slice-9b
+    # initial assignment row) so the approved VIP is indistinguishable from
+    # one created inline.
+    it "creates an ACTIVE vip with its initial assignment row when approved" do
+      call("system_sdwan_create_virtual_ip", **create_params)
+
+      expect { approve_latest_deferred! }.to change(::Sdwan::VirtualIp, :count).by(1)
+
+      vip = ::Sdwan::VirtualIp.order(created_at: :desc).first
+      expect(vip.state).to eq("active")
+      expect(vip.assignments.count).to eq(1),
+                                       "approved create left phantom holder state with no assignment history row"
+      expect(vip.assignments.first.sdwan_peer_id).to eq(holder.id)
+      expect(vip.assignments.first.reason).to eq("initial")
+    end
+
+    it "creates inline and serializes the vip when the policy auto-approves" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_create_virtual_ip", **create_params)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:virtual_ip][:name]).to eq("svc-vip"),
+                                              "answered success over a VIP that was not serialized back"
+      expect(r[:data][:virtual_ip][:state]).to eq("active")
+      expect(::Sdwan::VirtualIp.count).to eq(1)
+      expect(::Sdwan::VirtualIp.first.assignments.count).to eq(1)
+    end
+
+    it "rejects an invalid vip before the gate without parking anything" do
+      expect {
+        @result = call("system_sdwan_create_virtual_ip", **create_params.merge(anycast: true))
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to include("holder"), "the field-level error must survive pre-gate validation"
+      expect(::Sdwan::VirtualIp.count).to eq(0)
+    end
+
+    it "refuses a network outside the caller's account without parking anything" do
+      foreign = create(:sdwan_network)
+
+      expect {
+        @result = call("system_sdwan_create_virtual_ip", **create_params.merge(network_id: foreign.id))
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(foreign.virtual_ips.count).to eq(0)
     end
   end
 

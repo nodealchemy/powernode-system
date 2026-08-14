@@ -71,6 +71,51 @@ RSpec.describe Sdwan::Executors::CreateFirewallRule do
     end
   end
 
+  # IMP-6c482005db87 — the operator surfaces (REST + MCP) now park this
+  # executor's params through the gate, so the attribute shapes it must accept
+  # are the REPLAYED ones: jsonb round-trips every nested key to a String.
+  # The gate lives at those call sites, NOT here — internal composition
+  # (MultiTenantIsolationExecutor:408) keeps calling .execute synchronously.
+  describe "gated-surface replay + composer path" do
+    let(:operation) do
+      ::Ai::DeferredOperation.create!(
+        account: account, action_category: "sdwan.firewall_rule_create",
+        executor_class: described_class.name, params: {}
+      )
+    end
+
+    it "applies a string-keyed port_range_hash exactly as jsonb replay delivers it" do
+      network = create(:sdwan_network, account: account)
+
+      result = described_class.execute(
+        { network_id: network.id,
+          attributes: rule_attributes.merge(
+            protocol: "tcp", "port_range_hash" => { "from" => 5432, "to" => 5433 }
+          ) },
+        deferred_operation: operation
+      )
+
+      expect(result[:success]).to be true
+      rule = ::Sdwan::FirewallRule.find(result[:data][:rule_id])
+      expect(rule.port_range_hash).to eq({ from: 5432, to: 5433 })
+    end
+
+    it "performs immediately for the composer and opens no approval-gate rows" do
+      network = create(:sdwan_network)
+
+      result = described_class.execute(
+        { network_id: network.id, attributes: rule_attributes },
+        deferred_operation: nil
+      )
+
+      expect(result[:success]).to be true
+      expect(::Sdwan::FirewallRule.find(result[:data][:rule_id])).to be_present
+      expect(::Ai::DeferredOperation.count).to eq(0),
+                                               "the executor itself opened a deferred-operation row — gating belongs to the surfaces"
+      expect(::Ai::ApprovalRequest.count).to eq(0)
+    end
+  end
+
   # IMP-3a563becb7d7 — #summarize is the approval/notification body
   # (Ai::DeferredOperationApprovalContent.title and .message both render
   # preview[:summary]). It read "Add firewall rule to SDWAN network <uuid>" —

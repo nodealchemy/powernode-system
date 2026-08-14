@@ -93,6 +93,109 @@ RSpec.describe Sdwan::Executors::CreateVirtualIp do
       expect(result[:success]).to be true
       expect(::Sdwan::VirtualIp.find(result[:data][:vip_id]).sdwan_network_id).to eq(network.id)
     end
+
+    # IMP-6c482005db87 gated the operator surfaces (REST + MCP) — the gate
+    # lives at those call sites, NOT inside this executor. Internal
+    # composition (ServiceDiscoveryComposerExecutor, and the MTI executor for
+    # the firewall sibling) keeps calling .execute synchronously, ungated:
+    # the executor itself must never open an approval or deferred-operation
+    # row.
+    it "performs immediately for the composer and opens no approval-gate rows" do
+      network = create(:sdwan_network)
+      peer = create(:sdwan_peer, account: network.account, network: network)
+
+      result = described_class.execute(
+        { network_id: network.id,
+          attributes: vip_attributes.merge(cidr: "fd00:beef::7/128", holder_peer_ids: [ peer.id ]) },
+        deferred_operation: nil
+      )
+
+      expect(result[:success]).to be true
+      expect(::Ai::DeferredOperation.count).to eq(0),
+                                               "the executor itself opened a deferred-operation row — gating belongs to the surfaces"
+      expect(::Ai::ApprovalRequest.count).to eq(0)
+      # The create primitive is the same on every path: the composer's VIP
+      # gets the assignment audit row too, attributed to no user.
+      vip = ::Sdwan::VirtualIp.find(result[:data][:vip_id])
+      expect(vip.assignments.count).to eq(1)
+      expect(vip.assignments.first.triggered_by_user_id).to be_nil
+    end
+  end
+
+  # IMP-6c482005db87 — the create ceremony travels WITH the write. The two
+  # surfaces used to activate a holder-bearing VIP and open the slice-9b
+  # initial assignment row inline AFTER save; on the gate's :pending branch
+  # the executor is the only writer, so both belong here — otherwise an
+  # approved create yields a phantom holder with no history row and a VIP
+  # stuck "pending".
+  describe "state activation + initial assignment bootstrap" do
+    let(:network) { create(:sdwan_network, account: account) }
+    let(:peer_a)  { create(:sdwan_peer, account: account, network: network) }
+    let(:peer_b)  { create(:sdwan_peer, account: account, network: network) }
+    let(:requester) { create(:user, account: account) }
+    let(:operation) do
+      ::Ai::DeferredOperation.create!(
+        account: account, action_category: "sdwan.virtual_ip_create",
+        executor_class: described_class.name, params: {}, requested_by: requester
+      )
+    end
+
+    def execute!(attributes)
+      described_class.execute(
+        { network_id: network.id, attributes: attributes },
+        deferred_operation: operation
+      )
+    end
+
+    it "activates a holder-bearing VIP and opens the primary holder's assignment row" do
+      result = execute!(
+        { name: "held-vip", cidr: "fd00:beef::2/128", anycast: false,
+          holder_peer_ids: [ peer_a.id, peer_b.id ],
+          advertised_med: 0, advertised_local_pref: 100 }
+      )
+
+      expect(result[:success]).to be true
+      vip = ::Sdwan::VirtualIp.find(result[:data][:vip_id])
+      expect(vip.state).to eq("active")
+      expect(vip.assignments.count).to eq(1),
+                                       "a static VIP opens ONE assignment row — the primary holder, not every listed holder"
+      assignment = vip.assignments.first
+      expect(assignment.sdwan_peer_id).to eq(peer_a.id)
+      expect(assignment.reason).to eq("initial")
+      expect(assignment.released_at).to be_nil
+      expect(assignment.triggered_by_user_id).to eq(requester.id),
+                                                 "attribution must survive the approval window via deferred_operation.requested_by"
+    end
+
+    it "opens one assignment row per holder for an anycast VIP" do
+      result = execute!(
+        { name: "anycast-vip", cidr: "fd00:beef::3/128", anycast: true,
+          holder_peer_ids: [ peer_a.id, peer_b.id ],
+          advertised_med: 0, advertised_local_pref: 100 }
+      )
+
+      expect(result[:success]).to be true
+      vip = ::Sdwan::VirtualIp.find(result[:data][:vip_id])
+      expect(vip.state).to eq("active")
+      expect(vip.assignments.count).to eq(2)
+      expect(vip.assignments.map(&:sdwan_peer_id)).to contain_exactly(peer_a.id, peer_b.id)
+      expect(vip.assignments.map(&:reason).uniq).to eq([ "initial" ])
+    end
+
+    # Negative control: activation and assignment are HOLDER-triggered — a
+    # holderless VIP must keep the column-default "pending" state and an
+    # empty history, exactly as both inline surfaces behaved.
+    it "leaves a holderless VIP pending with no assignment rows" do
+      result = execute!(
+        { name: "parked-vip", cidr: "fd00:beef::4/128", anycast: false,
+          advertised_med: 0, advertised_local_pref: 100 }
+      )
+
+      expect(result[:success]).to be true
+      vip = ::Sdwan::VirtualIp.find(result[:data][:vip_id])
+      expect(vip.state).to eq("pending")
+      expect(vip.assignments.count).to eq(0)
+    end
   end
 
   # IMP-3a563becb7d7 — #summarize is the approval/notification body

@@ -31,23 +31,50 @@ module Api
             render_success(virtual_ip: serialize_vip_full(@vip))
           end
 
+          # IMP-6c482005db87: routed through Ai::AutonomyGate.
+          # Sdwan::Executors::CreateVirtualIp existed, tenancy-hardened and
+          # card-labeled, but had no caller — this wrote the VIP inline behind
+          # the permission check, so the seeded sdwan.virtual_ip_create policy
+          # matched nothing an operator did, while DELETE and failover below
+          # have been gated since slice 9b.
+          #
+          # Same response contract as PortMappingsController#create
+          # (IMP-bf996c7abcb4): validated before the gate so an unsaveable
+          # payload keeps its field-level 422 and opens no audit row; 202 with
+          # the deferred-operation id on :pending; 201 with the serialized row
+          # on :proceed. The slice-9b create ceremony (activation + initial
+          # assignment row) moved INTO the executor — gate! never calls
+          # on_proceed on :pending, so ceremony left here would silently not
+          # happen on every approved create.
           def create
             require_permission("system.sdwan.vips.manage")
-            attrs = vip_params
+            attrs = vip_params.to_h
 
-            ::Sdwan::VirtualIp.transaction do
-              vip = @network.virtual_ips.new(attrs.merge(account_id: @account.id))
-              vip.state = "active" if Array(vip.holder_peer_ids).any?
-              vip.save!
+            # Never saved — the executor's save! stays the authority. The
+            # candidate mirrors the executor's build (including activation,
+            # via the model's one activate_if_held symbol) so validation sees
+            # exactly the row that would be written.
+            candidate = @network.virtual_ips.new(attrs.merge(account_id: @account.id))
+            candidate.activate_if_held
+            return render_validation_error(candidate) unless candidate.valid?
 
-              # Slice 9b — initial assignment row for the primary holder
-              # (or every holder if anycast). Builds the audit trail from
-              # row 0 — no "phantom" current state without a history row.
-              create_initial_assignments!(vip)
-              render_success({ virtual_ip: serialize_vip_full(vip.reload) }, status: :created)
-            end
-          rescue ActiveRecord::RecordInvalid => e
-            render_validation_error(e.record)
+            gate!(
+              action_category: "sdwan.virtual_ip_create",
+              executor_class: "Sdwan::Executors::CreateVirtualIp",
+              # account_id rides along ONLY for the approval card's scoped
+              # network label (Base.preview runs with deferred_operation:
+              # nil); Base#attrs strips it again before the executor's save!.
+              params: { network_id: @network.id, attributes: attrs.merge("account_id" => @account.id) },
+              source_type: "Sdwan::Network",
+              source_id: @network.id,
+              # Matches CreateVirtualIp#summarize so both surfaces of the
+              # approval speak one sentence (IMP-3a563becb7d7).
+              description: "Allocate SDWAN VIP '#{candidate.name}' on network #{@network.name}",
+              on_proceed: lambda { |result|
+                created = @network.virtual_ips.find(result.result&.dig(:data, :vip_id))
+                render_success({ virtual_ip: serialize_vip_full(created) }, status: :created)
+              }
+            )
           end
 
           def update
@@ -120,18 +147,6 @@ module Api
               :advertised_med, :advertised_local_pref, :state,
               tags: [], holder_peer_ids: [], failover_holder_peer_ids: [], metadata: {}
             )
-          end
-
-          def create_initial_assignments!(vip)
-            holders = vip.anycast? ? Array(vip.holder_peer_ids) : Array(vip.holder_peer_ids).first(1)
-            holders.compact.each do |peer_id|
-              vip.assignments.create!(
-                peer: ::Sdwan::Peer.find(peer_id),
-                assumed_at: Time.current,
-                reason: "initial",
-                triggered_by_user_id: current_user&.id
-              )
-            end
           end
 
           # When holder_peer_ids changes via update, close out assignments

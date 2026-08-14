@@ -41,6 +41,16 @@ module Ai
       # engine's category allowlist.
       ACCESS_GRANT_REVOKE_CATEGORY = "sdwan.access_grant_revoke"
 
+      # Autonomy action categories for the two additive data-plane creates
+      # (IMP-6c482005db87). Shared verbatim with FirewallRulesController#create
+      # and VirtualIpsController#create so the MCP and HTTP surfaces resolve
+      # the SAME policy — seeded notify_and_proceed on the SDWAN Manager and
+      # (agent-less) for the operator path
+      # (db/seeds/system_sdwan_manager_agent.rb) and registered in the
+      # engine's category allowlist.
+      FIREWALL_RULE_CREATE_CATEGORY = "sdwan.firewall_rule_create"
+      VIRTUAL_IP_CREATE_CATEGORY = "sdwan.virtual_ip_create"
+
       ACTION_PERMISSIONS = {
         "system_sdwan_list_networks"   => "system.sdwan.networks.read",
         "system_sdwan_get_network"     => "system.sdwan.networks.read",
@@ -239,7 +249,7 @@ module Ai
             parameters: { firewall_rule_id: { type: "string", required: true, description: "UUID of the SDWAN firewall rule to fetch" } }
           },
           "system_sdwan_create_firewall_rule" => {
-            description: "Create a firewall rule. Selectors accept {peer_id|tag|cidr|all} primitives. Port range is optional and only applies to tcp/udp.",
+            description: "Create a firewall rule. Selectors accept {peer_id|tag|cidr|all} primitives. Port range is optional and only applies to tcp/udp. Approval-gated (sdwan.firewall_rule_create) — under require_approval this returns pending: true with a deferred_operation_id and the rule is written only once an operator approves.",
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network this rule belongs to" },
               name: { type: "string", required: true, description: "Display name for the firewall rule" },
@@ -458,7 +468,7 @@ module Ai
           },
           # Slice 9b — Virtual IPs
           "system_sdwan_create_virtual_ip" => {
-            description: "Create a Virtual IP. Static mode (anycast=false) = single primary holder + ordered failover. Anycast mode (slice 9c iBGP) = all holders advertise simultaneously. CIDR is typically /32 (v4) or /128 (v6).",
+            description: "Create a Virtual IP. Static mode (anycast=false) = single primary holder + ordered failover. Anycast mode (slice 9c iBGP) = all holders advertise simultaneously. CIDR is typically /32 (v4) or /128 (v6). Approval-gated (sdwan.virtual_ip_create) — under require_approval this returns pending: true with a deferred_operation_id and the VIP is allocated only once an operator approves.",
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network the Virtual IP lives in" },
               name: { type: "string", required: true, description: "Display name for the Virtual IP" },
@@ -1090,17 +1100,47 @@ module Ai
         )
       end
 
+      # IMP-6c482005db87 — routed through Ai::AutonomyGate, mirroring the
+      # REST twin (FirewallRulesController#create): the executor existed with
+      # no caller, so the seeded sdwan.firewall_rule_create policy matched
+      # nothing this tool did. Sdwan::Executors::CreateFirewallRule performs
+      # the write server-side, so it survives the :pending path; this method
+      # mutates nothing on either branch.
+      #
+      # The candidate is validated BEFORE the gate (like
+      # accept_federation_peer's up-front checks): a doomed create fails with
+      # its field errors immediately rather than parking an approval that can
+      # only ever fail. Never saved — the executor's create! stays the
+      # authority. Account ownership is enforced HERE by account_networks,
+      # the same split the HTTP path uses (set_network guard, executor
+      # re-anchors through resolve_scoped).
       def create_firewall_rule(params)
         network = account_networks.find(params[:network_id])
-        rule = network.firewall_rules.new(account_id: @account.id)
-        assign_rule_attrs(rule, params)
-        rule.save!
-        success_result(firewall_rule: serialize_rule(rule.reload))
+        # account_id rides along ONLY for the approval card's scoped network
+        # label (Base.preview runs with deferred_operation: nil); Base#attrs
+        # strips it again before the executor's create!.
+        attrs = firewall_rule_attrs(params).merge(account_id: @account.id)
+
+        candidate = network.firewall_rules.new(attrs)
+        unless candidate.valid?
+          return error_result(candidate.errors.full_messages.join("; "))
+        end
+
+        gated_result(
+          action_category: FIREWALL_RULE_CREATE_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateFirewallRule",
+          executor_params: { network_id: network.id, attributes: attrs },
+          source_type: "Sdwan::Network",
+          source_id: network.id,
+          # Matches CreateFirewallRule#summarize so both surfaces of the
+          # approval speak one sentence (IMP-3a563becb7d7).
+          description: "Add firewall rule '#{candidate.name}' to SDWAN network #{network.name}"
+        ) { |result| { firewall_rule: serialize_rule(network.firewall_rules.find(result.result&.dig(:data, :rule_id))) } }
       end
 
       def update_firewall_rule(params)
         rule = account_firewall_rules.find(params[:firewall_rule_id])
-        assign_rule_attrs(rule, params)
+        rule.assign_attributes(firewall_rule_attrs(params))
         rule.save!
         success_result(firewall_rule: serialize_rule(rule.reload))
       end
@@ -1113,18 +1153,28 @@ module Ai
 
       # === Helpers ===
 
-      def assign_rule_attrs(rule, params)
-        rule.name      = params[:name]              if params.key?(:name) && params[:name]
-        rule.priority  = params[:priority].to_i     if params.key?(:priority) && params[:priority]
-        rule.action    = params[:firewall_action]   if params.key?(:firewall_action) && params[:firewall_action]
-        rule.direction = params[:direction]         if params.key?(:direction) && params[:direction]
-        rule.protocol  = params[:protocol]          if params.key?(:protocol) && params[:protocol]
-        rule.src_selector = params[:src_selector]   if params.key?(:src_selector) && !params[:src_selector].nil?
-        rule.dst_selector = params[:dst_selector]   if params.key?(:dst_selector) && !params[:dst_selector].nil?
-        rule.enabled   = params[:enabled]           if params.key?(:enabled) && !params[:enabled].nil?
+      # The ONE params→attributes mapping for firewall rules — update assigns
+      # it (assign_attributes), create parks it on the gate for
+      # Sdwan::Executors::CreateFirewallRule to replay into create!
+      # (IMP-6c482005db87). Guard style is per-key presence: an omitted key
+      # leaves the column untouched on update and takes the model default on
+      # create. port_from/port_to are re-keyed to :port_range_hash (the
+      # model's mass-assignable accessor — the raw column is an int4range a
+      # Hash cannot set).
+      def firewall_rule_attrs(params)
+        attrs = {}
+        attrs[:name]         = params[:name]            if params.key?(:name) && params[:name]
+        attrs[:priority]     = params[:priority].to_i   if params.key?(:priority) && params[:priority]
+        attrs[:action]       = params[:firewall_action] if params.key?(:firewall_action) && params[:firewall_action]
+        attrs[:direction]    = params[:direction]       if params.key?(:direction) && params[:direction]
+        attrs[:protocol]     = params[:protocol]        if params.key?(:protocol) && params[:protocol]
+        attrs[:src_selector] = params[:src_selector]    if params.key?(:src_selector) && !params[:src_selector].nil?
+        attrs[:dst_selector] = params[:dst_selector]    if params.key?(:dst_selector) && !params[:dst_selector].nil?
+        attrs[:enabled]      = params[:enabled]         if params.key?(:enabled) && !params[:enabled].nil?
         if params[:port_from] && params[:port_to]
-          rule.port_range_hash = { from: params[:port_from].to_i, to: params[:port_to].to_i }
+          attrs[:port_range_hash] = { from: params[:port_from].to_i, to: params[:port_to].to_i }
         end
+        attrs
       end
 
       def account_firewall_rules
@@ -1702,27 +1752,38 @@ module Ai
 
       # === Slice 9b — Virtual IPs ===
 
+      # IMP-6c482005db87 — routed through Ai::AutonomyGate, mirroring the
+      # REST twin (VirtualIpsController#create): the executor existed with no
+      # caller, so the seeded sdwan.virtual_ip_create policy matched nothing
+      # this tool did. Sdwan::Executors::CreateVirtualIp performs the whole
+      # slice-9b create ceremony server-side (activation + initial assignment
+      # row), so it survives the :pending path; this method mutates nothing
+      # on either branch.
+      #
+      # The candidate is validated BEFORE the gate — mirroring the executor's
+      # build (including activation) so validation sees exactly the row that
+      # would be written — and is never saved. Account ownership is enforced
+      # HERE by account_networks, the same split the HTTP path uses.
       def create_virtual_ip(params)
         network = account_networks.find(params[:network_id])
-        ::Sdwan::VirtualIp.transaction do
-          vip = network.virtual_ips.new(
-            account_id: @account.id,
-            name: params[:name],
-            cidr: params[:cidr],
-            anycast: params[:anycast] || false,
-            holder_peer_ids: Array(params[:holder_peer_ids]),
-            failover_holder_peer_ids: Array(params[:failover_holder_peer_ids]),
-            description: params[:description],
-            tags: Array(params[:tags]),
-            advertised_med: params[:advertised_med] || 0,
-            advertised_local_pref: params[:advertised_local_pref] || 100
-          )
-          vip.state = "active" if Array(vip.holder_peer_ids).any?
-          vip.save!
+        attrs = virtual_ip_create_attrs(params)
 
-          create_initial_vip_assignments!(vip)
-          success_result(virtual_ip: serialize_virtual_ip(vip.reload))
+        candidate = network.virtual_ips.new(attrs)
+        candidate.activate_if_held
+        unless candidate.valid?
+          return error_result(candidate.errors.full_messages.join("; "))
         end
+
+        gated_result(
+          action_category: VIRTUAL_IP_CREATE_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateVirtualIp",
+          executor_params: { network_id: network.id, attributes: attrs },
+          source_type: "Sdwan::Network",
+          source_id: network.id,
+          # Matches CreateVirtualIp#summarize so both surfaces of the
+          # approval speak one sentence (IMP-3a563becb7d7).
+          description: "Allocate SDWAN VIP '#{candidate.name}' on network #{network.name}"
+        ) { |result| { virtual_ip: serialize_virtual_ip(network.virtual_ips.find(result.result&.dig(:data, :vip_id))) } }
       end
 
       def list_virtual_ips(params)
@@ -2077,16 +2138,27 @@ module Ai
         }
       end
 
-      def create_initial_vip_assignments!(vip)
-        holders = vip.anycast? ? Array(vip.holder_peer_ids) : Array(vip.holder_peer_ids).first(1)
-        holders.compact.each do |peer_id|
-          vip.assignments.create!(
-            peer: ::Sdwan::Peer.find(peer_id),
-            assumed_at: Time.current,
-            reason: "initial",
-            triggered_by_user_id: @user&.id
-          )
-        end
+      # The attribute Hash the gate stores and Sdwan::Executors::CreateVirtualIp
+      # replays into save! — same key set and defaults the inline create
+      # carried. account_id rides along ONLY for the approval card's scoped
+      # network label (Base.preview runs with deferred_operation: nil);
+      # Base#attrs strips it again before the executor's save!. The slice-9b
+      # initial-assignment bootstrap that used to live beside this moved into
+      # the executor, where it also runs on the :pending path
+      # (IMP-6c482005db87).
+      def virtual_ip_create_attrs(params)
+        {
+          account_id: @account.id,
+          name: params[:name],
+          cidr: params[:cidr],
+          anycast: params[:anycast] || false,
+          holder_peer_ids: Array(params[:holder_peer_ids]),
+          failover_holder_peer_ids: Array(params[:failover_holder_peer_ids]),
+          description: params[:description],
+          tags: Array(params[:tags]),
+          advertised_med: params[:advertised_med] || 0,
+          advertised_local_pref: params[:advertised_local_pref] || 100
+        }
       end
 
       def sync_vip_assignments_after_holder_change!(vip, previous_holders)

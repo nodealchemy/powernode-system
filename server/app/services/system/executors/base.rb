@@ -138,6 +138,16 @@ module System
       def initiator
         deferred_operation&.requested_by || deferred_operation&.ai_agent
       end
+
+      # The requesting USER, nil-safe across the duck-typed
+      # deferred_operation shapes enumerated on resolve_scoped — two of
+      # which (Base.preview's literal nil and MultiTenantIsolationExecutor's
+      # Struct.new(:account) context) have no requested_by at all. NOT
+      # #initiator: that falls back to ai_agent, which is wrong wherever a
+      # User id is recorded (e.g. VipAssignment#triggered_by_user_id).
+      def requesting_user
+        deferred_operation.respond_to?(:requested_by) ? deferred_operation.requested_by : nil
+      end
     end
   end
 end
