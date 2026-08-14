@@ -88,4 +88,40 @@ RSpec.describe Sdwan::VirtualIp, type: :model do
       expect { vip.failover! }.to raise_error(Sdwan::VirtualIp::StateError, /no failover candidates/)
     end
   end
+
+  # IMP-0e44cf2fc80b — the canonical diff-based holder-transition sync, ONE
+  # method for the update surfaces (Sdwan::Executors::UpdateVirtualIp and
+  # Ai::Tools::SdwanTool#update_virtual_ip both delegate here; the two copies
+  # had already drifted on attribution, so it is a parameter). #failover!
+  # stays positional on purpose — see the method comment.
+  describe "#sync_holder_assignments!" do
+    let(:operator) { create(:user, account: account) }
+    let!(:vip) do
+      described_class.create!(account_id: account.id, sdwan_network_id: network.id,
+                              name: "sync-vip", cidr: "192.0.2.60/32",
+                              holder_peer_ids: [ hub.id ], state: "active")
+    end
+    let!(:current_assignment) do
+      vip.assignments.create!(peer: hub, assumed_at: 1.hour.ago, reason: "initial")
+    end
+
+    it "releases departed holders and opens attributed rows for arrivals" do
+      previous = Array(vip.holder_peer_ids).dup
+      vip.update!(holder_peer_ids: [ spoke.id ])
+
+      vip.sync_holder_assignments!(previous, triggered_by_user: operator)
+
+      expect(current_assignment.reload.released_at).to be_present
+      arrived = vip.assignments.where(sdwan_peer_id: spoke.id, released_at: nil).first
+      expect(arrived).to be_present, "holder change left phantom current state with no history row"
+      expect(arrived.reason).to eq("holder_changed")
+      expect(arrived.triggered_by_user_id).to eq(operator.id)
+    end
+
+    it "is a no-op when holders are unchanged" do
+      expect { vip.sync_holder_assignments!(Array(vip.holder_peer_ids).dup) }
+        .not_to change { Sdwan::VirtualIpAssignment.where(sdwan_virtual_ip_id: vip.id).count }
+      expect(current_assignment.reload.released_at).to be_nil
+    end
+  end
 end

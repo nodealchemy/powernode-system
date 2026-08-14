@@ -77,17 +77,37 @@ module Api
             )
           end
 
+          # IMP-0e44cf2fc80b: routed through Ai::AutonomyGate, matching the
+          # gated update verbs (network/peer/route_policy/port_mapping). This
+          # verb was NOT a clean drop-in wiring: the holder audit trail
+          # (sync_assignments_after_holder_change!) ran inline here, and gate!
+          # never calls on_proceed on :pending — the executor is the sole
+          # writer there — so the sync migrated INTO UpdateVirtualIp#perform
+          # first. Wiring it naively would have applied an operator-APPROVED
+          # holder change while silently dropping the assignment sync.
           def update
             require_permission("system.sdwan.vips.manage")
-            ::Sdwan::VirtualIp.transaction do
-              previous_holders = Array(@vip.holder_peer_ids).dup
-              if @vip.update(vip_params)
-                sync_assignments_after_holder_change!(@vip, previous_holders)
-                render_success(virtual_ip: serialize_vip_full(@vip.reload))
-              else
-                render_validation_error(@vip)
-              end
-            end
+            attrs = vip_params.to_h
+            # Validated before the gate so an unsaveable payload keeps its
+            # field-level 422 and opens no audit row. Never saved —
+            # UpdateVirtualIp's update! stays the only writer.
+            @vip.assign_attributes(attrs)
+            return render_validation_error(@vip) unless @vip.valid?
+
+            # Discard the un-gated in-memory changes: nothing may reach the row
+            # except through the executor. restore_attributes is the zero-query
+            # equivalent of reload here (ActiveModel::Dirty).
+            @vip.restore_attributes
+
+            gate!(
+              action_category: "sdwan.virtual_ip_update",
+              executor_class: "Sdwan::Executors::UpdateVirtualIp",
+              params: { vip_id: @vip.id, attributes: attrs },
+              source_type: "Sdwan::VirtualIp",
+              source_id: @vip.id,
+              description: "Update SDWAN VIP '#{@vip.name}' on network #{@network.name}",
+              on_proceed: ->(_r) { render_success(virtual_ip: serialize_vip_full(@vip.reload)) }
+            )
           end
 
           def destroy
@@ -147,33 +167,6 @@ module Api
               :advertised_med, :advertised_local_pref, :state,
               tags: [], holder_peer_ids: [], failover_holder_peer_ids: [], metadata: {}
             )
-          end
-
-          # When holder_peer_ids changes via update, close out assignments
-          # for departed holders and open new ones for newcomers. Reason is
-          # "holder_changed" — distinct from "manual_failover" to keep the
-          # audit trail honest about what action was taken.
-          def sync_assignments_after_holder_change!(vip, previous_holders)
-            current = vip.anycast? ? Array(vip.holder_peer_ids) : Array(vip.holder_peer_ids).first(1)
-            current = current.compact
-
-            departed = previous_holders - current
-            arrived  = current - previous_holders
-            return if departed.empty? && arrived.empty?
-
-            now = Time.current
-            departed.each do |peer_id|
-              vip.assignments.where(sdwan_peer_id: peer_id, released_at: nil)
-                 .update_all(released_at: now, updated_at: now)
-            end
-            arrived.each do |peer_id|
-              vip.assignments.create!(
-                peer: ::Sdwan::Peer.find(peer_id),
-                assumed_at: now,
-                reason: "holder_changed",
-                triggered_by_user_id: current_user&.id
-              )
-            end
           end
 
           # Resolve a VIP's primary holder from the per-request preloaded map

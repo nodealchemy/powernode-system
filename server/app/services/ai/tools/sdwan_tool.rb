@@ -1813,7 +1813,9 @@ module Ai
           end
           vip.update!(updates)
 
-          sync_vip_assignments_after_holder_change!(vip, previous_holders)
+          # Canonical diff-based sync (Sdwan::VirtualIp#sync_holder_assignments!,
+          # IMP-0e44cf2fc80b); this surface attributes the MCP session user.
+          vip.sync_holder_assignments!(previous_holders, triggered_by_user: @user)
           success_result(virtual_ip: serialize_virtual_ip(vip.reload))
         end
       end
@@ -2159,29 +2161,6 @@ module Ai
           advertised_med: params[:advertised_med] || 0,
           advertised_local_pref: params[:advertised_local_pref] || 100
         }
-      end
-
-      def sync_vip_assignments_after_holder_change!(vip, previous_holders)
-        current = vip.anycast? ? Array(vip.holder_peer_ids) : Array(vip.holder_peer_ids).first(1)
-        current = current.compact
-
-        departed = previous_holders - current
-        arrived  = current - previous_holders
-        return if departed.empty? && arrived.empty?
-
-        now = Time.current
-        departed.each do |peer_id|
-          vip.assignments.where(sdwan_peer_id: peer_id, released_at: nil)
-             .update_all(released_at: now, updated_at: now)
-        end
-        arrived.each do |peer_id|
-          vip.assignments.create!(
-            peer: ::Sdwan::Peer.find(peer_id),
-            assumed_at: now,
-            reason: "holder_changed",
-            triggered_by_user_id: @user&.id
-          )
-        end
       end
 
       def account_federation_peers

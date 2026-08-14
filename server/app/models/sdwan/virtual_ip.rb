@@ -130,6 +130,44 @@ module Sdwan
       end
     end
 
+    # IMP-0e44cf2fc80b — the ONE diff-based holder-transition sync for the
+    # update surfaces: when holder_peer_ids changes, close out assignments
+    # for departed holders and open new ones for arrivals. Reason defaults to
+    # "holder_changed" — distinct from "manual_failover" to keep the audit
+    # trail honest about what action was taken. Attribution is the CALLER's
+    # to name (the copies had already drifted: the REST-gated executor
+    # credits the DeferredOperation's requesting user, the MCP tool credits
+    # its session user) — so it is a parameter, and the semantics live here
+    # once. NOT used by #failover!: that transition is positional (pops the
+    # primary, promotes the failover head) and carries signal-correlation
+    # attribution — mapping it onto a raw-array diff would also release
+    # stray extra holder ids failover! deliberately leaves alone.
+    def sync_holder_assignments!(previous_holders, triggered_by_user: nil, reason: "holder_changed")
+      current = anycast? ? Array(holder_peer_ids) : Array(holder_peer_ids).first(1)
+      current = current.compact
+
+      departed = previous_holders - current
+      arrived  = current - previous_holders
+      return if departed.empty? && arrived.empty?
+
+      now = Time.current
+      departed.each do |peer_id|
+        assignments.where(sdwan_peer_id: peer_id, released_at: nil)
+                   .update_all(released_at: now, updated_at: now)
+      end
+      arrived_peers = ::Sdwan::Peer.where(id: arrived).index_by(&:id)
+      arrived.each do |peer_id|
+        assignments.create!(
+          # fetch: an arrival naming a nonexistent peer must fail loudly, as
+          # the per-peer find it replaces did.
+          peer: arrived_peers.fetch(peer_id),
+          assumed_at: now,
+          reason: reason,
+          triggered_by_user_id: triggered_by_user&.id
+        )
+      end
+    end
+
     def anycast?
       anycast == true
     end
