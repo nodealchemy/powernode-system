@@ -23,7 +23,10 @@ RSpec.describe Sdwan::Executors::CreatePeer do
             node_instance_id: instance.id,
             publicly_reachable: true,
             endpoint_host_v6: "fd00:abcd:9::1",
-            endpoint_port: 51_820,
+            # STRING form on purpose: real dispatch is JSON, so the port
+            # arrives as "51820". AR typecasts on assignment — the integer
+            # port in the audit-tuple assertion below is the pin.
+            endpoint_port: "51820",
             listen_port: 51_820
           }
         },
@@ -151,7 +154,9 @@ RSpec.describe Sdwan::Executors::CreatePeer do
     it "falls back to the endpoint the peer will use when the instance carries no name" do
       instance.update_column(:name, "")
 
-      preview = preview_for(endpoint_host_v6: "fd00:abcd:9::1", endpoint_port: 51_820)
+      # STRING port on purpose — the JSON-dispatch form (AR typecasts on
+      # assignment inside prospective_endpoint_display's Sdwan::Peer.new).
+      preview = preview_for(endpoint_host_v6: "fd00:abcd:9::1", endpoint_port: "51820")
 
       expect(preview[:summary]).to eq("Add SDWAN peer [fd00:abcd:9::1]:51820 on wan-core")
     end
