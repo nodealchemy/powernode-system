@@ -412,6 +412,17 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         # The inner executor's provision failure — the reason the stack is
         # empty — must still surface; it rides the error string now.
         expect(r[:error]).to include("region quota exhausted")
+
+        # The refusal event fires on this arm too (one guard, one shape) and
+        # records the Node shell left for inspection even though there was
+        # nothing to reclaim.
+        ev = ::Ai::ExecutionEvent.where(account_id: account.id,
+                                        event_type: "relocate_cutover_refusal")
+                                 .order(:created_at).last
+        expect(ev).to be_present
+        expect(ev.metadata["refusal_reasons"]).to include("target stack is empty")
+        expect(ev.metadata["reclaimed"].values.flatten).to be_empty
+        expect(ev.metadata["node_ids_left_for_inspection"].size).to eq(1)
       end
     end
 
@@ -576,6 +587,58 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         expect(r[:success]).to be false
         expect(r[:error]).to match(/reclaim/i)
         expect(r[:error]).to include("volume delete refused")
+      end
+
+      # IMP-6b497651d670 hardening — the message is human-oriented and
+      # bounded; the MACHINE-READABLE diagnosis lives in an
+      # Ai::ExecutionEvent, because the runner's mark_rolled_back (composers
+      # stamp on_failure: "rollback" by default) overwrites result_summary
+      # after our failure return — without the event, an incomplete reclaim's
+      # survivors would be recorded nowhere durable.
+      it "records a machine-readable execution event with reclaimed ids per class and the inspection nodes" do
+        expect { run_blue_green_relocate }
+          .to change { ::Ai::ExecutionEvent.where(account_id: account.id).count }.by(1)
+
+        ev = ::Ai::ExecutionEvent.where(account_id: account.id,
+                                        event_type: "relocate_cutover_refusal")
+                                 .order(:created_at).last
+        expect(ev).to be_present
+        expect(ev.source_type).to eq("Ai::Mission")
+        expect(ev.source_id).to eq(mission.id)
+        expect(ev.status).to eq("target_stack_reclaimed")
+
+        md = ev.metadata
+        expect(md["refusal_reasons"].join).to match(/off-fabric/)
+        expect(md["reclaimed"]["node_instance"]).to match_array([ target_a.id, target_b.id ])
+        expect(md["reclaimed"]["provider_volume"]).to match_array([ volume_a.id, volume_b.id ])
+        expect(md["reclaimed"]["sdwan_peer"]).to eq(enrolled_peer_ids)
+        expect(md["survivors"].values.flatten).to be_empty
+        # F8 — the Node shells stay for inspection, but their ids are
+        # RECORDED, so "left for inspection" is findable rather than orphaned.
+        expect(md["node_ids_left_for_inspection"].size).to eq(2)
+        expect(::System::Node.where(id: md["node_ids_left_for_inspection"]).count).to eq(2)
+        expect(md["provisioning_leg_failures"].map { |f| f["step"] }).to include("attach_sdwan_peer")
+      end
+
+      it "records survivors per class when the reclaim is incomplete" do
+        allow(::System::VolumeManagementService).to receive(:delete)
+          .and_return(::System::Runtime::Result.err(error: "volume delete refused"))
+
+        run_blue_green_relocate
+
+        ev = ::Ai::ExecutionEvent.where(account_id: account.id,
+                                        event_type: "relocate_cutover_refusal")
+                                 .order(:created_at).last
+        expect(ev.status).to eq("reclaim_incomplete")
+
+        md = ev.metadata
+        expect(md["survivors"]["provider_volume"]).to match_array([ volume_a.id, volume_b.id ])
+        expect(md["reclaimed"]["provider_volume"]).to be_empty
+        # The other classes reclaimed cleanly and must not be smeared into
+        # the survivor set (per-class truth, not one aggregate flag).
+        expect(md["reclaimed"]["node_instance"]).to match_array([ target_a.id, target_b.id ])
+        expect(md["survivors"]["node_instance"]).to be_empty
+        expect(md["reclaim_errors"].map { |e| e["error"] }).to all(include("volume delete refused"))
       end
 
       # Positive control (F10): the identical composition with a healthy

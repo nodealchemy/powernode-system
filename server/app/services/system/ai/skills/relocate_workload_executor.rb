@@ -184,13 +184,14 @@ module System
           run_execute(strategy: strategy, count: count, source_ids: source_ids,
                       template_id: template_id, to_region_id: to_region_id,
                       provider_instance_type_id: provider_instance_type_id,
-                      network_id: network_id, with_storage_gb: with_storage_gb)
+                      network_id: network_id, with_storage_gb: with_storage_gb,
+                      mission: mission)
         end
 
         private
 
         def run_execute(strategy:, count:, source_ids:, template_id:, to_region_id:,
-                        provider_instance_type_id:, network_id:, with_storage_gb:)
+                        provider_instance_type_id:, network_id:, with_storage_gb:, mission:)
           planned_actions = [ { step: "relocate_workload", cutover_strategy: strategy,
                                 source_count: source_ids.size, target_count: count } ]
           terminated = []
@@ -246,7 +247,7 @@ module System
               # #refuse_blue_green_cutover! for why neither standard envelope
               # shape can delegate the reclaim to the runner.
               return refuse_blue_green_cutover!(
-                network_id: network_id, count: count,
+                mission: mission, network_id: network_id, count: count,
                 provision_data: provision_data, step_failures: failures
               )
             else
@@ -304,8 +305,9 @@ module System
         # already gone. The System::Node shells are deliberately NOT
         # reclaimed — they stay for inspection, the same rationale as
         # ProvisionFullStackExecutor's rollback.
-        def refuse_blue_green_cutover!(network_id:, count:, provision_data:, step_failures:)
+        def refuse_blue_green_cutover!(mission:, network_id:, count:, provision_data:, step_failures:)
           outputs     = provision_data.is_a?(Hash) ? (provision_data[:outputs] || {}) : {}
+          node_ids    = Array(outputs[:node_ids])
           target_ids  = Array(outputs[:node_instance_ids])
           volume_ids  = Array(outputs[:storage_volume_ids])
           peer_ids    = Array(outputs[:sdwan_peer_ids])
@@ -321,27 +323,68 @@ module System
                        "instances enrolled on network #{network_id})"
           end
 
+          # The inner executor's own leg failures — the REASON the stack is
+          # refused. step_failures covers the provision_data-nil shape (a
+          # whole-step inner failure lands in run_execute's local failures,
+          # not in an inner envelope).
+          leg_failures = Array(step_failures) + (provision_data.is_a?(Hash) ? Array(provision_data[:failures]) : [])
+
           reclaim = rollback_relocate_workload(
             node_instance_ids: target_ids,
             storage_volume_ids: volume_ids,
             sdwan_peer_ids: peer_ids
           )
+          reclaim_errors = Array(reclaim[:errors])
+
+          # Per-class truth: an id that errored during reclaim SURVIVES —
+          # billing, still on the provider — and everything else attempted is
+          # reclaimed (ids that no longer resolved were already gone).
+          survivors = {
+            "node_instance"   => reclaim_errors.select { |e| e[:resource] == "node_instance" }.map { |e| e[:id] },
+            "provider_volume" => reclaim_errors.select { |e| e[:resource] == "provider_volume" }.map { |e| e[:id] },
+            "sdwan_peer"      => reclaim_errors.select { |e| e[:resource] == "sdwan_peer" }.map { |e| e[:id] }
+          }
+          reclaimed = {
+            "node_instance"   => target_ids - survivors["node_instance"],
+            "provider_volume" => volume_ids - survivors["provider_volume"],
+            "sdwan_peer"      => peer_ids - survivors["sdwan_peer"]
+          }
+
+          # Machine-readable diagnosis, durable on purpose: composers stamp
+          # on_failure: "rollback" by default, so after this failure returns
+          # the runner rolls back (a no-op — recorded_outputs_for is empty on
+          # a first-run failure) and mark_rolled_back OVERWRITES the step's
+          # result_summary. The human message below does not survive that;
+          # this event does. Recorder self-rescues, so it can never turn a
+          # refusal into a raise.
+          ::Ai::Introspection::ExecutionEventRecorder.record(
+            source: mission,
+            event_type: "relocate_cutover_refusal",
+            status: reclaim[:success] ? "target_stack_reclaimed" : "reclaim_incomplete",
+            metadata: {
+              cutover_strategy: "blue_green",
+              refusal_reasons: reasons,
+              network_id: network_id,
+              requested_count: count,
+              node_ids_left_for_inspection: node_ids,
+              reclaimed: reclaimed,
+              survivors: survivors,
+              reclaim_errors: reclaim_errors,
+              provisioning_leg_failures: leg_failures
+            }.compact
+          )
 
           message = "blue_green cutover refused: #{reasons.join('; ')}; source instances not terminated"
 
-          # The failure envelope carries no failures array, so the inner
-          # executor's own leg failures — the REASON the stack is refused —
-          # ride in the message; the runner records only what we return.
-          # step_failures covers the provision_data-nil shape (a whole-step
-          # inner failure lands in run_execute's local failures, not in an
-          # inner envelope).
-          leg_failures = Array(step_failures) + (provision_data.is_a?(Hash) ? Array(provision_data[:failures]) : [])
+          # The failure envelope carries no failures array, so the leg
+          # failures ride in the message too (bounded; the event above is the
+          # complete record) — the runner records only what we return.
           message += "; provisioning-leg failures: #{summarize_entries(leg_failures)}" if leg_failures.any?
 
           message += if reclaim[:success]
                        "; refused target stack reclaimed"
                      else
-                       "; refused target stack reclaim INCOMPLETE: #{summarize_entries(Array(reclaim[:errors]))}"
+                       "; refused target stack reclaim INCOMPLETE: #{summarize_entries(reclaim_errors)}"
                      end
 
           failure(message)
