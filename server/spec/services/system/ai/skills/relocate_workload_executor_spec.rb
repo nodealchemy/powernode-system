@@ -208,13 +208,14 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       let(:second_source_instance) { create(:system_node_instance, :running, node: second_source_node) }
       let(:both_source_ids)        { [ source_instance.id, second_source_instance.id ] }
 
-      def card(strategy:, network_id: nil, source_ids: both_source_ids)
+      def card(strategy:, network_id: nil, source_ids: both_source_ids, with_storage_gb: nil)
         r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
                          to_region_id: to_region.id, cutover_strategy: strategy,
                          template_id: template.id,
                          provider_instance_type_id: instance_type.id, count: 2,
                          source_instance_ids: source_ids,
-                         network_id: network_id, dry_run: true)
+                         network_id: network_id, with_storage_gb: with_storage_gb,
+                         dry_run: true)
         expect(r[:success]).to be true
         r[:data][:planned_actions]
       end
@@ -256,6 +257,34 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         expect(terminate).to all(include(conditional: true, guard: "blue_green_cutover"))
         expect(terminate.map { |a| a[:condition] })
           .to all(match(/off-fabric/).and(include(network.id)).and(match(/target stack is reclaimed/)))
+      end
+
+      # IMP-e1903a42c1ab — the guard grew a THIRD arm (the storage leg), and a
+      # :high blast-radius card that names only two states a narrower guard
+      # than the run enforces. Disclosed only when storage was actually
+      # requested, and screened by the same predicate the provisioning leg
+      # uses: an explicit 0 requests nothing, so promising a storage refusal
+      # for it would describe a refusal the run cannot reach.
+      it "discloses the storage arm of the guard only when storage was requested" do
+        requested = card(strategy: "blue_green", with_storage_gb: 25)
+                      .select { |a| a[:step] == "terminate_source" }
+        expect(requested.map { |a| a[:condition] })
+          .to all(match(/storage-unready/).and(include("25")).and(match(/target stack is reclaimed/)))
+
+        # A DECLARED-but-unreadable value plans no storage steps (the inner
+        # executor creates nothing) yet still refuses the cutover, so the card
+        # must disclose it — and must NOT quote "0 GB" for a size nothing read.
+        unreadable = card(strategy: "blue_green", with_storage_gb: "plenty")
+                       .select { |a| a[:step] == "terminate_source" }
+        expect(unreadable.map { |a| a[:condition] }).to all(match(/storage-unready/))
+        expect(unreadable.map { |a| a[:condition] }.join(" | ")).not_to include("0 GB")
+
+        # A 0 is "no storage", not "storage missing" (ProvisionFullStackExecutor
+        # #storage_requested?) — the clause must be absent, not merely reworded.
+        none = card(strategy: "blue_green", with_storage_gb: 0)
+                 .select { |a| a[:step] == "terminate_source" }
+        expect(none.map { |a| a[:condition] }.join(" | ")).not_to match(/storage/)
+        expect(none.map { |a| a[:condition] }).to all(match(/\Askipped when the target stack comes up undersized/))
       end
 
       # Negative control (positive twins above): drain terminates FIRST — no
@@ -510,15 +539,18 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       # target stack comes up undersized"), so this shape cannot be observed
       # there.
       #
-      # That guard reads instance COUNT and fabric enrollment only
-      # (#run_execute), so it is NOT the case that blue_green refuses every
-      # partial run: a blue_green run whose STORAGE leg fails leaves
-      # undersized=false and off_fabric=false, passes the guard, terminates
-      # the sources, and returns a partial envelope of this same shape
-      # (verified by execution, IMP-4e5b78f0b737). Whether tearing the source
-      # down against a target stack whose data volume never attached is
-      # CORRECT is an open question on the guard itself, so that arm is
-      # deliberately left unpinned here rather than specced into place.
+      # That guard USED to read instance count and fabric enrollment only
+      # (#run_execute), so it was not the case that blue_green refused every
+      # partial run: a blue_green run whose STORAGE leg failed left
+      # undersized=false and off_fabric=false, passed the guard, terminated
+      # the sources, and returned a partial envelope of this same shape
+      # (verified by execution, IMP-4e5b78f0b737). That was left deliberately
+      # unpinned here pending a decision on whether it was correct. It was
+      # not: IMP-e1903a42c1ab added the storage arm, and the decision is
+      # specced in "blue_green refusal when the target stack's storage leg
+      # failed" below. Drain remains the strategy this partial-run shape is
+      # observable on — under blue_green all three legs now gate the teardown,
+      # and drain has no guard at all because it terminates first by design.
       context "when one of several provisioning legs fails" do
         let(:surviving_instance) { instance_double("System::NodeInstance", id: SecureRandom.uuid) }
 
@@ -841,6 +873,247 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
           expect(::System::VolumeManagementService).not_to have_received(:detach)
           expect(::System::VolumeManagementService).not_to have_received(:delete)
         end
+      end
+    end
+
+    # IMP-e1903a42c1ab — the readiness guard covered the instance and fabric
+    # legs; the executor composes THREE. This is the arm iteration 274 left
+    # deliberately unpinned pending a decision on whether tearing a source
+    # down against a diskless target is correct — it is not, and the guard now
+    # says so.
+    #
+    # Why this is the same class as undersized/off-fabric rather than untidy:
+    # blue_green exists to move a workload, and until the target is serving,
+    # the SOURCES hold the only copy of the data. A data volume that never
+    # attached means "the target is not ready" exactly as the other two arms
+    # do, and worse for a data-bearing workload.
+    #
+    # Verified by execution BEFORE the fix (this context, red): a failing
+    # attach left undersized=false and off_fabric=false, the guard passed,
+    # terminate_instance ran on the SOURCE, and the envelope returned
+    # success(partial: true) — and because a partial success never reaches
+    # SkillCompositionRunner#rollback_step!, the volume with the nil instance
+    # FK in storage_volume_ids was a permanent orphan.
+    #
+    # Counting `storage_volume_ids` alone would NOT have closed this: the
+    # inner executor records the volume id before attempting the attach, so
+    # the attach-failure shape has full count parity and a nil FK. The oracle
+    # has to be the attachment itself.
+    context "blue_green refusal when the target stack's storage leg failed" do
+      # Real rows throughout: the guard's question is about a persisted
+      # volume's FK and the reclaim resolves ids back to records, so a double
+      # would make both vacuous.
+      let(:target_a) do
+        create(:system_node_instance, :running,
+               node: create(:system_node, account: account, node_template: template))
+      end
+      let(:target_b) do
+        create(:system_node_instance, :running,
+               node: create(:system_node, account: account, node_template: template))
+      end
+      let(:volume_a) { create(:system_provider_volume, account: account, provider_region: to_region) }
+      let(:volume_b) { create(:system_provider_volume, account: account, provider_region: to_region) }
+
+      let(:terminated_ids)  { [] }
+      let(:pending_targets) { [ target_a, target_b ] }
+      let(:pending_volumes) { [ volume_a, volume_b ] }
+
+      before do
+        allow(::System::ProvisioningService).to receive(:provision_instance) do
+          ::System::Runtime::Result.ok(data: { instance: pending_targets.shift, cloud_instance_id: "ci-st" })
+        end
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |**kwargs|
+          terminated_ids << kwargs[:instance].id
+          ::System::Runtime::Result.ok
+        end
+        allow(::System::VolumeManagementService).to receive(:provision) do
+          ::System::Runtime::Result.ok(data: { volume: pending_volumes.shift })
+        end
+        # A FAITHFUL attach: an ok-returning stub that never writes the FK
+        # would make every target look diskless and the positive control below
+        # could not pass, which is the point — attachment is the oracle.
+        allow(::System::VolumeManagementService).to receive(:attach) do |**kwargs|
+          kwargs[:volume].attach_to!(kwargs[:instance], "/dev/vdb")
+          ::System::Runtime::Result.ok(data: { device: "/dev/vdb" })
+        end
+        allow(::System::VolumeManagementService).to receive(:detach).and_return(::System::Runtime::Result.ok)
+        allow(::System::VolumeManagementService).to receive(:delete).and_return(::System::Runtime::Result.ok)
+      end
+
+      def run_relocate(count: 1, with_storage_gb: 25)
+        exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                     to_region_id: to_region.id, cutover_strategy: "blue_green",
+                     template_id: template.id,
+                     provider_instance_type_id: instance_type.id, count: count,
+                     with_storage_gb: with_storage_gb,
+                     source_instance_ids: [ source_instance.id ])
+      end
+
+      it "refuses when the volume was provisioned but never attached, and leaves the source alive" do
+        allow(::System::VolumeManagementService).to receive(:attach)
+          .and_return(::System::Runtime::Result.err(error: "no free device paths"))
+
+        r = run_relocate
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(%r{storage-unready \(0/1})
+        expect(r[:error]).to include("source instances not terminated")
+        # The inner leg failure — the REASON the stack is refused — rides the
+        # error string, as it does on the other two arms.
+        expect(r[:error]).to include("no free device paths")
+
+        expect(terminated_ids).to eq([ target_a.id ])
+        expect(terminated_ids).not_to include(source_instance.id)
+        expect(::System::NodeInstance.where(id: source_instance.id)).to exist
+      end
+
+      # The orphan the pre-fix path left behind: the refusal's reclaim adopts
+      # it, because the inner envelope lists the volume id even though the
+      # attach failed. Detach is correctly SKIPPED — its FK is nil.
+      it "reclaims the never-attached volume that the pre-fix partial success orphaned" do
+        allow(::System::VolumeManagementService).to receive(:attach)
+          .and_return(::System::Runtime::Result.err(error: "no free device paths"))
+
+        run_relocate
+
+        expect(volume_a.reload.node_instance_id).to be_nil
+        expect(::System::VolumeManagementService).to have_received(:delete).with(volume: volume_a)
+        expect(::System::VolumeManagementService).not_to have_received(:detach)
+      end
+
+      it "refuses when the data volume was never provisioned at all" do
+        allow(::System::VolumeManagementService).to receive(:provision)
+          .and_return(::System::Runtime::Result.err(error: "storage pool exhausted"))
+
+        r = run_relocate
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(%r{storage-unready \(0/1})
+        expect(r[:error]).to include("storage pool exhausted")
+        expect(terminated_ids).to eq([ target_a.id ])
+        expect(terminated_ids).not_to include(source_instance.id)
+        expect(::System::NodeInstance.where(id: source_instance.id)).to exist
+      end
+
+      # IMP-e1903a42c1ab review F1 — the gate question is "was storage
+      # DECLARED?", not "was a positive size REQUESTED?". A declared-but-
+      # unreadable value takes ProvisionFullStackExecutor's LOUD lane
+      # (#storage_unreadable?): it records a provision_storage failure per
+      # node and skips the volume entirely, so the inner envelope comes back
+      # with the instances up and storage_volume_ids EMPTY. Gated on
+      # storage_requested? alone, that shape reproduced this task's exact
+      # failure — guard passes, sources torn down against a diskless target —
+      # through a different input. relocate forwards the raw value with no
+      # validation of its own (the descriptor says integer; nothing enforces
+      # it), and IMP-f85254148755 already judged the shape reachable from
+      # hand-authored plan_data, MissionComposer output and operator input.
+      #
+      # BOTH sub-branches of #storage_unreadable? in one sweep: a String that
+      # responds to to_i but reads 0 ("plenty"), and a shape that does not
+      # respond to to_i at all — those reach the lane by different routes.
+      it "refuses every declared-but-unreadable storage shape, on which no volume is ever created" do
+        [ "plenty", { "gb" => 50 } ].each do |declared|
+          r = run_relocate(with_storage_gb: declared)
+
+          expect(r[:success]).to be(false), "expected #{declared.inspect} to refuse the cutover"
+          expect(r[:error]).to match(%r{storage-unready \(0/1})
+          expect(r[:error]).to include("storage declared but unreadable")
+          # The size is UNKNOWN on this branch — rendering with_storage_gb.to_i
+          # would quote an authoritative "0 GB" for a value that was never read.
+          expect(r[:error]).not_to include("0 GB")
+        end
+
+        expect(::System::VolumeManagementService).not_to have_received(:provision)
+        expect(terminated_ids).to match_array([ target_a.id, target_b.id ])
+        expect(terminated_ids).not_to include(source_instance.id)
+        expect(::System::NodeInstance.where(id: source_instance.id)).to exist
+      end
+
+      # Open question answered in place: a PARTIALLY attached stack refuses
+      # too, on the same reasoning off-fabric refuses a partially-enrolled one
+      # — the card promises one volume per target, and a target without its
+      # disk cannot serve the workload the sources still hold.
+      #
+      # ONE source against TWO targets, deliberately: with two of each,
+      # "terminated every target" and "terminated every source" are
+      # indistinguishable.
+      it "refuses a partially attached stack — one target with a disk is not a ready stack" do
+        attach_calls = 0
+        allow(::System::VolumeManagementService).to receive(:attach) do |**kwargs|
+          attach_calls += 1
+          if attach_calls == 1
+            kwargs[:volume].attach_to!(kwargs[:instance], "/dev/vdb")
+            ::System::Runtime::Result.ok(data: { device: "/dev/vdb" })
+          else
+            ::System::Runtime::Result.err(error: "no free device paths")
+          end
+        end
+
+        r = run_relocate(count: 2)
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(%r{storage-unready \(1/2})
+        expect(terminated_ids).to match_array([ target_a.id, target_b.id ])
+        expect(terminated_ids).not_to include(source_instance.id)
+        expect(::System::NodeInstance.where(id: source_instance.id)).to exist
+      end
+
+      # One guard, one envelope shape: a consumer must not be able to tell the
+      # storage arm from the other two.
+      it "reports the storage refusal through the same failure envelope and event as the other arms" do
+        allow(::System::VolumeManagementService).to receive(:attach)
+          .and_return(::System::Runtime::Result.err(error: "no free device paths"))
+
+        expect { run_relocate }
+          .to change { ::Ai::ExecutionEvent.where(account_id: account.id).count }.by(1)
+
+        ev = ::Ai::ExecutionEvent.where(account_id: account.id,
+                                        event_type: "relocate_cutover_refusal")
+                                 .order(:created_at).last
+        expect(ev.source_type).to eq("Ai::Mission")
+        expect(ev.source_id).to eq(mission.id)
+        expect(ev.status).to eq("target_stack_reclaimed")
+
+        md = ev.metadata
+        expect(md["refusal_reasons"].join).to match(/storage-unready/)
+        expect(md["reclaimed"]["node_instance"]).to eq([ target_a.id ])
+        expect(md["reclaimed"]["provider_volume"]).to eq([ volume_a.id ])
+        expect(md["survivors"].values.flatten).to be_empty
+        expect(md["provisioning_leg_failures"].map { |f| f["step"] }).to include("attach_volume")
+      end
+
+      # Positive control: the identical composition with a healthy storage leg
+      # must still cut over, or the refusals above could be an unconditional
+      # failure passing itself off as the guard working.
+      #
+      # It rests on one unstated coupling worth naming: the volume factory's
+      # default status is "available" (spec/factories/system_factories.rb), so
+      # the faithful attach stub's `attach_to!` actually writes the FK. Were
+      # that default to become "creating", `can_attach?` would be false,
+      # `attach_to!` would silently return false, and this control would fail
+      # as storage-unready 0/2 — a factory change masquerading as a guard bug.
+      it "proceeds with the cutover when every target's volume is attached (positive control)" do
+        r = run_relocate(count: 2)
+
+        expect(r[:success]).to be true
+        expect(r[:data][:outputs][:terminated_instance_ids]).to eq([ source_instance.id ])
+        expect(terminated_ids).to eq([ source_instance.id ])
+        expect(::System::VolumeManagementService).not_to have_received(:delete)
+        expect([ volume_a.reload.node_instance_id, volume_b.reload.node_instance_id ])
+          .to match_array([ target_a.id, target_b.id ])
+      end
+
+      # Negative control on the PREDICATE, not the guard: an explicit 0 is a
+      # legitimate "no storage" answer (ProvisionFullStackExecutor
+      # #storage_requested?, IMP-33fa6c51f05d), so the absence of a volume is
+      # not a shortfall. A `present?`-shaped re-derivation would refuse here
+      # and strand every zero-storage blue_green relocate.
+      it "invents no storage refusal when no storage was requested" do
+        r = run_relocate(with_storage_gb: 0)
+
+        expect(r[:success]).to be true
+        expect(::System::VolumeManagementService).not_to have_received(:provision)
+        expect(terminated_ids).to eq([ source_instance.id ])
       end
     end
   end

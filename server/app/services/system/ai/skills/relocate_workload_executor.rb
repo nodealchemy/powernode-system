@@ -237,19 +237,36 @@ module System
             # every source against half the requested capacity. Undersized
             # (which subsumes empty) and off-fabric are one guard with one
             # refusal shape.
+            #
+            # IMP-e1903a42c1ab — and it has to include the STORAGE, because
+            # this executor composes THREE legs and the readiness predicate
+            # covered two. blue_green exists to move a workload, and until the
+            # target is serving, the SOURCES hold the only copy of the data —
+            # so a target whose data volume never attached is "not ready" in
+            # precisely the sense the other two arms refuse, and worse for a
+            # data-bearing workload. Verified by execution before this arm
+            # existed: a failing volume attach left undersized=false and
+            # off_fabric=false, the guard passed, the sources were terminated,
+            # and the run reported success(partial: true).
             target_outputs      = provision_data.is_a?(Hash) ? (provision_data[:outputs] || {}) : {}
             target_instance_ids = Array(target_outputs[:node_instance_ids])
             attached_peer_ids   = Array(target_outputs[:sdwan_peer_ids])
             undersized = target_instance_ids.size < count
             off_fabric = network_id.present? && attached_peer_ids.size < target_instance_ids.size
+            storage_unready = storage_unready?(
+              with_storage_gb: with_storage_gb,
+              target_instance_ids: target_instance_ids,
+              volume_ids: Array(target_outputs[:storage_volume_ids])
+            )
 
-            if undersized || off_fabric
+            if undersized || off_fabric || storage_unready
               # IMP-6b497651d670 — every refusal is a FAILURE with an
               # in-branch reclaim, not a success(partial: true): see
               # #refuse_blue_green_cutover! for why neither standard envelope
               # shape can delegate the reclaim to the runner.
               return refuse_blue_green_cutover!(
                 mission: mission, network_id: network_id, count: count,
+                with_storage_gb: with_storage_gb,
                 provision_data: provision_data, step_failures: failures
               )
             else
@@ -307,7 +324,8 @@ module System
         # already gone. The System::Node shells are deliberately NOT
         # reclaimed — they stay for inspection, the same rationale as
         # ProvisionFullStackExecutor's rollback.
-        def refuse_blue_green_cutover!(mission:, network_id:, count:, provision_data:, step_failures:)
+        def refuse_blue_green_cutover!(mission:, network_id:, count:, with_storage_gb:,
+                                       provision_data:, step_failures:)
           outputs     = provision_data.is_a?(Hash) ? (provision_data[:outputs] || {}) : {}
           node_ids    = Array(outputs[:node_ids])
           target_ids  = Array(outputs[:node_instance_ids])
@@ -323,6 +341,15 @@ module System
           if network_id.present? && peer_ids.size < target_ids.size
             reasons << "target stack is off-fabric (#{peer_ids.size}/#{target_ids.size} " \
                        "instances enrolled on network #{network_id})"
+          end
+          # Computed BEFORE the reclaim below, which detaches and deletes the
+          # very rows this reads (IMP-e1903a42c1ab).
+          if storage_declared?(with_storage_gb)
+            with_disk = instances_with_attached_volume(volume_ids: volume_ids, target_instance_ids: target_ids)
+            if with_disk.size < target_ids.size
+              reasons << "target stack is storage-unready (#{with_disk.size}/#{target_ids.size} " \
+                         "instances have #{declared_volume_phrase(with_storage_gb)} attached)"
+            end
           end
 
           # The inner executor's own leg failures — the REASON the stack is
@@ -390,6 +417,80 @@ module System
                      end
 
           failure(message)
+        end
+
+        # IMP-e1903a42c1ab — the storage leg's readiness oracle is ATTACHMENT,
+        # not the id count, and that distinction is the whole finding: the
+        # inner executor pushes a volume id onto `storage_volume_ids` BEFORE
+        # it attempts the attach (ProvisionFullStackExecutor#run_execute), so
+        # a failed attach yields full count parity over a volume whose
+        # `node_instance_id` is nil. A `volume_ids.size < target_ids.size`
+        # check — the shape the other two arms use — would refuse the
+        # provision-failure case and wave the attach-failure case through,
+        # which is the more insidious of the two: the volume exists, it bills,
+        # and nothing on the target can read it.
+        #
+        # Scoped to THIS run's volumes AND this run's targets: a volume
+        # attached to something else is not this stack's disk, and the account
+        # scope keeps the readiness question inside the tenant like every
+        # other read in this executor.
+        def instances_with_attached_volume(volume_ids:, target_instance_ids:)
+          return [] if volume_ids.empty? || target_instance_ids.empty?
+
+          ::System::ProviderVolume
+            .where(account_id: @account.id, id: volume_ids, node_instance_id: target_instance_ids)
+            .distinct.pluck(:node_instance_id)
+        end
+
+        # Both predicates are ProvisionFullStackExecutor's own (class scope),
+        # not copies: the leg that provisions the volume and the guard that
+        # refuses its absence must answer identically, or an explicit
+        # `with_storage_gb: 0` — a legitimate "no storage" (IMP-33fa6c51f05d)
+        # — would be read as a missing disk and strand every zero-storage
+        # blue_green relocate.
+        def storage_requested?(with_storage_gb)
+          ::System::Ai::Skills::ProvisionFullStackExecutor.storage_requested?(with_storage_gb)
+        end
+
+        def storage_unreadable?(with_storage_gb)
+          ::System::Ai::Skills::ProvisionFullStackExecutor.storage_unreadable?(with_storage_gb)
+        end
+
+        # The gate question is "was storage DECLARED?", not "was a positive
+        # size requested?" (review F1). A declared-but-unreadable value
+        # ("plenty", true, {gb: 50}) takes the inner executor's LOUD lane: it
+        # records a provision_storage failure per node and creates NO volume,
+        # so the envelope returns the instances up and storage_volume_ids
+        # empty. Gated on `storage_requested?` alone, that shape reproduced
+        # this task's exact failure — guard passes, sources torn down against
+        # a diskless target — through a different input. relocate forwards the
+        # raw value with no validation of its own, and IMP-f85254148755 judged
+        # the shape reachable from hand-authored plan_data, MissionComposer
+        # output and operator input. Verified red by execution before this
+        # union existed.
+        def storage_declared?(with_storage_gb)
+          storage_requested?(with_storage_gb) || storage_unreadable?(with_storage_gb)
+        end
+
+        # Per-instance parity, matching what the approval card promises: the
+        # plan lists one provision_storage + attach_volume pair PER target, so
+        # a stack where only some targets got their disk is refused for the
+        # same reason a partially-enrolled stack is off-fabric — the workload
+        # cannot run on it, and the sources still hold the only copy.
+        def storage_unready?(with_storage_gb:, target_instance_ids:, volume_ids:)
+          return false unless storage_declared?(with_storage_gb)
+
+          instances_with_attached_volume(
+            volume_ids: volume_ids, target_instance_ids: target_instance_ids
+          ).size < target_instance_ids.size
+        end
+
+        # The unreadable branch must NOT quote a size: `with_storage_gb.to_i`
+        # renders an authoritative "0 GB" for a value that was never read.
+        def declared_volume_phrase(with_storage_gb)
+          return "its declared data volume" unless storage_requested?(with_storage_gb)
+
+          "its #{with_storage_gb.to_i} GB data volume"
         end
 
         # F6 (IMP-6b497651d670 review) — bounded but never truncated
@@ -528,10 +629,10 @@ module System
           # graded step-for-step. The run additionally records one
           # provision_target_stack rollup after the provisioning leg, and
           # records terminate_source only for sources actually terminated —
-          # every blue_green refusal (undersized or off-fabric) fails the
-          # whole step after reclaiming the refused targets
-          # (IMP-6b497651d670, IMP-bb73f7154f27). The terminate steps below
-          # carry that guard.
+          # every blue_green refusal (undersized, off-fabric or
+          # storage-unready) fails the whole step after reclaiming the refused
+          # targets (IMP-6b497651d670, IMP-bb73f7154f27, IMP-e1903a42c1ab).
+          # The terminate steps below carry that guard.
           provision_steps = []
           count.times do |i|
             provision_steps << { step: "create_node", index: i, template_id: template_id }
@@ -545,7 +646,7 @@ module System
             # inner executor screens one, listing the pair here would promise a
             # volume the run will not create, on the approval card of a :high
             # blast-radius skill.
-            next unless with_storage_gb.respond_to?(:to_i) && with_storage_gb.to_i.positive?
+            next unless storage_requested?(with_storage_gb)
 
             provision_steps << { step: "provision_storage", index: i, size_gb: with_storage_gb.to_i }
             provision_steps << { step: "attach_volume", index: i }
@@ -553,8 +654,8 @@ module System
           terminate_steps = source_ids.map { |id| { step: "terminate_source", instance_id: id } }
           if strategy == "blue_green"
             # IMP-666a6e904650 — blue_green refuses the teardown when the
-            # target stack comes up undersized or off-fabric (the
-            # blue_green_cutover guard in #run_execute), so an unconditional
+            # target stack comes up undersized, off-fabric or storage-unready
+            # (the blue_green_cutover guard in #run_execute), so an unconditional
             # entry promised a destruction the run may (correctly) decline.
             # The step stays — the operator consents to the intent — marked
             # with the guard that may refuse it, so the card shows both the
@@ -563,15 +664,25 @@ module System
             # reclaimed and sources stay untouched, because a :high
             # blast-radius approval must cover every destruction the run can
             # perform, including the compensating one.
-            condition = if network_id.present?
-                          "skipped when the target stack comes up undersized or off-fabric " \
-                          "(not fully enrolled on network #{network_id}); on refusal the fresh " \
-                          "target stack is reclaimed and sources are left untouched"
-                        else
-                          "skipped when the target stack comes up undersized (fewer instances " \
-                          "than requested); on refusal the fresh target stack is reclaimed and " \
-                          "sources are left untouched"
-                        end
+            #
+            # IMP-e1903a42c1ab — the guard grew a third arm, so the card
+            # enumerates all of them. The storage clause tracks the GUARD's
+            # own predicate (`storage_declared?`), which is deliberately WIDER
+            # than the provision_storage steps above: an unreadable
+            # declaration plans no volume steps — the inner executor creates
+            # nothing — yet still refuses the cutover, so a card silent about
+            # it would understate the guard on exactly the input that reaches
+            # it. An explicit 0 is declared-as-none and stays out of both:
+            # promising a storage refusal there would describe a refusal the
+            # run cannot reach, the mirror of the same understatement.
+            clauses = [ "undersized (fewer instances than requested)" ]
+            clauses << "off-fabric (not fully enrolled on network #{network_id})" if network_id.present?
+            if storage_declared?(with_storage_gb)
+              clauses << "storage-unready (#{declared_volume_phrase(with_storage_gb)} not " \
+                         "attached to every target)"
+            end
+            condition = "skipped when the target stack comes up #{clauses.join(' or ')}; " \
+                        "on refusal the fresh target stack is reclaimed and sources are left untouched"
             terminate_steps.each do |step|
               step[:conditional] = true
               step[:guard] = "blue_green_cutover"
