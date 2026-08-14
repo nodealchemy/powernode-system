@@ -59,9 +59,14 @@ module Ai
       # policy — an agent refused on one surface cannot reach for the other.
       # PEER_UPDATE covers BOTH slice-9a peer arms (update_peer_lan_subnets,
       # set_peer_tags): lan_subnets and tags ride the same REST permit list
-      # (peer_update_params). NETWORK_UPDATE covers update_network_routing_mode
-      # (routing_protocol is in the REST network_params permit list);
-      # update_network itself is queued separately (IMP-2ff1980f7813).
+      # (peer_update_params). NETWORK_UPDATE covers BOTH network arms —
+      # update_network_routing_mode (routing_protocol) and the general
+      # update_network (name/description/status/settings, IMP-2ff1980f7813).
+      # Those five fields are a SUBSET of the network_params permit list
+      # NetworksController#update gates as a whole: slug, tags,
+      # advertise_overlay_subnet and route_reflector_redundancy have no MCP
+      # arm at all, so MCP reaches strictly less of the category than REST
+      # does — never more, which is what the parity claim has to mean.
       NETWORK_UPDATE_CATEGORY = "sdwan.network_update"
       PEER_UPDATE_CATEGORY = "sdwan.peer_update"
       FIREWALL_RULE_UPDATE_CATEGORY = "sdwan.firewall_rule_update"
@@ -232,7 +237,7 @@ module Ai
             }
           },
           "system_sdwan_update_network" => {
-            description: "Update an SDWAN network's name/description/status/settings",
+            description: "Update an SDWAN network's name/description/status/settings. Approval-gated (sdwan.network_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network to update" },
               options: { type: "object", required: false, description: "Hash of fields to update: name, description, status, settings (settings must itself be a hash)" }
@@ -1061,16 +1066,55 @@ module Ai
         success_result(network: serialize_network_full(network))
       end
 
+      # IMP-2ff1980f7813 — routed through Ai::AutonomyGate as
+      # sdwan.network_update, the category NetworksController#update gates over
+      # its WHOLE payload (3e0b0a60). This was the last ungated status write on
+      # the MCP surface: `status` moves a network between compilable and
+      # deny-all for every peer (Sdwan::Network::STATUSES /
+      # TopologyCompiler), so an agent refused on the HTTP surface could apply
+      # the identical flip here with no DeferredOperation row. The sibling arm
+      # set_network_routing_mode already gates on this category; together the
+      # two reach a subset of the REST permit list (see NETWORK_UPDATE_CATEGORY
+      # above for the four fields no MCP arm exposes).
+      #
+      # No re-parent anchor is needed (NetworksController#update carries the
+      # same note): Sdwan::Network is the top of the SDWAN tenancy tree and
+      # holds no re-pointable tenancy-bearing FK — account_id is its only
+      # tenancy key, and Executors::Base#attrs strips it.
+      #
+      # `options` is read string-keyed because that is the only live caller
+      # shape: McpPlatformToolRegistrar hands the tool a
+      # HashWithIndifferentAccess (mcp_platform_tool_registrar.rb).
       def update_network(params)
         network = account_networks.find(params[:network_id])
-        opts = params[:options] || {}
+        opts = params[:options]
+        opts = {} unless opts.is_a?(Hash)
         update_attrs = {}
-        update_attrs[:name]        = opts["name"]        if opts.is_a?(Hash) && opts["name"]
-        update_attrs[:description] = opts["description"] if opts.is_a?(Hash) && opts["description"]
-        update_attrs[:status]      = opts["status"]      if opts.is_a?(Hash) && opts["status"]
-        update_attrs[:settings]    = opts["settings"]    if opts.is_a?(Hash) && opts["settings"].is_a?(Hash)
-        network.update!(update_attrs) if update_attrs.any?
-        success_result(network: serialize_network_full(network.reload))
+        update_attrs[:name]        = opts["name"]        if opts["name"]
+        update_attrs[:description] = opts["description"] if opts["description"]
+        update_attrs[:status]      = opts["status"]      if opts["status"]
+        update_attrs[:settings]    = opts["settings"]    if opts["settings"].is_a?(Hash)
+
+        # Requested-but-unusable fails LOUD rather than parking a no-op
+        # approval (see update_firewall_rule). Replaces the old silent
+        # success-over-nothing: an unrecognized payload used to answer 200
+        # with the untouched network, which reads as "applied".
+        if update_attrs.empty?
+          return error_result("no recognized fields to update — permitted (options): name, description, status, settings")
+        end
+
+        error = validation_error_before_gate(network, update_attrs)
+        return error if error
+
+        gated_result(
+          action_category: NETWORK_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdateNetwork",
+          executor_params: { network_id: network.id, attributes: update_attrs },
+          source_type: "Sdwan::Network",
+          source_id: network.id,
+          # Matches NetworksController#update's gate description.
+          description: "Update SDWAN network '#{network.name}'"
+        ) { |_result| { network: serialize_network_full(network.reload) } }
       end
 
       def delete_network(params)
@@ -1814,8 +1858,8 @@ module Ai
       # the same control-plane knob. The mode check is the MODEL's inclusion
       # validation via the shared pre-gate ceremony (one wording with the
       # REST twin, and a doomed change parks no approval); UpdateNetwork's
-      # update! is the only writer. The general update_network arm is
-      # IMP-2ff1980f7813's.
+      # update! is the only writer. The general update_network arm gates on
+      # the same category (IMP-2ff1980f7813).
       def set_network_routing_mode(params)
         network = account_networks.find(params[:network_id])
         mode = params[:routing_protocol].to_s

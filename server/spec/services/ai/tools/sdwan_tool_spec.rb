@@ -2112,6 +2112,111 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # The general network update arm — the LAST ungated status write on the MCP
+  # surface (IMP-2ff1980f7813). Its REST twin (NetworksController#update)
+  # gates the WHOLE update through sdwan.network_update, so an inline write
+  # here is a parity bypass: status flips a network between compilable and
+  # deny-all for every peer.
+  #
+  # Options are string-keyed on purpose: McpPlatformToolRegistrar hands the
+  # tool a HashWithIndifferentAccess, which is the only live caller shape.
+  describe "system_sdwan_update_network approval gate (IMP-2ff1980f7813)" do
+    let!(:network) { create(:sdwan_network, account: account) }
+
+    let(:gate_action)  { "system_sdwan_update_network" }
+    let(:gate_request) { { network_id: network.id, options: { "status" => "suspended" } } }
+    let(:pristine_probe) { -> { network.reload.status } }
+    let(:pristine_value) { "registered" }
+    let(:pristine_failure_hint) { "MCP update_network flipped network status without an approval gate" }
+
+    let(:noop_request) { { network_id: network.id, options: { "bogus_field" => "x" } } }
+
+    it_behaves_like "an approval-gated sdwan update"
+    it_behaves_like "a loud no-op update refusal"
+
+    it "parks a sdwan.network_update operation the executor consumes on approval" do
+      r = call("system_sdwan_update_network", network_id: network.id,
+               options: { "status" => "suspended", "description" => "paused for maintenance" })
+
+      approve_parked_update!(r, category: "sdwan.network_update",
+                             executor: "Sdwan::Executors::UpdateNetwork") do |deferred|
+        expect(deferred.params["network_id"]).to eq(network.id)
+        expect(deferred.params.dig("attributes", "status")).to eq("suspended")
+        expect(deferred.params.dig("attributes", "description")).to eq("paused for maintenance")
+      end
+
+      expect(network.reload.status).to eq("suspended")
+      expect(network.description).to eq("paused for maintenance")
+    end
+
+    # The gate must not become status-conditional: a name/description-only
+    # payload carries no status at all and still has to defer.
+    it "defers a name-only payload too — the gate is not status-conditional" do
+      r = call("system_sdwan_update_network", network_id: network.id,
+               options: { "name" => "renamed-net" })
+
+      expect(r[:data][:pending]).to be true
+      expect(network.reload.name).not_to eq("renamed-net")
+    end
+
+    # The proceed branch must run the EXECUTOR, not an inline write — without
+    # the message expectation this example passes against the old inline
+    # `network.update!` and proves nothing.
+    it "runs the executor and serializes the network when the policy auto-approves" do
+      auto_approve_policy!
+      network.update!(settings: { "mtu" => 1420, "stale_key" => "gone" })
+      expect(::Sdwan::Executors::UpdateNetwork).to receive(:execute).and_call_original
+
+      r = call("system_sdwan_update_network", network_id: network.id,
+               options: { "status" => "suspended", "settings" => { "mtu" => 1380 } })
+
+      expect(r[:success]).to be true
+      expect(r[:data][:network][:status]).to eq("suspended"),
+                                             "answered success over a network that was not serialized back"
+      expect(network.reload.status).to eq("suspended")
+      # settings is REPLACED wholesale, matching the REST twin (network_params
+      # permits `settings: {}` and UpdateNetwork assigns it) — not merged.
+      expect(network.settings).to eq({ "mtu" => 1380 })
+    end
+
+    # An absent `options` is the shape whose behavior CHANGED: it used to
+    # answer 200 with the serialized network (a write-shaped call that read
+    # as applied), and now refuses loud. get_network covers the read case.
+    it "refuses a call with no options at all rather than answering success" do
+      expect {
+        @result = call("system_sdwan_update_network", network_id: network.id)
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to include("no recognized fields to update")
+    end
+
+    # SCOPE NOTE on this example's oracle: it cannot discriminate against the
+    # pre-gate code, and no assertion can — the old inline `update!` raised
+    # RecordInvalid, which the dispatch rescue (sdwan_tool.rb) rendered with
+    # `errors.full_messages.join("; ")`, the byte-identical wording
+    # validation_error_before_gate produces, and neither path wrote the row.
+    # That wording parity is deliberate. What this example DOES pin is the
+    # pre-gate refusal itself: neutering validation_error_before_gate makes a
+    # doomed update reach Ai::AutonomyGate and park an approval an operator
+    # would have to dispose of — mutation-verified red. The gating regression
+    # is caught by "an approval-gated sdwan update" above, not here.
+    it "rejects an out-of-range status before the gate is ever consulted" do
+      expect(::Ai::AutonomyGate).not_to receive(:evaluate)
+
+      expect {
+        @result = call("system_sdwan_update_network", network_id: network.id,
+                       options: { "name" => "renamed-net", "status" => "decommissioned" })
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to include("Status")
+      expect(Ai::ApprovalRequest.count).to eq(0)
+      expect(network.reload.status).to eq("registered")
+      expect(network.name).not_to eq("renamed-net")
+    end
+  end
+
   describe "system_sdwan_set_peer_tags approval gate (IMP-c9798d9d5671)" do
     let(:network)  { create(:sdwan_network, account: account) }
     let!(:peer)    { create(:sdwan_peer, account: account, network: network) }
