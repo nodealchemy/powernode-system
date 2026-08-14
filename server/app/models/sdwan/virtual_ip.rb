@@ -16,6 +16,8 @@ module Sdwan
   class VirtualIp < ApplicationRecord
     self.table_name = "system_sdwan_virtual_ips"
 
+    include Sdwan::LineSafeName
+
     STATES = %w[pending active failing_over unassigned error].freeze
 
     belongs_to :network, class_name: "Sdwan::Network", foreign_key: :sdwan_network_id

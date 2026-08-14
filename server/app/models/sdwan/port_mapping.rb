@@ -31,6 +31,8 @@ module Sdwan
   class PortMapping < ApplicationRecord
     self.table_name = "system_sdwan_port_mappings"
 
+    include Sdwan::LineSafeName
+
     PROTOCOLS = %w[tcp udp].freeze
 
     belongs_to :account

@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "support/line_safe_name_shared_examples"
 
 RSpec.describe Sdwan::VirtualIp, type: :model do
+  it_behaves_like "a line-safe named model", :sdwan_virtual_ip
+
   let(:account) { Account.first || create(:account) }
 
   before do

@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "support/line_safe_name_shared_examples"
 
 RSpec.describe Sdwan::FirewallRule, type: :model do
+  it_behaves_like "a line-safe named model", :sdwan_firewall_rule
+
   let(:account) { Account.first || create(:account) }
   let(:network) do
     Sdwan::Configuration.where(account_id: account.id).delete_all

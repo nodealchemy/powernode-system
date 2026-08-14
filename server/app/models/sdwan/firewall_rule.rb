@@ -20,6 +20,8 @@ module Sdwan
   class FirewallRule < ApplicationRecord
     self.table_name = "system_sdwan_firewall_rules"
 
+    include Sdwan::LineSafeName
+
     ACTIONS    = %w[accept drop reject].freeze
     DIRECTIONS = %w[ingress egress both].freeze
     PROTOCOLS  = %w[any tcp udp icmp6].freeze
