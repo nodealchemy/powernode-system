@@ -209,12 +209,18 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         r[:data][:planned_actions]
       end
 
-      it "marks blue_green terminate steps conditional, naming the guard and the empty-stack refusal" do
+      # IMP-6b497651d670 + IMP-bb73f7154f27 — the card must disclose BOTH
+      # sides of every refusal arm on this :high blast-radius skill: the
+      # guard that may decline the terminate (now undersized, subsuming
+      # empty, per the :233 undercount hole) AND what happens to the fresh
+      # target stack when it does (reclaimed; sources untouched).
+      it "marks blue_green terminate steps conditional, naming the guard, the undersized refusal, and the reclaim" do
         terminate = card(strategy: "blue_green").select { |a| a[:step] == "terminate_source" }
 
         expect(terminate).not_to be_empty
         expect(terminate).to all(include(conditional: true, guard: "blue_green_cutover"))
-        expect(terminate.map { |a| a[:condition] }).to all(match(/target stack is empty/))
+        expect(terminate.map { |a| a[:condition] })
+          .to all(match(/undersized/).and(match(/target stack is reclaimed/)).and(match(/sources are left untouched/)))
       end
 
       it "names the requested network in the condition when enrollment also gates the cutover" do
@@ -224,7 +230,8 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
 
         expect(terminate).not_to be_empty
         expect(terminate).to all(include(conditional: true, guard: "blue_green_cutover"))
-        expect(terminate.map { |a| a[:condition] }).to all(match(/off-fabric/).and(include(network.id)))
+        expect(terminate.map { |a| a[:condition] })
+          .to all(match(/off-fabric/).and(include(network.id)).and(match(/target stack is reclaimed/)))
       end
 
       # Negative control (positive twins above): drain terminates FIRST — no
@@ -380,6 +387,10 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       end
     end
 
+    # IMP-6b497651d670 — every blue_green refusal arm returns the SAME
+    # failure discriminator (one guard, one envelope shape). The empty arm
+    # has nothing to reclaim, so the strict no-terminate oracle holds
+    # unqualified here.
     context "blue_green refusal when target stack fails" do
       let(:bad_prov) { ::System::Runtime::Result.err(error: "region quota exhausted") }
 
@@ -387,7 +398,7 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         allow(::System::ProvisioningService).to receive(:provision_instance).and_return(bad_prov)
       end
 
-      it "does not terminate source instances when no target instance came up" do
+      it "refuses with a failure envelope and does not terminate source instances when no target instance came up" do
         expect(::System::ProvisioningService).not_to receive(:terminate_instance)
 
         r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
@@ -396,9 +407,50 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
                          provider_instance_type_id: instance_type.id, count: 1,
                          source_instance_ids: [ source_instance.id ])
 
-        expect(r[:success]).to be true
-        expect(r[:data][:partial]).to be true
-        expect(r[:data][:failures].any? { |f| f[:step] == "blue_green_cutover" }).to be true
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(/target stack is empty/)
+        # The inner executor's provision failure — the reason the stack is
+        # empty — must still surface; it rides the error string now.
+        expect(r[:error]).to include("region quota exhausted")
+      end
+    end
+
+    # IMP-bb73f7154f27 (pre-existing :233 undercount hole, closed alongside
+    # IMP-6b497651d670): the guard used to check only empty/off-fabric, so a
+    # 1-of-2 capacity shortfall passed and terminated EVERY source against
+    # half the requested capacity. Undersized now refuses like the other
+    # arms: failure envelope, provisioned targets reclaimed, sources alive.
+    context "blue_green refusal when the target stack comes up undersized" do
+      let(:target_a) do
+        create(:system_node_instance, :running,
+               node: create(:system_node, account: account, node_template: template))
+      end
+      let(:terminated_ids) { [] }
+
+      before do
+        results = [
+          ::System::Runtime::Result.ok(data: { instance: target_a, cloud_instance_id: "ci-1" }),
+          ::System::Runtime::Result.err(error: "region quota exhausted")
+        ]
+        allow(::System::ProvisioningService).to receive(:provision_instance) { results.shift }
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |**kwargs|
+          terminated_ids << kwargs[:instance].id
+          ::System::Runtime::Result.ok
+        end
+      end
+
+      it "refuses the cutover, reclaims the one provisioned target, and leaves every source alive" do
+        r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                         to_region_id: to_region.id, cutover_strategy: "blue_green",
+                         template_id: template.id,
+                         provider_instance_type_id: instance_type.id, count: 2,
+                         source_instance_ids: [ source_instance.id ])
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(%r{undersized \(1/2})
+        expect(terminated_ids).to eq([ target_a.id ])
+        expect(terminated_ids).not_to include(source_instance.id)
+        expect(::System::NodeInstance.where(id: source_instance.id)).to exist
       end
     end
 
@@ -408,36 +460,142 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
     # network_id terminated the source with its targets off-fabric, reporting
     # success. The enrollment change does not create that hole; it produces
     # the attach_sdwan_peer failure data that finally lets the guard see it.
+    #
+    # IMP-6b497651d670 — the refusal itself must be a FAILURE that reclaims
+    # the refused target stack in-branch. success(partial: true) abandoned
+    # the whole stack: SkillCompositionRunner reaches rollback_step! only
+    # from handle_failure, so a completed-partial step never dispatches the
+    # rollback holding these ids. And a bare failure(...) reclaims nothing
+    # either — the runner's rollback kwargs come from metadata["last_outputs"],
+    # written only by mark_completed, so a first-run failure rolls back {}
+    # and stamps rolled_back over live resources.
     context "blue_green refusal when the target never joined the requested network" do
       let(:network) { ::Sdwan::Network.create!(account_id: account.id, name: "reloc-net-#{SecureRandom.hex(3)}") }
-      let(:ok_prov) do
-        ::System::Runtime::Result.ok(data: { instance: new_instance_stub, cloud_instance_id: "ci-bg" })
+
+      # Real rows, because the reclaim resolves ids back to records — an
+      # instance_double id makes the rollback loops skip via find_by(nil)
+      # and every reclaim assertion would pass vacuously.
+      let(:target_a) { sdwan_test_node_instance(node: sdwan_test_node(account: account)) }
+      let(:target_b) { sdwan_test_node_instance(node: sdwan_test_node(account: account)) }
+      let(:volume_a) do
+        create(:system_provider_volume, :attached, account: account,
+               provider_region: to_region, node_instance: target_a)
       end
+      let(:volume_b) do
+        create(:system_provider_volume, :attached, account: account,
+               provider_region: to_region, node_instance: target_b)
+      end
+
+      let(:terminated_ids)    { [] }
+      let(:enrolled_peer_ids) { [] }
 
       before do
-        allow(::System::ProvisioningService).to receive(:provision_instance).and_return(ok_prov)
-        allow(::Sdwan::PeerEnroller).to receive(:call).and_raise(StandardError, "vrf table exhausted")
+        targets = [ target_a, target_b ]
+        allow(::System::ProvisioningService).to receive(:provision_instance) do
+          ::System::Runtime::Result.ok(data: { instance: targets.shift, cloud_instance_id: "ci-bg" })
+        end
+
+        # The first target enrolls for real; the second fails — 1/2 on fabric.
+        allow(::Sdwan::PeerEnroller).to receive(:call).and_wrap_original do |orig, **kwargs|
+          raise StandardError, "vrf table exhausted" if enrolled_peer_ids.any?
+
+          orig.call(**kwargs).tap { |peer| enrolled_peer_ids << peer.id }
+        end
+
+        volumes = [ volume_a, volume_b ]
+        allow(::System::VolumeManagementService).to receive(:provision) do
+          ::System::Runtime::Result.ok(data: { volume: volumes.shift })
+        end
+        allow(::System::VolumeManagementService).to receive(:attach)
+          .and_return(::System::Runtime::Result.ok(data: { device: "/dev/vdb" }))
+        allow(::System::VolumeManagementService).to receive(:detach)
+          .and_return(::System::Runtime::Result.ok)
+        allow(::System::VolumeManagementService).to receive(:delete)
+          .and_return(::System::Runtime::Result.ok)
+
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |**kwargs|
+          terminated_ids << kwargs[:instance].id
+          ::System::Runtime::Result.ok
+        end
       end
 
-      it "keeps the source alive and surfaces the enrollment failure in its own envelope" do
+      def run_blue_green_relocate
+        exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                     to_region_id: to_region.id, cutover_strategy: "blue_green",
+                     template_id: template.id,
+                     provider_instance_type_id: instance_type.id, count: 2,
+                     network_id: network.id, with_storage_gb: 25,
+                     source_instance_ids: [ source_instance.id ])
+      end
+
+      it "reports the refusal as a failure, naming the fabric shortfall and the enrollment error" do
+        r = run_blue_green_relocate
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(/off-fabric/)
+        expect(r[:error]).to include("1/2").and include(network.id)
+        # The inner executor's own leg failure must still reach the recorded
+        # envelope — the runner records only what this executor returns, and
+        # a failure envelope carries no failures array, so it rides the error.
+        expect(r[:error]).to include("vrf table exhausted")
+      end
+
+      it "reclaims the refused target stack — instances, volumes, enrolled peer — and never touches the source" do
+        # Strict oracle restored (was the not_to receive(:terminate_instance)
+        # of the pre-reclaim contract): the reclaim DOES terminate targets,
+        # so the never-condition is now scoped to the source's own args and
+        # backstopped by the terminated_ids capture below.
         expect(::System::ProvisioningService).not_to receive(:terminate_instance)
+          .with(instance: source_instance)
 
-        r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
-                         to_region_id: to_region.id, cutover_strategy: "blue_green",
-                         template_id: template.id,
-                         provider_instance_type_id: instance_type.id, count: 1,
-                         network_id: network.id,
-                         source_instance_ids: [ source_instance.id ])
+        r = run_blue_green_relocate
+        expect(r[:success]).to be false
 
-        expect(r[:success]).to be true
-        expect(r[:data][:outputs][:terminated_instance_ids]).to be_empty
-        expect(r[:data][:failures].any? do |f|
-          f[:step] == "blue_green_cutover" && f[:error].to_s.include?("off-fabric")
-        end).to be true
-        # The inner executor's own failure must reach the recorded envelope —
-        # the runner records only what this executor returns.
-        expect(r[:data][:failures].any? { |f| f[:step] == "attach_sdwan_peer" }).to be true
-        expect(r[:data][:partial]).to be true
+        # Target instances terminated; the source is NOT in the terminate set.
+        expect(terminated_ids).to match_array([ target_a.id, target_b.id ])
+        expect(terminated_ids).not_to include(source_instance.id)
+        expect(::System::NodeInstance.where(id: source_instance.id)).to exist
+
+        # Volumes detached then deleted (they arrive attached — IMP-093378034fb4).
+        expect(::System::VolumeManagementService).to have_received(:detach).with(volume: volume_a)
+        expect(::System::VolumeManagementService).to have_received(:detach).with(volume: volume_b)
+        expect(::System::VolumeManagementService).to have_received(:delete).with(volume: volume_a)
+        expect(::System::VolumeManagementService).to have_received(:delete).with(volume: volume_b)
+
+        # The one peer that DID enroll is detached again.
+        expect(enrolled_peer_ids.size).to eq(1)
+        expect(::Sdwan::Peer.where(id: enrolled_peer_ids.first)).to be_empty
+      end
+
+      it "surfaces an incomplete reclaim instead of claiming a clean unwind" do
+        allow(::System::VolumeManagementService).to receive(:delete)
+          .and_return(::System::Runtime::Result.err(error: "volume delete refused"))
+
+        r = run_blue_green_relocate
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(/reclaim/i)
+        expect(r[:error]).to include("volume delete refused")
+      end
+
+      # Positive control (F10): the identical composition with a healthy
+      # fabric — every target enrolls — must still cut over, or the refusal
+      # examples above could pass off an unconditional failure as the guard
+      # working. Terminate reaches ONLY the source; nothing is reclaimed.
+      context "when every target enrolls (positive control)" do
+        before do
+          allow(::Sdwan::PeerEnroller).to receive(:call).and_call_original
+        end
+
+        it "proceeds with the cutover: source terminated, targets kept, success envelope" do
+          r = run_blue_green_relocate
+
+          expect(r[:success]).to be true
+          expect(r[:data][:outputs][:terminated_instance_ids]).to eq([ source_instance.id ])
+          expect(terminated_ids).to eq([ source_instance.id ])
+          expect(::System::VolumeManagementService).not_to have_received(:detach)
+          expect(::System::VolumeManagementService).not_to have_received(:delete)
+        end
       end
     end
   end

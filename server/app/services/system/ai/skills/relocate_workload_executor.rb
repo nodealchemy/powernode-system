@@ -228,16 +228,27 @@ module System
             # What changed is that the failure is now KNOWABLE: attach_sdwan_peer
             # entries are real data this executor can gate on. Reading them
             # here is the whole point of producing them.
-            target_instance_ids = provision_data ? Array(provision_data[:outputs][:node_instance_ids]) : []
-            attached_peer_ids   = provision_data ? Array(provision_data[:outputs][:sdwan_peer_ids]) : []
+            #
+            # IMP-bb73f7154f27 — "healthy" has to include the SIZE, too: the
+            # old empty-check let a 1-of-2 shortfall through, terminating
+            # every source against half the requested capacity. Undersized
+            # (which subsumes empty) and off-fabric are one guard with one
+            # refusal shape.
+            target_outputs      = provision_data.is_a?(Hash) ? (provision_data[:outputs] || {}) : {}
+            target_instance_ids = Array(target_outputs[:node_instance_ids])
+            attached_peer_ids   = Array(target_outputs[:sdwan_peer_ids])
+            undersized = target_instance_ids.size < count
             off_fabric = network_id.present? && attached_peer_ids.size < target_instance_ids.size
 
-            if target_instance_ids.empty?
-              failures << { step: "blue_green_cutover", error: "target stack is empty; refusing to terminate source" }
-            elsif off_fabric
-              failures << { step: "blue_green_cutover",
-                            error: "target stack is off-fabric (#{attached_peer_ids.size}/#{target_instance_ids.size} " \
-                                   "instances enrolled on network #{network_id}); refusing to terminate source" }
+            if undersized || off_fabric
+              # IMP-6b497651d670 — every refusal is a FAILURE with an
+              # in-branch reclaim, not a success(partial: true): see
+              # #refuse_blue_green_cutover! for why neither standard envelope
+              # shape can delegate the reclaim to the runner.
+              return refuse_blue_green_cutover!(
+                network_id: network_id, count: count,
+                provision_data: provision_data, step_failures: failures
+              )
             else
               terminate_step!(source_ids: source_ids, terminated: terminated,
                               failures: failures, planned_actions: planned_actions)
@@ -265,6 +276,92 @@ module System
             failures: failures,
             partial: failures.any?
           )
+        end
+
+        # IMP-6b497651d670 — a blue_green refusal (undersized OR off-fabric
+        # target stack) reclaims the refused targets itself, then reports
+        # failure. Neither standard envelope could hand the reclaim to the
+        # runner:
+        #
+        #   - success(partial: true) abandoned the entire stack (VMs + volumes
+        #     + enrolled peers, unowned): SkillCompositionRunner reaches
+        #     rollback_step! only from handle_failure, so a completed-partial
+        #     step never dispatches the rollback that holds these ids.
+        #   - a bare failure(...) reclaims nothing either: the runner's
+        #     rollback kwargs come from metadata["last_outputs"], which only
+        #     mark_completed writes — on a first-run failure the hook fires
+        #     with empty kwargs, no-ops, and stamps rolled_back over live
+        #     resources.
+        #
+        # So the reclaim runs HERE, reusing the rollback contract this
+        # executor already owns. That contract is target-only by construction:
+        # its kwargs are the ids from the target provisioning envelope, and
+        # the sources are not in its kwargs-set (terminated_instance_ids is
+        # swallowed by **_extras) — so a refused cutover can never reach the
+        # workload it declined to tear down. If the runner rolls back again
+        # after this failure (composers stamp on_failure: "rollback" by
+        # default), the hook is idempotent: every id it re-resolves is
+        # already gone. The System::Node shells are deliberately NOT
+        # reclaimed — they stay for inspection, the same rationale as
+        # ProvisionFullStackExecutor's rollback.
+        def refuse_blue_green_cutover!(network_id:, count:, provision_data:, step_failures:)
+          outputs     = provision_data.is_a?(Hash) ? (provision_data[:outputs] || {}) : {}
+          target_ids  = Array(outputs[:node_instance_ids])
+          volume_ids  = Array(outputs[:storage_volume_ids])
+          peer_ids    = Array(outputs[:sdwan_peer_ids])
+
+          reasons = []
+          if target_ids.empty?
+            reasons << "target stack is empty"
+          elsif target_ids.size < count
+            reasons << "target stack is undersized (#{target_ids.size}/#{count} instances provisioned)"
+          end
+          if network_id.present? && peer_ids.size < target_ids.size
+            reasons << "target stack is off-fabric (#{peer_ids.size}/#{target_ids.size} " \
+                       "instances enrolled on network #{network_id})"
+          end
+
+          reclaim = rollback_relocate_workload(
+            node_instance_ids: target_ids,
+            storage_volume_ids: volume_ids,
+            sdwan_peer_ids: peer_ids
+          )
+
+          message = "blue_green cutover refused: #{reasons.join('; ')}; source instances not terminated"
+
+          # The failure envelope carries no failures array, so the inner
+          # executor's own leg failures — the REASON the stack is refused —
+          # ride in the message; the runner records only what we return.
+          # step_failures covers the provision_data-nil shape (a whole-step
+          # inner failure lands in run_execute's local failures, not in an
+          # inner envelope).
+          leg_failures = Array(step_failures) + (provision_data.is_a?(Hash) ? Array(provision_data[:failures]) : [])
+          message += "; provisioning-leg failures: #{summarize_entries(leg_failures)}" if leg_failures.any?
+
+          message += if reclaim[:success]
+                       "; refused target stack reclaimed"
+                     else
+                       "; refused target stack reclaim INCOMPLETE: #{summarize_entries(Array(reclaim[:errors]))}"
+                     end
+
+          failure(message)
+        end
+
+        # F6 (IMP-6b497651d670 review) — bounded but never truncated
+        # mid-identifier: whole entries are rendered (step/resource + id +
+        # error) and overflow is COUNTED, not sliced, so an operator reading
+        # a failed step never loses an id to a byte cap.
+        MESSAGE_DETAIL_LIMIT = 3
+
+        def summarize_entries(entries)
+          shown = entries.first(MESSAGE_DETAIL_LIMIT).map do |e|
+            label = e[:step] || e["step"] || e[:resource] || e["resource"]
+            id    = e[:instance_id] || e["instance_id"] || e[:node_id] || e["node_id"] || e[:id] || e["id"]
+            error = e[:error] || e["error"]
+            [ label, id ? "(#{id})" : nil, error ? ": #{error}" : nil ].compact.join
+          end
+          overflow = entries.size - shown.size
+          shown.join("; ") + (overflow.positive? ? " (+#{overflow} more)" : "")
         end
 
         def provision_target!(template_id:, count:, to_region_id:,
@@ -348,8 +445,10 @@ module System
           # graded step-for-step. The run additionally records one
           # provision_target_stack rollup after the provisioning leg, and
           # records terminate_source only for sources actually terminated —
-          # blue_green's refusals surface as blue_green_cutover failures, which
-          # is why the terminate steps below carry that guard.
+          # every blue_green refusal (undersized or off-fabric) fails the
+          # whole step after reclaiming the refused targets
+          # (IMP-6b497651d670, IMP-bb73f7154f27). The terminate steps below
+          # carry that guard.
           provision_steps = []
           count.times do |i|
             provision_steps << { step: "create_node", index: i, template_id: template_id }
@@ -371,16 +470,24 @@ module System
           terminate_steps = source_ids.map { |id| { step: "terminate_source", instance_id: id } }
           if strategy == "blue_green"
             # IMP-666a6e904650 — blue_green refuses the teardown when the
-            # target stack comes up empty or off-fabric (the blue_green_cutover
-            # guard in #run_execute), so an unconditional entry promised a
-            # destruction the run may (correctly) decline. The step stays — the
-            # operator consents to the intent — marked with the guard that may
-            # refuse it, so the card shows both the intent and the safety.
+            # target stack comes up undersized or off-fabric (the
+            # blue_green_cutover guard in #run_execute), so an unconditional
+            # entry promised a destruction the run may (correctly) decline.
+            # The step stays — the operator consents to the intent — marked
+            # with the guard that may refuse it, so the card shows both the
+            # intent and the safety. IMP-6b497651d670 — the card also
+            # discloses the refusal's OTHER side: the fresh target stack is
+            # reclaimed and sources stay untouched, because a :high
+            # blast-radius approval must cover every destruction the run can
+            # perform, including the compensating one.
             condition = if network_id.present?
-                          "skipped when the target stack is empty or off-fabric " \
-                          "(not fully enrolled on network #{network_id})"
+                          "skipped when the target stack comes up undersized or off-fabric " \
+                          "(not fully enrolled on network #{network_id}); on refusal the fresh " \
+                          "target stack is reclaimed and sources are left untouched"
                         else
-                          "skipped when the target stack is empty"
+                          "skipped when the target stack comes up undersized (fewer instances " \
+                          "than requested); on refusal the fresh target stack is reclaimed and " \
+                          "sources are left untouched"
                         end
             terminate_steps.each do |step|
               step[:conditional] = true
