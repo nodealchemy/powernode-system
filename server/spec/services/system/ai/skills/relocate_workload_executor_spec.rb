@@ -1116,6 +1116,153 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         expect(terminated_ids).to eq([ source_instance.id ])
       end
     end
+
+    # IMP-01a774a80f7a — the storage declaration reaches this executor under
+    # TWO key names, and only one of them used to survive the door.
+    # `storage_gb` is the tolerated alias ProvisionFullStackExecutor resolves
+    # ([with_storage_gb, storage_gb], first PRESENT wins) and the one
+    # CostEstimatorService#declared_gb prices. relocate's #perform declared no
+    # such keyword, so the alias landed in `**_extras` and was discarded, and
+    # #provision_target! forwarded only `with_storage_gb:` — nil.
+    #
+    # Verified by execution BEFORE the fix (this context, red): a blue_green
+    # relocate declaring `storage_gb: 25` alone provisioned no volume, planned
+    # no storage steps, recorded NO failure entry, disclosed no refusal clause,
+    # and — storage_declared?(nil) being false — passed the cutover guard and
+    # TERMINATED the sources against a target with no disk, reporting success.
+    # That is the IMP-e1903a42c1ab data loss reached through a third input
+    # shape, and strictly worse diagnostically than the unreadable one, which
+    # at least leaves one provision_storage failure per node to read.
+    context "storage declared through the `storage_gb` alias" do
+      let(:target_a) do
+        create(:system_node_instance, :running,
+               node: create(:system_node, account: account, node_template: template))
+      end
+      let(:target_b) do
+        create(:system_node_instance, :running,
+               node: create(:system_node, account: account, node_template: template))
+      end
+      let(:volume_a) { create(:system_provider_volume, account: account, provider_region: to_region) }
+      let(:volume_b) { create(:system_provider_volume, account: account, provider_region: to_region) }
+
+      let(:terminated_ids)  { [] }
+      let(:pending_targets) { [ target_a, target_b ] }
+      let(:pending_volumes) { [ volume_a, volume_b ] }
+
+      before do
+        allow(::System::ProvisioningService).to receive(:provision_instance) do
+          ::System::Runtime::Result.ok(data: { instance: pending_targets.shift, cloud_instance_id: "ci-alias" })
+        end
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |**kwargs|
+          terminated_ids << kwargs[:instance].id
+          ::System::Runtime::Result.ok
+        end
+        allow(::System::VolumeManagementService).to receive(:provision) do
+          ::System::Runtime::Result.ok(data: { volume: pending_volumes.shift })
+        end
+        # Faithful attach — it writes the FK the guard actually reads. Rests on
+        # the volume factory defaulting to status "available" (so `can_attach?`
+        # holds); a factory change there would surface here as a guard bug.
+        allow(::System::VolumeManagementService).to receive(:attach) do |**kwargs|
+          kwargs[:volume].attach_to!(kwargs[:instance], "/dev/vdb")
+          ::System::Runtime::Result.ok(data: { device: "/dev/vdb" })
+        end
+        allow(::System::VolumeManagementService).to receive(:detach).and_return(::System::Runtime::Result.ok)
+        allow(::System::VolumeManagementService).to receive(:delete).and_return(::System::Runtime::Result.ok)
+      end
+
+      def relocate_via_alias(count: 1, dry_run: false, **storage_keys)
+        exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                     to_region_id: to_region.id, cutover_strategy: "blue_green",
+                     template_id: template.id,
+                     provider_instance_type_id: instance_type.id, count: count,
+                     source_instance_ids: [ source_instance.id ],
+                     dry_run: dry_run, **storage_keys)
+      end
+
+      # The destructive shape, and the whole finding: pre-fix this returned
+      # success with the source gone and nothing anywhere recording why.
+      it "refuses the cutover and leaves the sources alive when the aliased storage leg fails" do
+        allow(::System::VolumeManagementService).to receive(:attach)
+          .and_return(::System::Runtime::Result.err(error: "no free device paths"))
+
+        r = relocate_via_alias(storage_gb: 25)
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(%r{storage-unready \(0/1})
+        expect(r[:error]).to include("25 GB")
+        expect(r[:error]).to include("source instances not terminated")
+        # The leg failure the pre-fix path never even attempted, so had nothing
+        # to report: no volume was requested, so none could fail.
+        expect(r[:error]).to include("no free device paths")
+
+        expect(terminated_ids).to eq([ target_a.id ])
+        expect(terminated_ids).not_to include(source_instance.id)
+        expect(::System::NodeInstance.where(id: source_instance.id)).to exist
+      end
+
+      # The FORWARD leg, distinct from the guard: a fix that taught only the
+      # guard to see the alias would refuse every aliased relocate. This proves
+      # the resolved value reaches ProvisionFullStackExecutor and buys a disk.
+      it "provisions and attaches the aliased volume, then cuts over (positive control)" do
+        r = relocate_via_alias(count: 2, storage_gb: 25)
+
+        expect(r[:success]).to be true
+        expect(::System::VolumeManagementService).to have_received(:provision)
+          .with(hash_including(size_gb: 25)).twice
+        expect([ volume_a.reload.node_instance_id, volume_b.reload.node_instance_id ])
+          .to match_array([ target_a.id, target_b.id ])
+        expect(r[:data][:outputs][:storage_volume_ids]).to match_array([ volume_a.id, volume_b.id ])
+        expect(terminated_ids).to eq([ source_instance.id ])
+      end
+
+      # The CARD leg. One resolved value feeds card, guard and forward, so the
+      # approval card for a :high blast-radius skill must quote the aliased
+      # volume and disclose the arm of the guard that can refuse the teardown.
+      it "previews the aliased volume and its guard clause on the approval card" do
+        plan = relocate_via_alias(count: 2, dry_run: true, storage_gb: 25)[:data][:planned_actions]
+
+        expect(plan.select { |a| a[:step] == "provision_storage" }.map { |a| a[:size_gb] })
+          .to eq([ 25, 25 ])
+        expect(plan.count { |a| a[:step] == "attach_volume" }).to eq(2)
+        expect(plan.select { |a| a[:step] == "terminate_source" }.map { |a| a[:condition] })
+          .to all(match(/storage-unready/).and(include("25 GB")))
+      end
+
+      # The LOUD lane through the alias: a declared-but-unreadable value
+      # creates no volume but must still refuse, exactly as it does under the
+      # advertised key (IMP-f85254148755's fork, reached by the other name).
+      it "refuses a declared-but-unreadable alias, on which no volume is ever created" do
+        r = relocate_via_alias(storage_gb: "plenty")
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(%r{storage-unready \(0/1})
+        expect(r[:error]).to include("storage declared but unreadable")
+        expect(r[:error]).not_to include("0 GB")
+        expect(::System::VolumeManagementService).not_to have_received(:provision)
+        expect(terminated_ids).to eq([ target_a.id ])
+        expect(::System::NodeInstance.where(id: source_instance.id)).to exist
+      end
+
+      # Resolution ORDER, pinned against a wrong-order fix rather than against
+      # the pre-fix state: `with_storage_gb` is read first and the first
+      # PRESENT value wins, so an explicit 0 — a legitimate "no storage"
+      # (IMP-33fa6c51f05d) — beats a positive alias on all three surfaces.
+      # `storage_gb || with_storage_gb` would provision 500 GB the operator
+      # explicitly declined and refuse the cutover when it failed.
+      it "reads with_storage_gb first: an explicit 0 beats a positive alias" do
+        r = relocate_via_alias(with_storage_gb: 0, storage_gb: 500)
+
+        expect(r[:success]).to be true
+        expect(::System::VolumeManagementService).not_to have_received(:provision)
+        expect(terminated_ids).to eq([ source_instance.id ])
+
+        card = relocate_via_alias(dry_run: true, with_storage_gb: 0, storage_gb: 500)[:data][:planned_actions]
+        expect(card.map { |a| a[:step] }).not_to include("provision_storage")
+        expect(card.select { |a| a[:step] == "terminate_source" }.map { |a| a[:condition] }.join(" | "))
+          .not_to match(/storage/)
+      end
+    end
   end
 
   describe "#rollback_relocate_workload" do

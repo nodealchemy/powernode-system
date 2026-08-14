@@ -150,7 +150,36 @@ module System
 
         def perform(project_id:, from_region_id:, to_region_id:, cutover_strategy:,
                     template_id:, provider_instance_type_id:, count:, source_instance_ids:,
-                    network_id: nil, with_storage_gb: nil, dry_run: false, **_extras)
+                    network_id: nil, with_storage_gb: nil, storage_gb: nil,
+                    dry_run: false, **_extras)
+          # IMP-01a774a80f7a — the ONE resolution site for this run's storage
+          # declaration, and everything below reads its result: the approval
+          # card (#build_plan), the cutover guard (#storage_unready?) and the
+          # forward to the executor that actually buys the disk
+          # (#provision_target!). The inner executor tolerates `storage_gb` as
+          # an alias and CostEstimatorService#declared_gb prices it, but this
+          # executor declared no such keyword, so a declaration made under that
+          # name landed in `**_extras` and was discarded — and because
+          # `provision_target!` forwards only `with_storage_gb:`, the inner
+          # executor was asked for nothing. Verified by execution before this
+          # parameter existed: `storage_gb: 500` on a blue_green relocate
+          # provisioned no volume, planned no storage steps, recorded NO
+          # failure entry and disclosed no refusal clause, so the guard read
+          # `storage_declared?(nil)` — false — skipped the storage arm and
+          # TERMINATED the sources against a target with no disk, returning
+          # success(partial: false) with an empty failures array and no
+          # execution event. That is IMP-e1903a42c1ab's data loss through a
+          # third input shape, and strictly worse than the unreadable one,
+          # which at least leaves a provision_storage failure per node.
+          #
+          # Resolution is ProvisionFullStackExecutor's own (class scope), not a
+          # copy: a re-derived order here is the card/actuator disagreement the
+          # published reader exists to prevent, and this executor forwards the
+          # resolved value on to that same reader, which re-resolves it
+          # idempotently.
+          with_storage_gb = ::System::Ai::Skills::ProvisionFullStackExecutor
+                            .resolve_storage_gb(with_storage_gb, storage_gb)
+
           strategy = cutover_strategy.to_s
           return failure("cutover_strategy must be one of: #{STRATEGIES.join(', ')}") unless STRATEGIES.include?(strategy)
 

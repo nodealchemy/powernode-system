@@ -159,17 +159,7 @@ module System
           count = count.to_i
           return failure("count must be between 1 and #{MAX_COUNT}") unless count.between?(1, MAX_COUNT)
 
-          # `storage_gb` is a tolerated alias for hand-authored plan_data,
-          # resolved in exactly CostEstimatorService#declared_gb's read order:
-          # `with_storage_gb` first, first PRESENT value wins — so an explicit
-          # `with_storage_gb: 0` beats a positive alias, and both surfaces
-          # read "no storage requested" for it. Before IMP-f85254148755 the
-          # alias fell into `**_extras`, so a plan carrying it alone was
-          # QUOTED for a volume this executor never provisioned — the same
-          # quote/actuator key disagreement class IMP-051509357291 removed.
-          # `with_storage_gb` stays the only ADVERTISED input; the alias is a
-          # compatibility read on both sides, not a descriptor entry.
-          storage_declared = [ with_storage_gb, storage_gb ].find(&:present?)
+          storage_declared = self.class.resolve_storage_gb(with_storage_gb, storage_gb)
 
           template = ::System::NodeTemplate.where(account_id: @account.id).find_by(id: template_id)
           return failure("template not found: #{template_id}") unless template
@@ -434,6 +424,36 @@ module System
         # `present?`-shaped copy would refuse every zero-storage relocate.
         def self.storage_requested?(with_storage_gb)
           with_storage_gb.respond_to?(:to_i) && with_storage_gb.to_i.positive?
+        end
+
+        # The single storage DECLARATION reader — one implementation, three
+        # surfaces (this executor plus the two that compose it).
+        #
+        # `storage_gb` is a tolerated alias for hand-authored plan_data,
+        # resolved in exactly CostEstimatorService#declared_gb's read order:
+        # `with_storage_gb` first, first PRESENT value wins — so an explicit
+        # `with_storage_gb: 0` beats a positive alias, and both surfaces read
+        # "no storage requested" for it. Before IMP-f85254148755 the alias fell
+        # into `**_extras` here, so a plan carrying it alone was QUOTED for a
+        # volume this executor never provisioned — the same quote/actuator key
+        # disagreement class IMP-051509357291 removed. `with_storage_gb` stays
+        # the only ADVERTISED input; the alias is a compatibility read on both
+        # sides, not a descriptor entry.
+        #
+        # IMP-01a774a80f7a — published at CLASS scope for the same reason the
+        # two predicates were, and with a sharper consequence. The predicates
+        # answer "what does this value MEAN"; this answers "which value are we
+        # even reading", and a composing executor that never asked the question
+        # read `nil` for a declaration its caller made under the other name.
+        # RelocateWorkloadExecutor dropped the alias into `**_extras` and
+        # forwarded nil, so its blue_green cutover guard saw storage_declared?
+        # (nil) — false — skipped the storage arm, and terminated the sources
+        # against a target with no disk, with no volume, no failure entry and
+        # no refusal clause anywhere in the run. A second copy of the
+        # expression would be the same divergence one refactor later, so the
+        # resolution lives here with the order it has to agree with.
+        def self.resolve_storage_gb(with_storage_gb, storage_gb = nil)
+          [ with_storage_gb, storage_gb ].find(&:present?)
         end
 
         def storage_requested?(with_storage_gb)
