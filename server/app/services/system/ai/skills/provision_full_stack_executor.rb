@@ -423,8 +423,21 @@ module System
         # the loud lane via #storage_unreadable? (IMP-f85254148755, closing
         # the gap this comment used to record) — this predicate only answers
         # the SIZE question for values that read as numbers.
-        def storage_requested?(with_storage_gb)
+        #
+        # IMP-e1903a42c1ab — published at CLASS scope because the answer is
+        # consulted by executors that COMPOSE this one and must not re-derive
+        # it. RelocateWorkloadExecutor's blue_green cutover guard has to know
+        # whether a missing volume is a shortfall or a legitimate "none
+        # requested" before it refuses to tear a workload's sources down; a
+        # second copy of the expression is exactly the disagreement between
+        # card and actuator this predicate exists to prevent, and a
+        # `present?`-shaped copy would refuse every zero-storage relocate.
+        def self.storage_requested?(with_storage_gb)
           with_storage_gb.respond_to?(:to_i) && with_storage_gb.to_i.positive?
+        end
+
+        def storage_requested?(with_storage_gb)
+          self.class.storage_requested?(with_storage_gb)
         end
 
         # The loud half of the storage fork (IMP-f85254148755, ruled by the
@@ -434,17 +447,31 @@ module System
         # (0, "0", -50) is NOT unreadable — it is a legitimate "no storage"
         # answer (IMP-33fa6c51f05d) and stays silent, matching
         # CostEstimatorService#declared_gb's quote of no line.
-        def storage_unreadable?(value)
+        #
+        # IMP-e1903a42c1ab — published at CLASS scope alongside
+        # `storage_requested?`, and for a sharper reason than symmetry: this
+        # lane creates NO volume, so a composing executor that asks only "was
+        # a positive size requested?" reads a stack with no disk as a stack
+        # that wanted none. RelocateWorkloadExecutor's cutover guard needs
+        # "was storage DECLARED?" — the union of the two predicates — before
+        # it tears a workload's sources down.
+        def self.storage_unreadable?(value)
           return false unless value.present?         # absent — genuinely not requested
           return false if storage_requested?(value)  # readable and positive — provisions
           !numeric_reading?(value)
         end
 
+        def storage_unreadable?(value)
+          self.class.storage_unreadable?(value)
+        end
+
         # Shapes with a trustworthy numeric reading: real numbers, and strings
         # that parse as one ("0", "-50"). `"plenty".to_i == 0` is why `to_i`
         # alone cannot tell an explicit zero from a shape that merely failed
-        # to parse.
-        def numeric_reading?(value)
+        # to parse. Class-scope only — its sole caller is the class-scope
+        # `storage_unreadable?` above, so an instance delegator would be dead
+        # the moment it was written.
+        def self.numeric_reading?(value)
           value.is_a?(Numeric) ||
             (value.is_a?(String) && !Float(value, exception: false).nil?)
         end
