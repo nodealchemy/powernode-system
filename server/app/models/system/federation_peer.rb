@@ -390,11 +390,18 @@ module System
         severity: severity,
         source: "federation_peer",
         payload: {
-          # federation_peer_id, NOT peer_id — the key all three per-peer
-          # readers filter on (`payload->>'federation_peer_id'`):
+          # federation_peer_id, NOT peer_id — the key all four per-peer
+          # readers match on. Three server-side readers filter on
+          # `payload->>'federation_peer_id'`:
           # Ai::Tools::SdwanTool#get_audit_log,
           # Federation::AuditShipmentService#events_for_peer (WORM sealing) and
-          # FederationApi::AuditExcerptsController#events_for_peer. The other
+          # FederationApi::AuditExcerptsController#events_for_peer. The fourth
+          # is the frontend PeerLivenessMonitor
+          # (frontend/src/features/system/components/platform/
+          # PeerLivenessMonitor.tsx), which attributes the live
+          # SystemFleetChannel push of this event to a peer row via
+          # payload.federation_peer_id (legacy platform_peer_id / peer_id /
+          # remote_instance_url kept as fallbacks). The other
           # peer-scoped federation.* emitters stamp it too; the account-rollup
           # ones (FederationManagerExecutor, GrantReviewService) carry no peer
           # id at all. Under the old `peer_id` these status events were
