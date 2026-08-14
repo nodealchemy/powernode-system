@@ -94,4 +94,42 @@ RSpec.describe Sdwan::Executors::CreateVirtualIp do
       expect(::Sdwan::VirtualIp.find(result[:data][:vip_id]).sdwan_network_id).to eq(network.id)
     end
   end
+
+  # IMP-3a563becb7d7 — #summarize is the approval/notification body
+  # (Ai::DeferredOperationApprovalContent.title and .message both render
+  # preview[:summary]). It read "Allocate SDWAN VIP on network <uuid>" — a
+  # bare network UUID, naming neither the VIP nor a network the operator
+  # recognises. The VIP does not exist yet, so the card is composed from what
+  # the request already names, mirroring CreatePeer (IMP-1eba7d50d24c); the
+  # network lookup is scoped by the account carried in the create attributes,
+  # because Base.preview supplies deferred_operation: nil and an approval card
+  # must not name another account's rows.
+  describe ".preview" do
+    let(:network) { create(:sdwan_network, account: account, name: "wan-core") }
+
+    it "names the VIP and the network an operator recognises, not a bare UUID" do
+      preview = described_class.preview(
+        { network_id: network.id, attributes: vip_attributes.merge(account_id: account.id) }
+      )
+
+      expect(preview[:summary]).to eq("Allocate SDWAN VIP 'svc-vip' on network wan-core")
+    end
+
+    it "does not name a network belonging to another account" do
+      foreign = create(:sdwan_network, name: "someone-elses")
+
+      preview = described_class.preview(
+        { network_id: foreign.id, attributes: vip_attributes.merge(account_id: account.id) }
+      )
+
+      expect(preview[:summary]).to eq("Allocate SDWAN VIP 'svc-vip' on network #{foreign.id}")
+      expect(preview[:summary]).not_to include("someone-elses")
+    end
+
+    it "degrades stepwise on a malformed request rather than raising" do
+      expect(described_class.preview({})[:summary]).to eq("Allocate SDWAN VIP")
+      expect(described_class.preview({ network_id: network.id })[:summary])
+        .to eq("Allocate SDWAN VIP on network #{network.id}")
+    end
+  end
 end
