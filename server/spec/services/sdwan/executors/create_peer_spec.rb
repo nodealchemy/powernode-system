@@ -180,9 +180,14 @@ RSpec.describe Sdwan::Executors::CreatePeer do
     end
 
     # The label is built on the preview path, where Base.preview supplies
-    # deferred_operation: nil — so the create attributes are the only account
-    # the lookups can be scoped by, and a foreign network must not be named.
-    it "does not name a network belonging to another account" do
+    # deferred_operation: nil — so a foreign network must not be named.
+    #
+    # IMP-97bb6231a322 re-grades the rest of this case. The anchor used to be
+    # the account the ATTRIBUTES named, which let the caller's own instance name
+    # render beside a network id that same anchor had just refused. The card now
+    # names rows only when the network and the node instance ONE request names
+    # agree on a single account, so a request that straddles two names neither.
+    it "names nothing when the network and the node instance are in different accounts" do
       instance.update!(name: "edge-lon-01")
       foreign = create(:sdwan_network, name: "someone-elses")
 
@@ -193,14 +198,104 @@ RSpec.describe Sdwan::Executors::CreatePeer do
         }
       )
 
-      expect(preview[:summary]).to eq("Add SDWAN peer edge-lon-01 on #{foreign.id}")
+      expect(preview[:summary]).to eq("Add SDWAN peer #{instance.id} on #{foreign.id}")
       expect(preview[:summary]).not_to include("someone-elses")
+      expect(preview[:summary]).not_to include("edge-lon-01")
     end
 
     it "degrades to the network alone rather than raising on a malformed request" do
       expect(described_class.preview({})[:summary]).to eq("Add SDWAN peer")
       expect(described_class.preview({ network_id: network.id })[:summary])
         .to eq("Add SDWAN peer to network #{network.id}")
+    end
+  end
+
+  # IMP-97bb6231a322 — the card's name lookups were anchored on
+  # params[:attributes][:account_id]: a value the CALLER supplies, taken from the
+  # one hash `attrs` deliberately strips it out of (Base::TENANCY_ATTRIBUTE_KEYS)
+  # precisely because it cannot be trusted to ASSIGN an owner. An id that cannot
+  # be trusted to assign an owner cannot be trusted to SELECT one either, and it
+  # cut both ways:
+  #
+  #   * a request naming a victim's account had the victim's network and node
+  #     instance resolved and their NAMES rendered onto the requester's own
+  #     approval card and into the Ai::ApprovalRequest body, and
+  #   * every honest request anchored on nil — no dispatcher puts account_id in
+  #     `attributes` — so both lookups were skipped and the card degraded to the
+  #     bare UUIDs IMP-1eba7d50d24c set out to remove. Only the synthetic
+  #     account_id in the `.preview` examples above exercised the good path.
+  #
+  # The anchor is now the OPERATION's account whenever there is one, and on the
+  # preview path (Base.preview hardcodes deferred_operation: nil) the account of
+  # the network the request names — trusted only when the node instance the same
+  # request names agrees with it.
+  describe "label anchoring" do
+    let(:account)  { create(:account) }
+    let(:network)  { create(:sdwan_network, account: account, name: "wan-core") }
+    let(:instance) { create(:system_node_instance, account: account, name: "edge-lon-01") }
+    let(:operation) do
+      ::Ai::DeferredOperation.create!(
+        account: account, action_category: "sdwan.peer_create",
+        executor_class: described_class.name, params: {}
+      )
+    end
+
+    # The shape a real dispatcher produces: the network id beside the create
+    # attributes, and no account_id anywhere — the tenancy keys are the caller's
+    # to omit and every in-repo gate call omits them.
+    it "names the rows of a request that carries no account_id at all" do
+      preview = described_class.preview(
+        { network_id: network.id, attributes: { node_instance_id: instance.id } }
+      )
+
+      expect(preview[:summary]).to eq("Add SDWAN peer edge-lon-01 on wan-core"),
+                                  "an honest request's card degraded to bare UUIDs"
+    end
+
+    it "does not name rows from the account the ATTRIBUTES claim" do
+      victim = create(:system_node_instance, account: create(:account), name: "victim-edge")
+
+      preview = described_class.preview(
+        { network_id: network.id,
+          attributes: { account_id: victim.account_id, node_instance_id: victim.id } }
+      )
+
+      expect(preview[:summary]).not_to include("victim-edge"),
+                                       "a caller-supplied account_id rendered another account's row name"
+      expect(preview[:summary]).to eq("Add SDWAN peer #{victim.id} on #{network.id}")
+    end
+
+    # Both arms of the anchor, on the path that HAS an operation: the account it
+    # was opened in wins outright, and the attributes cannot redirect it.
+    #
+    # The request names NO node instance on purpose. With one, the network and
+    # the instance would corroborate each other and reach the same anchor
+    # without the operation, so the example would stay green with the
+    # operation arm deleted outright — a check that passes either way. Nothing
+    # corroborates a lone network id, so "wan-core" is a string only the
+    # operation's account can produce.
+    it "anchors on the operation's account rather than the attributes' claim" do
+      preview = described_class.new(
+        { network_id: network.id, attributes: { account_id: create(:account).id } },
+        deferred_operation: operation
+      ).preview_payload
+
+      expect(preview[:summary]).to eq("Add SDWAN peer to network wan-core")
+    end
+
+    it "refuses to name a network or instance outside the operation's account" do
+      foreign = create(:sdwan_network, name: "someone-elses")
+      victim  = create(:system_node_instance, account: foreign.account, name: "victim-edge")
+
+      preview = described_class.new(
+        { network_id: foreign.id,
+          attributes: { account_id: foreign.account_id, node_instance_id: victim.id } },
+        deferred_operation: operation
+      ).preview_payload
+
+      expect(preview[:summary]).not_to include("someone-elses")
+      expect(preview[:summary]).not_to include("victim-edge")
+      expect(preview[:summary]).to eq("Add SDWAN peer #{victim.id} on #{foreign.id}")
     end
   end
 end

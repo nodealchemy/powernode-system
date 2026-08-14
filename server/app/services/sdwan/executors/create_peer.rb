@@ -53,26 +53,87 @@ module Sdwan
 
       private
 
-      # The account this label may name rows from. Deliberately NOT the
-      # `account` helper: that reads deferred_operation.account, and the only
-      # path that reaches this label is Base.preview, which builds the executor
-      # with deferred_operation: nil — consulting it would be an arm nothing can
-      # execute. The request's own attributes are the only anchor available
-      # here, read through `requested_account_id` because `attrs` now strips the
-      # tenancy keys (they are assignment-unsafe; scoping a read by them is not).
-      # Absent an account id the lookups are skipped rather than run unscoped —
-      # an approval card must not name another account's rows.
+      # IMP-97bb6231a322: the account this label may name rows from.
+      #
+      # It was `requested_account_id` — params[:attributes][:account_id], read
+      # out of the one hash `attrs` deliberately strips the tenancy keys from.
+      # The earlier reasoning ("assignment-unsafe, but scoping a read by them is
+      # not") does not hold: an id the caller supplies cannot be trusted to
+      # SELECT an owner any more than to assign one. It cut both ways — a
+      # request naming a victim's account had the victim's network and node
+      # instance resolved and their NAMES rendered onto the requester's own card
+      # and into the Ai::ApprovalRequest body, while every honest request (no
+      # dispatcher puts account_id in `attributes`) anchored on nil, skipped both
+      # lookups and degraded to the bare UUIDs IMP-1eba7d50d24c removed.
+      #
+      # Two anchors instead, in precedence order:
+      #
+      #   1. the OPERATION's account — the gate opened the operation in it, so
+      #      it is the one account on this request nobody supplied. NO CALLER
+      #      REACHES IT TODAY: the single non-spec caller of `preview_payload`
+      #      is Base.preview, which hardcodes deferred_operation: nil, so this
+      #      arm fires only for a hand-constructed executor. It is written first
+      #      because it is the correct answer the moment the card path is given
+      #      an operation — the seam for that is IMP-4a5094b22df0, not here.
+      #   2. otherwise the account of the network the request NAMES — a row's
+      #      own owner, not a claim — corroborated by the node instance the SAME
+      #      request names. One caller-supplied id is not corroboration for
+      #      another, so when the two rows disagree the card names neither and
+      #      falls back to ids. That keeps a card from ever mixing two accounts'
+      #      names, which is the guarantee IMP-1eba7d50d24c was really after.
+      #      Arm 1 being unreachable, this is the LIVE anchor for every real
+      #      card.
+      #
+      # So the disclosure is narrowed, not closed. A requester holding a foreign
+      # network id AND a node-instance id from that SAME foreign account still
+      # gets both rows named, self-consistently, on a card whose approvers
+      # resolve from the requesting account — i.e. in front of the wrong
+      # account's operators. What it costs an attacker went from "assert any
+      # account_id" to "already hold two real row ids from one victim". Closing
+      # it needs the requesting account on the preview path: Ai::DeferredOperation
+      # #preview has it and drops it at the `executor_class.preview(params)`
+      # class-method contract (IMP-4a5094b22df0).
       def target_account_id
-        requested_account_id
+        return @target_account_id if defined?(@target_account_id)
+
+        @target_account_id = account&.id || corroborated_account_id
+      end
+
+      def corroborated_account_id
+        network_owner = named_network&.account_id
+        return nil if network_owner.blank?
+        return nil unless named_node_instance&.account_id == network_owner
+
+        network_owner
+      end
+
+      # Resolved by id ALONE: on the preview path this row carries the anchor,
+      # so it cannot itself be scoped by one. Nothing is named off either row
+      # until `target_account_id` has settled and the row is checked against it.
+      def named_network
+        return @named_network if defined?(@named_network)
+
+        @named_network =
+          params[:network_id].present? ? ::Sdwan::Network.find_by(id: params[:network_id]) : nil
+      end
+
+      # system_node_instances carries account_id as a NOT NULL column, kept
+      # equal to the parent node's by System::NodeInstance#account_matches_node
+      # — the comment that used to sit here ("no account_id column — account
+      # flows through node") described the schema before that denormalization.
+      def named_node_instance
+        return @named_node_instance if defined?(@named_node_instance)
+
+        instance_id = attrs[:node_instance_id]
+        @named_node_instance =
+          instance_id.present? ? ::System::NodeInstance.find_by(id: instance_id) : nil
       end
 
       def target_network
-        return @target_network if defined?(@target_network)
+        anchor = target_account_id
+        return nil if anchor.blank?
 
-        @target_network =
-          if target_account_id.present? && params[:network_id].present?
-            ::Sdwan::Network.find_by(id: params[:network_id], account_id: target_account_id)
-          end
+        named_network if named_network&.account_id == anchor
       end
 
       def network_label
@@ -80,16 +141,10 @@ module Sdwan
       end
 
       def target_node_instance
-        return @target_node_instance if defined?(@target_node_instance)
+        anchor = target_account_id
+        return nil if anchor.blank?
 
-        instance_id = attrs[:node_instance_id]
-        @target_node_instance =
-          if target_account_id.present? && instance_id.present?
-            # NodeInstance has no account_id column — account flows through node.
-            ::System::NodeInstance.joins(:node)
-                                  .where(system_nodes: { account_id: target_account_id })
-                                  .find_by(id: instance_id)
-          end
+        named_node_instance if named_node_instance&.account_id == anchor
       end
 
       # The endpoint rung, rendered by the peer's own formatter (v6-literal
