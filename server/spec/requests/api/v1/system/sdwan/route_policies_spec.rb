@@ -29,15 +29,6 @@ RSpec.describe "Api::V1::System::Sdwan::RoutePolicies", type: :request do
 
   let(:collection_path) { "/api/v1/system/sdwan/route_policies" }
 
-  # Executes the deferred operation the gate parked — the tail of the approval
-  # path (Ai::ApprovalRequest ultimately calls execute_now!), not the whole of
-  # it. Without this the 202 examples would be vacuous: on the :pending branch
-  # the executor never runs during the request, so "no row was created" is
-  # trivially true and proves nothing about the executor.
-  def approve_latest_deferred!
-    ::Ai::DeferredOperation.order(created_at: :desc).first.tap(&:execute_now!)
-  end
-
   # Forces the gate's :proceed branch, where the executor runs inline and the
   # controller's on_proceed lambda renders. No InterventionPolicy rows exist in
   # a spec account, so InterventionPolicyService falls through to its

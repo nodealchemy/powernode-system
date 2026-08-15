@@ -44,14 +44,6 @@ RSpec.describe "Api::V1::System::Sdwan::VirtualIps update", type: :request do
           headers: auth_headers_for(as).merge("Content-Type" => "application/json")
   end
 
-  # Executes the deferred operation the gate parked — the tail of the approval
-  # path (Ai::ApprovalRequest ultimately calls execute_now!). Without it the
-  # 202 example is vacuous: on the :pending branch the executor never runs
-  # during the request, so "the vip is unchanged" proves nothing.
-  def approve_latest_deferred!
-    ::Ai::DeferredOperation.order(created_at: :desc).first.tap(&:execute_now!)
-  end
-
   # Forces the gate's :proceed branch. A fresh spec account has no
   # InterventionPolicy rows, so InterventionPolicyService falls through to its
   # require_approval default; stub resolve to reach :proceed.

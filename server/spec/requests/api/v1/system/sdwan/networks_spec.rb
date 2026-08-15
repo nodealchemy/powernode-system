@@ -96,15 +96,6 @@ RSpec.describe "Api::V1::System::Sdwan::Networks", type: :request do
             headers: auth_headers_for(as).merge("Content-Type" => "application/json")
     end
 
-    # Executes the deferred operation the gate parked — the tail of the approval
-    # path (Ai::ApprovalRequest ultimately calls execute_now!). Without it the
-    # 202 examples are vacuous: on the :pending branch the executor never runs
-    # during the request, so "the network is unchanged" proves nothing about the
-    # executor.
-    def approve_latest_deferred!
-      ::Ai::DeferredOperation.order(created_at: :desc).first.tap(&:execute_now!)
-    end
-
     # Forces the gate's :proceed branch. A fresh spec account has no
     # InterventionPolicy rows, so InterventionPolicyService falls through to its
     # require_approval default; stub resolve to reach :proceed.

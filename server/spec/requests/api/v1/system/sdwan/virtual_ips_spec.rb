@@ -33,20 +33,6 @@ RSpec.describe "Api::V1::System::Sdwan::VirtualIps", type: :request do
 
   def collection_path = "/api/v1/system/sdwan/networks/#{network.id}/virtual_ips"
 
-  def approve_latest_deferred!
-    deferred = Ai::DeferredOperation.order(created_at: :desc).first
-    expect(deferred).to be_present, "no deferred operation was parked — the create was applied inline"
-    deferred.execute_now!
-  end
-
-  def seed_operator_policy!(action_category)
-    ::Ai::InterventionPolicy.create!(
-      account: account, ai_agent_id: nil, scope: "action_type",
-      action_category: action_category, policy: "notify_and_proceed",
-      priority: 5, is_active: true
-    )
-  end
-
   describe "POST /api/v1/system/sdwan/networks/:network_id/virtual_ips" do
     let(:payload) do
       {

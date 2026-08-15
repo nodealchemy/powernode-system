@@ -29,25 +29,6 @@ RSpec.describe "Api::V1::System::Sdwan::FirewallRules", type: :request do
 
   def collection_path = "/api/v1/system/sdwan/networks/#{network.id}/firewall_rules"
 
-  # Tail of the approval path — Ai::ApprovalRequest ultimately calls
-  # execute_now!. The presence assertion keeps a missing gate failing by name
-  # instead of as `undefined method for nil`.
-  def approve_latest_deferred!
-    deferred = Ai::DeferredOperation.order(created_at: :desc).first
-    expect(deferred).to be_present, "no deferred operation was parked — the create was applied inline"
-    deferred.execute_now!
-  end
-
-  # Reproduces the agent-less operator row the SDWAN seed writes
-  # (IMP-187124ca2984) so resolution runs for real on the :proceed examples.
-  def seed_operator_policy!(action_category)
-    ::Ai::InterventionPolicy.create!(
-      account: account, ai_agent_id: nil, scope: "action_type",
-      action_category: action_category, policy: "notify_and_proceed",
-      priority: 5, is_active: true
-    )
-  end
-
   describe "POST /api/v1/system/sdwan/networks/:network_id/firewall_rules" do
     let(:payload) do
       {

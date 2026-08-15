@@ -21,18 +21,6 @@ RSpec.describe Ai::Tools::SdwanTool do
     tool.execute(params: { action: action }.merge(rest))
   end
 
-  # Shared approval-gate harness (IMP-6c482005db87). Tail of the approval
-  # path — Ai::ApprovalRequest ultimately calls execute_now!; the presence
-  # assertion keeps a missing gate failing by name instead of as `undefined
-  # method for nil`. Older gate describes below still carry local copies
-  # with action-specific failure messages; the cross-file extraction is
-  # queued separately (IMP-b8e8e9d6e4d9).
-  def approve_latest_deferred!
-    deferred = Ai::DeferredOperation.order(created_at: :desc).first
-    expect(deferred).to be_present, "no deferred operation was parked — the action was applied inline"
-    deferred.execute_now!
-  end
-
   # Forces the gate's :proceed branch — the default policy resolution is
   # require_approval, so nothing else exercises the inline path.
   def auto_approve_policy!
@@ -225,15 +213,6 @@ RSpec.describe Ai::Tools::SdwanTool do
   # with the reason threaded. Other transitions stay inline (pinned above).
   describe "system_sdwan_update_federation_peer trust-boundary status routing (IMP-796bde368789)" do
     let!(:peer) { create(:system_federation_peer, account: account, status: "proposed") }
-
-    # Tail of the approval path — Ai::ApprovalRequest ultimately calls
-    # execute_now!. The presence assertion keeps a missing gate failing by
-    # name instead of as `undefined method for nil`.
-    def approve_latest_deferred!
-      deferred = Ai::DeferredOperation.order(created_at: :desc).first
-      expect(deferred).to be_present, "no deferred operation was parked — the status write was applied inline"
-      deferred.tap(&:execute_now!)
-    end
 
     # Forces the gate's :proceed branch. The default policy is require_approval,
     # so nothing else here covers the inline path.
@@ -1452,15 +1431,6 @@ RSpec.describe Ai::Tools::SdwanTool do
     let!(:target)  { create(:sdwan_user_device, access_grant: grant, label: "lost-phone") }
     let!(:sibling) { create(:sdwan_user_device, access_grant: grant, label: "work-laptop") }
 
-    # Tail of the approval path — Ai::ApprovalRequest ultimately calls
-    # execute_now!. The presence assertion keeps a missing gate failing by
-    # name instead of as `undefined method for nil`.
-    def approve_latest_deferred!
-      deferred = Ai::DeferredOperation.order(created_at: :desc).first
-      expect(deferred).to be_present, "no deferred operation was parked — the revoke was applied inline"
-      deferred.tap(&:execute_now!)
-    end
-
     # Forces the gate's :proceed branch. The default policy is require_approval,
     # so nothing else here covers the inline path.
     def auto_approve_policy!
@@ -1561,15 +1531,6 @@ RSpec.describe Ai::Tools::SdwanTool do
     let(:grant)    { create(:sdwan_access_grant, account: account, network: network) }
     let!(:phone)   { create(:sdwan_user_device, access_grant: grant, label: "phone") }
     let!(:laptop)  { create(:sdwan_user_device, access_grant: grant, label: "work-laptop") }
-
-    # Tail of the approval path — Ai::ApprovalRequest ultimately calls
-    # execute_now!. The presence assertion keeps a missing gate failing by name
-    # instead of as `undefined method for nil`.
-    def approve_latest_deferred!
-      deferred = Ai::DeferredOperation.order(created_at: :desc).first
-      expect(deferred).to be_present, "no deferred operation was parked — the revoke was applied inline"
-      deferred.tap(&:execute_now!)
-    end
 
     # Forces the gate's :proceed branch. The default policy is require_approval,
     # so nothing else here covers the inline path.

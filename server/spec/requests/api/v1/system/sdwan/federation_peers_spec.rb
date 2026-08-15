@@ -19,20 +19,6 @@ RSpec.describe "Api::V1::System::Sdwan::FederationPeers", type: :request do
           headers: auth_headers_for(as).merge("Content-Type" => "application/json")
   end
 
-  # Executes the deferred operation the gate parked — the tail of the approval
-  # path (Ai::ApprovalRequest ultimately calls execute_now!), not the whole of
-  # it; the approval-chain hop itself is core-owned and untouched here.
-  # The presence check is what names the defect: when a gate is missing, the
-  # action was applied inline and there is nothing parked, so without it every
-  # example downstream fails as `undefined method 'execute_now!' for nil` —
-  # which reads as a broken helper rather than an ungated mutation.
-  def approve_latest_deferred!
-    deferred = Ai::DeferredOperation.order(created_at: :desc).first
-    expect(deferred).to be_present,
-                        "no deferred operation was parked — the action was applied inline, bypassing the gate"
-    deferred.tap(&:execute_now!)
-  end
-
   describe "GET /api/v1/system/sdwan/federation_peers" do
     it "forbids callers without sdwan.federation.read" do
       get "/api/v1/system/sdwan/federation_peers", headers: auth_headers_for(stranger)

@@ -44,29 +44,6 @@ RSpec.describe "Api::V1::System::Sdwan::PortMappings", type: :request do
 
   def collection_path = "/api/v1/system/sdwan/networks/#{network.id}/port_mappings"
 
-  # Executes the deferred operation the gate parked — the tail of the approval
-  # path (Ai::ApprovalRequest ultimately calls execute_now!), not the whole of
-  # it. Without this the 202 examples below would be vacuous: on the :pending
-  # branch the executor never runs during the request, so "no row was created"
-  # is trivially true and proves nothing about the executor.
-  def approve_latest_deferred!
-    Ai::DeferredOperation.order(created_at: :desc).first.tap(&:execute_now!)
-  end
-
-  # Reproduces exactly the row the SDWAN seed now writes for the operator path
-  # (db/seeds/system_sdwan_manager_agent.rb via
-  # AgentSetupHelpers.upsert_operator_policies!): agent-less, so
-  # Ai::InterventionPolicy#agent_matches? admits the agent-less request the
-  # controller makes, and scope "action_type" so it never collides with the
-  # agent-scoped set. Resolution runs for real from here on.
-  def seed_operator_policy!(action_category)
-    ::Ai::InterventionPolicy.create!(
-      account: account, ai_agent_id: nil, scope: "action_type",
-      action_category: action_category, policy: "notify_and_proceed",
-      priority: 5, is_active: true
-    )
-  end
-
   describe "POST /api/v1/system/sdwan/networks/:network_id/port_mappings" do
     let(:payload) do
       {

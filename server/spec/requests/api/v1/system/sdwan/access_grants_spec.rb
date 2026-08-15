@@ -22,13 +22,6 @@ RSpec.describe "Api::V1::System::Sdwan::AccessGrants", type: :request do
   let(:stranger) { user_with_permissions("system.sdwan.networks.read", account: account) }
   let(:network)  { create(:sdwan_network, account: account) }
 
-  # Executes the deferred operation the gate parked — the tail of the approval
-  # path (Ai::ApprovalRequest ultimately calls execute_now!), not the whole of
-  # it; the approval-chain hop itself is core-owned and untouched here.
-  def approve_latest_deferred!
-    Ai::DeferredOperation.order(created_at: :desc).first.tap(&:execute_now!)
-  end
-
   # Forces the gate's :proceed branch, where the executor runs inline and the
   # controller's on_proceed lambda renders. The seeded policy is
   # require_approval, so nothing else in this file covers that branch.
