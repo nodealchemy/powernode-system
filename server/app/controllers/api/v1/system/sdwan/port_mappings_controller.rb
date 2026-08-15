@@ -58,24 +58,25 @@ module Api
           def create
             require_permission("system.sdwan.port_mappings.manage")
             attrs = mapping_params.to_h
-            # Validated before the gate so an unsaveable payload keeps its
-            # field-level errors instead of the gate's generic refusal, and so
-            # no audit row is opened for an operation that could never run.
             # Never saved — the executor's create! stays the authority.
+            # gate_create! validates this candidate BEFORE the gate, so an
+            # unsaveable payload keeps its field-level errors instead of the
+            # gate's generic refusal and opens no audit row for an operation
+            # that could never run (Ai::GatedActions#gate_create!).
             candidate = @network.port_mappings.new(attrs.merge(account_id: @account.id))
-            return render_validation_error(candidate) unless candidate.valid?
 
-            gate!(
+            gate_create!(
+              candidate: candidate,
+              scope: @network.port_mappings,
+              result_key: :mapping_id,
+              response_key: :port_mapping,
+              serializer: ->(m) { serialize_full(m) },
               action_category: "sdwan.port_mapping_create",
               executor_class: "Sdwan::Executors::CreatePortMapping",
               params: { network_id: @network.id, attributes: attrs },
               source_type: "Sdwan::Network",
               source_id: @network.id,
-              description: "Add SDWAN port mapping #{candidate.name} on #{@network.name}",
-              on_proceed: lambda { |result|
-                created = @network.port_mappings.find(result.result&.dig(:data, :mapping_id))
-                render_success({ port_mapping: serialize_full(created) }, status: :created)
-              }
+              description: "Add SDWAN port mapping #{candidate.name} on #{@network.name}"
             )
           end
 

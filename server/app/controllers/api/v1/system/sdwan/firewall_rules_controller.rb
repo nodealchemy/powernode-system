@@ -53,13 +53,20 @@ module Api
             attrs = rule_params
 
             # Never saved — the executor's create! stays the authority.
-            # Plain assignment: Sdwan::FirewallRule#port_range= accepts the
-            # API's {from:, to:} shape directly (IMP-0e44cf2fc80b).
+            # gate_create! validates this candidate BEFORE the gate, so an
+            # unsaveable payload keeps its field-level 422 and opens no audit
+            # row (Ai::GatedActions#gate_create!). Plain assignment:
+            # Sdwan::FirewallRule#port_range= accepts the API's {from:, to:}
+            # shape directly (IMP-0e44cf2fc80b).
             candidate = @network.firewall_rules.new(account_id: @account.id)
             candidate.assign_attributes(attrs)
-            return render_validation_error(candidate) unless candidate.valid?
 
-            gate!(
+            gate_create!(
+              candidate: candidate,
+              scope: @network.firewall_rules,
+              result_key: :rule_id,
+              response_key: :firewall_rule,
+              serializer: ->(r) { serialize_rule_full(r) },
               action_category: "sdwan.firewall_rule_create",
               executor_class: "Sdwan::Executors::CreateFirewallRule",
               params: { network_id: @network.id, attributes: executor_rule_attributes(attrs) },
@@ -67,11 +74,7 @@ module Api
               source_id: @network.id,
               # Matches CreateFirewallRule#summarize so both surfaces of the
               # approval speak one sentence (IMP-3a563becb7d7).
-              description: "Add firewall rule '#{candidate.name}' to SDWAN network #{@network.name}",
-              on_proceed: lambda { |result|
-                created = @network.firewall_rules.find(result.result&.dig(:data, :rule_id))
-                render_success({ firewall_rule: serialize_rule_full(created) }, status: :created)
-              }
+              description: "Add firewall rule '#{candidate.name}' to SDWAN network #{@network.name}"
             )
           end
 

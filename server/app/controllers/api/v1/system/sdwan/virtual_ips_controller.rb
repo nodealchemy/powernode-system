@@ -53,12 +53,18 @@ module Api
             # Never saved — the executor's save! stays the authority. The
             # candidate mirrors the executor's build (including activation,
             # via the model's one activate_if_held symbol) so validation sees
-            # exactly the row that would be written.
+            # exactly the row that would be written. gate_create! validates it
+            # BEFORE the gate, so an unsaveable payload keeps its field-level
+            # 422 and opens no audit row (Ai::GatedActions#gate_create!).
             candidate = @network.virtual_ips.new(attrs.merge(account_id: @account.id))
             candidate.activate_if_held
-            return render_validation_error(candidate) unless candidate.valid?
 
-            gate!(
+            gate_create!(
+              candidate: candidate,
+              scope: @network.virtual_ips,
+              result_key: :vip_id,
+              response_key: :virtual_ip,
+              serializer: ->(v) { serialize_vip_full(v) },
               action_category: "sdwan.virtual_ip_create",
               executor_class: "Sdwan::Executors::CreateVirtualIp",
               # IMP-4a5094b22df0: account_id no longer rides along. It existed
@@ -72,11 +78,7 @@ module Api
               source_id: @network.id,
               # Matches CreateVirtualIp#summarize so both surfaces of the
               # approval speak one sentence (IMP-3a563becb7d7).
-              description: "Allocate SDWAN VIP '#{candidate.name}' on network #{@network.name}",
-              on_proceed: lambda { |result|
-                created = @network.virtual_ips.find(result.result&.dig(:data, :vip_id))
-                render_success({ virtual_ip: serialize_vip_full(created) }, status: :created)
-              }
+              description: "Allocate SDWAN VIP '#{candidate.name}' on network #{@network.name}"
             )
           end
 
