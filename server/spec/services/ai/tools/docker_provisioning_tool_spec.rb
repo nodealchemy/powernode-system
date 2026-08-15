@@ -75,6 +75,15 @@ RSpec.describe Ai::Tools::DockerProvisioningTool do
     )
   end
 
+  # Account-wide floor: scope "global", agent-less. Distinct from the operator
+  # path above — this audience binds BOTH callers (IMP-cb36021d4094).
+  def global_policy!(category, verb)
+    ::Ai::InterventionPolicy.create!(
+      account: account, action_category: category, scope: "global",
+      ai_agent_id: nil, user_id: nil, policy: verb, priority: 5, is_active: true
+    )
+  end
+
   def operator_tool
     described_class.new(account: account, user: user)
   end
@@ -142,6 +151,57 @@ RSpec.describe Ai::Tools::DockerProvisioningTool do
       expect(result[:success]).to be(false)
       expect(managed_hosts).not_to exist,
                                    "the agent-scoped policy did not bind an agent-dispatched provision"
+    end
+
+    # IMP-cb36021d4094 — this tool is the seam where both halves of the audience
+    # cut are observable, because it is dual-audience: an operator MCP call
+    # arrives with `agent` nil, an agent dispatch through
+    # system_provision_docker_runtime arrives with it set.
+    #
+    # The oracle is the REFUSAL, not the parking. While the cut keyed on
+    # ai_agent_id, an account-wide block resolved to require_approval for an
+    # agent caller, and require_approval is not a denial — the gate opens an
+    # ApprovalRequest whose default chain resolves to every active user, so the
+    # operator's "never" became "one click from any user". A `pending: true`
+    # payload here is the bug, not a near-miss.
+    it "refuses an agent-dispatched provision under an account-wide (scope global) block" do
+      agent = create(:ai_agent, account: account, provider: provider, name: "Runtime Manager")
+      global_policy!("system.runtime_docker_provision", "block")
+
+      result = provision!(described_class.new(account: account, agent: agent))
+
+      expect(managed_hosts).not_to exist
+      expect(result[:pending]).to be_falsey,
+                                  "the account-wide block became an approval any user could grant"
+      expect(result[:success]).to be(false)
+      expect(::Ai::ApprovalRequest.where(account: account)).not_to exist
+    end
+
+    # Same row, the other audience. Non-vacuity for the example above: the
+    # global floor is not agent-only either.
+    it "refuses an operator-dispatched provision under the same account-wide block" do
+      global_policy!("system.runtime_docker_provision", "block")
+
+      result = provision!
+
+      expect(result[:success]).to be(false)
+      expect(managed_hosts).not_to exist
+    end
+
+    # The fail-safe half at the seam: a global relaxation must actually reach an
+    # agent dispatch, or the audience is only half-restored.
+    it "proceeds on an agent dispatch under a scope-global auto_approve" do
+      agent = create(:ai_agent, account: account, provider: provider, name: "Runtime Manager")
+      global_policy!("system.runtime_docker_provision", "auto_approve")
+
+      result = provision!(described_class.new(account: account, agent: agent))
+
+      expect(result[:success]).to be(true)
+      expect(managed_hosts.count).to eq(1)
+      expect(
+        ::Ai::DeferredOperation.find_by(account: account,
+                                        action_category: "system.runtime_docker_provision")&.ai_agent_id
+      ).to eq(agent.id), "the dispatch lost its agent attribution"
     end
   end
 
