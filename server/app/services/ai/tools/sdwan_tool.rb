@@ -367,21 +367,20 @@ module Ai
             parameters: { federation_peer_id: { type: "string", required: true, description: "UUID of the federation peer to fetch" } }
           },
           "system_sdwan_propose_federation_peer" => {
-            description: "Propose a new federation peer. Status starts at 'proposed'. With generate_token: true (Phase 11b), generates a single-use acceptance token (plaintext returned ONCE) — Account A operator copies it out-of-band to Account B operator who pastes it into system_sdwan_accept_federation_peer.",
+            description: "Propose a new federation peer. Status starts at 'proposed'. Acceptance-token minting is NOT available on this surface — a tool result reaches the model provider, so the plaintext cannot be delivered here. To obtain the single-use acceptance token for the Phase 11b handshake, the operator proposes over the REST API (POST /api/v1/system/sdwan/federation_peers), which mints by default and reveals the plaintext once in the approval decision response.",
             parameters: {
               remote_instance_url: { type: "string", required: true, description: "Base URL of the remote Powernode instance to peer with" },
               remote_instance_id: { type: "string", required: false, description: "Optional identifier of the remote Powernode instance" },
               remote_account_id: { type: "string", required: false, description: "Optional identifier of the remote account on the peer instance" },
               remote_prefix_advertisement: { type: "string", required: false, description: "/48|/56|/64 ULA prefix the remote instance claims" },
-              generate_token: { type: "boolean", required: false, description: "When true, generate a single-use acceptance token (Phase 11b token round-trip handshake). Plaintext returned ONCE — not recoverable." },
-              token_ttl_seconds: { type: "integer", required: false, description: "Token expiry window in seconds (default 7 days)" }
+              generate_token: { type: "boolean", required: false, description: "Not supported on this surface — passing true is refused with the operator path to use instead. Omit it to propose the peer." }
             }
           },
           "system_sdwan_accept_federation_peer" => {
             description: "Transition a proposed federation peer to accepted. Approval-gated (sdwan.federation_peer_accept) — under require_approval this returns pending: true with a deferred_operation_id and the peer is accepted only once an operator approves. When the proposing operator generated a single-use acceptance token, pass it as acceptance_token — it is verified (digest match + not expired + single-use) before the request is gated, and again before the transition is written. Performs the status transition only (sets signed_at + audit metadata); it does NOT run the enroll / node-enrollment / SDWAN-attach chain — that is the federation_acceptance skill.",
             parameters: {
               federation_peer_id: { type: "string", required: true, description: "UUID of the federation peer to accept (must be in 'proposed' status)" },
-              acceptance_token:   { type: "string", required: false, description: "Single-use token from the proposing-account operator (from propose with generate_token: true). Verified against the stored digest; consumed on success." }
+              acceptance_token:   { type: "string", required: false, description: "Single-use token supplied by the proposing-account operator, who obtains it over the REST propose path (POST /api/v1/system/sdwan/federation_peers) — it cannot be minted on this MCP surface. Verified against the stored digest; consumed on success." }
             }
           },
           "system_sdwan_revoke_federation_peer" => {
@@ -1483,7 +1482,43 @@ module Ai
         success_result(federation_peer: serialize_federation_peer(peer))
       end
 
+      # Phase 11b token minting is NOT available on this surface (IMP-3a32dc649043).
+      #
+      # A tool result does not stop at its caller. Ai::AgentToolBridgeService
+      # appends the full result JSON to the conversation as a `role: "tool"`
+      # message, which is sent to the model provider on the next iteration of
+      # the agent loop; a truncated preview is also carried in tool_calls_log.
+      # Ai::SensitiveParams cannot intervene on either (the preview is a String,
+      # and #filter returns non-Hash input unchanged). So returning the plaintext
+      # acceptance token here transmits signing material off-platform — the
+      # absolute prohibition in CLAUDE.md.
+      #
+      # The refusal is up front, before the row is created, and deliberately not
+      # a silent omission: minting the token and withholding it would leave a
+      # peer whose only means of acceptance is a secret nobody ever saw.
+      # Proposing WITHOUT a token stays fully supported here; the token round
+      # trip belongs to the operator API, which renders to an HTTP response
+      # rather than into an agent's context.
+      #
+      # The predicate casts rather than comparing to `true`: MCP arguments arrive
+      # from JSON with no boolean coercion anywhere on the path (the bridge
+      # parses and stringifies keys; BaseTool only checks required-key presence),
+      # and models routinely serialize a boolean argument as the string "true".
+      # `== true` would let that through silently — and silently is the one thing
+      # this refusal must never be.
       def propose_federation_peer(params)
+        if ::ActiveModel::Type::Boolean.new.cast(params[:generate_token])
+          return error_result(
+            "generate_token is not available over the MCP tool surface: a tool result is forwarded " \
+            "to the model provider and persisted with the conversation, so the plaintext acceptance " \
+            "token cannot be delivered here without disclosing signing material. Propose the peer " \
+            "over the operator API instead — POST /api/v1/system/sdwan/federation_peers mints the " \
+            "token by default (Sdwan::Executors::ProposeFederationPeer) and reveals the plaintext " \
+            "exactly once in the approval decision response. Proposing without generate_token is " \
+            "supported here."
+          )
+        end
+
         peer = ::System::FederationPeer.create!(
           account_id: @account.id,
           status: "proposed",
@@ -1493,18 +1528,7 @@ module Ai
           remote_prefix_advertisement: params[:remote_prefix_advertisement]
         )
 
-        response = { federation_peer: serialize_federation_peer(peer) }
-
-        # Phase 11b: optional token generation. Plaintext returned ONCE.
-        if params[:generate_token] == true
-          ttl = (params[:token_ttl_seconds] || 7.days.to_i).to_i
-          plaintext = peer.generate_acceptance_token!(ttl_seconds: ttl)
-          response[:acceptance_token_plaintext] = plaintext
-          response[:acceptance_token_expires_at] = peer.reload.acceptance_token_expires_at&.iso8601
-          response[:note] = "Store the acceptance token immediately — it is shown EXACTLY ONCE. Account B operator pastes this into system_sdwan_accept_federation_peer."
-        end
-
-        success_result(**response)
+        success_result(federation_peer: serialize_federation_peer(peer))
       end
 
       def revoke_federation_peer(params)
