@@ -62,17 +62,16 @@ module Sdwan
         end
       end
 
-      # Scoped to the account the create attributes carry: deferred_operation
-      # is nil on the preview path (Base.preview hardcodes it), and absent an
-      # account id the lookup is skipped rather than run unscoped — an
-      # approval card must not name another account's rows (IMP-1eba7d50d24c).
+      # IMP-4a5094b22df0: anchored to the OPERATION's account — byte-identical
+      # rationale to Sdwan::Executors::CreateFirewallRule#target_network, which
+      # carries it in full. In short: `requested_account_id` scoped this label
+      # by an id the CALLER supplied, which could name a foreign account's
+      # network AND left every honest request naming a bare UUID. Both close
+      # once the card path carries the operation.
       def target_network
         return @target_network if defined?(@target_network)
 
-        @target_network =
-          if requested_account_id.present? && params[:network_id].present?
-            ::Sdwan::Network.find_by(id: params[:network_id], account_id: requested_account_id)
-          end
+        @target_network = scoped_label_record(::Sdwan::Network, params[:network_id])
       end
 
       def network_label

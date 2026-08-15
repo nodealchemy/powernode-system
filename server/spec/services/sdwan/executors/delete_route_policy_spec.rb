@@ -8,19 +8,38 @@ require "rails_helper"
 # Sdwan::RoutePolicy validates a name, so the row an operator is asked to
 # destroy can always be named while it still exists; the bare id is only the
 # floor for a row that is already gone.
+#
+# IMP-4a5094b22df0 threads the operation through `preview`, and the label is
+# resolved through it — so these previews now pass one. Without it there is no
+# account to anchor on and the card correctly declines to name the row at all
+# (asserted separately, in preview_account_anchor_spec.rb).
 RSpec.describe Sdwan::Executors::DeleteRoutePolicy do
+  let(:account) { create(:account) }
+
+  def operation_for(params)
+    ::Ai::DeferredOperation.create!(
+      account: account,
+      action_category: "sdwan.route_policy_delete",
+      executor_class: described_class.name,
+      params: params
+    )
+  end
+
   describe ".preview" do
     it "names the policy an operator recognises, not a bare UUID" do
-      policy = create(:sdwan_route_policy, name: "block-transit")
+      policy = create(:sdwan_route_policy, account: account, name: "block-transit")
+      params = { policy_id: policy.id }
 
-      preview = described_class.preview({ policy_id: policy.id })
+      preview = described_class.preview(params, deferred_operation: operation_for(params))
 
       expect(preview[:summary]).to eq("Delete route policy 'block-transit'")
       expect(preview[:impact]).to include("BGP route filtering")
     end
 
     it "falls back to the bare id when the policy is gone" do
-      preview = described_class.preview({ policy_id: "gone" })
+      params = { policy_id: "gone" }
+
+      preview = described_class.preview(params, deferred_operation: operation_for(params))
 
       expect(preview[:summary]).to eq("Delete route policy gone")
     end

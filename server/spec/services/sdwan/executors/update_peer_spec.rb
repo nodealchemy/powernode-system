@@ -94,12 +94,18 @@ RSpec.describe Sdwan::Executors::UpdatePeer do
   # "Delete SDWAN peer edge-lon-01 on wan-core". The label is
   # Sdwan::Peer#operator_label, the same ladder both delete surfaces render
   # (IMP-ee57d0fbe859).
+  #
+  # IMP-4a5094b22df0 threads the operation through `preview` and resolves the
+  # label through it, so these pass one. With no operation there is no account
+  # to anchor on and the card correctly declines to name the peer — asserted
+  # separately in preview_account_anchor_spec.rb.
   describe ".preview" do
     it "names the peer an operator recognises, not a bare UUID" do
       peer.node_instance.update!(name: "edge-lon-01")
       network.update!(name: "wan-core")
+      params = { peer_id: peer.id }
 
-      preview = described_class.preview({ peer_id: peer.id })
+      preview = described_class.preview(params, deferred_operation: deferred_for(params))
 
       expect(preview[:summary]).to eq("Update SDWAN peer edge-lon-01 on wan-core")
     end
@@ -108,9 +114,14 @@ RSpec.describe Sdwan::Executors::UpdatePeer do
     # oracle asserts the equality itself: one peer, two cards, one identity.
     it "renders the same identity fragment the delete card renders for the same peer" do
       peer.node_instance.update!(name: "edge-lon-01")
+      params = { peer_id: peer.id }
 
-      update_summary = described_class.preview({ peer_id: peer.id })[:summary]
-      delete_summary = ::Sdwan::Executors::DeletePeer.preview({ peer_id: peer.id })[:summary]
+      update_summary = described_class.preview(
+        params, deferred_operation: deferred_for(params)
+      )[:summary]
+      delete_summary = ::Sdwan::Executors::DeletePeer.preview(
+        params, deferred_operation: deferred_for(params)
+      )[:summary]
 
       expect(update_summary.delete_prefix("Update SDWAN peer "))
         .to eq(delete_summary.delete_prefix("Delete SDWAN peer ")),
@@ -118,7 +129,9 @@ RSpec.describe Sdwan::Executors::UpdatePeer do
     end
 
     it "falls back to the bare id when the peer is gone" do
-      preview = described_class.preview({ peer_id: "gone" })
+      params = { peer_id: "gone" }
+
+      preview = described_class.preview(params, deferred_operation: deferred_for(params))
 
       expect(preview[:summary]).to eq("Update SDWAN peer gone")
     end

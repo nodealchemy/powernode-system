@@ -26,8 +26,18 @@ module Sdwan
       # description verbatim, so the two surfaces naming this one operation
       # cannot disagree (the IMP-ee57d0fbe859 lesson). The bare id is only
       # the floor for a row already gone.
+      #
+      # IMP-4a5094b22df0: through the same account anchor `perform` resolves by
+      # (was a bare `find_by(id:)`). The network is reached THROUGH the anchored
+      # mapping — which is safe because every write path keeps the two accounts
+      # aligned (CreatePortMapping sets `account: network.account`; this
+      # executor's own anchor_reparent!), NOT because the model enforces it:
+      # Sdwan::PortMapping validates its hub/target RELATIVE to the network and
+      # never compares account_id against the network's. A caller-reachable way
+      # to save a misaligned pair would make this name disclosable again.
+
       def summarize
-        mapping = ::Sdwan::PortMapping.find_by(id: params[:mapping_id])
+        mapping = scoped_label_record(::Sdwan::PortMapping, params[:mapping_id])
         return "Update SDWAN port mapping #{params[:mapping_id]}" unless mapping
 
         "Update SDWAN port mapping #{mapping.name} on #{mapping.network.name}"

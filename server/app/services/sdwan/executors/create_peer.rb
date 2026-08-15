@@ -69,30 +69,24 @@ module Sdwan
       # Two anchors instead, in precedence order:
       #
       #   1. the OPERATION's account — the gate opened the operation in it, so
-      #      it is the one account on this request nobody supplied. NO CALLER
-      #      REACHES IT TODAY: the single non-spec caller of `preview_payload`
-      #      is Base.preview, which hardcodes deferred_operation: nil, so this
-      #      arm fires only for a hand-constructed executor. It is written first
-      #      because it is the correct answer the moment the card path is given
-      #      an operation — the seam for that is IMP-4a5094b22df0, not here.
+      #      it is the one account on this request nobody supplied. LIVE as of
+      #      IMP-4a5094b22df0: Ai::DeferredOperation#preview now threads itself
+      #      through Base.preview, so every card composed for a gated peer
+      #      create anchors here. (Peer creation has no gated dispatcher yet —
+      #      it runs through Sdwan::PeerEnroller — so "every card" is still
+      #      none; this arm is correct and waiting, not exercised in production.)
+      #      It closes the residual this comment used to end on: a requester
+      #      holding a foreign network id AND a node-instance id from that SAME
+      #      foreign account no longer gets either row named, because arm 2
+      #      never runs once arm 1 answers.
       #   2. otherwise the account of the network the request NAMES — a row's
       #      own owner, not a claim — corroborated by the node instance the SAME
       #      request names. One caller-supplied id is not corroboration for
       #      another, so when the two rows disagree the card names neither and
       #      falls back to ids. That keeps a card from ever mixing two accounts'
       #      names, which is the guarantee IMP-1eba7d50d24c was really after.
-      #      Arm 1 being unreachable, this is the LIVE anchor for every real
-      #      card.
-      #
-      # So the disclosure is narrowed, not closed. A requester holding a foreign
-      # network id AND a node-instance id from that SAME foreign account still
-      # gets both rows named, self-consistently, on a card whose approvers
-      # resolve from the requesting account — i.e. in front of the wrong
-      # account's operators. What it costs an attacker went from "assert any
-      # account_id" to "already hold two real row ids from one victim". Closing
-      # it needs the requesting account on the preview path: Ai::DeferredOperation
-      # #preview has it and drops it at the `executor_class.preview(params)`
-      # class-method contract (IMP-4a5094b22df0).
+      #      It remains the anchor for a PRE-GATE preview, which has no
+      #      operation to read an account from.
       def target_account_id
         return @target_account_id if defined?(@target_account_id)
 

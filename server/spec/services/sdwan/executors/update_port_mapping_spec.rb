@@ -106,18 +106,26 @@ RSpec.describe Sdwan::Executors::UpdatePortMapping do
   # operation reads "Update SDWAN port mapping ssh-ingress on wan-core". The
   # card renders the controller's sentence verbatim so the two surfaces
   # cannot disagree; the bare id is only the floor for a row already gone.
+  #
+  # IMP-4a5094b22df0 threads the operation through `preview` and resolves the
+  # label through it, so these pass one. With no operation there is no account
+  # to anchor on and the card correctly declines to name the mapping — asserted
+  # separately in preview_account_anchor_spec.rb.
   describe ".preview" do
     it "names the mapping and network an operator recognises, not a bare UUID" do
       mapping.update!(name: "ssh-ingress")
       network.update!(name: "wan-core")
+      params = { mapping_id: mapping.id }
 
-      preview = described_class.preview({ mapping_id: mapping.id })
+      preview = described_class.preview(params, deferred_operation: deferred_for(params))
 
       expect(preview[:summary]).to eq("Update SDWAN port mapping ssh-ingress on wan-core")
     end
 
     it "falls back to the bare id when the mapping is gone" do
-      preview = described_class.preview({ mapping_id: "gone" })
+      params = { mapping_id: "gone" }
+
+      preview = described_class.preview(params, deferred_operation: deferred_for(params))
 
       expect(preview[:summary]).to eq("Update SDWAN port mapping gone")
     end

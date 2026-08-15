@@ -203,17 +203,25 @@ RSpec.describe Sdwan::Executors::CreateVirtualIp do
   # preview[:summary]). It read "Allocate SDWAN VIP on network <uuid>" — a
   # bare network UUID, naming neither the VIP nor a network the operator
   # recognises. The VIP does not exist yet, so the card is composed from what
-  # the request already names, mirroring CreatePeer (IMP-1eba7d50d24c); the
-  # network lookup is scoped by the account carried in the create attributes,
-  # because Base.preview supplies deferred_operation: nil and an approval card
-  # must not name another account's rows.
+  # the request already names, mirroring CreatePeer (IMP-1eba7d50d24c).
+  #
+  # IMP-4a5094b22df0 changed WHAT the network lookup is scoped by: from the
+  # account_id the CALLER put in the create attributes to the account of the
+  # operation the gate opened. Same rationale as the CreateFirewallRule spec,
+  # which carries it in full.
   describe ".preview" do
     let(:network) { create(:sdwan_network, account: account, name: "wan-core") }
 
-    it "names the VIP and the network an operator recognises, not a bare UUID" do
-      preview = described_class.preview(
-        { network_id: network.id, attributes: vip_attributes.merge(account_id: account.id) }
+    def preview_for(params)
+      operation = ::Ai::DeferredOperation.create!(
+        account: account, action_category: "sdwan.virtual_ip_create",
+        executor_class: described_class.name, params: params
       )
+      described_class.preview(params, deferred_operation: operation)
+    end
+
+    it "names the VIP and the network an operator recognises, not a bare UUID" do
+      preview = preview_for({ network_id: network.id, attributes: vip_attributes })
 
       expect(preview[:summary]).to eq("Allocate SDWAN VIP 'svc-vip' on network wan-core")
     end
@@ -221,8 +229,10 @@ RSpec.describe Sdwan::Executors::CreateVirtualIp do
     it "does not name a network belonging to another account" do
       foreign = create(:sdwan_network, name: "someone-elses")
 
-      preview = described_class.preview(
-        { network_id: foreign.id, attributes: vip_attributes.merge(account_id: account.id) }
+      # Caller-supplied account_id still asserted — the old anchor — so this
+      # stays evidence that naming it no longer buys anything.
+      preview = preview_for(
+        { network_id: foreign.id, attributes: vip_attributes.merge(account_id: foreign.account_id) }
       )
 
       expect(preview[:summary]).to eq("Allocate SDWAN VIP 'svc-vip' on network #{foreign.id}")
@@ -230,9 +240,17 @@ RSpec.describe Sdwan::Executors::CreateVirtualIp do
     end
 
     it "degrades stepwise on a malformed request rather than raising" do
-      expect(described_class.preview({})[:summary]).to eq("Allocate SDWAN VIP")
-      expect(described_class.preview({ network_id: network.id })[:summary])
-        .to eq("Allocate SDWAN VIP on network #{network.id}")
+      unknown = SecureRandom.uuid
+
+      expect(preview_for({})[:summary]).to eq("Allocate SDWAN VIP")
+      # Named, in-account, no VIP name yet — the middle rung. Before
+      # IMP-4a5094b22df0 this rendered the bare id, because nothing in an
+      # honest request carried an account to scope the lookup by.
+      expect(preview_for({ network_id: network.id })[:summary])
+        .to eq("Allocate SDWAN VIP on network wan-core")
+      # The id is the floor, for a network this account cannot resolve.
+      expect(preview_for({ network_id: unknown })[:summary])
+        .to eq("Allocate SDWAN VIP on network #{unknown}")
     end
   end
 end
