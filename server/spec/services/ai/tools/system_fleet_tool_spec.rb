@@ -3699,40 +3699,38 @@ end
     # comment for the IMP-54bf2643f542 fail-closed ladder this satisfies.
     let(:sdwan_tool) { ::Ai::Tools::SdwanTool.new(account: account, internal: true) }
 
+    # Minting moved off this surface entirely (IMP-3a32dc649043): a tool result
+    # is forwarded to the model provider, so the MCP propose action cannot hand
+    # back signing material. The round trip itself is unchanged — only where the
+    # proposing operator obtains the token.
     describe "propose with generate_token" do
-      it "returns a one-time plaintext token + stores only the digest" do
-        r = sdwan_tool.execute(params: {
-          action: "system_sdwan_propose_federation_peer",
-          remote_instance_url: "https://b.example.com",
-          remote_instance_id: SecureRandom.uuid,
-          generate_token: true
-        })
-        expect(r[:success]).to be true
-        expect(r[:data][:acceptance_token_plaintext]).to be_present
-        expect(r[:data][:acceptance_token_expires_at]).to be_present
-        expect(r[:data][:note]).to include("EXACTLY ONCE")
+      it "refuses to mint, naming the operator path, and creates no peer" do
+        expect {
+          @r = sdwan_tool.execute(params: {
+            action: "system_sdwan_propose_federation_peer",
+            remote_instance_url: "https://b.example.com",
+            remote_instance_id: SecureRandom.uuid,
+            generate_token: true
+          })
+        }.not_to change(::System::FederationPeer, :count)
 
-        peer = ::System::FederationPeer.find(r[:data][:federation_peer][:id])
-        # Stored as digest only, not plaintext
-        expect(peer.acceptance_token_digest).to be_present
-        expect(peer.acceptance_token_digest).not_to eq(r[:data][:acceptance_token_plaintext])
-        # Honors token_ttl_seconds
-        expect(peer.acceptance_token_expires_at).to be > 1.day.from_now
+        expect(@r[:success]).to be false
+        expect(@r[:error]).to include("/api/v1/system/sdwan/federation_peers")
       end
     end
 
     describe "accept with token verification" do
-      let(:propose_result) do
-        sdwan_tool.execute(params: {
-          action: "system_sdwan_propose_federation_peer",
-          remote_instance_url: "https://b.example.com",
-          remote_instance_id: SecureRandom.uuid,
-          generate_token: true,
-          token_ttl_seconds: 600
-        })
+      # The token now originates from the operator path
+      # (Sdwan::Executors::ProposeFederationPeer), which mints on the model
+      # exactly as this does. `let!` keeps the mint eager — the accept surface
+      # treats a digest-less peer as requiring no token at all, so a lazy mint
+      # would quietly turn "rejects when token missing" into a no-op.
+      let(:accept_peer) do
+        create(:system_federation_peer, account: account, status: "proposed",
+                                        remote_instance_url: "https://b.example.com")
       end
-      let(:peer_id) { propose_result[:data][:federation_peer][:id] }
-      let(:plaintext) { propose_result[:data][:acceptance_token_plaintext] }
+      let(:peer_id) { accept_peer.id }
+      let!(:plaintext) { accept_peer.generate_acceptance_token!(ttl_seconds: 600) }
 
       it "accepts when correct plaintext token provided" do
         auto_approve_policy!

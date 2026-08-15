@@ -378,6 +378,132 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # IMP-3a32dc649043. `generate_token: true` used to mint a single-use
+  # acceptance token and hand the PLAINTEXT back in the tool result. A tool
+  # return does not stop at its caller: Ai::AgentToolBridgeService appends the
+  # full result JSON as a `role: "tool"` message and sends it to the model
+  # provider on the next loop iteration, and its truncated preview is persisted
+  # into ai_messages.processing_metadata. Ai::SensitiveParams cannot intervene
+  # on either (the preview is a String, and #filter returns non-Hash input
+  # unchanged). So the MCP surface is structurally incapable of delivering
+  # signing material.
+  #
+  # The refusal is deliberately up-front rather than a silent omission: minting
+  # a token that no caller can read leaves a peer that only an unreadable secret
+  # can accept.
+  describe "system_sdwan_propose_federation_peer token minting (IMP-3a32dc649043)" do
+    # Never a real mint. The tool must refuse before reaching the model, so this
+    # marker also serves as the tripwire: if it appears anywhere in the result,
+    # a plaintext token reached the MCP surface.
+    let(:synthetic_token) { "SYNTHETIC-NOT-A-REAL-TOKEN-000000" }
+    # Counts mints without asserting on a real one. allow_any_instance_of has no
+    # spy form, so the block records the call itself.
+    let(:mint_calls) { [] }
+
+    before do
+      recorder = mint_calls
+      token = synthetic_token
+      allow_any_instance_of(::System::FederationPeer)
+        .to receive(:generate_acceptance_token!) do |_peer, **_kwargs|
+          recorder << true
+          token
+        end
+    end
+
+    def propose(**rest)
+      call("system_sdwan_propose_federation_peer",
+           remote_instance_url: "https://peer.example.test", **rest)
+    end
+
+    context "with generate_token: true" do
+      it "refuses instead of returning the plaintext under any key" do
+        r = propose(generate_token: true)
+
+        expect(r.to_json).not_to include(synthetic_token),
+                                 "a plaintext acceptance token reached the MCP tool result"
+        expect(r[:success]).to be false
+      end
+
+      it "names the operator path that can deliver the token" do
+        r = propose(generate_token: true)
+
+        expect(r[:error]).to include("generate_token")
+        expect(r[:error]).to include("/api/v1/system/sdwan/federation_peers"),
+                             "the refusal does not tell the caller where the token CAN be obtained"
+      end
+
+      # Fail loud, not silently strand: a peer minted with a token nobody can
+      # read is worse than no peer at all, because the digest is the only thing
+      # that can accept it.
+      it "mints nothing and creates no peer" do
+        expect { propose(generate_token: true) }.not_to change(::System::FederationPeer, :count)
+
+        expect(mint_calls).to be_empty, "a token was minted and then withheld, stranding the peer"
+      end
+
+      # Nothing on the MCP path coerces booleans, and models routinely serialize
+      # a boolean argument as a string. A refusal that `"true"` walks past is not
+      # a refusal — the caller would get success: true and a digest-less peer,
+      # which System::FederationPeer#acceptance_token_error treats as needing no
+      # token at all.
+      it "refuses the string form the JSON boundary produces" do
+        expect { @r = propose(generate_token: "true") }.not_to change(::System::FederationPeer, :count)
+
+        expect(@r[:success]).to be false
+        expect(@r[:error]).to include("/api/v1/system/sdwan/federation_peers")
+      end
+    end
+
+    # Guard: the refusal is scoped to the token, not to the action. Proposing a
+    # peer over MCP still works — this is what keeps the fix from reading as a
+    # removal of the capability.
+    context "without a token request" do
+      it "still proposes the peer when generate_token is omitted" do
+        expect { @r = propose }.to change(::System::FederationPeer, :count).by(1)
+
+        expect(@r[:success]).to be true
+        expect(@r[:data][:federation_peer][:status]).to eq("proposed")
+      end
+
+      it "still proposes the peer when generate_token is explicitly false" do
+        r = propose(generate_token: false)
+
+        expect(r[:success]).to be true
+        expect(::System::FederationPeer.last.acceptance_token_digest).to be_nil
+      end
+    end
+
+    # Guard: the operator path is untouched. Sdwan::Executors::ProposeFederationPeer
+    # is what FederationPeersController#create drives through Ai::AutonomyGate,
+    # and its return carries the one reveal. On the ordinary branch — the default
+    # policy is require_approval, and Ai::ApprovalChain is defined in core so the
+    # gate never short-circuits — that return is handed to
+    # Ai::DeferredOperation#take_revealed_result! and read by
+    # Ai::ApprovalRequest#capture_revealed_result!, reaching the operator on the
+    # approval decision response.
+    #
+    # Mints for real (overriding the outer stub) so this cannot degrade into
+    # "the executor returns whatever the stub was given": the returned plaintext
+    # has to verify against the digest the peer actually stored.
+    it "leaves the operator executor path delivering a plaintext that verifies" do
+      allow_any_instance_of(::System::FederationPeer)
+        .to receive(:generate_acceptance_token!).and_call_original
+
+      result = ::Sdwan::Executors::ProposeFederationPeer.execute(
+        { attributes: { remote_instance_url: "https://peer.example.test" } },
+        deferred_operation: instance_double(::Ai::DeferredOperation, account: account)
+      )
+      delivered = result[:data][:acceptance_token_plaintext]
+      peer = ::System::FederationPeer.find(result[:data][:federation_peer_id])
+
+      expect(delivered).to be_present, "the operator delivery path stopped returning the token"
+      expect(peer.acceptance_token_error(delivered)).to be_nil,
+                                                       "the delivered plaintext does not verify against the stored digest"
+      expect(peer.acceptance_token_digest).to be_present
+      expect(peer.acceptance_token_digest).not_to eq(delivered), "the peer stored the plaintext, not a digest"
+    end
+  end
+
   # This tool already threaded `reason` into FederationPeer#revoke!, but its
   # peer serializer projected no metadata — so the reason it advertises as
   # "recorded on the peer" could not be read back through any MCP action
