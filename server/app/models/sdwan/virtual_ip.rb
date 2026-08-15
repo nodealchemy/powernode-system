@@ -38,6 +38,7 @@ module Sdwan
     validates :advertised_local_pref, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
     validate :holder_peers_belong_to_network
     validate :anycast_requires_holder_set
+    validate :non_anycast_single_holder, if: :will_save_change_to_holder_peer_ids?
 
     before_validation :inherit_account_from_network
 
@@ -104,7 +105,16 @@ module Sdwan
         old_holder = Array(holder_peer_ids).first
         new_holder = Array(failover_holder_peer_ids).first
 
-        new_holders  = ([ new_holder ] + (Array(holder_peer_ids) - [ new_holder ]))
+        # IMP-43cf1e6b5541 — the demoted holder must be POPPED off, not just
+        # left behind the promoted one: subtracting only `new_holder` (which
+        # was never in holder_peer_ids to begin with) was a no-op, so
+        # old_holder lingered and this produced a size-2 array on a
+        # non-anycast VIP, contradicting the doc comment above. Any OTHER
+        # stray ids already in the array (pre-existing phantom holders from
+        # a different write path) are left alone here — this method's
+        # contract is "pop the head", not "normalize the array" — but
+        # non_anycast_single_holder now blocks new ones from being written.
+        new_holders  = ([ new_holder ] + (Array(holder_peer_ids) - [ new_holder, old_holder ]))
         new_failover = (Array(failover_holder_peer_ids) - [ new_holder ]) + ([ old_holder ].compact)
 
         update!(
@@ -143,8 +153,20 @@ module Sdwan
     # attribution — mapping it onto a raw-array diff would also release
     # stray extra holder ids failover! deliberately leaves alone.
     def sync_holder_assignments!(previous_holders, triggered_by_user: nil, reason: "holder_changed")
-      current = anycast? ? Array(holder_peer_ids) : Array(holder_peer_ids).first(1)
-      current = current.compact
+      # IMP-43cf1e6b5541 — the `.first(1)` truncation for non-anycast VIPs
+      # used to be a defense: it kept a stray extra holder id (debris from
+      # a write path that produced a size>1 holder_peer_ids on a
+      # non-anycast VIP — #failover!'s pre-fix bug was one source) from
+      # being diffed at all, which meant it silently NEVER got an
+      # assignment history row. That was the phantom-holder defect, not a
+      # safety net for one. Now that #non_anycast_single_holder blocks new
+      # writes from creating that debris, diffing the full array is safe —
+      # and it is what SELF-HEALS any pre-existing stray id: the next real
+      # holder-transition sees it as an "arrival" relative to whatever the
+      # caller captured as previous_holders and opens its history row (a
+      # one-time sweep for debris that won't be touched again soon lives
+      # in Sdwan::VirtualIpPhantomHolderBackfillService).
+      current = Array(holder_peer_ids).compact
 
       departed = previous_holders - current
       arrived  = current - previous_holders
@@ -206,6 +228,24 @@ module Sdwan
       return if Array(holder_peer_ids).size >= 2
 
       errors.add(:holder_peer_ids, "anycast VIPs require at least 2 holders")
+    end
+
+    # IMP-43cf1e6b5541 — non-anycast VIPs are active/passive: exactly one
+    # active holder, not a set (failover_holder_peer_ids is where standby
+    # candidates belong). #failover! popping its demoted holder (this same
+    # task) is what makes this cap safe to enforce — before that fix, every
+    # manual failover on a non-anycast VIP would have raised here.
+    #
+    # Gated to :will_save_change_to_holder_peer_ids? — ON CHANGE ONLY — so a
+    # legacy row already carrying a stray extra holder (written before this
+    # validation existed, by a path this task does not touch) doesn't start
+    # failing validation on an unrelated field save. Only a fresh write TO
+    # holder_peer_ids itself must respect the cap going forward.
+    def non_anycast_single_holder
+      return if anycast?
+      return if Array(holder_peer_ids).size <= 1
+
+      errors.add(:holder_peer_ids, "non-anycast VIPs may have at most one holder (use failover_holder_peer_ids for standby candidates)")
     end
   end
 end
