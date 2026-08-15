@@ -44,6 +44,20 @@ module System
       # let a request move a record into an account of the caller's choosing.
       TENANCY_ATTRIBUTE_KEYS = %i[account account_id].freeze
 
+      # Params key carrying the request-time fingerprint. Built by the gating
+      # SURFACE from #replay_baseline and never merged from caller input — the
+      # REST controller and the MCP tool both construct their executor params
+      # hash literally, so a caller cannot supply or suppress this key.
+      REPLAY_BASELINE_KEY = :replay_baseline
+
+      # Raised when the row moved underneath a parked operation. A StandardError
+      # so Ai::DeferredOperation#execute_now! fails the row and
+      # Ai::ApprovalRequest#declare_execution_failure! declares the outcome and
+      # emits the Ai::ExecutionEvent (IMP-4bbb4227ac8a) — the refusal is
+      # OBSERVABLE to the approver who authorised it, which a silent skip
+      # would not be.
+      class ReplayBaselineError < StandardError; end
+
       class << self
         def execute(params, deferred_operation:)
           new(params, deferred_operation: deferred_operation).call
@@ -51,6 +65,39 @@ module System
 
         def preview(params, deferred_operation: nil)
           new(params, deferred_operation: deferred_operation).preview_payload
+        end
+
+        # Attributes whose request-time value must still hold at approval time.
+        # Empty by default: the guard is OPT-IN, so every existing executor and
+        # every already-parked operation keeps its current behaviour.
+        #
+        # Declared on the EXECUTOR rather than the surface because both ends of
+        # the guard read it — the surface stamps through #replay_baseline, the
+        # executor verifies through #verify_replay_baseline! — and a resource
+        # gated by two surfaces (VIP update has a REST and an MCP twin) would
+        # otherwise need the same list maintained in two places.
+        def replay_baseline_attributes
+          [].freeze
+        end
+
+        # Request-time fingerprint, for a gating surface to put in its executor
+        # params under REPLAY_BASELINE_KEY.
+        #
+        # Fingerprints only the intersection of what this executor declares
+        # replay-sensitive and what THIS request actually changes: a parked
+        # description edit must not be invalidated by a concurrent holder
+        # change it expressed no opinion about. Values go through as_json so
+        # the comparison at approval time is against the same JSONB round-trip
+        # the params column will have applied.
+        #
+        # `record` must be in its PERSISTED state — surfaces that pre-validate
+        # by assigning attributes have to restore_attributes first, as both
+        # current callers do.
+        def replay_baseline(record, requested_attributes)
+          requested = requested_attributes.to_h.symbolize_keys.keys
+          (requested & replay_baseline_attributes).index_with do |attribute|
+            record.public_send(attribute).as_json
+          end
         end
       end
 
@@ -216,6 +263,55 @@ module System
         return if parent_id.blank?
 
         resolve_scoped(model, parent_id)
+      end
+
+      # Refuse a replay whose premise expired (IMP-391525770512).
+      #
+      # gate! parks params[:attributes] verbatim at REQUEST time and the
+      # executor applies them whenever an approver decides — hours later.
+      # Nothing in between re-reads the row, so a parked change is written over
+      # whatever the row holds at approval time. The traced instance: an
+      # operator parks a holder_peer_ids change, a manual failover (a
+      # SEPARATELY gated surface, so the window is real rather than
+      # theoretical) moves the VIP, an approver approves the parked request,
+      # and the executor reverts the failover while recording a holder_changed
+      # assignment that misrepresents what happened to the overlay. The
+      # approval card cannot show the divergence: it was composed from the
+      # request, which still reads exactly as it did when parked.
+      #
+      # Refusing is the whole fix. Re-resolving to "current" and applying a
+      # merge would be worse — the operator authorised THIS change against
+      # THAT state, and nobody has approved the combination. So the operation
+      # fails, loudly and declared, and an operator re-submits against what the
+      # row now holds.
+      #
+      # No-op when nothing was stamped, which is what makes the guard opt-in:
+      # operations parked before a surface adopted it, and every executor that
+      # declares no replay_baseline_attributes, are unaffected.
+      def verify_replay_baseline!(record)
+        baseline = params[REPLAY_BASELINE_KEY]
+        return if baseline.blank?
+
+        declared = self.class.replay_baseline_attributes.map(&:to_s)
+        baseline.each do |attribute, requested_against|
+          # public_send on a key read straight out of the params JSONB, so it
+          # is constrained to what this executor DECLARED rather than to
+          # whatever the column happens to hold. No current surface can put a
+          # foreign key there — both build the hash literally — but this
+          # file's TENANCY_ATTRIBUTE_KEYS note states the standing threat
+          # model for params: caller-influenced, stored verbatim, replayed
+          # with no re-validation. Under it, `{"destroy" => nil}` would
+          # destroy the row and then report a refusal.
+          next unless declared.include?(attribute.to_s)
+
+          current = record.public_send(attribute).as_json
+          next if current == requested_against
+
+          raise ReplayBaselineError,
+                "#{record.class.name} #{record.id} #{attribute} changed since this operation was " \
+                "requested: requested against #{requested_against.inspect}, now #{current.inspect}. " \
+                "Re-submit the change against current state."
+        end
       end
 
       def initiator
