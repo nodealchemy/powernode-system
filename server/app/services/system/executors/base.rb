@@ -11,7 +11,29 @@ module System
     # The contract Ai::AutonomyGate expects:
     #
     #   ExecutorClass.execute(params, deferred_operation:) → { success:, data: }
-    #   ExecutorClass.preview(params)                       → { summary:, impact: }
+    #   ExecutorClass.preview(params, deferred_operation:) → { summary:, impact: }
+    #
+    # `preview` takes its context on the same keyword as `execute`
+    # (IMP-4a5094b22df0), so an approval card can be anchored to the account the
+    # gate opened the operation in. Two differences from `execute`, both
+    # deliberate:
+    #
+    #   * the keyword is OPTIONAL. The pre-gate path previews before any
+    #     DeferredOperation exists, so `preview(params)` alone stays a supported
+    #     call — it simply has no anchor, and #scoped_label_record names nothing
+    #     rather than naming a row whose owner nobody has established.
+    #   * what arrives is NOT the operation. Ai::DeferredOperation#preview
+    #     passes an Ai::DeferredOperation::PreviewContext, which answers
+    #     `account` and nothing else. So `#account`, `#resolve_scoped` and
+    #     `#scoped_label_record` work unchanged, and `#requesting_user` returns
+    #     nil through its existing respond_to? guard — while the operation's
+    #     `params`, `result` and `take_revealed_result!` are absent from the
+    #     context entirely, and `#initiator` raises because it dereferences a
+    #     `requested_by`/`ai_agent` the context does not carry. An executor
+    #     reaching for execution state while composing a card therefore raises,
+    #     and Ai::DeferredOperation#preview's rescue degrades it to a generic
+    #     card instead of rendering that state to an approver. Do not "fix"
+    #     such a raise by threading the operation; the absence is the guard.
     #
     # Subclasses normally only override `perform` and `summarize`.
     class Base
@@ -27,8 +49,8 @@ module System
           new(params, deferred_operation: deferred_operation).call
         end
 
-        def preview(params)
-          new(params, deferred_operation: nil).preview_payload
+        def preview(params, deferred_operation: nil)
+          new(params, deferred_operation: deferred_operation).preview_payload
         end
       end
 
@@ -83,17 +105,50 @@ module System
         params[:attributes].to_h.symbolize_keys.except(*TENANCY_ATTRIBUTE_KEYS)
       end
 
-      # The account the CALLER named, for label scoping only — never for
-      # assignment. Preview/summarize run through Base.preview, which hardcodes
-      # `deferred_operation: nil`, so `account` is nil there by construction and
-      # the request's own attributes are the only thing an approval card can
-      # scope its lookups by.
-      def requested_account_id
-        params[:attributes].to_h.symbolize_keys[:account_id]
-      end
-
       def account
         deferred_operation&.account
+      end
+
+      # Account-anchored lookup for a row an approval CARD is about to NAME.
+      # The label seam: before IMP-4a5094b22df0 each summarize hand-rolled its
+      # own find, and they disagreed — some read the row unscoped, some scoped
+      # it by an account_id the CALLER had put in params[:attributes] (the one
+      # hash `attrs` strips the tenancy keys out of before any write).
+      #
+      # NOT yet universal: IMP-4a5094b22df0 migrated the six executors named in
+      # its file list, and roughly eleven siblings still resolve their label row
+      # unscoped (delete_peer, delete_network, update_firewall_rule,
+      # update_virtual_ip, delete_virtual_ip, failover_virtual_ip,
+      # delete_access_grant, revoke_user_device, instance_pool/delete_pool,
+      # runtime/decommission_k3s_cluster, disk_image/promote_publication).
+      # They are unsafe on the same terms and are queued as a follow-on sweep
+      # (offer 01a0046b-6488) — a new executor should route here rather than
+      # copy one of them.
+      #
+      # Deliberately NOT resolve_scoped, in both directions:
+      #
+      #   * it never raises. resolve_scoped guards a WRITE and refusing loudly
+      #     is right there; this guards a sentence shown to a human, and a card
+      #     that 500s is worse than a card naming a bare id.
+      #   * it fails CLOSED with no anchor, where resolve_scoped passes through.
+      #     resolve_scoped's pass-through is safe because the caller authorised
+      #     the write upstream; there is no equivalent upstream authorisation
+      #     for a DISCLOSURE, and an unanchored disclosure is exactly the leak
+      #     this exists to stop. So no account ⇒ no name, and the caller
+      #     degrades to the id it was given.
+      #
+      # Callers pass the id they would have looked up anyway and treat nil as
+      # "render the id instead" — never as "not found", which it also covers.
+      def scoped_label_record(model, id)
+        return nil if id.blank?
+
+        anchor = account
+        return nil if anchor.nil?
+        # A model with no account of its own cannot be anchored, and asking
+        # PostgreSQL for the column would raise inside a card render.
+        return nil unless model.respond_to?(:column_names) && model.column_names.include?("account_id")
+
+        model.find_by(id: id, account_id: anchor.id)
       end
 
       # Account-anchored lookup for the records an executor resolves FOR ITSELF
@@ -108,7 +163,10 @@ module System
       # `where(account_id:)` would break the callers that reach an executor with
       # no account at all, turning every find into `where(account_id: nil)`:
       # fail-open dressed as fail-closed. Those callers pass a literal nil —
-      # Base.preview (which hardcodes it), Ai::Tools::SystemFleetTool, and
+      # Base.preview when invoked PRE-GATE (its `deferred_operation:` keyword
+      # defaults to nil; a preview reached through Ai::DeferredOperation#preview
+      # instead carries an Ai::DeferredOperation::PreviewContext, which does
+      # answer `account`), Ai::Tools::SystemFleetTool, and
       # System::Ai::Skills::ServiceDiscoveryComposerExecutor. The OTHER
       # duck-typed shape does carry one and is anchored like any operation:
       # MultiTenantIsolationExecutor's `Struct.new(:account)` context and the

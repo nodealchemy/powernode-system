@@ -244,11 +244,13 @@ RSpec.describe System::Executors::ExecuteTask do
       expect(card[:impact]).to eq("sync on System::Node edge-lon-01")
     end
 
-    # What the card may DISCLOSE. Base.preview runs with deferred_operation:
-    # nil, so resolve_scoped has no account anchor at preview time and passes
-    # any existing row through — an unguarded name lookup would hand a caller-
+    # What the card may DISCLOSE. These previews carry no operation (the
+    # PRE-GATE shape — IMP-4a5094b22df0 threads one through for every card
+    # composed via Ai::DeferredOperation#preview, but `preview(params)` alone
+    # still has none), so resolve_scoped has no account anchor and passes any
+    # existing row through — an unguarded name lookup would hand a caller-
     # supplied foreign UUID's name to the card at REQUEST time, before any
-    # approval. The only trusted anchor at preview is the initiator both HTTP
+    # approval. The only trusted anchor there is the initiator both HTTP
     # gate surfaces force into task_attrs after permit (tasks_controller
     # merges current_user.id over the permitted keys; NodeInstanceGating
     # writes it directly).

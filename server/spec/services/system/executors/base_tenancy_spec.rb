@@ -60,20 +60,53 @@ RSpec.describe System::Executors::Base do
     end
   end
 
-  # Preview/summarize run through Base.preview, which hardcodes
-  # deferred_operation: nil — so the create attributes are the only account a
-  # label can be scoped by, and stripping account_id out of `attrs` must not
-  # take that away (see Sdwan::Executors::CreatePeer#summarize).
-  describe "#requested_account_id" do
-    it "exposes the account the caller named, for label scoping only" do
-      exec = executor({ attributes: { account_id: account.id, name: "edge" } })
+  # IMP-4a5094b22df0 replaced `#requested_account_id` — which handed a label the
+  # account_id the CALLER put in params[:attributes], the one hash `attrs` above
+  # strips those very keys out of. An id a caller supplies cannot be trusted to
+  # SELECT an owner any more than to assign one. The operation now carries the
+  # anchor, and this is the single seam every card label resolves through.
+  describe "#scoped_label_record" do
+    let!(:network) { create(:sdwan_network, account: account, name: "ours") }
+    let!(:foreign_network) { create(:sdwan_network, account: foreign_account, name: "theirs") }
 
-      expect(exec.send(:requested_account_id)).to eq(account.id)
-      expect(exec.send(:attrs)).not_to have_key(:account_id)
+    it "returns a row the operation's account owns" do
+      exec = executor({}, deferred_operation: operation_for(account))
+
+      expect(exec.send(:scoped_label_record, ::Sdwan::Network, network.id)).to eq(network)
     end
 
-    it "is nil when the request named none" do
-      expect(executor({}).send(:requested_account_id)).to be_nil
+    it "returns nil for a row belonging to another account, rather than raising" do
+      exec = executor({}, deferred_operation: operation_for(account))
+
+      expect(exec.send(:scoped_label_record, ::Sdwan::Network, foreign_network.id)).to be_nil
+    end
+
+    # The difference from #resolve_scoped that matters most: that one passes
+    # through unanchored (the write was authorised upstream), this one refuses.
+    # A disclosure has no upstream authorisation to inherit.
+    it "returns nil when there is no operation to anchor on" do
+      expect(executor({}).send(:scoped_label_record, ::Sdwan::Network, network.id)).to be_nil
+    end
+
+    it "returns nil for a blank id" do
+      exec = executor({}, deferred_operation: operation_for(account))
+
+      expect(exec.send(:scoped_label_record, ::Sdwan::Network, nil)).to be_nil
+    end
+
+    # A model with no account of its own cannot be anchored; asking PostgreSQL
+    # for the column would raise inside a card render.
+    it "returns nil for a model that carries no account_id" do
+      exec = executor({}, deferred_operation: operation_for(account))
+
+      expect(exec.send(:scoped_label_record, ::Account, account.id)).to be_nil
+    end
+
+    it "no longer exposes the caller-supplied account id" do
+      exec = executor({ attributes: { account_id: account.id, name: "edge" } })
+
+      expect(exec.respond_to?(:requested_account_id, true)).to be(false)
+      expect(exec.send(:attrs)).not_to have_key(:account_id)
     end
   end
 

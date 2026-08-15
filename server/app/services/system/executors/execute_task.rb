@@ -129,12 +129,13 @@ module System
       end
 
       # Whether the resolved record's name may appear on the card. With the
-      # operation present (the execute path — and preview too, once
-      # IMP-4a5094b22df0 threads it through), resolve_operable already
-      # anchored the record to the operation's account and this passes. But
-      # Base.preview hardcodes deferred_operation: nil, so at preview time
-      # resolve_scoped passes ANY existing row through unscoped — and the only
-      # trusted anchor left is the initiator both HTTP gate surfaces force
+      # operation present, resolve_operable already anchored the record to the
+      # operation's account and this passes — which as of IMP-4a5094b22df0 is
+      # BOTH the execute path and every card composed through
+      # Ai::DeferredOperation#preview. The remaining anchor-less caller is a
+      # PRE-GATE preview (`preview(params)` with no operation), where
+      # resolve_scoped passes ANY existing row through unscoped — and there the
+      # only trusted anchor is the initiator both HTTP gate surfaces force
       # into task_attrs after their permit lists (tasks_controller#create
       # merges current_user.id over the permitted keys; NodeInstanceGating
       # writes it directly). Without this check the card would hand a
