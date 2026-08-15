@@ -120,5 +120,24 @@ RSpec.describe System::DockerDaemonProvisionerService do
         described_class.decommission!(docker_host: external)
       }.to raise_error(described_class::ProvisionError, /external/)
     end
+
+    # IMP-20fb59ec849d — #purge_from_vault! called #delete_credential, which
+    # only follows a RECORD's vault_path. #store_in_vault! passes no record, so
+    # the material sits at the provider's convention path and every
+    # decommission reported a successful purge while leaving the secret in
+    # place. #purge_credential! is the delete that matches that write.
+    it "purges the daemon TLS material through the convention-path delete" do
+      peer
+      host = described_class.provision!(node_instance: node_instance, account: account)
+      host_id = host.id
+      provider = instance_double(::Security::VaultCredentialProvider)
+      allow(::Security::VaultCredentialProvider).to receive(:new).and_return(provider)
+      allow(provider).to receive(:purge_credential!).and_return(true)
+
+      described_class.decommission!(docker_host: host)
+
+      expect(provider).to have_received(:purge_credential!)
+        .with(credential_type: :docker_daemon_tls, credential_id: host_id)
+    end
   end
 end
