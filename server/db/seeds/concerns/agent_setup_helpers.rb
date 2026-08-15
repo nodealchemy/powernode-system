@@ -204,12 +204,20 @@ module System
       # The row still carries the same trust_tier_minimum condition as
       # `upsert_policies!` even though the operator path never evaluates it
       # (`conditions_met?` skips the tier check when agent_record is nil), and
-      # its priority stays lower than the agent set's (`specificity_score`
-      # already gives an agent-scoped row +5). Both are defense in depth for
-      # the same regression: if the resolution-level audience split is ever
+      # its priority stays lower than the agent set's. Both are defense in depth
+      # for the same regression: if the resolution-level audience split is ever
       # removed, the shared condition keeps an emergency-demoted agent
-      # escalating to require_approval instead of landing here, and the
-      # ranking keeps an agent's own row winning over this one.
+      # escalating to require_approval instead of landing here, and the ranking
+      # keeps an agent's own row winning over this one.
+      #
+      # The ranking half no longer DEPENDS on that priority gap.
+      # `Ai::InterventionPolicy#specificity_key` is lexicographic, so an
+      # agent-scoped row out-ranks this one at any priority either carries
+      # (IMP-6430e3a8c4a1). Until then the key was an additive score giving an
+      # agent-scoped row a mere +5, so 5-vs-10 was doing real work here: an
+      # operator raising this set's priority by 6 would have inverted the
+      # ranking. Keep the gap anyway — it costs nothing and it states the
+      # intent — but the guarantee now rests on the tier, not on the numbers.
       #
       # WARNING before adding a condition key here: the two paths do not see the
       # same keys, and "trust_tier_minimum" is not the only asymmetric one.

@@ -144,8 +144,14 @@ RSpec.describe "Runtime Manager operator-path intervention policies" do
   end
 
   # Defense in depth, mirroring the SDWAN ruling: the agent row must out-rank
-  # the operator row on specificity_score too, which is what decides
-  # `matching.max_by(&:specificity_score)` if the audience split ever regresses.
+  # the operator row on specificity_key too, which is what decides
+  # `matching.max_by(&:specificity_key)` if the audience split ever regresses.
+  #
+  # Asserted at a priority the seed would never write, because that key is
+  # lexicographic (IMP-6430e3a8c4a1): the agent tier out-ranks the agent-less
+  # one whatever priorities the two rows carry. While it was an additive score
+  # the agent row's edge was a mere +5, so this held only by the seeded 10-vs-5
+  # gap and an operator raising the operator set by 6 would have inverted it.
   it "ranks the agent-scoped row above the operator row on specificity alone" do
     category     = "system.runtime_docker_provision"
     agent_row    = Ai::InterventionPolicy.find_by!(account: account, action_category: category,
@@ -153,7 +159,12 @@ RSpec.describe "Runtime Manager operator-path intervention policies" do
     operator_row = Ai::InterventionPolicy.find_by!(account: account, action_category: category,
                                                    ai_agent_id: nil)
 
-    expect(agent_row.specificity_score).to be > operator_row.specificity_score
+    expect(agent_row.specificity_key <=> operator_row.specificity_key).to eq(1)
+
+    # In memory only — the seeded rows are untouched for the idempotence example.
+    operator_row.priority = agent_row.priority + 100
+    expect(agent_row.specificity_key <=> operator_row.specificity_key).to eq(1),
+                                                                         "priority out-ranked the scope tier — IMP-6430e3a8c4a1 regressed"
   end
 
   # Seeds are re-run on every deploy. The operator set and the agent set each

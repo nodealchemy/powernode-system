@@ -194,7 +194,10 @@ puts "  ✅ SDWAN Manager policies: #{count} changed (#{sdwan_policies.size} tot
 # denial — the gate parks it for an approval any active user may grant).
 #
 # Two further guards remain as defense in depth should the resolution contract
-# ever regress: an agent-scoped row out-ranks these on specificity_score, and
+# ever regress: an agent-scoped row out-ranks these on specificity_key at ANY
+# priority, since that key is lexicographic and the agent tier sits above the
+# agent-less one (IMP-6430e3a8c4a1 — while it was an additive score, this
+# out-ranking held only because of the priority gap seeded below), and
 # both sets carry the SAME trust_tier_minimum condition so an emergency trust
 # demotion knocks out the agent row and this row together, preserving the
 # escalation to require_approval.
