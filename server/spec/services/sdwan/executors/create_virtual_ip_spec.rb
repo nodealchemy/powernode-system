@@ -150,21 +150,36 @@ RSpec.describe Sdwan::Executors::CreateVirtualIp do
     it "activates a holder-bearing VIP and opens the primary holder's assignment row" do
       result = execute!(
         { name: "held-vip", cidr: "fd00:beef::2/128", anycast: false,
-          holder_peer_ids: [ peer_a.id, peer_b.id ],
+          holder_peer_ids: [ peer_a.id ],
           advertised_med: 0, advertised_local_pref: 100 }
       )
 
       expect(result[:success]).to be true
       vip = ::Sdwan::VirtualIp.find(result[:data][:vip_id])
       expect(vip.state).to eq("active")
-      expect(vip.assignments.count).to eq(1),
-                                       "a static VIP opens ONE assignment row — the primary holder, not every listed holder"
+      expect(vip.assignments.count).to eq(1)
       assignment = vip.assignments.first
       expect(assignment.sdwan_peer_id).to eq(peer_a.id)
       expect(assignment.reason).to eq("initial")
       expect(assignment.released_at).to be_nil
       expect(assignment.triggered_by_user_id).to eq(requester.id),
                                                  "attribution must survive the approval window via deferred_operation.requested_by"
+    end
+
+    # IMP-43cf1e6b5541 — deliberate semantic tightening, a sibling of the
+    # same task's #failover! fix: Sdwan::VirtualIp#non_anycast_single_holder
+    # now rejects this at the model layer instead of silently keeping only
+    # the first id (the OLD behavior this replaces — "a static VIP opens
+    # ONE assignment row — the primary holder, not every listed holder" —
+    # was the same tolerate-and-truncate pattern that let a non-anycast VIP
+    # accumulate an untracked phantom holder).
+    it "rejects a non-anycast VIP given more than one holder in the same create" do
+      expect { execute!(
+        { name: "held-vip", cidr: "fd00:beef::2/128", anycast: false,
+          holder_peer_ids: [ peer_a.id, peer_b.id ],
+          advertised_med: 0, advertised_local_pref: 100 }
+      ) }.to raise_error(ActiveRecord::RecordInvalid, /at most one holder/)
+      expect(::Sdwan::VirtualIp.where(name: "held-vip")).not_to exist
     end
 
     it "opens one assignment row per holder for an anycast VIP" do
