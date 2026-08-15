@@ -23,6 +23,17 @@ module SdwanApprovalGateHelpers
 
   # Seeds an explicit notify_and_proceed InterventionPolicy for the given
   # action_category, scoped to the enclosing example's `account`.
+  #
+  # Precondition: every current caller seeds exactly one policy row matching
+  # a given account/action_category, so there is never a competing candidate
+  # for InterventionPolicy's precedence resolution (Ai::InterventionPolicy's
+  # specificity ranking, cf7528b15, is lexicographic by scope tier) to rank
+  # against. That makes this helper's outcome independent of how ties are
+  # broken — but only as long as that precondition holds. If a future spec
+  # calls this twice for the same account/action_category (or otherwise
+  # seeds a second matching row through here), the precedence rules become
+  # load-bearing and need to be reasoned about explicitly rather than
+  # assumed moot.
   def seed_operator_policy!(action_category)
     ::Ai::InterventionPolicy.create!(
       account: account, ai_agent_id: nil, scope: "action_type",
