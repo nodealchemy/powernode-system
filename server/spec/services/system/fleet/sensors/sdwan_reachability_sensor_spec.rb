@@ -51,6 +51,24 @@ RSpec.describe System::Fleet::Sensors::SdwanReachabilitySensor do
       expect(sensor.sense.find { |s| s.payload["no_hub_configured"] }).not_to be_nil
     end
 
+    # IMP-bb7e4d528c26 — the no-hub arm above must NOT fire on an empty
+    # network. A peerless network has nothing stranded: no spokes that lost
+    # connectivity, and no hub to fail over to, so the advertised
+    # `system.sdwan_failover` remediation has no candidates on either side.
+    # A leftover dry-run fabric was emitting this at :critical on every 60s
+    # tick indefinitely, making it the account's only recurring critical
+    # signal and devaluing severity as a triage axis.
+    it "stays silent for an active hub-and-spoke network with no peers at all" do
+      # Load-bearing: this line also CREATES the lazy `network`. Drop it as
+      # "obviously true" and the example goes vacuous — with no network at all
+      # `sense` returns [] against any implementation, correct or not. Do not
+      # switch to `let!` either: that injects a second peerless network into
+      # the full-mesh example below, where this very guard would silence it.
+      expect(network.peers).to be_empty # an active, peerless hub_and_spoke net
+
+      expect(sensor.sense).to be_empty
+    end
+
     it "stays silent for a hubless full-mesh network (legitimately has no hubs)" do
       mesh = create(:sdwan_network, account: account, status: "active",
                     settings: { "topology_strategy" => "full_mesh" })

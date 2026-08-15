@@ -29,6 +29,25 @@ module System
             .find_each.filter_map do |network|
               hubs = network.peers.where(publicly_reachable: true)
               if hubs.empty?
+                # With no hubs, every peer here is a spoke (publicly_reachable
+                # is NOT NULL), so this count IS the network's peer count. Read
+                # it ONCE and reuse it for the payload below: a separate read
+                # could disagree with the guard within a single tick and emit
+                # the very hub_count-0/spoke_count-0 signal the guard exists to
+                # suppress.
+                spoke_count = network.peers.where(publicly_reachable: false).count
+
+                # A network with NO PEERS AT ALL is not an outage: there are no
+                # spokes stranded without a tunnel, and no hub to fail over to,
+                # so the `system.sdwan_failover` remediation advertised below has
+                # no candidates on either side. Left unguarded this fires
+                # :critical on every 60s tick forever for an empty network (a
+                # leftover dry-run fabric, a half-built one), which devalues
+                # severity as a triage axis on the operations feed. The
+                # POPULATED hubless case below is a real alarm and still fires
+                # (IMP-bb7e4d528c26).
+                next if spoke_count.zero?
+
                 # An active hub-and-spoke network with zero publicly-reachable
                 # hubs cannot form tunnels going forward. This was skipped for
                 # months on an unverified "compiler will warn" claim — the
@@ -50,7 +69,7 @@ module System
                     network_name: network.name,
                     hub_count: 0,
                     no_hub_configured: true,
-                    spoke_count: network.peers.where(publicly_reachable: false).count,
+                    spoke_count: spoke_count,
                     remediation_action: "system.sdwan_failover"
                   },
                   fingerprint: "sdwan_no_hub:#{network.id}"
