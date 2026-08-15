@@ -2049,7 +2049,15 @@ module Ai
         gated_result(
           action_category: VIRTUAL_IP_UPDATE_CATEGORY,
           executor_class: "Sdwan::Executors::UpdateVirtualIp",
-          executor_params: { vip_id: vip.id, attributes: updates },
+          # IMP-391525770512 — the same replay-baseline stamp the REST twin
+          # makes. Omitting it here would leave one surface of ONE executor
+          # guarded and the other not, which is how a per-verb guard turns
+          # into a hole reachable by a different noun. `vip` is persisted
+          # state: validation_error_before_gate restores it above.
+          executor_params: {
+            vip_id: vip.id, attributes: updates,
+            replay_baseline: ::Sdwan::Executors::UpdateVirtualIp.replay_baseline(vip, updates)
+          },
           source_type: "Sdwan::VirtualIp",
           source_id: vip.id,
           # Matches UpdateVirtualIp#summarize so both surfaces of the

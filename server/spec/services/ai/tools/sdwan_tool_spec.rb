@@ -1929,6 +1929,55 @@ RSpec.describe Ai::Tools::SdwanTool do
       expect(@result[:success]).to be false
       expect(foreign.reload.description).to be_nil
     end
+
+    # IMP-391525770512 — this surface parks the SAME executor as
+    # VirtualIpsController#update, so it needs the same request-time baseline
+    # stamp. Without it the guard covers one surface of one executor and the
+    # other stays a silent-revert path. The REST examples cannot see this:
+    # they never build these params.
+    describe "replay baseline across the approval window" do
+      let(:standby) { create(:sdwan_peer, account: account, network: network) }
+      let!(:held_vip) do
+        create(:sdwan_virtual_ip, account: account, network: network, state: "active",
+                                  holder_peer_ids: [ holder.id ], failover_holder_peer_ids: [ standby.id ])
+      end
+
+      it "stamps the request-time holder value into the parked operation" do
+        call("system_sdwan_update_virtual_ip", virtual_ip_id: held_vip.id, holder_peer_ids: [ standby.id ])
+
+        deferred = Ai::DeferredOperation.order(created_at: :desc).first
+        expect(deferred.params.dig("replay_baseline", "holder_peer_ids")).to eq([ holder.id ]),
+                                                                            "MCP parked a holder change with no request-time baseline — the replay guard cannot fire"
+      end
+
+      it "refuses the approved replay when a failover moved the holder in between" do
+        call("system_sdwan_update_virtual_ip", virtual_ip_id: held_vip.id, holder_peer_ids: [ standby.id ])
+
+        held_vip.reload.failover!(reason: "manual_failover")
+        post_failover = held_vip.reload.holder_peer_ids
+
+        error = begin
+          Ai::DeferredOperation.order(created_at: :desc).first.execute_now!
+          nil
+        rescue StandardError => e
+          e
+        end
+
+        expect(held_vip.reload.holder_peer_ids).to eq(post_failover),
+                                                   "the approved MCP replay reverted the intervening failover"
+        expect(error).to be_a(::System::Executors::Base::ReplayBaselineError)
+      end
+
+      # Control: the same surface still applies an undisturbed replay.
+      it "applies an approved holder change when nothing moved in between" do
+        call("system_sdwan_update_virtual_ip", virtual_ip_id: held_vip.id, holder_peer_ids: [ standby.id ])
+
+        Ai::DeferredOperation.order(created_at: :desc).first.execute_now!
+
+        expect(held_vip.reload.holder_peer_ids).to eq([ standby.id ]),
+                                                  "the baseline stamp blocked an undisturbed MCP replay"
+      end
+    end
   end
 
   # IMP-7c911ca26585 — the failover arm was the one VIP mutation left

@@ -107,7 +107,15 @@ module Api
             gate!(
               action_category: "sdwan.virtual_ip_update",
               executor_class: "Sdwan::Executors::UpdateVirtualIp",
-              params: { vip_id: @vip.id, attributes: attrs },
+              # IMP-391525770512 — stamp the request-time value of the
+              # replay-sensitive attributes this request actually changes, so
+              # the executor can refuse a replay whose premise expired (a
+              # failover between park and approval). Read AFTER
+              # restore_attributes above, so it is the PERSISTED state.
+              params: {
+                vip_id: @vip.id, attributes: attrs,
+                replay_baseline: ::Sdwan::Executors::UpdateVirtualIp.replay_baseline(@vip, attrs)
+              },
               source_type: "Sdwan::VirtualIp",
               source_id: @vip.id,
               description: "Update SDWAN VIP '#{@vip.name}' on network #{@network.name}",
