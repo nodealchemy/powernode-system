@@ -125,7 +125,9 @@ RSpec.describe "Runtime Manager operator-path intervention policies" do
   end
 
   # IMP-bfbf8052e179 — the operator rows bind the operator audience ONLY. An
-  # agent carrying no runtime rows of its own must not catch them.
+  # agent carrying no runtime rows of its own must not catch them. The property
+  # that makes them operator-only is scope "action_type", not the nil
+  # ai_agent_id (IMP-cb36021d4094).
   it "keeps an unrelated monitored-tier agent on the require_approval default" do
     other_agent = create(:ai_agent, account: account, provider: provider,
                          name: "Unrelated Fleet Agent")

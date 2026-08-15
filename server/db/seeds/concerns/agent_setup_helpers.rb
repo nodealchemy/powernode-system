@@ -36,10 +36,11 @@
 module System
   module Seeds
     module AgentSetupHelpers
-      # Shared by the agent-scoped and operator-path upserts. Since
-      # IMP-bfbf8052e179, InterventionPolicyService#resolve never lets an agent
-      # caller land on an agent-less row at all, so the primary reason to keep
-      # this ONE value (a demoted agent falling through to the weaker row) is
+      # Shared by the agent-scoped and operator-path upserts.
+      # InterventionPolicyService#resolve never lets an agent caller land on a
+      # scope-"action_type" row (IMP-cb36021d4094), and every row this module
+      # writes agent-less is that scope, so the primary reason to keep this ONE
+      # value (a demoted agent falling through to the weaker row) is
       # structurally closed. It stays shared as defense in depth: if the
       # resolution-level audience split ever regresses, two drifted copies
       # would silently hand a demoted agent the weaker policy again.
@@ -185,14 +186,20 @@ module System
       # the agent-scoped set are disjoint by construction and each seed's stale
       # cleanup can only reach its own rows.
       #
-      # An agent-less row IS operator-only by resolution contract
-      # (IMP-bfbf8052e179): `agent_matches?` still admits it for any caller,
-      # but `InterventionPolicyService#resolve` considers ONLY agent-scoped
-      # rows when an agent is present — an agent with no matching scoped row
-      # falls to the require_approval default rather than catching this row.
-      # Before that cut, any agent WITHOUT its own row for a category (Fleet
-      # Autonomy, Concierge, Topology Designer on sdwan.*) inherited these
-      # rows' laxer verbs — human intent silently widening agent autonomy.
+      # A row of THIS shape is operator-only by resolution contract, and the
+      # load-bearing part of the shape is `scope: "action_type"`, not the nil
+      # ai_agent_id (IMP-cb36021d4094): `agent_matches?` still admits it for any
+      # caller, but `InterventionPolicyService#resolve` drops the
+      # scope-"action_type" audience when an agent is present — an agent with no
+      # matching row falls to the require_approval default rather than catching
+      # this one. Before that cut (IMP-bfbf8052e179), any agent WITHOUT its own
+      # row for a category (Fleet Autonomy, Concierge, Topology Designer on
+      # sdwan.*) inherited these rows' laxer verbs — human intent silently
+      # widening agent autonomy.
+      #
+      # Do NOT re-seed this set at scope "global" to "cover both audiences":
+      # that scope is the account-wide floor and DOES bind agent callers, so it
+      # would reinstate exactly the widening this shape exists to prevent.
       #
       # The row still carries the same trust_tier_minimum condition as
       # `upsert_policies!` even though the operator path never evaluates it

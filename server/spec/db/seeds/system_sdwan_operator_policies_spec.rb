@@ -115,9 +115,12 @@ RSpec.describe "SDWAN operator-path intervention policies" do
   # an agent that carries NO sdwan.* rows of its own (Fleet Autonomy,
   # Concierge, Topology Designer) at normal tier caught these operator rows and
   # dropped from the require_approval default to notify_and_proceed on writes
-  # like port-mapping create/delete and VPN-device minting. Resolution now
-  # skips nil-agent rows for agent callers entirely: unmatched by scoped rows
-  # means the default applies.
+  # like port-mapping create/delete and VPN-device minting.
+  #
+  # What makes these rows operator-only is their SCOPE, not their nil
+  # ai_agent_id (IMP-cb36021d4094): resolution drops the scope-"action_type"
+  # audience for an agent caller, which is the scope upsert_operator_policies!
+  # writes. A scope-"global" row would still bind this agent.
   it "keeps an unrelated monitored-tier agent on the require_approval default" do
     other_agent = create(:ai_agent, account: account, provider: provider,
                          name: "Unrelated Fleet Agent")
@@ -134,11 +137,11 @@ RSpec.describe "SDWAN operator-path intervention policies" do
     end
   end
 
-  # Post-IMP-bfbf8052e179 an agent caller never sees a nil-agent row at all,
-  # so the demotion escalation holds structurally. The shared
-  # trust_tier_minimum condition on both row sets stays as defense in depth —
-  # if the resolution-level audience split ever regressed, conditions_met?
-  # would still stop a demoted agent from landing on the operator row.
+  # An agent caller never sees a scope-"action_type" row, so the demotion
+  # escalation holds structurally. The shared trust_tier_minimum condition on
+  # both row sets stays as defense in depth — if the resolution-level audience
+  # split ever regressed, conditions_met? would still stop a demoted agent from
+  # landing on the operator row.
   it "still escalates a demoted agent instead of catching it on the operator row" do
     Ai::AgentTrustScore.find_by!(agent_id: sdwan_agent.id).emergency_demote!(reason: "spec")
 
@@ -149,11 +152,12 @@ RSpec.describe "SDWAN operator-path intervention policies" do
                                "the operator-path row became a fallback for an emergency-demoted agent"
   end
 
-  # Defense in depth. InterventionPolicyService#resolve restricts an agent
-  # caller to rows scoped to that agent (IMP-bfbf8052e179), but the agent row
-  # must also out-rank the operator row on specificity_score, which is what
-  # decides `matching.max_by(&:specificity_score)` if that restriction ever
-  # goes away.
+  # Defense in depth. InterventionPolicyService#resolve keeps the
+  # scope-"action_type" audience away from an agent caller (IMP-cb36021d4094),
+  # but the agent row must also out-rank the operator row on specificity_score,
+  # which is what decides `matching.max_by(&:specificity_score)` if that
+  # restriction ever goes away — and what already decides it against the
+  # scope-"global" rows an agent caller DOES see.
   it "ranks the agent-scoped row above the operator row on specificity alone" do
     category = "sdwan.peer_create"
     agent_row    = Ai::InterventionPolicy.find_by!(account: account, action_category: category,
