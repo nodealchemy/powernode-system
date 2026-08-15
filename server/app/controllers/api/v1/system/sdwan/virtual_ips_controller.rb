@@ -61,10 +61,13 @@ module Api
             gate!(
               action_category: "sdwan.virtual_ip_create",
               executor_class: "Sdwan::Executors::CreateVirtualIp",
-              # account_id rides along ONLY for the approval card's scoped
-              # network label (Base.preview runs with deferred_operation:
-              # nil); Base#attrs strips it again before the executor's save!.
-              params: { network_id: @network.id, attributes: attrs.merge("account_id" => @account.id) },
+              # IMP-4a5094b22df0: account_id no longer rides along. It existed
+              # ONLY to give the approval card an account to scope its network
+              # label by, back when Base.preview ran with deferred_operation:
+              # nil; the card now anchors on the operation's own account. The
+              # `candidate` above still merges it, because that one is a
+              # validation probe rather than gate-replayed params.
+              params: { network_id: @network.id, attributes: attrs },
               source_type: "Sdwan::Network",
               source_id: @network.id,
               # Matches CreateVirtualIp#summarize so both surfaces of the

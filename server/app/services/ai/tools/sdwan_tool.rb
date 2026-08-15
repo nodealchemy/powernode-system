@@ -1211,10 +1211,13 @@ module Ai
       # re-anchors through resolve_scoped).
       def create_firewall_rule(params)
         network = account_networks.find(params[:network_id])
-        # account_id rides along ONLY for the approval card's scoped network
-        # label (Base.preview runs with deferred_operation: nil); Base#attrs
-        # strips it again before the executor's create!.
-        attrs = firewall_rule_attrs(params).merge(account_id: @account.id)
+        # IMP-4a5094b22df0: no account_id merge. It existed ONLY to give the
+        # approval card an account to scope its network label by, back when
+        # Base.preview ran with deferred_operation: nil; the card now anchors on
+        # the operation's own account. Sdwan::FirewallRule derives account_id
+        # from its network in a before_validation, so the candidate below still
+        # validates identically.
+        attrs = firewall_rule_attrs(params)
 
         candidate = network.firewall_rules.new(attrs)
         unless candidate.valid?
@@ -2436,15 +2439,18 @@ module Ai
 
       # The attribute Hash the gate stores and Sdwan::Executors::CreateVirtualIp
       # replays into save! — same key set and defaults the inline create
-      # carried. account_id rides along ONLY for the approval card's scoped
-      # network label (Base.preview runs with deferred_operation: nil);
-      # Base#attrs strips it again before the executor's save!. The slice-9b
-      # initial-assignment bootstrap that used to live beside this moved into
-      # the executor, where it also runs on the :pending path
-      # (IMP-6c482005db87).
+      # carried. The slice-9b initial-assignment bootstrap that used to live
+      # beside this moved into the executor, where it also runs on the :pending
+      # path (IMP-6c482005db87).
+      #
+      # IMP-4a5094b22df0: no account_id. It existed ONLY to give the approval
+      # card an account to scope its network label by, back when Base.preview
+      # ran with deferred_operation: nil; the card now anchors on the
+      # operation's own account. Sdwan::VirtualIp derives account_id from its
+      # network in a before_validation, so the candidate still validates
+      # identically.
       def virtual_ip_create_attrs(params)
         {
-          account_id: @account.id,
           name: params[:name],
           cidr: params[:cidr],
           anycast: params[:anycast] || false,

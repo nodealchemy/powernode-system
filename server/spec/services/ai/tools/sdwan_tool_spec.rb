@@ -1699,7 +1699,14 @@ RSpec.describe Ai::Tools::SdwanTool do
       expect(deferred.params["network_id"]).to eq(network.id)
       expect(deferred.params.dig("attributes", "action")).to eq("accept")
       expect(deferred.params.dig("attributes", "port_range_hash", "from")).to eq(5432)
-      expect(deferred.params.dig("attributes", "account_id")).to eq(account.id)
+      # IMP-4a5094b22df0 — INVERTED. This used to assert account_id was PRESENT,
+      # because the approval card scoped its network label by whatever account
+      # the attributes carried. The card now anchors on the operation's own
+      # account, so a caller-shaped tenancy key in gate-replayed params buys
+      # nothing and is exactly the shape Base::TENANCY_ATTRIBUTE_KEYS exists to
+      # keep out. Sdwan::FirewallRule derives account_id from its network in a
+      # before_validation, so nothing downstream wanted it either.
+      expect(deferred.params.dig("attributes", "account_id")).to be_nil
     end
 
     it "creates the rule when the deferred op is approved" do
@@ -1777,7 +1784,10 @@ RSpec.describe Ai::Tools::SdwanTool do
       expect(deferred.executor_class).to eq("Sdwan::Executors::CreateVirtualIp")
       expect(deferred.params["network_id"]).to eq(network.id)
       expect(deferred.params.dig("attributes", "holder_peer_ids")).to eq([ holder.id ])
-      expect(deferred.params.dig("attributes", "account_id")).to eq(account.id)
+      # IMP-4a5094b22df0 — INVERTED, same rationale as the firewall-rule twin
+      # above: the card anchors on the operation's account, so the caller-shaped
+      # tenancy key is gone from the params the gate replays.
+      expect(deferred.params.dig("attributes", "account_id")).to be_nil
     end
 
     # The executor owns the whole create ceremony (activation + slice-9b

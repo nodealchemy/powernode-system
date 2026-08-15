@@ -89,10 +89,14 @@ RSpec.describe "Api::V1::System::Sdwan::FirewallRules", type: :request do
       # the executor's create! — the raw column is an int4range a Hash cannot
       # mass-assign.
       expect(deferred.params.dig("attributes", "port_range_hash", "from")).to eq(5432)
-      # The approval card scopes its network label by the account the
-      # attributes carry (Base.preview hardcodes deferred_operation: nil;
-      # Base#attrs strips the key again before perform).
-      expect(deferred.params.dig("attributes", "account_id")).to eq(account.id)
+      # IMP-4a5094b22df0 — INVERTED. This asserted account_id was PRESENT,
+      # because the approval card scoped its network label by whatever account
+      # the attributes carried, Base.preview having hardcoded
+      # deferred_operation: nil. The card now anchors on the operation's own
+      # account, so the key buys nothing and no longer rides in the params the
+      # gate stores and replays. Sdwan::FirewallRule derives account_id from
+      # its network in a before_validation.
+      expect(deferred.params.dig("attributes", "account_id")).to be_nil
     end
 
     # gate! never calls on_proceed on its :pending branch, so the row has to

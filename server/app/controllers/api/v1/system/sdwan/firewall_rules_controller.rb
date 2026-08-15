@@ -159,11 +159,16 @@ module Api
             attrs
           end
 
-          # account_id rides along ONLY for the approval card's scoped
-          # network label (Base.preview runs with deferred_operation: nil);
-          # Base#attrs strips it again before the executor's create!.
+          # IMP-4a5094b22df0: no longer merges account_id. It rode along ONLY
+          # to give the approval card an account to scope its network label by,
+          # back when Base.preview ran with deferred_operation: nil. The card
+          # now anchors on the operation's own account, so the key bought
+          # nothing and was a caller-shaped tenancy key sitting in the params
+          # the gate replays — the shape Base::TENANCY_ATTRIBUTE_KEYS exists to
+          # keep out. (Sdwan::FirewallRule derives account_id from its network
+          # in a before_validation, so nothing downstream needed it either.)
           def executor_rule_attributes(attrs)
-            normalize_port_range(attrs).merge(account_id: @account.id)
+            normalize_port_range(attrs)
           end
 
           def serialize_rule(r)

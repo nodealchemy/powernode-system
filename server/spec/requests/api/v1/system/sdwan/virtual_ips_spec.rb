@@ -82,10 +82,12 @@ RSpec.describe "Api::V1::System::Sdwan::VirtualIps", type: :request do
       expect(deferred.params["network_id"]).to eq(network.id)
       expect(deferred.params.dig("attributes", "name")).to eq("svc-vip")
       expect(deferred.params.dig("attributes", "holder_peer_ids")).to eq([ holder.id ])
-      # The approval card scopes its network label by the account the
-      # attributes carry (Base.preview hardcodes deferred_operation: nil;
-      # Base#attrs strips the key again before perform).
-      expect(deferred.params.dig("attributes", "account_id")).to eq(account.id)
+      # IMP-4a5094b22df0 — INVERTED, same rationale as the firewall-rule twin:
+      # the card anchors on the operation's account, so the caller-shaped
+      # tenancy key is gone from the params the gate replays. Sdwan::VirtualIp
+      # derives account_id from its network in a before_validation, and the
+      # controller's pre-gate validation probe still merges it.
+      expect(deferred.params.dig("attributes", "account_id")).to be_nil
     end
 
     # The approval-path VIP must carry the same ceremony the inline path
