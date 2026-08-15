@@ -48,14 +48,24 @@ module Api
           def create
             require_permission("system.sdwan.route_policies.manage")
             attrs = policy_params.to_h
-            # Validated before the gate so an unsaveable payload keeps its
-            # field-level 422 and opens no audit row for an operation that could
-            # never run. Never saved — CreateRoutePolicy's create! stays the
-            # only writer, and it takes the account from the operation.
+            # Never saved — CreateRoutePolicy's create! stays the only writer,
+            # and it takes the account from the operation. gate_create!
+            # validates this candidate BEFORE the gate, so an unsaveable
+            # payload keeps its field-level 422 and opens no audit row for an
+            # operation that could never run (Ai::GatedActions#gate_create!).
             candidate = ::Sdwan::RoutePolicy.new(attrs.merge(account_id: @account.id))
-            return render_validation_error(candidate) unless candidate.valid?
 
-            gate!(
+            gate_create!(
+              candidate: candidate,
+              # RoutePolicy belongs directly to the account, so unlike the
+              # network-nested creates there is no parent association to
+              # re-find through — the model itself is the scope, exactly as
+              # the inline on_proceed used it. `scope:` is duck-typed on #find,
+              # so a relation and a model class both satisfy it.
+              scope: ::Sdwan::RoutePolicy,
+              result_key: :policy_id,
+              response_key: :route_policy,
+              serializer: ->(p) { serialize_full(p) },
               action_category: "sdwan.route_policy_create",
               executor_class: "Sdwan::Executors::CreateRoutePolicy",
               params: { attributes: attrs },
@@ -64,11 +74,7 @@ module Api
               # carries no account_id); the executor's `account` is the anchor.
               source_type: "Account",
               source_id: @account.id,
-              description: "Create SDWAN route policy #{candidate.name}",
-              on_proceed: lambda { |result|
-                created = ::Sdwan::RoutePolicy.find(result.result&.dig(:data, :policy_id))
-                render_success({ route_policy: serialize_full(created) }, status: :created)
-              }
+              description: "Create SDWAN route policy #{candidate.name}"
             )
           end
 
