@@ -122,10 +122,17 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 ### `sdwan_reachability_sensor` — Hub reachability
 
 **Source:** `sdwan_reachability_sensor.rb`
-**Watches:** `Sdwan::Peer.last_handshake_at` for hub peers
-**Threshold:** No handshake in 5 minutes from hub → `sdwan.hub_unreachable` signal
-**Signals:** `sdwan.hub_unreachable`, `sdwan.hub_recovered`
-**Recommended remediation:** `sdwan_failover` skill (planning-only in v1; operator manually flips `publicly_reachable`).
+**Watches:** active `Sdwan::Network` rows — one signal per NETWORK, not per peer. Reads both the presence of publicly-reachable hub peers and `Sdwan::Peer.last_handshake_at` across **all** peers in the network, not just hubs.
+**Threshold:** two independent arms, each with its own fingerprint:
+- *no hub configured* (`sdwan_no_hub:<network_id>`, always `critical`) — the network has peers but none publicly reachable, so it cannot form tunnels at all.
+- *no recent handshake* (`sdwan_hub_unreachable:<network_id>`) — at least one hub exists, but no peer has handshaken within `REACHABILITY_WINDOW` (**10 minutes**). `critical` with a single hub (nothing to fail over to), `high` with two or more.
+
+**Exemptions — deliberate silence, not a broken sensor:**
+- `topology_strategy: "full_mesh"` networks are legitimately hubless.
+- A network with **zero peers** never signals: nothing is stranded on it, and the failover remediation would have no candidate hubs and no spokes to move.
+
+**Signals:** `system.sdwan_hub_unreachable` (both arms). There is **no** `hub_recovered` signal — recovery is the fingerprint's absence on a later tick.
+**Recommended remediation:** `system.sdwan_failover` — approval-gated. The executor's dry run returns the candidate-hub promotion plan; the operator promotes.
 
 ### `sdwan_drift_sensor` — Topology drift
 
