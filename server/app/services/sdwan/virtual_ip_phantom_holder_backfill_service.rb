@@ -8,12 +8,15 @@
 # Sdwan::VirtualIpAssignment row — a phantom holder, invisible to the
 # assignment audit trail.
 #
-# #sync_holder_assignments! self-heals this the NEXT time a VIP's
-# holder_peer_ids genuinely changes (removing the `.first(1)` truncation,
-# also part of this task, was the only thing hiding stray ids from its
-# diff). This service is the one-time (idempotent — safe to re-run) sweep
-# for VIPs that won't necessarily be touched again soon, invoked via
-# `rake sdwan:backfill_phantom_vip_holders`. Shape mirrors
+# Two paths sweep this debris going forward — #failover! now normalizes
+# to one holder unconditionally, and #sync_holder_assignments! stopped
+# spuriously releasing a stray's assignment on an UNRELATED save — but
+# neither backfills a MISSING history row for debris that predates this
+# validation and whose VIP won't necessarily be touched (via either path)
+# again soon: a stray id already sitting in a diff's "before" state is
+# never classified as an "arrival", so nothing creates its row. This
+# service is that one-time (idempotent — safe to re-run) sweep, invoked
+# via `rake sdwan:backfill_phantom_vip_holders`. Shape mirrors
 # Sdwan::VrfBackfillService (IMP-07014982a6d3), the precedent for a
 # one-time backfill of pre-existing fleet debris.
 module Sdwan

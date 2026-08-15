@@ -38,7 +38,8 @@ module Sdwan
     validates :advertised_local_pref, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
     validate :holder_peers_belong_to_network
     validate :anycast_requires_holder_set
-    validate :non_anycast_single_holder, if: :will_save_change_to_holder_peer_ids?
+    validate :non_anycast_single_holder,
+             if: -> { will_save_change_to_holder_peer_ids? || will_save_change_to_anycast? }
 
     before_validation :inherit_account_from_network
 
@@ -93,10 +94,12 @@ module Sdwan
       self.state = "active" if Array(holder_peer_ids).any?
     end
 
-    # Slice 9b — manual failover for non-anycast VIPs. Pops the head of
-    # `holder_peer_ids` (current primary), pushes it to the back of
-    # `failover_holder_peer_ids`, and promotes the head of failover to
-    # holder. Records the assignment transition.
+    # Slice 9b — manual failover for non-anycast VIPs. Normalizes
+    # `holder_peer_ids` to the promoted holder alone: pops the head
+    # (current primary), pushes it to the back of `failover_holder_peer_ids`,
+    # and drops anything else already in holder_peer_ids (debris, never a
+    # legitimate second holder outside anycast). Records the assignment
+    # transition for every departing holder, not just the primary.
     def failover!(reason: "manual_failover", triggered_by_user: nil, correlation_id: nil)
       raise StateError, "anycast VIPs don't fail over (all holders active simultaneously)" if anycast?
       raise StateError, "no failover candidates configured" if Array(failover_holder_peer_ids).empty?
@@ -105,26 +108,40 @@ module Sdwan
         old_holder = Array(holder_peer_ids).first
         new_holder = Array(failover_holder_peer_ids).first
 
-        # IMP-43cf1e6b5541 — the demoted holder must be POPPED off, not just
-        # left behind the promoted one: subtracting only `new_holder` (which
-        # was never in holder_peer_ids to begin with) was a no-op, so
-        # old_holder lingered and this produced a size-2 array on a
-        # non-anycast VIP, contradicting the doc comment above. Any OTHER
-        # stray ids already in the array (pre-existing phantom holders from
-        # a different write path) are left alone here — this method's
-        # contract is "pop the head", not "normalize the array" — but
-        # non_anycast_single_holder now blocks new ones from being written.
-        new_holders  = ([ new_holder ] + (Array(holder_peer_ids) - [ new_holder, old_holder ]))
+        # IMP-43cf1e6b5541 — normalize to exactly ONE holder, not merely
+        # "pop old_holder": non_anycast_single_holder validates every write
+        # to holder_peer_ids on THIS SAME update!, so leaving any other
+        # stray id in the array (debris predating that validation — e.g.
+        # from this method's own pre-fix bug) would make the update raise
+        # and roll back, permanently stranding exactly the VIPs this fix is
+        # for. Normalizing here instead makes failover! the self-healing
+        # recovery path for that debris: any id beyond old_holder is
+        # dropped from holder_peer_ids (never added to failover_holder_peer_ids
+        # either — it was never a legitimate candidate) and its assignment,
+        # if it has one, released alongside old_holder's below.
+        stray_ids = Array(holder_peer_ids) - [ old_holder, new_holder ]
+
+        new_holders  = [ new_holder ].compact
         new_failover = (Array(failover_holder_peer_ids) - [ new_holder ]) + ([ old_holder ].compact)
 
         update!(
-          holder_peer_ids: new_holders.compact,
+          holder_peer_ids: new_holders,
           failover_holder_peer_ids: new_failover.compact,
           state: "active"
         )
 
+        # old_holder is released UNCONDITIONALLY, even when it equals
+        # new_holder (a parked candidate-list edit can name the current
+        # primary — see Sdwan::Executors::UpdateVirtualIp's replay-baseline
+        # comment): release-then-recreate is what lets the create! below
+        # avoid colliding with the still-open row on the partial unique
+        # index (one active assignment per vip+peer).
         if old_holder
           assignments.where(sdwan_peer_id: old_holder, released_at: nil)
+                     .update_all(released_at: Time.current, updated_at: Time.current)
+        end
+        if stray_ids.any?
+          assignments.where(sdwan_peer_id: stray_ids, released_at: nil)
                      .update_all(released_at: Time.current, updated_at: Time.current)
         end
 
@@ -150,22 +167,28 @@ module Sdwan
     # its session user) — so it is a parameter, and the semantics live here
     # once. NOT used by #failover!: that transition is positional (pops the
     # primary, promotes the failover head) and carries signal-correlation
-    # attribution — mapping it onto a raw-array diff would also release
-    # stray extra holder ids failover! deliberately leaves alone.
+    # attribution, not a caller-supplied reason/attribution pair.
     def sync_holder_assignments!(previous_holders, triggered_by_user: nil, reason: "holder_changed")
       # IMP-43cf1e6b5541 — the `.first(1)` truncation for non-anycast VIPs
-      # used to be a defense: it kept a stray extra holder id (debris from
-      # a write path that produced a size>1 holder_peer_ids on a
-      # non-anycast VIP — #failover!'s pre-fix bug was one source) from
-      # being diffed at all, which meant it silently NEVER got an
-      # assignment history row. That was the phantom-holder defect, not a
-      # safety net for one. Now that #non_anycast_single_holder blocks new
-      # writes from creating that debris, diffing the full array is safe —
-      # and it is what SELF-HEALS any pre-existing stray id: the next real
-      # holder-transition sees it as an "arrival" relative to whatever the
-      # caller captured as previous_holders and opens its history row (a
-      # one-time sweep for debris that won't be touched again soon lives
-      # in Sdwan::VirtualIpPhantomHolderBackfillService).
+      # made `current` (computed HERE, post-write) inconsistent with
+      # `previous_holders` (the RAW pre-write array the caller captures):
+      # on a debris-laden row (a stray id beyond index 0) left untouched by
+      # the current write, previous_holders still contained the stray but
+      # truncated `current` did not, so the diff spuriously computed the
+      # stray as "departed" on every unrelated save — e.g. a bare
+      # description edit would release a phantom holder's assignment (if
+      # it had one) even though nothing about holders changed. Diffing the
+      # untruncated array makes "holders unchanged" a true no-op again.
+      #
+      # This does NOT, by itself, backfill a missing history row for
+      # pre-existing debris: a stray id that was already in BOTH
+      # previous_holders and current is diffed as neither departed nor
+      # arrived, so no row gets created for it here. It only gets swept up
+      # as "departed" (and released, if it had an open assignment) on a
+      # write that actually changes holder_peer_ids — #failover! now does
+      # the same sweep unconditionally (this same task). Debris on a VIP
+      # that never gets touched again needs the one-time sweep in
+      # Sdwan::VirtualIpPhantomHolderBackfillService instead.
       current = Array(holder_peer_ids).compact
 
       departed = previous_holders - current
@@ -232,15 +255,21 @@ module Sdwan
 
     # IMP-43cf1e6b5541 — non-anycast VIPs are active/passive: exactly one
     # active holder, not a set (failover_holder_peer_ids is where standby
-    # candidates belong). #failover! popping its demoted holder (this same
-    # task) is what makes this cap safe to enforce — before that fix, every
-    # manual failover on a non-anycast VIP would have raised here.
+    # candidates belong).
     #
-    # Gated to :will_save_change_to_holder_peer_ids? — ON CHANGE ONLY — so a
+    # Gated ON CHANGE ONLY — to either holder_peer_ids OR anycast — so a
     # legacy row already carrying a stray extra holder (written before this
-    # validation existed, by a path this task does not touch) doesn't start
-    # failing validation on an unrelated field save. Only a fresh write TO
-    # holder_peer_ids itself must respect the cap going forward.
+    # validation existed) doesn't start failing on an unrelated field save.
+    # anycast is included because it's the OTHER input to this invariant: an
+    # anycast VIP with 2+ holders flipping to anycast: false without also
+    # touching holder_peer_ids in the same write would otherwise mint a
+    # fresh instance of the exact bug this validation exists to prevent,
+    # invisible to a guard keyed on holder_peer_ids alone.
+    #
+    # #failover! normalizing to one holder unconditionally (this same task)
+    # is what makes the holder_peer_ids-only case safe to enforce — before
+    # that fix, every manual failover on a non-anycast VIP would have
+    # raised here.
     def non_anycast_single_holder
       return if anycast?
       return if Array(holder_peer_ids).size <= 1
