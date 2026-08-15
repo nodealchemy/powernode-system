@@ -240,12 +240,46 @@ RSpec.describe System::FederationPeer, type: :model do
       peer.suspend!(reason: "operator pause")
     end
 
-    it "emits a federation.peer.revoked FleetEvent (severity high) on revoke!" do
+    # The revoked event is the highest-severity peer transition the dashboard
+    # ever shows. broadcast_peer_state! has always accepted a `reason:` and
+    # nothing fed it, so the one event an operator opens to ask "why did this
+    # peer go away" carried no answer even when the revocation recorded one
+    # (IMP-8ce2d82065b9).
+    it "emits a federation.peer.revoked FleetEvent (severity high) carrying the reason" do
       peer = create(:system_federation_peer, :active)
       expect(::System::Fleet::EventBroadcaster)
         .to receive(:emit!)
-        .with(hash_including(kind: "federation.peer.revoked", severity: "high"))
+        .with(hash_including(
+                kind: "federation.peer.revoked",
+                severity: "high",
+                payload: hash_including(reason: "trust withdrawn")
+              ))
       peer.revoke!(reason: "trust withdrawn")
+    end
+
+    it "omits reason from the revoked event when the revocation recorded none" do
+      peer = create(:system_federation_peer, :active)
+      expect(::System::Fleet::EventBroadcaster)
+        .to receive(:emit!) { |args|
+          expect(args[:kind]).to eq("federation.peer.revoked")
+          expect(args[:payload]).not_to have_key(:reason)
+        }
+      peer.revoke!
+    end
+
+    # The broadcast keys on the NEW status, not on the presence of the metadata
+    # key — metadata is operator-writable (the peer PATCH permits `metadata: {}`),
+    # so a stray revocation_reason is reachable on a peer that is being
+    # suspended. Without the status guard this event would report a revocation
+    # cause for a suspension.
+    it "does not attach a revocation reason to a non-revocation transition" do
+      peer = create(:system_federation_peer, :active, metadata: { "revocation_reason" => "stale" })
+      expect(::System::Fleet::EventBroadcaster)
+        .to receive(:emit!) { |args|
+          expect(args[:kind]).to eq("federation.peer.suspended")
+          expect(args[:payload]).not_to have_key(:reason)
+        }
+      peer.suspend!(reason: "operator pause")
     end
 
     it "does not emit for sdwan_only peers (platform-only observability)" do

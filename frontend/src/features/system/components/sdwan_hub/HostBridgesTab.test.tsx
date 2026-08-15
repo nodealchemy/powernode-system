@@ -623,4 +623,47 @@ describe('HostBridgesTab', () => {
     // After the delete resolves, the tab should trigger a second GET
     await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  it('shows the pending-approval notification (not success) when the bridge delete is parked', async () => {
+    mockGet.mockResolvedValue(envelope({ host_bridges: [BRIDGE_ACTIVE] }));
+    mockDelete.mockResolvedValue({
+      status: 202,
+      data: {
+        success: true,
+        data: {
+          pending: true,
+          deferred_operation_id: 'dop-1',
+          action_category: 'sdwan.host_bridge_release',
+          approval_request_id: 'ar-1',
+          message: 'Approval required',
+        },
+      },
+    });
+
+    renderTab();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('delete-host-bridge-hb-001')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('delete-host-bridge-hb-001'));
+    await waitFor(() => expect(screen.getByText('Confirm?')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Confirm?'));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
 });

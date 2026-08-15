@@ -19,6 +19,19 @@ module Sdwan
     PROTOCOLS  = %w[https http tcp tls].freeze
     STATUSES   = %w[active disabled].freeze
     AUTH_MODES = %w[public authenticated scoped].freeze
+    # Service-level connectivity health, stamped by
+    # System::Fleet::Sensors::SdwanServiceHealthSensor (IMP-c7d663f24a0b).
+    # "unknown" is the honest default and the only state a service can hold
+    # before IPFIX telemetry has been correlated to it — it is deliberately
+    # NOT "serving", because an unobserved service is not a healthy one.
+    #
+    # "unobservable" is a DIFFERENT claim from "unknown" and the distinction is
+    # the point: unknown means "no data yet, ask again next tick"; unobservable
+    # means "this backend can never be correlated" — a backend_host holding a
+    # hostname rather than an address, which cannot be matched against the
+    # inet-typed flow records at all. Collapsing the two would hide a
+    # permanently unmeasurable service inside the transient state.
+    HEALTH_STATES = %w[unknown serving silent unobservable].freeze
     HTTP_PROTOCOLS = %w[https http].freeze
     # Path B (public TLS-carrying TCP via Traefik SNI) requires a protocol that
     # actually carries a TLS ClientHello with SNI. Plain "tcp" does not — that
@@ -47,6 +60,7 @@ module Sdwan
     validates :backend_port, presence: true,
                              numericality: { only_integer: true, in: 1..65_535 }
     validates :local_auth_mode, inclusion: { in: AUTH_MODES }
+    validates :health_state, inclusion: { in: HEALTH_STATES }
     validates :edge_mode, inclusion: { in: EDGE_MODES }
     validates :client_auth, inclusion: { in: CLIENT_AUTH_MODES }
     validate :slug_not_reserved
@@ -60,6 +74,7 @@ module Sdwan
     scope :active,          -> { where(status: "active") }
     scope :locally_exposed, -> { where(status: "active", local_enabled: true) }
     scope :publicly_exposed, -> { where(status: "active", public_enabled: true) }
+    scope :silent,          -> { where(health_state: "silent") }
 
     # Canonical local path prefix. /svc/ namespaces published services so they
     # never collide with the platform routers (/api, /cable, /sidekiq, /agent).

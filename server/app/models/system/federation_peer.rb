@@ -272,20 +272,9 @@ module System
       return false unless can_transition_to?("accepted")
 
       # Phase 11b: token verification when digest is set
-      if acceptance_token_digest.present?
-        if acceptance_token.blank?
-          errors.add(:base, "acceptance_token required (peer has acceptance_token_digest set)")
-          return false
-        end
-        if acceptance_token_expires_at.present? && acceptance_token_expires_at < Time.current
-          errors.add(:base, "acceptance_token has expired (expired_at #{acceptance_token_expires_at.iso8601})")
-          return false
-        end
-        provided_digest = ::Digest::SHA256.hexdigest(acceptance_token.to_s)
-        unless ::ActiveSupport::SecurityUtils.secure_compare(provided_digest, acceptance_token_digest)
-          errors.add(:base, "acceptance_token does not match stored digest")
-          return false
-        end
+      if (token_error = acceptance_token_error(acceptance_token))
+        errors.add(:base, token_error)
+        return false
       end
 
       update!(
@@ -300,6 +289,30 @@ module System
         )
       )
       true
+    end
+
+    # Verification-only counterpart to the Phase 11b token leg of accept!.
+    # Returns nil when the token is acceptable — including when this peer
+    # carries no digest at all (Phase 11a drill mode) — or the human-readable
+    # reason it is not. Consumes nothing.
+    #
+    # Acceptance is approval-gated (sdwan.federation_peer_accept), so callers
+    # check this BEFORE evaluating the gate: a request that can only ever fail
+    # should not park an approval request an operator has to dispose of. That
+    # is fail-fast, not enforcement — accept! re-runs the same check when the
+    # deferred operation finally executes, which is the check that counts.
+    def acceptance_token_error(acceptance_token)
+      return nil if acceptance_token_digest.blank?
+      return "acceptance_token required (peer has acceptance_token_digest set)" if acceptance_token.blank?
+
+      if acceptance_token_expires_at.present? && acceptance_token_expires_at < Time.current
+        return "acceptance_token has expired (expired_at #{acceptance_token_expires_at.iso8601})"
+      end
+
+      provided_digest = ::Digest::SHA256.hexdigest(acceptance_token.to_s)
+      return nil if ::ActiveSupport::SecurityUtils.secure_compare(provided_digest, acceptance_token_digest)
+
+      "acceptance_token does not match stored digest"
     end
 
     # Phase 11b — generates a high-entropy single-use acceptance token.
@@ -349,7 +362,16 @@ module System
       broadcast_peer_state!(
         kind: status,
         severity: severity,
-        previous_status: status_before_last_save
+        previous_status: status_before_last_save,
+        # Revocation is the one transition an operator opens the event for to
+        # ask "why is this peer gone". revoke! writes status and metadata in a
+        # single update!, so this after_update callback reads the cause it just
+        # recorded. Keyed on the NEW status rather than on the key's presence:
+        # metadata is operator-writable (PATCH permits `metadata: {}`), so a
+        # stray revocation_reason must not ride along on a suspend. Scoped to
+        # "revoked" deliberately — degraded/suspended record their own reasons
+        # under different keys, and feeding those is a separate change.
+        reason: (metadata["revocation_reason"] if status == "revoked")
       )
     end
 
@@ -368,7 +390,24 @@ module System
         severity: severity,
         source: "federation_peer",
         payload: {
-          peer_id: id,
+          # federation_peer_id, NOT peer_id — the key all four per-peer
+          # readers match on. Three server-side readers filter on
+          # `payload->>'federation_peer_id'`:
+          # Ai::Tools::SdwanTool#get_audit_log,
+          # Federation::AuditShipmentService#events_for_peer (WORM sealing) and
+          # FederationApi::AuditExcerptsController#events_for_peer. The fourth
+          # is the frontend PeerLivenessMonitor
+          # (frontend/src/features/system/components/platform/
+          # PeerLivenessMonitor.tsx), which attributes the live
+          # SystemFleetChannel push of this event to a peer row via
+          # payload.federation_peer_id (legacy platform_peer_id / peer_id /
+          # remote_instance_url kept as fallbacks). The other
+          # peer-scoped federation.* emitters stamp it too; the account-rollup
+          # ones (FederationManagerExecutor, GrantReviewService) carry no peer
+          # id at all. Under the old `peer_id` these status events were
+          # persisted but reachable by none of the readers, so a peer's audit
+          # history looked complete while omitting every transition it emitted.
+          federation_peer_id: id,
           peer_kind: peer_kind,
           status: status,
           previous_status: previous_status,

@@ -1167,4 +1167,58 @@ describe('PortMappingCreateModal', () => {
       ),
     );
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  it('shows the pending-approval notification, closes, and skips onSaved when the create is parked', async () => {
+    mockCreatePortMapping.mockResolvedValue({
+      pending: true,
+      deferred_operation_id: 'dop-1',
+      action_category: 'sdwan.port_mapping_create',
+      approval_request_id: 'ar-1',
+      message: 'Approval required',
+    });
+    const onSaved = jest.fn();
+    const onClose = jest.fn();
+
+    renderModal({ onSaved, onClose });
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole('option', { name: /peer-hub/ }).length,
+      ).toBeGreaterThan(0),
+    );
+
+    const allSelects = screen.getAllByRole('combobox');
+    fireEvent.change(allSelects[0], { target: { value: 'peer-hub-001' } });
+    fireEvent.change(screen.getByPlaceholderText('e.g. db-public'), {
+      target: { value: 'my-map' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('5432'), {
+      target: { value: '3000' },
+    });
+    const refreshedSelects = screen.getAllByRole('combobox');
+    fireEvent.change(refreshedSelects[refreshedSelects.length - 1], {
+      target: { value: 'peer-spoke-002' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /create mapping/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringContaining('my-map'),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
 });

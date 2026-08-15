@@ -296,15 +296,12 @@ Cross-account peering. Account A proposes; Account B accepts. The full propose /
 ```javascript
 // Account A proposes (this surface creates a sdwan_only peer_kind; for a
 // "platform" peer use the children-spawn flow in federation-setup.md instead).
-// Pass generate_token:true to mint the single-use acceptance token A hands to B.
 platform.system_sdwan_propose_federation_peer({
   remote_instance_url:         "https://platform-b.example.com",  // required
   remote_account_id:           "<account-b-id>",                  // optional
-  remote_prefix_advertisement: "fd00:b::/56",                     // optional ULA prefix B claims
-  generate_token:              true,                              // mint single-use acceptance token
-  token_ttl_seconds:           604800                             // optional; default 7 days
+  remote_prefix_advertisement: "fd00:b::/56"                      // optional ULA prefix B claims
 })
-// → { federation_peer: { id, status: "proposed", ... }, acceptance_token: "..." (once) }
+// → { federation_peer: { id, status: "proposed", ... } }
 
 // Account B reviews via UI → accepts via MCP (lands at status "accepted";
 // the first heartbeat later advances it to "active"):

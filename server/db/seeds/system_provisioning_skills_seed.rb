@@ -34,7 +34,7 @@ PROVISIONING_SKILLS_DATA = [
   {
     name: "Provision Full Stack",
     slug: "system-provision-full-stack",
-    description: "Provision a full compute + (optional) network + (optional) storage stack from a NodeTemplate — composes provision_instance per node, optionally provisions per-instance volumes, and compiles the SDWAN topology",
+    description: "Provision a full compute + (optional) network + (optional) storage stack from a NodeTemplate — composes provision_instance per node, optionally provisions per-instance volumes, and enrolls each new instance onto the SDWAN network",
     category: "devops",
     subdomain: "provisioning",
     executor: "System::Ai::Skills::ProvisionFullStackExecutor",

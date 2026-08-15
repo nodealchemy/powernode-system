@@ -5,7 +5,7 @@
 The **SDWAN Manager** is one of the autonomous agents seeded into every Powernode account. It owns **operator-initiated SDWAN CRUD** — the approval/notification gating on every change to networks, peers, firewall rules, VIPs, route policies, port mappings, access grants, user devices, and federation peers. Carved out of Fleet Autonomy on 2026-05-10 so SDWAN ops have an independent intervention queue — operators can pause SDWAN during a network maintenance window without halting fleet ops.
 
 > **Prefix split (important).** Two distinct action prefixes govern SDWAN, and they live on **two different agents**:
-> - **`sdwan.*`** — operator-initiated CRUD. These **24** policies live **here** on the SDWAN Manager.
+> - **`sdwan.*`** — operator-initiated CRUD. These **25** policies live **here** on the SDWAN Manager.
 > - **`system.sdwan_*`** — autonomous, sensor-triggered remediations (peer remediate, key rotate, failover, VIP failover, BGP session remediate, route-policy audit, user-device revoke). These **7** policies live on **Fleet Autonomy** (part of its 27-policy set), because the Fleet sensors that emit them run in the fleet autonomy pipeline. See [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) §Intervention Policy Reference.
 >
 > This guide documents the SDWAN Manager's own (`sdwan.*`) policies. The autonomous remediations are summarized below in [Sensor → Action Map](#sensor--action-map) for cross-reference, but they are **not** owned here.
@@ -32,7 +32,7 @@ What it does **not** own:
 
 ## Intervention Policies
 
-The agent ships with **24 intervention policies** — all `sdwan.*` operator-initiated CRUD (source: `system_sdwan_manager_agent.rb`). Each policy maps an `action_category` to one of four policy types:
+The agent ships with **25 intervention policies** — all `sdwan.*` operator-initiated CRUD (source: `system_sdwan_manager_agent.rb`). Each policy maps an `action_category` to one of four policy types:
 
 | Policy type | Behavior |
 |---|---|
@@ -92,6 +92,14 @@ The agent ships with **24 intervention policies** — all `sdwan.*` operator-ini
 |---|---|
 | `sdwan.access_grant_create` | `notify_and_proceed` |
 | `sdwan.access_grant_revoke` | `require_approval` |
+| `sdwan.access_grant_delete` | `require_approval` |
+
+`revoke` flips the grant to `revoked` and soft-revokes its devices, keeping every
+row for the 90-day audit window. `delete` cascades through
+`dependent: :destroy` to every VPN device and removes each device's WireGuard key
+from Vault, so it is gated at least as tightly and dispatches a separate
+executor (`Sdwan::Executors::DeleteAccessGrant`) — approving one can never
+produce the other.
 
 #### User devices
 | Action | Policy |

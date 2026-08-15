@@ -35,6 +35,61 @@ RSpec.describe System::Task, type: :model do
     it { is_expected.to validate_presence_of(:status) }
     it { is_expected.to validate_inclusion_of(:status).in_array(described_class::STATUSES) }
     it { is_expected.to validate_numericality_of(:progress).only_integer.is_greater_than_or_equal_to(0).is_less_than_or_equal_to(100) }
+
+    # IMP-973670faeba9 — operable_type is free text on an open polymorphic
+    # belongs_to, so the last line of defense is the model itself: every
+    # producer reaches save!, not just the gated HTTP create path.
+    it 'rejects an operable_type outside the allowlist' do
+      task = build(:system_task, account: account, operable: nil,
+                                 operable_type: 'Account', operable_id: account.id)
+
+      expect(task).not_to be_valid
+      expect(task.errors[:operable_type]).to be_present
+    end
+
+    # Every allowlisted type must also be ANCHORABLE: resolve_scoped reads
+    # account_id and passes a record through untouched when it finds none, so a
+    # type listed here without one would be allowlisted and unscoped at once.
+    it 'accepts every allowlisted type, and each one can be account-anchored' do
+      described_class::OPERABLE_TYPES.each do |type|
+        task = build(:system_task, account: account, operable: nil,
+                                   operable_type: type, operable_id: account.id)
+        task.valid?
+        expect(task.errors[:operable_type]).to be_empty, "#{type} is listed but rejected"
+
+        klass = type.safe_constantize
+        expect(klass).to be_present, "#{type} names no model"
+        expect(klass.column_names).to include('account_id'),
+                                      "#{type} has no account_id — resolve_scoped cannot anchor it and passes it through"
+      end
+    end
+
+    it 'still allows a task with no operable' do
+      expect(build(:system_task, account: account, operable: nil)).to be_valid
+    end
+
+    # operable_type was free text for the table's lifetime, so rows predating
+    # the allowlist can carry anything. Validating on every save would make
+    # those rows unsaveable — a worker mid-flight could not tick progress or
+    # record a failure. The guard is on the CHANGE, so an unrelated update to a
+    # legacy row still goes through.
+    context 'a persisted row whose type predates the allowlist' do
+      let(:legacy) do
+        task = create(:system_task, account: account, status: 'running', progress: 10)
+        task.update_columns(operable_type: 'System::RetiredThing', operable_id: account.id)
+        task.reload
+      end
+
+      it 'can still be updated on unrelated attributes' do
+        expect { legacy.update!(progress: 60) }.not_to raise_error
+        expect(legacy.reload.progress).to eq(60)
+      end
+
+      it 'still cannot be re-pointed at another unlisted type' do
+        expect(legacy.update(operable_type: 'Account')).to be(false)
+        expect(legacy.errors[:operable_type]).to be_present
+      end
+    end
   end
 
   describe 'scopes' do

@@ -1,0 +1,188 @@
+# frozen_string_literal: true
+
+require "rails_helper"
+
+# IMP-187124ca2984 — the operator-path policy ruling.
+#
+# `Ai::GatedActions#gate!` never passes `agent:`, so every operator HTTP request
+# resolves with `agent = nil`. `Ai::InterventionPolicy#agent_matches?` is
+# `return true if ai_agent_id.nil?; agent_record && ai_agent_id == agent_record.id`
+# — an agent-SCOPED row can therefore never match an agent-less caller. The SDWAN
+# Manager's carefully recorded per-verb intent (notify_and_proceed on low-risk
+# creates, require_approval on deletes) bound only on the agent-dispatch path,
+# and every gated operator request fell through InterventionPolicyService to its
+# require_approval default instead. Wiring the remaining create/update executors
+# on top of that would have shipped maximal friction by accident.
+#
+# The seed now mirrors the SAME per-verb table onto agent-less rows, so one
+# recorded intent governs both audiences.
+RSpec.describe "SDWAN operator-path intervention policies" do
+  let!(:account)  { create(:account, name: "Powernode Admin") }
+  let!(:user)     { create(:user, account: account, email: "admin@powernode.org") }
+  let!(:provider) { create(:ai_provider, account: account, provider_type: "anthropic", is_active: true) }
+
+  def load_sdwan_seed!
+    silence_warnings do
+      load Rails.root.join("..", "extensions", "system", "server", "db", "seeds",
+                           "system_sdwan_manager_agent.rb")
+    end
+  end
+
+  before { load_sdwan_seed! }
+
+  let(:sdwan_agent) { Ai::Agent.global.find_by!(name: "SDWAN Manager") }
+  let(:service)     { Ai::InterventionPolicyService.new(account: account) }
+
+  # The recorded per-verb intent, restated independently of the seed so a
+  # silent edit to the table shows up as a failing expectation rather than as a
+  # change in what an operator experiences.
+  let(:operator_verbs) do
+    {
+      "sdwan.network_create"          => "notify_and_proceed",
+      "sdwan.network_update"          => "notify_and_proceed",
+      "sdwan.network_delete"          => "require_approval",
+      "sdwan.peer_create"             => "notify_and_proceed",
+      "sdwan.peer_update"             => "notify_and_proceed",
+      "sdwan.peer_delete"             => "require_approval",
+      "sdwan.firewall_rule_create"    => "notify_and_proceed",
+      "sdwan.firewall_rule_update"    => "notify_and_proceed",
+      "sdwan.firewall_rule_delete"    => "require_approval",
+      "sdwan.virtual_ip_create"       => "notify_and_proceed",
+      "sdwan.virtual_ip_update"       => "notify_and_proceed",
+      "sdwan.virtual_ip_delete"       => "require_approval",
+      "sdwan.route_policy_create"     => "notify_and_proceed",
+      "sdwan.route_policy_update"     => "notify_and_proceed",
+      "sdwan.route_policy_delete"     => "require_approval",
+      "sdwan.port_mapping_create"     => "notify_and_proceed",
+      "sdwan.port_mapping_update"     => "notify_and_proceed",
+      "sdwan.port_mapping_delete"     => "notify_and_proceed",
+      "sdwan.access_grant_create"     => "notify_and_proceed",
+      "sdwan.access_grant_revoke"     => "require_approval",
+      "sdwan.access_grant_delete"     => "require_approval",
+      "sdwan.user_device_create"      => "notify_and_proceed",
+      "sdwan.federation_peer_propose" => "require_approval",
+      "sdwan.federation_peer_accept"  => "require_approval",
+      "sdwan.federation_peer_revoke"  => "require_approval"
+    }
+  end
+
+  it "seeds an active agent-less policy for every recorded SDWAN verb" do
+    missing = operator_verbs.keys.reject do |category|
+      Ai::InterventionPolicy.exists?(
+        account: account, ai_agent_id: nil, action_category: category, is_active: true
+      )
+    end
+
+    expect(missing).to be_empty,
+                       "no operator-path (agent-less) policy seeded for: #{missing.inspect}"
+  end
+
+  # The behavioral oracle. Row existence is not the claim — what an agent-less
+  # caller RESOLVES to is, because that is what Ai::AutonomyGate branches on.
+  it "resolves every verb to its recorded policy for an agent-less operator caller" do
+    resolved = operator_verbs.keys.index_with do |category|
+      service.resolve(action_category: category, agent: nil)[:policy]
+    end
+
+    expect(resolved).to eq(operator_verbs)
+  end
+
+  # Non-vacuity control: the change must be per-verb, not a blanket lowering of
+  # the operator path. system.sdwan_vip_failover is gated on an operator route
+  # (virtual_ips_controller#failover) but belongs to Fleet Autonomy's table, so
+  # it is deliberately absent here and must still land on the default.
+  it "leaves a category outside the table on the require_approval default" do
+    result = service.resolve(action_category: "system.sdwan_vip_failover", agent: nil)
+
+    expect(result[:policy]).to eq("require_approval")
+    expect(result[:record]).to be_nil, "an operator policy leaked outside the seeded table"
+  end
+
+  # The two audiences must stay separate: adding operator rows must not displace
+  # the SDWAN Manager's own policy on the agent-dispatch path.
+  it "still resolves the agent-dispatch path against the SDWAN Manager's own rows" do
+    displaced = operator_verbs.keys.reject do |category|
+      service.resolve(action_category: category, agent: sdwan_agent)[:record]&.ai_agent_id == sdwan_agent.id
+    end
+
+    expect(displaced).to be_empty,
+                         "operator rows displaced the agent-scoped policy for: #{displaced.inspect}"
+  end
+
+  # IMP-bfbf8052e179 — the operator rows must bind the operator audience ONLY.
+  # agent_matches? admits a nil-agent row for any caller, and resolve used to
+  # prefer agent-scoped rows only when the calling agent HAD matching ones — so
+  # an agent that carries NO sdwan.* rows of its own (Fleet Autonomy,
+  # Concierge, Topology Designer) at normal tier caught these operator rows and
+  # dropped from the require_approval default to notify_and_proceed on writes
+  # like port-mapping create/delete and VPN-device minting.
+  #
+  # What makes these rows operator-only is their SCOPE, not their nil
+  # ai_agent_id (IMP-cb36021d4094): resolution drops the scope-"action_type"
+  # audience for an agent caller, which is the scope upsert_operator_policies!
+  # writes. A scope-"global" row would still bind this agent.
+  it "keeps an unrelated monitored-tier agent on the require_approval default" do
+    other_agent = create(:ai_agent, account: account, provider: provider,
+                         name: "Unrelated Fleet Agent")
+    create(:ai_agent_trust_score, :monitored, account: account, agent: other_agent)
+
+    %w[sdwan.port_mapping_create sdwan.port_mapping_delete sdwan.user_device_create]
+      .each do |category|
+      result = service.resolve(action_category: category, agent: other_agent)
+
+      expect(result[:policy]).to eq("require_approval"),
+                                 "#{category} resolved to #{result[:policy]} for an unrelated agent"
+      expect(result[:record]).to be_nil,
+                                 "an operator row bound an unrelated agent on #{category}"
+    end
+  end
+
+  # An agent caller never sees a scope-"action_type" row, so the demotion
+  # escalation holds structurally. The shared trust_tier_minimum condition on
+  # both row sets stays as defense in depth — if the resolution-level audience
+  # split ever regressed, conditions_met? would still stop a demoted agent from
+  # landing on the operator row.
+  it "still escalates a demoted agent instead of catching it on the operator row" do
+    Ai::AgentTrustScore.find_by!(agent_id: sdwan_agent.id).emergency_demote!(reason: "spec")
+
+    result = service.resolve(action_category: "sdwan.peer_create", agent: sdwan_agent.reload)
+
+    expect(result[:policy]).to eq("require_approval")
+    expect(result[:record]).to be_nil,
+                               "the operator-path row became a fallback for an emergency-demoted agent"
+  end
+
+  # Defense in depth. InterventionPolicyService#resolve keeps the
+  # scope-"action_type" audience away from an agent caller (IMP-cb36021d4094),
+  # but the agent row must also out-rank the operator row on specificity_key,
+  # which is what decides `matching.max_by(&:specificity_key)` if that
+  # restriction ever goes away — and what already decides it against the
+  # scope-"global" rows an agent caller DOES see.
+  #
+  # Asserted at a priority the seed would never write, because that key is
+  # lexicographic (IMP-6430e3a8c4a1): the agent tier out-ranks the agent-less
+  # one whatever priorities the two rows carry. While it was an additive score
+  # the agent row's edge was a mere +5, so this held only by the seeded 10-vs-5
+  # gap and an operator raising the operator set by 6 would have inverted it.
+  it "ranks the agent-scoped row above the operator row on specificity alone" do
+    category = "sdwan.peer_create"
+    agent_row    = Ai::InterventionPolicy.find_by!(account: account, action_category: category,
+                                                   ai_agent_id: sdwan_agent.id)
+    operator_row = Ai::InterventionPolicy.find_by!(account: account, action_category: category,
+                                                   ai_agent_id: nil)
+
+    expect(agent_row.specificity_key <=> operator_row.specificity_key).to eq(1)
+
+    # In memory only — the seeded rows are untouched for the idempotence example.
+    operator_row.priority = agent_row.priority + 100
+    expect(agent_row.specificity_key <=> operator_row.specificity_key).to eq(1),
+                                                                         "priority out-ranked the scope tier — IMP-6430e3a8c4a1 regressed"
+  end
+
+  # Seeds are re-run on every deploy. The operator set and the agent set each
+  # carry their own stale cleanup, and neither may eat the other's rows.
+  it "is idempotent across a re-run" do
+    expect { load_sdwan_seed! }
+      .not_to change { Ai::InterventionPolicy.where(account: account).order(:action_category, :ai_agent_id).pluck(:action_category, :ai_agent_id, :policy) }
+  end
+end

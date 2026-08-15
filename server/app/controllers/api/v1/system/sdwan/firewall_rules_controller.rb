@@ -33,29 +33,84 @@ module Api
             render_success(firewall_rule: serialize_rule_full(@rule))
           end
 
+          # IMP-6c482005db87: routed through Ai::AutonomyGate.
+          # Sdwan::Executors::CreateFirewallRule existed, tenancy-hardened and
+          # card-labeled, but had no caller — this wrote the nftables rule
+          # inline behind the permission check, so the seeded
+          # sdwan.firewall_rule_create policy matched nothing an operator did,
+          # while DELETE below has been gated since slice 2.
+          #
+          # Same response contract as PortMappingsController#create
+          # (IMP-bf996c7abcb4): validated before the gate so an unsaveable
+          # payload keeps its field-level 422 and opens no audit row; 202 with
+          # the deferred-operation id on :pending (the executor — never this
+          # controller — performs the write, since gate! does not call
+          # on_proceed on :pending); 201 with the serialized row on :proceed
+          # (seeded accounts carry the agent-less notify_and_proceed operator
+          # row, IMP-187124ca2984).
           def create
             require_permission("system.sdwan.firewall.manage")
             attrs = rule_params
 
-            rule = @network.firewall_rules.new(account_id: @account.id)
-            assign_with_port_range(rule, attrs)
+            # Never saved — the executor's create! stays the authority.
+            # gate_create! validates this candidate BEFORE the gate, so an
+            # unsaveable payload keeps its field-level 422 and opens no audit
+            # row (Ai::GatedActions#gate_create!). Plain assignment:
+            # Sdwan::FirewallRule#port_range= accepts the API's {from:, to:}
+            # shape directly (IMP-0e44cf2fc80b).
+            candidate = @network.firewall_rules.new(account_id: @account.id)
+            candidate.assign_attributes(attrs)
 
-            if rule.save
-              render_success({ firewall_rule: serialize_rule_full(rule) }, status: :created)
-            else
-              render_validation_error(rule)
-            end
+            gate_create!(
+              candidate: candidate,
+              scope: @network.firewall_rules,
+              result_key: :rule_id,
+              response_key: :firewall_rule,
+              serializer: ->(r) { serialize_rule_full(r) },
+              action_category: "sdwan.firewall_rule_create",
+              executor_class: "Sdwan::Executors::CreateFirewallRule",
+              params: { network_id: @network.id, attributes: executor_rule_attributes(attrs) },
+              source_type: "Sdwan::Network",
+              source_id: @network.id,
+              # Matches CreateFirewallRule#summarize so both surfaces of the
+              # approval speak one sentence (IMP-3a563becb7d7).
+              description: "Add firewall rule '#{candidate.name}' to SDWAN network #{@network.name}"
+            )
           end
 
+          # IMP-0e44cf2fc80b: routed through Ai::AutonomyGate, matching the
+          # gated update verbs (network/peer/route_policy/port_mapping). This
+          # verb was NOT a clean drop-in wiring: the port_range →
+          # port_range_hash transform (normalize_port_range) ran inline here,
+          # and gate! never calls on_proceed on :pending — the executor is the
+          # sole writer there — so the transform migrated INTO
+          # UpdateFirewallRule#perform first. The gate parks the API-shaped
+          # attributes verbatim; the executor owns the re-key on both paths.
           def update
             require_permission("system.sdwan.firewall.manage")
             attrs = rule_params
-            assign_with_port_range(@rule, attrs)
-            if @rule.save
-              render_success(firewall_rule: serialize_rule_full(@rule.reload))
-            else
-              render_validation_error(@rule)
-            end
+            # Validated before the gate so an unsaveable payload keeps its
+            # field-level 422 and opens no audit row. Never saved —
+            # UpdateFirewallRule's update! stays the only writer. Plain
+            # assignment: Sdwan::FirewallRule#port_range= accepts the API's
+            # {from:, to:} shape directly (IMP-0e44cf2fc80b).
+            @rule.assign_attributes(attrs)
+            return render_validation_error(@rule) unless @rule.valid?
+
+            # Discard the un-gated in-memory changes: nothing may reach the row
+            # except through the executor. restore_attributes is the zero-query
+            # equivalent of reload here (ActiveModel::Dirty).
+            @rule.restore_attributes
+
+            gate!(
+              action_category: "sdwan.firewall_rule_update",
+              executor_class: "Sdwan::Executors::UpdateFirewallRule",
+              params: { rule_id: @rule.id, attributes: attrs.to_h },
+              source_type: "Sdwan::FirewallRule",
+              source_id: @rule.id,
+              description: "Update firewall rule '#{@rule.name}' on SDWAN network #{@network.name}",
+              on_proceed: ->(_r) { render_success(firewall_rule: serialize_rule_full(@rule.reload)) }
+            )
           end
 
           def destroy
@@ -93,13 +148,30 @@ module Api
             )
           end
 
-          # The :port_range param uses {from:, to:} JSON shape — apply via
-          # the model's port_range_hash= accessor instead of the raw column.
-          def assign_with_port_range(rule, attrs)
+          # SOLE remaining consumer: create's executor replay hash, which
+          # keeps the re-keyed :port_range_hash shape both create surfaces
+          # park (IMP-6c482005db87 — pinned by the REST and MCP specs). The
+          # validation candidates and update's replay hash need no re-key:
+          # Sdwan::FirewallRule#port_range= accepts the {from:, to:} API
+          # shape directly (IMP-0e44cf2fc80b), so update deliberately parks
+          # the RAW shape and mass assignment routes it through the model.
+          def normalize_port_range(attrs)
             attrs = attrs.to_h.with_indifferent_access
             port_range = attrs.delete(:port_range)
-            rule.assign_attributes(attrs)
-            rule.port_range_hash = port_range if attrs.key?(:port_range) || !port_range.nil?
+            attrs[:port_range_hash] = port_range unless port_range.nil?
+            attrs
+          end
+
+          # IMP-4a5094b22df0: no longer merges account_id. It rode along ONLY
+          # to give the approval card an account to scope its network label by,
+          # back when Base.preview ran with deferred_operation: nil. The card
+          # now anchors on the operation's own account, so the key bought
+          # nothing and was a caller-shaped tenancy key sitting in the params
+          # the gate replays — the shape Base::TENANCY_ATTRIBUTE_KEYS exists to
+          # keep out. (Sdwan::FirewallRule derives account_id from its network
+          # in a before_validation, so nothing downstream needed it either.)
+          def executor_rule_attributes(attrs)
+            normalize_port_range(attrs)
           end
 
           def serialize_rule(r)

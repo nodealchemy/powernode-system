@@ -656,4 +656,35 @@ describe('NetworksTab', () => {
     );
     expect(mockDeleteNetwork).toHaveBeenCalledTimes(2);
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  it('shows the pending-approval notification (not success) when the network delete is parked', async () => {
+    mockDeleteNetwork.mockResolvedValueOnce({
+      pending: true,
+      deferred_operation_id: 'dop-1',
+      action_category: 'sdwan.network_delete',
+      approval_request_id: 'ar-1',
+      message: 'Approval required',
+    });
+    renderTab();
+
+    await openDeleteModal('a');
+    clickConfirmDelete();
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
 });

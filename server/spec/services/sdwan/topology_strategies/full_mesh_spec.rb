@@ -103,6 +103,28 @@ RSpec.describe Sdwan::TopologyStrategies::FullMesh, type: :service do
     end
   end
 
+  # IMP-d182a8e6e19c — the compiled entry's :endpoint feeds `wg setconf`
+  # verbatim (agent/internal/sdwan/state.go → wg_applier.go), so a v6
+  # literal MUST be bracketed. Peer A's v4 assertion above
+  # ("203.0.113.10:51820") is the positive twin pinning v4 stays bare.
+  describe "IPv6-literal endpoint bracketing" do
+    let!(:instance_d) { create(:system_node_instance, node: node, name: "d-#{SecureRandom.hex(2)}") }
+    let!(:peer_d) do
+      Sdwan::PeerEnroller.call(
+        network: network, node_instance: instance_d,
+        publicly_reachable: true, endpoint_host_v6: "fd00:abcd:2::1", endpoint_port: 51_820
+      )
+    end
+
+    it "brackets a sibling's v6-literal endpoint in the compiled entry" do
+      view = described_class.new(network: network.reload).peers_for(peer_b.reload)
+      entry_d = view.find { |e| e[:peer_id] == peer_d.id }
+
+      expect(entry_d[:endpoint_family]).to eq("v6")
+      expect(entry_d[:endpoint]).to eq("[fd00:abcd:2::1]:51820")
+    end
+  end
+
   describe "user devices (slice 4)" do
     it "includes active user_devices as endpoint-less, keepalive-less peers" do
       grant = create(:sdwan_access_grant, account: account, network: network)

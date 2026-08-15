@@ -549,9 +549,50 @@ module PowernodeSystem
       end
     end
 
+    # IMP-8880bc817ea3 — OVN container-fabric hook. Core fires :created /
+    # :removed for every Devops::DockerContainer record from its
+    # ContainerLifecycleRegistry seam (no-op in core mode); this registers the
+    # SDWAN switch-port allocator so labeled containers on heavyweight hosts
+    # get their OVN logical switch port at creation and lose it at removal.
+    # `to_prepare` (not `after_initialize`): the registry is an autoloaded
+    # core service, so a dev-mode reload replaces the constant and drops its
+    # handler map — to_prepare re-registers after every reload (and still runs
+    # once at boot elsewhere). Registration is replace-by-name, so re-running
+    # is idempotent. The allocator constant resolves lazily at call time for
+    # the same reload-safety reason.
+    initializer "powernode_system.container_lifecycle_hooks", after: :load_config_initializers do
+      config.to_prepare do
+        next unless defined?(::Devops::ContainerLifecycleRegistry)
+
+        ::Devops::ContainerLifecycleRegistry.register(:sdwan_switch_port) do |event, container|
+          ::Sdwan::ContainerSwitchPortAllocator.call(event, container)
+        end
+      rescue StandardError => e
+        Rails.logger.warn "[PowernodeSystem] Could not register container lifecycle hook: #{e.message}"
+      end
+    end
+
     # Register all action_categories the system extension owns with the core
-    # AutonomyGate registry. Without this, InterventionPolicy seeds for these
-    # categories would fail validation (Phase 5 — Action Category Registry).
+    # AutonomyGate registry (Phase 5 — Action Category Registry).
+    #
+    # IMP-097a267b50b7: what an unregistered category actually breaks. NOT
+    # seed validation — `Ai::InterventionPolicy` validates action_category for
+    # presence only, never against the registry, so an unregistered category
+    # seeds, resolves and gates perfectly well. The one consumer that fails is
+    # operator-facing: System::AutonomyActions#update (the bulk PATCH
+    # /api/v1/system/autonomy behind the Autonomy modal) rejects any update
+    # whose category is not `category_registered?`. A seeded row for an
+    # unregistered category is therefore VISIBLE in the modal — the by_action
+    # pivot reads policy rows, not this registry — and un-saveable. Five
+    # sensor-gated categories shipped in exactly that state.
+    #
+    # INVARIANT, enforced by
+    # spec/lib/powernode_system/autonomy_categories_registration_spec.rb:
+    # every action_category in DecisionEngine::SIGNAL_BINDINGS must appear
+    # below. Both of the engine's `gate_action!` call sites pass
+    # `binding[:action_category]`, so that constant is the complete set of
+    # categories the sensor pipeline can put in front of an operator. Adding a
+    # signal binding without its category here reds that spec.
     #
     # IMP-8d444c6437a3: this used to run in `config.after_initialize`, which
     # fires exactly once at boot. `Ai::InterventionPolicy.@category_registry`
@@ -580,6 +621,10 @@ module PowernodeSystem
           system.capability_gap_review
           system.gitops_drift_remediate system.storage_assignment_reconcile
           system.template_closure_apply
+          system.node_boot_image_drift system.package_repository.sync
+          system.package_module.create system.package_module.refresh
+          system.architecture.propose system.architecture.create
+          system.architecture.update system.architecture.delete
         ])
 
         # SDWAN Manager domain
@@ -593,17 +638,19 @@ module PowernodeSystem
           sdwan.virtual_ip_create sdwan.virtual_ip_update sdwan.virtual_ip_delete
           sdwan.route_policy_create sdwan.route_policy_update sdwan.route_policy_delete
           sdwan.port_mapping_create sdwan.port_mapping_update sdwan.port_mapping_delete
-          sdwan.access_grant_create sdwan.access_grant_revoke
+          sdwan.access_grant_create sdwan.access_grant_revoke sdwan.access_grant_delete
           sdwan.user_device_create
           sdwan.federation_peer_propose sdwan.federation_peer_accept sdwan.federation_peer_revoke
+          system.sdwan_service_health_investigate
         ])
 
         # Phase 3 (Federation & Multi-Site) — SDWAN-first federation actions.
         # `system.federation_peer_remediate` is the autonomy action the
         # DecisionEngine gates off the FederationPeerLivenessSensor (routed
         # through FleetAutonomyService#gate_action!) — registering it here is
-        # REQUIRED or the SDWAN Manager InterventionPolicy seed row for it
-        # fails validation. The three compose categories
+        # REQUIRED or an operator cannot retune the SDWAN Manager policy row
+        # for it (see the header: the seed itself saves fine; the bulk PATCH
+        # endpoint is what refuses). The three compose categories
         # (federation_compose / multi_tenant_isolation / service_discovery_compose)
         # are approval-gated, operator/Concierge-driven composer skills (bound
         # to the System Topology Designer assistant, not autonomy reconcilers);
@@ -616,10 +663,20 @@ module PowernodeSystem
           system.service_discovery_compose
         ])
 
+        # GitOps Reconciler domain — operator-initiated gitops actions, seeded
+        # by db/seeds/system_gitops_reconciler_agent.rb. (The AUTONOMOUS
+        # system.gitops_drift_remediate lives on Fleet Autonomy above, because
+        # GitopsDriftSensor runs in FleetAutonomyService::SENSORS.)
+        categories.concat(%w[
+          system.gitops_apply_proposal system.gitops_register_repository
+          system.gitops_sync_repository
+        ])
+
         # CVE Responder domain
         categories.concat(%w[
           system.cve_remediate system.cve_sbom_ingest
           system.cve_exposure_scan system.cve_auto_remediate
+          system.module_critical_upgrade_ready
         ])
 
         # Disk Image Manager domain
@@ -627,17 +684,73 @@ module PowernodeSystem
           system.disk_image_publication_promote system.disk_image_publication_rollback
           system.disk_image_retention_update system.disk_image_webhook_trigger
           system.disk_image_webhook_revoke system.disk_image_webhook_rotate_secret
+          system.disk_image_publication_investigate
         ])
 
-        # Runtime Manager domain
+        # Runtime Manager domain.
+        #
+        # `system.runtime_docker_tls_rotate` is deliberately ABSENT and must not
+        # be re-added. The 2026-05-19 doc-accuracy audit deleted its seeded
+        # policy because nothing executes it — operators rotate Docker daemon
+        # TLS through the broader `system.cert_rotate` flow (see
+        # db/seeds/system_runtime_manager_agent.rb) — but the registration
+        # survived here for three months.
+        #
+        # A class NAMED for it does exist and is not evidence to the contrary:
+        # app/services/system/executors/runtime/rotate_docker_tls.rb is a
+        # deliberate raising stub whose `perform` always raises
+        # NotYetImplementedError (IMP-967901b9d2e1 made it refuse rather than
+        # keep reporting `rotated: true` without touching TLS material). No
+        # call site names it — executors are dispatched by an explicit
+        # `executor_class:` string at the gating site, and nothing passes this
+        # one. Re-register only alongside a real implementation AND a seeded
+        # policy row.
+        #
+        # Three further names are ABSENT for a different reason (IMP-eb60db901f5f)
+        # — they were never capabilities, only second SPELLINGS of the three
+        # seeded ones directly below:
+        #
+        #   system.runtime_docker_host_provision    -> system.runtime_docker_provision
+        #   system.runtime_docker_host_decommission -> system.runtime_docker_decommission
+        #   system.runtime_k8s_cluster_create       -> system.runtime_k8s_cluster_bootstrap
+        #
+        # The 2026-05-10 five-agent split (d579be93) added this whole block and
+        # wrote both spellings of each action into it: the seeded policy name AND
+        # the executor CLASS name. `git log -S` over every path finds each of the
+        # three in that commit and nowhere else — never seeded, never gated,
+        # never executed — and live powernode_production held zero policy /
+        # deferred-operation / remediation-outcome rows for them when they were
+        # removed on 2026-08-14.
+        #
+        # The executor classes they were spelled after are REAL and are not
+        # evidence to the contrary: app/services/system/executors/runtime/
+        # {provision_docker_host,decommission_docker_host,bootstrap_k3s_cluster}.rb
+        # are working implementations. An executor declares no action_category —
+        # the binding is the `executor_class:` string a gate site passes — and
+        # today NO gate site names any of those three (the only runtime executor
+        # with a call site is DecommissionK3sCluster, from core's
+        # Api::V1::Devops::Kubernetes::ClustersController#destroy under
+        # system.runtime_k8s_cluster_decommission). So the classes are evidence
+        # of the vocabulary, never of a backing for the removed names. When a
+        # Docker/K3s surface does get gated — e.g.
+        # Devops::Docker::HostsController#create, which is permission-gated
+        # (`devops.docker.manage`) but NOT autonomy-gated today — cite the
+        # SEEDED spelling above; do not re-add a second one.
+        #
+        # Registration is not cosmetic: it is
+        # the gate System::AutonomyActions#update passes, so a
+        # registered-but-unseeded category is one the bulk
+        # PATCH /api/v1/system/autonomy will `find_or_initialize_by` a policy
+        # row for, giving an operator a durable control over an action nothing
+        # can execute. Pinned by
+        # spec/lib/powernode_system/autonomy_categories_registration_spec.rb and,
+        # through the endpoint itself, by
+        # spec/controllers/api/v1/system/autonomy_controller_spec.rb.
         categories.concat(%w[
           system.runtime_docker_provision system.runtime_docker_decommission
-          system.runtime_docker_tls_rotate
           system.runtime_k8s_cluster_bootstrap system.runtime_k8s_cluster_decommission
           system.runtime_k8s_node_join system.runtime_k8s_node_drain
           system.runtime_k8s_runtime_upgrade
-          system.runtime_docker_host_provision system.runtime_docker_host_decommission
-          system.runtime_k8s_cluster_create
         ])
 
         # Instance pools (slice 7)

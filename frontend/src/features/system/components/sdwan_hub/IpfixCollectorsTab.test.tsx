@@ -430,4 +430,67 @@ describe('IpfixCollectorsTab', () => {
     expect(screen.getByText('Compiler picks')).toBeInTheDocument();
     expect(screen.getByText('Actions')).toBeInTheDocument();
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  const pendingEnvelope = (action_category: string) => ({
+    status: 202,
+    data: {
+      success: true,
+      data: {
+        pending: true,
+        deferred_operation_id: 'dop-1',
+        action_category,
+        approval_request_id: 'ar-1',
+        message: 'Approval required',
+      },
+    },
+  });
+
+  it('shows the pending-approval notification (not success) when the state toggle is parked', async () => {
+    mockGet.mockResolvedValueOnce(collectorsEnvelope([COLLECTOR_A]));
+    mockPatch.mockResolvedValueOnce(pendingEnvelope('sdwan.ipfix_collector_update'));
+
+    renderTab();
+    const btn = await waitFor(() => screen.getByTestId('toggle-ipfix-ipfix-a'));
+    fireEvent.click(btn);
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
+
+  it('shows the pending-approval notification (not success) when the delete is parked', async () => {
+    mockGet.mockResolvedValueOnce(collectorsEnvelope([COLLECTOR_A]));
+    mockDelete.mockResolvedValueOnce(pendingEnvelope('sdwan.ipfix_collector_delete'));
+
+    renderTab();
+    const btn = await waitFor(() => screen.getByTestId('delete-ipfix-ipfix-a'));
+    fireEvent.click(btn);
+    await waitFor(() => expect(screen.getByText('Confirm?')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('delete-ipfix-ipfix-a'));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
 });

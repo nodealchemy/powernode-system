@@ -4,6 +4,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
+import { isPendingApproval } from '../../../services/api/helpers';
+import { pendingApprovalNotice } from '../../../utils/pendingApproval';
 import type {
   SdwanPortMapping,
   SdwanPeer,
@@ -81,6 +83,13 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
       const saved = isEdit
         ? await sdwanApi.updatePortMapping(networkId, mapping!.id, payload)
         : await sdwanApi.createPortMapping(networkId, payload);
+      if (isPendingApproval(saved)) {
+        addNotification(
+          pendingApprovalNotice(`${isEdit ? 'updating' : 'creating'} port mapping '${name}'`, saved)
+        );
+        onClose();
+        return;
+      }
       onSaved(saved);
     } catch (err) {
       addNotification({ type: 'error', message: err instanceof Error ? err.message : 'Save failed' });

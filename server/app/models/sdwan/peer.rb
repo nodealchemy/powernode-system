@@ -110,6 +110,78 @@ module Sdwan
       [ primary_endpoint, fallback_endpoint ].compact
     end
 
+    # Pure "host:port" formatter, bracketing the host only when it is an IPv6
+    # LITERAL. Shared by the operator-facing #endpoint_display AND the
+    # data-plane consumers routed through it (WgConfigRenderer's Endpoint
+    # line, the peer serializers' effective_endpoint) — one function, so a
+    # readability edit to the operator label can never corrupt the config
+    # text those consumers emit. (The compiled topology plans still hand-roll
+    # their endpoint strings — tracked as a separate offer.)
+    #
+    # The bracket cannot be keyed on the tuple's :family —
+    # endpoint_host_v6_must_be_v6_or_hostname explicitly accepts a hostname in
+    # the v6 column (DNS hands back the AAAA), so a family of :v6 does not imply
+    # a literal and "[edge.example.net]:51820" is not an address anyone can use.
+    #
+    # The same validation also admits an ALREADY-bracketed literal (its literal
+    # guard is `include?(":")`, which "[fd00::1]" satisfies), and that is the
+    # form an operator pastes out of a WireGuard config — so re-bracketing it
+    # blindly yields "[[fd00::1]]:51820".
+    def self.format_host_port(host, port)
+      host = host.to_s
+      host = "[#{host}]" if host.include?(":") && !host.start_with?("[")
+      "#{host}:#{port}"
+    end
+
+    # "host:port" for the primary endpoint (operator-facing label rung).
+    # Bracketing rationale lives on .format_host_port.
+    def endpoint_display
+      endpoint = primary_endpoint
+      return nil if endpoint.blank?
+
+      self.class.format_host_port(endpoint[:host], endpoint[:port])
+    end
+
+    # The single operator-facing identity for this peer. Both surfaces that name
+    # a peer on a destructive operation consume it — the approval card served by
+    # the approvals API (Api::V1::System::Sdwan::PeersController#destroy passes
+    # it as the gate's `description:`) and the notification body
+    # (Sdwan::Executors::DeletePeer#summarize). They each carried their own copy
+    # of this expression and drifted; one method is what keeps them honest.
+    #
+    # The network is part of the identity, not decoration: the unique index is
+    # [sdwan_network_id, node_instance_id], so one instance is legitimately a
+    # peer in several networks and an instance-name-only label renders identical
+    # cards for different destructive operations. The endpoint is the detail
+    # rung — used only when the instance carries no operator-facing name.
+    def operator_label
+      self.class.operator_label_for(
+        node_instance: node_instance,
+        network_name: network&.name,
+        endpoint_display: endpoint_display,
+        fallback: id
+      )
+    end
+
+    # IMP-1eba7d50d24c: the same ladder expressed over the PARTS rather than a
+    # persisted row. Sdwan::Executors::CreatePeer#summarize has to name the peer
+    # on the approval card BEFORE the row exists, and retyping the ladder there
+    # is precisely how the two delete surfaces came to disagree — so the create
+    # card composes its label here instead of owning a third format.
+    #
+    # Returns nil when no rung resolves (a create request that names no instance
+    # at all), leaving the choice of degraded sentence to the caller rather than
+    # emitting a "label" that is really just the network name.
+    def self.operator_label_for(node_instance:, network_name: nil, endpoint_display: nil, fallback: nil)
+      identity = node_instance&.name.presence ||
+                 node_instance&.discovered_hostname.presence ||
+                 endpoint_display.presence ||
+                 fallback.presence
+      return nil if identity.blank?
+
+      network_name.presence ? "#{identity} on #{network_name}" : identity
+    end
+
     # Recompute status from last_handshake_at. Called by the heartbeat
     # status-report endpoint on every report from the agent.
     def recompute_status_from_handshake!

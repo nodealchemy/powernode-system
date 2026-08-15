@@ -6,7 +6,7 @@ module Sdwan
       protected
 
       def perform
-        network = ::Sdwan::Network.find(params[:network_id])
+        network = resolve_scoped(::Sdwan::Network, params[:network_id])
         network.update!(attrs)
         { network_id: network.id }
       end

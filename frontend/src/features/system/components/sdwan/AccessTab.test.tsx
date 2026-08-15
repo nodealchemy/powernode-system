@@ -869,4 +869,83 @@ describe('AccessTab', () => {
 
     await waitFor(() => expect(mockGetAccessGrants).toHaveBeenCalledWith('net-xyz789'));
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  const PENDING_APPROVAL = {
+    pending: true,
+    deferred_operation_id: 'dop-1',
+    action_category: 'sdwan.access_grant_revoke',
+    approval_request_id: 'ar-1',
+    message: 'Approval required',
+  };
+
+  it('shows the pending-approval notification (not success) when the grant revoke is parked', async () => {
+    mockGetAccessGrants.mockResolvedValue({ grants: [GRANT_A] });
+    mockGetUserDevices.mockResolvedValue({ devices: [] });
+    mockRevokeAccessGrant.mockResolvedValue(PENDING_APPROVAL);
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('alice@example.com')).toBeInTheDocument());
+
+    const revokeButtons = screen.getAllByRole('button', { name: /^Revoke$/i });
+    fireEvent.click(revokeButtons[0]);
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Revoke access grant/i })).toBeInTheDocument(),
+    );
+
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Revoke$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
+
+  it('shows the pending-approval notification (not success) when the device revoke is parked', async () => {
+    mockGetAccessGrants.mockResolvedValue({ grants: [GRANT_A] });
+    mockGetUserDevices.mockResolvedValue({ devices: [DEVICE_A] });
+    mockRevokeUserDevice.mockResolvedValue({
+      ...PENDING_APPROVAL,
+      action_category: 'system.sdwan_user_device_revoke',
+    });
+
+    renderTab();
+
+    await waitFor(() => expect(screen.getByText('macbook')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('Revoke macbook'));
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Revoke device/i })).toBeInTheDocument(),
+    );
+
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Revoke$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
 });

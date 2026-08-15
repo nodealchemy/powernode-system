@@ -9,16 +9,24 @@ package cli
 // branch on specific failure classes. Documented in the M2 plan and
 // set via os.Exit by main() based on the error type.
 const (
-	ExitOK                = 0  // success
-	ExitGeneric           = 1  // unspecified error (cobra default for RunE returns)
-	ExitVerifyFailed      = 2  // cosign / fs-verity / checksum mismatch
-	ExitMountFailed       = 3  // mount/filesystem operation failure
-	ExitInitFailed        = 4  // systemd / init action failure
-	ExitPlatformUnreached = 5  // platform unreachable / network failure
-	ExitRefused           = 6  // refused operation (e.g., reboot_required without --force)
+	ExitOK                 = 0 // success
+	ExitGeneric            = 1 // unspecified error (cobra default for RunE returns)
+	ExitVerifyFailed       = 2 // cosign / fs-verity / checksum mismatch
+	ExitMountFailed        = 3 // mount/filesystem operation failure
+	ExitInitFailed         = 4 // systemd / init action failure
+	ExitPlatformUnreached  = 5 // platform unreachable / network failure
+	ExitRefused            = 6 // refused operation (e.g., reboot_required without --force)
 	ExitRefusedDestructive = 7 // refused destructive op (e.g., volume-setup on non-empty disk)
-	ExitPartialSuccess    = 8  // some succeeded, some failed
+	ExitPartialSuccess     = 8 // some succeeded, some failed
 	// 64+ reserved for command-specific (e.g., puppet --detailed-exitcodes 4→9, 6→10)
 	ExitPuppetFailures = 9
 	ExitPuppetMixed    = 10
+	// ExitDryRunWouldRefuse is returned by a prepare/dry-run mode (no
+	// --execute) when the same operation WOULD be refused under --execute.
+	// Distinct from ExitOK (would succeed) and ExitGeneric (the command
+	// itself errored) so a CI wrapper can gate on "the dry run says the real
+	// run would be blocked" without conflating it with success or a crash.
+	// Used by `soft-recompose` (no --execute) when NextrootSurvivalGate would
+	// refuse the soft-reboot.
+	ExitDryRunWouldRefuse = 11
 )

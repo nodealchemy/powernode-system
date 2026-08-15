@@ -16,6 +16,10 @@ RSpec.describe System::Fleet::Sensors::InstanceStateDriftSensor do
 
   before { allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter) }
 
+  # `cloud_instance_id: nil` seeds the never-stampable shape (no provider
+  # identity, so no adapter read can ever succeed). The factory honours the
+  # explicit nil; omitting it would get a backfilled id and quietly void that
+  # premise.
   def running_instance(cloud_instance_id: "i-#{SecureRandom.hex(4)}")
     create(:system_node_instance, node: node, status: "running", cloud_instance_id: cloud_instance_id)
   end
@@ -53,6 +57,16 @@ RSpec.describe System::Fleet::Sensors::InstanceStateDriftSensor do
         stub_const("#{described_class}::MAX_PER_TICK", 3)
         3.times { running_instance(cloud_instance_id: nil) } # never stampable
         reachable = running_instance
+        # Both stamps are load-bearing, and for different reasons. With all
+        # four rows NULL the LIMIT-3 window breaks a four-way tie arbitrarily,
+        # so this example passed or failed on luck — including under the very
+        # regression it pins. last_sync_attempted_at puts `reachable` behind
+        # the unstampables on tick 1, making the window exactly them; a
+        # non-NULL last_synced_at is what makes the SUCCESS-ordered regression
+        # sort it behind them on EVERY tick, so reverting the valve starves
+        # `reachable` deterministically instead of tying with it.
+        reachable.update_columns(last_sync_attempted_at: 1.minute.ago,
+                                 last_synced_at: 2.minutes.ago)
         allow(adapter).to receive(:sync_status).and_return(success: true, status: "running")
 
         sensor.sense # tick 1: window consumed by the unstampables (attempts stamped)

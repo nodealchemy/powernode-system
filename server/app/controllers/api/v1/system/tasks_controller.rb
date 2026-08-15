@@ -57,6 +57,14 @@ module Api
             params: { task_attributes: attrs },
             account: current_account,
             requested_by: current_user,
+            # Anchor the operable as the operation's source. Without the pair,
+            # Ai::DeferredOperation#assert_source_within_account! has nothing to
+            # re-check and skips entirely, leaving the executor's own
+            # resolve_scoped as the single defense. The two cover different
+            # moments — the source pair is re-anchored immediately before the
+            # replay, the executor anchors what it actually dereferences.
+            source_type: attrs[:operable_type].presence,
+            source_id: attrs[:operable_id].presence,
             description: "#{attrs[:command]} on #{attrs[:operable_type]}##{attrs[:operable_id]}".strip
           )
 

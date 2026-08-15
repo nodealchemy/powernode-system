@@ -1,8 +1,22 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "support/line_safe_name_shared_examples"
 
 RSpec.describe Sdwan::PortMapping, type: :model do
+  # The :sdwan_port_mapping factory is not coherent under the `build`
+  # strategy (its peers get created on a separately-minted network), so the
+  # shared examples get a builder wired to this spec's own network/peers.
+  it_behaves_like "a line-safe named model", :sdwan_port_mapping do
+    let(:build_named) do
+      ->(name) do
+        described_class.new(account_id: account.id, sdwan_network_id: network.id,
+                            sdwan_peer_id: hub.id, target_peer_id: target.id,
+                            name: name, listen_port: 15_432, protocol: "tcp")
+      end
+    end
+  end
+
   let(:account) { Account.first || create(:account) }
 
   before do

@@ -4,6 +4,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import type { SdwanIssueUserDeviceResponse } from '../../types/sdwan.types';
 
 interface UserDeviceIssueModalProps {
@@ -34,6 +36,12 @@ export const UserDeviceIssueModal: React.FC<UserDeviceIssueModalProps> = ({
     setSubmitting(true);
     try {
       const result = await sdwanApi.issueUserDevice(networkId, grantId, { label: label.trim() });
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`issuing device "${label}"`, result));
+        setLabel('');
+        onClose();
+        return;
+      }
       addNotification({ type: 'success', message: `Device "${label}" issued` });
       onIssued(result);
       setLabel('');

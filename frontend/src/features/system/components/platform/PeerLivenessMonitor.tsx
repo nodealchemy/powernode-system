@@ -58,10 +58,13 @@ export const PeerLivenessMonitor: React.FC<PeerLivenessMonitorProps> = ({ refres
     return () => clearInterval(interval);
   }, []);
 
-  // Live federation events → in-place row update. A peer-scoped FleetEvent
-  // carries the peer id either in payload.platform_peer_id / payload.peer_id
-  // or in the (federation-specific) payload.remote_instance_url. We bump
-  // last_heartbeat_at on any matching event and flag the row "live".
+  // Live federation events → in-place row update. The current broadcast
+  // contract (System::FederationPeer#broadcast_peer_state!) stamps the peer id
+  // as payload.federation_peer_id — this component is a declared reader of
+  // that contract (see the comment at the emit site in federation_peer.rb).
+  // Legacy/other emitters carry payload.platform_peer_id / payload.peer_id or
+  // the (federation-specific) payload.remote_instance_url, kept as fallbacks.
+  // We bump last_heartbeat_at on any matching event and flag the row "live".
   useEffect(() => {
     if (!isConnected || !accountId) return;
 
@@ -86,6 +89,7 @@ export const PeerLivenessMonitor: React.FC<PeerLivenessMonitorProps> = ({ refres
         }
         const payload = (evt.payload ?? {}) as Record<string, unknown>;
         const peerId =
+          (typeof payload.federation_peer_id === 'string' && payload.federation_peer_id) ||
           (typeof payload.platform_peer_id === 'string' && payload.platform_peer_id) ||
           (typeof payload.peer_id === 'string' && payload.peer_id) ||
           null;

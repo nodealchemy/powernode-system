@@ -6,7 +6,7 @@ module Sdwan
       protected
 
       def perform
-        grant = ::Sdwan::AccessGrant.find(params[:grant_id])
+        grant = resolve_scoped(::Sdwan::AccessGrant, params[:grant_id])
         device = grant.user_devices.create!(attrs)
         { device_id: device.id, grant_id: grant.id }
       end

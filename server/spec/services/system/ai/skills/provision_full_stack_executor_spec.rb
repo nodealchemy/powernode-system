@@ -96,9 +96,13 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
         expect(d[:dry_run]).to be true
         expect(d[:count]).to eq(3)
         expect(d[:outputs]).to eq(node_ids: [], node_instance_ids: [], sdwan_peer_ids: [], storage_volume_ids: [])
-        # 3 nodes × (create + provision + storage) = 9 planned steps
-        expect(d[:planned_actions].size).to eq(9)
+        # 3 nodes × (create + provision + storage + attach) = 12 planned steps.
+        # The attach is planned because it is performed (IMP-093378034fb4) — a
+        # dry run that under-lists what execute does is how a plan stops being
+        # a preview of it.
+        expect(d[:planned_actions].size).to eq(12)
         expect(d[:planned_actions].first[:step]).to eq("create_node")
+        expect(d[:planned_actions].map { |a| a[:step] }).to include("attach_volume")
       end
     end
 
@@ -161,6 +165,8 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
 
         before do
           allow(::System::VolumeManagementService).to receive(:provision).and_return(ok_vol)
+          allow(::System::VolumeManagementService).to receive(:attach)
+            .and_return(::System::Runtime::Result.ok(data: { device: "/dev/sdb" }))
         end
 
         it "provisions a per-instance volume" do
@@ -173,31 +179,432 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
           expect(r[:data][:outputs][:storage_volume_ids].size).to eq(2)
           expect(::System::VolumeManagementService).to have_received(:provision).twice
         end
-      end
 
-      context "with network_id" do
-        # No :sdwan_network factory exists yet; stub the lookup with a
-        # double so the spec doesn't depend on cidr_64 allocation infra.
-        let(:network_id) { SecureRandom.uuid }
-        let(:network) { instance_double("Sdwan::Network", id: network_id) }
-        let(:peer_view) { { peer_id: SecureRandom.uuid, interface: {}, peers: [] } }
+        # IMP-093378034fb4 — the volume was provisioned and never attached, so
+        # ProviderVolume#node_instance_id stayed nil. That FK is how BOTH the
+        # scale-in teardown (ScaleProjectExecutor#victim_volumes) and its
+        # zero-orphan sweep (#orphans_for) reach a victim's volumes, so the
+        # check built to catch a leaked volume could not see one: scale-in
+        # reported zero orphans while the volume billed on.
+        #
+        # Real rows throughout, and the real VolumeManagementService.attach —
+        # only the provider adapter is stubbed. A nil FK is a fact about a
+        # persisted row; it cannot be observed on a double, and a spec that
+        # asserted `have_received(:attach)` would prove the call was made, not
+        # that anything now points at the instance.
+        context "attachment (real rows — the FK the teardown reads)" do
+          let(:storage_node) { create(:system_node, account: account, node_template: template) }
+          let(:provisioned_instance) do
+            create(:system_node_instance, :running, node: storage_node,
+                   provider_region: region, provider_instance_type: instance_type)
+          end
+          let(:real_volume) do
+            create(:system_provider_volume, account: account, provider_region: region,
+                   status: "available", external_id: "vol-#{SecureRandom.hex(6)}")
+          end
+          let(:volume_adapter) do
+            instance_double(::System::Providers::MockProvider,
+                            attach_volume: { success: true, device: "/dev/sdb" })
+          end
 
-        before do
-          relation = double("network_relation")
-          allow(::Sdwan::Network).to receive(:where).with(account_id: account.id).and_return(relation)
-          allow(relation).to receive(:find_by).with(id: network_id).and_return(network)
-          allow(::Sdwan::TopologyCompiler).to receive(:compile_for_network).and_return([ peer_view, peer_view ])
+          before do
+            allow(::System::ProvisioningService).to receive(:provision_instance).and_return(
+              ::System::Runtime::Result.ok(
+                data: { instance: provisioned_instance,
+                        cloud_instance_id: provisioned_instance.cloud_instance_id }
+              )
+            )
+            allow(::System::VolumeManagementService).to receive(:provision)
+              .and_return(::System::Runtime::Result.ok(data: { volume: real_volume }))
+            allow(::System::VolumeManagementService).to receive(:attach).and_call_original
+            allow(::System::Providers::Registry).to receive(:for_volume).and_return(volume_adapter)
+          end
+
+          def provision_one_with_storage
+            exec.execute(template_id: template.id, count: 1,
+                         provider_region_id: region.id,
+                         provider_instance_type_id: instance_type.id,
+                         with_storage_gb: 100)
+          end
+
+          it "attaches the volume to the instance it provisioned it for" do
+            r = provision_one_with_storage
+
+            expect(r[:success]).to be true
+            expect(r[:data][:failures]).to be_empty
+            # Ground truth: the persisted FK, not the call.
+            expect(real_volume.reload.node_instance_id).to eq(provisioned_instance.id)
+            expect(real_volume).to be_attached
+            expect(real_volume.device_name).to eq("/dev/sdb")
+          end
+
+          it "records the attach as its own planned action, so a plan can be graded on it" do
+            r = provision_one_with_storage
+
+            attach = r[:data][:planned_actions].find { |a| a[:step] == "attach_volume" }
+            expect(attach).not_to be_nil,
+                                  "no attach_volume action: #{r[:data][:planned_actions].inspect}"
+            expect(attach[:volume_id]).to eq(real_volume.id)
+            expect(attach[:instance_id]).to eq(provisioned_instance.id)
+          end
+
+          it "reports a FAILURE rather than a clean provision when the attach fails" do
+            allow(volume_adapter).to receive(:attach_volume)
+              .and_return({ success: false, error: "no free device" })
+
+            r = provision_one_with_storage
+            d = r[:data]
+
+            # An unattached volume bills and is out of reach of scale-in. The
+            # only thing that surfaces it is a loud partial — silence here is
+            # the failure mode this task exists to remove.
+            expect(d[:failures].map { |f| f[:step] }).to include("attach_volume")
+            expect(d[:partial]).to be true
+            # Still recorded, so the rollback path can reclaim it.
+            expect(d[:outputs][:storage_volume_ids]).to eq([ real_volume.id ])
+            expect(real_volume.reload.node_instance_id).to be_nil
+          end
+
+          it "does not let an attach raise take out the step and orphan what it created" do
+            allow(::System::VolumeManagementService).to receive(:attach)
+              .and_raise(::System::VolumeManagementService::VolumeError, "No available device paths")
+
+            r = provision_one_with_storage
+            d = r[:data]
+
+            expect(r[:success]).to be true
+            expect(d[:outputs][:node_instance_ids]).to eq([ provisioned_instance.id ])
+            expect(d[:failures].map { |f| f[:step] }).to include("attach_volume")
+          end
         end
 
-        it "compiles the SDWAN topology and returns peer ids" do
+        # IMP-33fa6c51f05d — the guard was `next if with_storage_gb.blank?`,
+        # and `0.blank?` is FALSE in Ruby, so an explicit 0 sailed past it and
+        # reached VolumeManagementService.provision as a real 0 GB volume
+        # request. PlanComposerService#brief_storage_gb drops non-positives
+        # before stamping, so a COMPOSED plan never carried one — the reachable
+        # writers are a hand-authored plan_data, a MissionComposer output, and
+        # an operator-supplied input, i.e. exactly the direct-dispatch paths
+        # the composer's `||=` is documented to let win.
+        #
+        # It did not leak a 0 GB volume — ProviderVolume validates size_gb as
+        # `greater_than: 0`, so the create raised and came back as an err
+        # Result. It produced one fabricated `provision_storage` failure per
+        # node and a `partial: true` envelope, i.e. a run that asked for no
+        # storage reporting itself as partially failed. Meanwhile
+        # CostEstimatorService#declared_gb already clamped non-positive to "not
+        # requested", so the approval card showed no volume line at all — the
+        # quote and the actuator disagreed about the same input.
+        context "with a non-positive with_storage_gb" do
+          # Stubbed to SUCCEED, deliberately. If the guard lets a 0 through,
+          # the example has to fail on "the provisioner was called" and not on
+          # a nil result crashing the leg — a red that points at the wrong
+          # thing is a red that gets fixed the wrong way.
+          before do
+            allow(::System::VolumeManagementService).to receive(:provision)
+              .and_return(::System::Runtime::Result.ok(data: { volume: volume_stub }))
+            allow(::System::VolumeManagementService).to receive(:attach)
+              .and_return(::System::Runtime::Result.ok(data: { device: "/dev/sdb" }))
+          end
+
+          # Each shape is its own example rather than one loop, because they
+          # fail for different reasons and a loop reports only the first.
+          # (`"plenty"` used to sit in this map as a fourth silent shape —
+          # IMP-f85254148755 moved every unreadable declaration to the loud
+          # lane; see the unreadable-declaration context below. These three
+          # are the shapes that stay LEGITIMATELY silent: explicit numbers
+          # that request nothing.)
+          {
+            "integer 0"    => 0,
+            "string \"0\"" => "0",
+            "negative"     => -50
+          }.each do |label, value|
+            it "provisions no volume for #{label}" do
+              r = exec.execute(template_id: template.id, count: 2,
+                               provider_region_id: region.id,
+                               provider_instance_type_id: instance_type.id,
+                               with_storage_gb: value)
+
+              expect(r[:success]).to be true
+              expect(::System::VolumeManagementService).not_to have_received(:provision)
+              expect(r[:data][:outputs][:storage_volume_ids]).to be_empty
+              # The positive twin of the loud unreadable fork: an explicit
+              # non-positive is "no storage requested", never a failure.
+              expect(r[:data][:failures]).to be_empty
+              expect(r[:data][:planned_actions].map { |a| a[:step] })
+                .not_to include("provision_storage", "attach_volume")
+            end
+          end
+
+          # `true` rather than `{}` on purpose: `{}.blank?` was ALREADY true, so
+          # an empty-Hash example would pass identically before and after the
+          # fix and prove nothing about it. `true.blank?` is FALSE, so this
+          # shape used to reach `.to_i`, raise NoMethodError, and fail the
+          # WHOLE step through `failure(...)` — which returns no `:data`, so
+          # the instances the loop had already provisioned were reported to
+          # nobody. The `respond_to?` screen turned that crash into a skip
+          # (IMP-33fa6c51f05d); IMP-f85254148755 then turned the skip into a
+          # per-node failure entry (asserted in the unreadable-declaration
+          # context). What THIS example pins is the invariant both revisions
+          # preserve: the shape must never take out the step or orphan what
+          # the loop created.
+          it "does not let a shape with no numeric reading take out the step" do
+            r = exec.execute(template_id: template.id, count: 2,
+                             provider_region_id: region.id,
+                             provider_instance_type_id: instance_type.id,
+                             with_storage_gb: true)
+
+            expect(r[:success]).to be true
+            expect(::System::VolumeManagementService).not_to have_received(:provision)
+            # The orphan hazard: these ids are what rollback and teardown read.
+            expect(r[:data][:outputs][:node_instance_ids].size).to eq(2)
+          end
+
+          # Positive control for the four negatives above: same stubs, same
+          # call shape, only the value differs. Without it a broken harness
+          # (a mis-stubbed provisioner, a raise swallowed into `failures`)
+          # would read as a pass.
+          it "still provisions for a positive value" do
+            r = exec.execute(template_id: template.id, count: 2,
+                             provider_region_id: region.id,
+                             provider_instance_type_id: instance_type.id,
+                             with_storage_gb: 100)
+
+            expect(::System::VolumeManagementService).to have_received(:provision).twice
+            expect(r[:data][:outputs][:storage_volume_ids].size).to eq(2)
+          end
+
+          # The dry run is the operator's approval card. It has to agree with
+          # what execute does, or the card promises a volume the run will not
+          # create (build_plan carried the same defect via `present?`).
+          it "plans no storage steps for 0 in dry_run" do
+            r = exec.execute(template_id: template.id, count: 3,
+                             provider_region_id: region.id,
+                             provider_instance_type_id: instance_type.id,
+                             with_storage_gb: 0, dry_run: true)
+
+            steps = r[:data][:planned_actions].map { |a| a[:step] }
+            expect(steps).not_to include("provision_storage", "attach_volume")
+            # 3 × (create_node + provision_instance) and nothing else.
+            expect(r[:data][:planned_actions].size).to eq(6)
+          end
+        end
+      end
+
+      # IMP-f85254148755 — storage declaration coherence. Two halves of the
+      # same declaration surface:
+      #
+      #   (1) `storage_gb` is a tolerated alias on every quote surface —
+      #       CostEstimatorService#declared_gb reads it (`with_storage_gb`
+      #       first, first PRESENT value wins) and PlanSnapshotService labels
+      #       it — but this executor dropped it into `**_extras`, so a
+      #       hand-authored plan carrying the alias alone was QUOTED for a
+      #       volume nothing provisioned: the same quote/actuator key
+      #       disagreement class IMP-051509357291 removed.
+      #   (2) an UNREADABLE declaration ("plenty", true, a Hash) read as "no
+      #       storage requested" — silent. Ruled by the ratified 4db30efae
+      #       fork: requested-but-unusable fails LOUD (a per-node
+      #       provision_storage failure entry, partial envelope); absent and
+      #       explicit non-positive stay silent, because those are the shapes
+      #       that genuinely request nothing.
+      context "with the storage_gb alias (IMP-f85254148755)" do
+        # Capture the requested sizes rather than matching kwargs through
+        # `have_received(...).with` — the size ASKED FOR is the assertion.
+        let(:provisioned_sizes) { [] }
+
+        before do
+          allow(::System::VolumeManagementService).to receive(:provision) do |**kw|
+            provisioned_sizes << kw[:size_gb]
+            ::System::Runtime::Result.ok(data: { volume: volume_stub })
+          end
+          allow(::System::VolumeManagementService).to receive(:attach)
+            .and_return(::System::Runtime::Result.ok(data: { device: "/dev/sdb" }))
+        end
+
+        it "provisions a per-instance volume for a plan declaring storage_gb alone" do
+          r = exec.execute(template_id: template.id, count: 2,
+                           provider_region_id: region.id,
+                           provider_instance_type_id: instance_type.id,
+                           storage_gb: 50)
+
+          expect(r[:success]).to be true
+          expect(provisioned_sizes).to eq([ 50, 50 ])
+          expect(r[:data][:outputs][:storage_volume_ids].size).to eq(2)
+          expect(r[:data][:failures]).to be_empty
+        end
+
+        it "lets with_storage_gb win when both keys are present (the estimator's read order)" do
           r = exec.execute(template_id: template.id, count: 1,
                            provider_region_id: region.id,
                            provider_instance_type_id: instance_type.id,
-                           network_id: network_id)
+                           with_storage_gb: 20, storage_gb: 50)
 
           expect(r[:success]).to be true
-          expect(r[:data][:outputs][:sdwan_peer_ids].size).to eq(2)
-          expect(::Sdwan::TopologyCompiler).to have_received(:compile_for_network).with(network)
+          expect(provisioned_sizes).to eq([ 20 ])
+        end
+
+        it "reads an explicit with_storage_gb 0 as no-storage even when the alias is positive" do
+          # 0 is PRESENT, so it wins the alias resolution — exactly what
+          # declared_gb quotes (no volume line). The alias must not resurrect
+          # a request the canonical key explicitly zeroed.
+          r = exec.execute(template_id: template.id, count: 1,
+                           provider_region_id: region.id,
+                           provider_instance_type_id: instance_type.id,
+                           with_storage_gb: 0, storage_gb: 50)
+
+          expect(r[:success]).to be true
+          expect(provisioned_sizes).to be_empty
+          expect(r[:data][:failures]).to be_empty
+        end
+
+        it "plans the storage steps for the alias in dry_run, at the declared size" do
+          r = exec.execute(template_id: template.id, count: 1,
+                           provider_region_id: region.id,
+                           provider_instance_type_id: instance_type.id,
+                           storage_gb: 50, dry_run: true)
+
+          storage = r[:data][:planned_actions].find { |a| a[:step] == "provision_storage" }
+          expect(storage).not_to be_nil,
+                                 "no provision_storage planned: #{r[:data][:planned_actions].inspect}"
+          expect(storage[:size_gb]).to eq(50)
+          expect(r[:data][:planned_actions].map { |a| a[:step] }).to include("attach_volume")
+        end
+      end
+
+      context "with an unreadable storage declaration (IMP-f85254148755)" do
+        before do
+          allow(::System::VolumeManagementService).to receive(:provision)
+            .and_return(::System::Runtime::Result.ok(data: { volume: volume_stub }))
+          allow(::System::VolumeManagementService).to receive(:attach)
+            .and_return(::System::Runtime::Result.ok(data: { device: "/dev/sdb" }))
+        end
+
+        # Each shape is its own example: `"plenty"` HAS a to_i reading that
+        # lies (== 0), while `true` and a Hash have none at all — they take
+        # different guards to the same loud answer.
+        {
+          "a non-numeric string" => "plenty",
+          "true"                 => true,
+          "a Hash"               => { "size" => 50 }
+        }.each do |label, value|
+          it "records a per-node provision_storage failure for #{label} without failing the step" do
+            r = exec.execute(template_id: template.id, count: 2,
+                             provider_region_id: region.id,
+                             provider_instance_type_id: instance_type.id,
+                             with_storage_gb: value)
+
+            expect(r[:success]).to be true
+            expect(::System::VolumeManagementService).not_to have_received(:provision)
+            expect(r[:data][:outputs][:storage_volume_ids]).to be_empty
+            # One entry PER NODE, the same shape as every other per-node leg
+            # failure — requested-but-unusable fails loud (4db30efae fork).
+            storage_failures = r[:data][:failures].select { |f| f[:step] == "provision_storage" }
+            expect(storage_failures.size).to eq(2)
+            expect(storage_failures.map { |f| f[:node_id] }).to all(be_present)
+            expect(storage_failures.first[:error]).to include(value.inspect)
+            expect(r[:data][:partial]).to be true
+            # The loud entry must not cost the caller the compute it DID get.
+            expect(r[:data][:outputs][:node_instance_ids].size).to eq(2)
+          end
+        end
+
+        it "fails loud for an unreadable value arriving via the storage_gb alias" do
+          r = exec.execute(template_id: template.id, count: 1,
+                           provider_region_id: region.id,
+                           provider_instance_type_id: instance_type.id,
+                           storage_gb: "plenty")
+
+          expect(r[:success]).to be true
+          expect(r[:data][:failures].map { |f| f[:step] }).to eq([ "provision_storage" ])
+          expect(r[:data][:partial]).to be true
+        end
+
+        it "surfaces the unreadable declaration on the dry-run card too" do
+          # The card and the actuator consult the same answer —
+          # storage_requested?'s documented single-answer contract — so a run
+          # that will record failures must not preview as a clean plan.
+          r = exec.execute(template_id: template.id, count: 2,
+                           provider_region_id: region.id,
+                           provider_instance_type_id: instance_type.id,
+                           with_storage_gb: "plenty", dry_run: true)
+
+          expect(r[:data][:planned_actions].map { |a| a[:step] })
+            .not_to include("provision_storage", "attach_volume")
+          expect(r[:data][:failures].size).to eq(2)
+          expect(r[:data][:failures]).to all(include(step: "provision_storage"))
+          # Nothing was created, so the envelope is not partial.
+          expect(r[:data][:partial]).to be false
+        end
+      end
+
+      # IMP-94f778f92dba — network_id used to only compile a read-only view
+      # of the network's ALREADY-EXISTING peers and return THOSE ids as
+      # sdwan_peer_ids. Nothing put the instances this step provisioned onto
+      # the fabric, and every "scale-out produced a peer" oracle passed
+      # vacuously off the fleet that was already there. Real records
+      # throughout: an enrollment cannot be proven against a double.
+      context "with network_id" do
+        let(:network) do
+          ::Sdwan::Network.create!(account_id: account.id, name: "pfs-net-#{SecureRandom.hex(3)}")
+        end
+
+        # The pre-existing fleet the old implementation reported as its own
+        # output. Its peer id must never appear in sdwan_peer_ids.
+        let(:incumbent_instance) { sdwan_test_node_instance(node: sdwan_test_node(account: account)) }
+        let!(:incumbent_peer) do
+          ::Sdwan::PeerEnroller.call(network: network, node_instance: incumbent_instance)
+        end
+
+        # PeerEnroller needs a persisted host, so this context hands the
+        # provisioning stub real NodeInstance rows rather than instance_stub.
+        let(:provisioned_node) { sdwan_test_node(account: account) }
+        let(:provisioned_instances) do
+          [ sdwan_test_node_instance(node: provisioned_node),
+            sdwan_test_node_instance(node: provisioned_node) ]
+        end
+
+        before do
+          queue = provisioned_instances.dup
+          allow(::System::ProvisioningService).to receive(:provision_instance) do
+            ::System::Runtime::Result.ok(data: { instance: queue.shift,
+                                                 cloud_instance_id: "ci-#{SecureRandom.hex(2)}" })
+          end
+        end
+
+        def provision_two
+          exec.execute(template_id: template.id, count: 2,
+                       provider_region_id: region.id,
+                       provider_instance_type_id: instance_type.id,
+                       network_id: network.id)
+        end
+
+        it "enrolls every instance it provisioned as a peer on the network" do
+          r = provision_two
+
+          expect(r[:success]).to be true
+          enrolled = ::Sdwan::Peer.where(node_instance_id: provisioned_instances.map(&:id))
+          expect(enrolled.count).to eq(2)
+          expect(r[:data][:outputs][:sdwan_peer_ids]).to match_array(enrolled.pluck(:id))
+          expect(r[:data][:failures]).to be_empty
+        end
+
+        it "reports only the peers it created — never the network's pre-existing ones" do
+          r = provision_two
+
+          expect(r[:data][:outputs][:sdwan_peer_ids]).not_to include(incumbent_peer.id)
+          expect(r[:data][:planned_actions].select { |a| a[:step] == "attach_sdwan_peer" }.size).to eq(2)
+        end
+
+        it "records an enrollment failure and keeps the provisioned instances instead of raising" do
+          allow(::Sdwan::PeerEnroller).to receive(:call).and_raise(StandardError, "vrf table exhausted")
+
+          r = provision_two
+
+          expect(r[:success]).to be true
+          expect(r[:data][:outputs][:node_instance_ids].size).to eq(2)
+          expect(r[:data][:outputs][:sdwan_peer_ids]).to be_empty
+          expect(r[:data][:failures].map { |f| f[:step] }).to eq([ "attach_sdwan_peer", "attach_sdwan_peer" ])
+          expect(r[:data][:partial]).to be true
         end
       end
     end
@@ -237,7 +644,7 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
     it "terminates instances and deletes volumes in reverse order, returning success when all clear" do
       instance_a = instance_double("System::NodeInstance", id: instance_id_a)
       instance_b = instance_double("System::NodeInstance", id: instance_id_b)
-      volume     = instance_double("System::ProviderVolume", id: volume_id)
+      volume     = instance_double("System::ProviderVolume", id: volume_id, attached?: false)
 
       allow(::System::NodeInstance).to receive(:find_by).with(id: instance_id_a).and_return(instance_a)
       allow(::System::NodeInstance).to receive(:find_by).with(id: instance_id_b).and_return(instance_b)
@@ -277,7 +684,7 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
       expect(result[:errors].first[:error]).to match(/provider rejected/)
     end
 
-    it "ignores extra kwargs that the runner may forward (sdwan_peer_ids, node_ids, etc.)" do
+    it "ignores extra kwargs that the runner may forward (node_ids, etc.) and unknown peer ids" do
       result = exec.rollback_provision_full_stack(
         node_instance_ids: [],
         storage_volume_ids: [],
@@ -287,6 +694,70 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
 
       expect(result[:success]).to be true
       expect(result[:errors]).to be_empty
+    end
+
+    # IMP-94f778f92dba — the executor enrols peers now, so rollback owns them.
+    # Leaning on terminate_instance's auto-detach is not enough: it lives in
+    # finalize_termination!, and five of terminate_instance's exits never reach
+    # it — a missing cloud_instance_id, an unknown provider, the ProviderError
+    # rescue, and (exercised here) a provider-side terminate failure all return
+    # Result.err, while `rescue ArgumentError` re-raises. Those are precisely
+    # the rollbacks that matter, and they would leave the peer live on the
+    # fabric.
+    it "detaches enrolled peers even when the provider rejects the terminate" do
+      inst = sdwan_test_node_instance(node: sdwan_test_node(account: account))
+      network = ::Sdwan::Network.create!(account_id: account.id, name: "pfs-rb-#{SecureRandom.hex(3)}")
+      peer = ::Sdwan::PeerEnroller.call(network: network, node_instance: inst)
+
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .and_return(::System::Runtime::Result.err(error: "provider rejected terminate"))
+
+      result = exec.rollback_provision_full_stack(
+        node_instance_ids: [ inst.id ],
+        storage_volume_ids: [],
+        sdwan_peer_ids: [ peer.id ]
+      )
+
+      expect(::Sdwan::Peer.where(id: peer.id)).to be_empty
+      expect(result[:success]).to be false
+      expect(result[:errors].map { |e| e[:resource] }).to eq([ "node_instance" ])
+    end
+
+    # IMP-093378034fb4 — the executor attaches what it provisions now, so
+    # rollback owns the detach too. VolumeManagementService#delete REFUSES an
+    # attached volume ("Volume is attached, detach first"), and once the
+    # instance is terminated there is nothing left to detach from — so the
+    # volume pass has to be detach-then-delete AND has to run BEFORE the
+    # instances. Same order, for the same reason, as
+    # ScaleProjectExecutor#teardown_resources. Without both, adding the attach
+    # would simply move the leak from scale-in to rollback.
+    it "detaches an attached volume and deletes it BEFORE terminating its instance" do
+      inst = create(:system_node_instance, :running,
+                    node: create(:system_node, account: account, node_template: template),
+                    provider_region: region, provider_instance_type: instance_type)
+      volume = create(:system_provider_volume, :attached, account: account,
+                      provider_region: region, node_instance: inst)
+
+      adapter = instance_double(::System::Providers::MockProvider,
+                                detach_volume: { success: true },
+                                delete_volume: { success: true })
+      allow(::System::Providers::Registry).to receive(:for_volume).and_return(adapter)
+
+      volume_gone_at_terminate = nil
+      allow(::System::ProvisioningService).to receive(:terminate_instance) do
+        volume_gone_at_terminate = ::System::ProviderVolume.where(id: volume.id).none?
+        ::System::Runtime::Result.ok
+      end
+
+      result = exec.rollback_provision_full_stack(
+        node_instance_ids: [ inst.id ], storage_volume_ids: [ volume.id ]
+      )
+
+      expect(result[:errors]).to be_empty
+      expect(::System::ProviderVolume.where(id: volume.id)).to be_empty
+      # Ordering IS the assertion: a delete attempted after the terminate
+      # would have had nothing left to detach from.
+      expect(volume_gone_at_terminate).to be(true)
     end
   end
 end

@@ -831,6 +831,96 @@ describe('PeerLivenessMonitor', () => {
       });
     });
 
+    // ── Current broadcast contract ────────────────────────────────────────────
+    // System::FederationPeer#broadcast_peer_state! (server/app/models/system/
+    // federation_peer.rb) stamps `federation_peer_id` — NOT platform_peer_id /
+    // peer_id / remote_instance_url — plus peer_kind/status/previous_status/
+    // last_heartbeat_at/reason, under kind "federation.peer.<status|heartbeat>".
+    // These payloads mirror that emitter literally; the legacy-key tests above
+    // are the positive twins proving older payload shapes still attribute.
+
+    it('attributes a HEAD-shaped broadcast_peer_state! status event (federation_peer_id) to the right row', async () => {
+      mockGet.mockResolvedValue(peersListEnvelope([PEER_ACTIVE]));
+
+      renderMonitor();
+
+      await waitFor(() =>
+        expect(screen.getByTestId('liveness-row-peer-active-1')).toBeInTheDocument(),
+      );
+
+      act(() => {
+        capturedOnMessage?.({
+          kind: 'federation.peer.degraded',
+          payload: {
+            federation_peer_id: 'peer-active-1',
+            peer_kind: 'platform',
+            status: 'degraded',
+            previous_status: 'active',
+            last_heartbeat_at: new Date(Date.now() - 5_000).toISOString(),
+          },
+          emitted_at: new Date().toISOString(),
+        });
+      });
+
+      // Row is attributed: live pulse appears AND the status pill flips.
+      await waitFor(() => {
+        expect(screen.getByTitle('Live event received this session')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('liveness-row-peer-active-1').textContent).toContain('degraded');
+    });
+
+    it('bumps the row live on a HEAD-shaped federation.peer.heartbeat event (federation_peer_id)', async () => {
+      mockGet.mockResolvedValue(peersListEnvelope([PEER_ACTIVE]));
+
+      renderMonitor();
+
+      await waitFor(() =>
+        expect(screen.getByTestId('liveness-row-peer-active-1')).toBeInTheDocument(),
+      );
+
+      act(() => {
+        capturedOnMessage?.({
+          kind: 'federation.peer.heartbeat',
+          payload: {
+            federation_peer_id: 'peer-active-1',
+            peer_kind: 'platform',
+            status: 'active',
+            last_heartbeat_at: new Date().toISOString(),
+          },
+          emitted_at: new Date().toISOString(),
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Live event received this session')).toBeInTheDocument();
+      });
+    });
+
+    it('does not attribute a federation_peer_id event to a non-matching row', async () => {
+      mockGet.mockResolvedValue(peersListEnvelope([PEER_ACTIVE]));
+
+      renderMonitor();
+
+      await waitFor(() =>
+        expect(screen.getByTestId('liveness-row-peer-active-1')).toBeInTheDocument(),
+      );
+
+      act(() => {
+        capturedOnMessage?.({
+          kind: 'federation.peer.revoked',
+          payload: {
+            federation_peer_id: 'peer-unknown-999',
+            peer_kind: 'platform',
+            status: 'revoked',
+            reason: 'operator revoked',
+          },
+          emitted_at: new Date().toISOString(),
+        });
+      });
+
+      expect(screen.queryByTitle('Live event received this session')).not.toBeInTheDocument();
+    });
+
     it('accepts events with a "peer" substring in the kind', async () => {
       mockGet.mockResolvedValue(peersListEnvelope([PEER_ACTIVE]));
 

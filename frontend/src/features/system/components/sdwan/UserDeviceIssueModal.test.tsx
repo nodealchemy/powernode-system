@@ -584,4 +584,40 @@ describe('UserDeviceIssueModal', () => {
       ),
     );
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  it('shows the pending-approval notification (not success) and skips onIssued when the issue is parked', async () => {
+    mockIssueUserDevice.mockResolvedValue({
+      pending: true,
+      deferred_operation_id: 'dop-1',
+      action_category: 'sdwan.user_device_issue',
+      approval_request_id: 'ar-1',
+      message: 'Approval required',
+    });
+    const onIssued = jest.fn();
+    const onClose = jest.fn();
+
+    renderModal({ onIssued, onClose });
+
+    fireEvent.change(getLabelInput(), { target: { value: 'macbook' } });
+    fireEvent.click(getIssueButton());
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+    expect(onIssued).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
 });

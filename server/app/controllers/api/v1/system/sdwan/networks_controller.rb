@@ -39,13 +39,51 @@ module Api
             end
           end
 
+          # IMP-c159cc6777b1: the update routes through Ai::AutonomyGate.
+          # Sdwan::Executors::UpdateNetwork existed but had no caller, so the
+          # seeded sdwan.network_update policy matched nothing — while DELETE
+          # below has been gated since the destructive-ops slice. Flipping a
+          # network's status / routing_protocol / advertise_overlay_subnet
+          # rewrites BGP and AllowedIPs for every peer, so it is at least as
+          # consequential as removing the network.
+          #
+          # Response contract mirrors DELETE: an operator carries no agent, and
+          # (for accounts with no seeded operator rows) InterventionPolicyService
+          # falls through to its require_approval default — 202, the change
+          # applied only at approval time by the executor, since gate! never
+          # calls on_proceed on its :pending branch. 200 with the row is the
+          # :proceed branch.
+          #
+          # No re-parent anchor is needed here (unlike UpdatePortMapping):
+          # Sdwan::Network is the top of the SDWAN tenancy tree — every child
+          # points at it via sdwan_network_id and it carries no re-pointable
+          # tenancy-bearing FK of its own. account_id is its only tenancy key —
+          # Executors::Base#attrs strips it (so a mass-assigned account_id cannot
+          # move the row) and resolve_scoped refuses any network_id outside the
+          # operation's account.
           def update
             require_permission("system.sdwan.networks.manage")
-            if @network.update(network_params)
-              render_success(network: serialize_network_full(@network.reload))
-            else
-              render_validation_error(@network)
-            end
+            attrs = network_params.to_h
+            # Validated before the gate so an unsaveable payload keeps its
+            # field-level 422 and opens no audit row for an operation that could
+            # never run. Never saved — UpdateNetwork's update! stays the only
+            # writer, and it takes the account from the operation.
+            @network.assign_attributes(attrs)
+            return render_validation_error(@network) unless @network.valid?
+
+            # Discard the un-gated in-memory changes: nothing may reach the row
+            # except through the executor.
+            @network.reload
+
+            gate!(
+              action_category: "sdwan.network_update",
+              executor_class: "Sdwan::Executors::UpdateNetwork",
+              params: { network_id: @network.id, attributes: attrs },
+              source_type: "Sdwan::Network",
+              source_id: @network.id,
+              description: "Update SDWAN network '#{@network.name}'",
+              on_proceed: ->(_r) { render_success(network: serialize_network_full(@network.reload)) }
+            )
           end
 
           def destroy

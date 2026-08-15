@@ -84,6 +84,7 @@ const PEER_REVOKED = {
   signed_at: null,
   expires_at: null,
   has_trust_jwt: false,
+  revocation_reason: 'remote signing key compromised',
   created_at: '2026-01-01T00:00:00Z',
 };
 
@@ -308,6 +309,44 @@ describe('FederationPeerList', () => {
     ).not.toBeInTheDocument();
   });
 
+  // ── Revocation reason display ────────────────────────────────────────────
+
+  it('shows the revocation reason inline for a revoked peer', async () => {
+    mockGet.mockResolvedValue(peersResponse([PEER_REVOKED]));
+    render(<FederationPeerList />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/remote signing key compromised/i),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it('shows the revocation reason in the expanded detail panel', async () => {
+    mockGet.mockResolvedValue(peersResponse([PEER_REVOKED]));
+    render(<FederationPeerList />);
+
+    fireEvent.click(await waitFor(() => screen.getByTitle('Expand details')));
+    await waitFor(() =>
+      expect(screen.getByText('Revocation reason')).toBeInTheDocument(),
+    );
+    // The reason text now appears twice: the inline row hint + the detail panel.
+    expect(
+      screen.getAllByText(/remote signing key compromised/i).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('does not show a revocation reason section for a non-revoked peer', async () => {
+    mockGet.mockResolvedValue(peersResponse([PEER_ACTIVE]));
+    render(<FederationPeerList />);
+
+    fireEvent.click(await waitFor(() => screen.getByTitle('Expand details')));
+    await waitFor(() =>
+      expect(screen.getByText('Trust JWT')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('Revocation reason')).not.toBeInTheDocument();
+  });
+
   // ── Revoke flow ────────────────────────────────────────────────────────────
 
   it('opens the revoke confirm modal when the Revoke button is clicked', async () => {
@@ -368,6 +407,63 @@ describe('FederationPeerList', () => {
       expect(mockAddNotification).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'success', message: 'Peer revoked' }),
       ),
+    );
+  });
+
+  it('collects an optional reason and sends it with the revoke request', async () => {
+    mockGet
+      .mockResolvedValueOnce(peersResponse([PEER_PROPOSED]))
+      .mockResolvedValueOnce(peersResponse([]));
+    mockPost.mockResolvedValue(
+      envelope({ federation_peer: { ...PEER_PROPOSED, status: 'revoked', revocation_reason: 'remote signing key compromised' } }),
+    );
+
+    render(<FederationPeerList />);
+
+    fireEvent.click(
+      await waitFor(() =>
+        screen.getByLabelText('Revoke peer https://remote-a.example.com'),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByText('Revoke federation peer')).toBeInTheDocument(),
+    );
+
+    fireEvent.change(screen.getByLabelText(/reason \(optional\)/i), {
+      target: { value: 'remote signing key compromised' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^revoke$/i }));
+
+    await waitFor(() =>
+      expect(mockPost).toHaveBeenCalledWith(
+        '/system/sdwan/federation_peers/fp-1/revoke',
+        { reason: 'remote signing key compromised' },
+      ),
+    );
+  });
+
+  it('resets the reason field between separate revoke attempts', async () => {
+    mockGet.mockResolvedValue(peersResponse([PEER_PROPOSED]));
+    render(<FederationPeerList />);
+
+    fireEvent.click(
+      await waitFor(() =>
+        screen.getByLabelText('Revoke peer https://remote-a.example.com'),
+      ),
+    );
+    const reasonInput = await waitFor(() => screen.getByLabelText(/reason \(optional\)/i));
+    fireEvent.change(reasonInput, { target: { value: 'draft reason' } });
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByText('Revoke federation peer')).not.toBeInTheDocument(),
+    );
+
+    fireEvent.click(
+      screen.getByLabelText('Revoke peer https://remote-a.example.com'),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText(/reason \(optional\)/i)).toHaveValue(''),
     );
   });
 
@@ -549,6 +645,83 @@ describe('FederationPeerList', () => {
       expect(
         screen.getAllByText('Remote instance URL').length,
       ).toBe(2),
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  const pendingEnvelope = (action_category: string) => ({
+    status: 202,
+    data: {
+      success: true,
+      data: {
+        pending: true,
+        deferred_operation_id: 'dop-1',
+        action_category,
+        approval_request_id: 'ar-1',
+        message: 'Approval required',
+      },
+    },
+  });
+
+  it('shows the pending-approval notification (not success) when the revoke is parked', async () => {
+    mockGet.mockResolvedValue(peersResponse([PEER_PROPOSED]));
+    mockPost.mockResolvedValue(pendingEnvelope('sdwan.federation_peer_revoke'));
+
+    render(<FederationPeerList />);
+
+    fireEvent.click(
+      await waitFor(() =>
+        screen.getByLabelText('Revoke peer https://remote-a.example.com'),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByText('Revoke federation peer')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^revoke$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
+
+  it('shows the pending-approval notification (not success) when the delete is parked', async () => {
+    mockGet.mockResolvedValue(peersResponse([PEER_ACTIVE]));
+    mockDelete.mockResolvedValue(pendingEnvelope('sdwan.federation_peer_revoke'));
+
+    render(<FederationPeerList />);
+
+    fireEvent.click(
+      await waitFor(() =>
+        screen.getByLabelText('Delete peer https://remote-b.example.com'),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByText('Delete federation peer')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
     );
   });
 });

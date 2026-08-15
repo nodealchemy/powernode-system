@@ -365,4 +365,39 @@ RSpec.describe System::Ai::Skills::MultiTenantIsolationExecutor do
       expect(rb[:errors]).to be_empty
     end
   end
+
+  # IMP-134062908364 (Part A) — the rescue-StandardError-continue at
+  # #create_firewall_rule (multi_tenant_isolation_executor.rb:413-415) is the
+  # documented per-rule failure contract, and it must hold for the
+  # CrossAccountError Sdwan::Executors::CreateFirewallRule now raises when handed
+  # a network outside @account. The composition collects it as a keyed failure
+  # rather than aborting the whole slice, no rule is planted in the foreign
+  # network, and the collected message is SAFE — it names the caller's OWN
+  # account (@account), never the victim's identifiers. Before the fix the bare
+  # .find inside CreateFirewallRule planted the rule in the foreign overlay and
+  # nothing was recorded as a failure.
+  describe "#create_firewall_rule cross-account contract" do
+    let(:foreign) { create(:sdwan_network) }
+    let(:rule_attributes) do
+      { name: "tenant-acme-allow-intra", priority: 100, action: "accept",
+        direction: "both", protocol: "any" }
+    end
+
+    it "records the cross-account refusal as a per-rule failure instead of planting the rule" do
+      failures = []
+
+      result = exec.send(:create_firewall_rule,
+                         network: foreign, attributes: rule_attributes, failures: failures)
+
+      expect(result).to be_nil
+      expect(foreign.firewall_rules.count).to eq(0),
+                                              "a foreign network reached CreateFirewallRule and a rule was planted in the victim's overlay"
+      expect(failures.size).to eq(1)
+      expect(failures.first).to include(step: "create_firewall_rule", name: "tenant-acme-allow-intra")
+      expect(failures.first[:error]).to include(account.id),
+                                        "the recorded failure must name the caller's OWN account"
+      expect(failures.first[:error]).not_to include(foreign.account_id),
+                                            "the recorded failure must not name the victim's account"
+    end
+  end
 end

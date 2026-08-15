@@ -4,6 +4,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import type {
   SdwanFirewallRule,
   SdwanFirewallAction,
@@ -92,13 +94,18 @@ export const FirewallRuleEditModal: React.FC<FirewallRuleEditModalProps> = ({
     }
     setSubmitting(true);
     try {
-      await sdwanApi.updateFirewallRule(networkId, rule.id, {
+      const result = await sdwanApi.updateFirewallRule(networkId, rule.id, {
         name: name.trim(),
         priority, action, direction, protocol, enabled,
         src_selector: buildSelector(srcKind, srcValue),
         dst_selector: buildSelector(dstKind, dstValue),
         port_range: portFrom !== '' ? { from: Number(portFrom), to: Number(portTo) } : null,
       });
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`updating firewall rule "${name}"`, result));
+        onClose();
+        return;
+      }
       addNotification({ type: 'success', message: `Rule "${name}" updated` });
       onSaved();
       onClose();

@@ -30,6 +30,8 @@ module Sdwan
   class RoutePolicy < ApplicationRecord
     self.table_name = "system_sdwan_route_policies"
 
+    include Sdwan::LineSafeName
+
     SCOPES     = %w[account network peer].freeze
     DIRECTIONS = %w[import export].freeze
     ACTION_TYPES = %w[accept reject].freeze

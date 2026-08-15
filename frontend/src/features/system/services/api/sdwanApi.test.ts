@@ -1376,3 +1376,155 @@ describe('sdwanApi.getFlowSamples', () => {
     );
   });
 });
+
+// ──── Gated mutations: 202 pending-approval passthrough (IMP-87ec6f651f07) ────
+//
+// Gated SDWAN verbs answer 202 with `{pending: true, deferred_operation_id,
+// action_category, approval_request_id, message}` inside the standard envelope
+// (core `render_pending_approval`). The API layer must surface that marker to
+// callers instead of silently returning `undefined` (resource extraction) or
+// discarding the body (deletes) — otherwise the UI toasts "saved"/"deleted"
+// for an operation that is actually parked awaiting approval.
+
+describe('gated mutations surface the 202 pending-approval marker', () => {
+  const PENDING = {
+    pending: true,
+    deferred_operation_id: 'dop-1',
+    action_category: 'sdwan.port_mapping_create',
+    approval_request_id: 'ar-1',
+    message: 'Approval required: sdwan.port_mapping_create',
+  };
+
+  const pendingEnvelope = (action_category: string) => ({
+    status: 202,
+    data: { success: true, data: { ...PENDING, action_category } },
+  });
+
+  it('createPortMapping returns the pending marker on 202', async () => {
+    mockPost.mockResolvedValue(pendingEnvelope('sdwan.port_mapping_create'));
+
+    const result = await sdwanApi.createPortMapping('net-1', {
+      name: 'web-http', sdwan_peer_id: 'peer-1', listen_port: 80, protocol: 'tcp',
+    });
+
+    expect(result).toMatchObject({ pending: true, approval_request_id: 'ar-1' });
+  });
+
+  it('updatePortMapping returns the pending marker on 202', async () => {
+    mockPatch.mockResolvedValue(pendingEnvelope('sdwan.port_mapping_update'));
+
+    const result = await sdwanApi.updatePortMapping('net-1', 'pm-1', { enabled: false });
+
+    expect(result).toMatchObject({ pending: true, deferred_operation_id: 'dop-1' });
+  });
+
+  it('deletePortMapping returns the pending marker on 202 instead of discarding the body', async () => {
+    mockDelete.mockResolvedValue(pendingEnvelope('sdwan.port_mapping_delete'));
+
+    const result = await sdwanApi.deletePortMapping('net-1', 'pm-1');
+
+    expect(result).toMatchObject({ pending: true, approval_request_id: 'ar-1' });
+  });
+
+  it('deleteNetwork returns the pending marker on 202', async () => {
+    mockDelete.mockResolvedValue(pendingEnvelope('sdwan.network_delete'));
+
+    const result = await sdwanApi.deleteNetwork('net-1');
+
+    expect(result).toMatchObject({ pending: true });
+  });
+
+  it('updateNetwork returns the pending marker on 202', async () => {
+    mockPut.mockResolvedValue(pendingEnvelope('sdwan.network_update'));
+
+    const result = await sdwanApi.updateNetwork('net-1', { name: 'renamed' });
+
+    expect(result).toMatchObject({ pending: true });
+  });
+
+  it('createVirtualIp returns the pending marker on 202', async () => {
+    mockPost.mockResolvedValue(pendingEnvelope('sdwan.virtual_ip_create'));
+
+    const result = await sdwanApi.createVirtualIp('net-1', { name: 'vip', cidr: '192.0.2.1/32' });
+
+    expect(result).toMatchObject({ pending: true });
+  });
+
+  it('deleteVirtualIp returns the pending marker on 202', async () => {
+    mockDelete.mockResolvedValue(pendingEnvelope('sdwan.virtual_ip_delete'));
+
+    const result = await sdwanApi.deleteVirtualIp('net-1', 'vip-1');
+
+    expect(result).toMatchObject({ pending: true });
+  });
+
+  it('failoverVirtualIp returns the pending marker on 202', async () => {
+    mockPost.mockResolvedValue(pendingEnvelope('system.sdwan_vip_failover'));
+
+    const result = await sdwanApi.failoverVirtualIp('net-1', 'vip-1');
+
+    expect(result).toMatchObject({ pending: true });
+  });
+
+  it('revokeAccessGrant returns the pending marker on 202', async () => {
+    mockPost.mockResolvedValue(pendingEnvelope('sdwan.access_grant_revoke'));
+
+    const result = await sdwanApi.revokeAccessGrant('net-1', 'ag-1');
+
+    expect(result).toMatchObject({ pending: true });
+  });
+
+  it('proposeFederationPeer returns the pending marker on 202', async () => {
+    mockPost.mockResolvedValue(pendingEnvelope('sdwan.federation_peer_propose'));
+
+    const result = await sdwanApi.proposeFederationPeer({ remote_instance_url: 'https://peer.example' });
+
+    expect(result).toMatchObject({ pending: true });
+  });
+
+  it('createRoutePolicy returns the pending marker on 202', async () => {
+    mockPost.mockResolvedValue(pendingEnvelope('sdwan.route_policy_create'));
+
+    const result = await sdwanApi.createRoutePolicy({ name: 'p', scope: 'network', direction: 'import' } as never);
+
+    expect(result).toMatchObject({ pending: true });
+  });
+
+  it('deleteRoutePolicy returns the pending marker on 202', async () => {
+    mockDelete.mockResolvedValue(pendingEnvelope('sdwan.route_policy_delete'));
+
+    const result = await sdwanApi.deleteRoutePolicy('rp-1');
+
+    expect(result).toMatchObject({ pending: true });
+  });
+
+  it('detachPeer returns the pending marker on 202', async () => {
+    mockDelete.mockResolvedValue(pendingEnvelope('sdwan.peer_delete'));
+
+    const result = await sdwanApi.detachPeer('net-1', 'peer-1');
+
+    expect(result).toMatchObject({ pending: true });
+  });
+
+  // sdwan.peer_update is gated server-side but PeerEditModal bypassed the
+  // shared API layer with a direct apiClient.put — updatePeer must exist here
+  // so the pending contract covers the peer update path too.
+  it('updatePeer PUTs through the shared layer and returns the pending marker on 202', async () => {
+    mockPut.mockResolvedValue(pendingEnvelope('sdwan.peer_update'));
+
+    const result = await sdwanApi.updatePeer('net-1', 'peer-1', { publicly_reachable: true });
+
+    expect(mockPut).toHaveBeenCalledWith('/system/sdwan/networks/net-1/peers/peer-1', {
+      peer: { publicly_reachable: true },
+    });
+    expect(result).toMatchObject({ pending: true });
+  });
+
+  it('updatePeer returns the peer on the non-pending branch', async () => {
+    mockPut.mockResolvedValue(envelope({ peer: { ...PEER, publicly_reachable: false } }));
+
+    const result = await sdwanApi.updatePeer('net-1', 'peer-1', { publicly_reachable: false });
+
+    expect(result).toMatchObject({ id: 'peer-1', publicly_reachable: false });
+  });
+});

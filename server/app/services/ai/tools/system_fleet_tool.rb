@@ -836,23 +836,22 @@ module Ai
           # the chat UI renders as an inline form. With full args, calls
           # the orchestrator and provisions the new platform.
           "system_deploy_platform" => {
-            description: "Deploy a new Powernode platform. Two execution shapes: (1) call with no `mode` to receive a wizard-card payload describing the form fields the operator should fill in — the chat UI renders this inline; (2) call with full args (mode, name, template_slug, [parent_url, spawn_mode for federated]) to actually provision. Standalone = sovereign platform; federated = peers back with this platform via P6 spawn flow. Federated mode returns a single-use acceptance_token that must be captured immediately.",
+            description: "Deploy a new Powernode platform. Two execution shapes: (1) call with no `mode` to receive a wizard-card payload describing the form fields the operator should fill in — the chat UI renders this inline; (2) call with mode 'standalone' plus full args (name, template_slug) to actually provision a sovereign platform. Federated deployment is NOT available on this surface — it mints a single-use acceptance token, and a tool result reaches the model provider and is persisted with the conversation, so the plaintext cannot be delivered here. Federated spawns go through the operator API (POST /api/v1/system/platform/deployments), which runs the same orchestrator and reveals the acceptance_token once in its HTTP response.",
             parameters: {
               mode: { type: "string", required: false,
-                      description: "standalone | federated. Omit to receive the wizard payload." },
+                      description: "standalone. Omit to receive the wizard payload. 'federated' is refused on this surface with the operator path to use instead." },
               name: { type: "string", required: false,
                       description: "Display name for the new deployment (required when mode is set)." },
               template_slug: { type: "string", required: false,
                                description: "NodeTemplate to provision from (defaults to powernode-hub)." },
               parent_url: { type: "string", required: false,
-                            description: "Required for federated mode — reachable URL of THIS platform." },
+                            description: "Federated-only — reachable URL of THIS platform. Supply it on the operator API path; federated mode is refused here." },
               spawn_mode: { type: "string", required: false,
-                            description: "Required for federated mode — one of managed_child, autonomous_peer, cluster_member." },
+                            description: "Federated-only — one of managed_child, autonomous_peer, cluster_member. Supply it on the operator API path; federated mode is refused here." },
               region: { type: "string", required: false, description: "Provider region to deploy the new platform into" },
               instance_size: { type: "string", required: false, description: "Instance size/SKU hint for the deployment's compute" },
               service_role: { type: "string", required: false, description: "Service role for the deployment (selects the workload profile)" },
-              public_dns_hostname: { type: "string", required: false, description: "Public DNS hostname to assign to the new platform" },
-              token_ttl_seconds: { type: "integer", required: false, description: "TTL (seconds) for the single-use federated acceptance_token" }
+              public_dns_hostname: { type: "string", required: false, description: "Public DNS hostname to assign to the new platform" }
             }
           },
 
@@ -3091,9 +3090,56 @@ module Ai
       # The bridge service (CARD_TOOLS) maps this tool name to the
       # `platform_deployment_wizard` ChatCard kind so the frontend
       # renders the form inline rather than showing the JSON envelope.
+      #
+      # Federated deployment is NOT available on this surface (IMP-c0687cfb3a05).
+      #
+      # A federated deploy always mints a single-use federation acceptance
+      # token (System::SpawnPlatformService#spawn! — the mint is unconditional,
+      # not a flag), and the plaintext came back in the tool result TWICE: once
+      # as `acceptance_token` and again inside `spawn_payload`.
+      #
+      # A tool result does not stop at its caller. Ai::AgentToolBridgeService
+      # appends the full result JSON to the conversation as a `role: "tool"`
+      # message, which is sent to the model provider on the next iteration of
+      # the agent loop. Worse than the sdwan sibling (IMP-3a32dc649043): this
+      # action is in that service's CARD_TOOLS map, so the full UNTRUNCATED data
+      # payload is also copied into a chat card and written to
+      # ai_messages.content_metadata — at-rest persistence, not just transit.
+      # Ai::SensitiveParams cannot intervene on either (#filter returns non-Hash
+      # input unchanged, and the card payload is never routed through it).
+      #
+      # The refusal is up front, before the orchestrator runs, and deliberately
+      # not a silent omission: minting the token and withholding it would leave
+      # a FederationPeer whose only means of acceptance is a secret nobody ever
+      # saw, plus a child VM already provisioned against it. Standalone
+      # deployment and the wizard payload stay fully supported here; the
+      # federated path belongs to the operator API, which renders to an HTTP
+      # response rather than into an agent's context.
+      #
+      # The predicate normalizes rather than comparing to a literal: MCP
+      # arguments arrive from JSON with no coercion anywhere on the path (the
+      # bridge parses and stringifies keys; BaseTool only checks required-key
+      # presence). Normalizing is strictly broader than the executor's own
+      # `MODES.include?(mode.to_s)`, so no spelling that would reach the mint
+      # can walk past a refusal whose whole contract is that it is loud.
       def deploy_platform(params)
+        if federated_mode?(params[:mode])
+          return error_result(
+            "federated deployment is not available over the MCP tool surface: it mints a " \
+            "single-use federation acceptance token, and a tool result is forwarded to the " \
+            "model provider and persisted with the conversation, so the plaintext cannot be " \
+            "delivered here without disclosing signing material. Deploy federated platforms " \
+            "over the operator API instead — POST /api/v1/system/platform/deployments " \
+            "(permission system.platform.deploy) runs the same orchestrator and reveals the " \
+            "acceptance_token exactly once in its HTTP response. Standalone deployment and " \
+            "the wizard payload are supported here."
+          )
+        end
+
         executor = build_skill_executor(::System::Ai::Skills::PlatformDeployExecutor)
-        # Pass through every relevant param; nil/blank get filtered by the executor
+        # Pass through every relevant param; nil/blank get filtered by the executor.
+        # token_ttl_seconds is not forwarded — it only ever tuned the acceptance
+        # token's expiry, which this surface no longer mints.
         execute_args = {
           mode: params[:mode].presence,
           name: params[:name].presence,
@@ -3103,13 +3149,19 @@ module Ai
           region: params[:region].presence,
           instance_size: params[:instance_size].presence,
           service_role: params[:service_role].presence,
-          public_dns_hostname: params[:public_dns_hostname].presence,
-          token_ttl_seconds: params[:token_ttl_seconds].presence
+          public_dns_hostname: params[:public_dns_hostname].presence
         }.compact
 
         result = executor.execute(**execute_args)
         return error_result(result[:error]) unless result[:success]
         success_result(result[:data])
+      end
+
+      # True for any spelling of "federated" the deploy path would honour.
+      # PlatformDeployExecutor matches on `mode.to_s`, so stripping and
+      # downcasing here refuses a superset of what could reach the mint.
+      def federated_mode?(mode)
+        mode.to_s.strip.downcase == "federated"
       end
 
       # === Storage volume CRUD (MCP.1) ===

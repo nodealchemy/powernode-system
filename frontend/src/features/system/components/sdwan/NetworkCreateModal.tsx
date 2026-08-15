@@ -4,6 +4,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 
 interface NetworkCreateModalProps {
   isOpen: boolean;
@@ -47,11 +49,17 @@ export const NetworkCreateModal: React.FC<NetworkCreateModalProps> = ({ isOpen, 
     }
     setSubmitting(true);
     try {
-      await sdwanApi.createNetwork({
+      const result = await sdwanApi.createNetwork({
         name: name.trim(),
         description: description.trim() || undefined,
         settings: defaultPolicy === 'drop' ? { firewall_default_policy: 'drop' } : undefined,
       });
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`creating network "${name}"`, result));
+        reset();
+        onClose();
+        return;
+      }
       addNotification({ type: 'success', message: `Network "${name}" created` });
       onCreated();
       reset();

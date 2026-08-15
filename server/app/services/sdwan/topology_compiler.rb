@@ -240,13 +240,13 @@ module Sdwan
     # the host has no SDWAN peers yet — the agent's OvnControllerApplier
     # validates this and skips ovn-controller startup until populated.
     def self.derive_sdwan_encap_ip(instance)
-      first_peer = ::Sdwan::Peer
-                     .where(node_instance_id: instance.id)
-                     .order(:created_at)
-                     .first
-      return "" unless first_peer&.assigned_address
-
-      first_peer.assigned_address.to_s.split("/").first.to_s
+      # Same oldest-peer-then-strip lookup as the rest of the fleet, via
+      # the shared seam. `to_s` preserves this method's "" contract for
+      # an unattached host (the seam returns nil). The seam additionally
+      # filters `assigned_address NOT NULL`, which selects the same row
+      # here: the column is NOT NULL in schema and presence-validated on
+      # Sdwan::Peer, so no peer can fail that predicate.
+      ::Sdwan::OverlayAddressResolver.address_for(instance).to_s
     end
 
     def initialize(network, federation_resolver:, include_private_key: false)

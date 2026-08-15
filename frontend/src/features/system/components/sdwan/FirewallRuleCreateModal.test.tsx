@@ -781,4 +781,41 @@ describe('FirewallRuleCreateModal', () => {
       );
     });
   });
+
+  // ── pending-approval branch (IMP-87ec6f651f07) ────────────────────────────
+
+  describe('pending-approval branch', () => {
+    it('shows the pending-approval notification (not success) and skips onCreated when the create is parked', async () => {
+      const onCreated = jest.fn();
+      const onClose = jest.fn();
+      mockPost.mockResolvedValueOnce({
+        pending: true,
+        deferred_operation_id: 'dop-1',
+        action_category: 'sdwan.firewall_rule_create',
+        approval_request_id: 'ar-1',
+        message: 'Approval required',
+      });
+      renderModal({ onCreated, onClose });
+
+      fireEvent.change(screen.getByPlaceholderText('e.g. allow-ssh'), {
+        target: { value: 'allow-ssh' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /create rule/i }));
+
+      await waitFor(() =>
+        expect(mockAddNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'info',
+            message: expect.stringMatching(/approval required/i),
+            link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+          }),
+        ),
+      );
+      expect(mockAddNotification).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success' }),
+      );
+      expect(onCreated).not.toHaveBeenCalled();
+      expect(onClose).toHaveBeenCalled();
+    });
+  });
 });

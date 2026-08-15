@@ -10,7 +10,14 @@ module Sdwan
   class VirtualIpAssignment < ApplicationRecord
     self.table_name = "system_sdwan_virtual_ip_assignments"
 
-    REASONS = %w[initial manual_failover sensor_failover holder_changed revoked].freeze
+    # IMP-43cf1e6b5541 — "phantom_backfill" tags a row created by
+    # Sdwan::VirtualIpPhantomHolderBackfillService (rake sdwan:backfill_phantom_vip_holders):
+    # a stray holder id already present in a VIP's holder_peer_ids before
+    # this task's on-change validation existed, discovered without a real
+    # holder-transition event to attribute it to. Distinct from
+    # "holder_changed" so the audit trail doesn't misrepresent a
+    # reconciliation as a live operator/sensor-driven change.
+    REASONS = %w[initial manual_failover sensor_failover holder_changed revoked phantom_backfill].freeze
 
     belongs_to :virtual_ip, class_name: "Sdwan::VirtualIp",
                foreign_key: :sdwan_virtual_ip_id

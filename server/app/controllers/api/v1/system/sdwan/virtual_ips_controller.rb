@@ -31,36 +31,96 @@ module Api
             render_success(virtual_ip: serialize_vip_full(@vip))
           end
 
+          # IMP-6c482005db87: routed through Ai::AutonomyGate.
+          # Sdwan::Executors::CreateVirtualIp existed, tenancy-hardened and
+          # card-labeled, but had no caller — this wrote the VIP inline behind
+          # the permission check, so the seeded sdwan.virtual_ip_create policy
+          # matched nothing an operator did, while DELETE and failover below
+          # have been gated since slice 9b.
+          #
+          # Same response contract as PortMappingsController#create
+          # (IMP-bf996c7abcb4): validated before the gate so an unsaveable
+          # payload keeps its field-level 422 and opens no audit row; 202 with
+          # the deferred-operation id on :pending; 201 with the serialized row
+          # on :proceed. The slice-9b create ceremony (activation + initial
+          # assignment row) moved INTO the executor — gate! never calls
+          # on_proceed on :pending, so ceremony left here would silently not
+          # happen on every approved create.
           def create
             require_permission("system.sdwan.vips.manage")
-            attrs = vip_params
+            attrs = vip_params.to_h
 
-            ::Sdwan::VirtualIp.transaction do
-              vip = @network.virtual_ips.new(attrs.merge(account_id: @account.id))
-              vip.state = "active" if Array(vip.holder_peer_ids).any?
-              vip.save!
+            # Never saved — the executor's save! stays the authority. The
+            # candidate mirrors the executor's build (including activation,
+            # via the model's one activate_if_held symbol) so validation sees
+            # exactly the row that would be written. gate_create! validates it
+            # BEFORE the gate, so an unsaveable payload keeps its field-level
+            # 422 and opens no audit row (Ai::GatedActions#gate_create!).
+            candidate = @network.virtual_ips.new(attrs.merge(account_id: @account.id))
+            candidate.activate_if_held
 
-              # Slice 9b — initial assignment row for the primary holder
-              # (or every holder if anycast). Builds the audit trail from
-              # row 0 — no "phantom" current state without a history row.
-              create_initial_assignments!(vip)
-              render_success({ virtual_ip: serialize_vip_full(vip.reload) }, status: :created)
-            end
-          rescue ActiveRecord::RecordInvalid => e
-            render_validation_error(e.record)
+            gate_create!(
+              candidate: candidate,
+              scope: @network.virtual_ips,
+              result_key: :vip_id,
+              response_key: :virtual_ip,
+              serializer: ->(v) { serialize_vip_full(v) },
+              action_category: "sdwan.virtual_ip_create",
+              executor_class: "Sdwan::Executors::CreateVirtualIp",
+              # IMP-4a5094b22df0: account_id no longer rides along. It existed
+              # ONLY to give the approval card an account to scope its network
+              # label by, back when Base.preview ran with deferred_operation:
+              # nil; the card now anchors on the operation's own account. The
+              # `candidate` above still merges it, because that one is a
+              # validation probe rather than gate-replayed params.
+              params: { network_id: @network.id, attributes: attrs },
+              source_type: "Sdwan::Network",
+              source_id: @network.id,
+              # Matches CreateVirtualIp#summarize so both surfaces of the
+              # approval speak one sentence (IMP-3a563becb7d7).
+              description: "Allocate SDWAN VIP '#{candidate.name}' on network #{@network.name}"
+            )
           end
 
+          # IMP-0e44cf2fc80b: routed through Ai::AutonomyGate, matching the
+          # gated update verbs (network/peer/route_policy/port_mapping). This
+          # verb was NOT a clean drop-in wiring: the holder audit trail
+          # (sync_assignments_after_holder_change!) ran inline here, and gate!
+          # never calls on_proceed on :pending — the executor is the sole
+          # writer there — so the sync migrated INTO UpdateVirtualIp#perform
+          # first. Wiring it naively would have applied an operator-APPROVED
+          # holder change while silently dropping the assignment sync.
           def update
             require_permission("system.sdwan.vips.manage")
-            ::Sdwan::VirtualIp.transaction do
-              previous_holders = Array(@vip.holder_peer_ids).dup
-              if @vip.update(vip_params)
-                sync_assignments_after_holder_change!(@vip, previous_holders)
-                render_success(virtual_ip: serialize_vip_full(@vip.reload))
-              else
-                render_validation_error(@vip)
-              end
-            end
+            attrs = vip_params.to_h
+            # Validated before the gate so an unsaveable payload keeps its
+            # field-level 422 and opens no audit row. Never saved —
+            # UpdateVirtualIp's update! stays the only writer.
+            @vip.assign_attributes(attrs)
+            return render_validation_error(@vip) unless @vip.valid?
+
+            # Discard the un-gated in-memory changes: nothing may reach the row
+            # except through the executor. restore_attributes is the zero-query
+            # equivalent of reload here (ActiveModel::Dirty).
+            @vip.restore_attributes
+
+            gate!(
+              action_category: "sdwan.virtual_ip_update",
+              executor_class: "Sdwan::Executors::UpdateVirtualIp",
+              # IMP-391525770512 — stamp the request-time value of the
+              # replay-sensitive attributes this request actually changes, so
+              # the executor can refuse a replay whose premise expired (a
+              # failover between park and approval). Read AFTER
+              # restore_attributes above, so it is the PERSISTED state.
+              params: {
+                vip_id: @vip.id, attributes: attrs,
+                replay_baseline: ::Sdwan::Executors::UpdateVirtualIp.replay_baseline(@vip, attrs)
+              },
+              source_type: "Sdwan::VirtualIp",
+              source_id: @vip.id,
+              description: "Update SDWAN VIP '#{@vip.name}' on network #{@network.name}",
+              on_proceed: ->(_r) { render_success(virtual_ip: serialize_vip_full(@vip.reload)) }
+            )
           end
 
           def destroy
@@ -120,45 +180,6 @@ module Api
               :advertised_med, :advertised_local_pref, :state,
               tags: [], holder_peer_ids: [], failover_holder_peer_ids: [], metadata: {}
             )
-          end
-
-          def create_initial_assignments!(vip)
-            holders = vip.anycast? ? Array(vip.holder_peer_ids) : Array(vip.holder_peer_ids).first(1)
-            holders.compact.each do |peer_id|
-              vip.assignments.create!(
-                peer: ::Sdwan::Peer.find(peer_id),
-                assumed_at: Time.current,
-                reason: "initial",
-                triggered_by_user_id: current_user&.id
-              )
-            end
-          end
-
-          # When holder_peer_ids changes via update, close out assignments
-          # for departed holders and open new ones for newcomers. Reason is
-          # "holder_changed" — distinct from "manual_failover" to keep the
-          # audit trail honest about what action was taken.
-          def sync_assignments_after_holder_change!(vip, previous_holders)
-            current = vip.anycast? ? Array(vip.holder_peer_ids) : Array(vip.holder_peer_ids).first(1)
-            current = current.compact
-
-            departed = previous_holders - current
-            arrived  = current - previous_holders
-            return if departed.empty? && arrived.empty?
-
-            now = Time.current
-            departed.each do |peer_id|
-              vip.assignments.where(sdwan_peer_id: peer_id, released_at: nil)
-                 .update_all(released_at: now, updated_at: now)
-            end
-            arrived.each do |peer_id|
-              vip.assignments.create!(
-                peer: ::Sdwan::Peer.find(peer_id),
-                assumed_at: now,
-                reason: "holder_changed",
-                triggered_by_user_id: current_user&.id
-              )
-            end
           end
 
           # Resolve a VIP's primary holder from the per-request preloaded map

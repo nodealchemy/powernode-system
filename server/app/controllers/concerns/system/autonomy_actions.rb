@@ -7,8 +7,26 @@ module System
   # for each of the 5 system agents (Fleet Autonomy, SDWAN Manager, CVE
   # Responder, Disk Image Manager, Runtime Manager) plus Manual Operations.
   #
-  # The frontend pivots whichever way it wants — this concern returns the
-  # full payload with three views: by_domain, by_agent, by_action.
+  # This concern returns the full payload with three views: by_domain,
+  # by_agent, by_action.
+  #
+  # `by_domain` is no longer a spare view. Since IMP-0874acd5b50c the Settings
+  # modal builds its sections AND its per-action rows from it; it used to render
+  # a list literal-ed into SystemSettingsPanel.tsx, which is how it came to omit
+  # 28 of the 119 seeded categories and to show one control whose seed had been
+  # deleted. So a SYSTEM category reaches an operator only through this payload:
+  # add a prefix to DOMAIN_PREFIXES and it renders with no frontend change.
+  #
+  # This stays an ACCOUNT-WIDE view and must keep returning every row: `all_policies`
+  # is deliberately unfiltered, so core's own rows (`approval`, `proposal`,
+  # `escalation`, `status_update`, `issue_alert`, `feedback` from
+  # server/db/seeds/autonomy_data_seed.rb, plus every `dev.*`) come back too and
+  # land in the "other" catch-all, since no prefix here claims them. Do NOT
+  # filter them out at this layer — hiding rows from an account-wide view is the
+  # same defect class as by_agent silently dropping agents. The System modal
+  # skips the "other" bucket on its own side, which it can do safely only
+  # because autonomy_domain_pivot_spec.rb pins that no seeded system category
+  # ever reaches it.
   module AutonomyActions
     extend ActiveSupport::Concern
 
@@ -20,13 +38,37 @@ module System
       "Runtime Manager"
     ].freeze
 
+    # ORDER IS SIGNIFICANT. `by_domain_pivot` resolves with `find`, so the FIRST
+    # matching entry wins and any prefix that EXTENDS another entry's prefix has
+    # to be declared before it. Two such pairs exist today:
+    #
+    #   system.instance_pool_           ⊂ system.instance_  (node_lifecycle)
+    #   system.module_critical_upgrade_ ⊂ system.module_    (node_lifecycle)
+    #
+    # Both were mis-filed until this map was ordered specific-first: the whole
+    # `instance_pool` domain was unreachable, and the CVE Responder's
+    # `system.module_critical_upgrade_ready` landed under node_lifecycle. Note
+    # that category is NOT prefixed `system.cve_`, so moving "cve" ahead of
+    # "node_lifecycle" does not on its own file it correctly — the specific
+    # prefix has to be listed too.
+    #
+    # Every category the extension's agent seeds create a policy row for must
+    # match some entry here; "other" is the catch-all for rows seeded outside
+    # this extension. spec/controllers/api/v1/system/autonomy_domain_pivot_spec.rb
+    # pins both properties (nothing seeded reaches "other"; no declared domain is
+    # left unreachable) so a new family or a reorder cannot regress silently.
     DOMAIN_PREFIXES = {
-      "node_lifecycle"  => %w[system.cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.observation system.task.],
-      "sdwan"           => %w[system.sdwan_ sdwan.],
+      "instance_pool"     => %w[system.instance_pool_],
+      "cve"               => %w[system.cve_ system.module_critical_upgrade_],
+      "sdwan"             => %w[system.sdwan_ sdwan. system.federation_peer_],
       "container_runtime" => %w[system.runtime_],
-      "disk_image"      => %w[system.disk_image_],
-      "instance_pool"   => %w[system.instance_pool_],
-      "cve"             => %w[system.cve_]
+      "disk_image"        => %w[system.disk_image_],
+      "gitops"            => %w[system.gitops_],
+      "packages"          => %w[system.package_module. system.package_repository.],
+      "architecture"      => %w[system.architecture.],
+      "storage"           => %w[system.storage_],
+      "project"           => %w[project.],
+      "node_lifecycle"    => %w[system.cert_ system.acme_cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.capability_gap_ system.observation system.task. system.template_closure_ system.node_boot_image_]
     }.freeze
 
     # GET /api/v1/system/autonomy
@@ -127,6 +169,17 @@ module System
       ::Ai::InterventionPolicy.where(account: current_account).includes(:agent, :approval_chain)
     end
 
+    # The by_agent bucket a row belongs to. Single authority: `by_agent_pivot`
+    # groups by it, and `serialize_policy` ships it, so a client rendering from
+    # ANY pivot can key a policy the same way the by_agent view did without
+    # re-deriving the rule (scope + agent presence) in its own language. Note
+    # `by_agent_pivot` then drops rows whose bucket is not a SYSTEM_AGENT_NAMES
+    # entry — this value is still correct for those, which is what lets a
+    # by_domain-driven client show them.
+    def agent_bucket_for(policy)
+      policy.scope == "agent" && policy.agent ? policy.agent.name : "Manual Operations"
+    end
+
     def serialize_policy(p)
       {
         id: p.id,
@@ -137,6 +190,7 @@ module System
         is_active: p.is_active,
         agent_id: p.ai_agent_id,
         agent_name: p.agent&.name,
+        agent_bucket: agent_bucket_for(p),
         approval_chain_id: p.approval_chain_id,
         approval_chain_name: p.approval_chain&.name,
         conditions: p.conditions,
@@ -155,11 +209,7 @@ module System
       result["Manual Operations"] = []
 
       all_policies.each do |p|
-        bucket = if p.scope == "agent" && p.agent
-                   p.agent.name
-        else
-                   "Manual Operations"
-        end
+        bucket = agent_bucket_for(p)
         next unless result.key?(bucket)
         result[bucket] << serialize_policy(p)
       end

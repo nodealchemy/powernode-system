@@ -52,4 +52,79 @@ RSpec.describe System::Seeds::AgentSetupHelpers do
       expect(Ai::InterventionPolicy.exists?(stale_foreign.id)).to be false
     end
   end
+
+  # IMP-187124ca2984 — the operator path resolves with agent = nil (gate! passes
+  # no `agent:`), which agent-scoped rows can never match. These two helpers own
+  # the agent-less mirror of the same per-verb table.
+  describe ".upsert_operator_policies! / .clean_stale_operator_policies!" do
+    def operator_row(category)
+      Ai::InterventionPolicy.find_by(account: account, ai_agent_id: nil,
+                                     scope: "action_type", action_category: category)
+    end
+
+    it "writes agent-less rows an agent-less caller can match" do
+      described_class.upsert_operator_policies!(
+        account: account, definitions: { "sdwan.peer_create" => "notify_and_proceed" }
+      )
+
+      row = operator_row("sdwan.peer_create")
+      expect(row).to be_present
+      expect(row.policy).to eq("notify_and_proceed")
+      expect(row.send(:agent_matches?, nil)).to be(true),
+                                                "an operator request could not match its own policy row"
+      # Inert on the operator path (conditions_met? skips the tier check with no
+      # agent record) but load-bearing on the agent path, where this same row is
+      # a fallback: it must stop matching when the agent-scoped row does, or a
+      # trust demotion stops escalating. Pinned end-to-end in
+      # spec/db/seeds/system_sdwan_operator_policies_spec.rb.
+      expect(row.conditions).to eq({ "trust_tier_minimum" => "monitored" })
+    end
+
+    it "is idempotent — a re-run reports no changes" do
+      definitions = { "sdwan.peer_create" => "notify_and_proceed" }
+      described_class.upsert_operator_policies!(account: account, definitions: definitions)
+
+      expect(described_class.upsert_operator_policies!(account: account, definitions: definitions))
+        .to eq(0)
+    end
+
+    # The agent-scoped and operator sets are disjoint by construction. Neither
+    # cleanup may reach into the other, or a targeted re-run of one seed silently
+    # disarms the other audience.
+    it "reaps only stale operator rows inside the owned namespace" do
+      described_class.upsert_operator_policies!(
+        account: account,
+        definitions: {
+          "sdwan.peer_create"    => "notify_and_proceed",
+          "sdwan.retired_action" => "require_approval",
+          "system.cert_rotate"   => "notify_and_proceed"
+        }
+      )
+      agent_row = policy!("sdwan.peer_create")
+
+      destroyed = described_class.clean_stale_operator_policies!(
+        account: account, keep_keys: [ "sdwan.peer_create" ], owned_prefixes: [ "sdwan." ]
+      )
+
+      expect(destroyed).to eq(1)
+      expect(operator_row("sdwan.retired_action")).to be_nil
+      expect(operator_row("sdwan.peer_create")).to be_present
+      expect(operator_row("system.cert_rotate")).to be_present, "reaped outside the owned namespace"
+      expect(Ai::InterventionPolicy.exists?(agent_row.id)).to be(true),
+                                                              "the operator cleanup destroyed an agent-scoped row"
+    end
+
+    it "leaves operator rows alone when the agent-scoped cleanup runs" do
+      described_class.upsert_operator_policies!(
+        account: account, definitions: { "sdwan.retired_action" => "require_approval" }
+      )
+
+      described_class.clean_stale_policies!(
+        account: account, agent: agent, keep_keys: [ "sdwan.peer_create" ]
+      )
+
+      expect(operator_row("sdwan.retired_action")).to be_present,
+                                                      "the agent-scoped cleanup destroyed an operator row"
+    end
+  end
 end

@@ -75,9 +75,14 @@ RSpec.describe System::ProjectMetricsCollector do
       end
     end
 
-    it "samples real replica_count/region_count from the mission's provisioned instances" do
-      # Reproduce the mission -> GoalPlan -> completed step -> last_outputs
-      # chain the provisioning runner records, then point the mission at it.
+    # Builds mission -> GoalPlan -> completed step, recording the step's outputs
+    # through the PRODUCTION writer (SkillCompositionRunner#result_outputs +
+    # #record_outputs) fed the envelope BaseSkillExecutor#success actually
+    # returns. A hand-written metadata literal is exactly what let IMP-3431f73dabe6
+    # survive: this spec used to author `last_outputs.node_instance_ids` — the
+    # shape the collector dug for and nothing ever wrote — so it went green while
+    # production never reached the live branch at all.
+    def seed_provisioned_mission(instance_ids)
       agent = create(:ai_agent, account: account)
       goal  = Ai::AgentGoal.create!(
         account: account, agent: agent, title: "provision",
@@ -87,22 +92,46 @@ RSpec.describe System::ProjectMetricsCollector do
         account: account, goal: goal, agent: agent, status: "approved", version: 1
       )
 
-      node   = create(:system_node, account: account)
-      region = create(:system_provider_region)
-      inst_a = create(:system_node_instance, :running, node: node, provider_region: region)
-      inst_b = create(:system_node_instance, :running, node: node, provider_region: region)
-
-      plan.steps.create!(
-        step_number: 1, status: "completed", step_type: "provisioning_skill",
-        metadata: { "last_outputs" => { "node_instance_ids" => [ inst_a.id, inst_b.id ] } }
-      )
-
       mission = create(
         :ai_mission, account: account, created_by: user, mission_type: "infrastructure",
         custom_phases: [ { "key" => "adapting", "label" => "Adapting", "order" => 0 } ],
         configuration: { "plan" => { "plan_id" => plan.id } }
       )
       mission.update_columns(status: "active")
+
+      step = plan.steps.create!(step_number: 1, status: "pending", step_type: "provisioning_skill")
+
+      # The literal an executor hands back: { success:, data: <payload> }, the
+      # payload carrying its node ids under a NESTED `outputs` key.
+      executor_result = {
+        success: true,
+        data: {
+          dry_run: false,
+          count: instance_ids.size,
+          planned_actions: [],
+          outputs: { node_ids: [], node_instance_ids: instance_ids,
+                     sdwan_peer_ids: [], storage_volume_ids: [] },
+          failures: [],
+          partial: false
+        }
+      }
+
+      # mark_completed, not record_outputs directly: it is the method the
+      # runner's success arm calls (skill_composition_runner.rb:195), and it
+      # persists through Ai::GoalPlanStep#complete! the way production does.
+      runner = ::Ai::Provisioning::SkillCompositionRunner.new(account: account, mission: mission, plan: plan)
+      runner.send(:mark_completed, step, runner.send(:result_outputs, executor_result))
+
+      [ mission, plan, step.reload ]
+    end
+
+    it "samples real replica_count/region_count from the mission's provisioned instances" do
+      node   = create(:system_node, account: account)
+      region = create(:system_provider_region)
+      inst_a = create(:system_node_instance, :running, node: node, provider_region: region)
+      inst_b = create(:system_node_instance, :running, node: node, provider_region: region)
+
+      mission, = seed_provisioned_mission([ inst_a.id, inst_b.id ])
 
       described_class.collect!(mission: mission)
 
@@ -111,6 +140,28 @@ RSpec.describe System::ProjectMetricsCollector do
       expect(replica.value).to include("observed" => 2, "source" => "live")
       # both instances share one provider region → 1 distinct region
       expect(region_row.value).to include("observed" => 1, "source" => "live")
+    end
+
+    # Divergence guard. Several readers dig this one envelope independently, and
+    # the defect was possible only because its shape is re-derived in each of
+    # them. Compare against AdaptationDispatchService#produced_instance_ids
+    # (core) — it performs its OWN dig, so this asserts agreement between two
+    # real readers rather than against a path spelled out in the spec.
+    it "resolves the same instance ids a core reader digs out of the same step" do
+      node   = create(:system_node, account: account)
+      inst_a = create(:system_node_instance, :running, node: node)
+      inst_b = create(:system_node_instance, :running, node: node)
+
+      mission, _plan, step = seed_provisioned_mission([ inst_a.id, inst_b.id ])
+
+      core_ids = ::Ai::Provisioning::AdaptationDispatchService
+                 .new(account: account, mission: mission)
+                 .send(:produced_instance_ids, step)
+
+      collector_ids = described_class.new(mission: mission).send(:resolvable_instance_ids).map(&:to_s)
+
+      expect(core_ids).to match_array([ inst_a.id, inst_b.id ])
+      expect(collector_ids).to match_array(core_ids)
     end
 
     it "threads the supplied correlation_id onto every row" do

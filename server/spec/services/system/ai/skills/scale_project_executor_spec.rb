@@ -132,6 +132,76 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
       end
     end
 
+    # IMP-01a774a80f7a — `storage_gb` is the tolerated alias for a storage
+    # declaration: ProvisionFullStackExecutor resolves [with_storage_gb,
+    # storage_gb] (first PRESENT wins) and CostEstimatorService#declared_gb
+    # reads the same two keys in the same order (cost_estimator_service.rb) —
+    # and `scale_project` is in that service's COMPUTE_SKILLS, so the quote is
+    # real money. This executor's #perform declared no such keyword, so the
+    # alias fell into `**_extras` and was discarded before the inner executor
+    # was ever asked for a disk.
+    #
+    # Verified by execution BEFORE the fix (this context, red): a scale-out
+    # declaring `storage_gb: 500` was QUOTED 500 GB per replica and provisioned
+    # none — the quote-vs-actuator disagreement IMP-051509357291 and
+    # IMP-f85254148755 exist to eliminate. Non-destructive, unlike relocate's
+    # arm of the same defect, but live.
+    context "storage declared through the `storage_gb` alias" do
+      let(:replica_node)     { create(:system_node, account: account, node_template: template) }
+      let(:replica_instance) { create(:system_node_instance, :running, node: replica_node) }
+      let(:replica_volume)   { create(:system_provider_volume, account: account, provider_region: region) }
+
+      before do
+        allow(::System::ProvisioningService).to receive(:provision_instance).and_return(
+          ::System::Runtime::Result.ok(data: { instance: replica_instance, cloud_instance_id: "ci-alias" })
+        )
+        allow(::System::VolumeManagementService).to receive(:provision)
+          .and_return(::System::Runtime::Result.ok(data: { volume: replica_volume }))
+        # Faithful attach: the FK is what a later scale-in's teardown reads, so
+        # an ok-returning stub would prove the call and not the attachment.
+        allow(::System::VolumeManagementService).to receive(:attach) do |**kwargs|
+          kwargs[:volume].attach_to!(kwargs[:instance], "/dev/vdb")
+          ::System::Runtime::Result.ok(data: { device: "/dev/vdb" })
+        end
+      end
+
+      def scale_out(dry_run: false, **storage_keys)
+        exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "add_replicas",
+                     template_id: template.id, provider_region_id: region.id,
+                     provider_instance_type_id: instance_type.id,
+                     dry_run: dry_run, **storage_keys)
+      end
+
+      it "provisions and attaches the volume the estimator already quoted for the alias" do
+        r = scale_out(storage_gb: 500)
+
+        expect(r[:success]).to be true
+        expect(::System::VolumeManagementService).to have_received(:provision)
+          .with(hash_including(size_gb: 500)).once
+        expect(r[:data][:outputs][:storage_volume_ids]).to eq([ replica_volume.id ])
+        expect(replica_volume.reload.node_instance_id).to eq(replica_instance.id)
+      end
+
+      it "previews the aliased volume on the dry-run plan" do
+        plan = scale_out(dry_run: true, storage_gb: 500)[:data][:planned_actions]
+
+        expect(plan.select { |a| a[:step] == "provision_storage" }.map { |a| a[:size_gb] }).to eq([ 500 ])
+        expect(plan.map { |a| a[:step] }).to include("attach_volume")
+      end
+
+      # Order, not merely presence: first PRESENT of [with_storage_gb,
+      # storage_gb] wins, so an explicit 0 (a legitimate "no storage",
+      # IMP-33fa6c51f05d) beats a positive alias. `storage_gb || with_storage_gb`
+      # would bill 500 GB the operator explicitly declined.
+      it "reads with_storage_gb first: an explicit 0 beats a positive alias" do
+        r = scale_out(with_storage_gb: 0, storage_gb: 500)
+
+        expect(r[:success]).to be true
+        expect(::System::VolumeManagementService).not_to have_received(:provision)
+        expect(r[:data][:outputs][:storage_volume_ids]).to be_empty
+      end
+    end
+
     context "add_region" do
       let(:other_region) { create(:system_provider_region, account: account, provider: provider) }
       let(:ok_prov) do
@@ -227,6 +297,7 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
       let(:provider_adapter) do
         instance_double(::System::Providers::MockProvider,
                         terminate_instance: { success: true },
+                        attach_volume: { success: true, device: "/dev/sdb" },
                         detach_volume: { success: true },
                         delete_volume: { success: true })
       end
@@ -418,6 +489,52 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
         expect(r[:data][:outputs][:removed_node_instance_ids])
           .to match_array(added[:data][:outputs][:node_instance_ids])
         expect(statuses_of(seed)).to eq(%w[running])
+      end
+
+      # IMP-093378034fb4 — the leak this arm was structurally unable to see.
+      # The scale-out provisioned a per-instance volume and never attached it,
+      # so node_instance_id stayed nil; victim_volumes AND the zero-orphan
+      # sweep both reach a victim's volumes through exactly that FK. The
+      # removal therefore deleted nothing and the sweep certified the result
+      # as clean while the volume billed on — the quietest possible failure.
+      # Both arms run for real here: the scale-out writes the row, the
+      # scale-in is the only thing that reads it.
+      it "deletes the volumes its own add_replicas arm provisioned" do
+        allow(::System::ProvisioningService).to receive(:provision_instance) do |node:, **_|
+          inst = create(:system_node_instance, :running, node: node, provider_region: region,
+                        provider_instance_type: instance_type,
+                        name: "#{node.name}-instance-#{SecureRandom.hex(2)}")
+          ::System::Runtime::Result.ok(data: { instance: inst, cloud_instance_id: inst.cloud_instance_id })
+        end
+        # Faithful to VolumeManagementService#provision: the row is persisted
+        # `available` with a provider id, and NAMED from options[:name] — the
+        # containment rail judges a volume by that name, so a stub that
+        # renamed it would make the rail refuse the removal for the wrong
+        # reason and hide the very deletion under test.
+        allow(::System::VolumeManagementService).to receive(:provision) do |account:, region:, options: {}, **_|
+          vol = create(:system_provider_volume, account: account, provider_region: region,
+                       name: options[:name], status: "available",
+                       external_id: "vol-#{SecureRandom.hex(6)}")
+          ::System::Runtime::Result.ok(data: { volume: vol })
+        end
+        replica!(minutes_old: 60)
+
+        added = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "add_replicas",
+                             template_id: template.id, provider_region_id: region.id,
+                             provider_instance_type_id: instance_type.id, with_storage_gb: 100)
+        expect(added[:success]).to be true
+        expect(added[:data][:failures]).to be_empty
+        volume_ids = added[:data][:outputs][:storage_volume_ids]
+        expect(volume_ids.size).to eq(1)
+
+        r = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "remove_replicas")
+
+        expect(r[:success]).to be true
+        # Ground truth first, envelope second: the row is gone, and the sweep
+        # that would have blessed a surviving one agrees.
+        expect(::System::ProviderVolume.where(id: volume_ids).count).to eq(0)
+        expect(r[:data][:outputs][:deleted_storage_volume_ids]).to match_array(volume_ids)
+        expect(r[:data][:outputs][:orphans]).to be_empty
       end
 
       it "reports WHICH prefix it enforced, so a nil one is never read as a pass" do

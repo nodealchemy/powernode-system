@@ -58,7 +58,7 @@ RSpec.describe System::ProvisionVerifier do
   end
 
   it "fails the phantom shape: cloud instance without provider identity" do
-    instance = make_instance(provider_identity: false, status: "error")
+    instance = make_instance(cloud_instance_id: nil, status: "error")
     r = reconcile_one(instance.id)
     expect(r[:ok]).to be false
     expect(r[:detail]).to match(/identity|cloud_instance_id/i)

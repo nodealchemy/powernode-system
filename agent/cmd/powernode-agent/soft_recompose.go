@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
 	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
@@ -43,9 +45,16 @@ set at /run/nextroot, ready for a userspace-only reboot:
   - refused while an A/B boot-image upgrade is armed, on non-pivot nodes,
     and on systemd older than 254.
 
-Without --execute this only prepares and reports; each prepare mounts a
-fresh nextroot scratch tmpfs (superseded ones are reclaimed at the next
-full reboot).`,
+Without --execute this only prepares and reports (a dry run). Its one side
+effect is a "systemctl daemon-reload": the survival gate rescans units to read
+the mount drop-ins before probing them — no boot state is changed. Each prepare
+mounts a fresh nextroot scratch tmpfs (superseded ones are reclaimed at the next
+full reboot).
+
+Exit codes: 0 if --execute would be accepted, 11 (ExitDryRunWouldRefuse) if the
+survival gate would refuse --execute — distinct from 0 and from a generic error
+(1) so CI can gate a soft-reboot on the dry run. With --execute the gate is
+enforced (fail-closed): a refusal is a hard error and no soft-reboot happens.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
@@ -87,17 +96,44 @@ full reboot).`,
 			if err := composer.ComposeForPivot(ctx, layout.SysRoot); err != nil {
 				return fmt.Errorf("compose union at %s: %w", layout.SysRoot, err)
 			}
-			if err := prepareNextrootMounts(layout.SysRoot); err != nil {
+			bound, err := prepareNextrootMounts(layout.SysRoot)
+			if err != nil {
 				return fmt.Errorf("bind durable mounts into %s: %w", layout.SysRoot, err)
 			}
 
+			// SECOND survival gate. It cannot live in SoftRecomposePreflight:
+			// the mounts it checks are the ones ComposeForPivot and
+			// prepareNextrootMounts just created, so at preflight time they
+			// read LoadState=not-found and would refuse forever.
+			//
+			// It is EVALUATED in both modes but only ENFORCED under --execute,
+			// and the asymmetry is deliberate. Prepare mode changes nothing
+			// about the next boot, so there is no unsafe act to refuse; making
+			// it fail would break the documented dry run on every node that has
+			// not yet received the drop-ins, while adding no safety. Reporting
+			// the refusal instead keeps the dry run's real value — it is how an
+			// operator learns --execute would be refused, without finding out by
+			// running it.
+			//
+			// Under --execute it runs BEFORE the breadcrumb commit below, so a
+			// soft-reboot that would silently not happen never leaves a record
+			// claiming it did. That ordering is the honesty fix and is pinned by
+			// TestSoftRecompose_GateRunsBeforeTheBreadcrumbAndTheSoftReboot.
+			doomedLayers, gateErr := runtime.NextrootSurvivalGate(ctx, mount.ExecRunner{}, layout, bound)
+			if gateErr != nil && execute {
+				return gateErr
+			}
+			for _, l := range doomedLayers {
+				fmt.Fprintf(out, "[soft-recompose] WARNING: %s is scheduled for teardown at umount.target. "+
+					"Whether the new root still serves that layer afterwards is UNSETTLED — see "+
+					"NextrootSurvivalGate: the design doc says overlayfs holds private clones, but a live "+
+					"pivot node was observed losing a layer's files this way (mount/union_lowers.go). "+
+					"Not a refusal (no drop-in can name a digest-derived unit), but do not treat --execute "+
+					"as proven on real hardware\n", l)
+			}
+
 			if !execute {
-				fmt.Fprintln(out, "\nPREPARED — /run/nextroot holds the freshly composed union.")
-				fmt.Fprintln(out, "Pass --execute to apply it now via `systemctl soft-reboot`")
-				fmt.Fprintln(out, "(userspace-only restart: services bounce once, kernel and enrollment stay).")
-				fmt.Fprintln(out, "The boot breadcrumb was deliberately NOT written; abandoning this")
-				fmt.Fprintln(out, "prepared root is safe and a full reboot clears it entirely.")
-				return nil
+				return writePrepareReport(out, gateErr)
 			}
 
 			// Commit point. Preserve the prior breadcrumb so a failed
@@ -143,6 +179,42 @@ full reboot).`,
 	return c
 }
 
+// writePrepareReport renders the dry-run report (no --execute) and returns the
+// error RunE must propagate. Two honesty properties are enforced here and
+// pinned by TestWritePrepareReport_* in soft_recompose_test.go:
+//
+//   - SIDE-EFFECT HONESTY. Reaching this point means NextrootSurvivalGate has
+//     already run, and its first act is `systemctl daemon-reload` — a global
+//     systemd unit rescan on the live node (it needs fresh unit state to probe
+//     the mount drop-ins accurately). That rescan is a real change to running
+//     systemd state, so the report NAMES it rather than claiming nothing
+//     happened. It does NOT change any boot state: no breadcrumb is written and
+//     the composed union is only staged, so the next boot is untouched.
+//   - CI-GATABLE EXIT CODE. When the survival gate would refuse --execute, this
+//     returns a DISTINCT non-zero code (cli.ExitDryRunWouldRefuse) instead of
+//     nil. The dry run exists so a CI wrapper (or an operator) can learn
+//     `--execute` would be refused WITHOUT running it; returning nil made that
+//     outcome exit 0 and indistinguishable from "would succeed".
+func writePrepareReport(out io.Writer, gateErr error) error {
+	fmt.Fprintln(out, "\nPREPARED — /run/nextroot holds the freshly composed union.")
+	fmt.Fprintln(out, "(Side effect of this dry run: the survival gate re-scanned systemd units via")
+	fmt.Fprintln(out, "`systemctl daemon-reload` to read the mount drop-ins. That rescan is the only")
+	fmt.Fprintln(out, "change made — no breadcrumb was written and no boot state changed.)")
+	if gateErr != nil {
+		fmt.Fprintf(out, "\nBUT --execute WOULD BE REFUSED:\n  %v\n\n", gateErr)
+		fmt.Fprintln(out, "No breadcrumb was written and no boot state changed, so this prepared root")
+		fmt.Fprintln(out, "is safe to abandon; a full reboot clears it.")
+		fmt.Fprintln(out, "Fix the mount survival above, then re-run with --execute.")
+		return cli.Errorf(cli.ExitDryRunWouldRefuse, "soft-recompose",
+			"--execute would be refused by the nextroot survival gate: %w", gateErr)
+	}
+	fmt.Fprintln(out, "Pass --execute to apply it now via `systemctl soft-reboot`")
+	fmt.Fprintln(out, "(userspace-only restart: services bounce once, kernel and enrollment stay).")
+	fmt.Fprintln(out, "The boot breadcrumb was deliberately NOT written; abandoning this")
+	fmt.Fprintln(out, "prepared root is safe and a full reboot clears it entirely.")
+	return nil
+}
+
 // nextrootBindSources are the ONLY mounts bound into a soft-reboot
 // nextroot. The list is deliberately short, and /run is deliberately
 // ABSENT — see prepareNextrootMounts.
@@ -178,8 +250,12 @@ var nextrootBindSources = []string{"/persist"}
 // the durable /var, and which is a top-level mount rather than one under
 // /run, so binding it creates no containment loop. Note that after this
 // change /persist reaches the new root SOLELY via run-nextroot-persist.mount
-// — that bind is now the single load-bearing carrier, and it is not what
-// CriticalSoftRebootMounts currently checks.
+// — that bind is the single load-bearing carrier. CriticalSoftRebootMounts
+// (the preflight) cannot check it, because it does not exist yet when the
+// preflight runs; that is why the destinations established here are RETURNED,
+// and handed to runtime.NextrootSurvivalGate once they are real. Returning
+// them rather than re-deriving the list at the gate is deliberate: a new bind
+// source then cannot quietly add an unchecked carrier.
 //
 // The API filesystems are deliberately NOT bound, and that is a REAL
 // DEPENDENCY, not merely dropping something redundant: we now RELY on
@@ -188,7 +264,8 @@ var nextrootBindSources = []string{"/persist"}
 // stops holding, the new root comes up with no /dev — unrecoverable in the
 // same way losing /persist is. Binding them here is not an option: they
 // live under paths whose peer groups reintroduce the detach bug above.
-func prepareNextrootMounts(sysroot string) error {
+func prepareNextrootMounts(sysroot string) ([]string, error) {
+	var dests []string
 	for _, src := range nextrootBindSources {
 		// The hazard is SHARED PEER GROUPS, not path containment as such.
 		// Every mount on a fleet node is shared:, so binding ANY source
@@ -200,29 +277,34 @@ func prepareNextrootMounts(sysroot string) error {
 		// future edit fails loudly instead of silently unmounting the
 		// running root's layers.
 		if src == "/run" || strings.HasPrefix(src, "/run/") {
-			return fmt.Errorf("refusing to bind %s into %s: sources under /run share a peer group with the target's parent, and a later lazy umount would detach the live root's scratch and module mounts", src, sysroot)
+			return nil, fmt.Errorf("refusing to bind %s into %s: sources under /run share a peer group with the target's parent, and a later lazy umount would detach the live root's scratch and module mounts", src, sysroot)
 		}
 		if strings.HasPrefix(sysroot, strings.TrimSuffix(src, "/")+"/") {
-			return fmt.Errorf("refusing to bind %s into %s: the source contains the target, which would detach live mounts on teardown", src, sysroot)
+			return nil, fmt.Errorf("refusing to bind %s into %s: the source contains the target, which would detach live mounts on teardown", src, sysroot)
 		}
 		dst := filepath.Join(sysroot, src)
 		if err := os.MkdirAll(dst, 0o755); err != nil {
-			return fmt.Errorf("mkdir %s: %w", dst, err)
+			return nil, fmt.Errorf("mkdir %s: %w", dst, err)
 		}
+		// Recorded whether we mounted it now or found it already mounted:
+		// either way it is a load-bearing carrier the survival gate must
+		// check. Skipping the already-mounted case would hide the carrier
+		// on exactly the repeat-prepare path.
+		dests = append(dests, dst)
 		if isMountedAt(dst) {
 			continue
 		}
 		out, err := exec.Command("mount", "--rbind", src, dst).CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("rbind %s -> %s: %w (output: %s)", src, dst, err, out)
+			return nil, fmt.Errorf("rbind %s -> %s: %w (output: %s)", src, dst, err, out)
 		}
 	}
 
 	initPath, err := ensureCanonicalInit(sysroot)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	fmt.Printf("[soft-recompose] nextroot ready — init=%s, bound=%v (NOT /run: see prepareNextrootMounts)\n",
 		initPath, nextrootBindSources)
-	return nil
+	return dests, nil
 }

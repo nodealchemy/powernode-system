@@ -29,6 +29,7 @@ module Sdwan
                       .where(publicly_reachable: true)
                       .includes(:keys)
                       .to_a
+                      # NOTE: the render loop below dereferences primary_endpoint without a nil guard — it depends on this filter.
                       .select(&:primary_endpoint)
     end
 
@@ -61,12 +62,17 @@ module Sdwan
         fallback = hub.fallback_endpoint
         out.puts "[Peer]"
         out.puts "# Hub: #{hub_label(hub)} (#{primary[:family]} primary)"
+        # IMP-651ec6336654: WireGuard requires PublicKey in every [Peer]
+        # section — clients reject the config without it. This is the hub's
+        # PUBLIC key (column-stored, non-secret); the private half never
+        # leaves Vault.
+        out.puts "PublicKey  = #{key.public_key}"
         # Slice 7a: when both v6 and v4 endpoints are configured, the v6
         # one is the canonical Endpoint; the v4 alternative is documented
         # in a comment so operators (or a smart WG client) can swap to
         # it manually if v6 reachability breaks. Stock WG itself only
         # reads one Endpoint line; the comment is operator-facing.
-        out.puts "Endpoint   = #{primary[:host]}:#{primary[:port]}"
+        out.puts "Endpoint   = #{Peer.format_host_port(primary[:host], primary[:port])}"
         out.puts "# Fallback (IPv4): #{fallback[:host]}:#{fallback[:port]}" if fallback
         out.puts "AllowedIPs = #{@network.cidr_64}"
         out.puts "PersistentKeepalive = #{DEFAULT_PERSISTENT_KEEPALIVE}"

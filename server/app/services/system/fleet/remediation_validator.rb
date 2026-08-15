@@ -21,6 +21,36 @@ module System
       # effect, and validation runs on a subsequent tick anyway.
       SETTLE_WINDOW = 90 # seconds
 
+      # Action categories that PROCEED without ever attempting a remediation.
+      # There is nothing for the validate arc to score: the triggering
+      # condition clears when a human acts, not within SETTLE_WINDOW, so a
+      # pending outcome would be marked ineffective every window until the
+      # F3-11 streak manufactures a false fleet.remediation_stuck HIGH
+      # escalation (and forces require_approval) for a lane that never acted.
+      #
+      # DECLARED, never inferred — the same rule DecisionEngine states for
+      # its `advisory` flag. "Skill-less and applier-less" does NOT imply
+      # non-remediating: system.cert_rotate and the SLO categories are both
+      # and still actuate through services outside this engine. A lane earns
+      # its place here by being listed.
+      #
+      #   system.observation                     — pure dashboard/MCP surface
+      #                                            (boot-image drift, trading
+      #                                            pressure, stale BGP).
+      #   system.sdwan_service_health_investigate — IMP-c7d663f24a0b. A service
+      #                                            that stopped serving needs a
+      #                                            person to read its logs; the
+      #                                            sensor deliberately ships no
+      #                                            remediation (its signal has
+      #                                            just PROVEN the overlay
+      #                                            healthy, so every sdwan_*
+      #                                            executor would act on
+      #                                            plumbing that is fine).
+      NON_REMEDIATING_ACTION_CATEGORIES = %w[
+        system.observation
+        system.sdwan_service_health_investigate
+      ].freeze
+
       def initialize(account:, agent: nil)
         @account = account
         @agent = agent
@@ -38,15 +68,15 @@ module System
         recorded = 0
         Array(decisions).each_with_index do |decision, i|
           next unless proceeded?(decision)
-          # Observation-only signals (action_category "system.observation") carry
-          # no remediation to validate — they exist purely to surface state to
-          # dashboards / serializers / MCP (boot-image drift in campaign 019f505f
-          # increment 1; trading-pressure + stale-BGP observations). Recording a
-          # pending outcome for a persistent observation would score "ineffective"
-          # forever (nothing ever remediates the fingerprint) and, once the
-          # ineffective streak trips F3-11, manufacture false fleet.remediation_stuck
-          # HIGH escalations + forced approvals. Skip them from the validate arc.
-          next if decision[:action_category].to_s == "system.observation"
+          # Non-remediating signals carry no remediation to validate — they
+          # exist purely to surface a condition (dashboards / serializers /
+          # MCP / the operator notification). Recording a pending outcome for
+          # one would score "ineffective" forever (nothing ever remediates the
+          # fingerprint) and, once the ineffective streak trips F3-11,
+          # manufacture false fleet.remediation_stuck HIGH escalations +
+          # forced approvals. Skip them from the validate arc — see the
+          # constant for the declared list and why it is a list, not a rule.
+          next if NON_REMEDIATING_ACTION_CATEGORIES.include?(decision[:action_category].to_s)
           # IMP-4f7f7a0c9d33: same exemption class, different reason. A PROPOSAL
           # is not a remediation — the remediation is the EXECUTED plan. The
           # project.* adaptation lane composes a diff plan and deliberately stops,

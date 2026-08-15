@@ -4,6 +4,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 
 interface AccessGrantCreateModalProps {
   isOpen: boolean;
@@ -38,7 +40,13 @@ export const AccessGrantCreateModal: React.FC<AccessGrantCreateModalProps> = ({
     setSubmitting(true);
     try {
       const tags = tagsInput.split(',').map((t) => t.trim()).filter(Boolean);
-      await sdwanApi.createAccessGrant(networkId, { user_id: userId.trim(), tags });
+      const result = await sdwanApi.createAccessGrant(networkId, { user_id: userId.trim(), tags });
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice('creating the access grant', result));
+        reset();
+        onClose();
+        return;
+      }
       addNotification({ type: 'success', message: 'Access grant created' });
       onCreated();
       reset();

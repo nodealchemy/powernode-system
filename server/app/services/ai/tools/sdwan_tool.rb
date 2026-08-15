@@ -11,6 +11,82 @@ module Ai
     class SdwanTool < BaseTool
       REQUIRED_PERMISSION = "system.sdwan.networks.read"
 
+      # Autonomy action category for federation acceptance. Seeded
+      # require_approval on the SDWAN Manager
+      # (db/seeds/system_sdwan_manager_agent.rb) and registered in the engine's
+      # category allowlist.
+      FEDERATION_ACCEPT_CATEGORY = "sdwan.federation_peer_accept"
+
+      # Autonomy action category for revoking a federation peer — the trust
+      # withdrawal twin of the accept above. Shared verbatim with
+      # FederationPeersController (#destroy, #revoke, and #update with
+      # status → revoked) so the MCP and HTTP surfaces resolve the SAME
+      # policy — seeded require_approval on the SDWAN Manager
+      # (db/seeds/system_sdwan_manager_agent.rb) and registered in the
+      # engine's category allowlist.
+      FEDERATION_REVOKE_CATEGORY = "sdwan.federation_peer_revoke"
+
+      # Autonomy action category for revoking one user VPN device. Shared
+      # verbatim with Api::V1::System::Sdwan::UserDevicesController (#revoke and
+      # #destroy) so the MCP and HTTP surfaces resolve the SAME policy — seeded
+      # require_approval in db/seeds/fleet_autonomy_agent.rb and registered in
+      # the engine's category allowlist.
+      USER_DEVICE_REVOKE_CATEGORY = "system.sdwan_user_device_revoke"
+
+      # Autonomy action category for revoking a whole access grant — which
+      # cascades to every device on it. Shared verbatim with
+      # Api::V1::System::Sdwan::AccessGrantsController#revoke so the MCP and HTTP
+      # surfaces resolve the SAME policy — seeded require_approval on the SDWAN
+      # Manager (db/seeds/system_sdwan_manager_agent.rb) and registered in the
+      # engine's category allowlist.
+      ACCESS_GRANT_REVOKE_CATEGORY = "sdwan.access_grant_revoke"
+
+      # Autonomy action categories for the two additive data-plane creates
+      # (IMP-6c482005db87). Shared verbatim with FirewallRulesController#create
+      # and VirtualIpsController#create so the MCP and HTTP surfaces resolve
+      # the SAME policy — seeded notify_and_proceed on the SDWAN Manager and
+      # (agent-less) for the operator path
+      # (db/seeds/system_sdwan_manager_agent.rb) and registered in the
+      # engine's category allowlist.
+      FIREWALL_RULE_CREATE_CATEGORY = "sdwan.firewall_rule_create"
+      VIRTUAL_IP_CREATE_CATEGORY = "sdwan.virtual_ip_create"
+
+      # Autonomy action categories for the UPDATE verbs (IMP-c9798d9d5671).
+      # Shared verbatim with the REST twins (NetworksController#update,
+      # PeersController#update, FirewallRulesController#update,
+      # VirtualIpsController#update, RoutePoliciesController#update,
+      # PortMappingsController#update) so both surfaces resolve the SAME
+      # policy — an agent refused on one surface cannot reach for the other.
+      # PEER_UPDATE covers BOTH slice-9a peer arms (update_peer_lan_subnets,
+      # set_peer_tags): lan_subnets and tags ride the same REST permit list
+      # (peer_update_params). NETWORK_UPDATE covers BOTH network arms —
+      # update_network_routing_mode (routing_protocol) and the general
+      # update_network (name/description/status/settings, IMP-2ff1980f7813).
+      # Those five fields are a SUBSET of the network_params permit list
+      # NetworksController#update gates as a whole: slug, tags,
+      # advertise_overlay_subnet and route_reflector_redundancy have no MCP
+      # arm at all, so MCP reaches strictly less of the category than REST
+      # does — never more, which is what the parity claim has to mean.
+      NETWORK_UPDATE_CATEGORY = "sdwan.network_update"
+      PEER_UPDATE_CATEGORY = "sdwan.peer_update"
+      FIREWALL_RULE_UPDATE_CATEGORY = "sdwan.firewall_rule_update"
+      VIRTUAL_IP_UPDATE_CATEGORY = "sdwan.virtual_ip_update"
+      ROUTE_POLICY_UPDATE_CATEGORY = "sdwan.route_policy_update"
+      PORT_MAPPING_UPDATE_CATEGORY = "sdwan.port_mapping_update"
+
+      # Autonomy action category for manual VIP failover (IMP-7c911ca26585).
+      # Shared verbatim with VirtualIpsController#failover AND the fleet
+      # autonomy remediation path (SdwanVipReachabilitySensor →
+      # FleetAutonomyService), and registered in the engine's category
+      # allowlist. The category STRING is the parity contract; the resolved
+      # policy row differs by audience: the seeded require_approval row
+      # (db/seeds/fleet_autonomy_agent.rb) is scoped to the Fleet Autonomy
+      # agent (the sensor path), so this arm (calling agent / nil) and the
+      # agent-less REST twin both fall through to
+      # InterventionPolicyService#default_policy — also require_approval —
+      # and per-audience operator rows tune each surface independently.
+      VIP_FAILOVER_CATEGORY = "system.sdwan_vip_failover"
+
       ACTION_PERMISSIONS = {
         "system_sdwan_list_networks"   => "system.sdwan.networks.read",
         "system_sdwan_get_network"     => "system.sdwan.networks.read",
@@ -161,7 +237,7 @@ module Ai
             }
           },
           "system_sdwan_update_network" => {
-            description: "Update an SDWAN network's name/description/status/settings",
+            description: "Update an SDWAN network's name/description/status/settings. Approval-gated (sdwan.network_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network to update" },
               options: { type: "object", required: false, description: "Hash of fields to update: name, description, status, settings (settings must itself be a hash)" }
@@ -209,7 +285,7 @@ module Ai
             parameters: { firewall_rule_id: { type: "string", required: true, description: "UUID of the SDWAN firewall rule to fetch" } }
           },
           "system_sdwan_create_firewall_rule" => {
-            description: "Create a firewall rule. Selectors accept {peer_id|tag|cidr|all} primitives. Port range is optional and only applies to tcp/udp.",
+            description: "Create a firewall rule. Selectors accept {peer_id|tag|cidr|all} primitives. Port range is optional and only applies to tcp/udp. Approval-gated (sdwan.firewall_rule_create) — under require_approval this returns pending: true with a deferred_operation_id and the rule is written only once an operator approves.",
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network this rule belongs to" },
               name: { type: "string", required: true, description: "Display name for the firewall rule" },
@@ -224,7 +300,7 @@ module Ai
             }
           },
           "system_sdwan_update_firewall_rule" => {
-            description: "Update a firewall rule (any field). Pass port_from/port_to as null to clear the port range.",
+            description: "Update a firewall rule (any field). Pass port_from/port_to as null to clear the port range. Approval-gated (sdwan.firewall_rule_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               firewall_rule_id: { type: "string", required: true, description: "UUID of the SDWAN firewall rule to update" },
               name: { type: "string", required: false, description: "New display name for the rule" },
@@ -257,7 +333,7 @@ module Ai
             }
           },
           "system_sdwan_revoke_access_grant" => {
-            description: "Revoke an access grant — cascades to revoke all the user's devices on this network",
+            description: "Revoke an access grant — cascades to revoke ALL the user's devices on this network. Approval-gated (sdwan.access_grant_revoke) — under require_approval this returns pending: true with a deferred_operation_id and nothing is cut until an operator approves. One-way in practice: access must be re-granted and every device re-issued. To cut a single device instead, use system_sdwan_revoke_user_device.",
             parameters: {
               access_grant_id: { type: "string", required: true, description: "UUID of the SDWAN access grant to revoke" },
               reason:          { type: "string", required: false, description: "Optional human-readable revocation reason (recorded on the grant)" }
@@ -275,7 +351,7 @@ module Ai
             }
           },
           "system_sdwan_revoke_user_device" => {
-            description: "Revoke a user device (immediate; agent drops it from the hub view on next reconcile)",
+            description: "Revoke a user device. Approval-gated (system.sdwan_user_device_revoke) — under require_approval this returns pending: true with a deferred_operation_id and the device is cut only once an operator approves. Scoped to the ONE named device: the user's other devices and the access grant are untouched. The hub PULLS its config, so the cut takes effect at its next pull rather than instantly.",
             parameters: {
               user_device_id: { type: "string", required: true, description: "UUID of the SDWAN user device to revoke" },
               reason:         { type: "string", required: false, description: "Optional human-readable revocation reason (recorded on the device)" }
@@ -291,21 +367,20 @@ module Ai
             parameters: { federation_peer_id: { type: "string", required: true, description: "UUID of the federation peer to fetch" } }
           },
           "system_sdwan_propose_federation_peer" => {
-            description: "Propose a new federation peer. Status starts at 'proposed'. With generate_token: true (Phase 11b), generates a single-use acceptance token (plaintext returned ONCE) — Account A operator copies it out-of-band to Account B operator who pastes it into system_sdwan_accept_federation_peer.",
+            description: "Propose a new federation peer. Status starts at 'proposed'. Acceptance-token minting is NOT available on this surface — a tool result reaches the model provider, so the plaintext cannot be delivered here. To obtain the single-use acceptance token for the Phase 11b handshake, the operator proposes over the REST API (POST /api/v1/system/sdwan/federation_peers), which mints by default and reveals the plaintext once in the approval decision response.",
             parameters: {
               remote_instance_url: { type: "string", required: true, description: "Base URL of the remote Powernode instance to peer with" },
               remote_instance_id: { type: "string", required: false, description: "Optional identifier of the remote Powernode instance" },
               remote_account_id: { type: "string", required: false, description: "Optional identifier of the remote account on the peer instance" },
               remote_prefix_advertisement: { type: "string", required: false, description: "/48|/56|/64 ULA prefix the remote instance claims" },
-              generate_token: { type: "boolean", required: false, description: "When true, generate a single-use acceptance token (Phase 11b token round-trip handshake). Plaintext returned ONCE — not recoverable." },
-              token_ttl_seconds: { type: "integer", required: false, description: "Token expiry window in seconds (default 7 days)" }
+              generate_token: { type: "boolean", required: false, description: "Not supported on this surface — passing true is refused with the operator path to use instead. Omit it to propose the peer." }
             }
           },
           "system_sdwan_accept_federation_peer" => {
-            description: "Transition a proposed federation peer to accepted. When the proposing operator generated a single-use acceptance token, pass it as acceptance_token — it is verified (digest match + not expired + single-use) before the transition is allowed. Sets signed_at + audit metadata and (for platform peers) chains into enroll. Returns the updated peer.",
+            description: "Transition a proposed federation peer to accepted. Approval-gated (sdwan.federation_peer_accept) — under require_approval this returns pending: true with a deferred_operation_id and the peer is accepted only once an operator approves. When the proposing operator generated a single-use acceptance token, pass it as acceptance_token — it is verified (digest match + not expired + single-use) before the request is gated, and again before the transition is written. Performs the status transition only (sets signed_at + audit metadata); it does NOT run the enroll / node-enrollment / SDWAN-attach chain — that is the federation_acceptance skill.",
             parameters: {
               federation_peer_id: { type: "string", required: true, description: "UUID of the federation peer to accept (must be in 'proposed' status)" },
-              acceptance_token:   { type: "string", required: false, description: "Single-use token from the proposing-account operator (from propose with generate_token: true). Verified against the stored digest; consumed on success." }
+              acceptance_token:   { type: "string", required: false, description: "Single-use token supplied by the proposing-account operator, who obtains it over the REST propose path (POST /api/v1/system/sdwan/federation_peers) — it cannot be minted on this MCP surface. Verified against the stored digest; consumed on success." }
             }
           },
           "system_sdwan_revoke_federation_peer" => {
@@ -320,10 +395,12 @@ module Ai
             parameters: {}
           },
           "system_sdwan_update_federation_peer" => {
-            description: "Update a federation peer's mutable fields. When `status` is supplied it is gated by the v1 transition matrix (FederationPeer#can_transition_to?) — disallowed transitions return an error. Mirrors the FederationPeersController#update permitted keys.",
+            description: "Update a federation peer's mutable fields. When `status` is supplied it is gated by the v1 transition matrix (FederationPeer#can_transition_to?) — disallowed transitions return an error. The two trust-boundary transitions are approval-gated exactly as on the REST surface: status 'accepted' routes through sdwan.federation_peer_accept (a peer carrying an acceptance token digest requires acceptance_token, verified up front) and status 'revoked' routes through sdwan.federation_peer_revoke (reason recorded on the peer); under require_approval these return pending: true with a deferred_operation_id and nothing changes until an operator approves. Other transitions apply inline. Mirrors the FederationPeersController#update permitted keys.",
             parameters: {
               federation_peer_id: { type: "string", required: true, description: "UUID of the federation peer to update" },
-              status: { type: "string", required: false, description: "Target status — must be an allowed v1 transition from the current status" },
+              status: { type: "string", required: false, description: "Target status — must be an allowed v1 transition from the current status. 'accepted' and 'revoked' are approval-gated; other transitions apply inline" },
+              acceptance_token: { type: "string", required: false, description: "Single-use token from the proposing-account operator — required when transitioning to 'accepted' on a peer that carries an acceptance token digest. Verified before the request is gated; consumed on success." },
+              reason: { type: "string", required: false, description: "Human-readable revocation reason, recorded on the peer when transitioning to 'revoked'" },
               remote_instance_url: { type: "string", required: false, description: "Base URL of the remote Powernode instance" },
               remote_instance_id: { type: "string", required: false, description: "Identifier of the remote Powernode instance" },
               remote_account_id: { type: "string", required: false, description: "Identifier of the remote account on the peer instance" },
@@ -341,7 +418,7 @@ module Ai
             }
           },
           "system_sdwan_get_audit_log" => {
-            description: "Read-only audit trail for a federation peer: WORM audit shipments (P9.2 sealed FleetEvent batches) plus recent federation.* FleetEvents pertaining to this peer. Secret fields (sealed_path, error_message) are not surfaced.",
+            description: "Read-only audit trail for a federation peer: WORM audit shipments (P9.2 sealed FleetEvent batches) plus recent federation.* FleetEvents pertaining to this peer. The events list is a FILTERED operator view (kind federation.* only); the sealed WORM archive captures ALL events referencing the peer regardless of kind and is the complete compliance record. Secret fields (sealed_path, error_message) are not surfaced.",
             parameters: {
               federation_peer_id: { type: "string", required: true, description: "UUID of the federation peer whose audit trail to read" },
               limit: { type: "integer", required: false, description: "Max rows per collection (default 50)" }
@@ -392,21 +469,21 @@ module Ai
           },
           # Slice 9a — routing layer (static subnet routing baseline)
           "system_sdwan_update_peer_lan_subnets" => {
-            description: "Declare the external LAN prefixes a peer can route to. In static mode, the topology compiler folds these into AllowedIPs so other peers route across the SDWAN to reach them. CIDR strings (v4 or v6).",
+            description: "Declare the external LAN prefixes a peer can route to. In static mode, the topology compiler folds these into AllowedIPs so other peers route across the SDWAN to reach them. CIDR strings (v4 or v6). Approval-gated (sdwan.peer_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer whose LAN subnets to declare" },
               lan_subnets: { type: "array", required: true, description: "Array of CIDR strings. Empty array clears." }
             }
           },
           "system_sdwan_set_peer_tags" => {
-            description: "Set the firewall tag labels on a peer. A FirewallRule whose src/dst selector is { \"tag\": \"<label>\" } matches every peer carrying that label (Sdwan::SelectorResolver compiles it to an nft set of their addresses). Replaces the peer's whole tag set; empty array clears it.",
+            description: "Set the firewall tag labels on a peer. A FirewallRule whose src/dst selector is { \"tag\": \"<label>\" } matches every peer carrying that label (Sdwan::SelectorResolver compiles it to an nft set of their addresses). Replaces the peer's whole tag set; empty array clears it. Approval-gated (sdwan.peer_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer to label" },
               tags: { type: "array", required: true, description: "Array of tag label strings (whitespace-trimmed, de-duped). Empty array clears all tags." }
             }
           },
           "system_sdwan_update_network_routing_mode" => {
-            description: "Set a network's routing protocol: 'static' (declarative AllowedIPs, no daemon) or 'ibgp' (slice 9c FRR + dynamic distribution). Until slice 9c lands, only 'static' is fully functional.",
+            description: "Set a network's routing protocol: 'static' (declarative AllowedIPs, no daemon) or 'ibgp' (slice 9c FRR + dynamic distribution). Until slice 9c lands, only 'static' is fully functional. Approval-gated (sdwan.network_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose routing mode to set" },
               routing_protocol: { type: "string", required: true, description: "static | ibgp" }
@@ -426,7 +503,7 @@ module Ai
           },
           # Slice 9b — Virtual IPs
           "system_sdwan_create_virtual_ip" => {
-            description: "Create a Virtual IP. Static mode (anycast=false) = single primary holder + ordered failover. Anycast mode (slice 9c iBGP) = all holders advertise simultaneously. CIDR is typically /32 (v4) or /128 (v6).",
+            description: "Create a Virtual IP. Static mode (anycast=false) = single primary holder + ordered failover. Anycast mode (slice 9c iBGP) = all holders advertise simultaneously. CIDR is typically /32 (v4) or /128 (v6). Approval-gated (sdwan.virtual_ip_create) — under require_approval this returns pending: true with a deferred_operation_id and the VIP is allocated only once an operator approves.",
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network the Virtual IP lives in" },
               name: { type: "string", required: true, description: "Display name for the Virtual IP" },
@@ -452,7 +529,7 @@ module Ai
             parameters: { virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP to fetch" } }
           },
           "system_sdwan_update_virtual_ip" => {
-            description: "Update a Virtual IP's holders, failover candidates, anycast mode, advertised_med/local_pref, etc. Holder changes are recorded as 'holder_changed' assignment rows.",
+            description: "Update a Virtual IP's holders, failover candidates, anycast mode, advertised_med/local_pref, etc. Holder changes are recorded as 'holder_changed' assignment rows. Approval-gated (sdwan.virtual_ip_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP to update" },
               holder_peer_ids: { type: "array", required: false, description: "Ordered holder peer UUIDs; first is primary when anycast=false" },
@@ -469,7 +546,7 @@ module Ai
             parameters: { virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP to delete" } }
           },
           "system_sdwan_failover_virtual_ip" => {
-            description: "Manual failover for a non-anycast VIP — promotes the head of failover_holder_peer_ids to holder. Anycast VIPs don't fail over (all holders are active simultaneously).",
+            description: "Manual failover for a non-anycast VIP — promotes the head of failover_holder_peer_ids to holder. Anycast VIPs don't fail over (all holders are active simultaneously). Approval-gated (system.sdwan_vip_failover, the same category as the REST surface) — under require_approval this returns pending: true with a deferred_operation_id and the standby is promoted only once an operator approves.",
             parameters: { virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP to fail over" } }
           },
           "system_sdwan_list_vip_assignments" => {
@@ -521,7 +598,7 @@ module Ai
             }
           },
           "system_sdwan_update_route_policy" => {
-            description: "Update a route policy's name, scope, statements, or enabled state.",
+            description: "Update a route policy's name, scope, statements, or enabled state. Approval-gated (sdwan.route_policy_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               route_policy_id: { type: "string", required: true, description: "UUID of the SDWAN route policy to update" },
               options: { type: "object", required: true, description: "Hash of fields to update: name, description, scope, scope_resource_id, direction, enabled, statements, metadata" }
@@ -566,7 +643,7 @@ module Ai
             }
           },
           "system_sdwan_update_port_mapping" => {
-            description: "Update a port mapping's name, target, ports, protocol, enabled state, or hardening (rate_limit/max_connections/source_cidrs).",
+            description: "Update a port mapping's name, target, ports, protocol, enabled state, or hardening (rate_limit/max_connections/source_cidrs). Approval-gated (sdwan.port_mapping_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               port_mapping_id: { type: "string", required: true, description: "UUID of the SDWAN port mapping to update" },
               options: { type: "object", required: true, description: "Hash of fields to update: name, description, target_peer_id, target_virtual_ip_id, listen_port, target_port, protocol, enabled, metadata, rate_limit, max_connections, source_cidrs. Pass rate_limit/max_connections as null or source_cidrs as [] to clear back to unrestricted." }
@@ -874,6 +951,97 @@ module Ai
         @user.has_permission?(required_perm_for(action))
       end
 
+      # === Approval gate seam ===
+      #
+      # The one shape every destructive verb on this tool routes through —
+      # the MCP twin of ::System::GatedActions#gate! on the REST controllers.
+      # Never hand-copy the AutonomyGate plumbing into an action; call this.
+      #
+      # Contract (mirrors the REST gate! semantics, IMP-322999495307):
+      #
+      #   * Validate BEFORE calling — account scoping (account_* finders),
+      #     transition matrices, and token checks all run first, so a request
+      #     that can only ever fail parks no approval an operator has to
+      #     dispose of. None of that is enforcement: the executor re-runs the
+      #     checks that count when the deferred operation executes.
+      #   * The EXECUTOR is the sole writer. On :pending the gate never calls
+      #     the proceed block — the action itself must mutate NOTHING, so the
+      #     operation survives the approval window and is performed
+      #     server-side (constantized at approval) with `executor_params`
+      #     replayed verbatim. Key names are each executor's contract.
+      #   * `pending_extra` carries the resource serialization for the 202-
+      #     shaped response; the block builds the :proceed payload and is only
+      #     called after the executor ran synchronously (auto-approve /
+      #     notify_and_proceed / core mode), receiving the gate Result — an
+      #     executor that mints material revealed exactly once (federation
+      #     propose) surfaces it from result.result there.
+      #
+      # Agent AND user are both forwarded: a seeded agent-scoped
+      # require_approval row only matches when the agent is passed
+      # (Ai::InterventionPolicy#agent_matches? rejects a scoped row against a
+      # nil agent), every other caller falls through to
+      # InterventionPolicyService#default_policy (also require_approval), and
+      # @agent additionally buys attribution — AutonomyGate#resolve_chain
+      # routes to "<agent name> Actions" and to "Manual Operations" when nil.
+      # Attribution for the requesting user lands on the DeferredOperation.
+      #
+      # Ai::AutonomyGate copies executor_params into the ApprovalRequest's
+      # request_data through Ai::SensitiveParams.filter, so secret-named keys
+      # (acceptance_token, …) reach the approval audience masked while the
+      # operation's own params keep the plaintext the executor replays.
+      def gated_result(action_category:, executor_class:, executor_params:,
+                       description:, source_type: nil, source_id: nil,
+                       pending_extra: {})
+        result = ::Ai::AutonomyGate.evaluate(
+          action_category: action_category,
+          executor_class: executor_class,
+          params: executor_params,
+          account: @account,
+          agent: @agent,
+          requested_by: @user,
+          source_type: source_type,
+          source_id: source_id,
+          description: description
+        )
+
+        case result.decision
+        when :proceed
+          success_result(**yield(result))
+        when :pending
+          success_result(
+            pending: true,
+            action_category: action_category,
+            deferred_operation_id: result.deferred_operation&.id,
+            approval_request_id: result.approval_request&.id,
+            **pending_extra,
+            message: "Approval required: #{action_category}"
+          )
+        else
+          error_result(result.error || "Action #{action_category} is blocked by policy")
+        end
+      end
+
+      # Validate-before-gate ceremony shared by every gated update arm
+      # (IMP-c9798d9d5671): assign the caller's attributes so the MODEL
+      # produces the field errors (one wording with the REST twin), surface
+      # them immediately when the update could only ever fail — a doomed
+      # change must not park an approval an operator has to dispose of —
+      # then restore_attributes (the zero-query equivalent of reload,
+      # ActiveModel::Dirty) so nothing reaches the row except through the
+      # executor. Returns the error_result to bubble, or nil when the
+      # update is gateable. The optional block runs on the VALID path only,
+      # before restore — the one window where normalization callbacks
+      # (before_validation) have run but the row is untouched, for callers
+      # that answer the normalized value without re-reading it later.
+      def validation_error_before_gate(record, attrs)
+        record.assign_attributes(attrs)
+        return error_result(record.errors.full_messages.join("; ")) unless record.valid?
+
+        yield record if block_given?
+        record.restore_attributes
+        nil
+      end
+
       # === Networks ===
 
       def list_networks(_params)
@@ -897,16 +1065,55 @@ module Ai
         success_result(network: serialize_network_full(network))
       end
 
+      # IMP-2ff1980f7813 — routed through Ai::AutonomyGate as
+      # sdwan.network_update, the category NetworksController#update gates over
+      # its WHOLE payload (3e0b0a60). This was the last ungated status write on
+      # the MCP surface: `status` moves a network between compilable and
+      # deny-all for every peer (Sdwan::Network::STATUSES /
+      # TopologyCompiler), so an agent refused on the HTTP surface could apply
+      # the identical flip here with no DeferredOperation row. The sibling arm
+      # set_network_routing_mode already gates on this category; together the
+      # two reach a subset of the REST permit list (see NETWORK_UPDATE_CATEGORY
+      # above for the four fields no MCP arm exposes).
+      #
+      # No re-parent anchor is needed (NetworksController#update carries the
+      # same note): Sdwan::Network is the top of the SDWAN tenancy tree and
+      # holds no re-pointable tenancy-bearing FK — account_id is its only
+      # tenancy key, and Executors::Base#attrs strips it.
+      #
+      # `options` is read string-keyed because that is the only live caller
+      # shape: McpPlatformToolRegistrar hands the tool a
+      # HashWithIndifferentAccess (mcp_platform_tool_registrar.rb).
       def update_network(params)
         network = account_networks.find(params[:network_id])
-        opts = params[:options] || {}
+        opts = params[:options]
+        opts = {} unless opts.is_a?(Hash)
         update_attrs = {}
-        update_attrs[:name]        = opts["name"]        if opts.is_a?(Hash) && opts["name"]
-        update_attrs[:description] = opts["description"] if opts.is_a?(Hash) && opts["description"]
-        update_attrs[:status]      = opts["status"]      if opts.is_a?(Hash) && opts["status"]
-        update_attrs[:settings]    = opts["settings"]    if opts.is_a?(Hash) && opts["settings"].is_a?(Hash)
-        network.update!(update_attrs) if update_attrs.any?
-        success_result(network: serialize_network_full(network.reload))
+        update_attrs[:name]        = opts["name"]        if opts["name"]
+        update_attrs[:description] = opts["description"] if opts["description"]
+        update_attrs[:status]      = opts["status"]      if opts["status"]
+        update_attrs[:settings]    = opts["settings"]    if opts["settings"].is_a?(Hash)
+
+        # Requested-but-unusable fails LOUD rather than parking a no-op
+        # approval (see update_firewall_rule). Replaces the old silent
+        # success-over-nothing: an unrecognized payload used to answer 200
+        # with the untouched network, which reads as "applied".
+        if update_attrs.empty?
+          return error_result("no recognized fields to update — permitted (options): name, description, status, settings")
+        end
+
+        error = validation_error_before_gate(network, update_attrs)
+        return error if error
+
+        gated_result(
+          action_category: NETWORK_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdateNetwork",
+          executor_params: { network_id: network.id, attributes: update_attrs },
+          source_type: "Sdwan::Network",
+          source_id: network.id,
+          # Matches NetworksController#update's gate description.
+          description: "Update SDWAN network '#{network.name}'"
+        ) { |_result| { network: serialize_network_full(network.reload) } }
       end
 
       def delete_network(params)
@@ -988,19 +1195,77 @@ module Ai
         )
       end
 
+      # IMP-6c482005db87 — routed through Ai::AutonomyGate, mirroring the
+      # REST twin (FirewallRulesController#create): the executor existed with
+      # no caller, so the seeded sdwan.firewall_rule_create policy matched
+      # nothing this tool did. Sdwan::Executors::CreateFirewallRule performs
+      # the write server-side, so it survives the :pending path; this method
+      # mutates nothing on either branch.
+      #
+      # The candidate is validated BEFORE the gate (like
+      # accept_federation_peer's up-front checks): a doomed create fails with
+      # its field errors immediately rather than parking an approval that can
+      # only ever fail. Never saved — the executor's create! stays the
+      # authority. Account ownership is enforced HERE by account_networks,
+      # the same split the HTTP path uses (set_network guard, executor
+      # re-anchors through resolve_scoped).
       def create_firewall_rule(params)
         network = account_networks.find(params[:network_id])
-        rule = network.firewall_rules.new(account_id: @account.id)
-        assign_rule_attrs(rule, params)
-        rule.save!
-        success_result(firewall_rule: serialize_rule(rule.reload))
+        # IMP-4a5094b22df0: no account_id merge. It existed ONLY to give the
+        # approval card an account to scope its network label by, back when
+        # Base.preview ran with deferred_operation: nil; the card now anchors on
+        # the operation's own account. Sdwan::FirewallRule derives account_id
+        # from its network in a before_validation, so the candidate below still
+        # validates identically.
+        attrs = firewall_rule_attrs(params)
+
+        candidate = network.firewall_rules.new(attrs)
+        unless candidate.valid?
+          return error_result(candidate.errors.full_messages.join("; "))
+        end
+
+        gated_result(
+          action_category: FIREWALL_RULE_CREATE_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateFirewallRule",
+          executor_params: { network_id: network.id, attributes: attrs },
+          source_type: "Sdwan::Network",
+          source_id: network.id,
+          # Matches CreateFirewallRule#summarize so both surfaces of the
+          # approval speak one sentence (IMP-3a563becb7d7).
+          description: "Add firewall rule '#{candidate.name}' to SDWAN network #{network.name}"
+        ) { |result| { firewall_rule: serialize_rule(network.firewall_rules.find(result.result&.dig(:data, :rule_id))) } }
       end
 
+      # IMP-c9798d9d5671 — routed through Ai::AutonomyGate, mirroring the
+      # REST twin (FirewallRulesController#update): the update executor
+      # gained its REST caller in IMP-0e44cf2fc80b while this arm kept
+      # writing inline, so an agent refused on the HTTP surface could apply
+      # the identical mutation here. The executor's update! stays the only
+      # writer (validation_error_before_gate ceremony). The parked
+      # attributes carry :port_range_hash (the model's mass-assignable
+      # accessor), same shape the create arm parks.
       def update_firewall_rule(params)
         rule = account_firewall_rules.find(params[:firewall_rule_id])
-        assign_rule_attrs(rule, params)
-        rule.save!
-        success_result(firewall_rule: serialize_rule(rule.reload))
+        attrs = firewall_rule_attrs(params)
+        # Requested-but-unusable fails LOUD: a typo'd payload maps to an
+        # empty attrs hash, and parking it would open a no-op approval an
+        # operator has to dispose of while the caller's intent vanishes.
+        if attrs.empty?
+          return error_result("no recognized fields to update — permitted: name, priority, firewall_action, direction, protocol, src_selector, dst_selector, enabled, port_from+port_to")
+        end
+        error = validation_error_before_gate(rule, attrs)
+        return error if error
+
+        gated_result(
+          action_category: FIREWALL_RULE_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdateFirewallRule",
+          executor_params: { rule_id: rule.id, attributes: attrs },
+          source_type: "Sdwan::FirewallRule",
+          source_id: rule.id,
+          # Matches UpdateFirewallRule#summarize so both surfaces of the
+          # approval speak one sentence (IMP-3a563becb7d7).
+          description: "Update firewall rule '#{rule.name}' on SDWAN network #{rule.network.name}"
+        ) { |_result| { firewall_rule: serialize_rule(rule.reload) } }
       end
 
       def delete_firewall_rule(params)
@@ -1011,18 +1276,28 @@ module Ai
 
       # === Helpers ===
 
-      def assign_rule_attrs(rule, params)
-        rule.name      = params[:name]              if params.key?(:name) && params[:name]
-        rule.priority  = params[:priority].to_i     if params.key?(:priority) && params[:priority]
-        rule.action    = params[:firewall_action]   if params.key?(:firewall_action) && params[:firewall_action]
-        rule.direction = params[:direction]         if params.key?(:direction) && params[:direction]
-        rule.protocol  = params[:protocol]          if params.key?(:protocol) && params[:protocol]
-        rule.src_selector = params[:src_selector]   if params.key?(:src_selector) && !params[:src_selector].nil?
-        rule.dst_selector = params[:dst_selector]   if params.key?(:dst_selector) && !params[:dst_selector].nil?
-        rule.enabled   = params[:enabled]           if params.key?(:enabled) && !params[:enabled].nil?
+      # The ONE params→attributes mapping for firewall rules — update assigns
+      # it (assign_attributes), create parks it on the gate for
+      # Sdwan::Executors::CreateFirewallRule to replay into create!
+      # (IMP-6c482005db87). Guard style is per-key presence: an omitted key
+      # leaves the column untouched on update and takes the model default on
+      # create. port_from/port_to are re-keyed to :port_range_hash (the
+      # model's mass-assignable accessor — the raw column is an int4range a
+      # Hash cannot set).
+      def firewall_rule_attrs(params)
+        attrs = {}
+        attrs[:name]         = params[:name]            if params.key?(:name) && params[:name]
+        attrs[:priority]     = params[:priority].to_i   if params.key?(:priority) && params[:priority]
+        attrs[:action]       = params[:firewall_action] if params.key?(:firewall_action) && params[:firewall_action]
+        attrs[:direction]    = params[:direction]       if params.key?(:direction) && params[:direction]
+        attrs[:protocol]     = params[:protocol]        if params.key?(:protocol) && params[:protocol]
+        attrs[:src_selector] = params[:src_selector]    if params.key?(:src_selector) && !params[:src_selector].nil?
+        attrs[:dst_selector] = params[:dst_selector]    if params.key?(:dst_selector) && !params[:dst_selector].nil?
+        attrs[:enabled]      = params[:enabled]         if params.key?(:enabled) && !params[:enabled].nil?
         if params[:port_from] && params[:port_to]
-          rule.port_range_hash = { from: params[:port_from].to_i, to: params[:port_to].to_i }
+          attrs[:port_range_hash] = { from: params[:port_from].to_i, to: params[:port_to].to_i }
         end
+        attrs
       end
 
       def account_firewall_rules
@@ -1054,10 +1329,53 @@ module Ai
         success_result(grant: serialize_grant(grant))
       end
 
+      # Revoking a grant cuts a user's VPN access AND cascades to every device
+      # on it (AccessGrant#revoke! soft-revokes each non-revoked device), so it
+      # goes through Ai::AutonomyGate (`sdwan.access_grant_revoke`, seeded
+      # require_approval) exactly as AccessGrantsController#revoke does. Both
+      # this action and the device-scoped one map to the same required
+      # permission (system.sdwan.user_devices.manage), so leaving this ungated
+      # would have let an agent refused the narrow device revoke reach for the
+      # wide one instead — unapproved, and with no Ai::DeferredOperation row.
+      #
+      # Sdwan::Executors::RevokeAccessGrant performs the revoke server-side —
+      # this method mutates nothing on either branch, so the revoke survives the
+      # :pending path. Account ownership is enforced HERE, before the gate, by
+      # account_access_grants — the same split the HTTP path uses
+      # (set_network/set_grant guard, executor re-resolves from the stored id).
+      #
+      # The params hash is GRANT-scoped on purpose: the executor's
+      # reject_device_scoped_params! guard raises on any device_id, because a
+      # grant revoke cascading out of a device-scoped verb would cut a user's
+      # whole access. Passing only grant_id/reason keeps this the guard's one
+      # legitimate shape, alongside the HTTP caller.
+      #
+      # No up-front doomed-action check: the one refusable condition inducible
+      # from the request — an already-revoked grant — is idempotent
+      # (AccessGrant#revoke! is `return if revoked?`), so it cannot park an
+      # approval that can only fail. A grant DELETED inside the approval window
+      # still raises out of the executor's bang find (reachable via an approved
+      # HTTP #destroy under sdwan.access_grant_delete), but that happens AFTER
+      # parking, so no pre-check reaches it, and it is recorded:
+      # DeferredOperation#execute_now! calls fail!(e) before re-raising.
       def revoke_access_grant(params)
         grant = account_access_grants.find(params[:access_grant_id])
-        grant.revoke!(reason: params[:reason], by_user: @user)
-        success_result(grant: serialize_grant(grant.reload), revoked: true)
+
+        gated_result(
+          action_category: ACCESS_GRANT_REVOKE_CATEGORY,
+          executor_class: "Sdwan::Executors::RevokeAccessGrant",
+          # grant_id and reason, shared verbatim with
+          # AccessGrantsController#revoke. `reason` replaces the `by_user:`
+          # this method used to pass to AccessGrant#revoke!, which the model
+          # accepts and never persists (there is no revoked_by column) —
+          # requester attribution lands on the DeferredOperation instead,
+          # where the approver can see it.
+          executor_params: { grant_id: grant.id, reason: params[:reason] },
+          source_type: "Sdwan::AccessGrant",
+          source_id: grant.id,
+          description: "Revoke SDWAN access for #{grant.user&.email || grant.id}",
+          pending_extra: { grant: serialize_grant(grant) }
+        ) { { grant: serialize_grant(grant.reload), revoked: true } }
       end
 
       # === User Devices ===
@@ -1078,10 +1396,44 @@ module Ai
         )
       end
 
+      # Revoking a device cuts one user's VPN access, so it goes through
+      # Ai::AutonomyGate (`system.sdwan_user_device_revoke`, seeded
+      # require_approval) exactly as UserDevicesController#revoke does —
+      # otherwise an agent holding this tool has a strictly wider capability
+      # than the operator performing the same revoke over HTTP, and leaves no
+      # Ai::DeferredOperation audit row.
+      #
+      # Sdwan::Executors::RevokeUserDevice performs the revoke server-side —
+      # this method mutates nothing on either branch, so the revoke survives the
+      # :pending path. The executor re-resolves the device from the stored
+      # grant/device id pair; account ownership is enforced HERE, before the
+      # gate, by account_user_devices — the same split the HTTP path uses
+      # (set_network/set_grant/set_device guard, executor re-validates pairing).
+      #
+      # No up-front doomed-action check, unlike accept_federation_peer: the one
+      # refusable condition inducible from the request — an already-revoked
+      # device — is idempotent (UserDevice#revoke! returns early), so it cannot
+      # park an approval that can only fail. A row DELETED during the approval
+      # window does still raise out of the executor's two bang finds (reachable
+      # via Sdwan::Executors::DeleteAccessGrant's `dependent: :destroy` cascade,
+      # or an approved HTTP #destroy under this same category) — but that
+      # happens AFTER parking, so no pre-check reaches it, and it is recorded:
+      # DeferredOperation#execute_now! calls fail!(e) before re-raising, so the
+      # row lands `failed` with the error message. Shared verbatim with the two
+      # HTTP device verbs, which dispatch the same executor on the same params.
       def revoke_user_device(params)
         device = account_user_devices.find(params[:user_device_id])
-        device.revoke!(reason: params[:reason])
-        success_result(device: serialize_user_device(device.reload), revoked: true)
+
+        gated_result(
+          action_category: USER_DEVICE_REVOKE_CATEGORY,
+          executor_class: "Sdwan::Executors::RevokeUserDevice",
+          # grant_id/device_id, shared with the two HTTP device verbs.
+          executor_params: { grant_id: device.sdwan_access_grant_id, device_id: device.id, reason: params[:reason] },
+          source_type: "Sdwan::UserDevice",
+          source_id: device.id,
+          description: "Revoke SDWAN device #{device.label || device.id}",
+          pending_extra: { device: serialize_user_device(device) }
+        ) { { device: serialize_user_device(device.reload), revoked: true } }
       end
 
       def account_access_grants
@@ -1133,7 +1485,43 @@ module Ai
         success_result(federation_peer: serialize_federation_peer(peer))
       end
 
+      # Phase 11b token minting is NOT available on this surface (IMP-3a32dc649043).
+      #
+      # A tool result does not stop at its caller. Ai::AgentToolBridgeService
+      # appends the full result JSON to the conversation as a `role: "tool"`
+      # message, which is sent to the model provider on the next iteration of
+      # the agent loop; a truncated preview is also carried in tool_calls_log.
+      # Ai::SensitiveParams cannot intervene on either (the preview is a String,
+      # and #filter returns non-Hash input unchanged). So returning the plaintext
+      # acceptance token here transmits signing material off-platform — the
+      # absolute prohibition in CLAUDE.md.
+      #
+      # The refusal is up front, before the row is created, and deliberately not
+      # a silent omission: minting the token and withholding it would leave a
+      # peer whose only means of acceptance is a secret nobody ever saw.
+      # Proposing WITHOUT a token stays fully supported here; the token round
+      # trip belongs to the operator API, which renders to an HTTP response
+      # rather than into an agent's context.
+      #
+      # The predicate casts rather than comparing to `true`: MCP arguments arrive
+      # from JSON with no boolean coercion anywhere on the path (the bridge
+      # parses and stringifies keys; BaseTool only checks required-key presence),
+      # and models routinely serialize a boolean argument as the string "true".
+      # `== true` would let that through silently — and silently is the one thing
+      # this refusal must never be.
       def propose_federation_peer(params)
+        if ::ActiveModel::Type::Boolean.new.cast(params[:generate_token])
+          return error_result(
+            "generate_token is not available over the MCP tool surface: a tool result is forwarded " \
+            "to the model provider and persisted with the conversation, so the plaintext acceptance " \
+            "token cannot be delivered here without disclosing signing material. Propose the peer " \
+            "over the operator API instead — POST /api/v1/system/sdwan/federation_peers mints the " \
+            "token by default (Sdwan::Executors::ProposeFederationPeer) and reveals the plaintext " \
+            "exactly once in the approval decision response. Proposing without generate_token is " \
+            "supported here."
+          )
+        end
+
         peer = ::System::FederationPeer.create!(
           account_id: @account.id,
           status: "proposed",
@@ -1143,18 +1531,7 @@ module Ai
           remote_prefix_advertisement: params[:remote_prefix_advertisement]
         )
 
-        response = { federation_peer: serialize_federation_peer(peer) }
-
-        # Phase 11b: optional token generation. Plaintext returned ONCE.
-        if params[:generate_token] == true
-          ttl = (params[:token_ttl_seconds] || 7.days.to_i).to_i
-          plaintext = peer.generate_acceptance_token!(ttl_seconds: ttl)
-          response[:acceptance_token_plaintext] = plaintext
-          response[:acceptance_token_expires_at] = peer.reload.acceptance_token_expires_at&.iso8601
-          response[:note] = "Store the acceptance token immediately — it is shown EXACTLY ONCE. Account B operator pastes this into system_sdwan_accept_federation_peer."
-        end
-
-        success_result(**response)
+        success_result(federation_peer: serialize_federation_peer(peer))
       end
 
       def revoke_federation_peer(params)
@@ -1163,6 +1540,17 @@ module Ai
         success_result(federation_peer: serialize_federation_peer(peer.reload), revoked: true)
       end
 
+      # Accepting completes the cross-instance handshake and starts mutual route
+      # advertisement — the same trust weight as the revoke this tool exposes —
+      # so it goes through Ai::AutonomyGate (`sdwan.federation_peer_accept`,
+      # seeded require_approval for the SDWAN Manager) exactly as
+      # FederationPeersController#update does. Sdwan::Executors::AcceptFederationPeer
+      # performs the acceptance server-side, so it survives the :pending path.
+      #
+      # The transition matrix and the token are checked BEFORE the gate so an
+      # unacceptable request fails immediately rather than parking an approval
+      # request that can only ever fail. Neither check is the enforcement — the
+      # executor re-runs both when the deferred operation executes.
       def accept_federation_peer(params)
         peer = account_federation_peers.find(params[:federation_peer_id])
 
@@ -1172,21 +1560,24 @@ module Ai
           )
         end
 
-        success = peer.accept!(
-          accepted_by_user: @user,
-          acceptance_token: params[:acceptance_token]
-        )
-
-        unless success
-          # accept! sets errors on the model and returns false (Phase 11b
-          # token verification path); surface to operator.
-          return error_result(peer.errors.full_messages.join("; "))
+        if (token_error = peer.acceptance_token_error(params[:acceptance_token]))
+          return error_result(token_error)
         end
 
-        success_result(
-          federation_peer: serialize_federation_peer(peer.reload),
-          accepted: true
-        )
+        gated_result(
+          action_category: FEDERATION_ACCEPT_CATEGORY,
+          executor_class: "Sdwan::Executors::AcceptFederationPeer",
+          # The single-use token has to outlive the approval window to be
+          # verified and consumed by the executor, so it is carried on the
+          # deferred operation (whose params stay plaintext for the replay);
+          # the ApprovalRequest's request_data copy reaches the approval
+          # audience with the token masked (Ai::SensitiveParams).
+          executor_params: { federation_peer_id: peer.id, acceptance_token: params[:acceptance_token] },
+          source_type: "System::FederationPeer",
+          source_id: peer.id,
+          description: "Accept federation peer #{peer.remote_instance_url}",
+          pending_extra: { federation_peer: serialize_federation_peer(peer) }
+        ) { { federation_peer: serialize_federation_peer(peer.reload), accepted: true } }
       end
 
       def federation_scan(_params)
@@ -1204,6 +1595,27 @@ module Ai
       # row. Permitted keys match the controller's peer_update_params (no
       # endpoints — that's outside the REST surface). RecordNotFound /
       # RecordInvalid bubble to the dispatch rescue.
+      #
+      # Two transitions reachable here cross the trust boundary, and both are
+      # routed through the approval gate exactly as the REST twin routes them
+      # (FederationPeersController#update → gated_accept!/gated_revoke!):
+      #
+      #   accepted — EXTENDS trust: completes the handshake that starts
+      #     mutual route advertisement with a remote instance.
+      #   revoked  — WITHDRAWS it: cuts cross-instance routing, and is the
+      #     transition whose cause has to be audited. V1_TRANSITIONS lists
+      #     "revoked" from every non-terminal state, so this update reaches
+      #     the same state change as system_sdwan_revoke_federation_peer.
+      #
+      # The bare update! this replaces was the MCP twin of the REST
+      # PATCH-status bypass (bc2ef162/e655659f): status:"accepted" completed
+      # the handshake with no gate, no signed_at, and without verifying or
+      # consuming the Phase 11b single-use acceptance token (it bypassed
+      # FederationPeer#accept! entirely); status:"revoked" skipped revoke!,
+      # so no revocation_reason was ever recorded. IMP-796bde368789.
+      #
+      # Suspend/enroll/activate narrow or track an existing link and stay
+      # inline, per the REST ruling.
       def update_federation_peer(params)
         peer = account_federation_peers.find(params[:federation_peer_id])
 
@@ -1223,8 +1635,71 @@ module Ai
         update_attrs[:expires_at]                  = params[:expires_at]                  if params.key?(:expires_at)
         update_attrs[:metadata]                    = params[:metadata]                    if params[:metadata].is_a?(Hash)
 
+        case params[:status].to_s
+        when "accepted" then return update_gated_accept(peer, params, update_attrs)
+        when "revoked"  then return update_gated_revoke(peer, params)
+        end
+
         peer.update!(update_attrs) if update_attrs.any?
         success_result(federation_peer: serialize_federation_peer(peer.reload))
+      end
+
+      # The acceptance leg of update_federation_peer. Every field the same
+      # update carried rides along to the executor rather than being written
+      # ahead of the approval — they are one caller intent, and applying half
+      # of it now would let an unapproved caller edit the peer (the executor
+      # applies them in one transaction with the acceptance, excluding
+      # signed_at, which accept! stamps itself).
+      #
+      # The token is checked BEFORE the gate, like accept_federation_peer: a
+      # doomed accept must fail immediately rather than park an approval
+      # request that can only ever fail (on the :pending path the executor
+      # runs from Ai::ApprovalRequest#notify_source_of_decision, which rescues
+      # and only logs — an operator would approve and never learn the peer
+      # stayed proposed). Not enforcement: the executor re-runs accept!'s own
+      # verification when the deferred operation executes.
+      def update_gated_accept(peer, params, update_attrs)
+        if (token_error = peer.acceptance_token_error(params[:acceptance_token]))
+          return error_result(
+            "#{token_error} — pass acceptance_token (or accept through system_sdwan_accept_federation_peer)"
+          )
+        end
+
+        gated_result(
+          action_category: FEDERATION_ACCEPT_CATEGORY,
+          executor_class: "Sdwan::Executors::AcceptFederationPeer",
+          executor_params: {
+            federation_peer_id: peer.id,
+            acceptance_token: params[:acceptance_token],
+            attributes: update_attrs.except(:status)
+          },
+          source_type: "System::FederationPeer",
+          source_id: peer.id,
+          description: "Accept federation peer #{peer.remote_instance_url}",
+          pending_extra: { federation_peer: serialize_federation_peer(peer) }
+        ) { { federation_peer: serialize_federation_peer(peer.reload) } }
+      end
+
+      # The revocation leg of update_federation_peer — same action category
+      # and executor as system_sdwan_revoke_federation_peer, so one approval
+      # policy and one audit trail cover every route to a revoked peer.
+      #
+      # Unlike the accept leg, ride-along fields are NOT forwarded: revoked is
+      # terminal and the revoke executor applies no attributes, so there is
+      # nowhere for them to land. They are ignored rather than refused, the
+      # same choice gated_revoke! makes on the REST twin — a form-shaped
+      # client resends every field on every update, and refusing that would
+      # break a legitimate revocation.
+      def update_gated_revoke(peer, params)
+        gated_result(
+          action_category: FEDERATION_REVOKE_CATEGORY,
+          executor_class: "Sdwan::Executors::RevokeFederationPeer",
+          executor_params: { federation_peer_id: peer.id, reason: params[:reason] },
+          source_type: "System::FederationPeer",
+          source_id: peer.id,
+          description: "Revoke federation peer #{peer.remote_instance_url}",
+          pending_extra: { federation_peer: serialize_federation_peer(peer) }
+        ) { { federation_peer: serialize_federation_peer(peer.reload) } }
       end
 
       # Set a federation peer's data residency region tag (scalar
@@ -1341,37 +1816,108 @@ module Ai
 
       # === Slice 9a — Routing (static subnet routing) ===
 
+      # IMP-c9798d9d5671 — routed through Ai::AutonomyGate as sdwan.peer_update,
+      # mirroring the REST twin: lan_subnets is in PeersController's
+      # peer_update_params permit list, so the gated REST path and this arm
+      # mutate the same category (changing lan_subnets rewrites AllowedIPs for
+      # every peer routing to this one). UpdatePeer's update! is the only
+      # writer; the proceed payload keeps this arm's routing-shaped response.
       def set_peer_lan_subnets(params)
         peer = account_peers.find(params[:peer_id])
-        peer.update!(lan_subnets: Array(params[:lan_subnets]).map(&:to_s))
-        success_result(
-          peer_id: peer.id,
-          lan_subnets: peer.lan_subnets,
-          advertisement_count: peer.subnet_advertisements.active.count
-        )
+        attrs = { lan_subnets: Array(params[:lan_subnets]).map(&:to_s) }
+        error = validation_error_before_gate(peer, attrs)
+        return error if error
+
+        gated_result(
+          action_category: PEER_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdatePeer",
+          executor_params: { peer_id: peer.id, attributes: attrs },
+          source_type: "Sdwan::Peer",
+          source_id: peer.id,
+          # Matches UpdatePeer#summarize (Sdwan::Peer#operator_label — the
+          # ladder every peer surface renders, IMP-ee57d0fbe859).
+          description: "Update SDWAN peer #{peer.operator_label}"
+        ) { |_result|
+          {
+            peer_id: peer.id,
+            # The executor persisted exactly attrs (no callback transforms
+            # lan_subnets) — answering it saves the reload SELECT; the
+            # advertisement count reflects the executor's after_save sync,
+            # so that query is unavoidable.
+            lan_subnets: attrs[:lan_subnets],
+            advertisement_count: peer.subnet_advertisements.active.count
+          }
+        }
       end
 
       # D8 — set the firewall tag labels on a peer (the model normalizes:
       # trim/dedup). Firewall { "tag": "x" } selectors then resolve to it.
+      # IMP-c9798d9d5671 — gated as sdwan.peer_update like set_peer_lan_subnets:
+      # tags ride the SAME REST permit list (peer_update_params), so leaving
+      # this arm inline would keep the category bypassable through MCP.
       def set_peer_tags(params)
         peer = account_peers.find(params[:peer_id])
-        peer.update!(tags: Array(params[:tags]).map(&:to_s))
-        success_result(peer_id: peer.id, tags: peer.tags)
+        # The valid? pass runs the model's before_validation normalize
+        # (trim/dedup/drop-blank) — capture it in the helper's valid-path
+        # window and park THAT, not the raw input: the approval card renders
+        # the parked attributes, so what the approver sees must be what the
+        # executor persists. Same capture answers the proceed payload
+        # without a reload SELECT.
+        normalized_tags = nil
+        error = validation_error_before_gate(peer, { tags: Array(params[:tags]).map(&:to_s) }) do |p|
+          normalized_tags = p.tags.dup
+        end
+        return error if error
+
+        gated_result(
+          action_category: PEER_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdatePeer",
+          executor_params: { peer_id: peer.id, attributes: { tags: normalized_tags } },
+          source_type: "Sdwan::Peer",
+          source_id: peer.id,
+          description: "Update SDWAN peer #{peer.operator_label}"
+        ) { |_result| { peer_id: peer.id, tags: normalized_tags } }
       end
 
+      # IMP-c9798d9d5671 — routed through Ai::AutonomyGate as
+      # sdwan.network_update: routing_protocol is in NetworksController's
+      # network_params permit list, so the gated REST update and this arm flip
+      # the same control-plane knob. The mode check is the MODEL's inclusion
+      # validation via the shared pre-gate ceremony (one wording with the
+      # REST twin, and a doomed change parks no approval); UpdateNetwork's
+      # update! is the only writer. The general update_network arm gates on
+      # the same category (IMP-2ff1980f7813).
       def set_network_routing_mode(params)
         network = account_networks.find(params[:network_id])
         mode = params[:routing_protocol].to_s
-        unless ::Sdwan::Network::ROUTING_PROTOCOLS.include?(mode)
-          return error_result("routing_protocol must be one of: #{::Sdwan::Network::ROUTING_PROTOCOLS.join(', ')}")
-        end
+        attrs = { routing_protocol: mode }
+        error = validation_error_before_gate(network, attrs)
+        return error if error
 
-        network.update!(routing_protocol: mode)
-        success_result(
-          network_id: network.id,
-          routing_protocol: network.routing_protocol,
-          note: mode == "ibgp" ? "iBGP mode requires slice 9c (FRR daemon) — peers won't propagate routes via BGP yet." : nil
-        )
+        # The iBGP capability warning must survive BOTH branches: the caller
+        # sees it on :pending via pending_extra (the old inline arm always
+        # returned it), and the APPROVER sees it in the description — neither
+        # would otherwise learn the mode they are approving isn't fully
+        # functional yet.
+        note = mode == "ibgp" ? "iBGP mode requires slice 9c (FRR daemon) — peers won't propagate routes via BGP yet." : nil
+
+        gated_result(
+          action_category: NETWORK_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdateNetwork",
+          executor_params: { network_id: network.id, attributes: attrs },
+          source_type: "Sdwan::Network",
+          source_id: network.id,
+          # Base sentence matches NetworksController#update's gate description.
+          description: "Update SDWAN network '#{network.name}'#{" — #{note}" if note}",
+          pending_extra: note ? { note: note } : {}
+        ) { |_result|
+          {
+            network_id: network.id,
+            # The executor persisted exactly attrs — no reload needed.
+            routing_protocol: mode,
+            note: note
+          }
+        }
       end
 
       def list_subnet_advertisements(params)
@@ -1425,27 +1971,38 @@ module Ai
 
       # === Slice 9b — Virtual IPs ===
 
+      # IMP-6c482005db87 — routed through Ai::AutonomyGate, mirroring the
+      # REST twin (VirtualIpsController#create): the executor existed with no
+      # caller, so the seeded sdwan.virtual_ip_create policy matched nothing
+      # this tool did. Sdwan::Executors::CreateVirtualIp performs the whole
+      # slice-9b create ceremony server-side (activation + initial assignment
+      # row), so it survives the :pending path; this method mutates nothing
+      # on either branch.
+      #
+      # The candidate is validated BEFORE the gate — mirroring the executor's
+      # build (including activation) so validation sees exactly the row that
+      # would be written — and is never saved. Account ownership is enforced
+      # HERE by account_networks, the same split the HTTP path uses.
       def create_virtual_ip(params)
         network = account_networks.find(params[:network_id])
-        ::Sdwan::VirtualIp.transaction do
-          vip = network.virtual_ips.new(
-            account_id: @account.id,
-            name: params[:name],
-            cidr: params[:cidr],
-            anycast: params[:anycast] || false,
-            holder_peer_ids: Array(params[:holder_peer_ids]),
-            failover_holder_peer_ids: Array(params[:failover_holder_peer_ids]),
-            description: params[:description],
-            tags: Array(params[:tags]),
-            advertised_med: params[:advertised_med] || 0,
-            advertised_local_pref: params[:advertised_local_pref] || 100
-          )
-          vip.state = "active" if Array(vip.holder_peer_ids).any?
-          vip.save!
+        attrs = virtual_ip_create_attrs(params)
 
-          create_initial_vip_assignments!(vip)
-          success_result(virtual_ip: serialize_virtual_ip(vip.reload))
+        candidate = network.virtual_ips.new(attrs)
+        candidate.activate_if_held
+        unless candidate.valid?
+          return error_result(candidate.errors.full_messages.join("; "))
         end
+
+        gated_result(
+          action_category: VIRTUAL_IP_CREATE_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateVirtualIp",
+          executor_params: { network_id: network.id, attributes: attrs },
+          source_type: "Sdwan::Network",
+          source_id: network.id,
+          # Matches CreateVirtualIp#summarize so both surfaces of the
+          # approval speak one sentence (IMP-3a563becb7d7).
+          description: "Allocate SDWAN VIP '#{candidate.name}' on network #{network.name}"
+        ) { |result| { virtual_ip: serialize_virtual_ip(network.virtual_ips.find(result.result&.dig(:data, :vip_id))) } }
       end
 
       def list_virtual_ips(params)
@@ -1462,22 +2019,51 @@ module Ai
         ))
       end
 
+      # IMP-c9798d9d5671 — routed through Ai::AutonomyGate, mirroring the
+      # REST twin (VirtualIpsController#update). This verb was NOT a clean
+      # drop-in wiring: the holder audit sync ran inline here (a hand copy of
+      # what became Sdwan::VirtualIp#sync_holder_assignments!), and gated_result
+      # never invokes its proceed block on :pending — the executor is the sole
+      # writer there — so the whole update+sync transaction now lives ONLY in
+      # UpdateVirtualIp#perform (which also anchors sdwan_network_id via
+      # Base#anchor_reparent!, a tenancy guard the inline body never had).
+      # Attribution rides the DeferredOperation's requested_by (this @user).
       def update_virtual_ip(params)
         vip = account_virtual_ips.find(params[:virtual_ip_id])
-        ::Sdwan::VirtualIp.transaction do
-          previous_holders = Array(vip.holder_peer_ids).dup
-          updates = {}
-          %i[holder_peer_ids failover_holder_peer_ids tags].each do |k|
-            updates[k] = Array(params[k]) if params.key?(k)
-          end
-          %i[anycast description advertised_med advertised_local_pref].each do |k|
-            updates[k] = params[k] if params.key?(k) && !params[k].nil?
-          end
-          vip.update!(updates)
-
-          sync_vip_assignments_after_holder_change!(vip, previous_holders)
-          success_result(virtual_ip: serialize_virtual_ip(vip.reload))
+        updates = {}
+        %i[holder_peer_ids failover_holder_peer_ids tags].each do |k|
+          updates[k] = Array(params[k]) if params.key?(k)
         end
+        %i[anycast description advertised_med advertised_local_pref].each do |k|
+          updates[k] = params[k] if params.key?(k) && !params[k].nil?
+        end
+
+        # Requested-but-unusable fails LOUD rather than parking a no-op
+        # approval (see update_firewall_rule).
+        if updates.empty?
+          return error_result("no recognized fields to update — permitted: holder_peer_ids, failover_holder_peer_ids, tags, anycast, description, advertised_med, advertised_local_pref")
+        end
+        error = validation_error_before_gate(vip, updates)
+        return error if error
+
+        gated_result(
+          action_category: VIRTUAL_IP_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdateVirtualIp",
+          # IMP-391525770512 — the same replay-baseline stamp the REST twin
+          # makes. Omitting it here would leave one surface of ONE executor
+          # guarded and the other not, which is how a per-verb guard turns
+          # into a hole reachable by a different noun. `vip` is persisted
+          # state: validation_error_before_gate restores it above.
+          executor_params: {
+            vip_id: vip.id, attributes: updates,
+            replay_baseline: ::Sdwan::Executors::UpdateVirtualIp.replay_baseline(vip, updates)
+          },
+          source_type: "Sdwan::VirtualIp",
+          source_id: vip.id,
+          # Matches UpdateVirtualIp#summarize so both surfaces of the
+          # approval speak one sentence (IMP-3a563becb7d7).
+          description: "Update SDWAN VIP '#{vip.name}' on network #{vip.network.name}"
+        ) { |_result| { virtual_ip: serialize_virtual_ip(vip.reload) } }
       end
 
       def delete_virtual_ip(params)
@@ -1490,12 +2076,38 @@ module Ai
         end
       end
 
+      # IMP-7c911ca26585 — routed through Ai::AutonomyGate with the REST
+      # twin's exact category (VirtualIpsController#failover): promoting the
+      # failover holder rewrites BGP/AllowedIPs reachability, so an agent
+      # refused approval on the REST surface must not get it inline here.
+      # The model's StateError guards are mirrored PRE-gate so a doomed
+      # failover (anycast, or no candidates) fails loud instead of parking
+      # an approval that can only fail on execution — wording kept identical
+      # to Sdwan::VirtualIp#failover!, whose semantics IMP-43cf1e6b5541
+      # owns. gated_result never invokes its proceed block on :pending, so
+      # the rotate + audit transaction runs ONLY in FailoverVirtualIp#perform;
+      # attribution rides the DeferredOperation's requested_by (this @user —
+      # the executor credits deferred_operation.requested_by, replacing the
+      # inline body's triggered_by_user: @user).
       def failover_virtual_ip(params)
         vip = account_virtual_ips.find(params[:virtual_ip_id])
-        vip.failover!(reason: "manual_failover", triggered_by_user: @user)
-        success_result(virtual_ip: serialize_virtual_ip(vip.reload), failed_over: true)
-      rescue ::Sdwan::VirtualIp::StateError => e
-        error_result(e.message)
+        if vip.anycast?
+          return error_result("anycast VIPs don't fail over (all holders active simultaneously)")
+        end
+        if Array(vip.failover_holder_peer_ids).empty?
+          return error_result("no failover candidates configured")
+        end
+
+        gated_result(
+          action_category: VIP_FAILOVER_CATEGORY,
+          executor_class: "Sdwan::Executors::FailoverVirtualIp",
+          executor_params: { vip_id: vip.id },
+          source_type: "Sdwan::VirtualIp",
+          source_id: vip.id,
+          # Matches the REST twin's wording (VirtualIpsController#failover)
+          # so both surfaces of the approval speak one sentence.
+          description: "Manual failover of VIP #{vip.try(:cidr) || vip.id}"
+        ) { |_result| { virtual_ip: serialize_virtual_ip(vip.reload), failed_over: true } }
       end
 
       def list_vip_assignments(params)
@@ -1610,15 +2222,31 @@ module Ai
         end
       end
 
+      # IMP-c9798d9d5671 — routed through Ai::AutonomyGate, mirroring the
+      # REST twin (RoutePoliciesController#update). UpdateRoutePolicy's
+      # update! stays the only writer (validation_error_before_gate ceremony).
       def update_route_policy(params)
-        p = ::Sdwan::RoutePolicy.where(account_id: @account.id).find(params[:route_policy_id])
+        policy = ::Sdwan::RoutePolicy.where(account_id: @account.id).find(params[:route_policy_id])
         opts = params[:options] || {}
-        if p.update(opts.slice(:name, :description, :scope, :scope_resource_id, :direction,
-                                :enabled, :statements, :metadata))
-          success_result(route_policy: serialize_route_policy_full(p))
-        else
-          error_result(p.errors.full_messages.join("; "))
+        attrs = opts.slice(:name, :description, :scope, :scope_resource_id, :direction,
+                           :enabled, :statements, :metadata)
+        # Requested-but-unusable fails LOUD rather than parking a no-op
+        # approval (see update_firewall_rule).
+        if attrs.empty?
+          return error_result("no recognized fields to update — permitted (options): name, description, scope, scope_resource_id, direction, enabled, statements, metadata")
         end
+        error = validation_error_before_gate(policy, attrs)
+        return error if error
+
+        gated_result(
+          action_category: ROUTE_POLICY_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdateRoutePolicy",
+          executor_params: { policy_id: policy.id, attributes: attrs },
+          source_type: "Sdwan::RoutePolicy",
+          source_id: policy.id,
+          # Matches RoutePoliciesController#update's gate description.
+          description: "Update SDWAN route policy #{policy.name}"
+        ) { |_result| { route_policy: serialize_route_policy_full(policy.reload) } }
       rescue ActiveRecord::RecordNotFound
         error_result("route policy not found")
       end
@@ -1705,18 +2333,35 @@ module Ai
         error_result("network not found in account scope")
       end
 
+      # IMP-c9798d9d5671 — routed through Ai::AutonomyGate, mirroring the
+      # REST twin (PortMappingsController#update). UpdatePortMapping's
+      # update! stays the only writer (validation_error_before_gate ceremony).
       def update_port_mapping(params)
         m = port_mapping_in_account(params[:port_mapping_id])
         return error_result("port mapping not found") unless m
 
         opts = params[:options] || {}
-        if m.update(opts.slice(:name, :description, :target_peer_id, :target_virtual_ip_id,
-                                :listen_port, :target_port, :protocol, :enabled, :metadata,
-                                :rate_limit, :max_connections, :source_cidrs))
-          success_result(port_mapping: serialize_port_mapping_full(m))
-        else
-          error_result(m.errors.full_messages.join("; "))
+        attrs = opts.slice(:name, :description, :target_peer_id, :target_virtual_ip_id,
+                           :listen_port, :target_port, :protocol, :enabled, :metadata,
+                           :rate_limit, :max_connections, :source_cidrs)
+        # Requested-but-unusable fails LOUD rather than parking a no-op
+        # approval (see update_firewall_rule).
+        if attrs.empty?
+          return error_result("no recognized fields to update — permitted (options): name, description, target_peer_id, target_virtual_ip_id, listen_port, target_port, protocol, enabled, metadata, rate_limit, max_connections, source_cidrs")
         end
+        error = validation_error_before_gate(m, attrs)
+        return error if error
+
+        gated_result(
+          action_category: PORT_MAPPING_UPDATE_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdatePortMapping",
+          executor_params: { mapping_id: m.id, attributes: attrs },
+          source_type: "Sdwan::PortMapping",
+          source_id: m.id,
+          # Matches UpdatePortMapping#summarize so both surfaces of the
+          # approval speak one sentence (IMP-3a563becb7d7).
+          description: "Update SDWAN port mapping #{m.name} on #{m.network.name}"
+        ) { |_result| { port_mapping: serialize_port_mapping_full(m.reload) } }
       end
 
       def delete_port_mapping(params)
@@ -1800,39 +2445,30 @@ module Ai
         }
       end
 
-      def create_initial_vip_assignments!(vip)
-        holders = vip.anycast? ? Array(vip.holder_peer_ids) : Array(vip.holder_peer_ids).first(1)
-        holders.compact.each do |peer_id|
-          vip.assignments.create!(
-            peer: ::Sdwan::Peer.find(peer_id),
-            assumed_at: Time.current,
-            reason: "initial",
-            triggered_by_user_id: @user&.id
-          )
-        end
-      end
-
-      def sync_vip_assignments_after_holder_change!(vip, previous_holders)
-        current = vip.anycast? ? Array(vip.holder_peer_ids) : Array(vip.holder_peer_ids).first(1)
-        current = current.compact
-
-        departed = previous_holders - current
-        arrived  = current - previous_holders
-        return if departed.empty? && arrived.empty?
-
-        now = Time.current
-        departed.each do |peer_id|
-          vip.assignments.where(sdwan_peer_id: peer_id, released_at: nil)
-             .update_all(released_at: now, updated_at: now)
-        end
-        arrived.each do |peer_id|
-          vip.assignments.create!(
-            peer: ::Sdwan::Peer.find(peer_id),
-            assumed_at: now,
-            reason: "holder_changed",
-            triggered_by_user_id: @user&.id
-          )
-        end
+      # The attribute Hash the gate stores and Sdwan::Executors::CreateVirtualIp
+      # replays into save! — same key set and defaults the inline create
+      # carried. The slice-9b initial-assignment bootstrap that used to live
+      # beside this moved into the executor, where it also runs on the :pending
+      # path (IMP-6c482005db87).
+      #
+      # IMP-4a5094b22df0: no account_id. It existed ONLY to give the approval
+      # card an account to scope its network label by, back when Base.preview
+      # ran with deferred_operation: nil; the card now anchors on the
+      # operation's own account. Sdwan::VirtualIp derives account_id from its
+      # network in a before_validation, so the candidate still validates
+      # identically.
+      def virtual_ip_create_attrs(params)
+        {
+          name: params[:name],
+          cidr: params[:cidr],
+          anycast: params[:anycast] || false,
+          holder_peer_ids: Array(params[:holder_peer_ids]),
+          failover_holder_peer_ids: Array(params[:failover_holder_peer_ids]),
+          description: params[:description],
+          tags: Array(params[:tags]),
+          advertised_med: params[:advertised_med] || 0,
+          advertised_local_pref: params[:advertised_local_pref] || 100
+        }
       end
 
       def account_federation_peers
@@ -1848,6 +2484,11 @@ module Ai
           remote_prefix_advertisement: p.remote_prefix_advertisement,
           status: p.status,
           data_residency: p.data_residency,
+          # The revocation cause this tool records (system_sdwan_revoke_federation_peer)
+          # would otherwise be write-only over MCP — none of the nine actions
+          # sharing this projection expose peer metadata, so nothing could read
+          # it back.
+          revocation_reason: p.metadata["revocation_reason"],
           v1_allowed_transitions: ::System::FederationPeer::V1_TRANSITIONS.fetch(p.status, []),
           signed_at: p.signed_at&.iso8601,
           expires_at: p.expires_at&.iso8601,
@@ -1942,7 +2583,7 @@ module Ai
           endpoint_host_v6: p.endpoint_host_v6,
           endpoint_host_v4: p.endpoint_host_v4,
           endpoint_port: p.endpoint_port,
-          effective_endpoint: primary && "#{primary[:host]}:#{primary[:port]}",
+          effective_endpoint: primary && ::Sdwan::Peer.format_host_port(primary[:host], primary[:port]),
           effective_endpoint_family: primary && primary[:family].to_s,
           fallback_endpoint: fallback && "#{fallback[:host]}:#{fallback[:port]}",
           listen_port: p.listen_port,

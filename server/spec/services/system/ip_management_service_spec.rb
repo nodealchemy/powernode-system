@@ -134,7 +134,10 @@ RSpec.describe System::IpManagementService do
       end
 
       it "errors when the instance has no cloud instance ID" do
-        bare = create(:system_node_instance, node: node, status: "running")
+        # The explicit nil is load-bearing: OMITTING cloud_instance_id gets a
+        # backfilled id for a cloud variety, which carries execution past this
+        # guard and into Providers::Registry.
+        bare = create(:system_node_instance, node: node, status: "running", cloud_instance_id: nil)
 
         result = described_class.associate_public_ip(instance: bare)
 

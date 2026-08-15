@@ -8,6 +8,8 @@ import type { PageAction } from '@/shared/components/layout/PageContainer';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
+import { isPendingApproval } from '@system/features/system/services/api/helpers';
+import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import type { SdwanRoutingOverview, SdwanRoutePolicy } from '@system/features/system/types/sdwan.types';
 import { AsNumberSetupBanner } from '@system/features/system/components/sdwan/routing/AsNumberSetupBanner';
 import { RoutingOverviewPanel } from '@system/features/system/components/sdwan/routing/RoutingOverviewPanel';
@@ -77,7 +79,12 @@ const SdwanRoutingPage: React.FC<SdwanRoutingPageProps> = ({ embedded = false })
   const handleDeletePolicy = async () => {
     if (!policyToDelete) return;
     try {
-      await sdwanApi.deleteRoutePolicy(policyToDelete.id);
+      const result = await sdwanApi.deleteRoutePolicy(policyToDelete.id);
+      if (isPendingApproval(result)) {
+        addNotification?.(pendingApprovalNotice(`deleting route policy '${policyToDelete.name}'`, result));
+        setPolicyToDelete(null);
+        return;
+      }
       addNotification?.({ type: 'success', message: `Policy '${policyToDelete.name}' deleted.` });
       setPolicyToDelete(null);
       setRefreshKey((k) => k + 1);
@@ -91,7 +98,11 @@ const SdwanRoutingPage: React.FC<SdwanRoutingPageProps> = ({ embedded = false })
 
   const handleTogglePolicy = async (p: SdwanRoutePolicy) => {
     try {
-      await sdwanApi.updateRoutePolicy(p.id, { enabled: !p.enabled });
+      const result = await sdwanApi.updateRoutePolicy(p.id, { enabled: !p.enabled });
+      if (isPendingApproval(result)) {
+        addNotification?.(pendingApprovalNotice(`updating route policy '${p.name}'`, result));
+        return;
+      }
       setRefreshKey((k) => k + 1);
     } catch (err) {
       addNotification?.({

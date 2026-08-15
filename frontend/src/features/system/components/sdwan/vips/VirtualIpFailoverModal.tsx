@@ -4,6 +4,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
+import { isPendingApproval } from '../../../services/api/helpers';
+import { pendingApprovalNotice } from '../../../utils/pendingApproval';
 import type { SdwanVirtualIp } from '../../../types/sdwan.types';
 
 interface VirtualIpFailoverModalProps {
@@ -28,6 +30,11 @@ export const VirtualIpFailoverModal: React.FC<VirtualIpFailoverModalProps> = ({
     setSubmitting(true);
     try {
       const updated = await sdwanApi.failoverVirtualIp(networkId, vip.id);
+      if (isPendingApproval(updated)) {
+        addNotification(pendingApprovalNotice(`failing over VIP '${vip.name}'`, updated));
+        onClose();
+        return;
+      }
       onFailedOver(updated);
     } catch (err) {
       addNotification({ type: 'error', message: err instanceof Error ? err.message : 'Failover failed' });

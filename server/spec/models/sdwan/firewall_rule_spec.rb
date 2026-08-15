@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "support/line_safe_name_shared_examples"
 
 RSpec.describe Sdwan::FirewallRule, type: :model do
+  it_behaves_like "a line-safe named model", :sdwan_firewall_rule
+
   let(:account) { Account.first || create(:account) }
   let(:network) do
     Sdwan::Configuration.where(account_id: account.id).delete_all
@@ -94,6 +97,39 @@ RSpec.describe Sdwan::FirewallRule, type: :model do
     it "clears the column when assigned nil" do
       rule.port_range_hash = nil
       rule.save!
+      expect(rule.reload.dst_port_range).to be_nil
+    end
+  end
+
+  # IMP-0e44cf2fc80b — API-shaped writer: any mass-assignment path may pass
+  # :port_range in the {from:, to:} JSON shape. The {}/nil clearing nuance
+  # (IMP-32978416b9d3) deliberately differs from port_range_hash=: in an
+  # update payload nil means "not provided — leave the column untouched",
+  # while {} clears the range.
+  describe "#port_range=" do
+    let(:rule) do
+      described_class.create!(
+        sdwan_network_id: network.id, account_id: account.id,
+        name: "api-ports", action: "accept", direction: "ingress", protocol: "tcp",
+        dst_port_range: (1024..2048)
+      )
+    end
+
+    it "accepts the { from:, to: } API shape through mass assignment" do
+      rule.update!(port_range: { from: 8000, to: 8080 })
+
+      expect(rule.reload.port_range_hash).to eq({ from: 8000, to: 8080 })
+    end
+
+    it "leaves the column untouched when assigned nil" do
+      rule.update!(port_range: nil)
+
+      expect(rule.reload.port_range_hash).to eq({ from: 1024, to: 2048 })
+    end
+
+    it "clears the range when assigned an empty hash" do
+      rule.update!(port_range: {})
+
       expect(rule.reload.dst_port_range).to be_nil
     end
   end

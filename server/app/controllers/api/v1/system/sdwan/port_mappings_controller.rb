@@ -31,23 +31,74 @@ module Api
             render_success(port_mapping: serialize_full(@mapping))
           end
 
+          # IMP-bf996c7abcb4: both writes route through Ai::AutonomyGate.
+          # Sdwan::Executors::{Create,Update}PortMapping existed and were
+          # tenancy-hardened but had no caller, so the seeded
+          # sdwan.port_mapping_{create,update} policies matched nothing — while
+          # DELETE on this same controller has been gated since slice 7b.
+          # Publishing a DNAT entry to a hub's underlay interface is at least as
+          # consequential as removing one.
+          #
+          # Response contract: on the gate's :pending branch the answer is 202
+          # (deferred operation id) and the row appears at approval time; the
+          # executor — not this controller — performs the write, because gate!
+          # never calls on_proceed on :pending. 201/200 with the serialized row
+          # is the answer on :proceed.
+          #
+          # Which branch an operator gets is a per-account policy question.
+          # gate! passes no `agent:`, so Ai::InterventionPolicy#agent_matches?
+          # admits only agent-less rows. db/seeds/system_sdwan_manager_agent.rb
+          # seeds the recorded per-verb table twice — agent-scoped for the SDWAN
+          # Manager, agent-less for the operator path (IMP-187124ca2984) — so a
+          # seeded account resolves sdwan.port_mapping_{create,update} to
+          # notify_and_proceed and lands on :proceed. An account with no operator
+          # policy for the category falls through InterventionPolicyService to
+          # its require_approval default and gets 202, exactly like the DELETE
+          # below. Either way the executor owns the write.
           def create
             require_permission("system.sdwan.port_mappings.manage")
-            mapping = @network.port_mappings.new(mapping_params.merge(account_id: @account.id))
-            if mapping.save
-              render_success({ port_mapping: serialize_full(mapping) }, status: :created)
-            else
-              render_validation_error(mapping)
-            end
+            attrs = mapping_params.to_h
+            # Never saved — the executor's create! stays the authority.
+            # gate_create! validates this candidate BEFORE the gate, so an
+            # unsaveable payload keeps its field-level errors instead of the
+            # gate's generic refusal and opens no audit row for an operation
+            # that could never run (Ai::GatedActions#gate_create!).
+            candidate = @network.port_mappings.new(attrs.merge(account_id: @account.id))
+
+            gate_create!(
+              candidate: candidate,
+              scope: @network.port_mappings,
+              result_key: :mapping_id,
+              response_key: :port_mapping,
+              serializer: ->(m) { serialize_full(m) },
+              action_category: "sdwan.port_mapping_create",
+              executor_class: "Sdwan::Executors::CreatePortMapping",
+              params: { network_id: @network.id, attributes: attrs },
+              source_type: "Sdwan::Network",
+              source_id: @network.id,
+              description: "Add SDWAN port mapping #{candidate.name} on #{@network.name}"
+            )
           end
 
           def update
             require_permission("system.sdwan.port_mappings.manage")
-            if @mapping.update(mapping_params)
-              render_success(port_mapping: serialize_full(@mapping))
-            else
-              render_validation_error(@mapping)
-            end
+            attrs = mapping_params.to_h
+            @mapping.assign_attributes(attrs)
+            return render_validation_error(@mapping) unless @mapping.valid?
+
+            # Discard the un-gated in-memory changes: nothing may reach the row
+            # except through the executor.
+            @mapping.reload
+
+            gate!(
+              action_category: "sdwan.port_mapping_update",
+              executor_class: "Sdwan::Executors::UpdatePortMapping",
+              params: { mapping_id: @mapping.id, attributes: attrs },
+              source_type: "Sdwan::PortMapping",
+              source_id: @mapping.id,
+              description: "Update SDWAN port mapping #{@mapping.name} on #{@network.name}",
+              on_proceed: ->(_r) { render_success(port_mapping: serialize_full(@mapping.reload)) }
+            )
           end
 
           def destroy

@@ -85,10 +85,10 @@ module System
         private
 
         def build_plan(instance)
-          peer = ::Sdwan::Peer.where(node_instance_id: instance.id)
-                              .where.not(assigned_address: nil)
-                              .order(:created_at)
-                              .first
+          # Same peer selection the provisioner itself uses, via the
+          # shared seam. The plan reports the RAW `assigned_address`
+          # (CIDR form) — only the provisioner strips the prefix length.
+          peer = ::Sdwan::OverlayAddressResolver.addressed_peer_for(instance)
           {
             instance_id: instance.id,
             instance_name: instance.name,

@@ -5,6 +5,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import type {
   SdwanFederationPeer,
   SdwanFederationStatus,
@@ -23,7 +25,17 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [revokeConfirm, setRevokeConfirm] = useState<SdwanFederationPeer | null>(null);
+  const [revokeReason, setRevokeReason] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState<SdwanFederationPeer | null>(null);
+
+  const openRevoke = useCallback((p: SdwanFederationPeer) => {
+    setRevokeReason('');
+    setRevokeConfirm(p);
+  }, []);
+  const closeRevoke = useCallback(() => {
+    setRevokeConfirm(null);
+    setRevokeReason('');
+  }, []);
 
   const [localKey, setLocalKey] = useState(0);
   const triggerLocal = useCallback(() => setLocalKey((k) => k + 1), []);
@@ -116,6 +128,11 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
               </td>
               <td className="p-3">
                 <span className={statusClass(p.status)}>{p.status}</span>
+                {p.status === 'revoked' && p.revocation_reason && (
+                  <div className="text-xs text-theme-secondary italic mt-1 max-w-xs truncate" title={p.revocation_reason}>
+                    reason: {p.revocation_reason}
+                  </div>
+                )}
               </td>
               <td className="p-3 text-xs text-theme-secondary">
                 <div>signed: {p.signed_at ? new Date(p.signed_at).toLocaleDateString() : '—'}</div>
@@ -123,7 +140,7 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
               </td>
               <td className="p-3 text-right">
                 {canManage && p.status !== 'revoked' && (
-                  <button type="button" onClick={() => setRevokeConfirm(p)}
+                  <button type="button" onClick={() => openRevoke(p)}
                           className="text-theme-warning-fg hover:bg-theme-warning-bg p-1 rounded mr-1"
                           aria-label={`Revoke peer ${p.remote_instance_url}`}>
                     <Ban size={16} />
@@ -167,6 +184,12 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
                       <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
                       <p className="text-theme-primary">{p.status}</p>
                     </div>
+                    {p.status === 'revoked' && (
+                      <div className="col-span-full">
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Revocation reason</label>
+                        <p className="text-theme-primary text-sm">{p.revocation_reason || '—'}</p>
+                      </div>
+                    )}
                     <div>
                       <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Trust JWT</label>
                       <p className="text-theme-primary inline-flex items-center gap-1">
@@ -211,7 +234,7 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
         </tbody>
       </table>
 
-      <Modal isOpen={revokeConfirm !== null} onClose={() => setRevokeConfirm(null)} icon={<Ban className="w-6 h-6" />} title="Revoke federation peer">
+      <Modal isOpen={revokeConfirm !== null} onClose={closeRevoke} icon={<Ban className="w-6 h-6" />} title="Revoke federation peer">
         {revokeConfirm && (
           <div className="space-y-3">
             <p className="text-theme-primary">
@@ -221,13 +244,32 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
               The row stays for audit but transitions to <code>revoked</code> (terminal in v1).
               Re-proposing the same remote instance creates a fresh row.
             </p>
+            <div>
+              <label htmlFor="fp-revoke-reason" className="block text-sm font-medium text-theme-primary mb-1">
+                Reason (optional)
+              </label>
+              <textarea
+                id="fp-revoke-reason"
+                value={revokeReason}
+                onChange={(e) => setRevokeReason(e.target.value)}
+                placeholder="e.g. remote signing key compromised"
+                rows={2}
+                className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary text-sm"
+              />
+              <p className="text-xs text-theme-secondary mt-1">Recorded on the peer for audit; shown here once revoked.</p>
+            </div>
             <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setRevokeConfirm(null)}>Cancel</Button>
+              <Button variant="secondary" onClick={closeRevoke}>Cancel</Button>
               <Button variant="danger" onClick={async () => {
                 try {
-                  await sdwanApi.revokeFederationPeer(revokeConfirm.id);
+                  const result = await sdwanApi.revokeFederationPeer(revokeConfirm.id, revokeReason.trim() || undefined);
+                  if (isPendingApproval(result)) {
+                    addNotification(pendingApprovalNotice(`revoking federation peer ${revokeConfirm.remote_instance_url}`, result));
+                    closeRevoke();
+                    return;
+                  }
                   addNotification({ type: 'success', message: 'Peer revoked' });
-                  setRevokeConfirm(null);
+                  closeRevoke();
                   triggerLocal();
                 } catch (err) {
                   addNotification({ type: 'error', message: err instanceof Error ? err.message : 'Failed' });
@@ -251,7 +293,12 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
               <Button variant="secondary" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
               <Button variant="danger" onClick={async () => {
                 try {
-                  await sdwanApi.deleteFederationPeer(deleteConfirm.id);
+                  const result = await sdwanApi.deleteFederationPeer(deleteConfirm.id);
+                  if (isPendingApproval(result)) {
+                    addNotification(pendingApprovalNotice(`deleting federation peer ${deleteConfirm.remote_instance_url}`, result));
+                    setDeleteConfirm(null);
+                    return;
+                  }
                   addNotification({ type: 'success', message: 'Peer deleted' });
                   setDeleteConfirm(null);
                   triggerLocal();

@@ -30,6 +30,13 @@ file_spec:
   # /persist soft-reboot survival drop-in (see the file's own header).
   # Same narrow-glob discipline as the line above.
   - '/etc/systemd/system/persist.mount.d/**'
+  # The other two halves of soft-reboot mount survival: the composed union
+  # systemd switches INTO, and the bind that carries /persist across. Both
+  # units are synthesized from mountinfo and exist only between a prepare and
+  # the soft-reboot that consumes it, so these drop-ins are inert on a node
+  # that never soft-reboots. Same narrow-glob discipline as the lines above.
+  - '/etc/systemd/system/run-nextroot.mount.d/**'
+  - '/etc/systemd/system/run-nextroot-persist.mount.d/**'
 
 # NOTE ON /sbin — do NOT ship real files here.
 #

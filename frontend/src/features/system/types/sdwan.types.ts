@@ -191,6 +191,10 @@ export interface SdwanFederationPeer {
   signed_at?: string | null;
   expires_at?: string | null;
   has_trust_jwt?: boolean;
+  // Populated from metadata["revocation_reason"] by the controller's
+  // serialize_peer — present on both the list (#index) and full (#show,
+  // #revoke, ...) projections once a peer has been revoked with a reason.
+  revocation_reason?: string | null;
   metadata?: Record<string, unknown>;
   created_at?: string;
 }

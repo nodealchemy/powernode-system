@@ -4,6 +4,8 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
+import { isPendingApproval } from '../../../services/api/helpers';
+import { pendingApprovalNotice } from '../../../utils/pendingApproval';
 import type { SdwanVirtualIp, SdwanPeer } from '../../../types/sdwan.types';
 
 interface VirtualIpCreateModalProps {
@@ -68,6 +70,11 @@ export const VirtualIpCreateModal: React.FC<VirtualIpCreateModalProps> = ({
         advertised_med: advertisedMed,
         advertised_local_pref: advertisedLocalPref,
       });
+      if (isPendingApproval(created)) {
+        addNotification(pendingApprovalNotice(`creating VIP '${name}'`, created));
+        onClose();
+        return;
+      }
       onCreated(created);
     } catch (err) {
       addNotification({ type: 'error', message: err instanceof Error ? err.message : 'Failed to create virtual IP' });

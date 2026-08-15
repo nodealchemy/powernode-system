@@ -867,4 +867,66 @@ describe('NetworkDetailModal', () => {
     // test relying on the mock returning true.
     expect(true).toBe(true);
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  const PENDING_APPROVAL = {
+    pending: true,
+    deferred_operation_id: 'dop-1',
+    action_category: 'sdwan.peer_delete',
+    approval_request_id: 'ar-1',
+    message: 'Approval required',
+  };
+
+  it('shows the pending-approval notification (not success) when the peer detach is parked', async () => {
+    mockDetachPeer.mockResolvedValue(PENDING_APPROVAL);
+    renderModal();
+    await waitFor(() => expect(screen.getByText('Peers')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Peers'));
+    fireEvent.click(screen.getByTestId('trigger-detach'));
+
+    fireEvent.click(screen.getByRole('button', { name: /^detach$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+    // No refresh — nothing changed yet.
+    expect(mockGetNetwork).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the pending-approval notification (not success) when the firewall rule delete is parked', async () => {
+    mockDeleteFirewallRule.mockResolvedValue({
+      ...PENDING_APPROVAL,
+      action_category: 'sdwan.firewall_rule_delete',
+    });
+    renderModal();
+    await waitFor(() => expect(screen.getByText('Firewall')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Firewall'));
+    fireEvent.click(screen.getByTestId('trigger-delete-rule'));
+
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
 });

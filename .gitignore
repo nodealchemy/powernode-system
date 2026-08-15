@@ -52,6 +52,13 @@ frontend/node_modules
 initramfs/build/
 initramfs/scripts/powernode-agent-*
 
+# === Claude Code ===
+# Agent worktrees, lockfiles, and local settings from Claude Code sessions
+# working in this submodule. Nothing under .claude/ is tracked here today
+# (see the parent platform's .gitignore for the more granular carve-outs
+# that repo needs); a blanket ignore is safe until that changes.
+.claude/
+
 # === Editor / OS ===
 .vscode/
 .idea/

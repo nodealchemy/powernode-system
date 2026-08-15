@@ -19,6 +19,8 @@ import {
   NetworkPortMappingsTab,
 } from '../../components/sdwan';
 import { sdwanApi } from '../../services/api/sdwanApi';
+import { isPendingApproval } from '../../services/api/helpers';
+import { pendingApprovalNotice } from '../../utils/pendingApproval';
 import type {
   SdwanNetwork,
   SdwanPeer,
@@ -134,7 +136,12 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
   const handleConfirmDetach = useCallback(async () => {
     if (!peerToDetach || !detail) return;
     try {
-      await sdwanApi.detachPeer(detail.id, peerToDetach.id);
+      const result = await sdwanApi.detachPeer(detail.id, peerToDetach.id);
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`detaching peer ${peerToDetach.assigned_address}`, result));
+        setPeerToDetach(null);
+        return;
+      }
       addNotification({ type: 'success', message: 'Peer detached' });
       setPeerToDetach(null);
       triggerRefresh();
@@ -149,7 +156,12 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
   const handleConfirmDeleteRule = useCallback(async () => {
     if (!ruleToDelete || !detail) return;
     try {
-      await sdwanApi.deleteFirewallRule(detail.id, ruleToDelete.id);
+      const result = await sdwanApi.deleteFirewallRule(detail.id, ruleToDelete.id);
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`deleting firewall rule "${ruleToDelete.name}"`, result));
+        setRuleToDelete(null);
+        return;
+      }
       addNotification({ type: 'success', message: `Rule "${ruleToDelete.name}" deleted` });
       setRuleToDelete(null);
       triggerRefresh();

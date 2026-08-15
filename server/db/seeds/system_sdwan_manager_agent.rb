@@ -97,8 +97,13 @@ sdwan_policies = {
   # the "Fleet Autonomy" agent, so gate_action! resolves the policy against THAT
   # agent — seeding them here left them stranded (silently 'not_permitted') in
   # the sensor path. This mirrors the system.federation_peer_remediate move.
-  # Only operator-initiated sdwan.* CRUD policies remain here; those gate via
-  # Ai::AutonomyGate as the SDWAN Manager agent (a different path).
+  # Only operator-initiated sdwan.* CRUD policies remain here.
+  #
+  # This table is seeded TWICE, against two different audiences (see the
+  # operator upsert below): once agent-scoped, which is what an agent dispatch
+  # resolves against, and once agent-less, which is what an operator HTTP
+  # request resolves against. The verbs below are the single recorded intent for
+  # both — do not fork them.
 
   # Operator-initiated network ops (newly gated 2026-05-10)
   "sdwan.network_create"              => "notify_and_proceed",
@@ -130,9 +135,13 @@ sdwan_policies = {
   "sdwan.port_mapping_update"         => "notify_and_proceed",
   "sdwan.port_mapping_delete"         => "notify_and_proceed",
 
-  # Access grants — granting access notifies, revoking requires approval
+  # Access grants — granting access notifies, revoking requires approval.
+  # Deleting is strictly more destructive than revoking: dependent: :destroy
+  # cascades to every VPN device and their Vault keys, leaving nothing for the
+  # 90-day audit window, so it is gated at least as tightly.
   "sdwan.access_grant_create"         => "notify_and_proceed",
   "sdwan.access_grant_revoke"         => "require_approval",
+  "sdwan.access_grant_delete"         => "require_approval",
 
   # User devices — issuing a VPN config notifies, revoking requires approval
   "sdwan.user_device_create"          => "notify_and_proceed",
@@ -152,6 +161,60 @@ System::Seeds::AgentSetupHelpers.clean_stale_policies!(
   keep_keys: sdwan_policies.keys
 )
 puts "  ✅ SDWAN Manager policies: #{count} changed (#{sdwan_policies.size} total)"
+
+# IMP-187124ca2984 — the OPERATOR path needs its own rows.
+#
+# The upsert above scopes every row to this agent (ai_agent_id set), and
+# Ai::InterventionPolicy#agent_matches? is
+# `return true if ai_agent_id.nil?; agent_record && ai_agent_id == agent_record.id`.
+# Ai::GatedActions#gate! passes no `agent:`, so an operator HTTP request through
+# any of the SDWAN controllers matches NONE of them and falls through
+# Ai::InterventionPolicyService to its require_approval default. The per-verb
+# intent recorded above therefore bound only on the agent-dispatch path: every
+# operator create/update/delete was hard-approval-gated by accident, not by
+# decision.
+#
+# Mirroring the same table onto operator-path rows makes the recorded intent
+# govern both audiences, and changes nothing about what any agent is allowed to
+# do: `resolve` skips scope-"action_type" rows for an agent caller, so these
+# rows bind exclusively on the operator path — an agent without its own row for
+# a verb (Fleet Autonomy, Concierge, Topology Designer on sdwan.*) lands on the
+# require_approval default, never here.
+#
+# The discriminator is `scope`, NOT ai_agent_id nil-ness (IMP-cb36021d4094,
+# landed; it superseded the duplicate IMP-d21b4c0cd5fd). SCOPES =
+# %w[global agent action_type] names THREE audiences: these operator rows are
+# scope "action_type" (upsert_operator_policies!), while scope "global" rows are
+# agent-binding by design — server/db/seeds/autonomy_data_seed.rb seeds
+# status_update/proposal/escalation there and Ai::AgentOutreachService resolves
+# them with an agent always set. IMP-bfbf8052e179's cut keyed on ai_agent_id and
+# so over-caught the global audience: measured, an agent resolving a global
+# auto_approve row got require_approval (fail-safe) and a global block row
+# stopped binding an agent at all (fail-OPEN, since require_approval is not a
+# denial — the gate parks it for an approval any active user may grant).
+#
+# Two further guards remain as defense in depth should the resolution contract
+# ever regress: an agent-scoped row out-ranks these on specificity_key at ANY
+# priority, since that key is lexicographic and the agent tier sits above the
+# agent-less one (IMP-6430e3a8c4a1 — while it was an additive score, this
+# out-ranking held only because of the priority gap seeded below), and
+# both sets carry the SAME trust_tier_minimum condition so an emergency trust
+# demotion knocks out the agent row and this row together, preserving the
+# escalation to require_approval.
+#
+# Note this is per-account: only accounts whose policies are seeded get the
+# recorded intent. Any other account still lands on the require_approval
+# default until an operator configures policies for it.
+operator_count = System::Seeds::AgentSetupHelpers.upsert_operator_policies!(
+  account: admin_account,
+  definitions: sdwan_policies
+)
+System::Seeds::AgentSetupHelpers.clean_stale_operator_policies!(
+  account: admin_account,
+  keep_keys: sdwan_policies.keys,
+  owned_prefixes: [ "sdwan." ]
+)
+puts "  ✅ SDWAN operator-path policies: #{operator_count} changed (#{sdwan_policies.size} total)"
 
 sdwan_chain = Ai::ApprovalChain.find_or_initialize_by(
   account: admin_account,

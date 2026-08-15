@@ -25,7 +25,13 @@ RSpec.describe System::InstancePoolService, type: :service do
 
   # Helper — seed a fully-warm pool member at a given state, bypassing
   # the standard provisioning flow (which would dispatch worker jobs).
-  def seed_pool_member(state:, warming_started_at: 1.minute.ago, acquired_at: nil, last_heartbeat_at: nil)
+  #
+  # Extra instance attributes pass straight through to the factory, so an
+  # example wanting the identity-less shape (a member whose VM the provider
+  # never created) seeds it with `cloud_instance_id: nil` — omitting the
+  # attribute instead gets a backfilled id.
+  def seed_pool_member(state:, warming_started_at: 1.minute.ago, acquired_at: nil, last_heartbeat_at: nil,
+                       **instance_attrs)
     node = create(:system_node, account: account, node_template: node_template,
                                  lifecycle_class: "ephemeral")
     create(:system_node_instance,
@@ -39,7 +45,8 @@ RSpec.describe System::InstancePoolService, type: :service do
            pool_state: state,
            pool_warming_started_at: warming_started_at,
            pool_acquired_at: acquired_at,
-           last_heartbeat_at: last_heartbeat_at)
+           last_heartbeat_at: last_heartbeat_at,
+           **instance_attrs)
   end
 
   # IMP-71c852bffc37 / offer 019fcc59 — the reuse-without-reset release path
@@ -257,11 +264,18 @@ RSpec.describe System::InstancePoolService, type: :service do
 
     it "transitions pool to draining + ready members to draining state" do
       # Explicit success stub. Without it the REAL terminate_instance runs and
-      # returns err("Instance has no cloud instance ID") for these fixtures —
-      # which this example used to pass through silently, asserting drained==2
-      # for two members whose terminates had both failed. That swallowed error
-      # is the defect fixed alongside this; the happy path now needs the
-      # terminate to actually succeed, same as the race context below.
+      # returns an err Result — which this example used to pass through
+      # silently, asserting drained==2 for two members whose terminates had
+      # both failed. That swallowed error is the defect fixed alongside this;
+      # the happy path now needs the terminate to actually succeed, same as
+      # the race context below.
+      #
+      # The err is no longer the missing-id short-circuit: these fixtures now
+      # carry a factory-backfilled cloud_instance_id, so the real path gets
+      # past that guard (provisioning_service.rb:239) and fails at provider
+      # resolution instead — Registry.for_instance raises UnknownProviderError
+      # for a fixture with no provider connection, which terminate_instance
+      # rescues into an err Result.
       allow(::System::ProvisioningService).to receive(:terminate_instance)
         .and_return(::System::Runtime::Result.ok)
 
@@ -639,11 +653,13 @@ RSpec.describe System::InstancePoolService, type: :service do
     # useless across ticks), and exhausting the bound is loud (error log +
     # high-severity FleetEvent), never silent.
     context "errored members → terminated cleanup (bounded retry)" do
+      # The id goes to the factory rather than being written over the top of a
+      # backfilled one afterwards. `cloud_instance_id: nil` means "the
+      # provider never created a VM for this member" and the factory honours
+      # it, so this seeds the identity-less shape directly.
       def seed_errored_member(cloud_instance_id: "dna/qemu/#{SecureRandom.hex(3)}", config_extra: {})
-        m = seed_pool_member(state: "errored")
-        cfg = m.config.merge(config_extra)
-        cfg["cloud_instance_id"] = cloud_instance_id if cloud_instance_id
-        m.update!(config: cfg)
+        m = seed_pool_member(state: "errored", cloud_instance_id: cloud_instance_id)
+        m.update!(config: m.config.merge(config_extra)) if config_extra.any?
         m
       end
 
@@ -934,7 +950,7 @@ RSpec.describe System::InstancePoolService, type: :service do
     end
 
     it "does not cycle a warming member with no cloud_instance_id yet (VM not created)" do
-      m = seed_pool_member(state: "warming", warming_started_at: 3.minutes.ago)
+      m = seed_pool_member(state: "warming", warming_started_at: 3.minutes.ago, cloud_instance_id: nil)
 
       count = reload_pending_seeds!(pool)
 

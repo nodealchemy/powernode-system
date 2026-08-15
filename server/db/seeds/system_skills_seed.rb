@@ -617,7 +617,7 @@ SKILLS_DATA = [
   {
     name: "Platform Deploy",
     slug: "system-platform-deploy",
-    description: "Deploy a new Powernode platform (standalone or federated). No params returns a wizard payload of form fields; full params call System::PlatformDeploymentOrchestrator to provision end-to-end.",
+    description: "Deploy a new standalone Powernode platform. No params returns a wizard payload of form fields; full params call System::PlatformDeploymentOrchestrator to provision end-to-end. Federated spawns are refused here — they mint an acceptance token this surface cannot deliver.",
     category: "devops",
     subdomain: "platform-deployment",
     executor: "System::Ai::Skills::PlatformDeployExecutor",
@@ -625,19 +625,22 @@ SKILLS_DATA = [
     tags: %w[platform deployment provisioning federation standalone],
     system_prompt: <<~PROMPT.strip
       Spin up a new Powernode platform — "deploy a new platform", "spin up another hub",
-      "create a federated peer", "stand up a standalone instance".
+      "stand up a standalone instance".
 
-      Two modes:
-        - standalone (default) → sovereign platform, no FederationPeer relationship
-        - federated            → peers with this platform on first boot (requires spawn_mode + parent_url)
+      Only standalone deployment runs here: a sovereign platform with no FederationPeer
+      relationship. It comes up with its own admin account from the first-run handler,
+      and requests its own ACME cert if public_dns_hostname is set (signable within
+      ~5 minutes).
 
       No parameters returns a wizard payload; the frontend renders an inline form.
-      After submit, call AGAIN with mode + name + (federated) parent_url + spawn_mode.
+      After submit, call AGAIN with mode=standalone + name.
 
-      Standalone comes up sovereign: first-run handler creates a fresh admin account,
-      requests its own ACME cert if public_dns_hostname is set, signable within ~5 minutes.
-      Federated returns a single-use acceptance_token — capture it immediately, it's never
-      shown again; the child's first-run handler uses it to complete the handshake.
+      DO NOT attempt mode=federated here — it is refused. A federated spawn mints a
+      single-use acceptance token, and everything this skill returns is forwarded to
+      the model provider and stored with the conversation, so the token cannot be
+      delivered here. Tell the operator to deploy federated platforms from the Deploy
+      Platform page (or POST /api/v1/system/platform/deployments), which runs the same
+      orchestrator and shows the acceptance_token once in its response.
 
       Deploy mode provisions real infrastructure — confirm with the operator first.
       The wizard phase is a safe no-op; use it generously to surface the form.

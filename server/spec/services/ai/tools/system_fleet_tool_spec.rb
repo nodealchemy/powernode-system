@@ -19,6 +19,16 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     tool.execute(params: { action: action }.merge(rest))
   end
 
+  # Forces Ai::AutonomyGate's :proceed branch, where the executor runs inline.
+  # Approval-gated tool actions resolve to require_approval by default (no
+  # seeded policy in a spec account), so anything asserting the post-action
+  # state — rather than the deferral itself — has to opt into this.
+  def auto_approve_policy!
+    allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+      { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+    )
+  end
+
   describe ".action_definitions" do
     it "registers all 17 system_* actions" do
       keys = described_class.action_definitions.keys
@@ -3610,7 +3620,46 @@ end
       )
     end
 
+    # Acceptance extends trust to a remote instance — the same weight as the
+    # revoke this tool exposes — so it goes through Ai::AutonomyGate on the MCP
+    # surface exactly as it does on FederationPeersController#update.
+    it "defers acceptance through the approval gate rather than mutating inline" do
+      r = sdwan_tool.execute(params: {
+        action: "system_sdwan_accept_federation_peer",
+        federation_peer_id: proposed_peer.id
+      })
+
+      expect(r[:success]).to be true
+      expect(r[:data][:pending]).to be true
+      expect(proposed_peer.reload.status).to eq("proposed"),
+                                             "MCP acceptance mutated the peer without an approval gate"
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred.action_category).to eq("sdwan.federation_peer_accept")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::AcceptFederationPeer")
+      expect(deferred.params["federation_peer_id"]).to eq(proposed_peer.id)
+    end
+
+    # The seeded require_approval row is scoped to the SDWAN Manager agent, and
+    # Ai::InterventionPolicy#agent_matches? rejects a scoped row when no agent is
+    # passed — so an agent caller that does not forward its agent silently falls
+    # through to the account default and its approval routes to "Manual
+    # Operations" instead of the agent's own chain, unattributed.
+    it "attributes the deferred acceptance to the calling agent" do
+      agent = create(:ai_agent, account: account)
+      agent_tool = ::Ai::Tools::SdwanTool.new(account: account, agent: agent, internal: true)
+
+      agent_tool.execute(params: {
+        action: "system_sdwan_accept_federation_peer",
+        federation_peer_id: proposed_peer.id
+      })
+
+      expect(Ai::DeferredOperation.order(created_at: :desc).first.ai_agent_id).to eq(agent.id)
+    end
+
     it "transitions proposed → accepted with signed_at populated" do
+      auto_approve_policy!
+
       r = sdwan_tool.execute(params: {
         action: "system_sdwan_accept_federation_peer",
         federation_peer_id: proposed_peer.id
@@ -3634,6 +3683,8 @@ end
     end
 
     it "records acceptance_token usage in metadata when token provided (no digest set, drill mode)" do
+      auto_approve_policy!
+
       sdwan_tool.execute(params: {
         action: "system_sdwan_accept_federation_peer",
         federation_peer_id: proposed_peer.id,
@@ -3648,42 +3699,42 @@ end
     # comment for the IMP-54bf2643f542 fail-closed ladder this satisfies.
     let(:sdwan_tool) { ::Ai::Tools::SdwanTool.new(account: account, internal: true) }
 
+    # Minting moved off this surface entirely (IMP-3a32dc649043): a tool result
+    # is forwarded to the model provider, so the MCP propose action cannot hand
+    # back signing material. The round trip itself is unchanged — only where the
+    # proposing operator obtains the token.
     describe "propose with generate_token" do
-      it "returns a one-time plaintext token + stores only the digest" do
-        r = sdwan_tool.execute(params: {
-          action: "system_sdwan_propose_federation_peer",
-          remote_instance_url: "https://b.example.com",
-          remote_instance_id: SecureRandom.uuid,
-          generate_token: true
-        })
-        expect(r[:success]).to be true
-        expect(r[:data][:acceptance_token_plaintext]).to be_present
-        expect(r[:data][:acceptance_token_expires_at]).to be_present
-        expect(r[:data][:note]).to include("EXACTLY ONCE")
+      it "refuses to mint, naming the operator path, and creates no peer" do
+        expect {
+          @r = sdwan_tool.execute(params: {
+            action: "system_sdwan_propose_federation_peer",
+            remote_instance_url: "https://b.example.com",
+            remote_instance_id: SecureRandom.uuid,
+            generate_token: true
+          })
+        }.not_to change(::System::FederationPeer, :count)
 
-        peer = ::System::FederationPeer.find(r[:data][:federation_peer][:id])
-        # Stored as digest only, not plaintext
-        expect(peer.acceptance_token_digest).to be_present
-        expect(peer.acceptance_token_digest).not_to eq(r[:data][:acceptance_token_plaintext])
-        # Honors token_ttl_seconds
-        expect(peer.acceptance_token_expires_at).to be > 1.day.from_now
+        expect(@r[:success]).to be false
+        expect(@r[:error]).to include("/api/v1/system/sdwan/federation_peers")
       end
     end
 
     describe "accept with token verification" do
-      let(:propose_result) do
-        sdwan_tool.execute(params: {
-          action: "system_sdwan_propose_federation_peer",
-          remote_instance_url: "https://b.example.com",
-          remote_instance_id: SecureRandom.uuid,
-          generate_token: true,
-          token_ttl_seconds: 600
-        })
+      # The token now originates from the operator path
+      # (Sdwan::Executors::ProposeFederationPeer), which mints on the model
+      # exactly as this does. `let!` keeps the mint eager — the accept surface
+      # treats a digest-less peer as requiring no token at all, so a lazy mint
+      # would quietly turn "rejects when token missing" into a no-op.
+      let(:accept_peer) do
+        create(:system_federation_peer, account: account, status: "proposed",
+                                        remote_instance_url: "https://b.example.com")
       end
-      let(:peer_id) { propose_result[:data][:federation_peer][:id] }
-      let(:plaintext) { propose_result[:data][:acceptance_token_plaintext] }
+      let(:peer_id) { accept_peer.id }
+      let!(:plaintext) { accept_peer.generate_acceptance_token!(ttl_seconds: 600) }
 
       it "accepts when correct plaintext token provided" do
+        auto_approve_policy!
+
         r = sdwan_tool.execute(params: {
           action: "system_sdwan_accept_federation_peer",
           federation_peer_id: peer_id,
@@ -3727,6 +3778,22 @@ end
         })
         expect(r[:success]).to be false
         expect(r[:error]).to include("expired")
+      end
+
+      # The token is checked BEFORE the gate so an unacceptable request fails
+      # immediately instead of parking an approval request that can only ever
+      # fail. Sdwan::Executors::AcceptFederationPeer re-checks it at execution
+      # time — that re-check, not this one, is the enforcement.
+      it "parks no approval request when the token is wrong" do
+        target = peer_id # force the propose round-trip outside the expectation
+
+        expect {
+          sdwan_tool.execute(params: {
+            action: "system_sdwan_accept_federation_peer",
+            federation_peer_id: target,
+            acceptance_token: "wrong-token"
+          })
+        }.not_to change(Ai::DeferredOperation, :count)
       end
     end
   end
@@ -4495,6 +4562,226 @@ end
                                        manifest_yaml: "schema_version: 1\nname: upmod\nfile_spec:\n  - \"/usr/local/bin/upmod\"\nreboot_required: false\n")
       expect(r[:success]).to be(true)
       expect(mod.reload.manifest_yaml).to include("upmod")
+    end
+  end
+
+  # IMP-c0687cfb3a05. A federated deploy always mints a single-use federation
+  # acceptance token (System::SpawnPlatformService#spawn! — unconditional, not a
+  # flag) and the plaintext came back in the tool result TWICE: once as
+  # `acceptance_token` and again inside `spawn_payload`.
+  #
+  # A tool return does not stop at its caller. Ai::AgentToolBridgeService appends
+  # the full result JSON as a `role: "tool"` message and sends it to the model
+  # provider on the next loop iteration. This action is additionally in that
+  # service's CARD_TOOLS map, so the full UNTRUNCATED data payload is copied
+  # into a chat card that ConciergeService writes to
+  # ai_messages.content_metadata — measured on HEAD: both copies persisted to
+  # the column. (The 200-char tool_calls_log preview did NOT reach it: plaintext
+  # sat at offsets 245 and 370 of a 1146-char result, behind three UUIDs.)
+  # Ai::SensitiveParams cannot intervene on either — #filter returns non-Hash
+  # input unchanged, and the card payload never passes through it.
+  #
+  # The refusal is up front rather than a silent omission: minting a token no
+  # caller can read would strand a FederationPeer whose digest is the only thing
+  # that can accept it, with a child VM already provisioned against it.
+  describe "system_deploy_platform federated token minting (IMP-c0687cfb3a05)" do
+    let(:deploy_user)     { create(:user, account: account) }
+    let(:deploy_template) { create(:system_node_template, account: account, name: "powernode-hub-spec") }
+    # Shadows the outer tool so the deploy carries an initiating user, as the
+    # concierge path does.
+    let(:tool) { described_class.new(account: account, user: deploy_user, internal: true) }
+
+    # Never a real mint. The surface must refuse before reaching the model, so
+    # this marker doubles as the tripwire: if it appears anywhere in the result,
+    # a plaintext token reached the MCP surface.
+    let(:synthetic_token) { "SYNTHETIC-NOT-A-REAL-TOKEN-0000000000000000" }
+    # Counts mints without asserting on a real one. allow_any_instance_of has no
+    # spy form, so the block records the call itself.
+    let(:mint_calls) { [] }
+
+    before do
+      recorder = mint_calls
+      token = synthetic_token
+      allow_any_instance_of(::System::FederationPeer)
+        .to receive(:generate_acceptance_token!) do |_peer, **_kwargs|
+          recorder << true
+          token
+        end
+      # Keep the spawn off the provider layer; the leak is in what comes back,
+      # not in what gets built.
+      allow_any_instance_of(::Federation::SpawnProvisioner)
+        .to receive(:provision!)
+        .and_return({ ok?: true, node_id: nil, node_instance_id: nil,
+                      provider_type: "proxmox", cloud_id: "vm-9001", error: nil })
+    end
+
+    def deploy(**rest)
+      call("system_deploy_platform", name: "child-platform",
+                                     template_slug: deploy_template.name, **rest)
+    end
+
+    def federated_deploy(**rest)
+      deploy(mode: "federated", parent_url: "https://parent.example.test",
+             spawn_mode: "managed_child", **rest)
+    end
+
+    context "with mode: federated" do
+      # The wording assertion is load-bearing, not decoration. Without it this
+      # example passes for the WRONG reason when both refusals are removed: the
+      # tool also stopped forwarding spawn_mode, so the orchestrator raises
+      # "Invalid spawn_mode" before SpawnPlatformService ever mints. Absence of
+      # plaintext would then be evidence of param starvation, not of a refusal —
+      # and would silently stop being evidence the day someone restores
+      # forwarding (the orchestrator still declares the param).
+      it "refuses instead of returning the plaintext under any key" do
+        r = federated_deploy
+
+        expect(r.to_json).not_to include(synthetic_token),
+                                 "a plaintext acceptance token reached the MCP tool result"
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("MCP tool surface"),
+                            "no plaintext appeared, but a refusal is not what prevented it"
+      end
+
+      # The two refusals (tool + executor) are worded differently on purpose:
+      # asserting the MCP-surface wording is what makes this arm independently
+      # killable. A shared oracle would have been satisfied by whichever arm
+      # answered, pinning neither.
+      it "names the operator path that can deliver the token" do
+        r = federated_deploy
+
+        expect(r[:error]).to include("MCP tool surface"),
+                             "the tool did not refuse — something downstream answered instead"
+        expect(r[:error]).to include("/api/v1/system/platform/deployments"),
+                             "the refusal does not tell the caller where the token CAN be obtained"
+      end
+
+      # Fail loud, not silently strand: a peer minted with a token nobody can
+      # read is worse than no peer, because the digest is the only thing that
+      # can accept it — and the child is provisioned against it.
+      it "mints nothing, creates no peer, and provisions no child" do
+        expect { @r = federated_deploy }.not_to change(::System::FederationPeer, :count)
+
+        expect(mint_calls).to be_empty, "a token was minted and then withheld, stranding the peer"
+        expect(::System::PlatformDeployment.count).to eq(0)
+        # Same trap as above: with the refusals gone, the orchestrator's own
+        # spawn_mode validation also creates no peer. Pin that the refusal is
+        # what stopped it.
+        expect(@r[:error]).to include("MCP tool surface"),
+                              "nothing was created, but a refusal is not what prevented it"
+      end
+
+      # CONTROL, not evidence: PlatformDeployExecutor matches on `mode.to_s`, so
+      # " Federated " never reached the mint on HEAD either — it fell through to
+      # "Unknown mode". What this pins is that the refusal is BROADER than the
+      # mint's acceptance, so tightening it to a literal comparison (the shape
+      # that let a string "true" walk past the sibling's refusal) is caught.
+      #
+      # The oracle has to name the MCP-surface wording, not just the operator
+      # path: a literal-comparison mutant on the tool still yields success:false
+      # AND the operator path, because the executor's own refusal catches the
+      # spelling one layer down. That mutant survived the looser oracle.
+      it "refuses the spellings a JSON boundary produces, not just the exact literal" do
+        r = federated_deploy(mode: " Federated ")
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("MCP tool surface"),
+                             "a mode spelling walked past the tool's refusal and was answered downstream"
+        expect(r[:error]).to include("/api/v1/system/platform/deployments")
+        expect(mint_calls).to be_empty
+      end
+    end
+
+    # Guard: the refusal is scoped to the federated path, not to the action.
+    # This is what keeps the fix from reading as a removal of the capability.
+    context "the paths that stay open" do
+      it "still deploys standalone" do
+        provisioned = instance_double("ProvisionResult", success?: true, data: { instance: nil })
+        allow(::System::ProvisioningService).to receive(:provision_instance).and_return(provisioned)
+
+        r = deploy(mode: "standalone")
+
+        expect(r[:success]).to be(true), "standalone deployment was refused too: #{r[:error]}"
+        expect(r[:data][:mode]).to eq("standalone")
+        expect(::System::ProvisioningService).to have_received(:provision_instance)
+      end
+
+      it "still returns the wizard payload, still offering federated to the OPERATOR form" do
+        r = deploy
+
+        expect(r[:success]).to be true
+        modes = r[:data][:card][:modes].map { |m| m[:value] }
+        # The wizard feeds PlatformDeploymentWizardCard, which submits to
+        # POST /system/platform/deployments — the REST path, which is unaffected.
+        # Dropping federated here would break the operator's only safe route.
+        expect(modes).to include("federated")
+      end
+    end
+
+    # Guard: the operator path still delivers. DeploymentsController#create calls
+    # this orchestrator directly and renders result.acceptance_token into its
+    # HTTP response, which is where PlatformDeploymentWizardCard's copy button
+    # reads it from.
+    #
+    # Mints for REAL (overriding the outer stub) so this cannot degrade into
+    # "the orchestrator returns whatever the stub was handed": the delivered
+    # plaintext has to verify against the digest the peer actually stored. The
+    # value is never printed.
+    it "leaves the operator orchestrator path delivering a token that verifies" do
+      allow_any_instance_of(::System::FederationPeer)
+        .to receive(:generate_acceptance_token!).and_call_original
+
+      result = ::System::PlatformDeploymentOrchestrator.deploy!(
+        account: account,
+        mode: "federated",
+        params: { name: "operator-child", template_slug: deploy_template.name,
+                  parent_url: "https://parent.example.test", spawn_mode: "managed_child" },
+        initiated_by_user: deploy_user
+      )
+
+      expect(result.ok?).to be(true), "the operator deploy path broke: #{result.error}"
+      expect(result.acceptance_token).to be_present,
+                                         "the operator delivery path stopped returning the token"
+
+      peer = ::System::FederationPeer.find(result.federation_peer_id)
+      expect(peer.acceptance_token_error(result.acceptance_token)).to be_nil,
+             "the delivered plaintext does not verify against the digest the peer stored"
+    end
+
+    # The skill executor is the same agent-facing surface (it is bound to System
+    # Concierge and discoverable via get_skill_context), and it is what the tool
+    # delegates to. Pinned separately so the two refusals are independently
+    # killable: removing either one reds only its own examples.
+    it "refuses at the skill executor too, naming the same operator path" do
+      executor = ::System::Ai::Skills::PlatformDeployExecutor.new(
+        account: account, agent: nil, user: deploy_user
+      )
+
+      expect {
+        @r = executor.execute(mode: "federated", name: "child-platform",
+                              template_slug: deploy_template.name,
+                              parent_url: "https://parent.example.test",
+                              spawn_mode: "managed_child")
+      }.not_to change(::System::FederationPeer, :count)
+
+      expect(@r[:success]).to be false
+      expect(@r.to_json).not_to include(synthetic_token)
+      expect(@r[:error]).to include("platform_deploy skill"),
+                          "the skill layer did not refuse on its own"
+      expect(@r[:error]).to include("/api/v1/system/platform/deployments")
+      expect(mint_calls).to be_empty
+    end
+
+    # The plan-time surfaces must not advertise a path that now refuses —
+    # otherwise a model reads "returns acceptance_token" and calls it.
+    it "no longer advertises token minting on either plan-time schema" do
+      tool_schema = described_class.action_definitions.fetch("system_deploy_platform")
+      expect(tool_schema[:parameters]).not_to have_key(:token_ttl_seconds)
+      expect(tool_schema[:description]).to include("/api/v1/system/platform/deployments")
+
+      outputs = ::System::Ai::Skills::PlatformDeployExecutor.descriptor[:outputs]
+      expect(outputs).not_to have_key(:acceptance_token)
+      expect(outputs).not_to have_key(:spawn_payload)
     end
   end
 end

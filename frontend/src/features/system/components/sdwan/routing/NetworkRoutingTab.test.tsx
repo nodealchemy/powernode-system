@@ -779,4 +779,52 @@ describe('NetworkRoutingTab', () => {
 
     await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
   });
+
+  // ---------------------------------------------------------------------------
+  // Pending-approval branch (IMP-87ec6f651f07)
+  // ---------------------------------------------------------------------------
+
+  it('shows the pending-approval notification (not success) and skips onNetworkUpdated when the mode change is parked', async () => {
+    mockGet.mockResolvedValueOnce(peersEnvelope([]));
+    mockPut.mockResolvedValueOnce({
+      status: 202,
+      data: {
+        success: true,
+        data: {
+          pending: true,
+          deferred_operation_id: 'dop-1',
+          action_category: 'sdwan.network_update',
+          approval_request_id: 'ar-1',
+          message: 'Approval required',
+        },
+      },
+    });
+
+    const onActionsReady = jest.fn();
+    const onNetworkUpdated = jest.fn();
+    renderTab({ network: STATIC_NETWORK, onActionsReady, onNetworkUpdated });
+
+    await waitFor(() => expect(onActionsReady).toHaveBeenCalled());
+    onActionsReady.mock.calls[0][0].openModeToggle();
+
+    await waitFor(() =>
+      expect(screen.getByText('iBGP (Free Range Routing)')).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByText('iBGP (Free Range Routing)').closest('button')!);
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+    expect(onNetworkUpdated).not.toHaveBeenCalled();
+  });
 });

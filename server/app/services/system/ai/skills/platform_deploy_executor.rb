@@ -15,10 +15,23 @@ module System
       #
       #   2. "deploy" — all required params present. Delegates to
       #      System::PlatformDeploymentOrchestrator.deploy! which
-      #      composes spawn + provisioning + (optional) federation +
-      #      PlatformDeployment record. Returns the deployment envelope
-      #      including the federation acceptance_token (if federated)
-      #      and the new node_instance_id.
+      #      composes provisioning + PlatformDeployment record. Returns
+      #      the deployment envelope and the new node_instance_id.
+      #
+      # Standalone only. Federated deployment is refused here
+      # (IMP-c0687cfb3a05): it mints a single-use acceptance token, and
+      # everything this skill returns is agent-facing.
+      #
+      # This refusal is NOT redundant with the one on Ai::Tools::SystemFleetTool.
+      # The tool is not this executor's only caller: the skill is bound to
+      # System Concierge, so Ai::Missions::MissionComposer can select it into a
+      # plan and Ai::SkillCompositionRunner resolves and invokes it directly —
+      # bypassing the tool, and landing the result in the step's
+      # metadata["last_outputs"]. Both entry points have to refuse.
+      #
+      # Federated spawns go through
+      # Api::V1::System::Platform::DeploymentsController#create, which runs the
+      # same orchestrator and renders the token to an HTTP response.
       #
       # Composition: this skill is intentionally thin. The heavy lifting
       # is in the orchestrator. The skill exists so concierge can render
@@ -26,23 +39,28 @@ module System
       #
       # Plan reference: chat-driven platform deployment (D2).
       class PlatformDeployExecutor < BaseSkillExecutor
+        # MODES stays complete: the wizard payload advertises both modes to the
+        # OPERATOR form, which submits to POST /api/v1/system/platform/deployments
+        # (PlatformDeploymentWizardCard → provisioningApi.createPlatformDeployment).
+        # Only this skill's own deploy branch refuses federated.
         MODES = %w[standalone federated].freeze
+        FEDERATED_MODE = "federated"
 
         skill_descriptor(
           name: "platform_deploy",
-          description: "Deploy a new Powernode platform. Pass mode='standalone' for a sovereign platform or mode='federated' for one that handshakes back with this platform on first boot. With no params, returns a wizard payload describing the form the operator should fill in.",
+          description: "Deploy a new Powernode platform. Pass mode='standalone' for a sovereign platform. With no params, returns a wizard payload describing the form the operator should fill in. mode='federated' is NOT available here — it mints a single-use acceptance token that this surface cannot deliver; operators deploy federated platforms over POST /api/v1/system/platform/deployments, which reveals the token once in its HTTP response.",
           category: "system",
           inputs: {
             mode: { type: "string", required: false,
-                    description: "Deployment mode: standalone | federated. Omit to receive a wizard payload." },
+                    description: "Deployment mode: standalone. Omit to receive a wizard payload. 'federated' is refused here with the operator path to use instead." },
             name: { type: "string", required: false,
                     description: "Human-readable name for the new platform / deployment." },
             template_slug: { type: "string", required: false, default: "powernode-hub",
                              description: "NodeTemplate slug to use (default: powernode-hub)." },
             parent_url: { type: "string", required: false,
-                          description: "Required for federated mode — reachable URL of THIS platform that the child posts back to." },
+                          description: "Federated-only — reachable URL of THIS platform that the child posts back to. Supply it on the operator API path; federated mode is refused here." },
             spawn_mode: { type: "string", required: false,
-                          description: "Required for federated mode — one of: managed_child, autonomous_peer, cluster_member." },
+                          description: "Federated-only — one of: managed_child, autonomous_peer, cluster_member. Supply it on the operator API path; federated mode is refused here." },
             region: { type: "string", required: false,
                       description: "Optional provider region preference." },
             instance_size: { type: "string", required: false,
@@ -50,16 +68,12 @@ module System
             service_role: { type: "string", required: false, default: "api",
                             description: "Service role for the PlatformDeployment row (default: api)." },
             public_dns_hostname: { type: "string", required: false,
-                                   description: "Optional public DNS hostname for the new platform." },
-            token_ttl_seconds: { type: "integer", required: false,
-                                 description: "Acceptance-token TTL for federated spawns (default: 7 days)." }
+                                   description: "Optional public DNS hostname for the new platform." }
           },
           outputs: {
             ok: :boolean,
             card: :object,
-            deployment: :object,
-            acceptance_token: :string,
-            spawn_payload: :object
+            deployment: :object
           }
         )
 
@@ -72,6 +86,23 @@ module System
           # in chat. Card carries the catalog of templates + spawn modes so the
           # UI doesn't have to refetch.
           return wizard_response if mode.blank?
+
+          # IMP-c0687cfb3a05 — refuse before the orchestrator runs, so no
+          # FederationPeer row is created, no token is minted, and no child is
+          # provisioned against a secret this surface cannot hand back.
+          # Normalizing (rather than comparing to the literal MODES entry)
+          # refuses a superset of what would reach the mint.
+          if mode.to_s.strip.downcase == FEDERATED_MODE
+            return failure(
+              "federated deployment is not available through the platform_deploy skill: it mints " \
+              "a single-use federation acceptance token, and this skill's result is handed to the " \
+              "model provider and persisted with the conversation, so the plaintext cannot be " \
+              "delivered here. Deploy federated platforms over the operator API instead — " \
+              "POST /api/v1/system/platform/deployments (permission system.platform.deploy) runs " \
+              "the same orchestrator and reveals the acceptance_token exactly once in its HTTP " \
+              "response."
+            )
+          end
 
           unless MODES.include?(mode.to_s)
             return failure("Unknown mode: #{mode.inspect}; allowed: #{MODES.inspect}")
@@ -89,9 +120,6 @@ module System
             instance_size: params[:instance_size].presence,
             service_role: params[:service_role].presence || "api",
             public_dns_hostname: params[:public_dns_hostname].presence,
-            parent_url: params[:parent_url].presence,
-            spawn_mode: params[:spawn_mode].presence,
-            token_ttl_seconds: params[:token_ttl_seconds].presence&.to_i,
             # Storage volume integration (VOL.1+)
             volume_id: params[:volume_id].presence,
             skip_volume: params[:skip_volume] == true,
@@ -109,13 +137,15 @@ module System
             return failure("Deploy failed: #{result.error}")
           end
 
+          # No acceptance_token / spawn_payload keys: both carried the federated
+          # spawn's plaintext token, and this envelope is agent-facing
+          # (IMP-c0687cfb3a05). The federated branch is refused above, so
+          # neither has a value to carry any more.
           success(
             mode: result.mode,
             node_instance_id: result.node_instance_id,
             federation_peer_id: result.federation_peer_id,
             platform_deployment_id: result.platform_deployment_id,
-            acceptance_token: result.acceptance_token,
-            spawn_payload: result.spawn_payload,
             storage_volume: result.storage_volume,
             next_steps: build_next_steps(result, deploy_params)
           )
@@ -173,11 +203,15 @@ module System
                 available_volumes: available_volumes,
                 updated_at: recs["updated_at"]
               },
+              # No token_ttl_seconds default: this skill no longer declares it
+              # as an input (IMP-c0687cfb3a05), and nothing reads it — the
+              # wizard card consumes template_slug/mode/spawn_mode only. The
+              # REST deploy path still accepts a TTL; it just isn't defaulted
+              # from here.
               defaults: {
                 template_slug: "powernode-hub",
                 mode: "standalone",
-                spawn_mode: "managed_child",
-                token_ttl_seconds: 7 * 86_400
+                spawn_mode: "managed_child"
               }
             }
           )
@@ -217,9 +251,6 @@ module System
 
         def build_next_steps(result, params)
           steps = []
-          if result.mode == "federated" && result.acceptance_token.present?
-            steps << "Capture the acceptance_token NOW — it's shown only once. The child platform's first-run handler will present it to /federation_api/accept to complete the handshake."
-          end
           if result.storage_volume.is_a?(Hash) && result.storage_volume[:error].nil? && result.storage_volume[:volume_id]
             sv = result.storage_volume
             steps << "Volume #{sv[:volume_name]} (#{sv[:size_gb]} GB) attached at #{sv[:device_name]} — the on-node agent will mount it at #{sv[:mount_point]} during first boot."

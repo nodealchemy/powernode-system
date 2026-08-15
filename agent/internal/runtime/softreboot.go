@@ -69,20 +69,257 @@ const MinSoftRebootSystemd = 254
 //	  both /persist and the carrier survive; the marker file is readable afterwards.
 //
 // So the carrier's fate FOLLOWS persist.mount's in both directions, which makes
-// /persist the correct thing to check. Checking the carrier instead would be a
-// regression, not a fix: its unit is generated from mountinfo under /run, and it
-// reported DefaultDependencies=yes in BOTH runs — including the run where /persist
-// demonstrably survived. A guard keyed on it therefore refuses unconditionally and
-// disables the soft-reboot tier permanently. Do not "fix" this list to the bind;
-// TestCriticalSoftRebootMounts_IsPersistNotTheNextrootCarrier fails if you do.
+// /persist the correct thing to check HERE. Do not "fix" this list to the bind;
+// TestCriticalSoftRebootMounts_IsPersistNotTheNextrootCarrier fails if you do —
+// but note carefully what that test does and does not say (its rationale was
+// corrected 2026-08-13, IMP-e4f3b8002de6). The carrier is not unguarded and is not
+// unguardable. The reason it cannot be checked from THIS list is timing: it does
+// not exist when SoftRecomposePreflight runs, so its unit reads LoadState=not-found
+// and the guard would refuse on every node forever. It is checked by
+// NextrootSurvivalGate instead, after ComposeForPivot has made it real.
+//
+// Both runs above measured the carrier at DefaultDependencies=yes, including the
+// run where /persist survived. That is a fact about a unit with NO DROP-IN — those
+// runs shipped none for it — and not evidence that one cannot be applied. A drop-in
+// for it now ships in powernode-system-base, on the same mechanism that is verified
+// live for persist.mount (a mountinfo-synthesized unit with no fragment still takes
+// drop-ins). Whether it resolves as intended on a pivot node is unmeasured; the gate
+// fails closed if it does not.
 //
 // Bound on the evidence: the scratch VM's /run/nextroot was a bind of /, and no
 // switch-root line appeared in the journal, so this measures the umount.target
-// survival semantics — the open question — and not a full root swap. Separately,
-// mounts under /run on that VM reported an EMPTY Conflicts, which contradicts the
-// pivot-node reading that run-powernode-scratch.mount and the module mounts carry
-// Conflicts=umount.target; that discrepancy is unresolved and filed separately.
+// survival semantics — the open question — and not a full root swap.
+//
+// THE APPARENT CONTRADICTION, RESOLVED. The scratch VM reported an EMPTY
+// Conflicts for its mounts under /run, while the live pivot node reports
+// Conflicts=umount.target for run-powernode-scratch.mount and all 14
+// run-powernode-modules-*.mount units. Both readings are accurate: they are
+// different mounts on different systems (plain binds of / and of a loop mount
+// there; tmpfs and erofs here). It does kill the tempting shortcut "mounts under
+// /run are exempt" — run-powernode-scratch.mount is itself under /run and DOES
+// carry the conflict. The actual discriminator is not established and must not be
+// assumed. This is why NextrootSurvivalGate probes each unit rather than
+// reasoning from its path.
+//
+// WHAT THIS LIST IS NOT. It is the list the PREFLIGHT can check — mounts that
+// already exist before anything is composed. The mounts that carry the soft-reboot
+// itself (/run/nextroot and its binds) do not exist yet at preflight time; they are
+// checked by NextrootSurvivalGate, after ComposeForPivot creates them.
 var CriticalSoftRebootMounts = []string{"/persist"}
+
+// NextrootSurvivalGate is the SECOND mount-survival gate, and it exists
+// because the first one structurally cannot cover the mounts that matter
+// most.
+//
+// WHY A SECOND GATE, AND NOT MORE ENTRIES IN CriticalSoftRebootMounts.
+// SoftRecomposePreflight runs BEFORE ComposeForPivot, so at that moment
+// /run/nextroot and its binds do not exist. `systemctl show` reports
+// LoadState=not-found for them, mountSurvivesSoftReboot's unknown-unit clause
+// correctly reads that as unproven, and the preflight would refuse on every
+// node forever — disabling the tier rather than guarding it. The check has to
+// happen after the mounts are real, which is here.
+//
+// THE TWO LETHAL MOUNTS. Both are checked as hard refusals:
+//
+//	/run/nextroot                  the composed union itself. systemd-soft-reboot
+//	                               switches into it only if it still finds an OS
+//	                               tree there; torn down at umount.target, PID1's
+//	                               probe fails and the switch SILENTLY does not
+//	                               happen. The caller had already committed a boot
+//	                               breadcrumb asserting that it did, so the node
+//	                               comes up on the old set while its own on-disk
+//	                               record claims the new one. Refusing here is what
+//	                               keeps that breadcrumb honest — see the gate's
+//	                               placement in soft_recompose.go, BEFORE the write.
+//	<sysroot>/persist              the sole carrier of /persist into the new root
+//	                               after the /run-bind fix (prepareNextrootMounts).
+//	                               persist.mount's DefaultDependencies=no drop-in
+//	                               does NOT reach it: a per-unit drop-in extends one
+//	                               unit, and this is a separate, mountinfo-generated
+//	                               one. Losing it lands in the new root unable to
+//	                               resolve anything under /persist — the enrolled
+//	                               PKI and the boot LKG among them. (Note the
+//	                               mechanism: these are reached by absolute
+//	                               /persist/var/... paths. /var itself is NOT a
+//	                               bind mount on a current node —
+//	                               mount.EnsurePersistentVar has no production
+//	                               caller — so "the durable /var bind" as written
+//	                               elsewhere in this tree describes an unused code
+//	                               path, not how the node works today.)
+//
+// The caller passes the destinations prepareNextrootMounts ACTUALLY established
+// rather than a re-derivation of the source list, so adding a bind source cannot
+// quietly add an unchecked carrier.
+//
+// RECURSIVE SUBMOUNTS — WALKED, AND REFUSED LIKE THE CARRIER. Probing a bind
+// destination as one unit is not enough: prepareNextrootMounts uses
+// `mount --rbind`, which reproduces every child mount of the source as a
+// separate mount beneath the destination, each with its own
+// mountinfo-generated unit and its own survival properties. A drop-in on the
+// destination's unit reaches NONE of them. /persist had zero child mounts when
+// this gate first shipped (verified on a pivot node 2026-08-13), but
+// mount.ReconcileStorageVolume mounts a volume at an arbitrary MountPoint, so
+// the first volume placed under /persist would have been an unguarded submount
+// whose teardown the gate could not predict. So the gate walks the live table
+// beneath each destination (mount.SubmountsBeneath — parent-id walk, same
+// parser as the layer enumeration) and probes every submount it finds as a
+// hard refusal — on BOTH sides of the rbind, the copy's generated unit and
+// the source mount's unit, because the measured semantics above say the
+// copy's fate follows the source's. The walk itself fails closed: an
+// unreadable table, an unparseable line, or a destination with no mountinfo
+// entry is an error, not an empty result — only "destination mounted, kernel
+// holds nothing beneath it" reads as no submounts.
+//
+// Submounts refuse rather than advise because they are the carrier's failure
+// mode, not the layers': what sits under /persist is durable data reached by
+// absolute path in the new root, losing it is silent data loss, and — unlike
+// the digest-named layers — an operator can always act on the refusal
+// (unmount the volume, ship a drop-in when the name is stable, or take the
+// full-reboot path). When a submount's unit name is dynamic and no drop-in
+// can cover it, the refusal NAMES the mount and the reason, and the operator
+// decides; the gate never silently waives it.
+//
+// WHY THE LAYER MOUNTS ARE REPORTED, NOT REFUSED — AND WHY THAT IS NOT A CLAIM
+// THAT THEY ARE SAFE. The union's erofs lowerdirs and its scratch upperdir also
+// carry Conflicts=umount.target on a live node (15 units measured 2026-08-11).
+// Whether losing them matters is GENUINELY UNSETTLED, and this repo contains both
+// answers:
+//
+//	live-recompose-design-2026-08-06.md §7b (docs/operations/ in the PARENT
+//	  platform repo, not this one) — "a composed overlay keeps serving after its
+//	  lower and upper mountpoints are unmounted (overlayfs clones its layers
+//	  privately)". Recorded there as an aside, with no measurement attached. That
+//	  would make layer teardown a non-event.
+//	mount/union_lowers.go (2026-08-07, LIVE PIVOT NODE) — the opposite: unmounting
+//	  a module whose path the live union still listed "rips that layer's files out
+//	  of the running root", observed as the entire Go toolchain vanishing from /.
+//
+// The second is the production-shaped measurement (erofs lowers, pivot node,
+// exactly this mount type), so do NOT read the advisory classification as a safety
+// finding. It is not one.
+//
+// They are nonetheless not refused, for a reason that does not depend on which
+// answer is right: a refusal here is unfixable and would delete the tier. Their
+// unit names are digest- and generation-derived, so no static drop-in can cover
+// them, and refusing on a condition no shipped file can satisfy is the same
+// self-disabling guard this file already got wrong once. The guard bites where it
+// can actually be remediated — the two stable mounts above — and the layer set is
+// surfaced so an operator sees it rather than being told it is fine. Settling this
+// needs a disposable pivot node (design doc §7b keeps --execute gated on real
+// hardware until then); if teardown is proven to matter, the fix is a generated
+// drop-in written at prepare time, not a refusal.
+//
+// Lowerdirs come from the LIVE mount table, not from the layout the composer was
+// handed — the same discipline mount.LiveUnionLowerDirs exists to enforce.
+//
+// daemon-reload FIRST. The drop-ins that make the two lethal mounts survive ship in
+// powernode-system-base and reach running nodes by hot-reconcile, and systemd does
+// not see a new drop-in file until it rescans. Probing before the reload reads
+// pre-delivery properties and refuses on a node that is correctly configured. A
+// reload that fails leaves the drop-ins unproven, which this file treats as "do not
+// proceed".
+func NextrootSurvivalGate(ctx context.Context, run mount.Runner, layout mount.Layout, bindDests []string) ([]string, error) {
+	if err := run.Run(ctx, "systemctl", "daemon-reload"); err != nil {
+		return nil, fmt.Errorf("systemctl daemon-reload before probing nextroot mount survival: %w "+
+			"(without a reload systemd may not have loaded the mount drop-ins, so their properties cannot be trusted)", err)
+	}
+
+	lethal := append([]string{layout.SysRoot}, bindDests...)
+	for _, path := range lethal {
+		if ok, why := mountSurvivesSoftReboot(ctx, run, path); !ok {
+			return nil, fmt.Errorf("%s would not survive the soft-reboot (%s). "+
+				"systemd tears down every mount except /run unless its unit sets DefaultDependencies=no and does not Conflicts=umount.target. "+
+				"%s so soft-rebooting now would %s. "+
+				"Ship the %s drop-in in powernode-system-base (and daemon-reload) before using --execute; a full reboot applies this composition safely in the meantime",
+				path, why,
+				lethalRole(path, layout.SysRoot),
+				lethalConsequence(path, layout.SysRoot),
+				MountUnitName(path))
+		}
+	}
+
+	// The submounts each rbind carried beneath its destination — every one
+	// its own generated unit that the destination's probe above cannot
+	// vouch for. Hard refusals, like the carrier itself; the walk fails
+	// closed on any table it cannot fully read. Each submount is probed on
+	// BOTH sides of the rbind: the nextroot copy's own unit AND the source
+	// mount's unit, because the measured persist.mount semantics above
+	// (the CriticalSoftRebootMounts comment) show the copy's fate FOLLOWS
+	// the source's — unmounting the source releases the filesystem and
+	// takes the copy with it, whatever the copy's unit is configured to
+	// do. Probing only the copy would turn the gate green the moment an
+	// operator ships the copy-side drop-in, while the source unit still
+	// tears the data down. See RECURSIVE SUBMOUNTS in the doc comment.
+	for _, dest := range bindDests {
+		subs, err := mount.SubmountsBeneath(dest)
+		if err != nil {
+			return nil, fmt.Errorf("walk the live mount table for submounts beneath %s: %w "+
+				"(what the rbind carried under it is unknown, and unknown is not a state to soft-reboot from)", dest, err)
+		}
+		for _, sub := range subs {
+			// The source-side path: bind destinations are established at
+			// <sysroot>/<source>, so stripping the sysroot maps the copy
+			// back to the mount it mirrors (/persist/volumes/pgdata for
+			// /run/nextroot/persist/volumes/pgdata). A submount the walk
+			// found that does NOT sit under the sysroot has no derivable
+			// source, and a submount whose origin is unknown cannot be
+			// proven to survive — refuse rather than guess.
+			srcSub := strings.TrimPrefix(sub, strings.TrimSuffix(layout.SysRoot, "/"))
+			if srcSub == sub || !strings.HasPrefix(srcSub, "/") {
+				return nil, fmt.Errorf("submount %s beneath bind destination %s does not sit under the nextroot %s, so its source mount cannot be derived — "+
+					"a submount whose origin is unknown cannot be proven to survive, and unknown is not a state to soft-reboot from", sub, dest, layout.SysRoot)
+			}
+			for _, side := range []struct{ path, role, consequence string }{
+				{srcSub, "the SOURCE mount of a submount the rbind carried beneath " + dest,
+					"tearing the source down releases the filesystem and takes the nextroot copy with it, whatever the copy's unit says (the carrier-follows-source semantics measured for persist.mount)"},
+				{sub, "the nextroot COPY of the submount at " + srcSub,
+					"it is a separate mountinfo-generated unit, which no drop-in on the destination's or the source's unit reaches"},
+			} {
+				if ok, why := mountSurvivesSoftReboot(ctx, run, side.path); !ok {
+					return nil, fmt.Errorf("%s would not survive the soft-reboot (%s). "+
+						"It is %s — %s — so soft-rebooting now would land in the new root with %s present but %s GONE from under it. "+
+						"Unmount it first, ship a drop-in for %s (and daemon-reload) if its name is stable, or apply this composition with a full reboot. "+
+						"If its unit name is dynamic, no drop-in can cover it and this refusal is the decision point — yours, not the gate's to waive",
+						side.path, why, side.role, side.consequence,
+						strings.TrimPrefix(dest, strings.TrimSuffix(layout.SysRoot, "/")), srcSub,
+						MountUnitName(side.path))
+				}
+			}
+		}
+	}
+
+	// Advisory: everything the union is built OUT of. Non-fatal by design —
+	// see the doc comment.
+	lowers, err := mount.LiveUnionLowerDirs(layout.SysRoot)
+	if err != nil {
+		return nil, fmt.Errorf("read the live mount table to enumerate %s's layers: %w "+
+			"(the layer set is unknown, and unknown is not a state to soft-reboot from)", layout.SysRoot, err)
+	}
+	var doomed []string
+	for _, path := range append(lowers, layout.ScratchRoot) {
+		if ok, _ := mountSurvivesSoftReboot(ctx, run, path); !ok {
+			doomed = append(doomed, path)
+		}
+	}
+	return doomed, nil
+}
+
+// lethalRole and lethalConsequence keep the refusal specific about WHICH of
+// the two failures the operator is looking at — they have different causes
+// and different fixes, and a generic message would blur them.
+func lethalRole(path, sysroot string) string {
+	if path == sysroot {
+		return "This is the composed union systemd would switch into,"
+	}
+	return "This is the sole carrier of a durable mount into the new root,"
+}
+
+func lethalConsequence(path, sysroot string) string {
+	if path == sysroot {
+		return "leave PID1 with no OS tree to switch into — the switch silently would NOT happen while the boot breadcrumb claims it did"
+	}
+	return fmt.Sprintf("land in the new root with %s GONE", strings.TrimPrefix(path, sysroot))
+}
 
 // mountSurvivesSoftReboot reports whether the mount unit backing path is
 // configured to stay mounted through the shutdown phase of a soft-reboot.
@@ -142,7 +379,13 @@ func MountUnitName(path string) string {
 		switch {
 		case c == '/':
 			b.WriteByte('-')
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_':
+		// ':' stays verbatim: systemd's own path escaping keeps it
+		// (systemd-escape --path '/persist/volumes/pg:main' ->
+		// 'persist-volumes-pg:main', verified 2026-08-14). Hex-escaping it
+		// would probe a unit name systemd has never generated, read
+		// "unknown to systemd", and refuse a correctly configured mount —
+		// while prescribing a drop-in filename that can never match.
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == ':':
 			b.WriteByte(c)
 		case c == '.' && i > 0:
 			b.WriteByte(c)

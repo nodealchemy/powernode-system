@@ -1,22 +1,37 @@
 /**
  * Behavioral tests for SystemSettingsPanel component.
  *
- * SystemSettingsPanel is a 7-domain + approval-chains settings modal for
- * the System extension's autonomy framework. It renders a sidebar nav
- * and a content pane; sidebar nav switches between domain sections and
- * the Approval Chains tab. Domain sections render an AutonomyPolicyGroup;
- * the Approval Chains tab renders ApprovalChainList.
+ * SystemSettingsPanel is a settings modal for the System extension's autonomy
+ * framework. It renders a sidebar nav and a content pane; sidebar nav switches
+ * between domain sections and the Approval Chains tab. Domain sections render
+ * an AutonomyPolicyGroup per agent bucket; the Approval Chains tab renders
+ * ApprovalChainList.
+ *
+ * These examples stub the hook, so they pin the panel's RENDERING contract
+ * against a controlled state. What they cannot show is where that state comes
+ * from — that is the subject of SystemSettingsPanel.serverDriven.test.tsx,
+ * which drives the real hook off a mocked HTTP payload.
+ *
+ * IMP-0874acd5b50c reshaped several of these. The panel used to own a
+ * `DOMAIN_SECTIONS` array with a literal `actions: string[]` per section, and
+ * this suite asserted those literals back (`actions.length` of 10 / 31 / 27, a
+ * fixed list of 7 section labels, a "Manual Operations" SECTION). Every one of
+ * those assertions was green while the modal omitted 28 of the 119 seeded
+ * categories — they described the literal, not the data. Sections and their
+ * rows now come from the hook's `domains`, and "Manual Operations" is an agent
+ * BUCKET inside a domain rather than a domain of its own, so the assertions
+ * below are written against the fixture instead of against constants.
  *
  * Tests cover:
  *  1. Modal not rendered when isOpen=false
  *  2. Modal renders title/subtitle when isOpen=true
- *  3. Sidebar renders all 7 domain sections + Approval Chains
- *  4. Default active section (node_lifecycle) shows label, agentName, description
+ *  3. Sidebar renders one section per non-empty domain, + Approval Chains
+ *  4. Default active section is the first the server returned
  *  5. Loading state — shows "Loading…" spinner when autonomy.loading is true
- *  6. Loaded state — renders AutonomyPolicyGroup (mocked)
+ *  6. Loaded state — renders AutonomyPolicyGroup (mocked) per agent bucket
  *  7. Clicking a different sidebar item activates that section
  *  8. Clicking Approval Chains renders ApprovalChainList (mocked)
- *  9. Each domain section shows correct action count badge in sidebar
+ *  9. Each domain section shows its action count badge in the sidebar
  * 10. onClose is called when the modal close button is clicked
  * 11. save() on the hook is called via onSave handler
  * 12. Loading spinner disappears once loading resolves
@@ -72,6 +87,73 @@ jest.mock('@/shared/components/approval-chains/ApprovalChainList', () => ({
 }));
 
 // =============================================================================
+// Fixture
+//
+// Stands in for GET /api/v1/system/autonomy's `by_domain` view as the hook
+// exposes it. Deliberately small and NOT a transcription of the seed set: the
+// panel must be able to render whatever it is handed, so the assertions below
+// are all derived from this object rather than from a list the component knows.
+//
+// `node_lifecycle` and `instance_pool` each carry two agent buckets, which is
+// the live shape — a category is commonly seeded twice, once agent-scoped and
+// once for the operator path, and those two rows can hold different verbs.
+//
+// KEY ORDER IS THE SERVER'S, and that is load-bearing. `by_domain` is keyed in
+// DOMAIN_PREFIXES' order, which is ordered so that a prefix extending another
+// is declared first (a correctness constraint) — so live, `instance_pool` comes
+// FIRST and `node_lifecycle` LAST. A fixture that led with node_lifecycle would
+// make "the modal opens on Node Lifecycle" pass while the live modal opened on
+// Instance Pools, which is exactly the regression this order lets these
+// examples see.
+//
+// `other` is POPULATED for the same reason: the endpoint is an account-wide
+// policy view and core seeds six of its own global rows into it
+// (server/db/seeds/autonomy_data_seed.rb), so an empty catch-all is not the
+// live shape either.
+// =============================================================================
+
+const DOMAINS = {
+  instance_pool: [
+    { action_category: 'system.instance_pool_create', agent_bucket: 'Fleet Autonomy', policy: 'require_approval' },
+    { action_category: 'system.instance_pool_create', agent_bucket: 'Manual Operations', policy: 'auto_approve' },
+  ],
+  cve: [
+    { action_category: 'system.cve_remediate', agent_bucket: 'CVE Responder', policy: 'notify_and_proceed' },
+  ],
+  sdwan: [
+    { action_category: 'sdwan.network_create', agent_bucket: 'SDWAN Manager', policy: 'auto_approve' },
+    { action_category: 'system.sdwan_peer_remediate', agent_bucket: 'SDWAN Manager', policy: 'notify_and_proceed' },
+    { action_category: 'sdwan.peer_delete', agent_bucket: 'SDWAN Manager', policy: 'require_approval' },
+  ],
+  container_runtime: [
+    { action_category: 'system.runtime_docker_provision', agent_bucket: 'Runtime Manager', policy: 'auto_approve' },
+  ],
+  disk_image: [
+    { action_category: 'system.disk_image_publication_promote', agent_bucket: 'Disk Image Manager', policy: 'require_approval' },
+  ],
+  node_lifecycle: [
+    { action_category: 'system.cert_rotate', agent_bucket: 'Fleet Autonomy', policy: 'require_approval' },
+    { action_category: 'system.instance_terminate', agent_bucket: 'Fleet Autonomy', policy: 'require_approval' },
+    { action_category: 'system.task.ssh_command', agent_bucket: 'Manual Operations', policy: 'require_approval' },
+    { action_category: 'system.task.terminate', agent_bucket: 'Manual Operations', policy: 'require_approval' },
+  ],
+  other: [
+    { action_category: 'status_update', agent_bucket: 'Manual Operations', policy: 'notify_and_proceed' },
+    { action_category: 'proposal', agent_bucket: 'Manual Operations', policy: 'require_approval' },
+  ],
+};
+
+/** Sidebar labels the fixture should produce, in PRESENTATION order. */
+const EXPECTED_SECTIONS = [
+  'Node Lifecycle',
+  'SDWAN',
+  'Container Runtimes',
+  'Disk Image CI',
+  'Instance Pools',
+  'CVE & Compliance',
+];
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
@@ -84,6 +166,7 @@ function defaultAutonomyState(overrides: Record<string, unknown> = {}) {
     save: mockSave,
     agentPolicies: {},
     agentNames: [],
+    domains: DOMAINS,
     reload: jest.fn(),
     ...overrides,
   };
@@ -95,6 +178,11 @@ const renderPanel = (isOpen = true, onClose = jest.fn()) =>
       <SystemSettingsPanel isOpen={isOpen} onClose={onClose} />
     </BrowserRouter>,
   );
+
+/** Props of every AutonomyPolicyGroup rendered since the last mockClear. */
+function groupProps(): Array<Record<string, unknown>> {
+  return mockAutonomyPolicyGroup.mock.calls.map((c) => c[0] as Record<string, unknown>);
+}
 
 // =============================================================================
 // Tests
@@ -132,24 +220,37 @@ describe('SystemSettingsPanel', () => {
   // Sidebar navigation
   // ---------------------------------------------------------------------------
 
-  it('renders all 7 domain sections in the sidebar', async () => {
+  it('renders one sidebar section per non-empty domain the hook returned', async () => {
     renderPanel();
     await waitFor(() =>
       expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
     );
 
-    const expectedLabels = [
-      'Node Lifecycle',
-      'SDWAN',
-      'Container Runtimes',
-      'Disk Image CI',
-      'Instance Pools',
-      'CVE & Compliance',
-      'Manual Operations',
-    ];
-    for (const label of expectedLabels) {
+    for (const label of EXPECTED_SECTIONS) {
       expect(screen.getByRole('button', { name: new RegExp(label, 'i') })).toBeInTheDocument();
     }
+    // The catch-all holds rows this extension does not own — core's own
+    // notification categories. The endpoint is right to return them; the modal
+    // is wrong to offer them.
+    expect(screen.queryByRole('button', { name: /^other/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('status_update')).not.toBeInTheDocument();
+    // Manual Operations is an agent BUCKET now, not a domain of its own, so it
+    // must not appear as a sidebar section.
+    expect(screen.queryByRole('button', { name: /manual operations/i })).not.toBeInTheDocument();
+  });
+
+  it('lists sections in presentation order, not the server\'s key order', async () => {
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
+    );
+
+    const labels = screen
+      .getAllByRole('button')
+      .map((b) => (b.textContent || '').replace(/\d+$/, '').trim())
+      .filter((t) => EXPECTED_SECTIONS.includes(t));
+
+    expect(labels).toEqual(EXPECTED_SECTIONS);
   });
 
   it('renders the Approval Chains item in the sidebar', async () => {
@@ -160,29 +261,25 @@ describe('SystemSettingsPanel', () => {
     expect(screen.getByRole('button', { name: /approval chains/i })).toBeInTheDocument();
   });
 
-  it('shows correct action count badge for each domain section', async () => {
+  it('shows each section\'s action count badge, counted from the rows', async () => {
     renderPanel();
     await waitFor(() =>
       expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
     );
 
-    // Each sidebar button contains the action count as text (span with tabular-nums class).
-    // node_lifecycle=10, sdwan=31, runtime=8, disk_image=6, instance_pool=6, cve=4, manual=27
-    const expectedCounts = ['10', '31', '8', '4', '27'];
-    for (const count of expectedCounts) {
-      const els = screen.getAllByText(count);
-      expect(els.length).toBeGreaterThan(0);
-    }
-    // Instance Pools has 6 actions — same as disk_image; both should be present (×2 = 2 elements)
-    const sixEls = screen.getAllByText('6');
-    expect(sixEls.length).toBeGreaterThanOrEqual(2);
+    // node_lifecycle = 4 rows, sdwan = 3, container_runtime = 1, disk_image = 1,
+    // instance_pool = 2 (one category, two buckets), cve = 1.
+    const nodeBtn = screen.getByRole('button', { name: /node lifecycle/i });
+    expect(nodeBtn).toHaveTextContent('4');
+    expect(screen.getByRole('button', { name: /^sdwan/i })).toHaveTextContent('3');
+    expect(screen.getByRole('button', { name: /instance pools/i })).toHaveTextContent('2');
   });
 
   // ---------------------------------------------------------------------------
-  // Default active section — node_lifecycle
+  // Default active section
   // ---------------------------------------------------------------------------
 
-  it('defaults to the Node Lifecycle section showing label, agentName, and description', async () => {
+  it('opens on Node Lifecycle even though the server keys instance_pool first', async () => {
     renderPanel();
     await waitFor(() =>
       expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
@@ -190,8 +287,6 @@ describe('SystemSettingsPanel', () => {
 
     // "Node Lifecycle" appears both in the sidebar nav and as the content h3
     expect(screen.getAllByText('Node Lifecycle').length).toBeGreaterThanOrEqual(2);
-    // "Fleet Autonomy" appears both as a sidebar button text and the content agentName badge
-    expect(screen.getAllByText('Fleet Autonomy').length).toBeGreaterThanOrEqual(1);
     expect(
       screen.getByText(
         /cert rotation, module assignment, instance reboot\/reprovision\/terminate/i,
@@ -204,7 +299,9 @@ describe('SystemSettingsPanel', () => {
   // ---------------------------------------------------------------------------
 
   it('shows loading spinner when autonomy.loading is true', async () => {
-    mockUseSystemAutonomyConfig.mockReturnValue(defaultAutonomyState({ loading: true }));
+    mockUseSystemAutonomyConfig.mockReturnValue(
+      defaultAutonomyState({ loading: true, domains: {} }),
+    );
     renderPanel();
 
     await waitFor(() =>
@@ -220,28 +317,34 @@ describe('SystemSettingsPanel', () => {
       expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
     );
     expect(screen.queryByText('Loading…')).not.toBeInTheDocument();
-    expect(screen.getByTestId('autonomy-policy-group')).toBeInTheDocument();
+    expect(screen.getAllByTestId('autonomy-policy-group').length).toBeGreaterThan(0);
+  });
+
+  it('explains itself rather than rendering blank when no policies exist', async () => {
+    mockUseSystemAutonomyConfig.mockReturnValue(defaultAutonomyState({ domains: {} }));
+    renderPanel();
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/no autonomy policies are configured for this account yet/i),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId('autonomy-policy-group')).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
   // AutonomyPolicyGroup receives correct props
   // ---------------------------------------------------------------------------
 
-  it('passes correct label, agentName, and actions to AutonomyPolicyGroup for node_lifecycle', async () => {
+  it('renders one group per agent bucket in the domain, carrying that bucket\'s rows', async () => {
     renderPanel();
-    await waitFor(() =>
-      expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
-    );
     await waitFor(() => expect(mockAutonomyPolicyGroup).toHaveBeenCalled());
 
-    const props = mockAutonomyPolicyGroup.mock.calls[0][0] as Record<string, unknown>;
-    expect(props.label).toBe('Node Lifecycle policies');
-    expect(props.agentName).toBe('Fleet Autonomy');
-    expect(Array.isArray(props.actions)).toBe(true);
-    const actions = props.actions as string[];
-    expect(actions).toContain('system.cert_rotate');
-    expect(actions).toContain('system.instance_terminate');
-    expect(actions.length).toBe(10);
+    const groups = groupProps();
+    expect(groups.map((p) => p.agentName)).toEqual(['Fleet Autonomy', 'Manual Operations']);
+    expect(groups[0].label).toBe('Node Lifecycle · Fleet Autonomy');
+    expect(groups[0].actions).toEqual(['system.cert_rotate', 'system.instance_terminate']);
+    expect(groups[1].actions).toEqual(['system.task.ssh_command', 'system.task.terminate']);
   });
 
   it('passes getPolicy, updatePolicy, isDirty, and onSave props to AutonomyPolicyGroup', async () => {
@@ -251,10 +354,10 @@ describe('SystemSettingsPanel', () => {
     renderPanel();
 
     await waitFor(() =>
-      expect(screen.getByTestId('autonomy-policy-group')).toBeInTheDocument(),
+      expect(screen.getAllByTestId('autonomy-policy-group').length).toBeGreaterThan(0),
     );
 
-    const props = mockAutonomyPolicyGroup.mock.calls[0][0] as Record<string, unknown>;
+    const props = groupProps()[0];
     expect(props.getPolicy).toBe(mockGetPolicy);
     expect(props.updatePolicy).toBe(mockUpdatePolicy);
     expect(props.isDirty).toBe(true);
@@ -271,14 +374,15 @@ describe('SystemSettingsPanel', () => {
       expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /sdwan/i }));
+    mockAutonomyPolicyGroup.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: /^sdwan/i }));
 
-    await waitFor(() => {
-      expect(screen.getByText('SDWAN Manager')).toBeInTheDocument();
-    });
-    expect(
-      screen.getByText(/networks, peers, firewall rules, vips, route policies/i),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByText(/networks, peers, firewall rules, vips, route policies/i),
+      ).toBeInTheDocument(),
+    );
+    expect(groupProps()[0].label).toBe('SDWAN · SDWAN Manager');
   });
 
   it('switches to Container Runtimes section when clicked', async () => {
@@ -287,14 +391,13 @@ describe('SystemSettingsPanel', () => {
       expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
     );
 
+    mockAutonomyPolicyGroup.mockClear();
     fireEvent.click(screen.getByRole('button', { name: /container runtimes/i }));
 
     await waitFor(() =>
-      expect(screen.getByText('Runtime Manager')).toBeInTheDocument(),
+      expect(screen.getByText(/docker daemon \+ k3s cluster lifecycle/i)).toBeInTheDocument(),
     );
-    expect(
-      screen.getByText(/docker daemon \+ k3s cluster lifecycle/i),
-    ).toBeInTheDocument();
+    expect(groupProps()[0].agentName).toBe('Runtime Manager');
   });
 
   it('switches to Disk Image CI section when clicked', async () => {
@@ -303,14 +406,13 @@ describe('SystemSettingsPanel', () => {
       expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
     );
 
+    mockAutonomyPolicyGroup.mockClear();
     fireEvent.click(screen.getByRole('button', { name: /disk image ci/i }));
 
     await waitFor(() =>
-      expect(screen.getByText('Disk Image Manager')).toBeInTheDocument(),
+      expect(screen.getByText(/publication promotion, rollback, retention/i)).toBeInTheDocument(),
     );
-    expect(
-      screen.getByText(/publication promotion, rollback, retention/i),
-    ).toBeInTheDocument();
+    expect(groupProps()[0].agentName).toBe('Disk Image Manager');
   });
 
   it('switches to Instance Pools section when clicked', async () => {
@@ -319,18 +421,20 @@ describe('SystemSettingsPanel', () => {
       expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
     );
 
+    mockAutonomyPolicyGroup.mockClear();
     fireEvent.click(screen.getByRole('button', { name: /instance pools/i }));
 
-    // The content area should show agent name for the pool section
-    await waitFor(() => {
-      // Fleet Autonomy is the agentName for instance_pool section
-      // This is shown both in the sidebar (Node Lifecycle) AND the content area badge
-      const badges = screen.getAllByText('Fleet Autonomy');
-      expect(badges.length).toBeGreaterThan(0);
-    });
-    expect(
-      screen.getByText(/warm-pool create \/ update \/ delete \/ replenish \/ drain \/ acquire/i),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByText(/warm-pool create \/ update \/ delete \/ replenish \/ drain \/ acquire/i),
+      ).toBeInTheDocument(),
+    );
+
+    // The same category, seeded twice — the operator has to be able to see and
+    // tune BOTH rows, which one group per section could never show.
+    const groups = groupProps();
+    expect(groups.map((p) => p.agentName)).toEqual(['Fleet Autonomy', 'Manual Operations']);
+    groups.forEach((p) => expect(p.actions).toEqual(['system.instance_pool_create']));
   });
 
   it('switches to CVE & Compliance section when clicked', async () => {
@@ -339,73 +443,15 @@ describe('SystemSettingsPanel', () => {
       expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
     );
 
+    mockAutonomyPolicyGroup.mockClear();
     fireEvent.click(screen.getByRole('button', { name: /cve & compliance/i }));
 
     await waitFor(() =>
-      expect(screen.getByText('CVE Responder')).toBeInTheDocument(),
+      expect(
+        screen.getByText(/sbom ingest, exposure scan, remediation orchestration/i),
+      ).toBeInTheDocument(),
     );
-    expect(
-      screen.getByText(/sbom ingest, exposure scan, remediation orchestration/i),
-    ).toBeInTheDocument();
-  });
-
-  it('switches to Manual Operations section when clicked', async () => {
-    renderPanel();
-    await waitFor(() =>
-      expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /manual operations/i }));
-
-    // "Manual Operations" appears in the sidebar, content h3, and agentName badge
-    await waitFor(() =>
-      expect(screen.getAllByText('Manual Operations').length).toBeGreaterThanOrEqual(2),
-    );
-    expect(
-      screen.getByText(/operator-initiated system::task commands/i),
-    ).toBeInTheDocument();
-  });
-
-  // ---------------------------------------------------------------------------
-  // AutonomyPolicyGroup props per section
-  // ---------------------------------------------------------------------------
-
-  it('passes correct actions to AutonomyPolicyGroup for SDWAN section', async () => {
-    renderPanel();
-    await waitFor(() =>
-      expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
-    );
-
-    mockAutonomyPolicyGroup.mockClear();
-    fireEvent.click(screen.getByRole('button', { name: /sdwan/i }));
-
-    await waitFor(() => expect(mockAutonomyPolicyGroup).toHaveBeenCalled());
-
-    const props = mockAutonomyPolicyGroup.mock.calls[0][0] as Record<string, unknown>;
-    const actions = props.actions as string[];
-    expect(props.agentName).toBe('SDWAN Manager');
-    expect(actions).toContain('sdwan.network_create');
-    expect(actions).toContain('system.sdwan_peer_remediate');
-    expect(actions.length).toBe(31);
-  });
-
-  it('passes correct actions to AutonomyPolicyGroup for Manual Operations section', async () => {
-    renderPanel();
-    await waitFor(() =>
-      expect(screen.getByText('System Autonomy Settings')).toBeInTheDocument(),
-    );
-
-    mockAutonomyPolicyGroup.mockClear();
-    fireEvent.click(screen.getByRole('button', { name: /manual operations/i }));
-
-    await waitFor(() => expect(mockAutonomyPolicyGroup).toHaveBeenCalled());
-
-    const props = mockAutonomyPolicyGroup.mock.calls[0][0] as Record<string, unknown>;
-    const actions = props.actions as string[];
-    expect(props.agentName).toBe('Manual Operations');
-    expect(actions).toContain('system.task.ssh_command');
-    expect(actions).toContain('system.task.terminate');
-    expect(actions.length).toBe(27);
+    expect(groupProps()[0].agentName).toBe('CVE Responder');
   });
 
   // ---------------------------------------------------------------------------
@@ -434,7 +480,7 @@ describe('SystemSettingsPanel', () => {
     );
 
     // AutonomyPolicyGroup visible initially
-    expect(screen.getByTestId('autonomy-policy-group')).toBeInTheDocument();
+    expect(screen.getAllByTestId('autonomy-policy-group').length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole('button', { name: /approval chains/i }));
 
@@ -457,7 +503,7 @@ describe('SystemSettingsPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /cve & compliance/i }));
     await waitFor(() =>
-      expect(screen.getByTestId('autonomy-policy-group')).toBeInTheDocument(),
+      expect(screen.getAllByTestId('autonomy-policy-group').length).toBeGreaterThan(0),
     );
     expect(screen.queryByTestId('approval-chain-list')).not.toBeInTheDocument();
   });
@@ -471,10 +517,10 @@ describe('SystemSettingsPanel', () => {
     renderPanel();
 
     await waitFor(() =>
-      expect(screen.getByTestId('autonomy-policy-group')).toBeInTheDocument(),
+      expect(screen.getAllByTestId('autonomy-policy-group').length).toBeGreaterThan(0),
     );
 
-    fireEvent.click(screen.getByTestId('trigger-save'));
+    fireEvent.click(screen.getAllByTestId('trigger-save')[0]);
 
     await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
   });
@@ -509,7 +555,7 @@ describe('SystemSettingsPanel', () => {
     );
 
     // Click SDWAN
-    const sdwanBtn = screen.getByRole('button', { name: /sdwan/i });
+    const sdwanBtn = screen.getByRole('button', { name: /^sdwan/i });
     fireEvent.click(sdwanBtn);
 
     await waitFor(() =>

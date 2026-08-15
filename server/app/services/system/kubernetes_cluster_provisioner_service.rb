@@ -147,11 +147,7 @@ module System
       # plane), they're added as VIP failover candidates. Bootstrap
       # node loss becomes a vip.failover! event, not a cluster-
       # destruction event.
-      bootstrap_peer = ::Sdwan::Peer
-                         .where(node_instance_id: @node_instance.id)
-                         .where.not(assigned_address: nil)
-                         .order(:created_at)
-                         .first
+      bootstrap_peer = ::Sdwan::OverlayAddressResolver.addressed_peer_for(@node_instance)
       cluster_name = cluster_name_for(@node_instance)
       api_vip = nil
       api_endpoint_address = overlay_address
@@ -520,17 +516,16 @@ module System
     private
 
     def resolve_overlay_address!
-      peer = ::Sdwan::Peer.where(node_instance_id: @node_instance.id)
-                          .where.not(assigned_address: nil)
-                          .order(:created_at)
-                          .first
-      unless peer
+      # Shared seam picks the oldest addressed peer and strips the CIDR
+      # prefix length; the error type stays ours for callers rescuing it.
+      address = ::Sdwan::OverlayAddressResolver.address_for(@node_instance)
+      unless address
         raise MissingSdwanPeerError,
               "NodeInstance #{@node_instance.id} has no SDWAN peer with an " \
               "assigned overlay address — assign an Sdwan::Peer before " \
               "bootstrapping a k3s cluster"
       end
-      peer.assigned_address.to_s.split("/").first
+      address
     end
 
     # Phase O4 — pick the CNI for a brand-new cluster from the
@@ -618,11 +613,7 @@ module System
       vip = ::Sdwan::VirtualIp.find_by(id: vip_id)
       return unless vip
 
-      joiner_peer = ::Sdwan::Peer
-                      .where(node_instance_id: @node_instance.id)
-                      .where.not(assigned_address: nil)
-                      .order(:created_at)
-                      .first
+      joiner_peer = ::Sdwan::OverlayAddressResolver.addressed_peer_for(@node_instance)
       return unless joiner_peer
 
       already_primary = Array(vip.holder_peer_ids).include?(joiner_peer.id)
@@ -641,11 +632,7 @@ module System
       vip = ::Sdwan::VirtualIp.find_by(id: vip_id)
       return unless vip
 
-      new_peer = ::Sdwan::Peer
-                   .where(node_instance_id: @node_instance.id)
-                   .where.not(assigned_address: nil)
-                   .order(:created_at)
-                   .first
+      new_peer = ::Sdwan::OverlayAddressResolver.addressed_peer_for(@node_instance)
       return unless new_peer
 
       current_primary = Array(vip.holder_peer_ids).first

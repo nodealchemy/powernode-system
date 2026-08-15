@@ -178,7 +178,9 @@ module Sdwan
         {
           peer_id: peer.id,
           public_key: key.public_key,
-          endpoint: primary && "#{primary[:host]}:#{primary[:port]}",
+          # Consumed verbatim by the agent's `wg setconf` (state.go →
+          # wg_applier.go) — Peer.format_host_port brackets IPv6 literals.
+          endpoint: primary && Peer.format_host_port(primary[:host], primary[:port]),
           endpoint_family: primary && primary[:family].to_s,
           fallback_endpoint: fallback && {
             host: fallback[:host],

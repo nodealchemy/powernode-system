@@ -4,6 +4,8 @@ import { useArmedConfirm } from '@/shared/hooks/useArmedConfirm';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
+import { isPendingApproval } from '@system/features/system/services/api/helpers';
+import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import type {
   SdwanIpfixCollector,
   SdwanIpfixState,
@@ -58,7 +60,11 @@ export const IpfixCollectorsTab: React.FC = () => {
   const handleToggleState = useCallback(async (c: SdwanIpfixCollector) => {
     const next = c.state === 'active' ? 'disabled' : 'active';
     try {
-      await sdwanApi.setIpfixCollectorState(c.id, next);
+      const result = await sdwanApi.setIpfixCollectorState(c.id, next);
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`${next === 'active' ? 'enabling' : 'disabling'} collector ${c.name}`, result));
+        return;
+      }
       addNotification({
         type: 'success',
         message: `Collector ${c.name} ${next === 'active' ? 'enabled' : 'disabled'}`,
@@ -74,7 +80,11 @@ export const IpfixCollectorsTab: React.FC = () => {
 
   const handleDelete = useCallback(async (c: SdwanIpfixCollector) => {
     try {
-      await sdwanApi.deleteIpfixCollector(c.id);
+      const result = await sdwanApi.deleteIpfixCollector(c.id);
+      if (isPendingApproval(result)) {
+        addNotification(pendingApprovalNotice(`deleting collector ${c.name}`, result));
+        return;
+      }
       addNotification({ type: 'success', message: `Collector ${c.name} deleted` });
       setRefreshKey((k) => k + 1);
     } catch (err) {

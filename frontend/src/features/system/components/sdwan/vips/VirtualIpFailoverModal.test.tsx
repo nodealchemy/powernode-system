@@ -319,4 +319,37 @@ describe('VirtualIpFailoverModal', () => {
     const btn = screen.getByRole('button', { name: /confirm failover/i });
     expect(btn).not.toBeDisabled();
   });
+
+  // ── Pending-approval branch (IMP-87ec6f651f07) ────────────────────────────
+
+  it('shows the pending-approval notification and skips onFailedOver when the failover is parked', async () => {
+    mockPost.mockResolvedValueOnce({
+      status: 202,
+      data: {
+        success: true,
+        data: {
+          pending: true,
+          deferred_operation_id: 'dop-1',
+          action_category: 'system.sdwan_vip_failover',
+          approval_request_id: 'ar-1',
+          message: 'Approval required',
+        },
+      },
+    });
+
+    renderModal();
+    fireEvent.click(screen.getByRole('button', { name: /confirm failover/i }));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          message: expect.stringMatching(/approval required/i),
+          link: expect.objectContaining({ to: '/app/ai/agents/autonomy' }),
+        }),
+      ),
+    );
+    expect(mockOnFailedOver).not.toHaveBeenCalled();
+    expect(mockOnClose).toHaveBeenCalled();
+  });
 });
