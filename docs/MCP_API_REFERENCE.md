@@ -319,13 +319,29 @@ These two actions are `system_*`-prefixed (not `system_sdwan_*`) but route throu
 
 | Action | What it does | Audience |
 |---|---|---|
-| `system_deploy_platform` | Spawn a child Powernode platform (managed_child / autonomous_peer / cluster_member modes) | operator |
+| `system_deploy_platform` | Deploy a **standalone** (sovereign) Powernode platform, or return the deployment wizard payload. **Federated spawns are refused on this surface** — see below | operator |
 | `system_platform_maintenance` | Concierge-bound skill — surface fleet-wide maintenance posture + scheduled windows | operator, agent |
 | `system_platform_resilience` | Concierge-bound skill — fleet-wide resilience posture + incident recovery suggestions | operator, agent |
 
-**Permissions:** `system.federation.{spawn,maintenance,resilience}` (latter two are read-shape; bound to System Concierge)
+**Permissions:** `system.platform.deploy` (deploy), `system.platform.read` (maintenance), `system.platform.scale` (resilience) — per `SystemFleetTool::ACTION_PERMISSIONS`. The latter two are bound to System Concierge. (Note: the auto-generated catalog at `docs/reference/auto/mcp-tools.md` prints the tool class's `REQUIRED_PERMISSION` floor, `system.nodes.read`, for every action — the per-action entries above are what actually gates these calls.)
 
-See [`docs/federation/SPAWN_MODES.md`](./federation/SPAWN_MODES.md) for the spawn-mode comparison; the actual spawn endpoint is REST (`POST /api/v1/system/federation/children/spawn`) — `system_deploy_platform` is the MCP wrapper that thin-shims that call.
+See [`docs/federation/SPAWN_MODES.md`](./federation/SPAWN_MODES.md) for the spawn-mode comparison.
+
+**Federated spawns do not go over MCP.** A federated deploy mints a single-use
+acceptance token, and an MCP tool result is forwarded to the model provider and
+persisted with the conversation — so `system_deploy_platform` refuses
+`mode: "federated"` and names the operator path in the error
+(IMP-c0687cfb3a05). Operators deploy federated platforms over REST:
+
+- `POST /api/v1/system/platform/deployments` (permission `system.platform.deploy`)
+  — runs the same `System::PlatformDeploymentOrchestrator` and reveals
+  `acceptance_token` exactly once in its HTTP response. This is what the
+  Deploy Platform wizard submits to.
+- `POST /api/v1/system/federation/children/spawn` — the lower-level spawn
+  endpoint, likewise unaffected.
+
+`system_deploy_platform` remains the MCP path for standalone deployments and for
+fetching the wizard payload.
 
 #### Additional lifecycle actions
 
