@@ -117,10 +117,21 @@ platform.system_sdwan_propose_federation_peer
   spawn_role: "symmetric"
 ```
 
-The peer is `status: "proposed"`. The proposing side then mints a
-**single-use acceptance token** (urlsafe-base64, 32 bytes of entropy; only
-its SHA-256 digest is persisted) and hands the plaintext to the accepting
-operator out of band.
+The peer is `status: "proposed"`.
+
+The proposing side then mints a **single-use acceptance token**
+(urlsafe-base64, 32 bytes of entropy; only its SHA-256 digest is persisted)
+and hands the plaintext to the accepting operator out of band. **Minting is
+not available on the MCP surface** — a tool result is forwarded to the model
+provider, so the plaintext cannot be delivered there (IMP-3a32dc649043).
+Propose over the operator REST API instead:
+
+```
+POST /api/v1/system/sdwan/federation_peers
+```
+
+which mints by default (`Sdwan::Executors::ProposeFederationPeer`) and
+reveals the plaintext exactly once, in the approval decision response.
 
 ### Accept — the acceptance orchestration
 
