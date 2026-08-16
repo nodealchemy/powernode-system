@@ -4,22 +4,22 @@ import type { AutonomyConfigSource } from '@/shared/types/autonomy';
 /**
  * System extension's AutonomyConfigSource — points the shared
  * useAutonomyConfig hook at the System Settings API endpoints
- * (Phase 8 controller). Maps the 5 system agents (Fleet Autonomy,
- * SDWAN Manager, CVE Responder, Disk Image Manager, Runtime Manager)
- * onto their PATCH role identifiers.
+ * (Phase 8 controller).
+ *
+ * This used to also carry a `roleForAgent` map from agent display name onto a
+ * coarse role string ('fleet' | 'sdwan' | 'cve' | 'disk_image' | 'runtime' |
+ * 'manual'), sent as `agent_role` alongside a `policies` object. Nothing
+ * server-side ever read either key: `System::AutonomyActions#update` parses
+ * `params[:updates]` and returns 400 without it, so every save from the
+ * Autonomy modal was rejected and no operator toggle was ever persisted
+ * (IMP-bef43160636f). The mapping was lossy in the same direction the finding
+ * describes — a substring match onto a name, from which no specific policy row
+ * can be recovered. `save()` now returns each row's own `scope` + `agent_id`,
+ * which the GET already ships, so no name→role mapping is needed at all.
  */
 export const systemAutonomyConfigSource: AutonomyConfigSource = {
   fetchEndpoint: '/system/autonomy',
   updateEndpoint: '/system/autonomy',
-  roleForAgent: (name: string): string | undefined => {
-    const lower = name.toLowerCase();
-    if (lower.includes('fleet')) return 'fleet';
-    if (lower.includes('sdwan')) return 'sdwan';
-    if (lower.includes('cve')) return 'cve';
-    if (lower.includes('disk image')) return 'disk_image';
-    if (lower.includes('runtime')) return 'runtime';
-    return 'manual';
-  },
 };
 
 export function useSystemAutonomyConfig() {
