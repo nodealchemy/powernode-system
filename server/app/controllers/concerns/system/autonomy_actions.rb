@@ -115,12 +115,44 @@ module System
           ai_agent_id: attrs[:agent_id],
           user_id: nil
         )
+        # An ABSENT key means "leave it alone", not "reset it".
+        #
+        # The Autonomy modal's save sends one entry per control the operator
+        # touched, and a control edits the VERB only — `approval_chain_id`,
+        # `priority`, `is_active` and `preferred_channels` are set elsewhere and
+        # are simply not in that payload. Every line here except `conditions`
+        # used to overwrite the stored value with a default when the key was
+        # missing, so a verb toggle silently unassigned the row's approval chain
+        # and reset an operator-tuned priority.
+        #
+        # That was inert only because the save itself never arrived: the panel
+        # PATCHed a body this action does not parse, so the whole request 400'd
+        # (IMP-bef43160636f). Making the save work makes these lines run, so
+        # they have to stop clobbering first. The defaults below still apply to
+        # a row being CREATED, where `policy.<attr>` is nil.
+        #
+        # `nil` remains meaningful when the key IS present: sending
+        # `approval_chain_id: null` still unassigns the chain.
+        #
+        # Each branch tests `new_record?` rather than falling back through the
+        # attribute's current value. These columns carry DB defaults — priority
+        # 0, is_active true, preferred_channels [] — so an initialized-but-unsaved
+        # row already answers with a non-nil value, and `attrs[:priority] ||
+        # policy.priority` quietly created every new row at priority 0 instead of
+        # the intended 10/5.
         policy.policy = policy_value
-        policy.priority = attrs[:priority] || (scope == "agent" ? 10 : 5)
-        policy.is_active = attrs[:is_active].nil? ? true : ActiveModel::Type::Boolean.new.cast(attrs[:is_active])
-        policy.preferred_channels = Array(attrs[:preferred_channels]).presence || %w[notification]
+        policy.priority = attrs[:priority] || (policy.new_record? ? (scope == "agent" ? 10 : 5) : policy.priority)
+        policy.is_active =
+          if attrs[:is_active].nil?
+            policy.new_record? ? true : policy.is_active
+          else
+            ActiveModel::Type::Boolean.new.cast(attrs[:is_active])
+          end
+        policy.preferred_channels =
+          Array(attrs[:preferred_channels]).presence ||
+          (policy.new_record? ? %w[notification] : policy.preferred_channels.presence || %w[notification])
         policy.conditions = attrs[:conditions].presence || policy.conditions || {}
-        policy.approval_chain_id = attrs[:approval_chain_id]
+        policy.approval_chain_id = attrs.key?(:approval_chain_id) ? attrs[:approval_chain_id] : policy.approval_chain_id
 
         if policy.save
           changed_count += 1

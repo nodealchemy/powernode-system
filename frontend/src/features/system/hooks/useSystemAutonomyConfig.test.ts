@@ -3,16 +3,22 @@
  * systemAutonomyConfigSource configuration object.
  *
  * useSystemAutonomyConfig is a thin wrapper around the shared
- * useAutonomyConfig hook, wired to the /system/autonomy endpoints and
- * the system-specific roleForAgent mapping. Tests cover:
+ * useAutonomyConfig hook, wired to the /system/autonomy endpoints.
+ * Tests cover:
  *
- * 1. systemAutonomyConfigSource — endpoints + roleForAgent for all agent types
+ * 1. systemAutonomyConfigSource — endpoints
  * 2. Hook fetch success (system-API array shape)
  * 3. Hook fetch error — loading clears, state stays empty
  * 4. Local override tracking (isDirty, getPolicy)
- * 5. save() — PATCHes each dirty agent with the correct role and payload
+ * 5. save() — PATCHes the updates array, each entry carrying its row's identity
  * 6. save() with no overrides — does NOT make any API call
  * 7. reload() — re-fetches and resets overrides
+ *
+ * The source used to carry a `roleForAgent` name→role mapping, sent as
+ * `agent_role` beside a `policies` object. No server code ever read either key
+ * and the endpoint 400s without `updates`, so the whole modal's save was a
+ * no-op; the examples that pinned the mapping are gone with it
+ * (IMP-bef43160636f).
  */
 
 import { renderHook, act, waitFor } from '@testing-library/react';
@@ -59,14 +65,37 @@ function envelope<T>(data: T) {
   return { data: { success: true, data } };
 }
 
+type SeedRow = {
+  action_category: string;
+  policy: string;
+  scope?: string;
+  agent_id?: string | null;
+};
+
+/** The agent_id these fixtures give a by_agent bucket, derived from its name. */
+function agentIdFor(agentName: string): string {
+  return `agent-${agentName.toLowerCase().replace(/\s+/g, '-')}`;
+}
+
 /**
  * Build a mock GET response in the system API shape.
- * System API returns policies as an array of { action_category, policy } per agent.
+ *
+ * `System::AutonomyActions#serialize_policy` ships EVERY row with its `scope`
+ * and `agent_id`, and a by_agent bucket named after an agent is by construction
+ * that agent's scope-"agent" rows. Fixtures default to that shape rather than
+ * the bare { action_category, policy } pair, because save() now writes a row's
+ * identity back and a fixture thinner than the real payload cannot see whether
+ * it did.
  */
-function systemPoliciesResponse(
-  byAgent: Record<string, Array<{ action_category: string; policy: string }>>,
-) {
-  return envelope({ policies: { by_agent: byAgent } });
+function systemPoliciesResponse(byAgent: Record<string, SeedRow[]>) {
+  const identified = Object.fromEntries(
+    Object.entries(byAgent).map(([agentName, rows]) => [
+      agentName,
+      rows.map((row) => ({ scope: 'agent', agent_id: agentIdFor(agentName), ...row })),
+    ]),
+  );
+
+  return envelope({ policies: { by_agent: identified } });
 }
 
 // ---------------------------------------------------------------------------
@@ -84,64 +113,6 @@ describe('systemAutonomyConfigSource', () => {
     });
   });
 
-  describe('roleForAgent', () => {
-    const { roleForAgent } = systemAutonomyConfigSource;
-
-    it('maps Fleet Autonomy agent to "fleet"', () => {
-      expect(roleForAgent('Fleet Autonomy')).toBe('fleet');
-    });
-
-    it('maps names containing "fleet" case-insensitively', () => {
-      expect(roleForAgent('fleet manager')).toBe('fleet');
-      expect(roleForAgent('FLEET AUTONOMY')).toBe('fleet');
-    });
-
-    it('maps SDWAN Manager agent to "sdwan"', () => {
-      expect(roleForAgent('SDWAN Manager')).toBe('sdwan');
-    });
-
-    it('maps names containing "sdwan" case-insensitively', () => {
-      expect(roleForAgent('sdwan controller')).toBe('sdwan');
-      expect(roleForAgent('SDWAN CONTROLLER')).toBe('sdwan');
-    });
-
-    it('maps CVE Responder agent to "cve"', () => {
-      expect(roleForAgent('CVE Responder')).toBe('cve');
-    });
-
-    it('maps names containing "cve" case-insensitively', () => {
-      expect(roleForAgent('cve scanner')).toBe('cve');
-    });
-
-    it('maps Disk Image Manager agent to "disk_image"', () => {
-      expect(roleForAgent('Disk Image Manager')).toBe('disk_image');
-    });
-
-    it('maps names containing "disk image" case-insensitively', () => {
-      expect(roleForAgent('disk image builder')).toBe('disk_image');
-      expect(roleForAgent('DISK IMAGE BUILDER')).toBe('disk_image');
-    });
-
-    it('maps Runtime Manager agent to "runtime"', () => {
-      expect(roleForAgent('Runtime Manager')).toBe('runtime');
-    });
-
-    it('maps names containing "runtime" case-insensitively', () => {
-      expect(roleForAgent('runtime scheduler')).toBe('runtime');
-      expect(roleForAgent('RUNTIME SCHEDULER')).toBe('runtime');
-    });
-
-    it('falls back to "manual" for unrecognized agent names', () => {
-      expect(roleForAgent('System Concierge')).toBe('manual');
-      expect(roleForAgent('Unknown Agent')).toBe('manual');
-      expect(roleForAgent('')).toBe('manual');
-    });
-
-    it('checks "disk image" before "runtime" (no false positive)', () => {
-      // "disk image" does not contain "runtime" — ensure correct role
-      expect(roleForAgent('Disk Image Manager')).toBe('disk_image');
-    });
-  });
 });
 
 describe('useSystemAutonomyConfig', () => {
@@ -297,7 +268,7 @@ describe('useSystemAutonomyConfig', () => {
   // save()
   // -------------------------------------------------------------------------
 
-  it('save() PATCHes /system/autonomy with correct role and policies payload', async () => {
+  it('save() PATCHes /system/autonomy with an updates array carrying the row identity', async () => {
     mockGet.mockResolvedValue(
       systemPoliciesResponse({
         'Fleet Autonomy': [
@@ -319,8 +290,14 @@ describe('useSystemAutonomyConfig', () => {
     });
 
     expect(mockPatch).toHaveBeenCalledWith('/system/autonomy', {
-      policies: { 'system.node_enroll': 'require_approval' },
-      agent_role: 'fleet',
+      updates: [
+        {
+          action_category: 'system.node_enroll',
+          policy: 'require_approval',
+          scope: 'agent',
+          agent_id: agentIdFor('Fleet Autonomy'),
+        },
+      ],
     });
   });
 
@@ -348,13 +325,17 @@ describe('useSystemAutonomyConfig', () => {
     expect(result.current.getPolicy('SDWAN Manager', 'system.sdwan_peer')).toBe('block');
   });
 
-  it('save() uses the correct role for each of the 5 system agent types', async () => {
+  // Each of the 5 system agents keeps its OWN agent_id through the save. The
+  // replaced version asserted a coarse role string per agent — which is exactly
+  // what could not identify a row, since several agents map onto one role and
+  // no row can be recovered from one.
+  it('save() sends every agent in one request, each entry keeping its own agent_id', async () => {
     const agents = [
-      { name: 'Fleet Autonomy', role: 'fleet', action: 'system.a' },
-      { name: 'SDWAN Manager', role: 'sdwan', action: 'system.b' },
-      { name: 'CVE Responder', role: 'cve', action: 'system.c' },
-      { name: 'Disk Image Manager', role: 'disk_image', action: 'system.d' },
-      { name: 'Runtime Manager', role: 'runtime', action: 'system.e' },
+      { name: 'Fleet Autonomy', action: 'system.a' },
+      { name: 'SDWAN Manager', action: 'system.b' },
+      { name: 'CVE Responder', action: 'system.c' },
+      { name: 'Disk Image Manager', action: 'system.d' },
+      { name: 'Runtime Manager', action: 'system.e' },
     ];
 
     const byAgent = Object.fromEntries(
@@ -377,13 +358,15 @@ describe('useSystemAutonomyConfig', () => {
       await result.current.save();
     });
 
-    agents.forEach(({ name, role, action }) => {
-      expect(mockPatch).toHaveBeenCalledWith('/system/autonomy', {
-        policies: { [action]: 'block' },
-        agent_role: role,
-      });
+    expect(mockPatch).toHaveBeenCalledTimes(1);
+    expect(mockPatch).toHaveBeenCalledWith('/system/autonomy', {
+      updates: agents.map(({ name, action }) => ({
+        action_category: action,
+        policy: 'block',
+        scope: 'agent',
+        agent_id: agentIdFor(name),
+      })),
     });
-    expect(mockPatch).toHaveBeenCalledTimes(agents.length);
   });
 
   it('save() with no overrides does not call PATCH', async () => {

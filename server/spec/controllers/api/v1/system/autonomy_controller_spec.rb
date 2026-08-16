@@ -318,5 +318,127 @@ RSpec.describe "Api::V1::System::Autonomy", type: :request do
           .to match_array(duplicate_to_live.values)
       end
     end
+
+    # IMP-bef43160636f. An ABSENT key means "leave it alone", not "reset it".
+    #
+    # `#update` used to overwrite `priority`, `is_active`, `preferred_channels`
+    # and `approval_chain_id` with a default whenever the key was missing —
+    # every attribute except `conditions`, which already fell back to the stored
+    # value. The Autonomy modal's save sends one entry per control the operator
+    # touched, and a control edits the VERB only, so a verb toggle silently
+    # unassigned the row's approval chain and reset an operator-tuned priority.
+    #
+    # This was unobservable for as long as the modal's save never arrived: it
+    # PATCHed a `{policies, agent_role}` body this action does not parse, so the
+    # request 400'd before reaching any of these lines. Fixing that made them
+    # reachable, which is why they are pinned here.
+    context "with keys the payload omits" do
+      let!(:agent) { create(:ai_agent, account: account, name: "SDWAN Manager") }
+      let!(:chain) { create(:ai_approval_chain, account: account) }
+
+      # Every non-default column the table has, so the "only the verb moved"
+      # assertion below has something to catch on each of them. `conditions` is
+      # deliberately non-empty: it is the one attribute #update already fell
+      # back to the stored value for, and a fixture leaving it at the `{}`
+      # default cannot tell preservation from a reset.
+      let!(:tuned) do
+        Ai::InterventionPolicy.create!(
+          account: account, action_category: "sdwan.peer_delete", scope: "agent",
+          ai_agent_id: agent.id, policy: "require_approval",
+          priority: 42, is_active: false, preferred_channels: %w[slack],
+          conditions: { "trust_tier_minimum" => "trusted" },
+          approval_chain_id: chain.id
+        )
+      end
+
+      def patch_verb_only(policy)
+        patch "/api/v1/system/autonomy",
+              params: { updates: [ { action_category: "sdwan.peer_delete", policy: policy,
+                                     scope: "agent", agent_id: agent.id } ] }.to_json,
+              headers: auth_headers_for(manage_user).merge("Content-Type" => "application/json")
+      end
+
+      # Stated as "only `policy` moved" rather than as a list of the four
+      # columns that were clobbering. A named list is blind to the way this
+      # regresses next: a FIFTH assignment added to #update for a column the
+      # payload also omits. Deriving the untouched set from the row's own
+      # attributes covers every column the table has, including ones added
+      # later.
+      #
+      # `updated_at` is excluded because a no-op save still touches it; the
+      # point is which OPERATOR-MEANINGFUL state moved.
+      it "changes the verb and nothing else on the row" do
+        before_attrs = tuned.attributes.except("updated_at")
+
+        patch_verb_only("block")
+        expect(response).to have_http_status(:ok)
+
+        after_attrs = tuned.reload.attributes.except("updated_at")
+        moved = before_attrs.reject { |col, was| after_attrs[col] == was }.keys
+
+        expect(moved).to eq([ "policy" ]),
+                         "a verb-only save also moved #{(moved - [ 'policy' ]).join(', ')}. The Autonomy modal " \
+                         "sends one entry per control and a control edits the VERB, so every other column on " \
+                         "the row is state #update was not asked to touch."
+        expect(tuned.policy).to eq("block")
+
+        # Pins the four that actually regressed, by value, so the failure above
+        # is not the only diagnosis available.
+        expect(tuned.approval_chain_id).to eq(chain.id)
+        expect(tuned.priority).to eq(42)
+        expect(tuned.is_active).to be(false)
+        expect(tuned.preferred_channels).to eq(%w[slack])
+      end
+
+      # POSITIVE CONTROL: preserving on ABSENCE must not make the fields
+      # unwritable. A refusal-only oracle cannot see an over-tightening that
+      # ignores the keys when they ARE sent.
+      it "still writes them when the keys are present" do
+        patch "/api/v1/system/autonomy",
+              params: { updates: [ {
+                action_category: "sdwan.peer_delete", policy: "block",
+                scope: "agent", agent_id: agent.id,
+                priority: 7, is_active: true, preferred_channels: %w[email]
+              } ] }.to_json,
+              headers: auth_headers_for(manage_user).merge("Content-Type" => "application/json")
+        expect(response).to have_http_status(:ok)
+
+        tuned.reload
+        expect(tuned.priority).to eq(7)
+        expect(tuned.is_active).to be(true)
+        expect(tuned.preferred_channels).to eq(%w[email])
+      end
+
+      # `nil` is only "no opinion" when the key is absent. A PRESENT nil is an
+      # explicit unassign, and the endpoint advertises chain assignment.
+      it "lets a present nil approval_chain_id unassign the chain" do
+        patch "/api/v1/system/autonomy",
+              params: { updates: [ { action_category: "sdwan.peer_delete", policy: "block",
+                                     scope: "agent", agent_id: agent.id,
+                                     approval_chain_id: nil } ] }.to_json,
+              headers: auth_headers_for(manage_user).merge("Content-Type" => "application/json")
+        expect(response).to have_http_status(:ok)
+
+        expect(tuned.reload.approval_chain_id).to be_nil
+      end
+
+      # A row being CREATED has no stored value to preserve, so the defaults the
+      # preserve-on-absence branches replaced must still apply there.
+      it "applies the defaults to a row it creates" do
+        patch "/api/v1/system/autonomy",
+              params: { updates: [ { action_category: "sdwan.network_create", policy: "block",
+                                     scope: "agent", agent_id: agent.id } ] }.to_json,
+              headers: auth_headers_for(manage_user).merge("Content-Type" => "application/json")
+        expect(response).to have_http_status(:ok)
+
+        created = Ai::InterventionPolicy.find_by!(account: account, action_category: "sdwan.network_create",
+                                                  scope: "agent", ai_agent_id: agent.id)
+        expect(created.priority).to eq(10)
+        expect(created.is_active).to be(true)
+        expect(created.preferred_channels).to eq(%w[notification])
+        expect(created.approval_chain_id).to be_nil
+      end
+    end
+
   end
 end
