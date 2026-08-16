@@ -88,7 +88,7 @@ module Api
             @peer.reload
 
             gate!(
-              action_category: "sdwan.peer_update",
+              action_category: ::Sdwan::Executors::UpdatePeer::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::UpdatePeer",
               params: { peer_id: @peer.id, attributes: attrs },
               source_type: "Sdwan::Peer",
@@ -107,7 +107,7 @@ module Api
             require_permission("system.sdwan.peers.manage")
 
             gate_result = ::Ai::AutonomyGate.evaluate(
-              action_category: "sdwan.peer_delete",
+              action_category: ::Sdwan::Executors::DeletePeer::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::DeletePeer",
               params: { peer_id: @peer.id, network_id: @network.id },
               account: current_account,

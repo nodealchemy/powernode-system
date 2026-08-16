@@ -11,81 +11,52 @@ module Ai
     class SdwanTool < BaseTool
       REQUIRED_PERMISSION = "system.sdwan.networks.read"
 
-      # Autonomy action category for federation acceptance. Seeded
-      # require_approval on the SDWAN Manager
-      # (db/seeds/system_sdwan_manager_agent.rb) and registered in the engine's
-      # category allowlist.
-      FEDERATION_ACCEPT_CATEGORY = "sdwan.federation_peer_accept"
-
-      # Autonomy action category for revoking a federation peer — the trust
-      # withdrawal twin of the accept above. Shared verbatim with
-      # FederationPeersController (#destroy, #revoke, and #update with
-      # status → revoked) so the MCP and HTTP surfaces resolve the SAME
-      # policy — seeded require_approval on the SDWAN Manager
-      # (db/seeds/system_sdwan_manager_agent.rb) and registered in the
-      # engine's category allowlist.
-      FEDERATION_REVOKE_CATEGORY = "sdwan.federation_peer_revoke"
-
-      # Autonomy action category for revoking one user VPN device. Shared
-      # verbatim with Api::V1::System::Sdwan::UserDevicesController (#revoke and
-      # #destroy) so the MCP and HTTP surfaces resolve the SAME policy — seeded
-      # require_approval in db/seeds/fleet_autonomy_agent.rb and registered in
-      # the engine's category allowlist.
-      USER_DEVICE_REVOKE_CATEGORY = "system.sdwan_user_device_revoke"
-
-      # Autonomy action category for revoking a whole access grant — which
-      # cascades to every device on it. Shared verbatim with
-      # Api::V1::System::Sdwan::AccessGrantsController#revoke so the MCP and HTTP
-      # surfaces resolve the SAME policy — seeded require_approval on the SDWAN
-      # Manager (db/seeds/system_sdwan_manager_agent.rb) and registered in the
-      # engine's category allowlist.
-      ACCESS_GRANT_REVOKE_CATEGORY = "sdwan.access_grant_revoke"
-
-      # Autonomy action categories for the two additive data-plane creates
-      # (IMP-6c482005db87). Shared verbatim with FirewallRulesController#create
-      # and VirtualIpsController#create so the MCP and HTTP surfaces resolve
-      # the SAME policy — seeded notify_and_proceed on the SDWAN Manager and
-      # (agent-less) for the operator path
-      # (db/seeds/system_sdwan_manager_agent.rb) and registered in the
-      # engine's category allowlist.
-      FIREWALL_RULE_CREATE_CATEGORY = "sdwan.firewall_rule_create"
-      VIRTUAL_IP_CREATE_CATEGORY = "sdwan.virtual_ip_create"
-
-      # Autonomy action categories for the UPDATE verbs (IMP-c9798d9d5671).
-      # Shared verbatim with the REST twins (NetworksController#update,
-      # PeersController#update, FirewallRulesController#update,
-      # VirtualIpsController#update, RoutePoliciesController#update,
-      # PortMappingsController#update) so both surfaces resolve the SAME
-      # policy — an agent refused on one surface cannot reach for the other.
-      # PEER_UPDATE covers BOTH slice-9a peer arms (update_peer_lan_subnets,
-      # set_peer_tags): lan_subnets and tags ride the same REST permit list
-      # (peer_update_params). NETWORK_UPDATE covers BOTH network arms —
-      # update_network_routing_mode (routing_protocol) and the general
-      # update_network (name/description/status/settings, IMP-2ff1980f7813).
-      # Those five fields are a SUBSET of the network_params permit list
-      # NetworksController#update gates as a whole: slug, tags,
-      # advertise_overlay_subnet and route_reflector_redundancy have no MCP
-      # arm at all, so MCP reaches strictly less of the category than REST
-      # does — never more, which is what the parity claim has to mean.
-      NETWORK_UPDATE_CATEGORY = "sdwan.network_update"
-      PEER_UPDATE_CATEGORY = "sdwan.peer_update"
-      FIREWALL_RULE_UPDATE_CATEGORY = "sdwan.firewall_rule_update"
-      VIRTUAL_IP_UPDATE_CATEGORY = "sdwan.virtual_ip_update"
-      ROUTE_POLICY_UPDATE_CATEGORY = "sdwan.route_policy_update"
-      PORT_MAPPING_UPDATE_CATEGORY = "sdwan.port_mapping_update"
-
-      # Autonomy action category for manual VIP failover (IMP-7c911ca26585).
-      # Shared verbatim with VirtualIpsController#failover AND the fleet
-      # autonomy remediation path (SdwanVipReachabilitySensor →
-      # FleetAutonomyService), and registered in the engine's category
-      # allowlist. The category STRING is the parity contract; the resolved
-      # policy row differs by audience: the seeded require_approval row
-      # (db/seeds/fleet_autonomy_agent.rb) is scoped to the Fleet Autonomy
-      # agent (the sensor path), so this arm (calling agent / nil) and the
-      # agent-less REST twin both fall through to
-      # InterventionPolicyService#default_policy — also require_approval —
-      # and per-audience operator rows tune each surface independently.
-      VIP_FAILOVER_CATEGORY = "system.sdwan_vip_failover"
+      # AUTONOMY ACTION CATEGORIES — declared on the EXECUTORS, not here.
+      #
+      # This class used to hold thirteen `*_CATEGORY` constants while the REST
+      # twins passed the identical strings as bare literals, so a rename was a
+      # hand-edit across both surfaces with typo protection on only one of them
+      # (IMP-249e01a804e5). Each gated arm below now passes
+      # `::Sdwan::Executors::<X>::ACTION_CATEGORY`, exactly as its REST twin
+      # does — the executor is the sole writer for the action, so it is the
+      # right place for the action's name to live.
+      #
+      # What that constant reference buys, and what it does not: the two GATING
+      # surfaces can no longer disagree. The seeded policy row
+      # (db/seeds/system_sdwan_manager_agent.rb — except user-device revoke and
+      # VIP failover, which are seeded in db/seeds/fleet_autonomy_agent.rb) and
+      # the engine's registration allowlist (lib/powernode_system/engine.rb)
+      # still carry their own literal, and are held to the declaration by
+      # spec/services/sdwan/executors/action_category_coherence_spec.rb.
+      #
+      # The parity claim the shared category makes is that an agent refused on
+      # one surface cannot reach for the other. Three notes on what "the same
+      # category" means where an MCP arm and its REST twin are not congruent:
+      #
+      #   * sdwan.peer_update covers BOTH slice-9a peer arms
+      #     (update_peer_lan_subnets, set_peer_tags): lan_subnets and tags ride
+      #     the same REST permit list (peer_update_params).
+      #   * sdwan.network_update covers BOTH network arms —
+      #     update_network_routing_mode (routing_protocol) and the general
+      #     update_network (name/description/status/settings, IMP-2ff1980f7813).
+      #     Those five fields are a SUBSET of the network_params permit list
+      #     NetworksController#update gates as a whole: slug, tags,
+      #     advertise_overlay_subnet and route_reflector_redundancy have no MCP
+      #     arm at all, so MCP reaches strictly less of the category than REST
+      #     does — never more, which is what the parity claim has to mean.
+      #   * system.sdwan_vip_failover (IMP-7c911ca26585) is shared with the
+      #     fleet autonomy remediation path (SdwanVipReachabilitySensor →
+      #     FleetAutonomyService) as well as VirtualIpsController#failover. The
+      #     category STRING is the parity contract; the resolved policy row
+      #     differs by audience: the seeded require_approval row is scoped to
+      #     the Fleet Autonomy agent (the sensor path), so this tool's arms
+      #     (calling agent / nil) and the agent-less REST twin both fall
+      #     through to InterventionPolicyService#default_policy — also
+      #     require_approval — and per-audience operator rows tune each surface
+      #     independently.
+      #
+      # Historical: the create arms are IMP-6c482005db87, the update arms
+      # IMP-c9798d9d5671.
 
       ACTION_PERMISSIONS = {
         "system_sdwan_list_networks"   => "system.sdwan.networks.read",
@@ -1073,8 +1044,8 @@ module Ai
       # TopologyCompiler), so an agent refused on the HTTP surface could apply
       # the identical flip here with no DeferredOperation row. The sibling arm
       # set_network_routing_mode already gates on this category; together the
-      # two reach a subset of the REST permit list (see NETWORK_UPDATE_CATEGORY
-      # above for the four fields no MCP arm exposes).
+      # two reach a subset of the REST permit list (see the action-category
+      # header above for the four fields no MCP arm exposes).
       #
       # No re-parent anchor is needed (NetworksController#update carries the
       # same note): Sdwan::Network is the top of the SDWAN tenancy tree and
@@ -1106,7 +1077,7 @@ module Ai
         return error if error
 
         gated_result(
-          action_category: NETWORK_UPDATE_CATEGORY,
+          action_category: ::Sdwan::Executors::UpdateNetwork::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::UpdateNetwork",
           executor_params: { network_id: network.id, attributes: update_attrs },
           source_type: "Sdwan::Network",
@@ -1225,7 +1196,7 @@ module Ai
         end
 
         gated_result(
-          action_category: FIREWALL_RULE_CREATE_CATEGORY,
+          action_category: ::Sdwan::Executors::CreateFirewallRule::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::CreateFirewallRule",
           executor_params: { network_id: network.id, attributes: attrs },
           source_type: "Sdwan::Network",
@@ -1257,7 +1228,7 @@ module Ai
         return error if error
 
         gated_result(
-          action_category: FIREWALL_RULE_UPDATE_CATEGORY,
+          action_category: ::Sdwan::Executors::UpdateFirewallRule::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::UpdateFirewallRule",
           executor_params: { rule_id: rule.id, attributes: attrs },
           source_type: "Sdwan::FirewallRule",
@@ -1362,7 +1333,7 @@ module Ai
         grant = account_access_grants.find(params[:access_grant_id])
 
         gated_result(
-          action_category: ACCESS_GRANT_REVOKE_CATEGORY,
+          action_category: ::Sdwan::Executors::RevokeAccessGrant::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::RevokeAccessGrant",
           # grant_id and reason, shared verbatim with
           # AccessGrantsController#revoke. `reason` replaces the `by_user:`
@@ -1425,7 +1396,7 @@ module Ai
         device = account_user_devices.find(params[:user_device_id])
 
         gated_result(
-          action_category: USER_DEVICE_REVOKE_CATEGORY,
+          action_category: ::Sdwan::Executors::RevokeUserDevice::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::RevokeUserDevice",
           # grant_id/device_id, shared with the two HTTP device verbs.
           executor_params: { grant_id: device.sdwan_access_grant_id, device_id: device.id, reason: params[:reason] },
@@ -1565,7 +1536,7 @@ module Ai
         end
 
         gated_result(
-          action_category: FEDERATION_ACCEPT_CATEGORY,
+          action_category: ::Sdwan::Executors::AcceptFederationPeer::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::AcceptFederationPeer",
           # The single-use token has to outlive the approval window to be
           # verified and consumed by the executor, so it is carried on the
@@ -1666,7 +1637,7 @@ module Ai
         end
 
         gated_result(
-          action_category: FEDERATION_ACCEPT_CATEGORY,
+          action_category: ::Sdwan::Executors::AcceptFederationPeer::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::AcceptFederationPeer",
           executor_params: {
             federation_peer_id: peer.id,
@@ -1692,7 +1663,7 @@ module Ai
       # break a legitimate revocation.
       def update_gated_revoke(peer, params)
         gated_result(
-          action_category: FEDERATION_REVOKE_CATEGORY,
+          action_category: ::Sdwan::Executors::RevokeFederationPeer::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::RevokeFederationPeer",
           executor_params: { federation_peer_id: peer.id, reason: params[:reason] },
           source_type: "System::FederationPeer",
@@ -1829,7 +1800,7 @@ module Ai
         return error if error
 
         gated_result(
-          action_category: PEER_UPDATE_CATEGORY,
+          action_category: ::Sdwan::Executors::UpdatePeer::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::UpdatePeer",
           executor_params: { peer_id: peer.id, attributes: attrs },
           source_type: "Sdwan::Peer",
@@ -1870,7 +1841,7 @@ module Ai
         return error if error
 
         gated_result(
-          action_category: PEER_UPDATE_CATEGORY,
+          action_category: ::Sdwan::Executors::UpdatePeer::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::UpdatePeer",
           executor_params: { peer_id: peer.id, attributes: { tags: normalized_tags } },
           source_type: "Sdwan::Peer",
@@ -1902,7 +1873,7 @@ module Ai
         note = mode == "ibgp" ? "iBGP mode requires slice 9c (FRR daemon) — peers won't propagate routes via BGP yet." : nil
 
         gated_result(
-          action_category: NETWORK_UPDATE_CATEGORY,
+          action_category: ::Sdwan::Executors::UpdateNetwork::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::UpdateNetwork",
           executor_params: { network_id: network.id, attributes: attrs },
           source_type: "Sdwan::Network",
@@ -1994,7 +1965,7 @@ module Ai
         end
 
         gated_result(
-          action_category: VIRTUAL_IP_CREATE_CATEGORY,
+          action_category: ::Sdwan::Executors::CreateVirtualIp::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::CreateVirtualIp",
           executor_params: { network_id: network.id, attributes: attrs },
           source_type: "Sdwan::Network",
@@ -2047,7 +2018,7 @@ module Ai
         return error if error
 
         gated_result(
-          action_category: VIRTUAL_IP_UPDATE_CATEGORY,
+          action_category: ::Sdwan::Executors::UpdateVirtualIp::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::UpdateVirtualIp",
           # IMP-391525770512 — the same replay-baseline stamp the REST twin
           # makes. Omitting it here would leave one surface of ONE executor
@@ -2099,7 +2070,7 @@ module Ai
         end
 
         gated_result(
-          action_category: VIP_FAILOVER_CATEGORY,
+          action_category: ::Sdwan::Executors::FailoverVirtualIp::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::FailoverVirtualIp",
           executor_params: { vip_id: vip.id },
           source_type: "Sdwan::VirtualIp",
@@ -2239,7 +2210,7 @@ module Ai
         return error if error
 
         gated_result(
-          action_category: ROUTE_POLICY_UPDATE_CATEGORY,
+          action_category: ::Sdwan::Executors::UpdateRoutePolicy::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::UpdateRoutePolicy",
           executor_params: { policy_id: policy.id, attributes: attrs },
           source_type: "Sdwan::RoutePolicy",
@@ -2353,7 +2324,7 @@ module Ai
         return error if error
 
         gated_result(
-          action_category: PORT_MAPPING_UPDATE_CATEGORY,
+          action_category: ::Sdwan::Executors::UpdatePortMapping::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::UpdatePortMapping",
           executor_params: { mapping_id: m.id, attributes: attrs },
           source_type: "Sdwan::PortMapping",

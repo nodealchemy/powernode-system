@@ -74,7 +74,7 @@ module Api
             id = @grant.id
             user_email = @grant.try(:user)&.email
             gate!(
-              action_category: "sdwan.access_grant_delete",
+              action_category: ::Sdwan::Executors::DeleteAccessGrant::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::DeleteAccessGrant",
               params: { network_id: @network.id, grant_id: id },
               source_type: "Sdwan::AccessGrant",
@@ -97,7 +97,7 @@ module Api
             id = @grant.id
             user_email = @grant.try(:user)&.email
             gate!(
-              action_category: "sdwan.access_grant_revoke",
+              action_category: ::Sdwan::Executors::RevokeAccessGrant::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::RevokeAccessGrant",
               params: { grant_id: id, reason: params[:reason] },
               source_type: "Sdwan::AccessGrant",

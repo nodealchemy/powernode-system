@@ -47,7 +47,7 @@ module Api
             attrs = peer_params.to_h
 
             gate!(
-              action_category: "sdwan.federation_peer_propose",
+              action_category: ::Sdwan::Executors::ProposeFederationPeer::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::ProposeFederationPeer",
               params: { attributes: attrs },
               description: "Propose federation with #{attrs[:remote_instance_url]}",
@@ -108,7 +108,7 @@ module Api
             id = @peer.id
             url = @peer.remote_instance_url
             gate!(
-              action_category: "sdwan.federation_peer_revoke",
+              action_category: ::Sdwan::Executors::RevokeFederationPeer::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::RevokeFederationPeer",
               params: { federation_peer_id: id },
               source_type: "System::FederationPeer",
@@ -123,7 +123,7 @@ module Api
             id = @peer.id
             url = @peer.remote_instance_url
             gate!(
-              action_category: "sdwan.federation_peer_revoke",
+              action_category: ::Sdwan::Executors::RevokeFederationPeer::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::RevokeFederationPeer",
               params: { federation_peer_id: id, reason: params[:reason] },
               source_type: "System::FederationPeer",
@@ -169,7 +169,7 @@ module Api
             end
 
             gate!(
-              action_category: "sdwan.federation_peer_accept",
+              action_category: ::Sdwan::Executors::AcceptFederationPeer::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::AcceptFederationPeer",
               params: { federation_peer_id: @peer.id, attributes: peer_update_params.to_h.except("status") },
               source_type: "System::FederationPeer",
@@ -209,7 +209,7 @@ module Api
           # anything this request carries.
           def gated_revoke!
             gate!(
-              action_category: "sdwan.federation_peer_revoke",
+              action_category: ::Sdwan::Executors::RevokeFederationPeer::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::RevokeFederationPeer",
               params: { federation_peer_id: @peer.id, reason: revocation_reason_param },
               source_type: "System::FederationPeer",

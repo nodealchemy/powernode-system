@@ -65,7 +65,7 @@ module Api
               result_key: :vip_id,
               response_key: :virtual_ip,
               serializer: ->(v) { serialize_vip_full(v) },
-              action_category: "sdwan.virtual_ip_create",
+              action_category: ::Sdwan::Executors::CreateVirtualIp::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::CreateVirtualIp",
               # IMP-4a5094b22df0: account_id no longer rides along. It existed
               # ONLY to give the approval card an account to scope its network
@@ -105,7 +105,7 @@ module Api
             @vip.restore_attributes
 
             gate!(
-              action_category: "sdwan.virtual_ip_update",
+              action_category: ::Sdwan::Executors::UpdateVirtualIp::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::UpdateVirtualIp",
               # IMP-391525770512 — stamp the request-time value of the
               # replay-sensitive attributes this request actually changes, so
@@ -128,7 +128,7 @@ module Api
             id = @vip.id
             address = @vip.try(:cidr)
             gate!(
-              action_category: "sdwan.virtual_ip_delete",
+              action_category: ::Sdwan::Executors::DeleteVirtualIp::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::DeleteVirtualIp",
               params: { vip_id: id },
               source_type: "Sdwan::VirtualIp",
@@ -150,7 +150,7 @@ module Api
             require_permission("system.sdwan.vips.manage")
             id = @vip.id
             gate!(
-              action_category: "system.sdwan_vip_failover",
+              action_category: ::Sdwan::Executors::FailoverVirtualIp::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::FailoverVirtualIp",
               params: { vip_id: id, target_peer_id: params[:target_peer_id] },
               source_type: "Sdwan::VirtualIp",
