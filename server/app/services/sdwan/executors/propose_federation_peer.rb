@@ -25,12 +25,22 @@ module Sdwan
       # seeded policy row and the engine registration to it.
       ACTION_CATEGORY = "sdwan.federation_peer_propose"
 
+      # CONTROL FLAGS, not columns — they steer token minting and are deleted
+      # from the payload before create!. Shared by #perform and
+      # #named_attribute_keys so the approval card does not announce
+      # "Sets fields: generate_token" for a field no row has (IMP-35bc8eda71ad).
+      CONTROL_FLAG_KEYS = %i[generate_token token_ttl_seconds].freeze
+
       protected
 
       def perform
-        attributes = attrs
-        generate_token = attributes.delete(:generate_token) != false
-        ttl_seconds = (attributes.delete(:token_ttl_seconds) || 7.days.to_i).to_i
+        # Removal goes through the constant, the reads stay named: a flag added
+        # to CONTROL_FLAG_KEYS is dropped from the create! payload and from the
+        # card together, and a flag READ but never added to it fails loudly at
+        # create! (unknown attribute) rather than silently reaching a column.
+        attributes = attrs.except(*CONTROL_FLAG_KEYS)
+        generate_token = attrs[:generate_token] != false
+        ttl_seconds = (attrs[:token_ttl_seconds] || 7.days.to_i).to_i
 
         peer = ::System::FederationPeer.create!(
           attributes.merge(account: account, status: "proposed")
@@ -51,6 +61,11 @@ module Sdwan
 
       def summarize = "Propose cross-instance federation with #{params.dig(:attributes, :remote_instance_url) || params.dig(:attributes, :remote_endpoint)}"
       def impact    = "Initiates a federation handshake with a remote Powernode instance and mints a single-use acceptance token"
+
+      # The card names what #perform WRITES (IMP-35bc8eda71ad) — the two control
+      # flags steer token minting and never reach a column, so announcing them
+      # as fields the operation "sets" would describe a row that does not exist.
+      def named_attribute_keys = attrs.keys - CONTROL_FLAG_KEYS
     end
   end
 end

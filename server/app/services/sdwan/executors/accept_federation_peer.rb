@@ -28,6 +28,13 @@ module Sdwan
       # seeded policy row and the engine registration to it.
       ACTION_CATEGORY = "sdwan.federation_peer_accept"
 
+      # Attributes that ride in on the acceptance PATCH and are deliberately NOT
+      # written by #perform: :status is the flip accept! performs, and
+      # :signed_at is stamped by accept! with the moment of acceptance. Shared
+      # by #perform and #named_attribute_keys so the write and the approval
+      # card's claim about it cannot drift apart (IMP-35bc8eda71ad).
+      IGNORED_RIDE_ALONG_KEYS = %i[status signed_at].freeze
+
       protected
 
       def perform
@@ -49,7 +56,7 @@ module Sdwan
           # stamps it with the moment of acceptance, which is what the column
           # means, so a value supplied in the same PATCH cannot win and should
           # not look like it might.
-          ride_along = attrs.except(:status, :signed_at)
+          ride_along = attrs.except(*IGNORED_RIDE_ALONG_KEYS)
           peer.update!(ride_along) if ride_along.any?
 
           # accept! is the only path that verifies the Phase 11b single-use
@@ -76,6 +83,13 @@ module Sdwan
 
       def summarize = "Accept federation peer #{params[:federation_peer_id]}"
       def impact    = "Completes federation handshake; mutual route advertisement begins"
+
+      # The card names what #perform WRITES, so the two keys it drops are not
+      # announced (IMP-35bc8eda71ad). Without this the PATCH that supplies
+      # signed_at renders "Sets fields: signed_at" on a card for an operation
+      # that discards it — the exact "should not look like it might" #perform
+      # excludes it to avoid.
+      def named_attribute_keys = attrs.keys - IGNORED_RIDE_ALONG_KEYS
 
       private
 

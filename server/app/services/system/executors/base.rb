@@ -35,7 +35,11 @@ module System
     #     card instead of rendering that state to an approver. Do not "fix"
     #     such a raise by threading the operation; the absence is the guard.
     #
-    # Subclasses normally only override `perform` and `summarize`.
+    # Subclasses normally only override `perform`, `summarize` and `impact`.
+    # The card's Impact line is COMPOSED (IMP-35bc8eda71ad): `#impact` supplies
+    # an executor's own prose and `#full_impact` appends the field names the
+    # operation will write, so an override adds to the line rather than
+    # replacing it. See `#changed_field_impact` for why those are keys only.
     class Base
       # Keys a caller must never mass-assign through params[:attributes].
       # account_id is mass-assignable on every model these executors write, the
@@ -49,6 +53,26 @@ module System
       # REST controller and the MCP tool both construct their executor params
       # hash literally, so a caller cannot supply or suppress this key.
       REPLAY_BASELINE_KEY = :replay_baseline
+
+      # How many attribute names an approval card will list before summarising
+      # the remainder as a count, and how long one name may render. A card is a
+      # HUMAN gate: an unbounded list does not inform an approver, it buries the
+      # "Requested by:" line under a wall of identifiers. Bounded here rather
+      # than trusted to each surface's permit list, for the reason
+      # TENANCY_ATTRIBUTE_KEYS states above — params are caller-influenced,
+      # stored verbatim, and replayed with no re-validation. A count cap alone
+      # would not meet that goal, since one 100KB key buries the card just as
+      # well, so the per-name cap is part of the same guard.
+      #
+      # The COUNT is deliberately set well above every gated permit list (the
+      # widest today is peer_update_params at 10). Truncation is alphabetical
+      # and therefore severity-blind — `lan_subnets` sorts after eight other
+      # peer columns — so a limit near the permit-list width would silently
+      # replace the very field this exists to name with "+1 more". Headroom is
+      # what keeps that unreachable; see the full-width example in
+      # preview_changed_fields_spec.rb, which reds if this drops back toward it.
+      CHANGED_FIELD_LIMIT = 24
+      CHANGED_FIELD_NAME_LIMIT = 60
 
       # Raised when the row moved underneath a parked operation. A StandardError
       # so Ai::DeferredOperation#execute_now! fails the row and
@@ -119,7 +143,7 @@ module System
       def preview_payload
         {
           summary: summarize,
-          impact: impact
+          impact: full_impact
         }
       end
 
@@ -136,6 +160,93 @@ module System
 
       def impact
         nil
+      end
+
+      # The card's Impact line: the executor's own prose, then the field NAMES
+      # this operation will write.
+      #
+      # Composed HERE rather than left to each executor (IMP-35bc8eda71ad).
+      # Every update executor returned the bare `nil` above, so
+      # Ai::DeferredOperationApprovalContent — which appends the impact only
+      # `if impact.present?` — rendered a card with one fewer line, and two
+      # operations against one row were indistinguishable. The traced instance:
+      # `system_sdwan_update_peer_lan_subnets` and `system_sdwan_set_peer_tags`
+      # share this executor, its #summarize AND their gate `description:`, so a
+      # change that rewrites AllowedIPs for every peer routing to this one and a
+      # cosmetic tag relabel produced BYTE-IDENTICAL approval cards.
+      #
+      # #impact stays the subclass hook and its prose still leads the line — but
+      # the field list is deliberately NOT part of what an override replaces.
+      # An executor added tomorrow with a hand-written `def impact` would
+      # otherwise reintroduce exactly this defect, silently and per-executor;
+      # inheriting the composition means it cannot. Subclasses override #impact,
+      # never this.
+      def full_impact
+        [ impact, changed_field_impact ].compact_blank.join(" — ").presence
+      end
+
+      # Keys only, never values — and that is a REDACTION property, not a style
+      # choice. Ai::AutonomyApprovalActions#serialize_deferred_operation emits
+      # `params: Ai::SensitiveParams.filter(op.params)` and `preview: op.preview`
+      # side by side, and only the first of the two is filtered. A card
+      # rendering attribute values would therefore serve, one key over, the
+      # plaintext that filter had just masked — to an audience defined by the
+      # approval permissions rather than by whatever permission authorised the
+      # original call. Runtime::BootstrapK3sCluster declares `server_token` and
+      # `agent_token` under exactly this key — nothing gates that executor yet,
+      # so the exposure is latent, which is the point: the rule has to hold by
+      # construction BEFORE a gate site exists, not be remembered when one lands.
+      #
+      # Naming the key is what the approver needed anyway: "changes lan_subnets"
+      # and "changes tags" is the whole difference between rerouting a mesh and
+      # relabelling a row.
+      #
+      # Names what the executor will WRITE — see #named_attribute_keys.
+      #
+      # Shape-guarded rather than rescued: this now runs on EVERY preview, and
+      # Ai::DeferredOperation#preview rescues StandardError into
+      # `{ summary: action_category }` — so a malformed :attributes would have
+      # blanked the whole card, losing the row's NAME to a defect in a line that
+      # is merely additive. Name nothing instead. The test is `is_a?(Hash)` and
+      # not `respond_to?(:keys)` because ActionController::Parameters answers
+      # `keys` and then RAISES on the `to_h` inside #attrs — passing that guard
+      # is precisely the blanked card it was written to prevent. Everything the
+      # gate parks arrives through JSONB and #initialize's
+      # with_indifferent_access, so a legitimate payload is always a Hash.
+      def changed_field_impact
+        return nil unless params[:attributes].is_a?(Hash)
+
+        fields = (attrs.keys & named_attribute_keys)
+                 .map { |key| key.to_s.truncate(CHANGED_FIELD_NAME_LIMIT) }
+                 .reject(&:blank?)
+                 .sort
+        return nil if fields.empty?
+
+        shown = fields.first(CHANGED_FIELD_LIMIT)
+        omitted = fields.size - shown.size
+        suffix = omitted.positive? ? ", +#{omitted} more" : ""
+        "Sets fields: #{shown.join(', ')}#{suffix}"
+      end
+
+      # The attribute keys #perform will actually WRITE — what the card is
+      # entitled to claim.
+      #
+      # Defaults to everything `attrs` carries, and is INTERSECTED with
+      # `attrs.keys` at the call site so it can only ever narrow: an override
+      # cannot make a card name a key the request never supplied.
+      #
+      # Overridden by the executors that SUBTRACT from `attrs` inside #perform.
+      # Naming a key the executor will discard misinforms the approver in the
+      # same direction TENANCY_ATTRIBUTE_KEYS does, and for AcceptFederationPeer
+      # it directly defeats a stated intent: it drops :signed_at so a value
+      # supplied in the same PATCH "cannot win and should not look like it
+      # might" — and a card announcing `Sets fields: signed_at` is exactly that
+      # look. Each override shares one frozen constant with its #perform, so the
+      # two cannot drift apart.
+      #
+      # Return symbols; `attrs` is symbol-keyed.
+      def named_attribute_keys
+        attrs.keys
       end
 
       # Create/update attribute payload coerced to a symbol-keyed Hash. The
