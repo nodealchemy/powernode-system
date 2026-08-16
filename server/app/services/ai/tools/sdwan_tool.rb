@@ -18,8 +18,11 @@ module Ai
       # hand-edit across both surfaces with typo protection on only one of them
       # (IMP-249e01a804e5). Each gated arm below now passes
       # `::Sdwan::Executors::<X>::ACTION_CATEGORY`, exactly as its REST twin
-      # does — the executor is the sole writer for the action, so it is the
-      # right place for the action's name to live.
+      # does — the executor is the sole writer on the GATED path, so it is the
+      # right place for the action's name to live. (Sole on the gated path, not
+      # in the platform: the autonomous VIP failover reaches the same row
+      # through System::Ai::Skills::SdwanVipFailoverExecutor, which is why
+      # system.sdwan_vip_failover is shared rather than owned — see below.)
       #
       # What that constant reference buys, and what it does not: the two GATING
       # surfaces can no longer disagree. The seeded policy row

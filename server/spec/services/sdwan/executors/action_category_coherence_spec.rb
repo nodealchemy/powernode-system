@@ -2,6 +2,7 @@
 
 require "rails_helper"
 require "ripper"
+require "tempfile"
 
 # IMP-249e01a804e5 — the autonomy action_category strings for SDWAN had no
 # single source of truth. They existed as Ruby constants on Ai::Tools::SdwanTool
@@ -25,6 +26,14 @@ require "ripper"
 # is seeded and registered but has no executor class, and that is fine — the
 # invariant this file protects is that nothing an executor OWNS can drift away
 # from the surfaces that gate and tune it.
+#
+# One deliberate consequence, since the refactor is otherwise behaviour-free:
+# a gate site now RESOLVES its executor class where it used to pass the class
+# name as an inert string (Ai::AutonomyGate never constantizes it on the
+# :pending branch). A gate site naming an executor that does not exist now
+# raises NameError at the gate instead of at approval-time execution. That is
+# the better failure — it is unreachable in a green tree, and reachable only in
+# exactly the tree this file exists to prevent.
 RSpec.describe "SDWAN executor action categories", type: :lib do
   # `let`, not constants: a bare constant assigned inside a describe block lands
   # on Object, and a generic name there is the duplicate-constant clobber that
@@ -80,20 +89,23 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
   # is commented out is not a guard. Ripper drops :on_comment tokens, so only
   # executable arguments are read.
   #
-  # Classification is TOTAL: every `action_category:` label in these files is
-  # sorted into one of three shapes and an unrecognised one RAISES. A scan that
-  # silently skipped what it did not understand is the failure mode that would
-  # let this whole file pass while reading nothing — and there is a live example
-  # of exactly that here, because SdwanTool's own `gated_result` helper both
-  # DECLARES the keyword and FORWARDS it into the MCP response payload:
+  # A site is recognised as a GATE by what sits next to it — a gate call always
+  # names its executor with a string literal — and NEVER by the shape of the
+  # action_category value, because the value shapes a drifting site would use
+  # are exactly the ones a shape-first classifier mistakes for plumbing:
+  # `action_category:` (Ruby 3.1 shorthand) lexes as no value at all, and a
+  # hoisted `action_category: cat` lexes as a bare local. Both are live gate
+  # sites carrying a hand-written string, and both would be skipped in silence.
+  # So the pairing lookup runs FIRST and decides.
   #
-  #   :declaration — `def gated_result(action_category:, …)`, no value at all
-  #   :forwarding  — `action_category: action_category`, a bare local
-  #   :gate        — a literal or constant, and the only shape this file gates on
-  #
-  # The pairing rule (`the executor_class: label that follows within 3 lines`)
-  # is the shape every gate call in this codebase has, and it too is asserted
-  # rather than assumed.
+  # Only then is the leftover classified, and TOTALLY — the two plumbing shapes
+  # are enumerated and anything else RAISES. Both plumbing shapes are real:
+  # SdwanTool's own `gated_result` helper DECLARES the keyword
+  # (`def gated_result(action_category:, executor_class:, …)`) and FORWARDS it
+  # into the MCP response payload (`action_category: action_category`), and the
+  # declaration sits next to an `executor_class:` of its own — which is why the
+  # pairing test is "an executor_class whose value is a STRING", not merely
+  # "an executor_class".
   def gate_sites(path)
     tokens = Ripper.lex(File.read(path))
                    .reject { |(_pos, type, _tok, _state)| %i[on_sp on_comment on_nl on_ignored_nl].include?(type) }
@@ -109,35 +121,21 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
         j += 1
       end
 
-      shapes = value_tokens.map { |t| t[1] }.uniq
-      next if value_tokens.empty?          # :declaration — a `def` keyword arg
-      next if shapes == [ :on_ident ]      # :forwarding  — a bare local
+      exec_class, exec_line = executor_argument(tokens, j)
 
-      unless (shapes - %i[on_const on_op]).empty? || shapes.first == :on_tstring_beg
-        raise "#{File.basename(path)}:#{pos[0]} passes action_category: in a shape this guard does not " \
-              "classify (#{shapes.inspect}) — it would be skipped silently, so the guard must be taught it"
+      if exec_class.nil?
+        shapes = value_tokens.map { |t| t[1] }.uniq
+        next if value_tokens.empty?     # `def gated_result(action_category:, …)`
+        next if shapes == [ :on_ident ] # `action_category: action_category`
+
+        raise "#{File.basename(path)}:#{pos[0]} passes action_category: with no adjacent executor_class: " \
+              "string, in a shape this guard does not classify as plumbing (#{shapes.inspect}) — it would " \
+              "be skipped silently, so the guard must be taught it"
       end
 
-      exec_class = nil
-      exec_line  = nil
-      k = j
-      while k < tokens.size
-        if tokens[k][1] == :on_label && tokens[k][2] == "executor_class:"
-          exec_line = tokens[k][0][0]
-          exec_class = +""
-          m = k + 1
-          while m < tokens.size && !%i[on_comma on_rparen].include?(tokens[m][1])
-            exec_class << tokens[m][2] if tokens[m][1] == :on_tstring_content
-            m += 1
-          end
-          break
-        end
-        k += 1
-      end
-
-      if exec_class.nil? || exec_class.empty? || (exec_line - pos[0]) > 3
-        raise "#{File.basename(path)}:#{pos[0]} gates on an action_category with no adjacent executor_class: " \
-              "string — the pairing this guard reads no longer holds, so it would certify nothing"
+      if (exec_line - pos[0]) > 3
+        raise "#{File.basename(path)}:#{pos[0]} is #{exec_line - pos[0]} lines from its executor_class: — " \
+              "the adjacency this guard pairs on no longer holds, so it would certify the wrong pair"
       end
 
       sites << {
@@ -146,6 +144,40 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
       }
     end
     sites
+  end
+
+  # The `executor_class: "..."` of the SAME call, or nil. Depth-tracked so it
+  # cannot reach out of the call it started in and borrow a neighbour's
+  # executor_class — without that, a call passing action_category and no
+  # executor at all is certified by whatever call happens to follow it.
+  # Returns nil for a non-literal executor_class, which is what distinguishes
+  # `gated_result`'s own declaration and forwarding from a real gate call.
+  def executor_argument(tokens, start)
+    depth = 0
+    k = start
+    while k < tokens.size
+      type = tokens[k][1]
+      depth += 1 if %i[on_lparen on_lbracket on_lbrace on_embexpr_beg].include?(type)
+      if %i[on_rparen on_rbracket on_rbrace on_embexpr_end].include?(type)
+        return [ nil, nil ] if depth.zero? # left the call
+
+        depth -= 1
+      end
+
+      if depth.zero? && type == :on_label && tokens[k][2] == "executor_class:"
+        return [ nil, nil ] unless tokens[k + 1] && tokens[k + 1][1] == :on_tstring_beg
+
+        name = +""
+        m = k + 1
+        while m < tokens.size && !%i[on_comma on_rparen].include?(tokens[m][1])
+          name << tokens[m][2] if tokens[m][1] == :on_tstring_content
+          m += 1
+        end
+        return name.empty? ? [ nil, nil ] : [ name, tokens[k][0][0] ]
+      end
+      k += 1
+    end
+    [ nil, nil ]
   end
 
   let(:all_gate_sites) { gate_source_paths.flat_map { |p| gate_sites(p) } }
@@ -159,16 +191,33 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
                        "hand-carry the string: #{missing.join(', ')}"
   end
 
-  it "gives each executor its own category" do
+  # Sharing is PINNED, not forbidden. Two executors under one category resolve
+  # to ONE intervention policy row, which is a copy-paste bug when a new
+  # executor inherits its neighbour's string — and is the intended result when
+  # categories are deliberately CONSOLIDATED (folding firewall_rule_update into
+  # a broader manage category is the example the finding itself names). A
+  # blanket uniqueness rule would red on the very operation this refactor
+  # exists to make cheap, so the list records intent instead: a consolidation
+  # is a one-line edit here that says so, an accident is a red with no line to
+  # write. Empty today — no two SDWAN executors share a category.
+  it "shares a category between executors only where that is recorded" do
+    deliberately_shared = {}
+
     shared = declared.group_by { |_klass, cat| cat }
                      .select { |_cat, pairs| pairs.size > 1 }
-                     .transform_values { |pairs| pairs.map(&:first) }
+                     .transform_values { |pairs| pairs.map(&:first).sort }
 
-    expect(shared).to be_empty,
-                      "executors sharing one action_category resolve to ONE intervention policy row, so an " \
-                      "operator tuning either tunes both: #{shared.inspect}"
+    expect(shared).to eq(deliberately_shared),
+                      "the set of action_categories shared by more than one executor changed. Executors under " \
+                      "one category resolve to ONE policy row, so an operator tuning either tunes both: " \
+                      "#{shared.inspect}"
   end
 
+  # Implied TODAY by `declared ⊆ seeded` above and `seeded ⊆ registered` in
+  # spec/lib/powernode_system/autonomy_categories_registration_spec.rb, so it
+  # cannot red while both of those hold. Kept because it reads the RUNTIME
+  # registry rather than the seed sources: when the seed scan is what broke,
+  # this example is the one that still names engine.rb as the fix.
   it "registers every declared category so an operator can retune it" do
     missing = declared.values.uniq.reject { |cat| Ai::InterventionPolicy.category_registered?(cat) }
 
@@ -198,13 +247,88 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
                          "#{offenders.map { |o| "#{o[:file]}:#{o[:line]} passes #{o[:category_source]} to #{o[:executor_class]}" }.join('; ')}"
   end
 
+  # The scanner's OWN oracle. Everything above trusts gate_sites to find the
+  # drift, and a scanner that quietly returns nothing is indistinguishable from
+  # a clean tree — the count floor below catches that only for sites that
+  # already exist, never for a NEW one written in a shape the scan walks past.
+  # So each shape a drifting site could plausibly take is exercised against
+  # constructed source, together with the plumbing that must still be ignored.
+  #
+  # Refusals paired with positive controls throughout: over-tightening this
+  # scan (classifying a real gate call as plumbing) is invisible to a
+  # refusal-only test, and is the exact failure the first two cases pin.
+  it "reports a drifting gate site whatever shape its value takes, and invents none" do
+    scan = lambda do |source|
+      Tempfile.create([ "gate_scan", ".rb" ]) do |f|
+        f.write(source)
+        f.flush
+        gate_sites(f.path)
+      end
+    end
+
+    conforming = scan.call(<<~RUBY)
+      gate!(
+        action_category: ::Sdwan::Executors::DeleteNetwork::ACTION_CATEGORY,
+        executor_class: "Sdwan::Executors::DeleteNetwork"
+      )
+    RUBY
+    expect(conforming.map { |s| s[:category_source] }).to eq([ "::Sdwan::Executors::DeleteNetwork::ACTION_CATEGORY" ])
+
+    # The three drifting shapes. A bare literal is the regression itself; the
+    # other two are what a shape-first classifier mistakes for plumbing —
+    # Ruby 3.1 hash shorthand lexes as NO value, a hoisted local as a bare
+    # ident, and both carry a hand-written string at a live gate call.
+    %w[
+      "sdwan.network_delete"
+      cat
+    ].each do |drift|
+      sites = scan.call(<<~RUBY)
+        gate!(
+          action_category: #{drift},
+          executor_class: "Sdwan::Executors::DeleteNetwork"
+        )
+      RUBY
+      expect(sites.map { |s| s[:category_source] }).to eq([ drift ]), "shape #{drift.inspect} was not reported"
+    end
+
+    shorthand = scan.call(<<~RUBY)
+      gate!(
+        action_category:,
+        executor_class: "Sdwan::Executors::DeleteNetwork"
+      )
+    RUBY
+    expect(shorthand.map { |s| s[:category_source] }).to eq([ "" ])
+
+    # Plumbing that must stay ignored — both shapes are live in SdwanTool.
+    expect(scan.call(<<~RUBY)).to be_empty
+      def gated_result(action_category:, executor_class:, executor_params:)
+      end
+    RUBY
+    expect(scan.call(<<~RUBY)).to be_empty
+      success_result(action_category: action_category, executor_class: executor_class)
+    RUBY
+
+    # And it may not reach out of the call it started in to borrow a
+    # neighbour's executor_class, which would certify a pairing nobody wrote.
+    expect { scan.call(<<~RUBY) }.to raise_error(/no adjacent executor_class/)
+      audit_only(action_category: ::Sdwan::Executors::DeletePeer::ACTION_CATEGORY, skill: "x")
+      other_call(executor_class: "Sdwan::Executors::DeletePeer")
+    RUBY
+  end
+
   # Cross-surface pin the constant reference itself cannot make.
-  # System::Fleet::DecisionEngine::SIGNAL_BINDINGS is a class-body hash, so
-  # referencing the executor constant there would autoload an extension class
-  # while the engine's own class body is still loading. The literal stays; this
-  # example is what reds when the executor renames out from under it — a silent
-  # drift that would otherwise route the SdwanVipReachabilitySensor's
-  # remediation at a category with no policy row.
+  #
+  # System::Fleet::DecisionEngine::SIGNAL_BINDINGS keeps its literal for a
+  # vocabulary reason, not a load-order one — it already names extension
+  # classes in its own class body (`skill: ::System::Ai::Skills::…`), so a
+  # constant reference would load fine. Its keys are the SENSOR remediation
+  # namespace, and system.sdwan_vip_failover is the single entry in it that any
+  # executor also owns; referencing the executor for that one row and literals
+  # for its dozen neighbours would read as a distinction that isn't there.
+  #
+  # So the literal stays and this example is what reds when the executor
+  # renames out from under it — a silent drift that would otherwise route the
+  # SdwanVipReachabilitySensor's remediation at a category with no policy row.
   it "binds the VIP-failover sensor to the executor's declared category" do
     binding = System::Fleet::DecisionEngine::SIGNAL_BINDINGS.fetch("system.sdwan_vip_unreachable")
 
