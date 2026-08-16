@@ -22,6 +22,18 @@ module Sdwan
 
       def perform
         vip = ::Sdwan::VirtualIp.find(params[:vip_id])
+
+        # IMP-d952c791e264 — asked BEFORE prefer_target!, which persists a
+        # reordered failover_holder_peer_ids with its own update! and is NOT
+        # inside failover!'s transaction. Checking only inside failover! (as
+        # the raise at the end of this chain does) means a failover refused on
+        # state that moved during the approval window still leaves the queue
+        # permanently rewritten by the operation that was refused. Named
+        # target included, since that is the peer prefer_target! is about to
+        # promote.
+        blocker = vip.failover_blocker(target_peer_id: params[:target_peer_id])
+        raise ::Sdwan::VirtualIp::StateError, blocker if blocker
+
         prefer_target!(vip, params[:target_peer_id])
 
         vip.failover!(

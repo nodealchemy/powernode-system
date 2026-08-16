@@ -174,6 +174,132 @@ RSpec.describe Sdwan::VirtualIp, type: :model do
       expect(vip.assignments.where(sdwan_peer_id: hub.id, released_at: nil).count).to eq(1),
                                                                                        "exactly one fresh active assignment, not a uniqueness collision"
     end
+
+    # IMP-d952c791e264 — the tombstone standby used to surface as a bare
+    # ActiveRecord::RecordNotFound from ::Sdwan::Peer.find(new_holder), deep
+    # inside the transaction and after every pre-gate check had passed it.
+    it "raises StateError, not RecordNotFound, when the standby it would promote was deleted" do
+      vip.update!(failover_holder_peer_ids: [ tombstone_peer_id ])
+
+      expect { vip.failover! }
+        .to raise_error(Sdwan::VirtualIp::StateError, /is not a live peer/)
+    end
+  end
+
+  # IMP-d952c791e264 — the ONE place that answers "can this VIP fail over, and
+  # to which standby". #failover!'s two StateError guards had been hand-copied
+  # into System::Ai::Skills::SdwanVipFailoverExecutor (wording already drifted)
+  # and into Ai::Tools::SdwanTool#failover_virtual_ip's pre-gate mirror, and
+  # all three missed the same third doomed case: a standby whose peer row was
+  # deleted. failover_holder_peer_ids is a bare uuid[] with no FK,
+  # Sdwan::Executors::DeletePeer never scrubs it, and
+  # holder_peers_belong_to_network only flags ids that EXIST in another
+  # network — so the tombstone passed every pre-gate check on both surfaces,
+  # parked a require_approval DeferredOperation, and only failed hours later
+  # inside #failover!'s transaction.
+  describe "#failover_blocker" do
+    let!(:vip) do
+      described_class.create!(account_id: account.id, sdwan_network_id: network.id,
+                              name: "blocker-vip", cidr: "192.0.2.70/32",
+                              holder_peer_ids: [ hub.id ],
+                              failover_holder_peer_ids: [ spoke.id ], state: "active")
+    end
+
+    it "is nil for a non-anycast VIP whose standby is a live peer" do
+      expect(vip.failover_blocker).to be_nil
+    end
+
+    it "names the anycast refusal" do
+      vip.update!(anycast: true, holder_peer_ids: [ hub.id, spoke.id ])
+
+      expect(vip.failover_blocker).to match(/anycast/)
+    end
+
+    it "names the candidate-less refusal" do
+      vip.update!(failover_holder_peer_ids: [])
+
+      expect(vip.failover_blocker).to match(/no failover candidates/)
+    end
+
+    # The finding. Note the setup itself is the proof that
+    # holder_peers_belong_to_network is blind to this: update! SAVES a VIP
+    # whose only standby no longer exists.
+    it "refuses when the standby it would promote has been deleted, naming the dead id" do
+      dead = tombstone_peer_id
+      vip.update!(failover_holder_peer_ids: [ dead ])
+
+      expect(vip.failover_blocker).to include(dead).and match(/not a live peer/)
+    end
+
+    it "refuses a blank candidate head rather than promoting nothing" do
+      # A uuid[] column accepts NULL elements, and every writer builds the
+      # array with a bare Array(params[...]) — so [nil] is reachable from the
+      # MCP surface. update!, not update_columns, precisely because that is
+      # the claim: holder_peers_belong_to_network compacts the array away and
+      # non_anycast_single_holder never looks at it, so an ordinary validated
+      # write persists this. #failover! would then write holder_peer_ids: []
+      # and still call the VIP "active" — a holderless active VIP with no
+      # assignment row.
+      expect(vip.update(failover_holder_peer_ids: [ nil ])).to be(true),
+                                                               "the reachability this example rests on is gone: [nil] no longer survives validation"
+
+      expect(vip.failover_blocker).to match(/not a live peer/)
+    end
+
+    # The cross-network candidate is the same doomed-approval shape wearing a
+    # different exception: ::Sdwan::Peer.find would SUCCEED, and #failover!'s
+    # update! would then be rejected by holder_peers_belong_to_network with an
+    # ActiveRecord::RecordInvalid from inside the transaction. The predicate
+    # asks the membership question that validation will ask, not a bare
+    # existence question. update_columns here is deliberate — the write path
+    # this legacy shape comes from predates that validation.
+    it "refuses a candidate that is a live peer of ANOTHER network" do
+      other_network = Sdwan::Network.create!(account_id: account.id, name: "other-#{SecureRandom.hex(3)}")
+      foreign = Sdwan::Peer.create!(account: account, sdwan_network_id: other_network.id,
+                                    node_instance: sdwan_test_node_instance(node: node),
+                                    publicly_reachable: false)
+      vip.update_columns(failover_holder_peer_ids: [ foreign.id ])
+
+      expect(vip.failover_blocker).to include(foreign.id).and match(/not a live peer/)
+    end
+
+    # Deliberately NOT blocked: #failover! promotes the head, so debris
+    # further down the queue is not this failover's problem. Without this
+    # control an over-strict "any dead candidate" predicate would pass every
+    # refusal example above.
+    it "permits a failover whose head is live even when a dead candidate sits behind it" do
+      vip.update!(failover_holder_peer_ids: [ spoke.id, tombstone_peer_id ])
+
+      expect(vip.failover_blocker).to be_nil
+    end
+
+    # Sdwan::Executors::FailoverVirtualIp#prefer_target! moves an operator's
+    # named target to the head BEFORE calling failover!, so the predicate has
+    # to answer for that peer and not for today's head.
+    it "answers for the operator's named target rather than the queue head" do
+      dead = tombstone_peer_id
+      vip.update!(failover_holder_peer_ids: [ spoke.id, dead ])
+
+      expect(vip.failover_blocker(target_peer_id: dead)).to include(dead)
+      expect(vip.failover_blocker(target_peer_id: spoke.id)).to be_nil
+    end
+
+    # prefer_target! no-ops on a target that is not a configured candidate, so
+    # the predicate must fall back to the head exactly as failover! will.
+    it "ignores a target that is not a configured candidate" do
+      expect(vip.failover_blocker(target_peer_id: tombstone_peer_id)).to be_nil
+    end
+  end
+
+  # A peer row that existed when the VIP was written and does not exist now —
+  # the exact sequence Sdwan::Executors::DeletePeer produces, since it destroys
+  # the peer without scrubbing the uuid[] arrays that name it.
+  def tombstone_peer_id
+    peer = Sdwan::Peer.create!(account: account, sdwan_network_id: network.id,
+                               node_instance: sdwan_test_node_instance(node: node),
+                               publicly_reachable: false)
+    peer.destroy!
+    peer.id
   end
 
   # IMP-0e44cf2fc80b — the canonical diff-based holder-transition sync, ONE

@@ -2125,10 +2125,14 @@ RSpec.describe Ai::Tools::SdwanTool do
       expect(vip.reload.holder_peer_ids.first).to eq(standby.id)
     end
 
-    # Positive twins for the two pre-gate refusals below are the gated
+    # Positive twins for the three pre-gate refusals below are the gated
     # examples above (a failover the model would accept parks / executes).
-    # Refusal wording is the model's own (Sdwan::VirtualIp#failover!
-    # StateError guards) so the arm's error contract is unchanged.
+    # Refusal wording is the model's own — IMP-d952c791e264 replaced this
+    # arm's hand-copied mirror of the failover! guards with the one
+    # Sdwan::VirtualIp#failover_blocker predicate they were copies of, so the
+    # anycast wording is unchanged, the candidate-less wording gained the
+    # remedy the drifted skill-executor copy used to carry, and the tombstone
+    # case below is refused here for the first time.
     it "refuses an anycast failover pre-gate without parking a doomed approval" do
       anycast = create(:sdwan_virtual_ip, account: account, network: network, anycast: true,
                        holder_peer_ids: [ primary.id, standby.id ])
@@ -2151,6 +2155,29 @@ RSpec.describe Ai::Tools::SdwanTool do
 
       expect(@result[:success]).to be false
       expect(@result[:error]).to include("no failover candidates")
+    end
+
+    # IMP-d952c791e264 — the THIRD doomed case, which neither hand-copied
+    # guard above could see: failover_holder_peer_ids is a bare uuid[] with no
+    # FK, Sdwan::Executors::DeletePeer never scrubs it, and the model's
+    # holder_peers_belong_to_network only flags ids that EXIST in another
+    # network. So a VIP whose only standby was deleted passed both pre-gate
+    # checks, parked a require_approval operation, and failed hours later at
+    # ::Sdwan::Peer.find inside the executor transaction.
+    it "refuses a tombstone-standby failover pre-gate without parking a doomed approval" do
+      dead = create(:sdwan_peer, account: account, network: network)
+      doomed = create(:sdwan_virtual_ip, account: account, network: network, state: "active",
+                      holder_peer_ids: [ primary.id ], failover_holder_peer_ids: [ dead.id ])
+      dead.destroy!
+
+      expect {
+        @result = call("system_sdwan_failover_virtual_ip", virtual_ip_id: doomed.id)
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to include(dead.id),
+                                "the refusal must name the dead standby — it is the id the operator has to remove"
+      expect(doomed.reload.holder_peer_ids).to eq([ primary.id ])
     end
 
     # The foreign VIP carries a real failover candidate so this control stays
