@@ -154,4 +154,49 @@ RSpec.describe System::ExecutionDispatcher do
       expect(described_class::COMMAND_REGISTRY['disassociate_public_ip']).to eq(System::Runtime::ManagePublicIp)
     end
   end
+
+  # A `restart` task means two entirely different things depending on whether
+  # it names a unit:
+  #
+  #   options["unit"] absent  -> instance-scoped. COMMAND_REGISTRY routes it to
+  #     Runtime::ControlInstance, whose ACTION_FOR_COMMAND maps "restart" to
+  #     the "reboot" action — it reboots the WHOLE VM via the provider adapter.
+  #   options["unit"] present -> unit-scoped. Only the agent can do this
+  #     (tasks/handlers/lifecycle.go LifecycleHandler -> systemctl restart).
+  #
+  # System::Task's after_commit enqueues server-side execution on create, so
+  # without this split a unit restart would ALSO reboot the VM.
+  describe '.unit_scoped_restart?' do
+    it 'treats a restart carrying options["unit"] as agent-delegated' do
+      expect(described_class.agent_delegated?('restart', { 'unit' => 'powernode-abc-rails.service' })).to be true
+    end
+
+    it 'leaves a bare restart on the provider path (instance reboot)' do
+      expect(described_class.agent_delegated?('restart', {})).to be false
+      expect(described_class.agent_delegated?('restart', nil)).to be false
+      expect(described_class.agent_delegated?('restart')).to be false
+    end
+
+    it 'does not extend the split to other lifecycle verbs' do
+      expect(described_class.agent_delegated?('reboot', { 'unit' => 'x.service' })).to be false
+      expect(described_class.agent_delegated?('terminate', { 'unit' => 'x.service' })).to be false
+    end
+  end
+
+  describe '.run with a unit-scoped restart' do
+    let(:operation) do
+      create(:system_task, account: account, operable: instance, command: 'restart',
+                           options: { 'unit' => "powernode-#{SecureRandom.uuid}-rails.service" })
+    end
+
+    it 'leaves the task pending for the agent instead of rebooting the instance' do
+      expect(System::InstanceControlService).not_to receive(:execute)
+
+      outcome = described_class.run(operation)
+
+      expect(outcome.claimed).to be false
+      expect(outcome.status_code).to eq(:accepted)
+      expect(operation.reload.status).to eq('pending')
+    end
+  end
 end

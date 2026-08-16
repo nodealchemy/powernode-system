@@ -114,6 +114,14 @@ module System
             promoted = node_module.current_version_id == node_module_version.id
           end
         end
+        # restart_after_update: promotion ARMS the version (inside
+        # NodeModule#promote_to_version!, the single choke point — so a
+        # rollback arms too), and deliberately does NOT enqueue anything here.
+        # At this point no instance has materialized the new artifact yet, so
+        # enqueueing a restart would restart into the OLD files — the same
+        # ordering bug behind the two outages of 2026-08-16. The restart is
+        # gated on each instance's own reported digest, at heartbeat time.
+        # See System::RestartAfterUpdate.
         register_skills_for(node_module)
         emit_published_event(node_module, node_module_version, oci_ref, result.module_artifacts, tag, promoted)
         Result.new(
