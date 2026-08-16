@@ -13,9 +13,13 @@ module System
           { pool_id: params[:pool_id], name: name, destroyed: true }
         end
 
+        # IMP-8e4674f4d62d: anchored to the operation's account (was a bare
+        # `find_by(id:)`), and the no-name arm carries the id — anchoring makes
+        # that arm reachable for a row this account does not own, not just for
+        # one already destroyed, so it has to say which pool the request named.
         def summarize
-          p = ::System::InstancePool.find_by(id: params[:pool_id])
-          p ? "Delete instance pool '#{p.name}'" : "Delete instance pool"
+          pool = scoped_label_record(::System::InstancePool, params[:pool_id])
+          pool ? "Delete instance pool '#{pool.name}'" : "Delete instance pool #{params[:pool_id]}"
         end
 
         def impact = "Terminates all warm instances + halts replenishment"

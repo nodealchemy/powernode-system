@@ -94,11 +94,36 @@ RSpec.describe Sdwan::Executors::RevokeUserDevice, type: :model do
   end
 
   describe "preview" do
+    # IMP-8e4674f4d62d — the label resolves through Base#scoped_label_record,
+    # anchored on the GRANT (system_sdwan_user_devices has no account_id of its
+    # own), so the preview needs the operation's account. Cross-account
+    # coverage lives in
+    # spec/services/system/executors/preview_account_anchor_spec.rb.
+    def anchored_preview(params)
+      described_class.preview(
+        params,
+        deferred_operation: ::Ai::DeferredOperation.create!(
+          account: account,
+          action_category: "system.sdwan_user_device_revoke",
+          executor_class: described_class.name,
+          params: params
+        )
+      )
+    end
+
     it "summarizes the verb it will actually perform" do
-      expect(described_class.preview({ grant_id: grant.id, device_id: target.id })[:summary])
+      expect(anchored_preview({ grant_id: grant.id, device_id: target.id })[:summary])
         .to eq("Revoke SDWAN user device lost-phone")
-      expect(described_class.preview({ grant_id: grant.id, device_id: target.id, destroy_row: true })[:summary])
+      expect(anchored_preview({ grant_id: grant.id, device_id: target.id, destroy_row: true })[:summary])
         .to eq("Delete SDWAN user device lost-phone")
+    end
+
+    # The pre-gate contract base.rb documents: no anchor, no name — the id is
+    # the floor.
+    it "declines to name the device when there is no account to anchor on" do
+      preview = described_class.preview({ grant_id: grant.id, device_id: target.id })
+
+      expect(preview[:summary]).to eq("Revoke SDWAN user device #{target.id}")
     end
   end
 end

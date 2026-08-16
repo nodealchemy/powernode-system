@@ -84,8 +84,14 @@ module Sdwan
       # description verbatim so the two surfaces naming this one operation
       # cannot disagree (the IMP-ee57d0fbe859 lesson, UpdatePortMapping
       # precedent). The bare id is only the floor for a row already gone.
+      #
+      # IMP-8e4674f4d62d: through the same account anchor `perform` resolves
+      # by (was a bare `find_by(id:)`). This card names the VIP AND its
+      # network, so an unanchored lookup disclosed two of another account's
+      # resource names; the network is reached through the anchored VIP, with
+      # the same alignment caveat UpdateFirewallRule records.
       def summarize
-        vip = ::Sdwan::VirtualIp.find_by(id: params[:vip_id])
+        vip = scoped_label_record(::Sdwan::VirtualIp, params[:vip_id])
         return "Update VIP #{params[:vip_id]}" unless vip
 
         "Update SDWAN VIP '#{vip.name}' on network #{vip.network.name}"

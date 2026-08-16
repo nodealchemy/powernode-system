@@ -54,13 +54,39 @@ RSpec.describe Sdwan::Executors::DeleteAccessGrant, type: :model do
   end
 
   describe "preview" do
+    # IMP-8e4674f4d62d — the label and the blast-radius count are resolved
+    # through Base#scoped_label_record, so both need the operation's account to
+    # anchor on. What the card renders is a user's EMAIL; with no account
+    # established there is nobody to establish it belongs to, so the executor
+    # declines to name it (asserted below, and cross-account in
+    # spec/services/system/executors/preview_account_anchor_spec.rb).
+    let(:params) { { network_id: network.id, grant_id: grant.id } }
+    let(:operation) do
+      ::Ai::DeferredOperation.create!(
+        account: account,
+        action_category: "sdwan.access_grant_delete",
+        executor_class: described_class.name,
+        params: params
+      )
+    end
+
     # The approval card is the only place an operator sees the blast radius
     # before saying yes, so the cascade has to be named there.
     it "reports the device count in the impact line" do
-      preview = described_class.preview({ network_id: network.id, grant_id: grant.id })
+      preview = described_class.preview(params, deferred_operation: operation)
 
       expect(preview[:summary]).to include("Delete SDWAN access grant")
       expect(preview[:impact]).to include("1 device")
+    end
+
+    # The pre-gate contract base.rb documents: one positional argument still
+    # works and nothing raises — what changes is the posture, not the
+    # reachability. No anchor, no name, and no count either.
+    it "declines to name the grant when there is no account to anchor on" do
+      preview = described_class.preview(params)
+
+      expect(preview[:summary]).to eq("Delete SDWAN access grant #{grant.id}")
+      expect(preview[:impact]).to eq("Destroys the access grant and every VPN device beneath it")
     end
   end
 end

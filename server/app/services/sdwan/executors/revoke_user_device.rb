@@ -61,12 +61,26 @@ module Sdwan
         ::Sdwan::AccessGrant.find(params[:grant_id]).user_devices.find(params[:device_id])
       end
 
-      # Scoped like scoped_device so a preview can't surface a label from
-      # outside the named grant. Nil when the pairing no longer resolves.
+      # The label the CARD renders, resolved through Base#scoped_label_record
+      # (IMP-8e4674f4d62d). scoped_device is deliberately not reused: it
+      # anchors on the GRANT named in the same params, which re-validates the
+      # pairing but establishes nothing about ownership, so a caller that did
+      # not pre-scope had another account's device labelled on its approvers'
+      # card.
+      #
+      # The GRANT is what gets anchored, not the device: system_sdwan_user_devices
+      # carries no account_id, and #scoped_label_record returns nil for any
+      # model without the column — anchoring the device directly would name
+      # nothing at all, in-account cards included. Reaching it through the
+      # anchored grant keeps the pairing check scoped_device performs and
+      # inherits the grant's account, which the create path aligns
+      # (AccessGrantsController#create builds the grant on an account-scoped
+      # network and stamps account_id from the same account).
+      #
+      # Nil is "render the id instead", per the seam's caller contract.
       def device_label
-        scoped_device.label
-      rescue ActiveRecord::RecordNotFound
-        nil
+        grant = scoped_label_record(::Sdwan::AccessGrant, params[:grant_id])
+        grant&.user_devices&.find_by(id: params[:device_id])&.label
       end
 
       def destroy_row?

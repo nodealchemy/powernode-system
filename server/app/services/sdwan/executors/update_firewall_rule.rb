@@ -33,8 +33,18 @@ module Sdwan
       # description verbatim so the two surfaces naming this one operation
       # cannot disagree (the IMP-ee57d0fbe859 lesson, UpdatePortMapping
       # precedent). The bare id is only the floor for a row already gone.
+      #
+      # IMP-8e4674f4d62d: through the same account anchor `perform` resolves
+      # by. It was a bare `find_by(id:)` — the identical param, resolved scoped
+      # for the write and unscoped for the sentence. The network is reached
+      # THROUGH the anchored rule, which is safe because every write path keeps
+      # the two accounts aligned (CreateFirewallRule inherits the network's
+      # account; this executor's own anchor_reparent!), NOT because the model
+      # enforces it — Sdwan::FirewallRule's validations are relative to the
+      # network and never compare account_id against it (the UpdatePortMapping
+      # precedent, same residual).
       def summarize
-        rule = ::Sdwan::FirewallRule.find_by(id: params[:rule_id])
+        rule = scoped_label_record(::Sdwan::FirewallRule, params[:rule_id])
         return "Update firewall rule #{params[:rule_id]}" unless rule
 
         "Update firewall rule '#{rule.name}' on SDWAN network #{rule.network.name}"

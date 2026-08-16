@@ -162,15 +162,23 @@ module System
       # it by an account_id the CALLER had put in params[:attributes] (the one
       # hash `attrs` strips the tenancy keys out of before any write).
       #
-      # NOT yet universal: IMP-4a5094b22df0 migrated the six executors named in
-      # its file list, and roughly eleven siblings still resolve their label row
-      # unscoped (delete_peer, delete_network, update_firewall_rule,
-      # update_virtual_ip, delete_virtual_ip, failover_virtual_ip,
-      # delete_access_grant, revoke_user_device, instance_pool/delete_pool,
-      # runtime/decommission_k3s_cluster, disk_image/promote_publication).
-      # They are unsafe on the same terms and are queued as a follow-on sweep
-      # (offer 01a0046b-6488) — a new executor should route here rather than
-      # copy one of them.
+      # Universal as of IMP-8e4674f4d62d: that sweep migrated the eleven
+      # siblings IMP-4a5094b22df0's six left behind, so every executor whose
+      # card resolves a row from params now resolves it through here. A new one
+      # should route here rather than hand-roll a find.
+      #
+      # Three of the eleven leak less than a name and were migrated anyway,
+      # which is worth knowing before "simplifying" them: delete_virtual_ip,
+      # failover_virtual_ip and disk_image/promote_publication all render
+      # `row.try(:<method that does not exist>) || row.id`, so their found arm
+      # names the id the caller already supplied and what an unanchored lookup
+      # disclosed was EXISTENCE. Their not-found arm therefore carries NO id —
+      # unlike delete_network / instance_pool.delete_pool /
+      # runtime.decommission_k3s_cluster, where it does — because identical
+      # text on both arms would erase the only observable and leave the anchor
+      # unverifiable. Repairing a dead rung (offer 01a00899-026d) turns those
+      # cards into ordinary name disclosures; preview_account_anchor_spec.rb
+      # carries a respond_to? tripwire that fails when one is.
       #
       # Deliberately NOT resolve_scoped, in both directions:
       #

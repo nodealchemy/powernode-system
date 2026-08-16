@@ -203,6 +203,365 @@ RSpec.describe "approval-card preview account anchoring" do
     end
   end
 
+  # IMP-8e4674f4d62d — the follow-on sweep base.rb's #scoped_label_record
+  # docstring names. Same mechanism, same oracle: drive Ai::DeferredOperation
+  # #preview through a caller that does NOT pre-scope its ids.
+  #
+  # DeleteAccessGrant is first and separate because what its card names is not a
+  # resource name but a USER'S EMAIL ADDRESS — a cross-account disclosure of
+  # personal data rather than a label bug. Its impact line discloses a second
+  # fact, the foreign grant's device count, and is asserted separately: a fix
+  # that anchored only the summary would leave a working oracle for "how many
+  # VPN devices does that other account's grant have".
+  describe "Sdwan::Executors::DeleteAccessGrant" do
+    let!(:victim_user) { create(:user, account: victim, email: "victim-operator@example.test") }
+    let!(:victim_grant) do
+      create(:sdwan_access_grant, account: victim, network: victim_network, user: victim_user)
+    end
+    let!(:victim_devices) { create_list(:sdwan_user_device, 2, access_grant: victim_grant) }
+
+    let!(:tenant_user) { create(:user, account: tenant, email: "tenant-operator@example.test") }
+    let!(:tenant_grant) do
+      create(:sdwan_access_grant, account: tenant, network: tenant_network, user: tenant_user)
+    end
+    let!(:tenant_device) { create(:sdwan_user_device, access_grant: tenant_grant) }
+
+    it "renders the bare id rather than a foreign grant holder's email address" do
+      preview = card_preview("Sdwan::Executors::DeleteAccessGrant", "sdwan.access_grant_delete",
+                             { network_id: victim_network.id, grant_id: victim_grant.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to include(victim_grant.id)
+      expect(preview[:summary]).not_to include("victim-operator@example.test")
+    end
+
+    it "does not disclose a foreign grant's device count in the impact line" do
+      preview = card_preview("Sdwan::Executors::DeleteAccessGrant", "sdwan.access_grant_delete",
+                             { network_id: victim_network.id, grant_id: victim_grant.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:impact]).to eq("Destroys the access grant and every VPN device beneath it")
+      expect(preview[:impact]).not_to include("2 device")
+    end
+
+    it "still names an in-account grant and counts its devices" do # CONTROL
+      preview = card_preview("Sdwan::Executors::DeleteAccessGrant", "sdwan.access_grant_delete",
+                             { network_id: tenant_network.id, grant_id: tenant_grant.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to eq("Delete SDWAN access grant tenant-operator@example.test")
+      expect(preview[:impact]).to include("1 device")
+    end
+
+    # The network/grant pairing #scoped_grant re-validates is a SECOND guard,
+    # not the same one: it refuses a grant that has moved network since the
+    # operation was parked. Anchoring must not cost it — an in-account grant
+    # named against the wrong in-account network still declines to be labelled.
+    it "keeps refusing to name an in-account grant on a different network" do
+      other_network = create(:sdwan_network, account: tenant, name: "tenant-spare")
+
+      preview = card_preview("Sdwan::Executors::DeleteAccessGrant", "sdwan.access_grant_delete",
+                             { network_id: other_network.id, grant_id: tenant_grant.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).not_to include("tenant-operator@example.test")
+      expect(preview[:impact]).to eq("Destroys the access grant and every VPN device beneath it")
+    end
+  end
+
+  describe "Sdwan::Executors::DeletePeer" do
+    # IMP-ee57d0fbe859 pinned that the update and delete cards for ONE peer
+    # name it identically. That invariant went structural-only once
+    # IMP-4a5094b22df0 anchored UpdatePeer and left DeletePeer unanchored: the
+    # two rendered the same string only while both previews happened to be
+    # handed the same anchor. Anchoring both restores it.
+    it "renders the bare id rather than a foreign peer's operator label" do
+      preview = card_preview("Sdwan::Executors::DeletePeer", "sdwan.peer_delete",
+                             { peer_id: victim_peer.id, network_id: victim_network.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to include(victim_peer.id)
+      expect(preview[:summary]).not_to include("victim-edge-01")
+      expect(preview[:summary]).not_to include("victim-core")
+    end
+
+    it "still names an in-account peer" do # CONTROL
+      preview = card_preview("Sdwan::Executors::DeletePeer", "sdwan.peer_delete",
+                             { peer_id: tenant_peer.id, network_id: tenant_network.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to include("tenant-edge-01 on tenant-core")
+    end
+
+    it "names the peer exactly as the update card does, on one anchor" do
+      params = { peer_id: tenant_peer.id }
+
+      delete_summary = card_preview("Sdwan::Executors::DeletePeer", "sdwan.peer_delete", params)[:summary]
+      update_summary = card_preview("Sdwan::Executors::UpdatePeer", "sdwan.peer_update", params)[:summary]
+
+      expect(delete_summary.delete_prefix("Delete SDWAN peer "))
+        .to eq(update_summary.delete_prefix("Update SDWAN peer ")),
+            "update/delete cards must name the same peer identically"
+    end
+  end
+
+  describe "Sdwan::Executors::DeleteNetwork" do
+    it "renders the bare id rather than a foreign network's name" do
+      preview = card_preview("Sdwan::Executors::DeleteNetwork", "sdwan.network_delete",
+                             { network_id: victim_network.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to include(victim_network.id)
+      expect(preview[:summary]).not_to include("victim-core")
+    end
+
+    it "still names an in-account network" do # CONTROL
+      preview = card_preview("Sdwan::Executors::DeleteNetwork", "sdwan.network_delete",
+                             { network_id: tenant_network.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to eq("Delete SDWAN network 'tenant-core'")
+    end
+  end
+
+  describe "Sdwan::Executors::UpdateFirewallRule" do
+    let!(:victim_rule) do
+      create(:sdwan_firewall_rule, account: victim, network: victim_network, name: "victim-rule")
+    end
+    let!(:tenant_rule) do
+      create(:sdwan_firewall_rule, account: tenant, network: tenant_network, name: "tenant-rule")
+    end
+
+    it "renders the bare id rather than a foreign rule's name and network" do
+      preview = card_preview("Sdwan::Executors::UpdateFirewallRule", "sdwan.firewall_rule_update",
+                             { rule_id: victim_rule.id, attributes: { enabled: false } })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to include(victim_rule.id)
+      expect(preview[:summary]).not_to include("victim-rule")
+      expect(preview[:summary]).not_to include("victim-core")
+    end
+
+    it "still names an in-account rule" do # CONTROL
+      preview = card_preview("Sdwan::Executors::UpdateFirewallRule", "sdwan.firewall_rule_update",
+                             { rule_id: tenant_rule.id, attributes: { enabled: false } })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to eq("Update firewall rule 'tenant-rule' on SDWAN network tenant-core")
+    end
+  end
+
+  describe "Sdwan::Executors::UpdateVirtualIp" do
+    let!(:victim_vip) do
+      create(:sdwan_virtual_ip, network: victim_network, name: "victim-vip")
+    end
+    let!(:tenant_vip) do
+      create(:sdwan_virtual_ip, network: tenant_network, name: "tenant-vip")
+    end
+
+    it "renders the bare id rather than a foreign VIP's name and network" do
+      preview = card_preview("Sdwan::Executors::UpdateVirtualIp", "sdwan.virtual_ip_update",
+                             { vip_id: victim_vip.id, attributes: { description: "x" } })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to include(victim_vip.id)
+      expect(preview[:summary]).not_to include("victim-vip")
+      expect(preview[:summary]).not_to include("victim-core")
+    end
+
+    it "still names an in-account VIP" do # CONTROL
+      preview = card_preview("Sdwan::Executors::UpdateVirtualIp", "sdwan.virtual_ip_update",
+                             { vip_id: tenant_vip.id, attributes: { description: "x" } })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to eq("Update SDWAN VIP 'tenant-vip' on network tenant-core")
+    end
+  end
+
+  # Sdwan::UserDevice carries NO account_id of its own, so #scoped_label_record
+  # cannot anchor it directly — it returns nil for any model without the
+  # column, which would leave every device card, in-account included, naming a
+  # bare UUID. The device is reached THROUGH its access grant, which does carry
+  # one; the CONTROL example is what distinguishes "anchored" from "anchored so
+  # hard it names nothing".
+  describe "Sdwan::Executors::RevokeUserDevice" do
+    let!(:victim_grant2) { create(:sdwan_access_grant, account: victim, network: victim_network) }
+    let!(:victim_dev) { create(:sdwan_user_device, access_grant: victim_grant2, label: "victim-phone") }
+    let!(:tenant_grant2) { create(:sdwan_access_grant, account: tenant, network: tenant_network) }
+    let!(:tenant_dev) { create(:sdwan_user_device, access_grant: tenant_grant2, label: "tenant-phone") }
+
+    it "renders the bare id rather than a foreign device's label" do
+      preview = card_preview("Sdwan::Executors::RevokeUserDevice", "system.sdwan_user_device_revoke",
+                             { grant_id: victim_grant2.id, device_id: victim_dev.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to include(victim_dev.id)
+      expect(preview[:summary]).not_to include("victim-phone")
+    end
+
+    it "still names an in-account device" do # CONTROL
+      preview = card_preview("Sdwan::Executors::RevokeUserDevice", "system.sdwan_user_device_revoke",
+                             { grant_id: tenant_grant2.id, device_id: tenant_dev.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to eq("Revoke SDWAN user device tenant-phone")
+    end
+
+    # The request a caller can actually construct: their OWN grant id, plus
+    # someone else's device id. The foreign-grant example above cannot reach
+    # this — its anchor returns nil and the device lookup never runs — so
+    # without this one, reading the device globally once the grant is anchored
+    # survives the whole suite.
+    it "renders the bare id for a foreign device named against an in-account grant" do
+      preview = card_preview("Sdwan::Executors::RevokeUserDevice", "system.sdwan_user_device_revoke",
+                             { grant_id: tenant_grant2.id, device_id: victim_dev.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to include(victim_dev.id)
+      expect(preview[:summary]).not_to include("victim-phone")
+    end
+  end
+
+  describe "System::Executors::InstancePool::DeletePool" do
+    def pool_for(account, name)
+      ::System::InstancePool.create!(
+        account: account,
+        node_template: create(:system_node_template, account: account),
+        name: name, target_size: 1, min_size: 0, max_size: 2,
+        lifecycle_class: "ephemeral", status: "active",
+        provider_region: create(:system_provider_region),
+        provider_instance_type: create(:system_provider_instance_type)
+      )
+    end
+
+    let!(:victim_pool) { pool_for(victim, "victim-pool") }
+    let!(:tenant_pool) { pool_for(tenant, "tenant-pool") }
+
+    it "renders the bare id rather than a foreign pool's name" do
+      preview = card_preview("System::Executors::InstancePool::DeletePool",
+                             "system.instance_pool_delete", { pool_id: victim_pool.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to include(victim_pool.id)
+      expect(preview[:summary]).not_to include("victim-pool")
+    end
+
+    it "still names an in-account pool" do # CONTROL
+      preview = card_preview("System::Executors::InstancePool::DeletePool",
+                             "system.instance_pool_delete", { pool_id: tenant_pool.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to eq("Delete instance pool 'tenant-pool'")
+    end
+  end
+
+  describe "System::Executors::Runtime::DecommissionK3sCluster" do
+    let!(:victim_cluster) { create(:devops_kubernetes_cluster, account: victim, name: "victim-cluster") }
+    let!(:tenant_cluster) { create(:devops_kubernetes_cluster, account: tenant, name: "tenant-cluster") }
+
+    it "renders the bare id rather than a foreign cluster's name" do
+      preview = card_preview("System::Executors::Runtime::DecommissionK3sCluster",
+                             "system.runtime_k8s_cluster_decommission",
+                             { cluster_id: victim_cluster.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to include(victim_cluster.id)
+      expect(preview[:summary]).not_to include("victim-cluster")
+    end
+
+    it "still names an in-account cluster" do # CONTROL
+      preview = card_preview("System::Executors::Runtime::DecommissionK3sCluster",
+                             "system.runtime_k8s_cluster_decommission",
+                             { cluster_id: tenant_cluster.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to eq("Decommission K3s cluster 'tenant-cluster'")
+    end
+  end
+
+  # The three verbs whose label rung is DEAD, so what their card leaks is
+  # thinner than a name and still real: EXISTENCE. Each renders
+  # `row.try(:<missing method>) || row.id` on the found arm and a bare noun on
+  # the not-found arm, so an unanchored lookup answered "a row with this UUID
+  # exists somewhere in the platform" — which is why the found/not-found
+  # DIFFERENCE is the oracle here, and why (unlike DeleteNetwork/DeletePool/
+  # DecommissionK3sCluster) the id is deliberately NOT added to the not-found
+  # arm: identical text on both arms would erase the only observable and make
+  # the anchoring unverifiable.
+  #
+  # The dead rungs are a separate defect (offer 01a00899-026d): the
+  # controller's `description:` renders `try(:cidr)` where the card renders a
+  # UUID, so the two surfaces naming one operation disagree — the thing
+  # IMP-ee57d0fbe859 exists to prevent. The respond_to? assertions below are
+  # the tripwire: repairing a rung turns these into ordinary name disclosures,
+  # and the example fails so the change cannot land without revisiting them.
+  describe "the dead-rung verbs (existence is still a disclosure)" do
+    let!(:victim_vip2) { create(:sdwan_virtual_ip, network: victim_network, name: "victim-vip2") }
+    let!(:tenant_vip2) { create(:sdwan_virtual_ip, network: tenant_network, name: "tenant-vip2") }
+
+    {
+      "Sdwan::Executors::DeleteVirtualIp" => [ "sdwan.virtual_ip_delete", "Delete SDWAN VIP" ],
+      "Sdwan::Executors::FailoverVirtualIp" => [ "system.sdwan_vip_failover", "Failover VIP" ]
+    }.each do |klass, (category, floor)|
+      it "#{klass.demodulize} confirms nothing about a foreign VIP's existence" do
+        preview = card_preview(klass, category, { vip_id: victim_vip2.id })
+
+        expect(preview[:error]).to be_nil
+        expect(preview[:summary]).to eq(floor)
+        expect(preview[:summary]).not_to include(victim_vip2.id)
+      end
+
+      it "#{klass.demodulize} still identifies an in-account VIP" do # CONTROL
+        preview = card_preview(klass, category, { vip_id: tenant_vip2.id })
+
+        expect(preview[:error]).to be_nil
+        expect(preview[:summary]).to eq("#{floor} #{tenant_vip2.id}")
+      end
+    end
+
+    it "pins the dead rung the two VIP verbs rest on" do
+      expect(::Sdwan::VirtualIp.new).not_to respond_to(:address),
+                                            "the dead label rung was repaired — these cards now disclose a NAME"
+    end
+  end
+
+  # Latent, and pinned rather than left to the wiring (the CreatePeer
+  # precedent). Nothing previews PromotePublication today — its one caller
+  # invokes `.execute` directly — but `system.disk_image_publication_promote`
+  # is a registered action category with a seeded require_approval policy, so
+  # the label is one gate site away from being rendered to approvers. Driven
+  # through the executor's own `preview` because there is no operation shape to
+  # drive it through yet.
+  describe "System::Executors::DiskImage::PromotePublication (latent)" do
+    def publication_for(account)
+      platform = create(:system_node_platform, account: account)
+      create(:system_disk_image_publication, account: account, node_platform: platform)
+    end
+
+    let!(:victim_pub) { publication_for(victim) }
+    let!(:tenant_pub) { publication_for(tenant) }
+
+    def preview_for(pub, account)
+      ::System::Executors::DiskImage::PromotePublication.preview(
+        { publication_id: pub.id },
+        deferred_operation: ::Ai::DeferredOperation::PreviewContext.new(account)
+      )
+    end
+
+    it "confirms nothing about a foreign publication's existence" do
+      expect(preview_for(victim_pub, tenant)[:summary]).to eq("Promote disk image")
+    end
+
+    it "still identifies an in-account publication" do # CONTROL
+      expect(preview_for(tenant_pub, tenant)[:summary]).to eq("Promote disk image #{tenant_pub.id} to active")
+    end
+
+    it "pins the dead rung this card rests on" do
+      expect(::System::DiskImagePublication.new).not_to respond_to(:tag),
+                                                       "the dead label rung was repaired — this card now discloses a NAME"
+    end
+  end
+
   # The behavioural examples above are all satisfiable by a hand-written
   # `find_by(id:, account_id:)` per executor, or by a post-filter that reads the
   # row unscoped and then discards it. The property the task actually buys is

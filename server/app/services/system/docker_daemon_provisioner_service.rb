@@ -209,11 +209,18 @@ module System
       )
     end
 
+    # #purge_credential!, NOT #delete_credential (IMP-20fb59ec849d).
+    # #store_in_vault! above passes no `record`, so the material lands at the
+    # provider's convention path; #delete_credential only follows a record's
+    # `vault_path` and, with no record, returns true having purged nothing. For
+    # the whole life of this service the decommission has reported a successful
+    # purge and left the secret in place. #purge_credential! is the delete that
+    # matches the write #store_in_vault! performs.
     def purge_from_vault!(host:)
       provider = ::Security::VaultCredentialProvider.new(account_id: @account.id)
-      return unless provider.respond_to?(:delete_credential)
+      return unless provider.respond_to?(:purge_credential!)
 
-      provider.delete_credential(
+      provider.purge_credential!(
         credential_type: :docker_daemon_tls,
         credential_id: host.id
       )

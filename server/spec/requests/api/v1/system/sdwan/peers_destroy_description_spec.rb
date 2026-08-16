@@ -42,8 +42,15 @@ RSpec.describe "SDWAN peer destroy — approval description", type: :request do
     # Taken before the request because an auto-proceeding gate (core mode, no
     # Ai::ApprovalChain) destroys the peer inline, after which preview can only
     # report its missing-peer fallback.
+    #
+    # IMP-8e4674f4d62d — through a PreviewContext, which is exactly what
+    # Ai::DeferredOperation#preview hands the executor in production. The
+    # stand-in used to pass nothing; now that the label is account-anchored
+    # that would compare the description against the unanchored floor (a bare
+    # UUID) and pin the wrong thing.
     notification_summary = ::Sdwan::Executors::DeletePeer.preview(
-      { peer_id: peer.id, network_id: network.id }
+      { peer_id: peer.id, network_id: network.id },
+      deferred_operation: ::Ai::DeferredOperation::PreviewContext.new(account)
     )[:summary]
 
     delete "/api/v1/system/sdwan/networks/#{network.id}/peers/#{peer.id}", headers: headers

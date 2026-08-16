@@ -13,9 +13,13 @@ module System
           { cluster_id: params[:cluster_id], name: name, decommissioned: true }
         end
 
+        # IMP-8e4674f4d62d: anchored to the operation's account (was a bare
+        # `find_by(id:)`), with the id on the no-name arm for the same reason
+        # DeletePool carries it — that arm now also covers a row this account
+        # does not own.
         def summarize
-          c = ::Devops::KubernetesCluster.find_by(id: params[:cluster_id])
-          c ? "Decommission K3s cluster '#{c.name}'" : "Decommission K3s cluster"
+          cluster = scoped_label_record(::Devops::KubernetesCluster, params[:cluster_id])
+          cluster ? "Decommission K3s cluster '#{cluster.name}'" : "Decommission K3s cluster #{params[:cluster_id]}"
         end
 
         def impact = "Cascade-deletes node rows, tears down workloads, revokes kubeconfig"
