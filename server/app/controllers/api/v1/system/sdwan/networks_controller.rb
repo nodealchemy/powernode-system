@@ -76,7 +76,7 @@ module Api
             @network.reload
 
             gate!(
-              action_category: "sdwan.network_update",
+              action_category: ::Sdwan::Executors::UpdateNetwork::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::UpdateNetwork",
               params: { network_id: @network.id, attributes: attrs },
               source_type: "Sdwan::Network",
@@ -91,7 +91,7 @@ module Api
             id = @network.id
             name = @network.name
             gate!(
-              action_category: "sdwan.network_delete",
+              action_category: ::Sdwan::Executors::DeleteNetwork::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::DeleteNetwork",
               params: { network_id: id },
               source_type: "Sdwan::Network",

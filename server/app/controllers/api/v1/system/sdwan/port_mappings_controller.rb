@@ -71,7 +71,7 @@ module Api
               result_key: :mapping_id,
               response_key: :port_mapping,
               serializer: ->(m) { serialize_full(m) },
-              action_category: "sdwan.port_mapping_create",
+              action_category: ::Sdwan::Executors::CreatePortMapping::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::CreatePortMapping",
               params: { network_id: @network.id, attributes: attrs },
               source_type: "Sdwan::Network",
@@ -91,7 +91,7 @@ module Api
             @mapping.reload
 
             gate!(
-              action_category: "sdwan.port_mapping_update",
+              action_category: ::Sdwan::Executors::UpdatePortMapping::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::UpdatePortMapping",
               params: { mapping_id: @mapping.id, attributes: attrs },
               source_type: "Sdwan::PortMapping",
@@ -105,7 +105,7 @@ module Api
             require_permission("system.sdwan.port_mappings.manage")
             id = @mapping.id
             gate!(
-              action_category: "sdwan.port_mapping_delete",
+              action_category: ::Sdwan::Executors::DeletePortMapping::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::DeletePortMapping",
               params: { mapping_id: id },
               source_type: "Sdwan::PortMapping",

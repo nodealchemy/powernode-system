@@ -66,7 +66,7 @@ module Api
               result_key: :policy_id,
               response_key: :route_policy,
               serializer: ->(p) { serialize_full(p) },
-              action_category: "sdwan.route_policy_create",
+              action_category: ::Sdwan::Executors::CreateRoutePolicy::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::CreateRoutePolicy",
               params: { attributes: attrs },
               # Provenance only: RoutePolicy belongs directly to the account, so
@@ -89,7 +89,7 @@ module Api
             @policy.reload
 
             gate!(
-              action_category: "sdwan.route_policy_update",
+              action_category: ::Sdwan::Executors::UpdateRoutePolicy::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::UpdateRoutePolicy",
               params: { policy_id: @policy.id, attributes: attrs },
               source_type: "Sdwan::RoutePolicy",
@@ -104,7 +104,7 @@ module Api
             id = @policy.id
             name = @policy.name
             gate!(
-              action_category: "sdwan.route_policy_delete",
+              action_category: ::Sdwan::Executors::DeleteRoutePolicy::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::DeleteRoutePolicy",
               params: { policy_id: id },
               source_type: "Sdwan::RoutePolicy",

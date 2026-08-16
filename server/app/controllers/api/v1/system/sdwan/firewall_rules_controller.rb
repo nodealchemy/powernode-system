@@ -67,7 +67,7 @@ module Api
               result_key: :rule_id,
               response_key: :firewall_rule,
               serializer: ->(r) { serialize_rule_full(r) },
-              action_category: "sdwan.firewall_rule_create",
+              action_category: ::Sdwan::Executors::CreateFirewallRule::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::CreateFirewallRule",
               params: { network_id: @network.id, attributes: executor_rule_attributes(attrs) },
               source_type: "Sdwan::Network",
@@ -103,7 +103,7 @@ module Api
             @rule.restore_attributes
 
             gate!(
-              action_category: "sdwan.firewall_rule_update",
+              action_category: ::Sdwan::Executors::UpdateFirewallRule::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::UpdateFirewallRule",
               params: { rule_id: @rule.id, attributes: attrs.to_h },
               source_type: "Sdwan::FirewallRule",
@@ -117,7 +117,7 @@ module Api
             require_permission("system.sdwan.firewall.manage")
             id = @rule.id
             gate!(
-              action_category: "sdwan.firewall_rule_delete",
+              action_category: ::Sdwan::Executors::DeleteFirewallRule::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::DeleteFirewallRule",
               params: { rule_id: id },
               source_type: "Sdwan::FirewallRule",

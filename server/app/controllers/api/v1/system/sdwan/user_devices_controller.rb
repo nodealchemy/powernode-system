@@ -60,7 +60,7 @@ module Api
             id = @device.id
             label = @device.try(:label)
             gate!(
-              action_category: "system.sdwan_user_device_revoke",
+              action_category: ::Sdwan::Executors::RevokeUserDevice::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::RevokeUserDevice",
               params: { grant_id: @grant.id, device_id: id, destroy_row: true },
               source_type: "Sdwan::UserDevice",
@@ -79,7 +79,7 @@ module Api
             id = @device.id
             label = @device.try(:label)
             gate!(
-              action_category: "system.sdwan_user_device_revoke",
+              action_category: ::Sdwan::Executors::RevokeUserDevice::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::RevokeUserDevice",
               params: { grant_id: @grant.id, device_id: id, reason: params[:reason] },
               source_type: "Sdwan::UserDevice",
