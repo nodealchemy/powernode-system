@@ -70,9 +70,11 @@ jest.mock('@/shared/components/approval-chains/ApprovalChainList', () => ({
 // prove:
 //
 //   gitops            — a whole domain the old literal list had no section for,
-//                       AND whose owning agent ("GitOps Reconciler") is not one
-//                       of SYSTEM_AGENT_NAMES, so `by_agent` drops it. Its value
-//                       can only come from the row itself.
+//                       AND a row this fixture's `by_agent` map omits, so its
+//                       value can only come from the row itself. (The live
+//                       pivot has listed "GitOps Reconciler" since
+//                       IMP-e3a30e2dd5ee; the omission here is the fixture's,
+//                       and stands in for any agent outside that list.)
 //   container_runtime — present, but WITHOUT the ghost the literal list carried.
 //   node_lifecycle    — a domain the literal list did cover, returning ONE of
 //                       its ten literals, so "the list is gone" is observable.
@@ -127,6 +129,15 @@ function autonomyResponse(byDomain: unknown = byDomainFixture) {
           // the live pivot's `next unless result.key?(bucket)` drop. If the
           // gitops select still shows the seeded verb, the value came from the
           // row and not from this map.
+          //
+          // The live pivot no longer drops THIS agent specifically —
+          // SYSTEM_AGENT_NAMES was extended with the GitOps Reconciler
+          // (IMP-e3a30e2dd5ee) — but the drop itself is unchanged and still
+          // reaches any agent outside that list, an operator's own agent
+          // included. The fixture is kept as-is because what it pins is that
+          // the panel reads the ROW, which must hold for any bucket by_agent
+          // omits; retargeting it would only rename the agent in a payload
+          // this file writes by hand.
           by_agent: {
             'Fleet Autonomy': [
               { action_category: 'system.cert_rotate', policy: 'require_approval' },

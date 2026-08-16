@@ -54,7 +54,16 @@ RSpec.describe "Api::V1::System::Autonomy", type: :request do
       # NOT a member of SYSTEM_AGENT_NAMES, so `by_agent_pivot` builds no bucket
       # for it and drops its rows entirely — the case that makes shipping the
       # bucket on the row load-bearing rather than convenient.
-      let!(:unlisted_agent) { create(:ai_agent, account: account, name: "GitOps Reconciler") }
+      #
+      # An OPERATOR'S OWN agent, deliberately. This fixture used to be the
+      # GitOps Reconciler, which read well until the constant was extended with
+      # it (IMP-e3a30e2dd5ee) and the example started asserting the opposite of
+      # what shipped. Any seeded system agent is a moving target here: the set
+      # of them that belongs in the constant is the subject of
+      # autonomy_agent_pivot_spec.rb, and this example is not about that
+      # question. An account-local agent can never be promoted into the list,
+      # so it pins the DROP behaviour without coupling to the membership call.
+      let!(:unlisted_agent) { create(:ai_agent, account: account, name: "Ops Team Custom Agent") }
 
       def policy!(category, scope:, agent: nil)
         Ai::InterventionPolicy.create!(
@@ -88,12 +97,12 @@ RSpec.describe "Api::V1::System::Autonomy", type: :request do
 
         pivot = payload
 
-        expect(pivot["by_agent"]).not_to have_key("GitOps Reconciler")
+        expect(pivot["by_agent"]).not_to have_key("Ops Team Custom Agent")
         expect(pivot["by_agent"].values.flatten.map { |r| r["id"] }).not_to include(row.id)
 
         dropped = domain_rows(pivot).find { |r| r["id"] == row.id }
         expect(dropped).to be_present
-        expect(dropped["agent_bucket"]).to eq("GitOps Reconciler")
+        expect(dropped["agent_bucket"]).to eq("Ops Team Custom Agent")
         expect(dropped["policy"]).to eq("notify_and_proceed")
       end
 
