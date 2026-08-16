@@ -190,6 +190,16 @@ done
 ws="$WORKSPACE"
 cd "$ws"
 
+# --- BEGIN stale-provenance clear ---
+# Core-source provenance (IMP-b2aebb9f4b17): drop any file a PREVIOUS job on
+# this runner left behind BEFORE deciding whether this module clones a parent.
+# A Gitea runner reuses /tmp across jobs, so a stale file would let a module
+# that clones no parent inherit the previous module's core sha — the same
+# silently-wrong provenance this capture exists to remove. After this line the
+# file exists only if THIS run's Class-B arm wrote it.
+rm -f /tmp/parent-provenance.env
+# --- END stale-provenance clear ---
+
 needs_parent=0
 case "$MODULE" in
   powernode-hub-backend|powernode-hub-worker|powernode-hub-frontend|powernode-extension-system) needs_parent=1 ;;
@@ -224,6 +234,51 @@ if [ "$needs_parent" = "1" ]; then
 
   echo "Cloning parent ${parent_host}/${parent_path}..."
   git clone --depth 1 "$clone_url" /tmp/parent
+
+  # --- BEGIN core-source provenance capture ---
+  # Record WHICH core commit this build actually landed on (IMP-b2aebb9f4b17).
+  #
+  # The clone above is deliberately UNPINNED — a bare `--depth 1` of whatever
+  # the remote's default branch points at right now — so the commit it resolved
+  # to is knowable only here, after the fact. Downstream, `built_from_sha` is
+  # the MODULE-SOURCE sha (this repo), not core; without this capture a Class-B
+  # artifact assembled from a stale core mirror reports IDENTICALLY to a correct
+  # one at every checkpoint (real oci_digest, real fsverity root, batch success,
+  # promotion proceeds). That is what shipped hub-backend v71 with three-day-old
+  # core on 2026-08-15 and cost two outages; it was found only by unpacking the
+  # layer and diffing a file by hand.
+  #
+  # The REMOTE is recorded alongside the sha because that incident was a correct
+  # branch name on a STALE MIRROR — github.com and git.powernode.net both carried
+  # a `develop`, three days apart. A sha alone would have looked plausible.
+  #
+  # DEFENSIVE: a rev-parse failure records `unknown` rather than aborting the
+  # build or omitting the key — an absent value must never be indistinguishable
+  # from a successful one. `|| true` keeps `set -e` from killing the build here.
+  #
+  # `--verify` is load-bearing, not decoration. A BARE `git rev-parse HEAD` on a
+  # repo with an UNBORN head prints the literal string "HEAD" to STDOUT (exit
+  # 128), which `|| true` swallows and the non-empty test then accepts — writing
+  # `core_source_sha=HEAD`, a fourth state that is neither a sha nor `unknown`
+  # and reads like an answer. That is reachable: `git clone --depth 1` of an
+  # empty/freshly-created parent mirror exits 0, and the extension-system arm
+  # below tolerates a parent with no frontend/package.json, so the module would
+  # build green and stamp "HEAD" permanently onto the published artifact.
+  # `--verify` prints nothing on failure, which is what the fallback needs.
+  #
+  # CREDENTIAL SAFETY: the remote recorded is ${parent_host}/${parent_path},
+  # NEVER $clone_url — for a private host that URL embeds PARENT_PAT in its
+  # userinfo. This value flows into the build result JSON and into an OCI
+  # annotation on the published artifact, both persisted and human-read; a token
+  # here would be a permanent cleartext leak.
+  core_source_sha="$(git -C /tmp/parent rev-parse --verify HEAD 2>/dev/null || true)"
+  [ -n "$core_source_sha" ] || core_source_sha="unknown"
+  {
+    printf 'core_source_sha=%s\n' "$core_source_sha"
+    printf 'core_source_remote=%s\n' "${parent_host}/${parent_path}"
+  } > /tmp/parent-provenance.env
+  echo "[stage-1.5] core provenance: ${core_source_sha} from ${parent_host}/${parent_path}"
+  # --- END core-source provenance capture ---
 fi
 
 case "$MODULE" in

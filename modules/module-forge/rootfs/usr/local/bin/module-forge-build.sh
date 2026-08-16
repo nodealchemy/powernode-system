@@ -96,10 +96,25 @@
 #                            redirected to this script's stderr too, so
 #                            stdout is reserved for the result JSON alone.
 #
-# Output — RESULT JSON, exactly these four keys (the CONTRACT shape Part
+# Output — RESULT JSON, exactly these six keys (the CONTRACT shape Part
 # B's handler must parse):
 #   {"oci_digest": "sha256:...", "fsverity_root": "...", "size": N,
-#    "built_from_sha": "..."}
+#    "built_from_sha": "...", "core_source_sha": "...",
+#    "core_source_remote": "..."}
+#
+# built_from_sha is the MODULE-SOURCE commit (the repo holding modules/),
+# NOT core. core_source_sha / core_source_remote are the parent
+# powernode-platform commit and host whose tree stage15.sh staged into a
+# Class-B artifact — added by IMP-b2aebb9f4b17, because without them an
+# artifact built from a stale core mirror is indistinguishable from a
+# correct one at every downstream checkpoint. Values: a sha; "unknown"
+# (a parent WAS cloned but the value is unattributable); or
+# "not_applicable" (module clones no parent). NOTE: the agent's moduleBuildResult struct
+# (agent/internal/runtime/tasks/handlers/module_build.go) does NOT yet
+# decode the two core_* keys — encoding/json drops unknown fields
+# silently — so today they reach the --result-file and the OCI annotations
+# push.sh stamps, but not System::NodeModuleVersion.artifacts. Threading
+# them further needs an AGENT rebuild; tracked separately.
 #
 # Exit: non-zero on any failure (set -euo pipefail propagates the first
 # one); cleanup (unmount + scratch removal) always runs via the EXIT trap,
@@ -447,12 +462,56 @@ SIZE=$(sed -n 's/^size=//p' "$META_FILE" | head -n1)
 [ -n "$FSVERITY_ROOT" ] || die "$META_FILE has no fsverity_root= line"
 [ -n "$SIZE" ] || die "$META_FILE has no size= line"
 
+# --- BEGIN core-source provenance read ---
+# Core-tree provenance (IMP-b2aebb9f4b17). Read stage15.sh's capture off the
+# chroot's filesystem exactly the way fsverity_root/size are read above — the
+# chroot shares the host's storage, so no copy is needed.
+#
+# built_from_sha below is the MODULE-SOURCE commit and is silent about core, so
+# for a Class-B module it cannot distinguish an artifact carrying a stale core
+# mirror from a correct one. These two fields are that missing answer, and they
+# are deliberately NAMED for core rather than anything that could be mistaken
+# for the module source.
+#
+# THREE DISTINGUISHABLE STATES — an absent field must never be indistinguishable
+# from a successful one:
+#   <sha>            a Class-B build; the core commit its tree came from
+#   "unknown"        a parent WAS cloned but the value is unattributable — either
+#                    stage15.sh's own rev-parse fallback, or its key missing here
+#   "not_applicable" this module clones no parent at all (not Class-B)
+#
+# The state is decided ONCE, by whether the file exists — never per key. Keying
+# it per field lets a present-but-truncated file report
+# `core_source_sha=not_applicable` NEXT TO a named `core_source_remote`: a
+# self-contradictory record, which a consumer reading the sha alone takes as
+# "not Class-B". The reachable cause is key drift, not a torn write — rename the
+# key in stage15.sh and every Class-B build silently reports not_applicable
+# forever with nothing failing anywhere. So `not_applicable` is reachable only
+# from the file-absent branch below.
+#
+# Explicit `if` block / `||` form, never `[ -n "$x" ] && y=...`: under this
+# script's `set -e` a trailing false test would abort the whole build.
+PARENT_PROV_FILE="$BUILDENV/tmp/parent-provenance.env"
+CORE_SOURCE_SHA="not_applicable"
+CORE_SOURCE_REMOTE="not_applicable"
+if [ -s "$PARENT_PROV_FILE" ]; then
+  CORE_SOURCE_SHA=$(sed -n 's/^core_source_sha=//p' "$PARENT_PROV_FILE" | head -n1)
+  CORE_SOURCE_REMOTE=$(sed -n 's/^core_source_remote=//p' "$PARENT_PROV_FILE" | head -n1)
+  [ -n "$CORE_SOURCE_SHA" ]    || CORE_SOURCE_SHA="unknown"
+  [ -n "$CORE_SOURCE_REMOTE" ] || CORE_SOURCE_REMOTE="unknown"
+fi
+log "core provenance: sha=${CORE_SOURCE_SHA} remote=${CORE_SOURCE_REMOTE}"
+# --- END core-source provenance read ---
+
 RESULT_JSON=$(jq -nc \
   --arg digest "$OCI_DIGEST" \
   --arg root "$FSVERITY_ROOT" \
   --argjson size "$SIZE" \
   --arg sha "$BUILD_SHA" \
-  '{oci_digest: $digest, fsverity_root: $root, size: $size, built_from_sha: $sha}')
+  --arg core_sha "$CORE_SOURCE_SHA" \
+  --arg core_remote "$CORE_SOURCE_REMOTE" \
+  '{oci_digest: $digest, fsverity_root: $root, size: $size, built_from_sha: $sha,
+    core_source_sha: $core_sha, core_source_remote: $core_remote}')
 
 if [ -n "$RESULT_FILE" ]; then
   printf '%s\n' "$RESULT_JSON" > "$RESULT_FILE"

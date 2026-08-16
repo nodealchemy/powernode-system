@@ -383,6 +383,27 @@ jobs:
           # rides through the same way built_from_sha already does.
           PACKAGES_COUNT=$(wc -l < "/tmp/$MODULE.packages.txt" | tr -d ' ')
           PACKAGES_SHA256=$(sha256sum "/tmp/$MODULE.packages.txt" | awk '{print $1}')
+          # --- BEGIN ci core-source provenance read ---
+          # Core-tree provenance (IMP-b2aebb9f4b17). built_from_sha below is the
+          # MODULE-SOURCE commit and says nothing about core, so for a Class-B
+          # module it cannot tell an artifact carrying a stale core mirror from a
+          # correct one — the v71 failure. Stage 1.5 recorded what its parent
+          # clone actually landed on; carry it into the artifacts payload, which
+          # is JSONB and is what system_list_module_versions returns, so the
+          # answer is reachable without a shell on the runner.
+          #
+          # State decided ONCE by the file's existence, matching
+          # module-forge-build.sh: a sha / `unknown` (a parent was cloned but the
+          # value is unattributable) / `not_applicable` (no parent cloned).
+          CORE_SOURCE_SHA="not_applicable"
+          CORE_SOURCE_REMOTE="not_applicable"
+          if [ -s /tmp/parent-provenance.env ]; then
+            CORE_SOURCE_SHA=$(sed -n 's/^core_source_sha=//p' /tmp/parent-provenance.env | head -n1)
+            CORE_SOURCE_REMOTE=$(sed -n 's/^core_source_remote=//p' /tmp/parent-provenance.env | head -n1)
+            [ -n "$CORE_SOURCE_SHA" ]    || CORE_SOURCE_SHA="unknown"
+            [ -n "$CORE_SOURCE_REMOTE" ] || CORE_SOURCE_REMOTE="unknown"
+          fi
+          # --- END ci core-source provenance read ---
           payload=$(jq -nc \
             --arg name       "$MODULE" \
             --arg tag        "${{ steps.push.outputs.tag }}" \
@@ -393,6 +414,8 @@ jobs:
             --arg manifest   "$MANIFEST_B64" \
             --arg pkg_count  "$PACKAGES_COUNT" \
             --arg pkg_sha256 "$PACKAGES_SHA256" \
+            --arg core_sha    "$CORE_SOURCE_SHA" \
+            --arg core_remote "$CORE_SOURCE_REMOTE" \
             '{
                module_name: $name,
                tag:         $tag,
@@ -403,7 +426,9 @@ jobs:
                    fsverity_root:  $root,
                    size:           ($size | tonumber),
                    media_type:     "application/vnd.powernode.erofs",
-                   built_from_sha: $sha
+                   built_from_sha: $sha,
+                   core_source_sha:    $core_sha,
+                   core_source_remote: $core_remote
                  },
                  packages: {
                    oci_ref:    $ref,
