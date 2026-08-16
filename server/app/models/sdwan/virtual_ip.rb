@@ -169,7 +169,8 @@ module Sdwan
     # #failover! cannot fail for any other reason: a legacy row whose
     # holder_peer_ids debris IS the failover head still collides on the
     # one-active-assignment index down there. That is a bug in the sweep
-    # rather than a missing precondition, and is filed as IMP-56bcfaf2feb4.
+    # rather than a missing precondition, and is filed separately as
+    # recommendation 01a00a28-8ceb-78a5-ae3b-b672d10b5010.
     #
     # Every surface that can start a failover asks this BEFORE doing anything
     # else: Ai::Tools::SdwanTool#failover_virtual_ip and
