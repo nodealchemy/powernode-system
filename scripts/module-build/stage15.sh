@@ -190,6 +190,7 @@ done
 ws="$WORKSPACE"
 cd "$ws"
 
+# --- BEGIN stale-provenance clear ---
 # Core-source provenance (IMP-b2aebb9f4b17): drop any file a PREVIOUS job on
 # this runner left behind BEFORE deciding whether this module clones a parent.
 # A Gitea runner reuses /tmp across jobs, so a stale file would let a module
@@ -197,6 +198,7 @@ cd "$ws"
 # silently-wrong provenance this capture exists to remove. After this line the
 # file exists only if THIS run's Class-B arm wrote it.
 rm -f /tmp/parent-provenance.env
+# --- END stale-provenance clear ---
 
 needs_parent=0
 case "$MODULE" in
@@ -254,12 +256,22 @@ if [ "$needs_parent" = "1" ]; then
   # build or omitting the key — an absent value must never be indistinguishable
   # from a successful one. `|| true` keeps `set -e` from killing the build here.
   #
+  # `--verify` is load-bearing, not decoration. A BARE `git rev-parse HEAD` on a
+  # repo with an UNBORN head prints the literal string "HEAD" to STDOUT (exit
+  # 128), which `|| true` swallows and the non-empty test then accepts — writing
+  # `core_source_sha=HEAD`, a fourth state that is neither a sha nor `unknown`
+  # and reads like an answer. That is reachable: `git clone --depth 1` of an
+  # empty/freshly-created parent mirror exits 0, and the extension-system arm
+  # below tolerates a parent with no frontend/package.json, so the module would
+  # build green and stamp "HEAD" permanently onto the published artifact.
+  # `--verify` prints nothing on failure, which is what the fallback needs.
+  #
   # CREDENTIAL SAFETY: the remote recorded is ${parent_host}/${parent_path},
   # NEVER $clone_url — for a private host that URL embeds PARENT_PAT in its
   # userinfo. This value flows into the build result JSON and into an OCI
   # annotation on the published artifact, both persisted and human-read; a token
   # here would be a permanent cleartext leak.
-  core_source_sha="$(git -C /tmp/parent rev-parse HEAD 2>/dev/null || true)"
+  core_source_sha="$(git -C /tmp/parent rev-parse --verify HEAD 2>/dev/null || true)"
   [ -n "$core_source_sha" ] || core_source_sha="unknown"
   {
     printf 'core_source_sha=%s\n' "$core_source_sha"

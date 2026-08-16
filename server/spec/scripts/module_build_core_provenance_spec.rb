@@ -5,6 +5,7 @@ require "tmpdir"
 require "fileutils"
 require "json"
 require "shellwords"
+require "yaml"
 
 # IMP-b2aebb9f4b17: a module build recorded NO core-tree provenance.
 #
@@ -88,6 +89,12 @@ RSpec.describe "module build core-source provenance" do
           git.call("add", "-A")
           git.call("commit", "-q", "-m", "core commit")
           `git -C #{parent_dir} rev-parse HEAD`.strip
+        when :empty_repo
+          # `git clone --depth 1` of an EMPTY remote exits 0 (only a warning),
+          # leaving a real repo with an UNBORN HEAD.
+          FileUtils.mkdir_p(parent_dir)
+          system("git", "init", "-q", "-b", "develop", parent_dir, out: File::NULL, err: File::NULL)
+          nil
         when :not_a_repo
           FileUtils.mkdir_p(parent_dir)
           nil
@@ -154,6 +161,26 @@ RSpec.describe "module build core-source provenance" do
       end
     end
 
+    # `git rev-parse HEAD` on an UNBORN head prints the literal string "HEAD" to
+    # STDOUT and exits 128 — so a bare rev-parse records `core_source_sha=HEAD`,
+    # a fourth state that is neither a sha nor `unknown` and reads like an
+    # answer. It is reachable: cloning an empty/freshly-created parent mirror
+    # exits 0, and the powernode-extension-system arm tolerates a parent with no
+    # frontend/package.json (stage15.sh logs and continues), so that module would
+    # build green and stamp `HEAD` permanently onto the published artifact.
+    # `rev-parse --verify` prints nothing on failure, which is what the `unknown`
+    # fallback needs.
+    it "records `unknown`, never the literal string HEAD, for a parent with an unborn HEAD" do
+      Dir.mktmpdir("stage15-prov") do |root|
+        status, prov, out, _sha = run_capture(root, parent: :empty_repo)
+
+        expect(status).to be_success, out
+        expect(prov).not_to be_nil, out
+        expect(prov["core_source_sha"]).not_to eq("HEAD")
+        expect(prov["core_source_sha"]).to eq("unknown")
+      end
+    end
+
     it "records `unknown` when the clone left nothing behind at all" do
       Dir.mktmpdir("stage15-prov") do |root|
         status, prov, out, _sha = run_capture(root, parent: :missing)
@@ -186,28 +213,53 @@ RSpec.describe "module build core-source provenance" do
       expect(block).to match(/PARENT_PAT/)
     end
 
-    # The literal paths the sandboxed run substitutes away.
-    it "writes the provenance file at the path push.sh and module-forge-build.sh read" do
-      src = File.read(stage15_script)
-
-      expect(src).to include("/tmp/parent-provenance.env")
+    # The literal paths the sandboxed runs substitute away. Asserted on ALL
+    # THREE files: the writer and both readers must agree on the same path, and
+    # the sandboxing gsub in the examples above cannot prove that agreement.
+    it "writes the provenance file at the exact path push.sh and module-forge-build.sh read" do
       expect(extract_block(stage15_script, "core-source provenance capture"))
         .to include("/tmp/parent-provenance.env")
+      expect(File.read(push_script)).to include("/tmp/parent-provenance.env")
+      # The forge reads it from OUTSIDE the chroot, so its path is $BUILDENV-relative.
+      expect(File.read(forge_script)).to include('$BUILDENV/tmp/parent-provenance.env')
     end
 
     # A CI runner reuses /tmp across jobs. Without an unconditional clear, a
     # provenance file left by a PREVIOUS Class-B build would make a later
     # non-parent module claim a core sha it never cloned — the same class of
     # silently-wrong provenance this task exists to remove.
-    it "clears a stale provenance file before the needs_parent branch" do
+    #
+    # EXECUTED, not grepped: an `src.index("rm -f …")` assertion passes just as
+    # happily when the line is commented out, or deleted with the string left
+    # behind in any comment — which is exactly the reuse hazard going unguarded.
+    it "actually deletes a stale provenance file left by a previous job" do
+      Dir.mktmpdir("stage15-clear") do |root|
+        stale = File.join(root, "parent-provenance.env")
+        File.write(stale, "core_source_sha=stalefromapreviousjob\n")
+
+        block = extract_block(stage15_script, "stale-provenance clear")
+                  .gsub("/tmp/parent", File.join(root, "parent"))
+        out = IO.popen({ "PATH" => "/usr/bin:/bin" },
+                       ["bash", "-c", "set -euo pipefail\n#{block}"],
+                       err: [:child, :out], unsetenv_others: true, &:read)
+
+        expect($?).to be_success, out
+        expect(File).not_to exist(stale),
+                            "a previous job's provenance file survived into this build"
+      end
+    end
+
+    # …and it must run for EVERY module, not only inside the parent branch —
+    # otherwise the module that inherits the stale sha (one that clones no
+    # parent) is precisely the one that never clears it.
+    it "clears before the needs_parent branch, so non-parent modules are covered too" do
       src = File.read(stage15_script)
-      clear_at  = src.index("rm -f /tmp/parent-provenance.env")
+      clear_at  = src.index(extract_block(stage15_script, "stale-provenance clear").strip.lines.last.strip)
       branch_at = src.index('if [ "$needs_parent" = "1" ]')
 
-      expect(clear_at).not_to be_nil, "no unconditional stale-provenance clear in stage15.sh"
+      expect(clear_at).not_to be_nil
       expect(branch_at).not_to be_nil
-      expect(clear_at).to be < branch_at,
-                          "the clear must run for EVERY module, not only inside the parent branch"
+      expect(clear_at).to be < branch_at
     end
   end
 
@@ -276,6 +328,132 @@ RSpec.describe "module build core-source provenance" do
 
         expect(args).to include("org.powernode.core_source_sha=unknown")
         expect(args).to include("org.powernode.core_source_remote=git.powernode.org/x/y")
+      end
+    end
+
+    # The two per-key guards need a fixture the file-exists guard LETS THROUGH,
+    # or they are unpinned no matter how many of the examples above pass (both
+    # guards otherwise reject exactly the same fixtures). A provenance file that
+    # exists but is missing a key is what a build killed mid-write leaves behind;
+    # an empty `--annotation org.powernode.core_source_sha=` on a published
+    # artifact is worse than no annotation, because it reads as an answer.
+    it "omits only the missing key when the provenance file is truncated" do
+      Dir.mktmpdir("push-prov") do |root|
+        status, args = run_annotations(root, provenance: "core_source_remote=github.com/o/r\n")
+
+        expect(status).to be_success, args.join("\n")
+        expect(args).to include("org.powernode.core_source_remote=github.com/o/r")
+        expect(args.grep(/core_source_sha/)).to be_empty
+      end
+    end
+
+    it "omits only the remote when the remote line is missing" do
+      Dir.mktmpdir("push-prov") do |root|
+        status, args = run_annotations(root, provenance: "core_source_sha=deadbeef\n")
+
+        expect(status).to be_success, args.join("\n")
+        expect(args).to include("org.powernode.core_source_sha=deadbeef")
+        expect(args.grep(/core_source_remote/)).to be_empty
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Gitea CI path — the ONE path that reaches NodeModuleVersion.artifacts today
+  # ---------------------------------------------------------------------------
+  #
+  # The native path's result JSON dead-ends at the agent's moduleBuildResult
+  # struct, which does not decode the two core_* keys (encoding/json drops
+  # unknown fields silently) — closing that needs an AGENT rebuild. The CI
+  # workflow instead POSTs its own artifacts payload straight to
+  # /api/v1/system/module_publications, whose controller does
+  # `params[:artifacts].to_unsafe_h` with NO strong-params filtering and writes
+  # it to the JSONB column verbatim (module_publications_controller.rb:62-63,
+  # :141) — so a key added here genuinely lands in what
+  # system_list_module_versions returns.
+  describe "Gitea workflow notify-platform payload" do
+    let(:workflow) { File.join(ext_root, ".gitea/workflows/build-platform-modules.yaml") }
+
+    it "is still valid YAML after the payload edit" do
+      expect { YAML.load_file(workflow, aliases: true) }.not_to raise_error
+    end
+
+    # Executes the shipped provenance read + the real jq payload assembly. A jq
+    # syntax error here would break EVERY CI module build, and would otherwise
+    # only be discovered on the next dispatch.
+    def run_payload(root, provenance:)
+      prov = File.join(root, "parent-provenance.env")
+      File.write(prov, provenance) if provenance
+
+      src = File.read(workflow)
+      read_block = extract_block(workflow, "ci core-source provenance read")
+      payload_block = src[/^\s*payload=\$\(jq -nc \\.*?\n\s*\}'\)$/m]
+      raise "could not locate the payload jq assembly in #{workflow}" unless payload_block
+
+      # The step is a YAML literal block: strip its indentation, and neutralise
+      # the Gitea Actions `${{ … }}` expressions, which are substituted at
+      # workflow-render time and are not shell syntax.
+      body = "#{read_block}\n#{payload_block}"
+              .gsub(/\$\{\{[^}]*\}\}/, "actions-expr")
+              .gsub("/tmp/parent-provenance.env", prov)
+      body = body.lines.map { |l| l.sub(/\A {10}/, "") }.join
+
+      harness = <<~SH
+        set -euo pipefail
+        MODULE=powernode-hub-backend
+        EROFS_ROOT=deadbeef
+        EROFS_SIZE=4096
+        MANIFEST_B64=bWFuaWZlc3Q=
+        PACKAGES_COUNT=12
+        PACKAGES_SHA256=abc123
+        GITHUB_SHA=modulesourcesha000000000000000000000000
+        #{body}
+        printf '%s\\n' "$payload"
+      SH
+
+      out = IO.popen({ "PATH" => "/usr/bin:/bin" }, ["bash", "-c", harness],
+                     err: [:child, :out], unsetenv_others: true, &:read)
+      [$?, out, (JSON.parse(out.lines.map(&:strip).reject(&:empty?).last) rescue nil)]
+    end
+
+    it "carries the core sha and remote into artifacts.erofs, distinct from built_from_sha" do
+      Dir.mktmpdir("ci-payload") do |root|
+        status, out, payload = run_payload(
+          root,
+          provenance: "core_source_sha=fedcba9876543210fedcba9876543210fedcba98\n" \
+                      "core_source_remote=github.com/nodealchemy/powernode-platform\n"
+        )
+
+        expect(status).to be_success, out
+        expect(payload).not_to be_nil, "payload jq produced no parseable JSON:\n#{out}"
+
+        erofs = payload.dig("artifacts", "erofs")
+        expect(erofs["core_source_sha"]).to eq("fedcba9876543210fedcba9876543210fedcba98")
+        expect(erofs["core_source_remote"]).to eq("github.com/nodealchemy/powernode-platform")
+        expect(erofs["built_from_sha"]).to eq("modulesourcesha000000000000000000000000")
+        expect(erofs["core_source_sha"]).not_to eq(erofs["built_from_sha"])
+      end
+    end
+
+    it "keeps the pre-existing payload keys intact" do
+      Dir.mktmpdir("ci-payload") do |root|
+        _status, out, payload = run_payload(root, provenance: "core_source_sha=a\ncore_source_remote=b\n")
+
+        expect(payload).not_to be_nil, out
+        expect(payload["module_name"]).to eq("powernode-hub-backend")
+        expect(payload.dig("artifacts", "erofs", "fsverity_root")).to eq("deadbeef")
+        expect(payload.dig("artifacts", "erofs", "size")).to eq(4096)
+        expect(payload.dig("artifacts", "packages", "count")).to eq(12)
+      end
+    end
+
+    it "reports not_applicable for a module that cloned no parent" do
+      Dir.mktmpdir("ci-payload") do |root|
+        status, out, payload = run_payload(root, provenance: nil)
+
+        expect(status).to be_success, out
+        expect(payload.dig("artifacts", "erofs", "core_source_sha")).to eq("not_applicable")
+        expect(payload.dig("artifacts", "erofs", "core_source_remote")).to eq("not_applicable")
       end
     end
   end
@@ -410,6 +588,29 @@ RSpec.describe "module build core-source provenance" do
       expect(result).to have_key("core_source_sha")
       expect(result["core_source_sha"]).to eq("not_applicable")
       expect(result["core_source_remote"]).to eq("not_applicable")
+    end
+
+    # not_applicable means "this module clones no parent" and must be reachable
+    # ONLY from the file-absent branch. Deciding it per KEY lets a present file
+    # with one key missing report `core_source_sha=not_applicable` alongside a
+    # named `core_source_remote` — a self-contradictory record, and one a
+    # consumer keying on the sha alone reads as "not Class-B". The reachable
+    # cause is key drift: rename the key in stage15.sh and every Class-B build
+    # silently reports not_applicable forever, with nothing failing anywhere.
+    it "reports `unknown`, not `not_applicable`, when the file is present but the sha key is missing" do
+      status, result, out = run_build(provenance: "core_source_remote=github.com/o/r\n")
+
+      expect(status).to be_success, out
+      expect(result["core_source_sha"]).to eq("unknown")
+      expect(result["core_source_remote"]).to eq("github.com/o/r")
+    end
+
+    it "reports `unknown` for the remote when only the sha key is present" do
+      status, result, out = run_build(provenance: "core_source_sha=deadbeefcafe\n")
+
+      expect(status).to be_success, out
+      expect(result["core_source_sha"]).to eq("deadbeefcafe")
+      expect(result["core_source_remote"]).to eq("unknown")
     end
 
     it "propagates stage15's `unknown` rather than masking it as not_applicable" do

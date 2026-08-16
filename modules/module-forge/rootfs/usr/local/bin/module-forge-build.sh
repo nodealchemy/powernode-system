@@ -108,8 +108,8 @@
 # Class-B artifact — added by IMP-b2aebb9f4b17, because without them an
 # artifact built from a stale core mirror is indistinguishable from a
 # correct one at every downstream checkpoint. Values: a sha; "unknown"
-# (Class-B, rev-parse failed); or "not_applicable" (module clones no
-# parent). NOTE: the agent's moduleBuildResult struct
+# (a parent WAS cloned but the value is unattributable); or
+# "not_applicable" (module clones no parent). NOTE: the agent's moduleBuildResult struct
 # (agent/internal/runtime/tasks/handlers/module_build.go) does NOT yet
 # decode the two core_* keys — encoding/json drops unknown fields
 # silently — so today they reach the --result-file and the OCI annotations
@@ -476,21 +476,29 @@ SIZE=$(sed -n 's/^size=//p' "$META_FILE" | head -n1)
 # THREE DISTINGUISHABLE STATES — an absent field must never be indistinguishable
 # from a successful one:
 #   <sha>            a Class-B build; the core commit its tree came from
-#   "unknown"        a Class-B build whose rev-parse failed (stage15.sh's own
-#                    fallback) — core-derived content, unattributable
+#   "unknown"        a parent WAS cloned but the value is unattributable — either
+#                    stage15.sh's own rev-parse fallback, or its key missing here
 #   "not_applicable" this module clones no parent at all (not Class-B)
 #
-# Explicit `if` blocks, not `[ -n "$x" ] && y=...`: under this script's `set -e`
-# a trailing false test would abort the whole build.
+# The state is decided ONCE, by whether the file exists — never per key. Keying
+# it per field lets a present-but-truncated file report
+# `core_source_sha=not_applicable` NEXT TO a named `core_source_remote`: a
+# self-contradictory record, which a consumer reading the sha alone takes as
+# "not Class-B". The reachable cause is key drift, not a torn write — rename the
+# key in stage15.sh and every Class-B build silently reports not_applicable
+# forever with nothing failing anywhere. So `not_applicable` is reachable only
+# from the file-absent branch below.
+#
+# Explicit `if` block / `||` form, never `[ -n "$x" ] && y=...`: under this
+# script's `set -e` a trailing false test would abort the whole build.
 PARENT_PROV_FILE="$BUILDENV/tmp/parent-provenance.env"
 CORE_SOURCE_SHA="not_applicable"
 CORE_SOURCE_REMOTE="not_applicable"
 if [ -s "$PARENT_PROV_FILE" ]; then
-  _prov_sha=$(sed -n 's/^core_source_sha=//p' "$PARENT_PROV_FILE" | head -n1)
-  _prov_remote=$(sed -n 's/^core_source_remote=//p' "$PARENT_PROV_FILE" | head -n1)
-  if [ -n "$_prov_sha" ]; then CORE_SOURCE_SHA="$_prov_sha"; fi
-  if [ -n "$_prov_remote" ]; then CORE_SOURCE_REMOTE="$_prov_remote"; fi
-  unset _prov_sha _prov_remote
+  CORE_SOURCE_SHA=$(sed -n 's/^core_source_sha=//p' "$PARENT_PROV_FILE" | head -n1)
+  CORE_SOURCE_REMOTE=$(sed -n 's/^core_source_remote=//p' "$PARENT_PROV_FILE" | head -n1)
+  [ -n "$CORE_SOURCE_SHA" ]    || CORE_SOURCE_SHA="unknown"
+  [ -n "$CORE_SOURCE_REMOTE" ] || CORE_SOURCE_REMOTE="unknown"
 fi
 log "core provenance: sha=${CORE_SOURCE_SHA} remote=${CORE_SOURCE_REMOTE}"
 # --- END core-source provenance read ---
