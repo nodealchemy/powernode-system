@@ -35,7 +35,11 @@ module System
     #     card instead of rendering that state to an approver. Do not "fix"
     #     such a raise by threading the operation; the absence is the guard.
     #
-    # Subclasses normally only override `perform` and `summarize`.
+    # Subclasses normally only override `perform`, `summarize` and `impact`.
+    # The card's Impact line is COMPOSED (IMP-35bc8eda71ad): `#impact` supplies
+    # an executor's own prose and `#full_impact` appends the field names the
+    # operation will write, so an override adds to the line rather than
+    # replacing it. See `#changed_field_impact` for why those are keys only.
     class Base
       # Keys a caller must never mass-assign through params[:attributes].
       # account_id is mass-assignable on every model these executors write, the
@@ -49,6 +53,15 @@ module System
       # REST controller and the MCP tool both construct their executor params
       # hash literally, so a caller cannot supply or suppress this key.
       REPLAY_BASELINE_KEY = :replay_baseline
+
+      # How many attribute names an approval card will list before summarising
+      # the remainder as a count. A card is a HUMAN gate: an unbounded list does
+      # not inform an approver, it buries the "Requested by:" line under a wall
+      # of identifiers. Bounded here rather than trusted to each surface's
+      # permit list, for the reason TENANCY_ATTRIBUTE_KEYS states above — params
+      # are caller-influenced, stored verbatim, and replayed with no
+      # re-validation.
+      CHANGED_FIELD_LIMIT = 12
 
       # Raised when the row moved underneath a parked operation. A StandardError
       # so Ai::DeferredOperation#execute_now! fails the row and
@@ -119,7 +132,7 @@ module System
       def preview_payload
         {
           summary: summarize,
-          impact: impact
+          impact: full_impact
         }
       end
 
@@ -136,6 +149,66 @@ module System
 
       def impact
         nil
+      end
+
+      # The card's Impact line: the executor's own prose, then the field NAMES
+      # this operation will write.
+      #
+      # Composed HERE rather than left to each executor (IMP-35bc8eda71ad).
+      # Every update executor returned the bare `nil` above, so
+      # Ai::DeferredOperationApprovalContent — which appends the impact only
+      # `if impact.present?` — rendered a card with one fewer line, and two
+      # operations against one row were indistinguishable. The traced instance:
+      # `system_sdwan_update_peer_lan_subnets` and `system_sdwan_set_peer_tags`
+      # share this executor, its #summarize AND their gate `description:`, so a
+      # change that rewrites AllowedIPs for every peer routing to this one and a
+      # cosmetic tag relabel produced BYTE-IDENTICAL approval cards.
+      #
+      # #impact stays the subclass hook and its prose still leads the line — but
+      # the field list is deliberately NOT part of what an override replaces.
+      # An executor added tomorrow with a hand-written `def impact` would
+      # otherwise reintroduce exactly this defect, silently and per-executor;
+      # inheriting the composition means it cannot. Subclasses override #impact,
+      # never this.
+      def full_impact
+        [ impact, changed_field_impact ].compact_blank.join(" — ").presence
+      end
+
+      # Keys only, never values — and that is a REDACTION property, not a style
+      # choice. Ai::AutonomyApprovalActions#serialize_deferred_operation emits
+      # `params: Ai::SensitiveParams.filter(op.params)` and `preview: op.preview`
+      # side by side, and only the first of the two is filtered. A card
+      # rendering attribute values would therefore serve, one key over, the
+      # plaintext that filter had just masked — to an audience defined by the
+      # approval permissions rather than by whatever permission authorised the
+      # original call. Runtime::BootstrapK3sCluster parks `server_token` and
+      # `agent_token` under exactly this key, so the exposure is concrete.
+      #
+      # Naming the key is what the approver needed anyway: "changes lan_subnets"
+      # and "changes tags" is the whole difference between rerouting a mesh and
+      # relabelling a row.
+      #
+      # Reads through `attrs`, so what the card names is the same hash the
+      # executor will write — TENANCY_ATTRIBUTE_KEYS stripped, because naming a
+      # key the executor provably refuses to write would misinform the approver
+      # in the other direction.
+      #
+      # Shape-guarded rather than rescued: this now runs on EVERY preview, and
+      # Ai::DeferredOperation#preview rescues StandardError into
+      # `{ summary: action_category }` — so a caller-supplied non-Hash under
+      # :attributes would have blanked the whole card, losing the row's NAME to
+      # a defect in a line that is merely additive. Name nothing instead.
+      def changed_field_impact
+        raw = params[:attributes]
+        return nil unless raw.respond_to?(:keys)
+
+        fields = attrs.keys.map(&:to_s).sort
+        return nil if fields.empty?
+
+        shown = fields.first(CHANGED_FIELD_LIMIT)
+        omitted = fields.size - shown.size
+        suffix = omitted.positive? ? ", +#{omitted} more" : ""
+        "Sets fields: #{shown.join(', ')}#{suffix}"
       end
 
       # Create/update attribute payload coerced to a symbol-keyed Hash. The

@@ -41,6 +41,19 @@ module Sdwan
         "Update SDWAN peer #{peer.operator_label}"
       end
 
+      # No #impact override here, deliberately (IMP-35bc8eda71ad). This executor
+      # is the whole reason the field naming lives on Base rather than on each
+      # subclass: `system_sdwan_update_peer_lan_subnets` and
+      # `system_sdwan_set_peer_tags` are gated as ONE action through this one
+      # class, so #summarize and the two gate `description:` strings are — and
+      # must remain — identical for both. Before the field list, that made a
+      # change rewriting AllowedIPs for every peer routing to this one render a
+      # card byte-identical to a cosmetic tag relabel.
+      #
+      # Prose here could only say what is true of BOTH arms, which is what the
+      # card already said. `Sets fields: lan_subnets` versus `Sets fields: tags`
+      # is the distinction the approver needs, and Base composes it from the
+      # parked attributes. Anything added here is appended, never substituted.
     end
   end
 end
