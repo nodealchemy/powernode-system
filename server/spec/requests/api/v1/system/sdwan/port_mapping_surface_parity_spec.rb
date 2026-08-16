@@ -76,9 +76,26 @@ RSpec.describe "SDWAN port-mapping surface parity", type: :request do
 
   # The MCP arms call the hub column by the name their schema, their
   # serializers and their list filter have always used.
+  #
+  # PINNED LITERALLY, and that is the point. The first version of this file
+  # derived the mapping by inverting Ai::Tools::SdwanTool::
+  # PORT_MAPPING_OPTION_ALIASES — which made every example here blind to the
+  # alias table itself: emptying the constant moved the production arm and the
+  # oracle together, so a mutant that renamed the published `hub_peer_id`
+  # parameter to the raw column name passed the whole file. `hub_peer_id` is a
+  # CONTRACT (create's schema parameter, both serializers' key, list's filter),
+  # not an implementation detail, so the spec has to state it independently.
+  let(:caller_name_for) { { sdwan_peer_id: :hub_peer_id }.freeze }
+
+  # Field SET follows the model's writable list — that coupling is intended,
+  # it is what makes a new writable attribute reach these examples. Only the
+  # NAMES are pinned.
+  let(:expected_option_names) do
+    ::Sdwan::PortMapping::WRITABLE_ATTRIBUTES.map { |a| caller_name_for.fetch(a, a) }
+  end
+
   def under_caller_names(attrs)
-    aliases = ::Ai::Tools::SdwanTool::PORT_MAPPING_OPTION_ALIASES.invert
-    attrs.transform_keys { |k| aliases.fetch(k, k) }
+    attrs.transform_keys { |k| caller_name_for.fetch(k, k) }
   end
 
   def parked_attributes
@@ -156,7 +173,7 @@ RSpec.describe "SDWAN port-mapping surface parity", type: :request do
 
       expect(result[:success]).to be false
       named = result[:error].split("permitted (options):").last.split(",").map { |s| s.strip.to_sym }
-      expect(named).to match_array(::Ai::Tools::SdwanTool.port_mapping_option_names)
+      expect(named).to match_array(expected_option_names)
     end
 
     it "advertises the same set in its tool schema" do
@@ -164,9 +181,11 @@ RSpec.describe "SDWAN port-mapping surface parity", type: :request do
                                         .fetch("system_sdwan_update_port_mapping")
                                         .dig(:parameters, :options, :description)
 
-      ::Ai::Tools::SdwanTool.port_mapping_option_names.each do |field|
+      expected_option_names.each do |field|
         expect(described).to include(field.to_s), "the schema does not advertise #{field}"
       end
+      expect(described).not_to include("sdwan_peer_id"),
+                               "the schema advertises the raw column name instead of hub_peer_id"
     end
   end
 
