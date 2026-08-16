@@ -269,6 +269,35 @@ fi
 # provenance attestation (io.powernode.provenance_uri) — that
 # remains queued as 019f3112-f719-7152-aeac-51a3e833259f.
 ORAS_PUSH_ARGS+=(--annotation "org.powernode.built_from_sha=${GITHUB_SHA}")
+
+# --- BEGIN core-source provenance annotations ---
+# Stamp the CORE (parent powernode-platform) commit whose tree was assembled
+# into this artifact, alongside built_from_sha above — which is the MODULE-SOURCE
+# commit and says nothing about core (IMP-b2aebb9f4b17).
+#
+# This is the channel that makes core drift visible WITHOUT a shell on the
+# builder: `oras manifest fetch` on the published artifact answers "which core
+# commit is inside this erofs, and which host did it come from?" directly and
+# permanently, for anyone, long after the builder's scratch tree is gone. The
+# remote is carried too — the incident this fixes was a right-branch-name on a
+# stale MIRROR, where the sha alone looked entirely plausible.
+#
+# Written by stage15.sh's Class-B parent-clone arm. ABSENT for every module that
+# clones no parent, and absent is the correct distinct answer there ("this module
+# has no core content") — not to be confused with the value `unknown`, which
+# means "it has core content and the sha could not be resolved".
+if [[ -f /tmp/parent-provenance.env ]]; then
+  CORE_SOURCE_SHA=$(sed -n 's/^core_source_sha=//p' /tmp/parent-provenance.env | head -n1)
+  CORE_SOURCE_REMOTE=$(sed -n 's/^core_source_remote=//p' /tmp/parent-provenance.env | head -n1)
+  if [[ -n "$CORE_SOURCE_SHA" ]]; then
+    ORAS_PUSH_ARGS+=(--annotation "org.powernode.core_source_sha=${CORE_SOURCE_SHA}")
+  fi
+  if [[ -n "$CORE_SOURCE_REMOTE" ]]; then
+    ORAS_PUSH_ARGS+=(--annotation "org.powernode.core_source_remote=${CORE_SOURCE_REMOTE}")
+  fi
+fi
+# --- END core-source provenance annotations ---
+
 oras push "${ORAS_PUSH_ARGS[@]}"
 
 # Also tag this build as `:latest` so the drift-check's
