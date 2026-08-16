@@ -85,6 +85,17 @@ module Api
             # the instance has no in-flight upgrade_boot_image task.
             ::System::BootImage::UpgradeReconciler.reconcile!(instance: current_instance)
 
+            # restart_after_update: this heartbeat is the exact moment the
+            # platform learns what the instance has actually MATERIALIZED, so
+            # it is the only safe place to decide that a dependent service now
+            # needs recycling. A module declaring `services: []` never triggers
+            # the agent's own restart path (it restarts only services whose
+            # unit content drifts), so without this its new code sits on disk
+            # while the running process serves the previous version. Cheap
+            # no-op when nothing declares the field; never raises into the
+            # heartbeat. See System::RestartAfterUpdate.
+            ::System::RestartAfterUpdate.reconcile!(instance: current_instance)
+
             # Transition pending → running on first heartbeat post-enrollment.
             current_instance.mark_running! if current_instance.may_mark_running?
 
@@ -210,7 +221,16 @@ module Api
           def fail_task
             operation = current_instance.tasks.find(params[:id])
 
-            unless operation.pending? || operation.running? || operation.status == "acknowledged"
+            # A restart_after_update task that settle! completed was completed
+            # on an INFERENCE (the reporting channel dropped, which is usually
+            # evidence the restart ran), not on the agent's own report. If the
+            # agent later manages to report a genuine failure, that is real
+            # evidence and must win over the inference — otherwise a restart
+            # that stopped the unit and failed to bring it back is recorded as
+            # a success. Every other terminal state stays un-overridable.
+            settled = ::System::RestartAfterUpdate.settled?(operation)
+            unless operation.pending? || operation.running? ||
+                   operation.status == "acknowledged" || settled
               return render_error("Operation cannot be marked as failed from #{operation.status} state")
             end
 
@@ -257,8 +277,22 @@ module Api
             }
           end
 
+          # Everything this returns is handed to the agent, which re-executes
+          # it: tasks/loop.go tick() does NOT filter by status, and its only
+          # re-entry guard is the in-memory `isInflight` set that processTask's
+          # defer clears the moment the completion POST fails.
+          #
+          # `running` is in this list so a crashed agent can resume mid-task.
+          # For a unit-scoped restart that resumption is actively harmful: the
+          # one command whose completion report is reliably LOST is a restart
+          # of the platform's own rails unit (it kills the process the agent
+          # reports to), so re-offering it restarts the platform every ~30s
+          # forever. RestartAfterUpdate.offerable withholds exactly those;
+          # every other command's behaviour is unchanged.
           def pending_tasks
-            current_instance.tasks.where(status: %w[pending acknowledged running])
+            ::System::RestartAfterUpdate.offerable(
+              current_instance.tasks.where(status: %w[pending acknowledged running])
+            )
           end
 
           def pending_operations_count

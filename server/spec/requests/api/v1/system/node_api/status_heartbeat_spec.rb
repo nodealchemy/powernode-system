@@ -375,5 +375,103 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
         expect(instance.reload.pool_state).to be_nil
       end
     end
+
+    # `restart_after_update` fires HERE, not at promotion: the heartbeat is the
+    # exact moment the platform learns what the instance has materialized.
+    context "restart_after_update" do
+      let(:platform_rec) { create(:system_node_platform, account: account) }
+      let(:category)     { create(:system_node_module_category, account: account) }
+      let(:extension) do
+        create(:system_node_module, account: account, node_platform: platform_rec,
+               category: category, name: "powernode-extension-system")
+      end
+      let(:backend) do
+        create(:system_node_module, account: account, node_platform: platform_rec,
+               category: category, name: "powernode-hub-backend")
+      end
+      let(:digest) { "sha256:#{'d' * 64}" }
+
+      before do
+        node.node_modules << extension
+        node.node_modules << backend
+        extension.update!(config: extension.config.merge(
+          "restart_after_update" => [ { "module" => "powernode-hub-backend", "services" => [ "rails" ] } ]
+        ))
+        version = System::NodeModuleVersion.create!(
+          node_module: extension, version_number: 1,
+          mask: [], file_spec: [], package_spec: [], config: {}, oci_digest: digest
+        )
+        extension.update!(current_version: version, current_version_number: 1)
+        System::RestartAfterUpdate.arm!(node_module: extension, version: version)
+      end
+
+      it "enqueues the computed unit restart when the heartbeat reports the promoted digest" do
+        body[:module_digests] = { extension.id => digest }
+
+        expect {
+          post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+        }.to change { instance.tasks.where(command: "restart").count }.by(1)
+
+        expect(response).to have_http_status(:ok)
+        expect(instance.tasks.where(command: "restart").last.options["unit"])
+          .to eq("powernode-#{backend.id}-rails.service")
+      end
+
+      it "enqueues nothing while the heartbeat still reports the old digest" do
+        body[:module_digests] = { extension.id => "sha256:#{'e' * 64}" }
+
+        expect {
+          post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+        }.not_to change { instance.tasks.where(command: "restart").count }
+      end
+    end
+  end
+
+  # The agent's poll loop does not filter by status and re-executes anything
+  # this endpoint returns. A unit restart whose completion report was lost —
+  # which is exactly what happens when the restarted unit IS the platform —
+  # must not be handed back, or it restarts every ~30s forever.
+  describe "GET /api/v1/system/node_api/status/tasks" do
+    let(:unit) { "powernode-#{SecureRandom.uuid}-rails.service" }
+
+    def offered_ids
+      get "/api/v1/system/node_api/status/tasks", headers: headers, as: :json
+      JSON.parse(response.body).dig("data", "tasks").map { |t| t["id"] }
+    end
+
+    let(:provenance) { { "unit" => unit, "restart_after_update" => { "triggers" => [] } } }
+
+    it "offers a unit restart that has not been picked up yet" do
+      task = System::Task.create!(account: account, operable: instance, command: "restart",
+                                  status: "pending", options: provenance)
+
+      expect(offered_ids).to include(task.id)
+    end
+
+    it "withholds a unit restart that is already in flight" do
+      task = System::Task.create!(account: account, operable: instance, command: "restart",
+                                  status: "pending", options: provenance)
+      task.update_columns(status: "running")
+
+      expect(offered_ids).not_to include(task.id)
+    end
+
+    # An in-flight unit restart the feature did not create is never settled by
+    # it, so withholding it would strand the task `running` forever.
+    it "still offers an in-flight unit restart it does not own" do
+      task = System::Task.create!(account: account, operable: instance, command: "restart",
+                                  status: "pending", options: { "unit" => unit })
+      task.update_columns(status: "running")
+
+      expect(offered_ids).to include(task.id)
+    end
+
+    it "still offers an in-flight task that is not a unit restart" do
+      task = System::Task.create!(account: account, operable: instance, command: "sync_modules",
+                                  status: "pending")
+      task.update_columns(status: "running")
+
+      expect(offered_ids).to include(task.id)
+    end
   end
 end
