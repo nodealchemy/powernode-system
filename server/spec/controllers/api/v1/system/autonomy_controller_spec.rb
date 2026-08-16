@@ -352,12 +352,32 @@ RSpec.describe "Api::V1::System::Autonomy", type: :request do
               headers: auth_headers_for(manage_user).merge("Content-Type" => "application/json")
       end
 
-      it "preserves them rather than resetting to defaults" do
+      # Stated as "only `policy` moved" rather than as a list of the four
+      # columns that were clobbering. A named list is blind to the way this
+      # regresses next: a FIFTH assignment added to #update for a column the
+      # payload also omits. Deriving the untouched set from the row's own
+      # attributes covers every column the table has, including ones added
+      # later.
+      #
+      # `updated_at` is excluded because a no-op save still touches it; the
+      # point is which OPERATOR-MEANINGFUL state moved.
+      it "changes the verb and nothing else on the row" do
+        before_attrs = tuned.attributes.except("updated_at")
+
         patch_verb_only("block")
         expect(response).to have_http_status(:ok)
 
-        tuned.reload
+        after_attrs = tuned.reload.attributes.except("updated_at")
+        moved = before_attrs.reject { |col, was| after_attrs[col] == was }.keys
+
+        expect(moved).to eq([ "policy" ]),
+                         "a verb-only save also moved #{(moved - [ 'policy' ]).join(', ')}. The Autonomy modal " \
+                         "sends one entry per control and a control edits the VERB, so every other column on " \
+                         "the row is state #update was not asked to touch."
         expect(tuned.policy).to eq("block")
+
+        # Pins the four that actually regressed, by value, so the failure above
+        # is not the only diagnosis available.
         expect(tuned.approval_chain_id).to eq(chain.id)
         expect(tuned.priority).to eq(42)
         expect(tuned.is_active).to be(false)
