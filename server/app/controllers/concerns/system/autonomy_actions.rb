@@ -4,8 +4,8 @@ module System
   # Operator-facing CRUD over `Ai::InterventionPolicy` rows scoped to the
   # System extension's domains. Powers the System Settings → Autonomy modal
   # where operators configure per-action policy + approval chain assignment
-  # for each of the 5 system agents (Fleet Autonomy, SDWAN Manager, CVE
-  # Responder, Disk Image Manager, Runtime Manager) plus Manual Operations.
+  # for each of the system agents that carry intervention policies (see
+  # SYSTEM_AGENT_NAMES) plus Manual Operations.
   #
   # This concern returns the full payload with three views: by_domain,
   # by_agent, by_action.
@@ -30,12 +30,41 @@ module System
   module AutonomyActions
     extend ActiveSupport::Concern
 
+    # The system agents `by_agent_pivot` builds a bucket for, and the agents
+    # `serialize_agents` ships. Membership is one question: does the extension
+    # seed agent-scoped `Ai::InterventionPolicy` rows for it? A policy-carrying
+    # agent left out has its rows DROPPED from the pivot; an agent with no
+    # policies added in ships a permanently empty bucket.
+    #
+    # That is why this is six of the extension's eight seeded agents. System
+    # Concierge (`assistant`, chat router) and System Topology Designer
+    # (`assistant`, compose specialist) carry no intervention policies at all —
+    # their seeds write no policy row — so they are deliberately absent rather
+    # than overlooked. GitOps Reconciler WAS overlooked: it landed in the same
+    # wave as Topology Designer with three seeded `system.gitops_*` policies
+    # and this list was not extended with it (IMP-e3a30e2dd5ee).
+    #
+    # ORDER IS NOT SIGNIFICANT here, unlike DOMAIN_PREFIXES immediately below.
+    # That map resolves with `find` on a string PREFIX, so an entry extending
+    # another's prefix must precede it; this list is matched on whole-name
+    # equality through `Ai::Agent.resolve_for` and only sets the key order of
+    # the emitted `by_agent` hash, which no client reads as a ranking. Append
+    # freely — and do not copy the warning next door onto this constant.
+    #
+    # Kept as a literal rather than derived: a controller cannot read db/seeds
+    # at request time, and deriving from the account's own policy rows would
+    # make the pivot's shape a function of the data it pivots (a fresh account
+    # would report no system agents; an operator's own agent holding one system
+    # policy would be promoted into this list). The DERIVATION lives in the
+    # oracle instead — spec/controllers/api/v1/system/autonomy_agent_pivot_spec.rb
+    # scans the seed files and fails on drift in either direction.
     SYSTEM_AGENT_NAMES = [
       "Fleet Autonomy",
       "SDWAN Manager",
       "CVE Responder",
       "Disk Image Manager",
-      "Runtime Manager"
+      "Runtime Manager",
+      "GitOps Reconciler"
     ].freeze
 
     # ORDER IS SIGNIFICANT. `by_domain_pivot` resolves with `find`, so the FIRST
