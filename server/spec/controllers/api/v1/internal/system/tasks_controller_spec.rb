@@ -39,7 +39,9 @@ RSpec.describe "Api::V1::Internal::System::Tasks", type: :request do
           namespace :v1 do
             namespace :internal do
               namespace :system do
-                resources :tasks, only: %i[index show]
+                resources :tasks, only: %i[index show update] do
+                  member { post :events }
+                end
               end
             end
           end
@@ -101,6 +103,38 @@ RSpec.describe "Api::V1::Internal::System::Tasks", type: :request do
 
       expect(response).to have_http_status(:ok)
       expect(json_response_data["id"]).to eq(own_task.id)
+    end
+  end
+
+  # update and events resolve through the same set_operation, so the exposure
+  # was mutation of a foreign account's row, not merely disclosure of it. That
+  # is the claim that carries the severity, so it gets its own examples rather
+  # than riding on the shared mechanism.
+  describe "writes against another account's task" do
+    it "refuses to transition it" do
+      expect {
+        patch "/api/v1/internal/system/tasks/#{other_task.id}",
+              params: { status: "running" }, headers: headers_for(worker)
+      }.not_to change { other_task.reload.status }
+
+      expect(response).to have_http_status(:not_found)
+    end
+
+    it "refuses to append an event to it" do
+      expect {
+        post "/api/v1/internal/system/tasks/#{other_task.id}/events",
+             params: { event_type: "info", message: "injected" }, headers: headers_for(worker)
+      }.not_to change { other_task.reload.events.size }
+
+      expect(response).to have_http_status(:not_found)
+    end
+
+    it "still transitions the caller's own task" do
+      patch "/api/v1/internal/system/tasks/#{own_task.id}",
+            params: { status: "running" }, headers: headers_for(worker)
+
+      expect(response).to have_http_status(:ok)
+      expect(own_task.reload.status).to eq("running")
     end
   end
 end
