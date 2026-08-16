@@ -146,8 +146,26 @@ module Api
           end
 
           # POST /virtual_ips/:id/failover — manual failover for non-anycast VIPs.
+          #
+          # IMP-d952c791e264: this verb pre-checked NOTHING, so every doomed
+          # failover — anycast, no candidates, or a standby whose peer row was
+          # deleted — parked a require_approval DeferredOperation that could
+          # only fail hours later inside Sdwan::VirtualIp#failover!'s
+          # transaction. It now asks the model's one precondition predicate
+          # (the same symbol failover! raises, shared with the MCP twin), which
+          # answers for the peer that would ACTUALLY be promoted: target_peer_id
+          # when named, since Sdwan::Executors::FailoverVirtualIp#prefer_target!
+          # moves it to the head before failing over.
+          #
+          # After require_permission, deliberately: an unauthorized caller must
+          # not be able to use the refusal to learn which VIPs have live
+          # standbys.
           def failover
             require_permission("system.sdwan.vips.manage")
+            if (blocker = @vip.failover_blocker(target_peer_id: params[:target_peer_id]))
+              return render_error(blocker, status: :unprocessable_entity)
+            end
+
             id = @vip.id
             gate!(
               action_category: ::Sdwan::Executors::FailoverVirtualIp::ACTION_CATEGORY,

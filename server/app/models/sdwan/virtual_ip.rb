@@ -101,8 +101,11 @@ module Sdwan
     # legitimate second holder outside anycast). Records the assignment
     # transition for every departing holder, not just the primary.
     def failover!(reason: "manual_failover", triggered_by_user: nil, correlation_id: nil)
-      raise StateError, "anycast VIPs don't fail over (all holders active simultaneously)" if anycast?
-      raise StateError, "no failover candidates configured" if Array(failover_holder_peer_ids).empty?
+      # IMP-d952c791e264 — preconditions live in #failover_blocker, the one
+      # symbol the pre-gate surfaces share with this method. They used to be
+      # two inline raises here, hand-copied into three other places.
+      blocker = failover_blocker
+      raise StateError, blocker if blocker
 
       transaction do
         old_holder = Array(holder_peer_ids).first
@@ -155,6 +158,74 @@ module Sdwan
           )
         end
       end
+    end
+
+    # IMP-d952c791e264 — the ONE answer to "can this VIP fail over, and to
+    # which standby". Returns nil when the PRECONDITIONS hold — mode, a
+    # non-empty candidate list, and a standby that is a live peer of this
+    # VIP's network — or the operator-facing reason the failover is doomed.
+    #
+    # Preconditions, deliberately, and not a claim that the transaction in
+    # #failover! cannot fail for any other reason: a legacy row whose
+    # holder_peer_ids debris IS the failover head still collides on the
+    # one-active-assignment index down there. That is a bug in the sweep
+    # rather than a missing precondition, and is filed as IMP-56bcfaf2feb4.
+    #
+    # Every surface that can start a failover asks this BEFORE doing anything
+    # else: Ai::Tools::SdwanTool#failover_virtual_ip and
+    # Api::V1::System::Sdwan::VirtualIpsController#failover ask it pre-gate, so
+    # a doomed failover is refused inline instead of parking a require_approval
+    # DeferredOperation that can only fail hours later at execution;
+    # System::Ai::Skills::SdwanVipFailoverExecutor (sensor-driven, ungated)
+    # asks it to fail loud; and #failover! raises it as a StateError so the
+    # post-approval executor gets the same verdict on state that moved during
+    # the approval window. Those were four hand-written copies of two guards,
+    # already drifted on wording.
+    #
+    # The third case none of the copies had: a TOMBSTONE standby.
+    # failover_holder_peer_ids is a bare uuid[] with no foreign key,
+    # Sdwan::Executors::DeletePeer destroys a peer without scrubbing the arrays
+    # that name it, and #holder_peers_belong_to_network only flags ids that
+    # EXIST in another network — a deleted id matches no row, so it is not
+    # foreign to anything and every check passed it. The failure surfaced at
+    # ::Sdwan::Peer.find(new_holder) inside the transaction below.
+    #
+    # Scoped to the ONE candidate #failover! will promote, not to the whole
+    # queue: dead ids further down are not this failover's problem (the head is
+    # what gets promoted), and refusing on them would strand a VIP that can
+    # still fail over perfectly well.
+    def failover_blocker(target_peer_id: nil)
+      return "anycast VIPs don't fail over (all holders active simultaneously)" if anycast?
+      return "no failover candidates configured — add a standby peer to failover_holder_peer_ids" if Array(failover_holder_peer_ids).empty?
+
+      peer_id = failover_target_peer_id(target_peer_id: target_peer_id)
+      # Scoped to THIS VIP's network, not merely to existence: #failover!'s
+      # update! re-runs holder_peers_belong_to_network, which rejects a holder
+      # from another network — so an unscoped existence check would answer
+      # "fine" and then hand the caller an ActiveRecord::RecordInvalid from
+      # inside the transaction, the same shape of doomed approval as the
+      # tombstone. Reachable the same way: a legacy or update_columns write
+      # that predates the validation.
+      unless peer_id.present? && network_peer?(peer_id)
+        return "failover candidate #{peer_id.presence || '(blank)'} is not a live peer of this VIP's " \
+               "network — it was deleted, moved, or never existed; edit the VIP's " \
+               "failover_holder_peer_ids to name a current standby"
+      end
+
+      nil
+    end
+
+    # The candidate #failover! will actually promote: the caller's named target
+    # when it is a configured candidate — Sdwan::Executors::FailoverVirtualIp#
+    # prefer_target! moves exactly that peer to the head before calling
+    # failover!, and no-ops on anything else — otherwise the head of the queue.
+    # Kept beside the blocker so "which standby" is answered once, for both the
+    # precondition and the promotion it predicts.
+    def failover_target_peer_id(target_peer_id: nil)
+      candidates = Array(failover_holder_peer_ids)
+      return target_peer_id if target_peer_id.present? && candidates.include?(target_peer_id)
+
+      candidates.first
     end
 
     # IMP-0e44cf2fc80b — the ONE diff-based holder-transition sync for the
@@ -220,6 +291,15 @@ module Sdwan
     class StateError < StandardError; end
 
     private
+
+    # IMP-d952c791e264 — the membership test #failover_blocker asks, phrased as
+    # the SAME predicate holder_peers_belong_to_network enforces on the write
+    # that follows, so the precondition and the validation cannot disagree.
+    def network_peer?(peer_id)
+      return false if sdwan_network_id.blank?
+
+      ::Sdwan::Peer.where(sdwan_network_id: sdwan_network_id).exists?(id: peer_id)
+    end
 
     def inherit_account_from_network
       return if account_id.present?

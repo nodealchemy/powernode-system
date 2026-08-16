@@ -128,4 +128,92 @@ RSpec.describe "Api::V1::System::Sdwan::VirtualIps", type: :request do
                                                "an unsaveable create still opened an autonomy-gate audit row"
     end
   end
+
+  # IMP-d952c791e264 — this verb pre-checked NOTHING. Its MCP twin mirrored
+  # Sdwan::VirtualIp#failover!'s two StateError guards so a doomed failover
+  # fails loud instead of parking an approval that can only fail at execution;
+  # the REST surface parked all of them. Both surfaces now ask the model's one
+  # precondition predicate, which also catches the case neither copy had:
+  # a standby whose peer row was deleted (failover_holder_peer_ids is a bare
+  # uuid[] with no FK and Sdwan::Executors::DeletePeer never scrubs it).
+  describe "POST /api/v1/system/sdwan/networks/:network_id/virtual_ips/:id/failover" do
+    let(:standby) { create(:sdwan_peer, account: account, network: network) }
+    let(:vip) do
+      create(:sdwan_virtual_ip, account: account, network: network, state: "active",
+             holder_peer_ids: [ holder.id ], failover_holder_peer_ids: [ standby.id ])
+    end
+
+    def post_failover(body = {}, user: manager)
+      post "#{collection_path}/#{vip.id}/failover",
+           params: body, headers: auth_headers_for(user), as: :json
+    end
+
+    # Positive control for all four refusals below: a failover the model
+    # accepts still parks exactly as it always did.
+    it "parks a healthy failover through the autonomy gate" do
+      expect { post_failover }.to change(::Ai::DeferredOperation, :count).by(1)
+
+      expect(response).to have_http_status(:accepted)
+      deferred = ::Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred.action_category).to eq("system.sdwan_vip_failover")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::FailoverVirtualIp")
+      expect(deferred.params["vip_id"]).to eq(vip.id)
+    end
+
+    it "refuses a tombstone-standby failover with 422 and opens no gate row" do
+      dead = create(:sdwan_peer, account: account, network: network)
+      vip.update!(failover_holder_peer_ids: [ dead.id ])
+      dead.destroy!
+
+      expect { post_failover }.not_to change(::Ai::DeferredOperation, :count)
+
+      expect(response).to have_http_status(422)
+      expect(response.parsed_body["error"]).to include(dead.id),
+                                               "the refusal must name the dead standby the operator has to remove"
+      expect(vip.reload.holder_peer_ids).to eq([ holder.id ])
+    end
+
+    # The named target is what Sdwan::Executors::FailoverVirtualIp#prefer_target!
+    # promotes, so a live head does not make a dead target safe.
+    it "refuses when the operator names a deleted target peer" do
+      dead = create(:sdwan_peer, account: account, network: network)
+      vip.update!(failover_holder_peer_ids: [ standby.id, dead.id ])
+      dead.destroy!
+
+      expect { post_failover({ target_peer_id: dead.id }) }
+        .not_to change(::Ai::DeferredOperation, :count)
+
+      expect(response).to have_http_status(422)
+      expect(response.parsed_body["error"]).to include(dead.id)
+    end
+
+    it "refuses an anycast failover with 422 and opens no gate row" do
+      vip.update!(anycast: true, holder_peer_ids: [ holder.id, standby.id ])
+
+      expect { post_failover }.not_to change(::Ai::DeferredOperation, :count)
+
+      expect(response).to have_http_status(422)
+      expect(response.parsed_body["error"]).to match(/anycast/)
+    end
+
+    it "refuses a candidate-less failover with 422 and opens no gate row" do
+      vip.update!(failover_holder_peer_ids: [])
+
+      expect { post_failover }.not_to change(::Ai::DeferredOperation, :count)
+
+      expect(response).to have_http_status(422)
+      expect(response.parsed_body["error"]).to match(/no failover candidates/)
+    end
+
+    # The permission check must still run BEFORE the precondition, or the
+    # refusal becomes a probe that tells an unauthorized caller which VIPs
+    # have live standbys.
+    it "requires system.sdwan.vips.manage before answering a precondition" do
+      vip.update!(failover_holder_peer_ids: [])
+
+      post_failover(user: reader)
+
+      expect(response).to have_http_status(:forbidden)
+    end
+  end
 end

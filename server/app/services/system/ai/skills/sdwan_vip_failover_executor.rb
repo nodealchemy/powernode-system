@@ -55,23 +55,41 @@ module System
             )
           end
 
-          if Array(vip.failover_holder_peer_ids).empty?
-            return failure("VIP has no failover candidates configured. Edit the VIP and add at least one peer to failover_holder_peer_ids.")
-          end
-
+          # IMP-d952c791e264 — was a hand-written copy of the model's
+          # candidate-less guard, whose wording had already drifted from it.
+          # Sdwan::VirtualIp#failover_blocker is now the one source, so this
+          # path also refuses a standby that is no longer a live peer of the
+          # VIP's network instead of reaching ::Sdwan::Peer.find inside
+          # failover!'s transaction. Resolved AFTER the anycast branch above,
+          # which is informational here (BGP re-converges on its own) rather
+          # than a failure.
+          blocker         = vip.failover_blocker
           previous_holder = Array(vip.holder_peer_ids).first
 
+          # A dry run is a PREVIEW, and System::Fleet::DecisionEngine invokes
+          # it for exactly one purpose: to stamp `skill_plan` on the approval
+          # request it is about to park (skill_metadata_payload keys on
+          # `skill_result[:data]`, which #failure does not carry). Answering
+          # a blocked preview with #failure would therefore park a card that
+          # says nothing at all — so the preview stays a preview and reports
+          # the refusal IN the plan, the same shape the anycast branch above
+          # already uses for "this VIP cannot fail over, here is why". What it
+          # must NOT do is what it did before IMP-d952c791e264: name a
+          # would_promote_peer_id pointing at a peer that cannot be promoted.
           if dry_run
-            next_candidate = Array(vip.failover_holder_peer_ids).first
             return success(
               resolved: false,
               dry_run: true,
+              blocked: blocker.present?,
+              note: blocker,
               virtual_ip_id: vip.id,
               cidr: vip.cidr,
               previous_holder_peer_id: previous_holder,
-              would_promote_peer_id: next_candidate
+              would_promote_peer_id: blocker ? nil : vip.failover_target_peer_id
             )
           end
+
+          return failure(blocker) if blocker
 
           begin
             vip.failover!(reason: "sensor_failover", triggered_by_user: @user)

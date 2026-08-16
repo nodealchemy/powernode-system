@@ -2066,22 +2066,23 @@ module Ai
       # twin's exact category (VirtualIpsController#failover): promoting the
       # failover holder rewrites BGP/AllowedIPs reachability, so an agent
       # refused approval on the REST surface must not get it inline here.
-      # The model's StateError guards are mirrored PRE-gate so a doomed
-      # failover (anycast, or no candidates) fails loud instead of parking
-      # an approval that can only fail on execution — wording kept identical
-      # to Sdwan::VirtualIp#failover!, whose semantics IMP-43cf1e6b5541
-      # owns. gated_result never invokes its proceed block on :pending, so
+      # The model's preconditions are asked PRE-gate so a doomed failover
+      # fails loud instead of parking an approval that can only fail on
+      # execution. IMP-d952c791e264 replaced the hand-copied mirror of the two
+      # StateError guards with Sdwan::VirtualIp#failover_blocker — the same
+      # symbol failover! raises — so this arm cannot drift from the model's
+      # wording again and inherits the case the copy missed (a standby that is
+      # no longer a live peer of the VIP's network).
+      #
+      # gated_result never invokes its proceed block on :pending, so
       # the rotate + audit transaction runs ONLY in FailoverVirtualIp#perform;
       # attribution rides the DeferredOperation's requested_by (this @user —
       # the executor credits deferred_operation.requested_by, replacing the
       # inline body's triggered_by_user: @user).
       def failover_virtual_ip(params)
         vip = account_virtual_ips.find(params[:virtual_ip_id])
-        if vip.anycast?
-          return error_result("anycast VIPs don't fail over (all holders active simultaneously)")
-        end
-        if Array(vip.failover_holder_peer_ids).empty?
-          return error_result("no failover candidates configured")
+        if (blocker = vip.failover_blocker)
+          return error_result(blocker)
         end
 
         gated_result(

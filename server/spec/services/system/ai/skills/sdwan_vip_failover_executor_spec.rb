@@ -69,6 +69,66 @@ RSpec.describe System::Ai::Skills::SdwanVipFailoverExecutor do
       expect(vip.reload.holder_peer_ids.first).to eq(candidate.id)
     end
 
+    # IMP-d952c791e264 — this executor carried its own copy of the model's
+    # precondition guards (its wording had already drifted), and like both
+    # other copies it missed the standby whose peer row was deleted:
+    # failover_holder_peer_ids is a bare uuid[] with no FK and
+    # Sdwan::Executors::DeletePeer never scrubs it, so the sensor-driven
+    # failover reached ::Sdwan::Peer.find inside the transaction.
+    it "fails when the standby it would promote has been deleted" do
+      dead = create(:sdwan_peer, account: account, network: network)
+      vip.update!(failover_holder_peer_ids: [ dead.id ])
+      dead.destroy!
+
+      r = exec.execute(virtual_ip_id: vip.id)
+
+      expect(r[:success]).to be false
+      # Pinning the predicate's wording, not merely `success: false`: the
+      # unfixed executor also answers false here, because BaseSkillExecutor's
+      # blanket rescue turns the ActiveRecord::RecordNotFound raised deep in
+      # the failover! transaction into a failure whose message happens to
+      # contain the same id. `include(dead.id)` alone cannot tell a refused
+      # failover from an attempted one that blew up.
+      expect(r[:error]).to include(dead.id).and match(/not a live peer/)
+      expect(vip.reload.holder_peer_ids).to eq([ primary.id ])
+    end
+
+    # A dry run exists to tell an operator what WOULD happen; over a tombstone
+    # standby the honest answer is "nothing, because X" — not a
+    # would_promote_peer_id naming a row that no longer exists.
+    #
+    # It stays a `success` PREVIEW rather than becoming a failure because
+    # System::Fleet::DecisionEngine invokes the dry run solely to stamp
+    # `skill_plan` on the approval request it then parks, and
+    # skill_metadata_payload keys on skill_result[:data] — which
+    # BaseSkillExecutor#failure does not carry. Answering with #failure would
+    # trade a misleading card for an empty one.
+    it "reports the blocker in a dry run instead of planning a doomed promotion" do
+      dead = create(:sdwan_peer, account: account, network: network)
+      vip.update!(failover_holder_peer_ids: [ dead.id ])
+      dead.destroy!
+
+      r = exec.execute(virtual_ip_id: vip.id, dry_run: true)
+
+      expect(r[:success]).to be true
+      expect(r.dig(:data, :blocked)).to be true
+      expect(r.dig(:data, :note)).to include(dead.id).and match(/not a live peer/)
+      expect(r.dig(:data, :would_promote_peer_id)).to be_nil,
+                                                      "the preview still named a peer that cannot be promoted"
+      expect(vip.reload.holder_peer_ids).to eq([ primary.id ])
+    end
+
+    # Positive control for the example above: an unblocked dry run must keep
+    # naming its candidate, or "would_promote_peer_id is nil" is satisfied by a
+    # preview that simply stopped planning anything.
+    it "still names the candidate on an unblocked dry run" do
+      r = exec.execute(virtual_ip_id: vip.id, dry_run: true)
+
+      expect(r.dig(:data, :blocked)).to be false
+      expect(r.dig(:data, :note)).to be_nil
+      expect(r.dig(:data, :would_promote_peer_id)).to eq(candidate.id)
+    end
+
     it "returns failure (not a raise) when failover! hits a StateError" do
       allow_any_instance_of(::Sdwan::VirtualIp)
         .to receive(:failover!).and_raise(::Sdwan::VirtualIp::StateError, "concurrent failover")
