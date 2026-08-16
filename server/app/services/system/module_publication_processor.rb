@@ -90,19 +90,28 @@ module System
         # version was current while current_version_id still pointed at the
         # previous one. The REST controller already reports the real outcome
         # (promoted_to_current: current_version_id == version.id).
+        # IMP-26b7f0004a49 phase 1 — pure (the annotations are already in hand
+        # from the ingest above; no network, no DB), so computing it up front
+        # rather than mid-`elsif` costs nothing and keeps the chain readable.
+        core_verdict = core_provenance_verdict(node_module, result, native_build)
+
         promoted = false
         if promote
           if !auto_promote?(node_module)
             hold_promotion_by_policy!(node_module, node_module_version, tag)
-          elsif promotable_artifact?(canonical)
+          elsif !promotable_artifact?(canonical)
+            withhold_promotion!(node_module, node_module_version, canonical, tag)
+          elsif core_verdict.refused?
+            # Checked AFTER the non-empty floor: an artifact that fails both
+            # should report the emptier, more fundamental problem.
+            withhold_promotion_for_core_drift!(node_module, node_module_version, tag, core_verdict)
+          else
             promote_current_version(node_module, node_module_version)
             # Read the STATE, not promote_to_version!'s return: that returns
             # false for an already-current version, which is a successful no-op
             # (a republished tag), not a withheld promotion. update_columns
             # refreshes the in-memory attribute, so no reload is needed.
             promoted = node_module.current_version_id == node_module_version.id
-          else
-            withhold_promotion!(node_module, node_module_version, canonical, tag)
           end
         end
         register_skills_for(node_module)
@@ -332,6 +341,49 @@ module System
       Rails.logger.error(
         "[ModulePublicationProcessor] REFUSING to promote #{node_module.name}@#{tag}: #{reason}. " \
         "Version #{version.id} is published but NOT current; the fleet keeps the previous version."
+      )
+      emit_promotion_withheld_event(node_module, version, tag, reason)
+    end
+
+    # IMP-26b7f0004a49 phase 1 — is this artifact's core (parent
+    # powernode-platform) content the core this build was supposed to contain?
+    #
+    # Only the NATIVE path can answer TODAY: the provenance lives in the OCI
+    # manifest annotations ModuleOciIngestService fetched during ingest_native!,
+    # and the expectation is recorded on the build batch at dispatch and threaded
+    # here through native_build. Every other publish path gets the inert verdict.
+    #
+    # KNOWN GAP, not an invariant — phase 1 scope, stated so nobody reads the
+    # inert return as "those paths are safe". The Gitea-Actions build
+    # (.gitea/workflows/build-platform-modules.yaml) runs the same stage15.sh +
+    # push.sh, so ITS artifacts carry the same core_source_sha annotation, but it
+    # publishes through worker_api/module_publications_controller with no batch —
+    # hence no expectation to compare against, and it auto-promotes ungated.
+    # Closing it needs (a) ingest! to surface oci_annotations the way
+    # ingest_native! now does, and (b) a publish-time source for the expected core
+    # ref, since there is no dispatch record to carry one.
+    def core_provenance_verdict(node_module, result, native_build)
+      return ::System::CoreProvenanceGate.inert unless native_build
+
+      ::System::CoreProvenanceGate.evaluate(
+        module_name:  node_module.name,
+        expected_sha: native_build[:expected_core_sha] || native_build["expected_core_sha"],
+        annotations:  result.oci_annotations
+      )
+    end
+
+    # Same shape as #withhold_promotion! (publish the row, withhold the step
+    # that reaches the fleet, emit the high-severity event an operator sees) —
+    # the difference is only the reason. A stale-core artifact is not empty and
+    # not unsigned; nothing else about it looks wrong, which is exactly why it
+    # got two nodes into an outage on 2026-08-15.
+    def withhold_promotion_for_core_drift!(node_module, version, tag, verdict)
+      reason = "core-source provenance #{verdict.state}: #{verdict.reason}"
+
+      Rails.logger.error(
+        "[ModulePublicationProcessor] REFUSING to promote #{node_module.name}@#{tag}: #{reason}. " \
+        "Version #{version.id} is published but NOT current; the fleet keeps the previous version. " \
+        "Set #{::System::CoreProvenanceGate::ENABLED_SETTING}=false to override."
       )
       emit_promotion_withheld_event(node_module, version, tag, reason)
     end
