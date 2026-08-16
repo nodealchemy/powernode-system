@@ -1347,6 +1347,22 @@ RSpec.describe Ai::Tools::SdwanTool do
       expect(r[:error]).to match(/greater than 0/)
     end
 
+    # IMP-2c531ddb5a0c — the other direction of the same drift: metadata rides
+    # the REST permit list on create and update and this arm's `options` on
+    # update, but was unreachable on the MCP create.
+    it "accepts metadata on create" do
+      r = call(
+        "system_sdwan_create_port_mapping",
+        network_id: network.id, hub_peer_id: hub_peer.id, target_peer_id: target.id,
+        name: "tagged-mapping", listen_port: 6004, protocol: "tcp",
+        metadata: { "tier" => "gold" }
+      )
+      expect(r[:success]).to be true
+      expect(r[:data][:port_mapping][:metadata]).to eq({ "tier" => "gold" })
+      expect(::Sdwan::PortMapping.find(r[:data][:port_mapping][:id]).metadata)
+        .to eq({ "tier" => "gold" })
+    end
+
     it "keeps the manage permission gate unchanged" do
       expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_create_port_mapping"))
         .to eq("system.sdwan.port_mappings.manage")
@@ -1406,6 +1422,82 @@ RSpec.describe Ai::Tools::SdwanTool do
     it "keeps the manage permission gate unchanged" do
       expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_update_port_mapping"))
         .to eq("system.sdwan.port_mappings.manage")
+    end
+  end
+
+  # ─── IMP-2c531ddb5a0c: the hub column, the half of the permit list this
+  # surface was missing ────────────────────────────────────────────────
+  #
+  # PortMappingsController#mapping_params has always permitted sdwan_peer_id,
+  # so an OPERATOR could move a DNAT entry onto a different hub while this arm
+  # answered "no recognized fields to update" — the same action category, the
+  # same executor, a different reachable field set.
+  describe "system_sdwan_update_port_mapping hub reassignment" do
+    let(:network)   { create(:sdwan_network, account: account) }
+    let(:hub)       { create(:sdwan_peer, :hub, account: account, network: network) }
+    let(:other_hub) { create(:sdwan_peer, :hub, account: account, network: network) }
+    let(:target)    { create(:sdwan_peer, account: account, network: network) }
+    let!(:mapping) do
+      create(:sdwan_port_mapping, account: account, network: network,
+                                  hub_peer: hub, target_peer: target)
+    end
+
+    it "reassigns the hub peer through the gate" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_update_port_mapping",
+               port_mapping_id: mapping.id, options: { hub_peer_id: other_hub.id })
+
+      expect(r[:success]).to be true
+      expect(mapping.reload.sdwan_peer_id).to eq(other_hub.id)
+      expect(r[:data][:port_mapping][:hub_peer_id]).to eq(other_hub.id)
+    end
+
+    it "parks the reassignment rather than applying it inline under the default policy" do
+      r = call("system_sdwan_update_port_mapping",
+               port_mapping_id: mapping.id, options: { hub_peer_id: other_hub.id })
+
+      expect(r[:success]).to be true
+      expect(r[:data][:pending]).to be true
+      expect(mapping.reload.sdwan_peer_id).to eq(hub.id),
+                                              "MCP update_port_mapping moved the DNAT hub without an approval gate"
+      approve_parked_update!(r, category: "sdwan.port_mapping_update",
+                                executor: "Sdwan::Executors::UpdatePortMapping") do |deferred|
+        expect(deferred.params.dig("attributes", "sdwan_peer_id")).to eq(other_hub.id)
+      end
+      expect(mapping.reload.sdwan_peer_id).to eq(other_hub.id)
+    end
+
+    # Cross-account twin. Only the HUB is foreign — the mapping itself is the
+    # caller's, so the example reaches the reassignment rather than
+    # short-circuiting on the account scope of port_mapping_in_account.
+    it "refuses a hub peer belonging to another account without parking anything" do
+      foreign_hub = create(:sdwan_peer, :hub)
+      expect(foreign_hub.account_id).not_to eq(account.id)
+
+      expect {
+        @result = call("system_sdwan_update_port_mapping",
+                       port_mapping_id: mapping.id, options: { hub_peer_id: foreign_hub.id })
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to match(/hub peer must belong to the network/i)
+      expect(mapping.reload.sdwan_peer_id).to eq(hub.id)
+    end
+
+    # Names the belongs_to refusal explicitly: the "no recognized fields"
+    # message also refuses this payload while hub_peer_id is unreachable, so
+    # without the wording assertion the example cannot tell the two apart.
+    it "refuses a hub peer id that names no row" do
+      expect {
+        @result = call("system_sdwan_update_port_mapping",
+                       port_mapping_id: mapping.id,
+                       options: { hub_peer_id: "00000000-0000-7000-8000-000000000000" })
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@result[:success]).to be false
+      expect(@result[:error]).to match(/hub peer must exist/i)
+      expect(mapping.reload.sdwan_peer_id).to eq(hub.id)
     end
   end
 

@@ -47,6 +47,14 @@ module Ai
       #     advertise_overlay_subnet and route_reflector_redundancy have no MCP
       #     arm at all, so MCP reaches strictly less of the category than REST
       #     does — never more, which is what the parity claim has to mean.
+      #   * sdwan.port_mapping_{create,update} used to be the counterexample to
+      #     that "never more" claim, in both directions at once: this surface
+      #     alone reached rate_limit/max_connections/source_cidrs, the REST
+      #     twin alone reached the hub column (IMP-2c531ddb5a0c). Neither arm
+      #     carries its own list any more — both read
+      #     Sdwan::PortMapping::WRITABLE_ATTRIBUTES, which is why the schema
+      #     text and the no-op refusal message below are interpolated rather
+      #     than written out.
       #   * system.sdwan_vip_failover (IMP-7c911ca26585) is shared with the
       #     fleet autonomy remediation path (SdwanVipReachabilitySensor →
       #     FleetAutonomyService) as well as VirtualIpsController#failover. The
@@ -611,16 +619,20 @@ module Ai
               target_port: { type: "integer", required: false, description: "Defaults to listen_port if omitted" },
               description: { type: "string", required: false, description: "Free-form description of the mapping" },
               enabled: { type: "boolean", required: false, description: "Whether the mapping is active (default true)" },
+              metadata: { type: "object", required: false, description: "Free-form operator metadata stored on the mapping" },
               rate_limit: { type: "integer", required: false, description: "Hardened DNAT tier (increment 6): max NEW CONNECTIONS per second (conntrack flows — the nat chain only sees each connection's first packet, so this throttles connection-establishment rate, not request/packet throughput). Omit for unrestricted (default)." },
               max_connections: { type: "integer", required: false, description: "Hardened DNAT tier (increment 6): max concurrent connections before excess are dropped. Omit for unrestricted (default)." },
               source_cidrs: { type: "array", required: false, description: "Hardened DNAT tier (increment 6): allow-list of source CIDR strings (v4 and/or v6). Traffic from any other source is dropped. Omit/empty for unrestricted (default)." }
             }
           },
           "system_sdwan_update_port_mapping" => {
-            description: "Update a port mapping's name, target, ports, protocol, enabled state, or hardening (rate_limit/max_connections/source_cidrs). Approval-gated (sdwan.port_mapping_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
+            description: "Update a port mapping's name, target, hub peer, ports, protocol, enabled state, or hardening (rate_limit/max_connections/source_cidrs). Approval-gated (sdwan.port_mapping_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               port_mapping_id: { type: "string", required: true, description: "UUID of the SDWAN port mapping to update" },
-              options: { type: "object", required: true, description: "Hash of fields to update: name, description, target_peer_id, target_virtual_ip_id, listen_port, target_port, protocol, enabled, metadata, rate_limit, max_connections, source_cidrs. Pass rate_limit/max_connections as null or source_cidrs as [] to clear back to unrestricted." }
+              # Field list derived from the one writable set (IMP-2c531ddb5a0c)
+              # so the advertised schema, the refusal message and the arm's
+              # own slice cannot disagree about what is accepted.
+              options: { type: "object", required: true, description: "Hash of fields to update: #{port_mapping_option_names.join(', ')}. Pass rate_limit/max_connections as null or source_cidrs as [] to clear back to unrestricted." }
             }
           },
           "system_sdwan_delete_port_mapping" => {
@@ -2282,21 +2294,13 @@ module Ai
 
       def create_port_mapping(params)
         net = ::Sdwan::Network.where(account_id: @account.id).find(params[:network_id])
-        attrs = {
-          account_id: @account.id,
-          sdwan_peer_id: params[:hub_peer_id],
-          target_peer_id: params[:target_peer_id],
-          target_virtual_ip_id: params[:target_virtual_ip_id],
-          name: params[:name],
-          listen_port: params[:listen_port],
-          target_port: params[:target_port],
-          protocol: params[:protocol] || "tcp",
-          description: params[:description],
-          enabled: params.fetch(:enabled, true),
-          rate_limit: params[:rate_limit],
-          max_connections: params[:max_connections],
-          source_cidrs: params[:source_cidrs]
-        }.compact
+        # IMP-2c531ddb5a0c: one writable list with the REST twin. Create takes
+        # its fields at the top level rather than under `options`.
+        attrs = port_mapping_writable_attrs(params).merge(account_id: @account.id).compact
+        # Create-time defaults, applied so an omitted value is explicit on the
+        # candidate rather than left to the column default alone.
+        attrs[:protocol] ||= "tcp"
+        attrs[:enabled] = true unless attrs.key?(:enabled)
         m = net.port_mappings.new(attrs)
         if m.save
           success_result(port_mapping: serialize_port_mapping_full(m))
@@ -2315,13 +2319,14 @@ module Ai
         return error_result("port mapping not found") unless m
 
         opts = params[:options] || {}
-        attrs = opts.slice(:name, :description, :target_peer_id, :target_virtual_ip_id,
-                           :listen_port, :target_port, :protocol, :enabled, :metadata,
-                           :rate_limit, :max_connections, :source_cidrs)
+        # IMP-2c531ddb5a0c: one writable list with the REST twin, which has
+        # always permitted the hub column this arm silently dropped.
+        attrs = port_mapping_writable_attrs(opts)
         # Requested-but-unusable fails LOUD rather than parking a no-op
-        # approval (see update_firewall_rule).
+        # approval (see update_firewall_rule). The message is derived from the
+        # same list, so it cannot name a field the arm no longer accepts.
         if attrs.empty?
-          return error_result("no recognized fields to update — permitted (options): name, description, target_peer_id, target_virtual_ip_id, listen_port, target_port, protocol, enabled, metadata, rate_limit, max_connections, source_cidrs")
+          return error_result("no recognized fields to update — permitted (options): #{self.class.port_mapping_option_names.join(', ')}")
         end
         error = validation_error_before_gate(m, attrs)
         return error if error
@@ -2344,6 +2349,34 @@ module Ai
 
         m.destroy!
         success_result(deleted: true, id: m.id)
+      end
+
+      # This surface's name for a port-mapping column that it does not call by
+      # the column's own name. `hub_peer_id` is what create's parameter, both
+      # serializers and list's filter have always called sdwan_peer_id, so the
+      # shared writable list is TRANSLATED here rather than sliced through —
+      # renaming the caller-facing key would break every existing agent call.
+      PORT_MAPPING_OPTION_ALIASES = { hub_peer_id: :sdwan_peer_id }.freeze
+
+      # Caller-supplied attributes for a port-mapping write, taken from
+      # Sdwan::PortMapping's one writable list (IMP-2c531ddb5a0c) with the
+      # alias above applied. `source` is the top-level params on create and
+      # the `options` sub-hash on update.
+      def port_mapping_writable_attrs(source)
+        direct = ::Sdwan::PortMapping::WRITABLE_ATTRIBUTES - PORT_MAPPING_OPTION_ALIASES.values
+        attrs = source.slice(*direct)
+        PORT_MAPPING_OPTION_ALIASES.each do |option, column|
+          attrs[column] = source[option] if source.key?(option)
+        end
+        attrs
+      end
+
+      # The same set under the names a CALLER uses, for the refusal message
+      # and the tool schema's `options` description. A class method because
+      # `self.action_definitions` is the schema's home.
+      def self.port_mapping_option_names
+        (::Sdwan::PortMapping::WRITABLE_ATTRIBUTES - PORT_MAPPING_OPTION_ALIASES.values) +
+          PORT_MAPPING_OPTION_ALIASES.keys
       end
 
       def port_mapping_in_account(id)

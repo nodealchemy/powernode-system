@@ -129,10 +129,15 @@ module Api
             render_not_found("SDWAN Port Mapping")
           end
 
+          # IMP-2c531ddb5a0c: read from Sdwan::PortMapping's one writable list
+          # rather than a literal of its own. This list omitted the hardened
+          # DNAT tier (rate_limit / max_connections / source_cidrs) that the
+          # MCP twin has accepted since increment 6, so an operator could not
+          # set a mapping's hardening on create OR update while an agent could.
           def mapping_params
             params.require(:port_mapping).permit(
-              :name, :description, :sdwan_peer_id, :target_peer_id, :target_virtual_ip_id,
-              :listen_port, :target_port, :protocol, :enabled, metadata: {}
+              *::Sdwan::PortMapping::WRITABLE_SCALAR_ATTRIBUTES,
+              ::Sdwan::PortMapping::WRITABLE_STRUCTURED_ATTRIBUTES
             )
           end
 
@@ -154,11 +159,19 @@ module Api
             }
           end
 
+          # The hardening tier is answered here for the same reason
+          # mapping_params now accepts it (IMP-2c531ddb5a0c): a 200/201 whose
+          # body never names the field the caller just set is the same shape
+          # as the dropped key it replaced. Matches the MCP twin's
+          # serialize_port_mapping_full.
           def serialize_full(m)
             serialize(m).merge(
               description: m.description,
               metadata: m.metadata,
-              resolved_target_address: m.resolved_target_address
+              resolved_target_address: m.resolved_target_address,
+              rate_limit: m.rate_limit,
+              max_connections: m.max_connections,
+              source_cidrs: m.source_cidrs
             )
           end
         end

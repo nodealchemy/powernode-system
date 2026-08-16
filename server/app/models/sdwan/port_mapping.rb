@@ -35,6 +35,43 @@ module Sdwan
 
     PROTOCOLS = %w[tcp udp].freeze
 
+    # ─── The one caller-writable attribute set (IMP-2c531ddb5a0c) ────────
+    #
+    # Read by EVERY surface that accepts a caller's attributes for this
+    # resource: Api::V1::System::Sdwan::PortMappingsController#mapping_params
+    # (REST create AND update, which share it) and Ai::Tools::SdwanTool's
+    # create_port_mapping / update_port_mapping arms. Each used to carry its
+    # own literal, and the two had drifted in BOTH directions on the same
+    # action categories, the same executors and the same params shape: REST
+    # alone could reassign the hub peer, MCP alone could set the hardened DNAT
+    # tier (rate_limit / max_connections / source_cidrs) — so an operator
+    # could not set a mapping's hardening at all while an agent could, and the
+    # gating comments on both surfaces asserted they enforced one policy.
+    #
+    # Declared here rather than on either executor for the same reason
+    # System::Executors::Base.replay_baseline_attributes is declared on the
+    # executor: whatever several readers must agree on belongs in one place.
+    # CreatePortMapping and UpdatePortMapping write the SAME columns and
+    # neither owns the other's list, so the model — which owns these columns
+    # and the validations that make each one safe to permit — is the seam.
+    #
+    # Adding a column here makes it writable from both surfaces at once. The
+    # column-classification pin in spec/models/sdwan/port_mapping_spec.rb
+    # reds on any new column that is neither listed here nor recorded as
+    # deliberately non-writable, so a migration cannot land a field that is
+    # silently outside every surface's reach.
+    WRITABLE_SCALAR_ATTRIBUTES = %i[
+      name description sdwan_peer_id target_peer_id target_virtual_ip_id
+      listen_port target_port protocol enabled rate_limit max_connections
+    ].freeze
+
+    # Split out because strong parameters needs each non-scalar's SHAPE:
+    # metadata is a free-form object, source_cidrs an array of scalars. A bare
+    # `permit(:source_cidrs)` silently drops the array it was meant to accept.
+    WRITABLE_STRUCTURED_ATTRIBUTES = { metadata: {}, source_cidrs: [] }.freeze
+
+    WRITABLE_ATTRIBUTES = (WRITABLE_SCALAR_ATTRIBUTES + WRITABLE_STRUCTURED_ATTRIBUTES.keys).freeze
+
     belongs_to :account
     belongs_to :network, class_name: "Sdwan::Network", foreign_key: :sdwan_network_id
     belongs_to :hub_peer, class_name: "Sdwan::Peer", foreign_key: :sdwan_peer_id

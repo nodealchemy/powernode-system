@@ -112,6 +112,59 @@ RSpec.describe "Api::V1::System::Sdwan::PortMappings", type: :request do
                                                               "notify_and_proceed create bypassed the gate entirely"
     end
 
+    # IMP-2c531ddb5a0c — the hardened DNAT tier (campaign 019f3458 increment 6:
+    # rate_limit / max_connections / source_cidrs) was reachable ONLY from the
+    # MCP arm. mapping_params permitted none of the three, on create or update,
+    # so an operator could not set a rate limit, a connection cap or a source
+    # allow-list at all while an agent could — on the same action category, the
+    # same executor and the same params shape.
+    it "carries the hardening tier through the gate on create" do
+      payload[:port_mapping].merge!(rate_limit: 100, max_connections: 25,
+                                    source_cidrs: [ "203.0.113.0/24" ])
+
+      post_create
+
+      expect(response).to have_http_status(:accepted)
+      attrs = ::Ai::DeferredOperation.order(created_at: :desc).first.params["attributes"]
+      expect(attrs["rate_limit"]).to eq(100)
+      expect(attrs["max_connections"]).to eq(25)
+      expect(attrs["source_cidrs"]).to eq([ "203.0.113.0/24" ])
+    end
+
+    it "persists and renders the hardening tier under the seeded operator policy" do
+      seed_operator_policy!("sdwan.port_mapping_create")
+      payload[:port_mapping].merge!(rate_limit: 100, max_connections: 25,
+                                    source_cidrs: [ "203.0.113.0/24" ])
+
+      post_create
+
+      expect(response).to have_http_status(:created)
+      body = response.parsed_body.dig("data", "port_mapping")
+      # A write the caller cannot read back is the same shape as a dropped
+      # field, so serialize_full has to name them too.
+      expect(body["rate_limit"]).to eq(100)
+      expect(body["max_connections"]).to eq(25)
+      expect(body["source_cidrs"]).to eq([ "203.0.113.0/24" ])
+
+      persisted = ::Sdwan::PortMapping.find(body["id"])
+      expect(persisted.rate_limit).to eq(100)
+      expect(persisted.max_connections).to eq(25)
+      expect(persisted.source_cidrs).to eq([ "203.0.113.0/24" ])
+    end
+
+    # The model's per-entry CIDR error has to reach the operator. While the key
+    # was dropped by mapping_params this answered 202 over a mapping that would
+    # never carry the allow-list the caller asked for.
+    it "answers 422 with the model's CIDR error rather than dropping the allow-list" do
+      payload[:port_mapping][:source_cidrs] = [ "not-a-cidr" ]
+
+      post_create
+
+      expect(response).to have_http_status(422)
+      expect(response.parsed_body.to_json).to match(/invalid CIDR entry/)
+      expect(::Ai::DeferredOperation.count).to eq(0)
+    end
+
     # Gating must not cost the caller its field-level errors: an invalid
     # payload is rejected before the gate, so no audit row is opened for an
     # operation that could never have run.
@@ -190,6 +243,46 @@ RSpec.describe "Api::V1::System::Sdwan::PortMappings", type: :request do
       expect(mapping.reload.listen_port).to eq(30_100)
       expect(::Ai::DeferredOperation.count).to eq(0),
                                                "an unsaveable update still opened an autonomy-gate audit row"
+    end
+
+    # IMP-2c531ddb5a0c — the update twin of the create examples above.
+    it "carries the hardening tier through the gate on update" do
+      payload[:port_mapping] = { rate_limit: 200, max_connections: 40,
+                                 source_cidrs: [ "2001:db8::/32" ] }
+
+      patch_update
+
+      expect(response).to have_http_status(:accepted)
+      attrs = ::Ai::DeferredOperation.order(created_at: :desc).first.params["attributes"]
+      expect(attrs["rate_limit"]).to eq(200)
+      expect(attrs["max_connections"]).to eq(40)
+      expect(attrs["source_cidrs"]).to eq([ "2001:db8::/32" ])
+    end
+
+    it "persists and renders the hardening tier under the seeded operator policy" do
+      seed_operator_policy!("sdwan.port_mapping_update")
+      payload[:port_mapping] = { rate_limit: 200, max_connections: 40,
+                                 source_cidrs: [ "2001:db8::/32" ] }
+
+      patch_update
+
+      expect(response).to have_http_status(:ok)
+      body = response.parsed_body.dig("data", "port_mapping")
+      expect(body["rate_limit"]).to eq(200)
+      expect(body["max_connections"]).to eq(40)
+      expect(body["source_cidrs"]).to eq([ "2001:db8::/32" ])
+      expect(mapping.reload.rate_limit).to eq(200)
+    end
+
+    it "answers 422 with the model's CIDR error rather than dropping the allow-list" do
+      payload[:port_mapping] = { source_cidrs: [ "999.999.999.999/24" ] }
+
+      patch_update
+
+      expect(response).to have_http_status(422)
+      expect(response.parsed_body.to_json).to match(/invalid CIDR entry/)
+      expect(mapping.reload.source_cidrs).to eq([])
+      expect(::Ai::DeferredOperation.count).to eq(0)
     end
   end
 end
