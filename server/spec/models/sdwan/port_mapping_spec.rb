@@ -263,6 +263,15 @@ RSpec.describe Sdwan::PortMapping, type: :model do
   # a one-line, deliberate, reviewable act, whereas a blanket "these shapes are
   # never writable" heuristic would eventually forbid a column someone has a
   # good reason to permit. Each entry below records WHY it is not caller-input.
+  #
+  # What this does NOT catch, deliberately: PROMOTING a column — deleting it
+  # from the list below and adding it to WRITABLE_ATTRIBUTES in the same edit —
+  # goes green here, because a pinned intent list exists precisely to let the
+  # deliberate case through at the cost of one recorded line. The accidental
+  # case is what reds. For the two promotions that would actually matter,
+  # account_id and sdwan_network_id, the independent floor is
+  # port_mapping_surface_parity_spec.rb's `forbidden_attributes`, which asserts
+  # by EXECUTION that neither reaches the executor from either surface.
   describe "writable attribute classification" do
     # A `let`, not a constant: a bare assignment inside a describe block binds
     # on Object (blocks carry no lexical scope of their own), which is how one

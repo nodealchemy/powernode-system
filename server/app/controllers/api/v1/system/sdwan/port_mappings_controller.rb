@@ -16,6 +16,7 @@ module Api
           before_action :set_account
           before_action :set_network
           before_action :set_mapping, only: %i[show update destroy]
+          before_action :reject_misshaped_attributes, only: %i[create update]
 
           def index
             require_permission("system.sdwan.port_mappings.read")
@@ -138,6 +139,34 @@ module Api
             params.require(:port_mapping).permit(
               *::Sdwan::PortMapping::WRITABLE_SCALAR_ATTRIBUTES,
               ::Sdwan::PortMapping::WRITABLE_STRUCTURED_ATTRIBUTES
+            )
+          end
+
+          # Strong parameters DROPS a permitted key whose value has the wrong
+          # shape rather than refusing it: `source_cidrs: "203.0.113.0/24"` — a
+          # bare string where an array is declared, the likeliest way to get
+          # this field wrong — vanishes, and the request answers 202 over a
+          # mapping that will never carry the allow-list the caller asked for.
+          # On a source-restriction control that silence is fail-OPEN, and it
+          # is the same silent drop this endpoint's permit list was widened to
+          # end (IMP-2c531ddb5a0c). The MCP twin hands the identical value to
+          # the model and gets a loud "must be an array (got String)", so
+          # refusing here is also what keeps the two surfaces answering alike.
+          #
+          # Scoped to keys the caller is ALLOWED to set: a dropped
+          # account_id/id is strong parameters doing its job and must stay
+          # silent. Derived from the one writable list, so a structured
+          # attribute added later is covered on arrival.
+          def reject_misshaped_attributes
+            supplied = params.require(:port_mapping)
+            writable = ::Sdwan::PortMapping::WRITABLE_ATTRIBUTES.map(&:to_s)
+            dropped = writable & (supplied.keys - mapping_params.keys)
+            return if dropped.empty?
+
+            render_error(
+              "Malformed value for: #{dropped.sort.join(', ')} — check each field's type " \
+              "(source_cidrs is an array of CIDR strings, metadata an object)",
+              status: :unprocessable_entity
             )
           end
 

@@ -59,6 +59,37 @@ RSpec.describe Sdwan::Executors::UpdatePortMapping do
     expect(mapping.reload.listen_port).to eq(30_200)
   end
 
+  # IMP-2c531ddb5a0c — the hub is the OTHER caller-writable parent FK, and it
+  # is now writable from both surfaces. hub_belongs_to_network refuses a hub in
+  # a different NETWORK, which covers the ordinary foreign hub; it says nothing
+  # about accounts. The peer below is deliberately misaligned — this account's
+  # network, another account's account_id — a pair Sdwan::Peer permits (it has
+  # no validation tying the two) and that every write path merely happens not
+  # to produce. Under the relative validation alone this update SUCCEEDS and a
+  # foreign account's peer ends up terminating this account's DNAT; the
+  # anchor is what refuses it.
+  it "refuses a hub peer whose network matches but whose account does not" do
+    misaligned_hub = create(:sdwan_peer, :hub, account: create(:account), network: network)
+    expect(misaligned_hub.sdwan_network_id).to eq(network.id)
+    expect(misaligned_hub.account_id).not_to eq(account.id)
+
+    error = run({ mapping_id: mapping.id, attributes: { sdwan_peer_id: misaligned_hub.id } })
+
+    expect(error).to be_a(::Ai::DeferredOperation::CrossAccountError)
+    expect(mapping.reload.sdwan_peer_id).to eq(hub.id)
+  end
+
+  # Positive control for the anchor: an in-account hub reassignment is the
+  # operation the MCP arm was widened to allow, and must still work.
+  it "applies an in-account hub reassignment" do
+    other_hub = create(:sdwan_peer, :hub, account: account, network: network)
+
+    error = run({ mapping_id: mapping.id, attributes: { sdwan_peer_id: other_hub.id } })
+
+    expect(error).to be_nil
+    expect(mapping.reload.sdwan_peer_id).to eq(other_hub.id)
+  end
+
   it "refuses to re-parent the mapping into another account's network" do
     foreign_network = create(:sdwan_network)
     foreign_account = foreign_network.account

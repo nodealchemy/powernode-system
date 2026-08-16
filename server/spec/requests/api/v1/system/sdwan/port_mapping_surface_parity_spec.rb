@@ -123,6 +123,21 @@ RSpec.describe "SDWAN port-mapping surface parity", type: :request do
       expect(attrs["rate_limit"]).to eq(100)
       expect(attrs["sdwan_peer_id"]).to eq(other_hub.id)
     end
+
+    # A write the caller cannot read back is the same shape as a dropped key,
+    # so the serializer has to move with the permit list. serialize_full is a
+    # literal: without this, adding a writable attribute leaves it unanswered
+    # and nothing reds.
+    it "answers every writable attribute it just accepted" do
+      seed_operator_policy!("sdwan.port_mapping_create")
+
+      post collection_path, params: { port_mapping: full_attributes },
+           headers: auth_headers_for(manager), as: :json
+
+      expect(response).to have_http_status(:created)
+      body = response.parsed_body.dig("data", "port_mapping")
+      expect(body.keys).to include(*expected_option_names.map(&:to_s))
+    end
   end
 
   describe "REST update" do
@@ -199,15 +214,32 @@ RSpec.describe "SDWAN port-mapping surface parity", type: :request do
       }.merge(under_caller_names(full_attributes)).merge(forbidden_attributes))
 
       expect(result[:success]).to be(true), "MCP create refused the full writable payload: #{result[:error]}"
-      row = ::Sdwan::PortMapping.find(result[:data][:port_mapping][:id])
+      payload = result[:data][:port_mapping]
+      row = ::Sdwan::PortMapping.find(payload[:id])
 
       full_attributes.each do |column, value|
         expect(row.public_send(column)).to eq(value), "#{column} did not reach the row"
       end
 
+      # Same reason as the REST twin above: the response has to name what it
+      # accepted, and serialize_port_mapping_full is a literal.
+      expect(payload.keys).to include(*expected_option_names)
+
       expect(row.account_id).to eq(account.id)
       expect(row.sdwan_network_id).to eq(network.id)
+      expect(row.id).not_to eq(forbidden_attributes[:id])
       expect(row.last_compiled_at).to be_nil
+    end
+
+    # create's schema is hand-written where update's is interpolated, so it is
+    # the one place an accepted field can go unadvertised.
+    it "advertises every accepted field in its tool schema" do
+      declared = ::Ai::Tools::SdwanTool.action_definitions
+                                       .fetch("system_sdwan_create_port_mapping")
+                                       .fetch(:parameters).keys
+
+      expect(declared).to include(*expected_option_names)
+      expect(declared).not_to include(:sdwan_peer_id)
     end
   end
 end

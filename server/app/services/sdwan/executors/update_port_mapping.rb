@@ -22,6 +22,18 @@ module Sdwan
         # once the network is anchored, the relative validations transitively
         # anchor the hub and target peers.
         anchor_reparent!(:sdwan_network_id, ::Sdwan::Network)
+        # IMP-2c531ddb5a0c: the hub is a second caller-writable parent FK, and
+        # since this change it is writable from BOTH surfaces (the MCP arm
+        # dropped it before). Its refusal used to be derived rather than
+        # anchored: hub_belongs_to_network compares the peer's network against
+        # the MAPPING's, never against an account, so a foreign hub is refused
+        # only because peers are account-aligned with their network — an
+        # invariant every write path upholds and no constraint enforces. The
+        # comment below already says that about the mapping/network pair; the
+        # same gap on the hub is now closed directly, which also means a
+        # misaligned peer (right network, wrong account) cannot terminate this
+        # account's DNAT. No-op when the attributes name no new hub.
+        anchor_reparent!(:sdwan_peer_id, ::Sdwan::Peer)
         mapping.update!(attrs)
         { mapping_id: mapping.id }
       end

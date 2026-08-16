@@ -165,6 +165,47 @@ RSpec.describe "Api::V1::System::Sdwan::PortMappings", type: :request do
       expect(::Ai::DeferredOperation.count).to eq(0)
     end
 
+    # The example above sends an ARRAY of bad strings, which strong parameters
+    # keeps — so it proves the model error reaches the caller but says nothing
+    # about the shape strong parameters silently DROPS. A bare string is the
+    # likeliest way to get this field wrong, and dropping it answers 202 over
+    # an unrestricted DNAT: fail-open on a source-restriction control.
+    it "answers 422 for a source_cidrs that is not an array rather than dropping it" do
+      payload[:port_mapping][:source_cidrs] = "203.0.113.0/24"
+
+      post_create
+
+      expect(response).to have_http_status(422)
+      expect(response.parsed_body.to_json).to match(/source_cidrs/)
+      expect(::Ai::DeferredOperation.count).to eq(0)
+      expect(::Sdwan::PortMapping.count).to eq(0)
+    end
+
+    it "answers 422 for a metadata that is not an object rather than dropping it" do
+      payload[:port_mapping][:metadata] = "gold"
+
+      post_create
+
+      expect(response).to have_http_status(422)
+      expect(response.parsed_body.to_json).to match(/metadata/)
+      expect(::Ai::DeferredOperation.count).to eq(0)
+    end
+
+    # Positive control: strong parameters drops non-writable keys too, and
+    # THAT must stay silent — it is the filter doing its job, not a caller
+    # error. Without this the refusal above could be over-broad and nothing
+    # would say so.
+    it "still drops a non-writable key silently" do
+      payload[:port_mapping][:account_id] = create(:account).id
+      payload[:port_mapping][:sdwan_network_id] = create(:sdwan_network).id
+
+      post_create
+
+      expect(response).to have_http_status(:accepted)
+      attrs = ::Ai::DeferredOperation.order(created_at: :desc).first.params["attributes"]
+      expect(attrs.keys).not_to include("account_id", "sdwan_network_id")
+    end
+
     # Gating must not cost the caller its field-level errors: an invalid
     # payload is rejected before the gate, so no audit row is opened for an
     # operation that could never have run.
