@@ -7,6 +7,13 @@ module Sdwan
     # The peer's destroy callbacks handle peer-config cleanup + adjacent
     # bookkeeping (FRR re-render, key revocation, etc).
     class DeletePeer < ::System::Executors::Base
+      # Single source of this action's autonomy category (IMP-249e01a804e5).
+      # Every gate site — the REST controller and Ai::Tools::SdwanTool — reads
+      # it from here rather than carrying its own copy, and
+      # spec/services/sdwan/executors/action_category_coherence_spec.rb pins the
+      # seeded policy row and the engine registration to it.
+      ACTION_CATEGORY = "sdwan.peer_delete"
+
       protected
 
       def perform

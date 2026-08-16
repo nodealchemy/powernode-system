@@ -3,6 +3,13 @@
 module Sdwan
   module Executors
     class UpdateVirtualIp < ::System::Executors::Base
+      # Single source of this action's autonomy category (IMP-249e01a804e5).
+      # Every gate site — the REST controller and Ai::Tools::SdwanTool — reads
+      # it from here rather than carrying its own copy, and
+      # spec/services/sdwan/executors/action_category_coherence_spec.rb pins the
+      # seeded policy row and the engine registration to it.
+      ACTION_CATEGORY = "sdwan.virtual_ip_update"
+
       # IMP-391525770512 — the replay-sensitive columns are exactly the ones
       # Sdwan::VirtualIp#failover! writes (virtual_ip.rb:110-114), because
       # failover is the concurrent writer that makes the park→approve window

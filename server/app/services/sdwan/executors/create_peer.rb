@@ -6,6 +6,14 @@ module Sdwan
     # Most peer creates are auto-approved (additive operation), but the
     # AutonomyGate audit row + chain-of-custody is still useful.
     class CreatePeer < ::System::Executors::Base
+      # Single source of this action's autonomy category (IMP-249e01a804e5).
+      # No gate site references it today — this executor is composed directly
+      # rather than dispatched through Ai::AutonomyGate — but the seeded policy
+      # row and the engine registration are pinned to it by
+      # spec/services/sdwan/executors/action_category_coherence_spec.rb, so the
+      # first surface to gate this verb has a declaration to read.
+      ACTION_CATEGORY = "sdwan.peer_create"
+
       protected
 
       def perform
