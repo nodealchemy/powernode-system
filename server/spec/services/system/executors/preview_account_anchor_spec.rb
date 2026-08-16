@@ -203,6 +203,72 @@ RSpec.describe "approval-card preview account anchoring" do
     end
   end
 
+  # IMP-8e4674f4d62d — the follow-on sweep base.rb's #scoped_label_record
+  # docstring names. Same mechanism, same oracle: drive Ai::DeferredOperation
+  # #preview through a caller that does NOT pre-scope its ids.
+  #
+  # DeleteAccessGrant is first and separate because what its card names is not a
+  # resource name but a USER'S EMAIL ADDRESS — a cross-account disclosure of
+  # personal data rather than a label bug. Its impact line discloses a second
+  # fact, the foreign grant's device count, and is asserted separately: a fix
+  # that anchored only the summary would leave a working oracle for "how many
+  # VPN devices does that other account's grant have".
+  describe "Sdwan::Executors::DeleteAccessGrant" do
+    let!(:victim_user) { create(:user, account: victim, email: "victim-operator@example.test") }
+    let!(:victim_grant) do
+      create(:sdwan_access_grant, account: victim, network: victim_network, user: victim_user)
+    end
+    let!(:victim_devices) { create_list(:sdwan_user_device, 2, access_grant: victim_grant) }
+
+    let!(:tenant_user) { create(:user, account: tenant, email: "tenant-operator@example.test") }
+    let!(:tenant_grant) do
+      create(:sdwan_access_grant, account: tenant, network: tenant_network, user: tenant_user)
+    end
+    let!(:tenant_device) { create(:sdwan_user_device, access_grant: tenant_grant) }
+
+    it "renders the bare id rather than a foreign grant holder's email address" do
+      preview = card_preview("Sdwan::Executors::DeleteAccessGrant", "sdwan.access_grant_delete",
+                             { network_id: victim_network.id, grant_id: victim_grant.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to include(victim_grant.id)
+      expect(preview[:summary]).not_to include("victim-operator@example.test")
+    end
+
+    it "does not disclose a foreign grant's device count in the impact line" do
+      preview = card_preview("Sdwan::Executors::DeleteAccessGrant", "sdwan.access_grant_delete",
+                             { network_id: victim_network.id, grant_id: victim_grant.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:impact]).to eq("Destroys the access grant and every VPN device beneath it")
+      expect(preview[:impact]).not_to include("2 device")
+    end
+
+    it "still names an in-account grant and counts its devices" do # CONTROL
+      preview = card_preview("Sdwan::Executors::DeleteAccessGrant", "sdwan.access_grant_delete",
+                             { network_id: tenant_network.id, grant_id: tenant_grant.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to eq("Delete SDWAN access grant tenant-operator@example.test")
+      expect(preview[:impact]).to include("1 device")
+    end
+
+    # The network/grant pairing #scoped_grant re-validates is a SECOND guard,
+    # not the same one: it refuses a grant that has moved network since the
+    # operation was parked. Anchoring must not cost it — an in-account grant
+    # named against the wrong in-account network still declines to be labelled.
+    it "keeps refusing to name an in-account grant on a different network" do
+      other_network = create(:sdwan_network, account: tenant, name: "tenant-spare")
+
+      preview = card_preview("Sdwan::Executors::DeleteAccessGrant", "sdwan.access_grant_delete",
+                             { network_id: other_network.id, grant_id: tenant_grant.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).not_to include("tenant-operator@example.test")
+      expect(preview[:impact]).to eq("Destroys the access grant and every VPN device beneath it")
+    end
+  end
+
   # The behavioural examples above are all satisfiable by a hand-written
   # `find_by(id:, account_id:)` per executor, or by a post-filter that reads the
   # row unscoped and then discards it. The property the task actually buys is

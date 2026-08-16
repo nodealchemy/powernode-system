@@ -63,18 +63,37 @@ module Sdwan
         ::Sdwan::Network.find(params[:network_id]).access_grants.find(params[:grant_id])
       end
 
-      # Scoped like scoped_grant so a preview can't surface a label from outside
-      # the named network. Nil when the pairing no longer resolves.
+      # The row the CARD names, resolved through Base#scoped_label_record
+      # (IMP-8e4674f4d62d). scoped_grant is deliberately not reused here: it
+      # anchors on the NETWORK named in the same params, which re-validates the
+      # pairing but establishes nothing about ownership — so a caller that did
+      # not pre-scope had another account's grant labelled on its approvers'
+      # card, and this card's label is the grant holder's EMAIL ADDRESS. That
+      # makes it a disclosure of personal data, not a mislabelled resource.
+      #
+      # Both guards, not one: the account anchor is the ownership check, and
+      # the `sdwan_network_id` comparison keeps scoped_grant's pairing check —
+      # a grant that has moved network since the operation was parked still
+      # declines to be named. The comparison is against the params value
+      # because that is what the approver's request was ABOUT; reaching the
+      # network through the grant instead would make the pairing tautological.
+      #
+      # Nil is "render the id instead", per the seam's caller contract — never
+      # "not found", which it also covers.
+      def label_grant
+        grant = scoped_label_record(::Sdwan::AccessGrant, params[:grant_id])
+        return nil unless grant
+        return nil unless grant.sdwan_network_id.to_s == params[:network_id].to_s
+
+        grant
+      end
+
       def grant_label
-        scoped_grant.user&.email
-      rescue ActiveRecord::RecordNotFound
-        nil
+        label_grant&.user&.email
       end
 
       def device_count_for_preview
-        scoped_grant.user_devices.count
-      rescue ActiveRecord::RecordNotFound
-        nil
+        label_grant&.user_devices&.count
       end
     end
   end
