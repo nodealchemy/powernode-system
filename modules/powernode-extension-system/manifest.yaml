@@ -42,6 +42,33 @@ dependencies:
 # and hub-worker's sidekiq processes.
 services: []
 
+# Because `services` is empty, updating this module used to restart NOTHING:
+# the agent re-renders units only when a module's OWN services-block hash
+# drifts, so new extension code landed on disk while the processes that load
+# it kept serving the old copy. Verified live on 2026-08-16 — v53 was built,
+# signed, promoted and materialised (the node's running_module_digests matched
+# the published oci_digest byte-for-byte) and Rails never restarted; a 200s
+# poll of /up across the delivery saw zero 502s. Every extension change before
+# then had activated only by COINCIDENCE, when a core deploy happened to
+# restart Rails.
+#
+# So name the processes that actually load this code. Each entry targets
+# another module's service; the restart fires once that instance has
+# materialised this module's new digest, never merely on promotion.
+#
+# All three are load-bearing, not defensive:
+#   rails      — extensions_loader_helper turns server/ into a path-gem at boot
+#   sidekiq    — worker/config/boot.rb requires worker/app/{services,jobs}/**
+#   worker-web — config.ru line 3 requires the SAME config/application, so the
+#                HTTP worker loads this extension exactly as sidekiq does.
+#                Omitting it would leave the embeddings/LLM-proxy process on
+#                stale code indefinitely, which is the quiet half of this bug.
+restart_after_update:
+  - module: powernode-hub-backend
+    services: [rails]
+  - module: powernode-hub-worker
+    services: [sidekiq, worker-web]
+
 security:
   capabilities: []
   egress_allow: []
