@@ -143,17 +143,37 @@ RSpec.describe Sdwan::Executors::UpdateVirtualIp do
   # (IMP-3a563becb7d7 / IMP-ee57d0fbe859, UpdatePortMapping precedent); the
   # bare id is only the floor for a row already gone.
   describe ".preview" do
+    # IMP-8e4674f4d62d — the label resolves through Base#scoped_label_record,
+    # so it needs the operation's account to anchor on; `deferred_for` is this
+    # file's existing builder. Cross-account coverage lives in
+    # spec/services/system/executors/preview_account_anchor_spec.rb.
+    def anchored_preview(params)
+      described_class.preview(params, deferred_operation: deferred_for(params))
+    end
+
     it "names the VIP and network an operator recognises, not a bare UUID" do
       vip.update!(name: "svc-vip")
       network.update!(name: "wan-core")
 
-      preview = described_class.preview({ vip_id: vip.id })
+      preview = anchored_preview({ vip_id: vip.id })
 
       expect(preview[:summary]).to eq("Update SDWAN VIP 'svc-vip' on network wan-core")
     end
 
+    # The pre-gate contract base.rb documents: no anchor, no name.
+    it "declines to name the VIP when there is no account to anchor on" do
+      vip.update!(name: "svc-vip")
+
+      preview = described_class.preview({ vip_id: vip.id })
+
+      expect(preview[:summary]).to eq("Update VIP #{vip.id}")
+    end
+
+    # Anchored on purpose: unanchored it would pass because there is no
+    # account, not because the row is gone, leaving the missing-row arm
+    # untested and duplicating the example above.
     it "falls back to the bare id when the VIP is gone" do
-      preview = described_class.preview({ vip_id: "gone" })
+      preview = anchored_preview({ vip_id: "gone" })
 
       expect(preview[:summary]).to eq("Update VIP gone")
     end

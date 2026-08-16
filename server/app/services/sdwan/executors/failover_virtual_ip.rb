@@ -32,8 +32,11 @@ module Sdwan
         }
       end
 
+      # IMP-8e4674f4d62d: anchored to the operation's account, on the same
+      # terms as its DeleteVirtualIp twin — including why the no-name arm
+      # deliberately carries no id. See that file for the reasoning.
       def summarize
-        vip = ::Sdwan::VirtualIp.find_by(id: params[:vip_id])
+        vip = scoped_label_record(::Sdwan::VirtualIp, params[:vip_id])
         vip ? "Failover VIP #{vip.try(:address) || vip.id}" : "Failover VIP"
       end
 

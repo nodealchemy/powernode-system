@@ -133,19 +133,36 @@ RSpec.describe Sdwan::Executors::UpdateFirewallRule do
   # (IMP-3a563becb7d7 / IMP-ee57d0fbe859, UpdatePortMapping precedent); the
   # bare id is only the floor for a row already gone.
   describe ".preview" do
+    # IMP-8e4674f4d62d — the label resolves through Base#scoped_label_record,
+    # so it needs the operation's account to anchor on; `deferred_for` is this
+    # file's existing builder. Cross-account coverage lives in
+    # spec/services/system/executors/preview_account_anchor_spec.rb.
+    def anchored_preview(params)
+      described_class.preview(params, deferred_operation: deferred_for(params))
+    end
+
     it "names the rule and network an operator recognises, not a bare UUID" do
       rule.update!(name: "web-allow")
       network.update!(name: "wan-core")
 
-      preview = described_class.preview({ rule_id: rule.id })
+      preview = anchored_preview({ rule_id: rule.id })
 
       expect(preview[:summary]).to eq("Update firewall rule 'web-allow' on SDWAN network wan-core")
     end
 
     it "falls back to the bare id when the rule is gone" do
-      preview = described_class.preview({ rule_id: "gone" })
+      preview = anchored_preview({ rule_id: "gone" })
 
       expect(preview[:summary]).to eq("Update firewall rule gone")
+    end
+
+    # The pre-gate contract base.rb documents: no anchor, no name.
+    it "declines to name the rule when there is no account to anchor on" do
+      rule.update!(name: "web-allow")
+
+      preview = described_class.preview({ rule_id: rule.id })
+
+      expect(preview[:summary]).to eq("Update firewall rule #{rule.id}")
     end
   end
 end

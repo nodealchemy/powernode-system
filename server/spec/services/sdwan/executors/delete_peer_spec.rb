@@ -73,11 +73,27 @@ RSpec.describe Sdwan::Executors::DeletePeer do
     # spec; these examples pin what this executor renders around it.
     let(:network) { create(:sdwan_network, name: 'wan-core') }
 
+    # IMP-8e4674f4d62d — the label resolves through Base#scoped_label_record,
+    # so it needs the operation's account to anchor on, exactly as the
+    # UpdatePeer twin already did. With no operation there is nobody to
+    # establish the peer belongs to, and the card correctly declines to name
+    # it — pinned by the last example here, and cross-account in
+    # spec/services/system/executors/preview_account_anchor_spec.rb.
+    def deferred_for(params, account)
+      ::Ai::DeferredOperation.create!(
+        account: account,
+        action_category: 'sdwan.peer_delete',
+        executor_class: described_class.name,
+        params: params
+      )
+    end
+
     it 'names the peer by its node instance and network, the way an operator recognises it' do
       peer = create(:sdwan_peer, :hub, account: network.account, network: network)
       peer.node_instance.update!(name: 'edge-lon-01')
+      params = { peer_id: peer.id }
 
-      preview = described_class.preview({ peer_id: peer.id })
+      preview = described_class.preview(params, deferred_operation: deferred_for(params, network.account))
 
       expect(preview[:summary]).to eq('Delete SDWAN peer edge-lon-01 on wan-core')
       expect(preview[:impact]).to include('SDWAN connectivity')
@@ -86,17 +102,32 @@ RSpec.describe Sdwan::Executors::DeletePeer do
     it 'falls back to the endpoint when the instance carries no name at all' do
       peer = create(:sdwan_peer, :hub, account: network.account, network: network)
       peer.node_instance.update_column(:name, '')
+      params = { peer_id: peer.id }
 
-      preview = described_class.preview({ peer_id: peer.id })
+      preview = described_class.preview(params, deferred_operation: deferred_for(params, network.account))
 
       # v6 literal is bracketed so host and port stay unambiguous.
       expect(preview[:summary]).to eq('Delete SDWAN peer [fd00:abcd:1::1]:51820 on wan-core')
     end
 
     it 'returns a generic summary when the peer is missing' do
-      preview = described_class.preview({ peer_id: 'gone' })
+      params = { peer_id: 'gone' }
+
+      preview = described_class.preview(params, deferred_operation: deferred_for(params, create(:account)))
 
       expect(preview[:summary]).to eq('Delete SDWAN peer gone')
+    end
+
+    # The pre-gate contract base.rb documents: one positional argument still
+    # works and nothing raises. What changes is the posture — no anchor, no
+    # name.
+    it 'declines to name a real peer when there is no account to anchor on' do
+      peer = create(:sdwan_peer, :hub, account: network.account, network: network)
+      peer.node_instance.update!(name: 'edge-lon-01')
+
+      preview = described_class.preview({ peer_id: peer.id })
+
+      expect(preview[:summary]).to eq("Delete SDWAN peer #{peer.id}")
     end
   end
 end

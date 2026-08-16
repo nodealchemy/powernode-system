@@ -62,8 +62,22 @@ module System
           { publication_id: pub.id, platform_id: platform.id, promoted: true }
         end
 
+        # IMP-8e4674f4d62d: anchored to the operation's account, though nothing
+        # previews this executor today — its one caller
+        # (Ai::Tools::SystemFleetTool#set_default_disk_image_publication)
+        # invokes `.execute` directly with `deferred_operation: nil`, so no
+        # approval card renders it. Pinned rather than left to the wiring
+        # (the CreatePeer precedent): `system.disk_image_publication_promote`
+        # IS a registered action category with a seeded require_approval
+        # policy, so the day a gate site names this class the label would have
+        # gone out unscoped.
+        #
+        # Same shape as the VIP verbs: `pub.try(:tag)` is a DEAD rung
+        # (System::DiskImagePublication has no `tag`), so the named arm renders
+        # the id and what the card discloses is EXISTENCE. The no-name arm
+        # therefore stays id-free — see delete_virtual_ip.rb for why.
         def summarize
-          pub = ::System::DiskImagePublication.find_by(id: params[:publication_id])
+          pub = scoped_label_record(::System::DiskImagePublication, params[:publication_id])
           pub ? "Promote disk image #{pub.try(:tag) || pub.id} to active" : "Promote disk image"
         end
 

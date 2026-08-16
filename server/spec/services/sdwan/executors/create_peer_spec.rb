@@ -172,7 +172,19 @@ RSpec.describe Sdwan::Executors::CreatePeer do
       peer = create(:sdwan_peer, account: account, network: network, node_instance: instance)
 
       create_summary = preview_for[:summary]
-      delete_summary = ::Sdwan::Executors::DeletePeer.preview({ peer_id: peer.id })[:summary]
+      # IMP-8e4674f4d62d — DeletePeer resolves its label through the
+      # operation's account now, so the comparison has to hand it one; without
+      # an anchor it declines to name the peer and the two cards could only
+      # agree by both saying nothing.
+      delete_summary = ::Sdwan::Executors::DeletePeer.preview(
+        { peer_id: peer.id },
+        deferred_operation: ::Ai::DeferredOperation.create!(
+          account: account,
+          action_category: "sdwan.peer_delete",
+          executor_class: "Sdwan::Executors::DeletePeer",
+          params: { peer_id: peer.id }
+        )
+      )[:summary]
 
       expect(create_summary.delete_prefix("Add SDWAN peer "))
         .to eq(delete_summary.delete_prefix("Delete SDWAN peer ")),

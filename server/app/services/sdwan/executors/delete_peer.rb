@@ -22,8 +22,17 @@ module Sdwan
       # PeersController#destroy's gate `description:`. This executor used to
       # carry its own copy of the rung ladder, which is how the two surfaces
       # naming the SAME delete came to disagree.
+      #
+      # IMP-8e4674f4d62d: through the operation's account anchor, the way its
+      # UpdatePeer twin already resolves the identical param. operator_label
+      # names a node instance AND a network, so an unanchored find_by handed a
+      # foreign peer id put two of another account's resource names on this
+      # account's approval card. It also restores IMP-ee57d0fbe859's invariant
+      # structurally rather than by coincidence: while one twin was anchored
+      # and the other was not, the two cards named the same peer identically
+      # only for as long as both previews happened to receive the same anchor.
       def summarize
-        peer = ::Sdwan::Peer.find_by(id: params[:peer_id])
+        peer = scoped_label_record(::Sdwan::Peer, params[:peer_id])
         return "Delete SDWAN peer #{params[:peer_id]}" unless peer
         "Delete SDWAN peer #{peer.operator_label}"
       end
