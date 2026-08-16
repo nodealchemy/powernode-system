@@ -104,6 +104,56 @@ RSpec.describe "Api::V1::System::Sdwan::RoutePolicies", type: :request do
                                                               "auto-approved create bypassed the gate entirely"
     end
 
+    # IMP-7ff14e99e885 — the re-find scope handed to gate_create! must be
+    # account-constrained.
+    #
+    # Reachability, stated honestly: on the real :proceed path the id comes from
+    # CreateRoutePolicy#perform, which is a bare `create!` — always a fresh
+    # UUIDv7 row under the operation's account — so no caller input steers it
+    # and the old unscoped `scope:` was never a reachable cross-tenant read.
+    # These examples pin the property rather than an exploit: whatever id the
+    # gate hands back, the controller re-finds it inside this account or refuses.
+    # Without them the scope silently reverts to "everything".
+    context "when the gate's :proceed result names a policy in another account" do
+      let(:other_account) { create(:account) }
+      let!(:foreign_policy) do
+        create(:sdwan_route_policy, account: other_account, name: "foreign-policy",
+                                    scope: "account", direction: "import")
+      end
+
+      def proceed_returning(policy_id)
+        allow(::Ai::AutonomyGate).to receive(:evaluate).and_return(
+          ::Ai::AutonomyGate::Result.new(
+            decision: :proceed, deferred_operation: nil,
+            result: { data: { policy_id: policy_id } }
+          )
+        )
+      end
+
+      it "does not re-find and serialize the foreign row" do
+        proceed_returning(foreign_policy.id)
+
+        post_create
+
+        expect(response.body).not_to include("foreign-policy")
+        expect(response).to have_http_status(:not_found)
+      end
+
+      # Control: the refusal above must not be over-tightening. @account is
+      # `current_account`, the same account Executors::Base writes under, so a
+      # legitimate result still resolves.
+      it "still re-finds and renders a row in the caller's own account" do
+        own_policy = create(:sdwan_route_policy, account: account, name: "own-policy",
+                                                 scope: "account", direction: "import")
+        proceed_returning(own_policy.id)
+
+        post_create
+
+        expect(response).to have_http_status(:created)
+        expect(response.parsed_body.dig("data", "route_policy", "name")).to eq("own-policy")
+      end
+    end
+
     # Gating must not cost the caller its field-level errors: an invalid payload
     # is rejected before the gate, so no audit row is opened for an operation
     # that could never have run.

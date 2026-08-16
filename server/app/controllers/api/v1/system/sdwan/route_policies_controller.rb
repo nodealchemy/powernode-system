@@ -58,11 +58,13 @@ module Api
             gate_create!(
               candidate: candidate,
               # RoutePolicy belongs directly to the account, so unlike the
-              # network-nested creates there is no parent association to
-              # re-find through — the model itself is the scope, exactly as
-              # the inline on_proceed used it. `scope:` is duck-typed on #find,
-              # so a relation and a model class both satisfy it.
-              scope: ::Sdwan::RoutePolicy,
+              # network-nested creates there is no parent association to re-find
+              # through. That is a reason to build the scope explicitly, NOT a
+              # reason to pass the model class: a class is not a scope, it is
+              # every row in the table. `scope:` is duck-typed on #find, so the
+              # account-scoped relation satisfies it just as well — and this is
+              # the same relation set_policy re-finds through below.
+              scope: ::Sdwan::RoutePolicy.where(account_id: @account.id),
               result_key: :policy_id,
               response_key: :route_policy,
               serializer: ->(p) { serialize_full(p) },
