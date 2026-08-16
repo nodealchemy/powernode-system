@@ -74,8 +74,37 @@ module System
       probe.module_smoke
     ].freeze
 
-    def self.agent_delegated?(command)
-      AGENT_DELEGATED_COMMANDS.include?(command)
+    # @param options [Hash, nil] the task's options JSONB. Optional so the
+    #   pre-existing single-argument call shape keeps working unchanged.
+    def self.agent_delegated?(command, options = nil)
+      AGENT_DELEGATED_COMMANDS.include?(command) || unit_scoped_restart?(command, options)
+    end
+
+    # A `restart` task means two entirely different things depending on
+    # whether it names a systemd unit, and the two terminal functions are on
+    # opposite sides of the fleet:
+    #
+    #   options["unit"] ABSENT  — instance-scoped. COMMAND_REGISTRY routes it
+    #     to Runtime::ControlInstance, whose ACTION_FOR_COMMAND maps "restart"
+    #     to the "reboot" action: InstanceControlService reboots the WHOLE VM
+    #     through the provider adapter.
+    #   options["unit"] PRESENT — unit-scoped. Only the agent can do this
+    #     (tasks/handlers/lifecycle.go LifecycleHandler reads options["unit"]
+    #     and shells out to `systemctl restart`).
+    #
+    # The agent dispatches on the LITERAL command string (tasks.Registry
+    # #Lookup), so "restart" is the only command that reaches the systemd
+    # handler — the collision is not avoidable by picking a different name,
+    # and the agent must not be changed. Since System::Task's after_commit
+    # enqueues server-side execution on create, without this split a
+    # unit-scoped restart would reboot the VM *and* restart the unit.
+    #
+    # Fails closed: no pre-existing caller sets options["unit"] on a restart,
+    # so every task that exists today keeps its current routing exactly.
+    # Deliberately NOT extended to reboot/terminate — those have no
+    # unit-scoped meaning, and RebootHandler ignores options entirely.
+    def self.unit_scoped_restart?(command, options)
+      command == "restart" && options.is_a?(Hash) && options["unit"].present?
     end
 
     Outcome = Struct.new(:claimed, :result, :status_code, keyword_init: true)
@@ -95,7 +124,7 @@ module System
     def run
       # Node-executed commands are left pending for the powernode-agent to poll
       # and complete via node_api. The server neither claims nor fails them.
-      if self.class.agent_delegated?(@operation.command)
+      if self.class.agent_delegated?(@operation.command, @operation.options)
         log_event(:dispatch_delegated_to_agent, command: @operation.command)
         return Outcome.new(
           claimed: false,
