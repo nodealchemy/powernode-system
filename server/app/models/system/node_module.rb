@@ -562,6 +562,17 @@ module System
         current_version_number: version.version_number,
         updated_at: Time.current
       )
+      # restart_after_update: this is the platform's ONLY choke point for
+      # "this version is now what the fleet runs", and the guard above means
+      # we reach here only when current_version actually MOVED. Arming here
+      # rather than at the publish site is what makes a ROLLBACK re-arm (and
+      # therefore restart) while a republished tag stays quiet. Non-fatal:
+      # promotion must never fail because of a bookkeeping stamp.
+      begin
+        ::System::RestartAfterUpdate.arm!(node_module: self, version: version)
+      rescue StandardError => e
+        Rails.logger.warn("[NodeModule##{id}] restart_after_update arm failed: #{e.class}: #{e.message}")
+      end
       true
     end
 

@@ -449,4 +449,41 @@ RSpec.describe System::ModulePublicationProcessor do
       expect(class_b_module.reload.current_version_id).to be_nil
     end
   end
+
+  # `restart_after_update` arming. Promotion ARMS the promoted version; it
+  # never enqueues a restart — at promotion time no instance has materialized
+  # the new artifact, so enqueueing here would restart into the OLD files.
+  describe "restart_after_update arming" do
+    before do
+      node_module.update!(config: node_module.config.merge(
+        "restart_after_update" => [ { "module" => "powernode-hub-backend", "services" => [ "rails" ] } ]
+      ))
+    end
+
+    it "arms the promoted version when the module declares restart_after_update" do
+      result = described_class.process!(node_module: node_module, tag: "abc1234")
+
+      expect(result.ok?).to be true
+      expect(System::RestartAfterUpdate.armed?(result.node_module_version.reload)).to be true
+    end
+
+    it "enqueues NO restart task at promotion time" do
+      expect { described_class.process!(node_module: node_module, tag: "abc1234") }
+        .not_to change { System::Task.where(command: "restart").count }
+    end
+
+    it "does not arm when promotion was withheld" do
+      result = described_class.process!(node_module: node_module, tag: "abc1234", promote: false)
+
+      expect(System::RestartAfterUpdate.armed?(result.node_module_version.reload)).to be false
+    end
+
+    it "does not arm a module that declares nothing" do
+      node_module.update!(config: node_module.config.except("restart_after_update"))
+
+      result = described_class.process!(node_module: node_module, tag: "abc1234")
+
+      expect(System::RestartAfterUpdate.armed?(result.node_module_version.reload)).to be false
+    end
+  end
 end

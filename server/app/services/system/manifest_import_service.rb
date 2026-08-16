@@ -82,7 +82,7 @@ module System
       schema_version name display_name description license category
       mask file_spec package_spec dependency_spec protected_spec
       dependencies init reboot_required security skills build services
-      users groups sudoers
+      users groups sudoers restart_after_update
     ].freeze
 
     SPEC_FIELDS = %w[mask file_spec package_spec dependency_spec protected_spec].freeze
@@ -293,6 +293,7 @@ module System
       end
 
       validate_services(manifest, errors)
+      validate_restart_after_update(manifest, errors)
       validate_groups(manifest, errors)
       validate_users(manifest, errors)
       validate_sudoers(manifest, errors)
@@ -510,6 +511,55 @@ module System
       end
     end
 
+    # Validates `restart_after_update:` — the declaration that updating THIS
+    # module requires restarting ANOTHER module's service. See
+    # System::RestartAfterUpdate for why the field exists and how it fires.
+    #
+    # Validated here, at manifest level, rather than at promotion time,
+    # because a malformed declaration must be caught by CI (`validate_only`
+    # backs the system_validate_module_manifest MCP action) before it ships.
+    # A declaration that survives this gate but is still malformed is dropped
+    # by RestartAfterUpdate.declarations — failing closed, i.e. no restart.
+    #
+    # The `services` check is the one that earns its keep: a `service:` /
+    # `services:` typo would otherwise import cleanly and then silently never
+    # restart anything, which is precisely the inert-deploy failure this whole
+    # feature exists to remove.
+    def validate_restart_after_update(manifest, errors)
+      entries = manifest["restart_after_update"]
+      return if entries.nil?
+
+      unless entries.is_a?(Array)
+        errors << "restart_after_update must be an array"
+        return
+      end
+
+      entries.each_with_index do |entry, i|
+        prefix = "restart_after_update[#{i}]"
+        unless entry.is_a?(Hash)
+          errors << "#{prefix} must be a hash"
+          next
+        end
+
+        target = entry["module"]
+        if target.blank?
+          errors << "#{prefix}.module is required (the NAME of the module whose service must restart)"
+        elsif !target.is_a?(String)
+          errors << "#{prefix}.module must be a string"
+        end
+
+        services = entry["services"]
+        if !services.is_a?(Array) || services.empty?
+          errors << "#{prefix}.services must be a non-empty array of service names " \
+                     "(note the plural — a `service:` key is ignored and would silently restart nothing)"
+        else
+          services.each_with_index do |svc, j|
+            errors << "#{prefix}.services[#{j}] #{svc.inspect} must be a string" unless svc.is_a?(String)
+          end
+        end
+      end
+    end
+
     # Validates `services:` key. Catches schema issues before any DB writes
     # so the operator sees the full error set in one round-trip.
     def validate_services(manifest, errors)
@@ -636,7 +686,12 @@ module System
       mod.config ||= {}
       preserved = mod.config.is_a?(Hash) ? mod.config.deep_dup : {}
 
-      %w[skills security build display_name license].each do |key|
+      # restart_after_update rides along here rather than getting its own
+      # column: it is read by System::RestartAfterUpdate off config, and a
+      # dedicated column would need a migration for a field only a handful of
+      # platform modules ever set. Being in KNOWN_TOP_KEYS keeps it OUT of
+      # manifest_extras, so there is exactly one place to read it from.
+      %w[skills security build display_name license restart_after_update].each do |key|
         preserved[key] = manifest[key] if manifest.key?(key)
       end
 

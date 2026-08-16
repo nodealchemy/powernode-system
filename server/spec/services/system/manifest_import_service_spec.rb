@@ -940,4 +940,94 @@ RSpec.describe System::ManifestImportService, type: :service do
       end
     end
   end
+
+  # `restart_after_update` — a module declaring that updating IT requires
+  # restarting ANOTHER module's service. Validated here rather than at
+  # promotion time so CI catches a malformed declaration before it ships.
+  describe "restart_after_update" do
+    def yaml_with(block)
+      <<~YAML
+        schema_version: 1
+        name: demo-mod
+        services: []
+        #{block}
+      YAML
+    end
+
+    it "stores a well-formed declaration on the module config" do
+      result = described_class.import!(node_module: mod, yaml: yaml_with(<<~BLOCK))
+        restart_after_update:
+          - module: powernode-hub-backend
+            services: [rails]
+          - module: powernode-hub-worker
+            services: [sidekiq]
+      BLOCK
+
+      expect(result.ok?).to be true
+      expect(mod.reload.config["restart_after_update"]).to eq(
+        [ { "module" => "powernode-hub-backend", "services" => [ "rails" ] },
+          { "module" => "powernode-hub-worker",  "services" => [ "sidekiq" ] } ]
+      )
+    end
+
+    it "is not swept into manifest_extras (it is a known key, not an unknown one)" do
+      described_class.import!(node_module: mod, yaml: yaml_with(<<~BLOCK))
+        restart_after_update:
+          - module: powernode-hub-backend
+            services: [rails]
+      BLOCK
+
+      expect(mod.reload.config["manifest_extras"]).to be_blank
+    end
+
+    it "accepts a manifest that omits the field entirely" do
+      result = described_class.validate_only(yaml: yaml_with(""), node_module: mod)
+      expect(result.ok?).to be true
+    end
+
+    it "rejects a non-array declaration" do
+      result = described_class.validate_only(
+        yaml: yaml_with("restart_after_update: powernode-hub-backend"), node_module: mod
+      )
+
+      expect(result.ok?).to be false
+      expect(result.validation_errors.join).to match(/restart_after_update must be an array/)
+    end
+
+    it "rejects an entry missing `module`" do
+      result = described_class.validate_only(yaml: yaml_with(<<~BLOCK), node_module: mod)
+        restart_after_update:
+          - services: [rails]
+      BLOCK
+
+      expect(result.ok?).to be false
+      expect(result.validation_errors.join).to match(/restart_after_update\[0\]\.module is required/)
+    end
+
+    # Catches the `service:` / `services:` typo, which would otherwise import
+    # cleanly and then silently never restart anything — the exact failure
+    # shape this whole feature exists to remove.
+    it "rejects an entry missing `services`" do
+      result = described_class.validate_only(yaml: yaml_with(<<~BLOCK), node_module: mod)
+        restart_after_update:
+          - module: powernode-hub-backend
+            service: rails
+      BLOCK
+
+      expect(result.ok?).to be false
+      expect(result.validation_errors.join)
+        .to match(/restart_after_update\[0\]\.services must be a non-empty array/)
+    end
+
+    it "rejects a non-string service name" do
+      result = described_class.validate_only(yaml: yaml_with(<<~BLOCK), node_module: mod)
+        restart_after_update:
+          - module: powernode-hub-backend
+            services: [3000]
+      BLOCK
+
+      expect(result.ok?).to be false
+      expect(result.validation_errors.join).to match(/restart_after_update\[0\]\.services\[0\]/)
+    end
+  end
 end
