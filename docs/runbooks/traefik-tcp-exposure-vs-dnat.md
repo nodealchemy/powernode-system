@@ -156,9 +156,13 @@ tunneled over TLS with SNI.
     nftables statements with no unusual version floor beyond what the platform already requires
     for the base DNAT chain (`type nat hook prerouting`); no additional minimum was identified
     during increment 6. `meta nfproto` is likewise a baseline nftables match.
-  - **MCP surface:** `system_sdwan_create_port_mapping` / `system_sdwan_update_port_mapping`
-    accept `rate_limit`, `max_connections`, `source_cidrs`; pass `rate_limit`/`max_connections`
-    as `null` or `source_cidrs` as `[]` on update to clear a mapping back to unrestricted.
+  - **Both surfaces:** `system_sdwan_create_port_mapping` / `system_sdwan_update_port_mapping`
+    over MCP, and `POST`/`PATCH /api/v1/system/sdwan/networks/:network_id/port_mappings` over
+    REST, accept `rate_limit`, `max_connections`, `source_cidrs`; pass
+    `rate_limit`/`max_connections` as `null` or `source_cidrs` as `[]` on update to clear a
+    mapping back to unrestricted. The two permit lists are one list —
+    `Sdwan::PortMapping::WRITABLE_ATTRIBUTES` — since IMP-2c531ddb5a0c; until then the tier was
+    reachable from MCP only, which is what this bullet used to say.
 - **Verification:** inspect the compiled ruleset for the hub peer (`Sdwan::NatCompiler.compile_for_peer`)
   or `nft list table inet powernode_sdwan` on the hub host; confirm the DNAT rule's
   `dnat to [<target>]:<port>` matches the mapping's `resolved_target_address`/`effective_target_port`.

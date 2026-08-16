@@ -251,4 +251,77 @@ RSpec.describe Sdwan::PortMapping, type: :model do
       expect(result[:v6]).to contain_exactly("2001:db8::/32")
     end
   end
+
+  # ─── IMP-2c531ddb5a0c: the writable list is the seam, this is its floor ──
+  #
+  # WRITABLE_ATTRIBUTES makes the two surfaces agree by construction, which
+  # answers "did one of them drift from the other" but not "did a new column
+  # land outside BOTH of them" — an ADDITION no mutation of either permit list
+  # can produce. So every column is classified exactly once, here.
+  #
+  # NON_WRITABLE is a pinned intent list, not a rule: adding a column to it is
+  # a one-line, deliberate, reviewable act, whereas a blanket "these shapes are
+  # never writable" heuristic would eventually forbid a column someone has a
+  # good reason to permit. Each entry below records WHY it is not caller-input.
+  #
+  # What this does NOT catch, deliberately: PROMOTING a column — deleting it
+  # from the list below and adding it to WRITABLE_ATTRIBUTES in the same edit —
+  # goes green here, because a pinned intent list exists precisely to let the
+  # deliberate case through at the cost of one recorded line. The accidental
+  # case is what reds. For the two promotions that would actually matter,
+  # account_id and sdwan_network_id, the independent floor is
+  # port_mapping_surface_parity_spec.rb's `forbidden_attributes`, which asserts
+  # by EXECUTION that neither reaches the executor from either surface.
+  describe "writable attribute classification" do
+    # A `let`, not a constant: a bare assignment inside a describe block binds
+    # on Object (blocks carry no lexical scope of their own), which is how one
+    # spec file's list clobbers another's.
+    let(:non_writable_columns) do
+      {
+        "id" => "UUIDv7 primary key",
+        "account_id" => "tenancy — CreatePortMapping takes it from the resolved network, " \
+                        "and System::Executors::Base strips it from every replayed attrs hash",
+        "sdwan_network_id" => "the parent; a create resolves it from the route/params and an " \
+                              "update anchors it through Base#anchor_reparent!",
+        "last_compiled_at" => "written by Sdwan::NatCompiler, never by a caller",
+        "created_at" => "Rails timestamp",
+        "updated_at" => "Rails timestamp"
+      }.freeze
+    end
+
+    it "classifies every column as either caller-writable or deliberately not" do
+      writable = described_class::WRITABLE_ATTRIBUTES.map(&:to_s)
+      unclassified = described_class.column_names - writable - non_writable_columns.keys
+
+      expect(unclassified).to be_empty,
+                              "columns reachable from no surface and recorded as non-writable nowhere: " \
+                              "#{unclassified.join(', ')}. Add each to Sdwan::PortMapping::" \
+                              "WRITABLE_SCALAR_ATTRIBUTES / WRITABLE_STRUCTURED_ATTRIBUTES (both " \
+                              "surfaces then accept it) or to non_writable_columns above with a reason."
+    end
+
+    it "never lets a non-writable column into the writable list" do
+      overlap = described_class::WRITABLE_ATTRIBUTES.map(&:to_s) & non_writable_columns.keys
+
+      expect(overlap).to be_empty,
+                         "these are mass-assignable from both surfaces but recorded as non-caller-input: " \
+                         "#{overlap.join(', ')}"
+    end
+
+    it "names only real columns" do
+      expect(described_class::WRITABLE_ATTRIBUTES.map(&:to_s) - described_class.column_names).to be_empty
+      expect(non_writable_columns.keys - described_class.column_names).to be_empty
+    end
+
+    # The scalar/structured split exists so strong parameters gets each
+    # non-scalar's shape; a symbol that drifts between the two halves silently
+    # changes what REST accepts.
+    it "keeps the two halves disjoint and jointly equal to the whole" do
+      scalar     = described_class::WRITABLE_SCALAR_ATTRIBUTES
+      structured = described_class::WRITABLE_STRUCTURED_ATTRIBUTES.keys
+
+      expect(scalar & structured).to be_empty
+      expect(described_class::WRITABLE_ATTRIBUTES).to match_array(scalar + structured)
+    end
+  end
 end

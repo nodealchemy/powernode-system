@@ -65,7 +65,9 @@ module System
       # well, so the per-name cap is part of the same guard.
       #
       # The COUNT is deliberately set well above every gated permit list (the
-      # widest today is peer_update_params at 10). Truncation is alphabetical
+      # widest today is Sdwan::PortMapping::WRITABLE_ATTRIBUTES at 13, ahead of
+      # peer_update_params at 10, which is the width the full-width example in
+      # preview_changed_fields_spec.rb exercises). Truncation is alphabetical
       # and therefore severity-blind — `lan_subnets` sorts after eight other
       # peer columns — so a limit near the permit-list width would silently
       # replace the very field this exists to name with "+1 more". Headroom is
