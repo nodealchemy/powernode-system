@@ -336,11 +336,17 @@ RSpec.describe "Api::V1::System::Autonomy", type: :request do
       let!(:agent) { create(:ai_agent, account: account, name: "SDWAN Manager") }
       let!(:chain) { create(:ai_approval_chain, account: account) }
 
+      # Every non-default column the table has, so the "only the verb moved"
+      # assertion below has something to catch on each of them. `conditions` is
+      # deliberately non-empty: it is the one attribute #update already fell
+      # back to the stored value for, and a fixture leaving it at the `{}`
+      # default cannot tell preservation from a reset.
       let!(:tuned) do
         Ai::InterventionPolicy.create!(
           account: account, action_category: "sdwan.peer_delete", scope: "agent",
           ai_agent_id: agent.id, policy: "require_approval",
           priority: 42, is_active: false, preferred_channels: %w[slack],
+          conditions: { "trust_tier_minimum" => "trusted" },
           approval_chain_id: chain.id
         )
       end
