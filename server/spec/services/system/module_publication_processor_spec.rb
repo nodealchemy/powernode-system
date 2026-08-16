@@ -263,4 +263,190 @@ RSpec.describe System::ModulePublicationProcessor do
       expect(node_module.reload.current_version_id).to be_nil
     end
   end
+
+  # IMP-26b7f0004a49 phase 1 — core-drift promote gate.
+  #
+  # stage15.sh clones the parent powernode-platform with a bare
+  # `git clone --depth 1` against a HARDCODED github.com remote — no ref, no
+  # pin. Core pushes go to Gitea; GitHub is a separately-pushed mirror that
+  # lags arbitrarily. A Class-B module assembled from a stale mirror clears
+  # cosign, clears OCI ingest, clears the non-empty floor, and auto-promotes
+  # to the fleet — that is what shipped hub-backend v71 with three-day-old
+  # core on 2026-08-15 and cost two outages.
+  #
+  # The only signal that distinguishes it is the core sha push.sh stamps as an
+  # OCI annotation. It is NOT in NodeModuleVersion#artifacts (the agent's Go
+  # result struct drops the key), so the comparison has to happen here, on the
+  # manifest ModuleOciIngestService already fetches.
+  describe "core-drift promotion gate" do
+    let(:expected_core) { "3280a3cd2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+    let(:stale_core)    { "b6f6947811111111111111111111111111111111" }
+
+    # A Class-B module — stage15.sh's `needs_parent` set is the authority for
+    # which modules carry core content at all.
+    let!(:class_b_module) do
+      create(:system_node_module, account: account, name: "powernode-hub-backend")
+    end
+
+    let!(:class_a_module) do
+      create(:system_node_module, account: account, name: "runtime-go")
+    end
+
+    # Well above the non-empty floor, so the ONLY thing under test is the
+    # provenance comparison — never the size gate standing in for it.
+    def stub_native_manifest(core_sha:, remote: "github.com/nodealchemy/powernode-platform")
+      annotations = {}
+      annotations["org.powernode.core_source_sha"]    = core_sha if core_sha
+      annotations["org.powernode.core_source_remote"] = remote   if remote
+
+      doc = {
+        "mediaType"   => "application/vnd.oci.image.manifest.v1+json",
+        "annotations" => annotations,
+        "layers"      => [
+          { "mediaType" => "application/vnd.powernode.erofs",
+            "digest"    => "sha256:#{'c' * 64}",
+            "size"      => 140_546_048 }
+        ]
+      }
+      allow_any_instance_of(System::ModuleOciIngestService)
+        .to receive(:fetch_native_manifest).and_return(doc: doc)
+    end
+
+    def publish_native(mod, tag:, expected_core_sha: expected_core)
+      described_class.process!(
+        node_module: mod, tag: tag,
+        native_build: {
+          fsverity_root:     "sha256:#{'d' * 64}",
+          architecture:      "amd64",
+          expected_core_sha: expected_core_sha
+        }
+      )
+    end
+
+    it "promotes when the artifact's core sha is the one the batch expected" do
+      stub_native_manifest(core_sha: expected_core)
+
+      result = publish_native(class_b_module, tag: "good-core")
+
+      expect(result.ok?).to be true
+      expect(class_b_module.reload.current_version_id).to eq(result.node_module_version.id)
+    end
+
+    # THE POINT OF THE GATE. The version is still PUBLISHED (so the bad build
+    # can be inspected) — what is withheld is promotion, the step that reaches
+    # the fleet.
+    it "publishes but REFUSES TO PROMOTE an artifact built from a different core sha" do
+      stub_native_manifest(core_sha: stale_core)
+
+      result = publish_native(class_b_module, tag: "stale-core")
+
+      expect(result.ok?).to be true
+      expect(result.node_module_version).to be_present
+      expect(class_b_module.reload.current_version_id).to be_nil
+    end
+
+    it "leaves the previously-promoted good version current when a stale-core build lands" do
+      stub_native_manifest(core_sha: expected_core)
+      good = publish_native(class_b_module, tag: "good-core")
+      expect(class_b_module.reload.current_version_id).to eq(good.node_module_version.id)
+
+      stub_native_manifest(core_sha: stale_core)
+      publish_native(class_b_module, tag: "stale-core")
+
+      expect(class_b_module.reload.current_version_id).to eq(good.node_module_version.id)
+    end
+
+    it "emits system.module_promotion_withheld naming both shas and the remote" do
+      stub_native_manifest(core_sha: stale_core)
+
+      expect {
+        publish_native(class_b_module, tag: "stale-core")
+      }.to change {
+        System::FleetEvent.where(account: account, kind: "system.module_promotion_withheld").count
+      }.by(1)
+
+      event = System::FleetEvent.where(kind: "system.module_promotion_withheld").last
+      expect(event.payload["reason"]).to include(stale_core[0, 7])
+      expect(event.payload["reason"]).to include(expected_core[0, 7])
+      expect(event.payload["reason"]).to include("github.com/nodealchemy/powernode-platform")
+    end
+
+    it "reports promoted: false on the module_published event for a refused build" do
+      stub_native_manifest(core_sha: stale_core)
+
+      publish_native(class_b_module, tag: "stale-core")
+
+      event = System::FleetEvent.where(kind: "system.module_published").last
+      expect(event.payload["promoted"]).to eq(false)
+    end
+
+    it "REFUSES a Class-B artifact whose core sha could not be resolved (`unknown`)" do
+      stub_native_manifest(core_sha: "unknown")
+
+      publish_native(class_b_module, tag: "unknown-core")
+
+      expect(class_b_module.reload.current_version_id).to be_nil
+    end
+
+    it "REFUSES a Class-B artifact carrying no core annotation at all" do
+      stub_native_manifest(core_sha: nil, remote: nil)
+
+      publish_native(class_b_module, tag: "unstamped")
+
+      expect(class_b_module.reload.current_version_id).to be_nil
+    end
+
+    # A module that clones no parent has no core content; its artifact carries
+    # no annotation and that is the CORRECT answer, not a missing one.
+    it "promotes a Class-A module normally — it clones no parent" do
+      stub_native_manifest(core_sha: nil, remote: nil)
+
+      result = publish_native(class_a_module, tag: "class-a")
+
+      expect(result.ok?).to be true
+      expect(class_a_module.reload.current_version_id).to eq(result.node_module_version.id)
+    end
+
+    # Every batch dispatched before this change carries no expectation. The
+    # gate must be inert for them rather than stalling in-flight work.
+    it "promotes when the batch recorded no expected core sha" do
+      stub_native_manifest(core_sha: stale_core)
+
+      result = publish_native(class_b_module, tag: "no-expectation", expected_core_sha: nil)
+
+      expect(result.ok?).to be true
+      expect(class_b_module.reload.current_version_id).to eq(result.node_module_version.id)
+    end
+
+    # The Gitea webhook / CI-direct REST publish paths pass no native_build at
+    # all. They must be byte-for-byte unaffected.
+    it "is inert for a non-native publish (no native_build)" do
+      result = described_class.process!(node_module: class_b_module, tag: "webhook01")
+
+      expect(result.ok?).to be true
+      expect(class_b_module.reload.current_version_id).to eq(result.node_module_version.id)
+    end
+
+    it "honours the operator kill switch" do
+      SiteSetting.set("system.module_publish.core_provenance_gate", "false", setting_type: "string")
+      stub_native_manifest(core_sha: stale_core)
+
+      result = publish_native(class_b_module, tag: "switched-off")
+
+      expect(result.ok?).to be true
+      expect(class_b_module.reload.current_version_id).to eq(result.node_module_version.id)
+    end
+
+    # The size floor is the older, incident-driven gate. Adding this one must
+    # not displace it: an empty artifact with PERFECT core provenance still
+    # must not promote.
+    it "does not let a matching core sha override the non-empty artifact floor" do
+      SiteSetting.set("system.module_publish.min_artifact_bytes", "500000000", setting_type: "integer")
+      stub_native_manifest(core_sha: expected_core)
+
+      publish_native(class_b_module, tag: "tiny-but-correct")
+
+      expect(class_b_module.reload.current_version_id).to be_nil
+    end
+  end
 end

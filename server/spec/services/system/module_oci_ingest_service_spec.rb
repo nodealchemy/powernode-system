@@ -674,6 +674,79 @@ RSpec.describe System::ModuleOciIngestService do
       expect(System::ModuleArtifact.where(node_module_version: version).count).to eq(0)
     end
 
+    # IMP-26b7f0004a49 phase 1 — the manifest this method already GETs is the
+    # ONLY place a Class-B artifact's core provenance is readable from Rails.
+    # push.sh stamps org.powernode.core_source_sha as a MANIFEST annotation;
+    # the agent's moduleBuildResult Go struct does not decode the matching
+    # result-JSON keys, so NodeModuleVersion#artifacts never carries them and
+    # a gate reading `artifacts` would read nil forever. Surfacing them on the
+    # ingest Result is what lets the promote gate see anything at all.
+    context "core-source provenance annotations" do
+      let(:core_sha) { "3280a3cd2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+
+      let(:annotated_doc) do
+        manifest_doc.merge(
+          "annotations" => {
+            "org.powernode.core_source_sha"    => core_sha,
+            "org.powernode.core_source_remote" => "github.com/nodealchemy/powernode-platform"
+          }
+        )
+      end
+
+      it "surfaces the manifest annotations on the ingest Result" do
+        allow_any_instance_of(described_class)
+          .to receive(:fetch_native_manifest).and_return(doc: annotated_doc)
+
+        result = described_class.ingest_native!(
+          node_module_version: version, oci_ref: native_ref,
+          account: account, fsverity_root: agent_fsverity
+        )
+
+        expect(result.ok?).to be true
+        expect(result.oci_annotations["org.powernode.core_source_sha"]).to eq(core_sha)
+        expect(result.oci_annotations["org.powernode.core_source_remote"])
+          .to eq("github.com/nodealchemy/powernode-platform")
+      end
+
+      # An unannotated manifest must reach the caller as an EMPTY hash, never
+      # nil — the gate distinguishes "no annotation" from "wrong annotation"
+      # and both readings have to survive the trip.
+      it "returns an empty hash (never nil) when the manifest carries no annotations" do
+        result = described_class.ingest_native!(
+          node_module_version: version, oci_ref: native_ref,
+          account: account, fsverity_root: agent_fsverity
+        )
+
+        expect(result.ok?).to be true
+        expect(result.oci_annotations).to eq({})
+      end
+
+      # A native push is a plain image manifest, but the index branch of
+      # resolve_erofs_layer is reachable defensively. oras writes the
+      # annotations onto the manifest it PUSHED, which in that shape is the
+      # sub-manifest — so the sub-manifest's annotations must win.
+      it "prefers the sub-manifest's annotations when it resolved through an index" do
+        index_doc = {
+          "mediaType"   => "application/vnd.oci.image.index.v1+json",
+          "annotations" => { "org.powernode.core_source_sha" => "index000000000000000000000000000000000000" },
+          "manifests"   => [
+            { "digest" => "sha256:#{'a' * 64}", "platform" => { "architecture" => "amd64" } }
+          ]
+        }
+        allow_any_instance_of(described_class).to receive(:fetch_native_manifest) do |_svc, _reg, _repo, reference, _auth|
+          reference == native_ref.split(":").last ? { doc: index_doc } : { doc: annotated_doc }
+        end
+
+        result = described_class.ingest_native!(
+          node_module_version: version, oci_ref: native_ref,
+          account: account, fsverity_root: agent_fsverity
+        )
+
+        expect(result.ok?).to be true
+        expect(result.oci_annotations["org.powernode.core_source_sha"]).to eq(core_sha)
+      end
+    end
+
     context "R6 signature re-verification (task #48)" do
       # These unit tests exercise the R6 GATE, not the registry auth: with the
       # registry unconfigured, with_registry_docker_config yields {} (no oras

@@ -58,10 +58,13 @@ module Api
           # frontend/src/shared/host-api/modules.ts), so it must receive the
           # PAT too — otherwise the parent clone auths with an empty token and
           # the build fails "remote: Failed to authenticate user".
-          CLASS_B_PARENT_MODULES = %w[
-            powernode-hub-backend powernode-hub-worker powernode-hub-frontend
-            powernode-extension-system
-          ].freeze
+          #
+          # The list itself lives on System::CoreProvenanceGate, which needs the
+          # SAME set to decide whether a published artifact should be carrying
+          # core-source provenance at all (IMP-26b7f0004a49). Two copies of a
+          # set that must track one shell case statement is one copy too many —
+          # this is an alias, not a second list.
+          CLASS_B_PARENT_MODULES = ::System::CoreProvenanceGate::CLASS_B_PARENT_MODULES
 
           # GET /api/v1/system/node_api/config
           # Returns instance configuration

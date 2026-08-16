@@ -20,7 +20,14 @@ module System
   #
   # Reference: Golden Eclipse plan M1 supply chain, ModuleArtifact schema (M0.L).
   class ModuleOciIngestService
-    Result = Struct.new(:ok?, :error, :node_module_version, :module_artifacts,
+    # oci_annotations — the published artifact's OCI MANIFEST annotations, as
+    # fetched during ingest. Populated on the native path only (ingest_native!);
+    # nil elsewhere. This is the only channel by which a Class-B artifact's core
+    # provenance (org.powernode.core_source_sha, stamped by push.sh) reaches
+    # Rails: the agent's build-result Go struct silently drops the matching JSON
+    # keys, so NodeModuleVersion#artifacts never carries them. See
+    # System::CoreProvenanceGate.
+    Result = Struct.new(:ok?, :error, :node_module_version, :module_artifacts, :oci_annotations,
                         keyword_init: true)
 
     class IngestError < StandardError; end
@@ -323,7 +330,12 @@ module System
       Result.new(
         ok?: true,
         node_module_version: node_module_version.reload,
-        module_artifacts: created
+        module_artifacts: created,
+        # Always a Hash, never nil, on the ok? path — the promote gate has to
+        # distinguish "the artifact carries no core annotation" from "the
+        # annotations never made it out of ingest", and those must not collapse
+        # into the same value.
+        oci_annotations: layer[:annotations] || {}
       )
     rescue ::ActiveRecord::RecordInvalid => e
       failure("artifact persistence failed: #{e.record.errors.full_messages.join('; ')}")
@@ -403,6 +415,7 @@ module System
       return fetched if fetched[:error]
 
       doc = fetched[:doc]
+      outer_annotations = doc["annotations"]
       if NATIVE_INDEX_MEDIA_TYPES.include?(doc["mediaType"]) || (doc["layers"].nil? && doc["manifests"])
         entry = Array(doc["manifests"]).find { |x| x.dig("platform", "architecture") == arch } ||
                 Array(doc["manifests"]).first
@@ -425,7 +438,13 @@ module System
       {
         digest:     erofs["digest"].to_s,
         size:       erofs["size"].to_i,
-        media_type: erofs["mediaType"].to_s
+        media_type: erofs["mediaType"].to_s,
+        # `oras push --annotation` writes MANIFEST-level annotations, so these
+        # come off the image manifest oras actually pushed. When an index was
+        # resolved through, that is the SUB-manifest — the index's own
+        # annotations are only a fallback (a native push is never an index; the
+        # branch above is defensive).
+        annotations: (doc["annotations"].presence || outer_annotations.presence || {})
       }
     end
 

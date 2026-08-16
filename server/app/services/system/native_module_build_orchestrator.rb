@@ -124,6 +124,7 @@ module System
         return vacuous_result
       end
 
+      record_expected_core_ref!(modules)
       try_dispatch_queued!(modules)
       save_modules_state!(modules)
 
@@ -433,9 +434,121 @@ module System
       @module_source_build_sha ||= resolve_module_source_tip || @batch.head_sha
     end
 
+    # Compares against the RESOLVED core repo, not the bare constant: the
+    # planner that stamps metadata["source_repo"] honours the
+    # SiteSetting/ENV override (ModuleBuildPlannerService#core_source_repo?), so
+    # keying off the constant here made a fork with `ci_core_source_repo` set
+    # fail to recognise its own core-sourced batches — the BUILD_SHA would then
+    # be resolved from the module-source repo instead of kept as the core sha,
+    # and (IMP-26b7f0004a49) the expected core ref would be resolved from the
+    # wrong end too.
     def core_sourced_batch?
       repo = @batch.metadata.is_a?(Hash) ? @batch.metadata["source_repo"] : nil
-      repo.to_s.strip.casecmp?(::System::ModuleBuildPlannerService::CORE_SOURCE_REPO_DEFAULT)
+      repo.to_s.strip.casecmp?(core_source_repo)
+    end
+
+    # === Expected core ref (IMP-26b7f0004a49 phase 1, design option (a)) ===
+
+    # Writes down, at dispatch, WHICH core (parent powernode-platform) commit
+    # this batch's Class-B artifacts are supposed to be assembled from.
+    #
+    # stage15.sh:226 clones the parent with a bare `git clone --depth 1` and NO
+    # ref, against a remote hardcoded at stage15.sh:147-148 to
+    # github.com/nodealchemy/powernode-platform — a MIRROR of the Gitea that
+    # core is actually pushed to, and one that lags arbitrarily (three days on
+    # 2026-08-15; five merges again on 2026-08-16). The commit that clone lands
+    # on is therefore knowable only after the fact, from the artifact's own
+    # provenance annotation. Without an expectation recorded here there is
+    # nothing to compare that annotation against, and
+    # System::ModulePublicationProcessor's promote gate has no oracle.
+    #
+    # Idempotent: dispatch! is reachable more than once for a batch, and the
+    # expectation is pinned to the moment of dispatch — it must not drift under
+    # a batch that is already in flight.
+    def record_expected_core_ref!(modules)
+      return if @batch.metadata["expected_core_sha"].present?
+      # Only a Class-B module clones core, so only a batch containing one has
+      # anything to expect. This guard is not an optimisation: #resolve_core_tip
+      # makes two blocking Gitea calls (Devops::Git::ApiClient allows 10s connect
+      # + 30s read EACH), and dispatch! runs synchronously from the MCP tool,
+      # ModuleBuildTriggerService, PackageClosureBuildBridge, and
+      # CiRunnerLeaseSweepService — a sweep loop. Paying up to 80s there on every
+      # package/runtime batch that can never contain core content would stall
+      # lease sweeping fleet-wide whenever Gitea is slow.
+      return unless modules.any? { |_key, entry| ::System::CoreProvenanceGate.class_b?(entry["module"]) }
+
+      sha = expected_core_sha
+      if sha.blank?
+        # Say so out loud. The failure mode this gate exists to prevent is a
+        # protection that looks present and is not, and an inert batch is
+        # exactly that — every other log line downstream reads as if the gate
+        # were armed.
+        Rails.logger.warn(
+          "[NativeModuleBuildOrchestrator] batch #{@batch.id} contains a Class-B module but no core " \
+          "expectation could be resolved from #{core_source_repo} — the core-drift promote gate will " \
+          "be INERT for this batch"
+        )
+        return
+      end
+
+      @batch.update!(metadata: @batch.metadata.merge(
+        "expected_core_sha"  => sha,
+        "expected_core_repo" => core_source_repo
+      ))
+      Rails.logger.info(
+        "[NativeModuleBuildOrchestrator] batch #{@batch.id} expects core #{sha.to_s[0, 7]} " \
+        "from #{core_source_repo}"
+      )
+    end
+
+    # A core-triggered batch EXISTS because core moved to head_sha — that is the
+    # strongest expectation available, and it costs no network call. Every other
+    # batch (extension push, manual, CVE) carries a head_sha from a DIFFERENT
+    # repo, so the expectation has to come from core's own tip.
+    def expected_core_sha
+      return @batch.head_sha if core_sourced_batch?
+
+      resolve_core_tip
+    end
+
+    # Structurally identical to #resolve_module_source_tip above, pointed at the
+    # CORE repo instead of the module-source repo. Resolves through the platform
+    # Git provider — the AUTHORITATIVE remote core is pushed to — which is
+    # precisely why a build that took its core from the lagging public mirror
+    # will fail to match it.
+    #
+    # NEVER fabricates a value: an unresolvable tip returns nil, nothing is
+    # recorded, and the promote gate stays inert for this batch. That is exactly
+    # today's behaviour — no worse than before — whereas recording a guess would
+    # refuse good builds forever.
+    def resolve_core_tip
+      owner, repo = core_source_repo.split("/", 2)
+      return nil if owner.blank? || repo.blank?
+
+      credential = ::System::CiRunnerRegistrationResolver.new(account: @batch.account).credential
+      return nil unless credential
+
+      client = ::Devops::Git::ApiClient.for(credential)
+      default_branch = client.get_repository(owner, repo).to_h["default_branch"].presence || "develop"
+      branch = Array(client.list_branches(owner, repo)).find { |b| b.to_h["name"].to_s == default_branch }
+      branch.to_h.dig("commit", "id").presence
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[NativeModuleBuildOrchestrator] could not resolve #{core_source_repo} tip for batch " \
+        "#{@batch.id} (#{e.class}: #{e.message}) — recording no core expectation, so the promote " \
+        "gate stays inert for this batch"
+      )
+      nil
+    end
+
+    # Same SiteSetting -> ENV -> default chain ModuleBuildPlannerService uses to
+    # recognise a core-sourced batch, so "which repo is core" is answered one way.
+    def core_source_repo
+      ::SiteSetting.get("ci_core_source_repo").presence ||
+        ENV["CI_CORE_SOURCE_REPO"].presence ||
+        ::System::ModuleBuildPlannerService::CORE_SOURCE_REPO_DEFAULT
+    rescue StandardError
+      ::System::ModuleBuildPlannerService::CORE_SOURCE_REPO_DEFAULT
     end
 
     def resolve_module_source_tip
@@ -632,7 +745,13 @@ module System
         node_module: node_module, tag: entry["tag"], promote: !@batch.shadow?,
         native_build: {
           fsverity_root: result["fsverity_root"],
-          architecture: entry["architecture"]
+          architecture: entry["architecture"],
+          # IMP-26b7f0004a49 phase 1 — the core commit this batch was dispatched
+          # expecting (#record_expected_core_ref!). The processor compares it
+          # against the core sha stamped on the published artifact and refuses
+          # to promote on a mismatch. nil for any batch dispatched before that
+          # expectation existed, which leaves the gate inert.
+          expected_core_sha: @batch.metadata["expected_core_sha"]
         }
       )
       unless publish_result.ok?

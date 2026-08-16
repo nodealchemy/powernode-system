@@ -233,6 +233,177 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
     end
   end
 
+  # IMP-26b7f0004a49 phase 1 (design option (a)) — record, at dispatch, WHICH
+  # core commit this batch expects its Class-B artifacts to be assembled from.
+  #
+  # stage15.sh clones the parent with a bare `git clone --depth 1` against a
+  # hardcoded github.com remote — unpinned, so the core it lands on is knowable
+  # only after the fact. Without an expectation written down at dispatch there
+  # is nothing to compare the artifact's stamped core sha AGAINST, and the
+  # promote gate has no oracle.
+  describe "expected core ref recorded at dispatch" do
+    def core_batch(head_sha: "409c706ecd758a04f2237fdb8f2a1092106b903d")
+      mod = create_module("powernode-hub-backend")
+      plan = [ { module: mod.name, oci_ref: head_sha[0, 7] } ]
+      System::ModuleBuildBatch.create_for(
+        account: account, plan: plan, trigger: "manual",
+        base_sha: "b3bc6908e9f9078797488f7e48e61970b78718b0", head_sha: head_sha,
+        source_repo: "powernode/powernode-platform"
+      )
+    end
+
+    def stub_git_api(default_branch: "develop", tip: nil)
+      provider = create(:git_provider, :gitea, account: account)
+      create(:git_provider_credential, :gitea, account: account, provider: provider)
+      fake = instance_double(::Devops::Git::ApiClient)
+      allow(::Devops::Git::ApiClient).to receive(:for).and_return(fake)
+      allow(fake).to receive(:supports_runners?).and_return(false)
+      allow(fake).to receive(:get_repository).and_return({ "default_branch" => default_branch })
+      allow(fake).to receive(:list_branches)
+        .and_return([ { "name" => default_branch, "commit" => { "id" => tip } } ])
+      fake
+    end
+
+    # A core-triggered batch EXISTS because core moved to head_sha. That is the
+    # strongest expectation available and costs no network call.
+    it "uses the batch's own head_sha for a core-sourced batch" do
+      seed_pool_member
+      stub_git_api(tip: "e8f31a9d1111111111111111111111111111aaaa")
+      batch = core_batch
+
+      described_class.dispatch!(batch: batch)
+
+      expect(batch.reload.metadata["expected_core_sha"])
+        .to eq("409c706ecd758a04f2237fdb8f2a1092106b903d")
+    end
+
+    # An extension-triggered / manual / CVE batch's head_sha is NOT a core sha,
+    # so the expectation has to come from the core repo's own tip — resolved
+    # from the AUTHORITATIVE remote, which is what a lagging GitHub mirror will
+    # then fail to match.
+    it "resolves the core repo's default-branch tip for a non-core-sourced batch" do
+      seed_pool_member
+      stub_git_api(tip: "aa11bb22cc33dd44ee55ff6600778899aabbccdd")
+      mod = create_module("powernode-hub-frontend")
+      batch = build_batch(modules: [ mod ], head_sha: "systemsha987654")
+
+      described_class.dispatch!(batch: batch)
+
+      expect(batch.reload.metadata["expected_core_sha"])
+        .to eq("aa11bb22cc33dd44ee55ff6600778899aabbccdd")
+    end
+
+    it "records WHICH repo the expectation came from, so a refusal is diagnosable" do
+      seed_pool_member
+      stub_git_api(tip: "aa11bb22cc33dd44ee55ff6600778899aabbccdd")
+      mod = create_module("powernode-hub-frontend")
+      batch = build_batch(modules: [ mod ], head_sha: "systemsha987654")
+
+      described_class.dispatch!(batch: batch)
+
+      expect(batch.reload.metadata["expected_core_repo"]).to eq("powernode/powernode-platform")
+    end
+
+    # NEVER fabricate an expectation. An unresolvable tip records nothing, and
+    # the promote gate is then inert for that batch — exactly today's behaviour,
+    # no worse. Recording a guess would refuse good builds forever.
+    it "records NO expectation (rather than a guess) when the core tip cannot be resolved" do
+      seed_pool_member
+      provider = create(:git_provider, :gitea, account: account)
+      create(:git_provider_credential, :gitea, account: account, provider: provider)
+      fake = instance_double(::Devops::Git::ApiClient)
+      allow(::Devops::Git::ApiClient).to receive(:for).and_return(fake)
+      allow(fake).to receive(:supports_runners?).and_return(false)
+      allow(fake).to receive(:get_repository).and_raise(StandardError, "gitea down")
+      mod = create_module("powernode-hub-frontend")
+      batch = build_batch(modules: [ mod ], head_sha: "systemsha987654")
+
+      described_class.dispatch!(batch: batch)
+
+      expect(batch.reload.metadata).not_to have_key("expected_core_sha")
+    end
+
+    # #resolve_core_tip makes two blocking Gitea calls (10s connect + 30s read
+    # each), and dispatch! runs synchronously from CiRunnerLeaseSweepService's
+    # sweep loop. A batch with no Class-B module can never carry core content, so
+    # paying that there would stall lease sweeping fleet-wide for nothing.
+    it "does not touch the git API at all for a batch with no Class-B module" do
+      seed_pool_member
+      provider = create(:git_provider, :gitea, account: account)
+      create(:git_provider_credential, :gitea, account: account, provider: provider)
+      fake = instance_double(::Devops::Git::ApiClient)
+      allow(::Devops::Git::ApiClient).to receive(:for).and_return(fake)
+      allow(fake).to receive(:supports_runners?).and_return(false)
+      expect(fake).not_to receive(:get_repository)
+      expect(fake).not_to receive(:list_branches)
+      mod = create_module("runtime-go")
+      batch = build_batch(modules: [ mod ], head_sha: "systemsha987654")
+
+      described_class.dispatch!(batch: batch)
+
+      expect(batch.reload.metadata).not_to have_key("expected_core_sha")
+    end
+
+    it "does not fail the dispatch when the core tip cannot be resolved" do
+      seed_pool_member
+      mod = create_module("powernode-hub-frontend")
+      batch = build_batch(modules: [ mod ], head_sha: "systemsha987654")
+
+      result = described_class.dispatch!(batch: batch)
+
+      expect(result.ok?).to be true
+      expect(result.dispatched).to eq(1)
+    end
+
+    # dispatch! is reachable more than once for a batch; the expectation is
+    # pinned to the moment of dispatch and must not drift under it afterwards.
+    it "does not re-resolve an expectation it already recorded" do
+      seed_pool_member
+      stub_git_api(tip: "aa11bb22cc33dd44ee55ff6600778899aabbccdd")
+      mod = create_module("powernode-hub-frontend")
+      batch = build_batch(modules: [ mod ], head_sha: "systemsha987654")
+      described_class.dispatch!(batch: batch)
+
+      allow(::Devops::Git::ApiClient).to receive(:for)
+        .and_return(instance_double(::Devops::Git::ApiClient,
+                                    supports_runners?: false,
+                                    get_repository: { "default_branch" => "develop" },
+                                    list_branches: [ { "name" => "develop",
+                                                       "commit" => { "id" => "ffffffffffffffffffffffffffffffffffffffff" } } ]))
+      described_class.dispatch!(batch: batch.reload)
+
+      expect(batch.reload.metadata["expected_core_sha"])
+        .to eq("aa11bb22cc33dd44ee55ff6600778899aabbccdd")
+    end
+
+    # The whole chain is worthless if the recorded expectation never reaches
+    # the gate. This is the plumbing assertion — the terminal call, not a name.
+    it "hands the recorded expectation to ModulePublicationProcessor at publish time" do
+      seed_pool_member
+      stub_git_api(tip: "e8f31a9d1111111111111111111111111111aaaa")
+      batch = core_batch
+      described_class.dispatch!(batch: batch)
+      mod = account.system_node_modules.find_by(name: "powernode-hub-backend")
+
+      task = System::Task.find_by(account: account, command: "ci.module_build")
+      task.update!(status: "complete", completed_at: Time.current,
+                   events: [ { "type" => "completed", "result" => { "oci_digest" => "sha256:abcd1234" } } ])
+
+      allow(System::ModuleSigningService).to receive(:sign!)
+        .and_return(System::ModuleSigningService::Result.new(ok?: true, oci_ref: "x", digest: "sha256:abcd1234"))
+      expect(System::ModulePublicationProcessor).to receive(:process!)
+        .with(hash_including(
+                node_module: mod,
+                native_build: hash_including(
+                  expected_core_sha: "409c706ecd758a04f2237fdb8f2a1092106b903d"
+                )
+              ))
+        .and_return(System::ModulePublicationProcessor::Result.new(ok?: true, node_module_version: nil))
+
+      described_class.advance!(batch: batch.reload)
+    end
+  end
+
   describe "#advance!" do
     def dispatch_single(mod, tag: "abc1234")
       batch = build_batch(modules: [ mod ], tag: tag)

@@ -1,0 +1,261 @@
+# frozen_string_literal: true
+
+module System
+  # IMP-26b7f0004a49 phase 1 — decides whether a natively-built module artifact
+  # may be PROMOTED, given the core (parent powernode-platform) commit it was
+  # actually assembled from.
+  #
+  # WHY THIS EXISTS
+  #
+  # A Class-B module's payload is built on top of a parent clone that
+  # scripts/module-build/stage15.sh makes with a bare
+  # `git clone --depth 1 "$clone_url" /tmp/parent` — no ref, no pin — against a
+  # remote hardcoded at stage15.sh:147-148 to github.com/nodealchemy/powernode-
+  # platform. Core pushes go to Gitea; GitHub is a separately-pushed mirror that
+  # lags arbitrarily. An artifact assembled from a stale mirror is INDISTIN-
+  # GUISHABLE from a correct one at every checkpoint the platform already has:
+  # it has a real oci_digest, a real fs-verity root, a valid cosign signature, a
+  # size far above the non-empty floor, and a batch that reports success. Publish
+  # auto-promotes, so it reaches the fleet. That is what shipped hub-backend v71
+  # with three-day-old core on 2026-08-15 and cost two outages; it was found only
+  # by unpacking the layer and diffing a file by hand.
+  #
+  # The one signal that separates the two is the core sha push.sh:271-299 stamps
+  # onto the published artifact as the OCI manifest annotation
+  # `org.powernode.core_source_sha`. Deliberately NOT read from
+  # NodeModuleVersion#artifacts: the agent's `moduleBuildResult` Go struct does
+  # not decode the matching result-JSON keys (encoding/json drops unknown
+  # fields), so that column is nil forever and a gate reading it would never
+  # fire — worse than no gate, because it looks like protection.
+  #
+  # KNOWN LIMITATION (phase 1): the comparison is EQUALITY, so it is blind to
+  # DIRECTION. It cannot distinguish "the artifact's core is older than the
+  # expectation" (the stale-mirror incident this exists for) from "core simply
+  # moved between dispatch and clone" — both refuse. That is the safe direction
+  # and the cost is bounded: the version still publishes, the fleet keeps what it
+  # already had, and the operator gets a high-severity event naming both shas and
+  # the remote. Turning it into an ancestry test needs a compare API call against
+  # the core repo and is deliberately out of scope here.
+  #
+  # FAIL-CLOSED, BUT ONLY WHERE THERE IS SOMETHING TO COMPARE. The batch's
+  # recorded expectation is what arms this gate. A batch that recorded none
+  # (dispatched before this existed, or a core tip that would not resolve) leaves
+  # it inert — we never fabricate an expectation, and never stall in-flight work
+  # over an answer we did not have. Once an expectation IS recorded, every
+  # reading other than "matches" refuses, including the absence of the
+  # annotation: a Class-B artifact that arrives unstamped means the stamping did
+  # not run, which is precisely the blind spot being closed.
+  class CoreProvenanceGate
+    # Modules whose Stage-1.5 arm actually clones the PARENT platform repo.
+    # MUST stay in sync with scripts/module-build/stage15.sh's `needs_parent`
+    # case statement — that script is the authority. Every other module clones
+    # no parent, carries no core content, and has nothing for this gate to
+    # compare.
+    #
+    # Single source of truth: Api::V1::System::NodeApi::ConfigController (which
+    # mints PARENT_PAT for exactly this set) points its own constant here rather
+    # than keeping a second copy, because a set defined twice is a set that
+    # drifts.
+    CLASS_B_PARENT_MODULES = %w[
+      powernode-hub-backend powernode-hub-worker powernode-hub-frontend
+      powernode-extension-system
+    ].freeze
+
+    SHA_ANNOTATION    = "org.powernode.core_source_sha"
+    REMOTE_ANNOTATION = "org.powernode.core_source_remote"
+
+    # stage15.sh:274-275 records this literal when `git rev-parse --verify HEAD`
+    # fails, specifically so an unresolved value is never indistinguishable from
+    # a successful one. It means "this artifact HAS core content and the sha
+    # could not be resolved" — which cannot be promoted on.
+    UNRESOLVED_SHA = "unknown"
+
+    # What module-forge-build.sh reports for a module that clones no parent.
+    # Today it never reaches an OCI annotation — a Class-A artifact simply
+    # carries none (stage15.sh:200 rm -f's the provenance file before deciding,
+    # and only the needs_parent arm rewrites it) — and the module-NAME check is
+    # what recognises that case. Named here so that if a future push.sh does
+    # stamp it, a Class-B artifact carrying it is refused rather than silently
+    # excused by its own self-report.
+    NOT_APPLICABLE_SHA = "not_applicable"
+
+    ENABLED_SETTING = "system.module_publish.core_provenance_gate"
+
+    # A prefix shorter than this is not an identity. 7 hex characters is 268M
+    # possibilities — a coincidence waiting to happen, and telling two
+    # plausible-looking shas apart is this gate's entire job. 12 is git's own
+    # threshold for a "reasonably unambiguous" abbreviation on a large repo.
+    MIN_ABBREV_LENGTH = 12
+
+    SHA_PATTERN = /\A[0-9a-f]{7,40}\z/
+
+    Verdict = Struct.new(:promotable, :state, :reason, :expected_sha, :actual_sha, :actual_remote,
+                         keyword_init: true) do
+      def promotable?
+        promotable
+      end
+
+      def refused?
+        !promotable
+      end
+    end
+
+    class << self
+      # @param module_name [String, nil] the module slug (System::NodeModule#name)
+      # @param expected_sha [String, nil] the core commit the batch was dispatched
+      #   expecting; nil/blank leaves the gate inert
+      # @param annotations [Hash, nil] the published artifact's OCI manifest
+      #   annotations, as surfaced by ModuleOciIngestService::Result#oci_annotations
+      # @return [Verdict]
+      def evaluate(module_name:, expected_sha:, annotations:)
+        ann      = annotations.is_a?(Hash) ? annotations : {}
+        actual   = ann[SHA_ANNOTATION].to_s.strip
+        remote   = ann[REMOTE_ANNOTATION].to_s.strip.presence
+        expected = expected_sha.to_s.strip
+
+        unless class_b?(module_name)
+          return pass("not_applicable",
+                      "#{module_name.presence || 'module'} clones no parent — it carries no core content",
+                      expected: expected, actual: actual, remote: remote)
+        end
+
+        # For a Class-B module the NAME is the authority (stage15.sh decides
+        # whether to clone a parent from its own `needs_parent` case, before any
+        # artifact exists) — the artifact's self-report is exactly the thing that
+        # cannot be trusted here. build-one-module.sh already emits the literal
+        # `not_applicable` in its result JSON, so an artifact claiming it while
+        # being a module we KNOW clones core means the provenance capture went
+        # wrong. Accepting it would reopen the "the stamping did not run" hole
+        # that the `missing` branch below exists to close.
+        if actual == NOT_APPLICABLE_SHA
+          return refuse("contradictory",
+                        "#{module_name} is built on a clone of core, but the artifact reports " \
+                        "`#{NOT_APPLICABLE_SHA}` — its core provenance capture did not run",
+                        expected: expected, actual: actual, remote: remote)
+        end
+
+        if expected.blank?
+          return pass("no_expectation",
+                      "the build batch recorded no expected core commit — nothing to compare against",
+                      expected: expected, actual: actual, remote: remote)
+        end
+
+        unless enabled?
+          return pass("disabled", "#{ENABLED_SETTING} is disabled",
+                      expected: expected, actual: actual, remote: remote)
+        end
+
+        if actual.blank?
+          return refuse("missing",
+                        "#{module_name} is built on a clone of core, but the artifact carries no " \
+                        "#{SHA_ANNOTATION} annotation — the build could not be shown to contain " \
+                        "the expected core #{short(expected)}",
+                        expected: expected, actual: actual, remote: remote)
+        end
+
+        if actual.casecmp?(UNRESOLVED_SHA)
+          return refuse("unresolved",
+                        "the builder could not resolve which core commit it cloned (recorded " \
+                        "`#{UNRESOLVED_SHA}`#{remote_suffix(remote)}); expected #{short(expected)}",
+                        expected: expected, actual: actual, remote: remote)
+        end
+
+        unless sha_like?(actual)
+          return refuse("malformed",
+                        "#{SHA_ANNOTATION} is #{actual.inspect}, which is not a commit sha" \
+                        "#{remote_suffix(remote)}; expected #{short(expected)}",
+                        expected: expected, actual: actual, remote: remote)
+        end
+
+        unless same_commit?(actual, expected)
+          return refuse("mismatch",
+                        "built from core #{short(actual)}#{remote_suffix(remote)}, but this batch " \
+                        "expected core #{short(expected)}",
+                        expected: expected, actual: actual, remote: remote)
+        end
+
+        pass("match", "built from the expected core #{short(actual)}",
+             expected: expected, actual: actual, remote: remote)
+      end
+
+      # The verdict for a caller with no native-build context at all — the Gitea
+      # webhook and the CI-direct REST publish. Those paths have no batch and no
+      # expectation, and must be byte-for-byte unaffected by this gate.
+      def inert
+        Verdict.new(promotable: true, state: "not_native",
+                    reason: "not a native build — no core provenance context")
+      end
+
+      def class_b?(module_name)
+        CLASS_B_PARENT_MODULES.include?(module_name.to_s)
+      end
+
+      # Default ON. A gate an operator has to remember to switch on is not a
+      # gate. The switch exists because the failure mode is "the fleet stays on
+      # the previous version" — recoverable, but an operator mid-incident needs
+      # to be able to override it without a deploy, the same way
+      # system.module_publish.min_artifact_bytes is tunable.
+      def enabled?
+        raw = ::SiteSetting.get(ENABLED_SETTING)
+        return true if raw.nil?
+        # SiteSetting returns a real Integer for setting_type "integer", and 0 is
+        # TRUTHY in Ruby — an operator who writes 0 meaning "off" would otherwise
+        # get a switch that silently does nothing.
+        return false if raw == false || raw == 0
+        return true unless raw.is_a?(String)
+
+        value = raw.strip.downcase
+        return true if value.empty?
+
+        !%w[false 0 off no disabled].include?(value)
+      rescue StandardError
+        true
+      end
+
+      private
+
+      def pass(state, reason, expected:, actual:, remote:)
+        Verdict.new(promotable: true, state: state, reason: reason,
+                    expected_sha: expected.presence, actual_sha: actual.presence, actual_remote: remote)
+      end
+
+      def refuse(state, reason, expected:, actual:, remote:)
+        Verdict.new(promotable: false, state: state, reason: reason,
+                    expected_sha: expected.presence, actual_sha: actual.presence, actual_remote: remote)
+      end
+
+      def sha_like?(value)
+        SHA_PATTERN.match?(value.to_s.downcase)
+      end
+
+      # Git's own abbreviation rules. Either side may legitimately arrive
+      # abbreviated (a webhook head_sha, an operator-supplied ref), and refusing
+      # a correct build because one side was short is a false positive — a gate
+      # that cries wolf is a gate an operator turns off. A prefix shorter than
+      # MIN_ABBREV_LENGTH is rejected rather than trusted.
+      def same_commit?(actual, expected)
+        a = actual.to_s.downcase
+        b = expected.to_s.downcase
+        return true if a == b
+        return false unless sha_like?(b)
+
+        long, short = a.length >= b.length ? [ a, b ] : [ b, a ]
+        return false if short.length < MIN_ABBREV_LENGTH
+
+        long.start_with?(short)
+      end
+
+      def short(sha)
+        sha.to_s[0, 7].presence || "(none)"
+      end
+
+      # The 2026-08-15 incident was a RIGHT BRANCH NAME on a STALE MIRROR —
+      # github.com and the Gitea both carried a `develop`, three days apart — so
+      # the sha alone looked entirely plausible. An operator reading a refusal
+      # needs the host.
+      def remote_suffix(remote)
+        remote.present? ? " (from #{remote})" : ""
+      end
+    end
+  end
+end
