@@ -77,24 +77,35 @@ jobs:
     # seven red jobs, each with a ~1.5 KB log containing no rspec output at all.
     # So the gate has not been failing on code; it has not been running.
     #
-    # A SHARED group across rspec + provider-specs + worker-specs (not one per
-    # job) is what actually fixes it — the collision is between those jobs, not
-    # within any one of them. cancel-in-progress is false so a queued suite
-    # waits rather than being discarded.
+    # DO NOT reach for `concurrency:` here. It was tried on run 1675 (develop
+    # 1f01dfa8) as a group shared across rspec + provider-specs + worker-specs.
+    # Gitea accepts the key — the jobs are created, not skipped — but with one
+    # group spanning several jobs NOTHING ever acquires it: all six sat at
+    # status=waiting with zero running for 20+ minutes and the run could not
+    # finish. That is strictly worse than the collision, which at least failed
+    # fast and visibly, and it also caught rspec (controllers), which had been
+    # passing. Reverted in the same session that introduced it.
     #
-    # Chosen over per-job distinct ports deliberately: parameterising
-    # services.*.ports needs `${{ }}` expansion inside the services block, which
-    # cannot be verified without a live act runner and fails UNSAFE if this
-    # runner does not support it (the literal string becomes the port and every
-    # service dies). An unsupported `concurrency:` key is merely ignored, which
-    # leaves today's behaviour untouched. Correctness of the gate beats
-    # parallelism here; restore parallelism later via distinct ports once
-    # expression support is confirmed, or via the runner-level fix (task #76).
-    concurrency:
-      group: ci-fixed-host-ports-${{ github.ref }}
-      cancel-in-progress: false
+    # What works instead, using only long-established primitives:
+    #   - max-parallel: 1 below serializes the four matrix entries against each
+    #     other (they are the main source of the collision);
+    #   - provider-specs and worker-specs chain off this job via needs:, so the
+    #     three port-publishing jobs run one after another.
+    # Both degrade safely: an ignored max-parallel is just today's behaviour,
+    # and needs: is core workflow semantics.
+    #
+    # Per-job distinct ports would restore parallelism but need `${{ }}`
+    # expansion inside the services block, which cannot be verified without a
+    # live act runner and fails UNSAFE if unsupported (the literal string
+    # becomes the port and every service dies). Prefer that only once expression
+    # support is confirmed, or fix it at the runner level (task #76).
     strategy:
       fail-fast: false
+      # Serialize the matrix: all four entries publish 0.0.0.0:5432, so more
+      # than one at a time cannot bind. This is the collision that kept them
+      # red. max-parallel is the mechanism that actually works here — see the
+      # note above about the concurrency: attempt that deadlocked.
+      max-parallel: 1
       matrix:
         suite: [controllers, services, models-lib, misc]
     # Service addressing: sidecars publish container ports to the host;
@@ -301,13 +312,14 @@ jobs:
   # SDK gems onto the core bundle (via extensions/system/scripts/test-provider-gems.sh)
   # so those specs actually run and provider regressions are caught.
   provider-specs:
-    needs: ci-hygiene
+    # Chained after rspec (not merely after ci-hygiene) because this job
+    # publishes the same fixed host ports and would otherwise start alongside a
+    # matrix entry and lose the bind. if: always() keeps it running even when
+    # rspec fails — the dependency exists to sequence port usage, not to gate on
+    # rspec's result.
+    needs: [ci-hygiene, rspec]
+    if: always()
     runs-on: ubuntu-24.04
-    # Same SHARED group as the rspec matrix — this job publishes the same fixed
-    # host ports, so it must serialize against them, not just against itself.
-    concurrency:
-      group: ci-fixed-host-ports-${{ github.ref }}
-      cancel-in-progress: false
     # Same postgres/redis sidecars + docker-bridge-gateway addressing as the
     # `rspec` job above — see the long comment there for why localhost and
     # service-name DNS both fail on this act runner.
@@ -585,13 +597,12 @@ jobs:
   # the extension's worker jobs are autoloaded by the parent worker app;
   # there's no separate spec harness for extension-only worker jobs.
   worker-specs:
-    needs: ci-hygiene
+    # Last link in the port-publishing chain — see provider-specs. always() so a
+    # red suite upstream does not skip this one; the chain sequences the shared
+    # 6379/5432 bindings, it is not a success gate.
+    needs: [ci-hygiene, provider-specs]
+    if: always()
     runs-on: ubuntu-24.04
-    # Same SHARED group as the rspec matrix — this job publishes redis on the
-    # same fixed host port, so it must serialize against those jobs too.
-    concurrency:
-      group: ci-fixed-host-ports-${{ github.ref }}
-      cancel-in-progress: false
     # Same docker-bridge-gateway addressing as the rspec matrix above —
     # see the long comment up there for why localhost and service-name
     # DNS both don't work on this Gitea Actions installation.
