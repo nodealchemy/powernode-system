@@ -10,7 +10,7 @@ module Api
 
           # GET /api/v1/internal/system/operations
           def index
-            operations = ::System::Task.all
+            operations = account_scoped(::System::Task.all)
 
             # Filter by status
             operations = operations.where(status: params[:status]) if params[:status].present?
@@ -83,8 +83,11 @@ module Api
 
           private
 
+          # Scoped for the same reason as #index: show/update/events all resolve
+          # through here, and update/events are writes — an unscoped find lets a
+          # foreign account's task be mutated, not merely read.
           def set_operation
-            @operation = ::System::Task.find(params[:id])
+            @operation = account_scoped(::System::Task.all).find(params[:id])
           rescue ActiveRecord::RecordNotFound
             render_not_found("Operation")
           end
