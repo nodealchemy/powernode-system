@@ -101,6 +101,15 @@ install() {
     inst_simple "${moddir}/90-default-dhcp.network" \
         /etc/systemd/network/90-default-dhcp.network
 
+    # Bound systemd-networkd-wait-online in the initrd. Stock behaviour waits
+    # for ALL managed links and expires at 120s, which measured as 2min 0.119s
+    # of a 2min 42s boot on dev-cell — the dominant cost of every boot, for a
+    # wait that never succeeds. See wait-online-any.conf for the measurement
+    # and why bounding it cannot regress the success path (the unit already
+    # fails today and every node boots and enrols anyway).
+    inst_simple "${moddir}/wait-online-any.conf" \
+        /etc/systemd/system/systemd-networkd-wait-online.service.d/10-powernode-any.conf
+
     # ─────────────────────────────────────────────────────────────────────
     # OpenSSH server for smoke-test interactive access. Production switch_roots
     # to system-base which has its own sshd in the module rootfs. This block

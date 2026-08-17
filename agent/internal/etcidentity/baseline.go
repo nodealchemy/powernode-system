@@ -45,11 +45,34 @@ package etcidentity
 //     line "%sudo ALL=(ALL:ALL) ALL" doesn't error at sudoers parse
 //     time. Without this group, `sudo -ln` returns "user X may not
 //     run sudo" even for a user explicitly granted via a drop-in.
+//   - the device/subsystem groups below: these are NOT module-declared
+//     and cannot be. What references them is config the BASE OS ITSELF
+//     ships — /usr/lib/udev/rules.d/*.rules and /usr/lib/tmpfiles.d/*.conf
+//     — so "let modules declare what they need" never reaches them, and
+//     because this package renders /etc/group AUTHORITATIVELY it replaces
+//     the base image's own complete file. Omitting them silently dropped
+//     every one, which on dev-cell 2026-08-17 produced, per boot:
+//     systemd-tmpfiles: Failed to resolve group 'systemd-journal'/'utmp'
+//     systemd-udevd:    Unknown group 'video'/'kvm'/'render'/..., ignoring
+//     utempter:         pututline: Permission denied
+//     and made `journalctl` unusable for any non-root user ("Failed to
+//     check if we are in the 'systemd-journal' group"), forcing sudo for
+//     ordinary log reads. The udev failures are the material ones: the
+//     rules silently drop GROUP= on /dev/kvm, /dev/dri/render*, /dev/snd/*,
+//     video and serial nodes, so unprivileged access to KVM, GPU, audio and
+//     serial breaks on a fleet whose purpose is running those workloads.
 //
-// Add to this list only when a baseline user/group is genuinely
-// required to boot — e.g., systemd-network if a future deployment
-// expects it pre-populated. Otherwise let modules declare what
-// they need.
+// GIDs match what base-os-ubuntu-noble ships, so the rendered file agrees
+// with the image rather than reallocating underneath it. They are also
+// clear of the platform's own allocations, which start at 70000 (see
+// reserved.go) — no collision is possible.
+//
+// The rest of Debian's base-passwd set (mail, news, uucp, man, proxy, dip,
+// plugdev, staff, games, ...) is deliberately NOT here. Measured on the
+// live image: those groups have zero references in shipped udev/tmpfiles/
+// systemd config AND own zero files, so adding them would only create dead
+// entries. Add a group here when something the OS ships references it or
+// owns files as it; otherwise let modules declare what they need.
 func Baseline() *Set {
 	return &Set{
 		Users: []User{
@@ -71,6 +94,25 @@ func Baseline() *Set {
 			{Name: "disk", GID: 6},
 			{Name: "sudo", GID: 27},
 			{Name: "shadow", GID: 42}, // /etc/shadow group-ownership — read by getpwent
+
+			// Device/subsystem groups referenced by shipped udev rules and
+			// tmpfiles.d config. See the package comment above for why these
+			// cannot be left to modules. Ordered by GID.
+			{Name: "lp", GID: 7},                // parallel/USB printer nodes
+			{Name: "kmem", GID: 15},             // /dev/mem, /dev/kmem, /dev/port
+			{Name: "dialout", GID: 20},          // serial ports — /dev/ttyS*, /dev/ttyUSB*
+			{Name: "cdrom", GID: 24},            // optical devices — /dev/sr*
+			{Name: "floppy", GID: 25},           // /dev/fd*
+			{Name: "tape", GID: 26},             // /dev/st*, /dev/nst*
+			{Name: "audio", GID: 29},            // ALSA — /dev/snd/*
+			{Name: "utmp", GID: 43},             // /run/utmp, /var/log/wtmp — utempter, who, w, last
+			{Name: "video", GID: 44},            // /dev/video*, /dev/fb*, /dev/dri/card*
+			{Name: "render", GID: 994},          // /dev/dri/render* — GPU compute without display access
+			{Name: "kvm", GID: 995},             // /dev/kvm — unprivileged VM launch
+			{Name: "sgx", GID: 996},             // /dev/sgx_*
+			{Name: "input", GID: 997},           // /dev/input/* (most-referenced: 12 shipped rules)
+			{Name: "systemd-journal", GID: 999}, // /var/log/journal — non-root `journalctl`
+
 			{Name: "pnadmin", GID: 1000},
 			{Name: "nogroup", GID: 65534},
 		},
