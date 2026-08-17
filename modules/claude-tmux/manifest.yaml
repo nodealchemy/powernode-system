@@ -179,6 +179,15 @@ services:
       After=network-online.target
       Wants=network-online.target
       ConditionPathExists=/usr/bin/claude
+      # Hold-down for PERSISTENT faults that are not the "no credential
+      # configured" case below (which suppresses its restart outright via
+      # RestartPreventExitStatus). These MUST live in [Unit] — systemd
+      # silently ignores them in [Service]. The stock defaults (10s/5) can
+      # never trip against RestartSec=5s: only ~2 starts fit in a 10s
+      # window, so the burst of 5 is unreachable and the unit loops
+      # forever. The interval has to exceed RestartSec x Burst (25s).
+      StartLimitIntervalSec=180
+      StartLimitBurst=5
 
       [Service]
       # tmux daemonizes itself (the client forks the tmux server and exits) —
@@ -214,6 +223,15 @@ services:
 
       Restart=on-failure
       RestartSec=5s
+      # exit 78 (EX_CONFIG) from the credential fetch means this instance
+      # has NO credential configured — the intended steady state for any
+      # cell that is not meant to spend (the fallback SiteSetting defaults
+      # OFF since inc21). Restarting cannot resolve it, so fail once and
+      # stay put: an operator sets a credential, then `systemctl start`s
+      # this unit. Without this the designed state was an unbounded crash
+      # loop — one mTLS handshake against the control plane every 5s,
+      # ~17k/day per idle cell, drowning real failures in journal noise.
+      RestartPreventExitStatus=78
       StandardOutput=journal
       StandardError=journal
 
