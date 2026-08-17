@@ -151,6 +151,24 @@ esac
 
 echo "== layer 2: systemd wiring that consumes the taxonomy =="
 
+# WHY THESE ASSERTIONS AND NOT "RestartPreventExitStatus is set":
+# that was the original fix and it was INERT. RestartPreventExitStatus= (and
+# Restart= decisions generally) key off the MAIN process; the fetch used to run
+# as an ExecStartPre, which is a CONTROL process, so systemd restarted the unit
+# regardless of the exit code. Measured on live systemd 2026-08-17: exit 78 from
+# ExecStartPre with the directive set gave NRestarts=5; the same exit from
+# ExecStart gave NRestarts=0. The suite passed the whole time, because it only
+# checked that the directive was PRESENT in the manifest — never that it
+# governed the failure it was written for.
+#
+# So the invariants below are about SHAPE, which is what actually decides
+# whether systemd honours the intent:
+#   1. no manifest may run the fetch from an ExecStartPre at all;
+#   2. it runs as some unit's ExecStart, whose exit IS the main-process exit;
+#   3. that unit maps 78 to success, so "no credential" is not a fault;
+#   4. every consumer gates on the staged file with ConditionPathExists —
+#      a false condition is a SKIP, not a failure, so nothing restarts.
+
 # Extract one service's unit_body from a module manifest, then read a
 # directive out of a named INI section of that body. Section matters:
 # StartLimitIntervalSec/StartLimitBurst are silently IGNORED in [Service]
@@ -186,12 +204,78 @@ seconds_of() {
   esac
 }
 
-check_unit() { # <label> <manifest> <service>
-  local label="$1" manifest="$2" service="$3"
+# THE BUG-CLASS GUARD. The fetch signals "no credential configured" with an
+# exit code, and an exit code can only steer systemd's restart decision from
+# the MAIN process. Running it as a pre-hook silently discards that signal.
+no_fetch_in_execstartpre() { # <label> <manifest>
+  local label="$1" manifest="$2" hits
+  hits="$(python3 - "$manifest" <<'PY'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1])) or {}
+bad = []
+for svc in (doc.get("services") or []):
+    for raw in (svc.get("unit_body") or "").splitlines():
+        line = raw.strip()
+        if line.startswith("ExecStartPre=") and "claude-tmux-fetch-credential.sh" in line:
+            bad.append(svc.get("name"))
+print(",".join(bad))
+PY
+)"
+  if [ -z "$hits" ]; then
+    pass "$label: credential fetch is never an ExecStartPre"
+  else
+    fail "$label: credential fetch is never an ExecStartPre" \
+         "found in unit(s) [$hits] — a pre-hook is a control process, so its exit code cannot prevent a restart"
+  fi
+}
 
+# The stager: the fetch must be an ExecStart (main process), and 78 must be
+# success so a deliberately uncredentialed instance is not a fault to retry.
+check_stager() { # <label> <manifest> <service>
+  local label="$1" manifest="$2" service="$3" exec_start success
+  exec_start="$(unit_directive "$manifest" "$service" "[Service]" "ExecStart")"
+  case "$exec_start" in
+    */claude-tmux-fetch-credential.sh) pass "$label: fetch runs as ExecStart (main process)" ;;
+    *) fail "$label: fetch runs as ExecStart (main process)" "ExecStart='$exec_start'" ;;
+  esac
+  success="$(unit_directive "$manifest" "$service" "[Service]" "SuccessExitStatus")"
+  assert_eq "$label: EX_CONFIG is success, not a retryable fault" "$EX_CONFIG" "$success"
+}
+
+# The consumer: gated on the staged credential, so absence is a SKIP.
+check_gate() { # <label> <manifest> <service> <expected-path>
+  local label="$1" manifest="$2" service="$3" want="$4" conds
+  conds="$(python3 - "$manifest" "$service" <<'PY'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1])) or {}
+svc = next((s for s in (doc.get("services") or []) if s.get("name") == sys.argv[2]), None)
+out = []
+if svc:
+    for raw in (svc.get("unit_body") or "").splitlines():
+        line = raw.strip()
+        if line.startswith("ConditionPathExists="):
+            out.append(line.split("=", 1)[1].strip())
+print("\n".join(out))
+PY
+)"
+  if printf '%s\n' "$conds" | grep -qx -- "$want"; then
+    pass "$label: gated on the staged credential ($want)"
+  else
+    fail "$label: gated on the staged credential ($want)" "ConditionPathExists set was: $(echo $conds)"
+  fi
+  # A gated unit must NOT also carry the inert directive.
   local prevent
   prevent="$(unit_directive "$manifest" "$service" "[Service]" "RestartPreventExitStatus")"
-  assert_eq "$label: RestartPreventExitStatus honours EX_CONFIG" "$EX_CONFIG" "$prevent"
+  if [ "$prevent" = "<unset>" ]; then
+    pass "$label: no inert RestartPreventExitStatus left behind"
+  else
+    fail "$label: no inert RestartPreventExitStatus left behind" \
+         "found RestartPreventExitStatus=$prevent — the condition gate handles this now"
+  fi
+}
+
+check_unit() { # <label> <manifest> <service>
+  local label="$1" manifest="$2" service="$3"
 
   # The hold-down for every OTHER persistent failure must be reachable:
   # systemd only trips the limit if Burst starts fit inside the interval,
@@ -230,8 +314,19 @@ check_unit() { # <label> <manifest> <service>
   fi
 }
 
-check_unit "claude-tmux/claude"  "$CLAUDE_TMUX_MANIFEST" "claude"
-check_unit "dev-cell/executor"   "$DEV_CELL_MANIFEST"    "executor"
+no_fetch_in_execstartpre "claude-tmux" "$CLAUDE_TMUX_MANIFEST"
+no_fetch_in_execstartpre "dev-cell"    "$DEV_CELL_MANIFEST"
+
+check_stager "claude-tmux/credential" "$CLAUDE_TMUX_MANIFEST" "credential"
+check_stager "dev-cell/credential"    "$DEV_CELL_MANIFEST"    "credential"
+
+check_gate "claude-tmux/claude" "$CLAUDE_TMUX_MANIFEST" "claude"   "/run/claude-tmux/api_key"
+check_gate "dev-cell/executor"  "$DEV_CELL_MANIFEST"    "executor" "/run/dev-cell/api_key"
+
+check_unit "claude-tmux/claude"      "$CLAUDE_TMUX_MANIFEST" "claude"
+check_unit "claude-tmux/credential"  "$CLAUDE_TMUX_MANIFEST" "credential"
+check_unit "dev-cell/executor"       "$DEV_CELL_MANIFEST"    "executor"
+check_unit "dev-cell/credential"     "$DEV_CELL_MANIFEST"    "credential"
 
 echo
 printf 'passed: %d   failed: %d\n' "$PASS_COUNT" "$FAIL_COUNT"

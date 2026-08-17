@@ -119,11 +119,29 @@ is deleted immediately after the one read that needs it.
 `claude-tmux-fetch-credential.sh` distinguishes a *deliberately* uncredentialed
 instance from a broken one, because only the second is worth retrying:
 
-| Condition | Exit | Unit behaviour |
+| Condition | Exit | Behaviour |
 |---|---|---|
-| Credential staged | `0` | session starts |
-| **HTTP 404 — no credential configured** | **`78`** (`EX_CONFIG`) | **fails once and stays put** (`RestartPreventExitStatus=78`) |
-| Unenrolled, unresolvable platform URL, network/mTLS error, non-200, malformed response | `1` | retried by `Restart=on-failure`, then held down by the start limit |
+| Credential staged | `0` | stager succeeds; session starts |
+| **HTTP 404 — no credential configured** | **`78`** (`EX_CONFIG`) | stager **succeeds having staged nothing** (`SuccessExitStatus=78`); the session unit is **skipped** by `ConditionPathExists` |
+| Unenrolled, unresolvable platform URL, network/mTLS error, non-200, malformed response | `1` | stager fails, retried by `Restart=on-failure`, then held down by the start limit |
+
+### Why the fetch is its own unit
+
+The fetch runs as `ExecStart=` of a dedicated root oneshot
+(`…-credential.service`), **not** as an `ExecStartPre=` of the session unit. That
+is not stylistic. `RestartPreventExitStatus=` — and systemd's restart decision
+generally — keys off the **main** process; an `ExecStartPre` is a *control*
+process, so its exit code cannot prevent a restart. Measured on live systemd
+(2026-08-17): exit `78` from `ExecStartPre` with `RestartPreventExitStatus=78`
+set gave `NRestarts=5`, while the same exit from `ExecStart` gave `NRestarts=0`.
+An earlier version of this module shipped exactly that inert directive.
+
+The split lets each half use a mechanism that applies. The stager's exit *is* a
+main-process exit, so `SuccessExitStatus=78` makes "no credential configured" a
+clean success rather than a fault to retry. The session unit is then gated with
+`ConditionPathExists=/run/claude-tmux/api_key`: **a false condition is not a
+failure**, so systemd skips the unit with no restart, no `failed` state, and no
+`type=1130 … res=failed` audit record at all.
 
 An instance with no credential is the **intended steady state** — the
 `dev_cell_account_provider_credential_fallback` SiteSetting defaults OFF (inc21,
@@ -137,19 +155,30 @@ not stop it either — systemd's defaults (`10s`/`5`) are unreachable against
 declare a reachable `StartLimitIntervalSec`/`StartLimitBurst` **in `[Unit]`**
 (systemd silently ignores them in `[Service]`).
 
-So on a healthy uncredentialed cell you should expect **one** `res=failed` audit
-record per unit per boot, not a stream. A stream means a genuine fault — read
-the journal line, it names which branch fired.
+So on a healthy uncredentialed cell you should expect **no** `res=failed` audit
+records from these units at all — the stager succeeds and the session is
+skipped. Any `res=failed` here is a genuine fault; read the journal line, it
+names which branch fired. (Before the unit split this state produced an
+unbounded stream: 717 restarts in one boot, one mTLS handshake against the
+control plane every 5s.)
 
-The same taxonomy governs `dev-cell`'s `executor` unit, which reuses this
-script for its own `ANTHROPIC_API_KEY`.
+The same taxonomy and the same unit split govern `dev-cell`'s `executor`, which
+reuses this script for its own `ANTHROPIC_API_KEY` and is gated on
+`/run/dev-cell/api_key`.
 
 ## Operator runbook
 
-Set the credential for an instance (one-time; the module's `ExecStartPre`
-exits `78` and the unit stays down until this exists — after setting it,
-`systemctl start` the unit or reboot, since a suppressed restart is not
-re-armed automatically):
+Set the credential for an instance (one-time; until it exists the stager stages
+nothing and the session unit is skipped). The staged credential lives in tmpfs
+and is read-then-deleted, so after setting one either reboot the instance or
+start the stager and then the session:
+
+```bash
+# discover the real unit names — never type a guessed one
+systemctl list-units 'powernode-*-credential.service' 'powernode-*-claude.service' \
+  --no-pager --no-legend --all
+systemctl start <module>-credential.service && systemctl start <module>-claude.service
+```
 
 ```javascript
 // POST /api/v1/system/nodes/:node_id/node_instances/:id/claude_code_credential

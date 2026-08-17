@@ -161,17 +161,83 @@ dependencies:
     - dev.claude-cli
     - dev.tmux-session
 
-# unit_body passthrough (option A2): Type=forking + the credential-fetch
-# ExecStartPre= can't be expressed via the generated-unit Service fields,
-# so this rides the services: lifecycle with the unit file's body
-# verbatim. No sibling dev-cell/claude-tmux unit references in this body
-# (After=/Wants=network-online.target only), so nothing needed stripping
-# into `dependencies:`. No `user:` — pnadmin is an agent-baseline
+# unit_body passthrough (option A2): Type=forking + the condition gate and
+# oneshot credential stager below can't be expressed via the generated-unit
+# Service fields, so these ride the services: lifecycle with the unit files'
+# bodies verbatim. The one sibling reference (claude -> credential) is
+# stripped out into `dependencies:` rather than hand-written as
+# After=/Requires= in the body, so the generator owns the real unit names.
+# No `user:` — pnadmin is an agent-baseline
 # identity, not a platform-allocated ServiceUser or a
 # WELL_KNOWN_SYSTEM_USERS entry, so it can't be declared under `users:`
 # without colliding UIDs; the body's own User=/Group=pnadmin governs.
 services:
+  # The credential fetch is its OWN unit, not an ExecStartPre of the session
+  # below, because of a systemd rule that is easy to get wrong:
+  # RestartPreventExitStatus= (and Restart= decisions generally) key off the
+  # MAIN process. An ExecStartPre is a CONTROL process — systemd logs
+  # "Control process exited, code=exited, status=78/CONFIG" and restarts the
+  # unit anyway. Measured on live systemd 2026-08-17: exit 78 from
+  # ExecStartPre with RestartPreventExitStatus=78 gave NRestarts=5; the same
+  # exit from ExecStart gave NRestarts=0. So the "fail once and stay put"
+  # posture CANNOT be expressed from a pre-hook at all.
+  #
+  # Splitting it lets each half use the mechanism that actually applies:
+  #   - fetching is a root oneshot whose exit code IS its main-process exit,
+  #     so SuccessExitStatus=78 makes "no credential configured" a clean
+  #     success rather than a fault to retry;
+  #   - the session is gated by ConditionPathExists on the staged credential.
+  #     A false CONDITION is not a failure: systemd skips the unit, with no
+  #     restart, no failed state, and no type=1130 res=failed audit record.
+  #     That is the posture the 404 branch always wanted.
+  - name: credential
+    unit_body: |
+      [Unit]
+      Description=Claude Code CLI: stage the Anthropic credential (root, mTLS)
+      Documentation=https://github.com/nodealchemy/powernode-platform
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=/usr/bin/claude
+      # Bounds genuinely transient faults (network/mTLS, 5xx). MUST live in
+      # [Unit] — systemd silently ignores these in [Service] — and the
+      # interval MUST exceed RestartSec x Burst (30s x 5 = 150s) or the
+      # limit can never trip. The stock 10s/5 defaults are unreachable
+      # against any RestartSec above ~2s, which is how the original unit
+      # looped 717 times instead of holding down.
+      StartLimitIntervalSec=600
+      StartLimitBurst=5
+
+      [Service]
+      Type=oneshot
+      # Runs as root: only root can read the agent's mTLS private key at
+      # /persist/var/lib/powernode/pki/node.key (0600). The staged key is
+      # chowned to the session user by the script.
+      RuntimeDirectory=claude-tmux
+      RuntimeDirectoryMode=0700
+      # Preserve past this oneshot's own exit — the session unit below reads
+      # the staged file, and an auto-removed RuntimeDirectory would take the
+      # credential with it the moment this unit went inactive.
+      RuntimeDirectoryPreserve=yes
+      Environment=CLAUDE_TMUX_USER=pnadmin
+      ExecStart=/usr/local/bin/claude-tmux-fetch-credential.sh
+      # 78 (EX_CONFIG) = this instance has NO credential configured. That is
+      # a supported, deliberate state (the fallback SiteSetting defaults OFF
+      # since inc21 so an idle cell cannot burn API credits), NOT a fault —
+      # so it completes successfully having staged nothing, and the session
+      # unit's ConditionPathExists then skips cleanly. Every other failure
+      # keeps exit 1 and is retried below.
+      SuccessExitStatus=78
+      Restart=on-failure
+      RestartSec=30s
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+
   - name: claude
+    dependencies:
+      - { service: credential, kind: start_before }
     unit_body: |
       [Unit]
       Description=Claude Code CLI (managed tmux session)
@@ -179,13 +245,13 @@ services:
       After=network-online.target
       Wants=network-online.target
       ConditionPathExists=/usr/bin/claude
-      # Hold-down for PERSISTENT faults that are not the "no credential
-      # configured" case below (which suppresses its restart outright via
-      # RestartPreventExitStatus). These MUST live in [Unit] — systemd
-      # silently ignores them in [Service]. The stock defaults (10s/5) can
-      # never trip against RestartSec=5s: only ~2 starts fit in a 10s
-      # window, so the burst of 5 is unreachable and the unit loops
-      # forever. The interval has to exceed RestartSec x Burst (25s).
+      # The gate. No credential staged => this unit is SKIPPED, not failed:
+      # no restart, no failed state, no audit record. Replaces the old
+      # ExecStartPre=+...fetch-credential.sh, whose exit code could not
+      # suppress a restart because a pre-hook is a control process.
+      ConditionPathExists=/run/claude-tmux/api_key
+      # Bounds a PERSISTENT tmux-side failure. Interval must exceed
+      # RestartSec x Burst (5s x 5 = 25s); the stock 10s/5 cannot trip.
       StartLimitIntervalSec=180
       StartLimitBurst=5
 
@@ -200,19 +266,13 @@ services:
       Group=pnadmin
       Environment=HOME=/home/pnadmin
 
-      # RuntimeDirectory gives us a private, auto-created, auto-cleaned tmpfs
-      # dir (0700, owned by User=/Group=) at /run/claude-tmux for the
-      # short-lived credential handoff file — never a world-readable path.
+      # Same private tmpfs dir the credential unit created and preserved. It
+      # is re-declared here so systemd re-applies ownership to this unit's
+      # User=/Group= (the credential unit runs as root, so the dir arrives
+      # root-owned) and so it is cleaned up when the session stops — never a
+      # world-readable path either way.
       RuntimeDirectory=claude-tmux
       RuntimeDirectoryMode=0700
-
-      # Fetches the Anthropic API key from the platform's Vault-backed node_api
-      # over mTLS and writes it to $RUNTIME_DIRECTORY/api_key (0600). Runs as
-      # root (the "+" prefix) because only root can read the agent's mTLS
-      # private key at /persist/var/lib/powernode/pki/node.key (0600) — the
-      # credential file it writes back is chowned to pnadmin so the unprivileged
-      # tmux session (User=pnadmin below) can read it exactly once.
-      ExecStartPre=+/usr/local/bin/claude-tmux-fetch-credential.sh
 
       # Starts (or, on restart, no-ops into) the "claude-code" tmux session and
       # launches `claude` inside it. The credential file is read-then-deleted
@@ -221,17 +281,13 @@ services:
       ExecStart=/usr/local/bin/claude-tmux-start.sh
       ExecStop=/usr/bin/tmux -L claude-tmux kill-session -t claude-code
 
+      # Governs the tmux server dying, which is the only failure this unit
+      # can now have — "no credential configured" never reaches here, it is
+      # answered by the ConditionPathExists gate above. Deliberately NO
+      # RestartPreventExitStatus=: it was inert here (a pre-hook is a
+      # control process) and there is no longer a pre-hook to guard.
       Restart=on-failure
       RestartSec=5s
-      # exit 78 (EX_CONFIG) from the credential fetch means this instance
-      # has NO credential configured — the intended steady state for any
-      # cell that is not meant to spend (the fallback SiteSetting defaults
-      # OFF since inc21). Restarting cannot resolve it, so fail once and
-      # stay put: an operator sets a credential, then `systemctl start`s
-      # this unit. Without this the designed state was an unbounded crash
-      # loop — one mTLS handshake against the control plane every 5s,
-      # ~17k/day per idle cell, drowning real failures in journal noise.
-      RestartPreventExitStatus=78
       StandardOutput=journal
       StandardError=journal
 
