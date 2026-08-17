@@ -109,16 +109,21 @@ file_spec:
   - "/usr/share/docker.io/**"
   - "/usr/share/lintian/overrides/docker.io"
   - "/usr/share/zsh/vendor-completions/_docker"
-  # tmpfs mount for /var/lib/docker (below) — dockerd's overlay2 storage
-  # driver can't nest on this instance's own overlay rootfs (same finding
-  # gitea-act-runner's manifest documents: overlay-on-overlay is
-  # unsupported by the kernel). tmpfs isn't overlayfs, so overlay2 works
-  # fine on top of it — matches "disposable not ephemeral": this instance's
-  # own IDENTITY (host keys, home dir) persists across reboot, but Docker's
-  # image/layer cache is fine to lose on reboot, same as CI's ephemeral
-  # posture.
-  - "/etc/systemd/system/var-lib-docker.mount"
-  - "/etc/systemd/system/local-fs.target.wants/var-lib-docker.mount"
+  # NOTE (2026-08-17): this module used to carve a tmpfs var-lib-docker.mount
+  # here, copied from gitea-act-runner. It is GONE — dockerd now takes
+  # --data-root=/persist/var/lib/docker in dev-cell-docker.service instead.
+  #
+  # The tmpfs put the whole image/layer store in RAM (size=8G on a 15.5 GB
+  # node, no swap), so "the Docker tmpfs filled up" and "the node stopped
+  # responding" were one event, not cause and effect. gitea-act-runner wants
+  # that — a CI sandbox SHOULD lose its layers. This daemon is interactive and
+  # its cache accumulates, so it inherited a posture that did not apply.
+  #
+  # The old rationale ("overlay2 can't nest on this instance's own overlay
+  # rootfs") only ever constrained `/`. /persist is ext4 and overlay2 nests on
+  # it fine — measured on dev-cell, `Backing Filesystem: extfs`, 117 GB free.
+  # The sibling docker-engine module already documents /persist/var/lib/docker,
+  # so this aligns the two rather than inventing a third answer.
   # iptables' own closure (real-boot-verified need, see package_spec
   # comment) — derive-file-spec.sh --mode deb-payload's under-carve report
   # against the updated package_spec.
