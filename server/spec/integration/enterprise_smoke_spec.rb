@@ -60,8 +60,8 @@ RSpec.describe "AI-driven provisioning M4 enterprise smoke", type: :integration 
   end
 
   let(:account) { create(:account) }
-  let(:user_a)  { user_with_permissions("ai.workflows.create", "ai.workflows.execute", account: account) }
-  let(:user_b)  { user_with_permissions("ai.workflows.create", "ai.workflows.execute", account: account) }
+  let(:user_a)  { user_with_permissions("ai.loops.create", "ai.loops.execute", account: account) }
+  let(:user_b)  { user_with_permissions("ai.loops.create", "ai.loops.execute", account: account) }
   let(:agent)   { create(:ai_agent, account: account) }
 
   # ---------- Business plan with second-signature + ip_allowlist features ----
