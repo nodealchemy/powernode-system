@@ -55,10 +55,9 @@ jobs:
 
   rspec:
     needs: ci-hygiene
-    # Split into 3 parallel suites (controllers/requests, services, models+lib+
-    # integration) so wall-clock is max-of-three rather than sum-of-all. Each
-    # matrix entry pays the bundle-install + db-setup cost independently but
-    # they run concurrently on separate runners. Target <10 min per suite.
+    # Runs the four spec suites (controllers/requests, services, models+lib+
+    # integration, and a sweep of the rest) SEQUENTIALLY inside one job. This
+    # was a 4-entry matrix; see the note below for why it could not stay one.
     runs-on: ubuntu-24.04
     # Serialize every job that publishes postgres/redis to a FIXED host port.
     #
@@ -77,37 +76,35 @@ jobs:
     # seven red jobs, each with a ~1.5 KB log containing no rspec output at all.
     # So the gate has not been failing on code; it has not been running.
     #
-    # DO NOT reach for `concurrency:` here. It was tried on run 1675 (develop
-    # 1f01dfa8) as a group shared across rspec + provider-specs + worker-specs.
-    # Gitea accepts the key — the jobs are created, not skipped — but with one
-    # group spanning several jobs NOTHING ever acquires it: all six sat at
-    # status=waiting with zero running for 20+ minutes and the run could not
-    # finish. That is strictly worse than the collision, which at least failed
-    # fast and visibly, and it also caught rspec (controllers), which had been
-    # passing. Reverted in the same session that introduced it.
+    # TWO scheduler-level fixes were tried here and BOTH failed. Do not retry
+    # either without new evidence:
     #
-    # What works instead, using only long-established primitives:
-    #   - max-parallel: 1 below serializes the four matrix entries against each
-    #     other (they are the main source of the collision);
-    #   - provider-specs and worker-specs chain off this job via needs:, so the
-    #     three port-publishing jobs run one after another.
-    # Both degrade safely: an ignored max-parallel is just today's behaviour,
-    # and needs: is core workflow semantics.
+    #   1. `concurrency:` group shared across rspec + provider-specs +
+    #      worker-specs (run 1675, develop 1f01dfa8). Gitea accepts the key and
+    #      creates the jobs — but with one group spanning several jobs nothing
+    #      ever acquires it. Six jobs sat at status=waiting, zero running, 20+
+    #      minutes, run unable to finish. Strictly worse than the collision,
+    #      which at least failed fast, and it also caught rspec (controllers),
+    #      which had been passing.
     #
-    # Per-job distinct ports would restore parallelism but need `${{ }}`
-    # expansion inside the services block, which cannot be verified without a
-    # live act runner and fails UNSAFE if unsupported (the literal string
-    # becomes the port and every service dies). Prefer that only once expression
-    # support is confirmed, or fix it at the runner level (task #76).
-    strategy:
-      fail-fast: false
-      # Serialize the matrix: all four entries publish 0.0.0.0:5432, so more
-      # than one at a time cannot bind. This is the collision that kept them
-      # red. max-parallel is the mechanism that actually works here — see the
-      # note above about the concurrency: attempt that deadlocked.
-      max-parallel: 1
-      matrix:
-        suite: [controllers, services, models-lib, misc]
+    #   2. `strategy.max-parallel: 1` on the matrix (run 1676, develop
+    #      f826b219). Silently IGNORED by this runner — all four entries started
+    #      together exactly as before, three died on "port is already allocated"
+    #      while the fourth held 5432. It degraded safely, but it did not work.
+    #
+    # So the suites are sequenced INSIDE one job instead (see the run step).
+    # That needs no scheduler feature at all, which is the point: it cannot be
+    # ignored or deadlocked by a runner that implements these keys differently.
+    # provider-specs and worker-specs chain off this job with needs:, which IS
+    # empirically honoured here (both correctly queued behind it on run 1676).
+    #
+    # Cost: wall-clock is now the sum of the four suites rather than the max.
+    # That is the deliberate trade — they were not running at all before.
+    # Parallelism can return via per-entry distinct ports, but that needs
+    # `${{ }}` expansion inside the services block, which fails UNSAFE if
+    # unsupported (the literal string becomes the port and every service dies),
+    # so confirm expression support there first — or fix it at the runner level
+    # (task #76), which is where this problem actually belongs.
     # Service addressing: sidecars publish container ports to the host;
     # the job container reaches them at the docker bridge gateway IP
     # (172.17.0.1 on a default Linux docker setup), NOT localhost.
@@ -233,7 +230,7 @@ jobs:
             end
           '
 
-      - name: Run system extension specs (${{ matrix.suite }})
+      - name: Run system extension specs (all suites, sequential)
         working-directory: powernode-platform/server
         # Each named suite runs a disjoint subset; `misc` sweeps every
         # remaining top-level spec directory, so a NEW directory is covered by
@@ -242,7 +239,17 @@ jobs:
         # `claimed` below. spec/scripts/ci_matrix_spec_coverage_spec.rb fails
         # if a claimed directory is not explicitly run by a named suite.
         run: |
-          case "${{ matrix.suite }}" in
+          # One job, four suites, run one after another. The suites used to be
+          # matrix entries, but every entry publishes 0.0.0.0:5432 and this
+          # runner honours NEITHER of the mechanisms that would stagger them:
+          # a shared concurrency: group deadlocks (run 1675) and max-parallel
+          # is ignored (run 1676 — three entries still died on
+          # "port is already allocated" while the fourth held the port).
+          # Sequencing them inside a single job needs no scheduler feature at
+          # all, so it cannot be silently ignored.
+          overall=0
+          for suite in controllers services models-lib misc; do
+          case "$suite" in
             controllers)
               paths="../extensions/system/server/spec/controllers ../extensions/system/server/spec/requests"
               ;;
@@ -267,7 +274,7 @@ jobs:
               done
               ;;
             *)
-              echo "FATAL: unknown matrix.suite=${{ matrix.suite }}"
+              echo "FATAL: unknown suite=$suite"
               exit 1
               ;;
           esac
@@ -278,10 +285,16 @@ jobs:
             [ -d "$p" ] && existing="$existing $p"
           done
           if [ -z "$existing" ]; then
-            echo "no spec directories present for matrix suite ${{ matrix.suite }} — skipping"
-            exit 0
+            echo "no spec directories present for suite $suite — skipping"
+            continue
           fi
-          bundle exec rspec $existing --format progress
+          echo "::group::rspec $suite"
+          # || overall=1 preserves the old fail-fast: false behaviour — every
+          # suite runs even after one fails, and the job still reports failure.
+          bundle exec rspec $existing --format progress || overall=1
+          echo "::endgroup::"
+          done
+          exit $overall
 
       # Post-job sidecar cleanup. Runs on normal completion AND on most
       # cancellations (act-runner sends SIGTERM with a grace period
