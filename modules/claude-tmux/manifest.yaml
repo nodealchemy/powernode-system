@@ -199,13 +199,23 @@ services:
       Wants=network-online.target
       ConditionPathExists=/usr/bin/claude
       # Bounds genuinely transient faults (network/mTLS, 5xx). MUST live in
-      # [Unit] — systemd silently ignores these in [Service] — and the
-      # interval MUST exceed RestartSec x Burst (30s x 5 = 150s) or the
-      # limit can never trip. The stock 10s/5 defaults are unreachable
-      # against any RestartSec above ~2s, which is how the original unit
-      # looped 717 times instead of holding down.
-      StartLimitIntervalSec=600
-      StartLimitBurst=5
+      # [Unit] — systemd silently ignores these in [Service].
+      #
+      # Burst is 20, not 5, because StartLimitBurst counts STARTS, NOT
+      # FAILURES. This unit has no RemainAfterExit, so the session unit pulls
+      # it afresh on every one of its own starts — and those starts SUCCEED.
+      # At Burst=5 five successful stagings inside the window exhausted the
+      # allowance, systemd answered the next pull with "Start request repeated
+      # too quickly", and Requires= turned that into "Dependency failed" on the
+      # session (observed on dev-cell 2026-08-17). So the budget has to clear
+      # the consumer's own restart budget: the session can emit at most 5
+      # starts per 180s before its own limit holds it down, well under 20.
+      #
+      # It still bounds a real fetch loop: retries are 30s apart, so 20 starts
+      # take 600s, inside the 1800s window. As always the interval must exceed
+      # RestartSec x Burst or the limit could never trip at all.
+      StartLimitIntervalSec=1800
+      StartLimitBurst=20
 
       [Service]
       Type=oneshot

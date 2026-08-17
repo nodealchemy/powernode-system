@@ -274,6 +274,27 @@ PY
   fi
 }
 
+# StartLimitBurst counts STARTS, not FAILURES. The stager has no
+# RemainAfterExit, so the consumer pulls it afresh on every one of its own
+# starts and those starts SUCCEED. If the stager's burst does not clear the
+# consumer's, ordinary restarts exhaust it, systemd answers the next pull with
+# "Start request repeated too quickly", and Requires= surfaces that on the
+# consumer as "Dependency failed" — a self-inflicted outage from a limit that
+# was only meant to bound a fetch loop. Observed on dev-cell 2026-08-17.
+check_burst_headroom() { # <label> <manifest> <stager> <consumer>
+  local label="$1" manifest="$2" stager="$3" consumer="$4" sb cb
+  sb="$(unit_directive "$manifest" "$stager" "[Unit]" "StartLimitBurst")"
+  cb="$(unit_directive "$manifest" "$consumer" "[Unit]" "StartLimitBurst")"
+  if [ "$sb" = "<unset>" ] || [ "$cb" = "<unset>" ]; then
+    fail "$label: stager burst clears consumer burst" "stager='$sb' consumer='$cb'"
+  elif [ "$sb" -gt "$cb" ]; then
+    pass "$label: stager burst clears consumer burst ($sb > $cb)"
+  else
+    fail "$label: stager burst clears consumer burst" \
+         "stager burst $sb must exceed consumer burst $cb — each consumer start consumes one stager start"
+  fi
+}
+
 check_unit() { # <label> <manifest> <service>
   local label="$1" manifest="$2" service="$3"
 
@@ -322,6 +343,9 @@ check_stager "dev-cell/credential"    "$DEV_CELL_MANIFEST"    "credential"
 
 check_gate "claude-tmux/claude" "$CLAUDE_TMUX_MANIFEST" "claude"   "/run/claude-tmux/api_key"
 check_gate "dev-cell/executor"  "$DEV_CELL_MANIFEST"    "executor" "/run/dev-cell/api_key"
+
+check_burst_headroom "claude-tmux" "$CLAUDE_TMUX_MANIFEST" "credential" "claude"
+check_burst_headroom "dev-cell"    "$DEV_CELL_MANIFEST"    "credential" "executor"
 
 check_unit "claude-tmux/claude"      "$CLAUDE_TMUX_MANIFEST" "claude"
 check_unit "claude-tmux/credential"  "$CLAUDE_TMUX_MANIFEST" "credential"
