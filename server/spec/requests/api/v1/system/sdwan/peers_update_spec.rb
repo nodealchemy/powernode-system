@@ -30,7 +30,7 @@ RSpec.describe "Api::V1::System::Sdwan::Peers update", type: :request do
   let!(:network) { create(:sdwan_network, account: account) }
   let!(:peer) { create(:sdwan_peer, account: account, network: network, tags: []) }
 
-  let(:payload) { { peer: { tags: ["edge"] } } }
+  let(:payload) { { peer: { tags: [ "edge" ] } } }
 
   def member_path = "/api/v1/system/sdwan/networks/#{network.id}/peers/#{peer.id}"
 
@@ -68,7 +68,7 @@ RSpec.describe "Api::V1::System::Sdwan::Peers update", type: :request do
     expect(deferred.action_category).to eq("sdwan.peer_update")
     expect(deferred.executor_class).to eq("Sdwan::Executors::UpdatePeer")
     expect(deferred.params["peer_id"]).to eq(peer.id)
-    expect(deferred.params.dig("attributes", "tags")).to eq(["edge"])
+    expect(deferred.params.dig("attributes", "tags")).to eq([ "edge" ])
   end
 
   # gate! never calls on_proceed on its :pending branch, so the executor is the
@@ -78,7 +78,7 @@ RSpec.describe "Api::V1::System::Sdwan::Peers update", type: :request do
 
     approve_latest_deferred!
 
-    expect(peer.reload.tags).to eq(["edge"]), "approved update left the peer unchanged"
+    expect(peer.reload.tags).to eq([ "edge" ]), "approved update left the peer unchanged"
   end
 
   it "updates inline and renders the row when the policy auto-approves" do
@@ -87,7 +87,7 @@ RSpec.describe "Api::V1::System::Sdwan::Peers update", type: :request do
     patch_update
 
     expect(response).to have_http_status(:ok)
-    expect(peer.reload.tags).to eq(["edge"]), "answered ok over an unchanged peer"
+    expect(peer.reload.tags).to eq([ "edge" ]), "answered ok over an unchanged peer"
     # 200-with-the-row is also what the UNGATED controller answered, so without
     # this the example cannot tell fixed from unfixed.
     expect(::Ai::DeferredOperation.last&.executor_class).to eq("Sdwan::Executors::UpdatePeer"),

@@ -86,5 +86,4 @@ RSpec.describe "Cross-domain stigmergic coordination" do
       expect(capacity_emit[:strength]).to be > 0
     end
   end
-
 end

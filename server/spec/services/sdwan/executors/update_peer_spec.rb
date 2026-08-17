@@ -42,10 +42,10 @@ RSpec.describe Sdwan::Executors::UpdatePeer do
   end
 
   it "applies an in-account update" do
-    error = run({ peer_id: peer.id, attributes: { tags: ["edge"] } })
+    error = run({ peer_id: peer.id, attributes: { tags: [ "edge" ] } })
 
     expect(error).to be_nil
-    expect(peer.reload.tags).to eq(["edge"])
+    expect(peer.reload.tags).to eq([ "edge" ])
   end
 
   # The anchor must not block a legitimate re-parent WITHIN the account.
@@ -79,12 +79,12 @@ RSpec.describe Sdwan::Executors::UpdatePeer do
   it "cannot move the peer to another account via a mass-assigned account_id" do
     other = create(:account)
 
-    error = run({ peer_id: peer.id, attributes: { tags: ["edge"], account_id: other.id } })
+    error = run({ peer_id: peer.id, attributes: { tags: [ "edge" ], account_id: other.id } })
 
     expect(error).to be_nil
     expect(peer.reload.account_id).to eq(account.id),
                                       "attrs failed to strip account_id — the peer was moved"
-    expect(peer.tags).to eq(["edge"])
+    expect(peer.tags).to eq([ "edge" ])
   end
 
   # IMP-3a563becb7d7 — #summarize is the approval/notification body

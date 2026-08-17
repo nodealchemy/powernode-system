@@ -448,6 +448,5 @@ RSpec.describe "Api::V1::System::Autonomy", type: :request do
         expect(created.approval_chain_id).to be_nil
       end
     end
-
   end
 end

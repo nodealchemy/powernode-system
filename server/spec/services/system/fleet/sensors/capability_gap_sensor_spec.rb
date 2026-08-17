@@ -89,15 +89,15 @@ RSpec.describe System::Fleet::Sensors::CapabilityGapSensor do
     create(:system_node_module,
            account: account,
            name: "self-referential",
-           capabilities: ["runtime.go"],
-           manifest_yaml: { "dependencies" => { "requires" => ["capability:runtime.go"] } }.to_yaml)
+           capabilities: [ "runtime.go" ],
+           manifest_yaml: { "dependencies" => { "requires" => [ "capability:runtime.go" ] } }.to_yaml)
 
     expect(sensor.sense.size).to eq(1)
   end
 
   it "is scoped to the account and never sees another account's providers" do
     module_requiring("capability:runtime.go")
-    create(:system_node_module, account: create(:account), capabilities: ["runtime.go"])
+    create(:system_node_module, account: create(:account), capabilities: [ "runtime.go" ])
 
     expect(sensor.sense.size).to eq(1)
   end

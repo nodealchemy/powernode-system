@@ -42,7 +42,7 @@ RSpec.describe "OVN container-fabric cross-seam", type: :integration do
       "State" => { "Status" => "running" },
       "Config" => {
         "Image" => "nginx:latest",
-        "Cmd" => ["nginx"],
+        "Cmd" => [ "nginx" ],
         "Labels" => { Sdwan::ContainerSwitchPortAllocator::SWITCH_LABEL => "ls-fabric" }
       },
       "RestartCount" => 0

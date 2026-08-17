@@ -1295,5 +1295,4 @@ RSpec.describe System::NodeInstance, "pool methods (slice 7)", type: :model do
       }.to raise_error(ActiveRecord::CheckViolation, /chk_node_instances_pool_state/)
     end
   end
-
 end

@@ -112,8 +112,8 @@ RSpec.describe "module build core-source provenance" do
         #{block}
       SH
 
-      out = IO.popen({ "PATH" => "/usr/bin:/bin" }, ["bash", "-c", harness],
-                     err: [:child, :out], unsetenv_others: true, &:read)
+      out = IO.popen({ "PATH" => "/usr/bin:/bin" }, [ "bash", "-c", harness ],
+                     err: [ :child, :out ], unsetenv_others: true, &:read)
       status = $?
 
       prov_path = File.join(root, "parent-provenance.env")
@@ -124,7 +124,7 @@ RSpec.describe "module build core-source provenance" do
             h[k] = v if k
           end
         end
-      [status, parsed, out, expected_sha]
+      [ status, parsed, out, expected_sha ]
     end
 
     it "records the commit the parent clone actually landed on" do
@@ -240,8 +240,8 @@ RSpec.describe "module build core-source provenance" do
         block = extract_block(stage15_script, "stale-provenance clear")
                   .gsub("/tmp/parent", File.join(root, "parent"))
         out = IO.popen({ "PATH" => "/usr/bin:/bin" },
-                       ["bash", "-c", "set -euo pipefail\n#{block}"],
-                       err: [:child, :out], unsetenv_others: true, &:read)
+                       [ "bash", "-c", "set -euo pipefail\n#{block}" ],
+                       err: [ :child, :out ], unsetenv_others: true, &:read)
 
         expect($?).to be_success, out
         expect(File).not_to exist(stale),
@@ -283,9 +283,9 @@ RSpec.describe "module build core-source provenance" do
         for a in "${ORAS_PUSH_ARGS[@]+"${ORAS_PUSH_ARGS[@]}"}"; do printf '%s\\n' "$a"; done
       SH
 
-      out = IO.popen({ "PATH" => "/usr/bin:/bin" }, ["bash", "-c", harness],
-                     err: [:child, :out], unsetenv_others: true, &:read)
-      [$?, out.lines.map(&:chomp)]
+      out = IO.popen({ "PATH" => "/usr/bin:/bin" }, [ "bash", "-c", harness ],
+                     err: [ :child, :out ], unsetenv_others: true, &:read)
+      [ $?, out.lines.map(&:chomp) ]
     end
 
     it "stamps the core sha and remote as OCI annotations on the pushed artifact" do
@@ -411,9 +411,9 @@ RSpec.describe "module build core-source provenance" do
         printf '%s\\n' "$payload"
       SH
 
-      out = IO.popen({ "PATH" => "/usr/bin:/bin" }, ["bash", "-c", harness],
-                     err: [:child, :out], unsetenv_others: true, &:read)
-      [$?, out, (JSON.parse(out.lines.map(&:strip).reject(&:empty?).last) rescue nil)]
+      out = IO.popen({ "PATH" => "/usr/bin:/bin" }, [ "bash", "-c", harness ],
+                     err: [ :child, :out ], unsetenv_others: true, &:read)
+      [ $?, out, (JSON.parse(out.lines.map(&:strip).reject(&:empty?).last) rescue nil) ]
     end
 
     it "carries the core sha and remote into artifacts.erofs, distinct from built_from_sha" do
@@ -472,7 +472,7 @@ RSpec.describe "module build core-source provenance" do
         baked   = File.join(root, "baked-scripts")
         golden  = File.join(root, "golden-buildenv")
         jobroot = File.join(root, "jobs")
-        [stubs, baked, golden, jobroot].each { |d| FileUtils.mkdir_p(d) }
+        [ stubs, baked, golden, jobroot ].each { |d| FileUtils.mkdir_p(d) }
 
         %w[build-one-module.sh push.sh].each do |f|
           write_stub(baked, f, "#!/bin/sh\nexit 0\n")
@@ -536,12 +536,12 @@ RSpec.describe "module build core-source provenance" do
           "ORAS_REGISTRY"                => "registry.invalid"
         }
 
-        out = IO.popen(env, ["bash", forge_script],
-                       err: [:child, :out], unsetenv_others: true, &:read)
+        out = IO.popen(env, [ "bash", forge_script ],
+                       err: [ :child, :out ], unsetenv_others: true, &:read)
         status = $?
         json_line = out.lines.map(&:strip).reject(&:empty?).last
         parsed = (JSON.parse(json_line) rescue nil)
-        [status, parsed, out]
+        [ status, parsed, out ]
       end
     end
 

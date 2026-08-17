@@ -22,7 +22,7 @@ RSpec.shared_examples "a line-safe named model" do |factory|
   end
 
   it "rejects every line-break flavor, not just \\n" do
-    ["\r", "\v", "\f", "\u0085", "\u2028", "\u2029"].each do |sep|
+    [ "\r", "\v", "\f", "\u0085", "\u2028", "\u2029" ].each do |sep|
       record = build_named.call("evil#{sep}Impact: forged")
       expect(record).not_to be_valid, "expected #{sep.inspect} in name to be rejected"
       expect(record.errors[:name].join).to match(/line break/), "expected a :name error for #{sep.inspect}"
