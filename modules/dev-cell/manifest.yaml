@@ -922,28 +922,77 @@ services:
       [Install]
       WantedBy=multi-user.target
 
+  # Mirrors claude-tmux's split for the same systemd reason: this unit used
+  # to carry ExecStartPre=+claude-tmux-fetch-credential.sh, and a pre-hook is
+  # a CONTROL process, so no Restart* directive could stop the "no credential
+  # configured" exit from restarting it forever. Fetching moves into its own
+  # oneshot whose exit IS a main-process exit, and the supervisor below is
+  # gated on the staged file instead.
+  - name: credential
+    dependencies:
+      - { service: bootstrap, kind: start_before }
+    unit_body: |
+      [Unit]
+      Description=Dev-cell: stage the executor's Anthropic credential (root, mTLS)
+      Documentation=https://github.com/nodealchemy/powernode-platform
+      After=network-online.target
+      ConditionPathExists=/persist/dev-cell/state/provisioned
+      # Both come from the claude-tmux module — skip cleanly rather than fail
+      # if it isn't co-assigned on this instance's template.
+      ConditionPathExists=/usr/bin/claude
+      ConditionPathExists=/usr/local/bin/claude-tmux-fetch-credential.sh
+      # Bounds transient fetch faults. MUST be in [Unit], and the interval
+      # MUST exceed RestartSec x Burst (30s x 5 = 150s) or it can never trip.
+      StartLimitIntervalSec=1800
+      StartLimitBurst=5
+
+      [Service]
+      Type=oneshot
+      # Reuses dev-cell-bootstrap.service's already-root-owned /run/dev-cell
+      # rather than declaring a RuntimeDirectory=, keeping every dev-cell
+      # secret — Gitea deploy key, node mTLS cert/key, Anthropic API key — in
+      # ONE tmpfs dir with the same boot-only lifetime and root-only
+      # confinement. CLAUDE_TMUX_USER=root (overriding the script's pnadmin
+      # default) keeps the staged key root-owned; the supervisor below reads
+      # and deletes it exactly once.
+      Environment=RUNTIME_DIRECTORY=/run/dev-cell
+      Environment=CLAUDE_TMUX_USER=root
+      ExecStart=/usr/local/bin/claude-tmux-fetch-credential.sh
+      # 78 (EX_CONFIG) = no credential configured for this instance: the
+      # deliberate state for a cell that must not idle-burn API credits.
+      # Completes successfully having staged nothing, so the supervisor's
+      # ConditionPathExists skips it instead of crash-looping. Every other
+      # failure keeps exit 1 and is retried.
+      SuccessExitStatus=78
+      Restart=on-failure
+      RestartSec=30s
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+
   - name: executor
     dependencies:
       - { service: provision, kind: start_before }
       - { service: mcp-proxy, kind: start_before }
+      - { service: credential, kind: start_before }
     unit_body: |
       [Unit]
       Description=Dev-cell: autonomous campaign dev-loop ROOT supervisor (sandboxes agent work as pnagent)
       Documentation=https://github.com/nodealchemy/powernode-platform
       After=network-online.target
       ConditionPathExists=/persist/dev-cell/state/provisioned
-      # The headless `claude` CLI this unit drives (via `runuser -u pnagent`),
-      # and the credential-fetch script it reuses for its own ANTHROPIC_API_KEY,
-      # both come from the claude-tmux module — fail closed (skip) rather than
-      # crash-loop if it isn't co-assigned on this instance's template.
+      # The headless `claude` CLI this unit drives (via `runuser -u pnagent`)
+      # comes from the claude-tmux module — skip rather than crash-loop if it
+      # isn't co-assigned on this instance's template.
       ConditionPathExists=/usr/bin/claude
-      ConditionPathExists=/usr/local/bin/claude-tmux-fetch-credential.sh
-      # Hold-down for PERSISTENT faults other than the "no credential
-      # configured" case (which suppresses its own restart via
-      # RestartPreventExitStatus below). MUST be in [Unit] — systemd
-      # silently ignores these in [Service]. Must exceed RestartSec x
-      # Burst (30s x 5 = 150s) or the limit can never trip and the unit
-      # loops forever, which is exactly what the stock 10s/5 defaults did.
+      # The gate: no credential staged => SKIPPED, not failed. No restart, no
+      # failed state, no audit record. Replaces the old ExecStartPre, whose
+      # exit code could not suppress a restart from a control process.
+      ConditionPathExists=/run/dev-cell/api_key
+      # Bounds a PERSISTENT supervisor fault. Interval must exceed
+      # RestartSec x Burst (30s x 5 = 150s); the stock 10s/5 cannot trip.
       StartLimitIntervalSec=1800
       StartLimitBurst=5
 
@@ -962,36 +1011,25 @@ services:
       Environment=MAX_CONSECUTIVE_FAILURES=5
       Environment=DEV_CELL_MCP_PROXY_BIND=127.0.0.1
       Environment=DEV_CELL_MCP_PROXY_PORT=18443
-      # Deliberately NOT declaring this unit's own RuntimeDirectory=: the
-      # ExecStartPre below reuses claude-tmux-fetch-credential.sh as-is, and
-      # pointing it at dev-cell-bootstrap.service's already-root-owned
-      # /run/dev-cell (via this override of the env var that script already
-      # reads) keeps every dev-cell secret — the Gitea SSH deploy key, the
-      # node's own mTLS client cert/key, and the Anthropic API key — in the ONE
-      # tmpfs runtime directory, all with the same lifetime (this boot only)
-      # AND the same root-only confinement.
+      # No RuntimeDirectory= of its own: the credential unit above stages the
+      # key into dev-cell-bootstrap.service's already-root-owned /run/dev-cell,
+      # keeping every dev-cell secret — the Gitea SSH deploy key, the node's
+      # own mTLS client cert/key, and the Anthropic API key — in the ONE tmpfs
+      # runtime directory, all with the same lifetime (this boot only) AND the
+      # same root-only confinement. This unit's own process (root)
+      # reads-then-deletes /run/dev-cell/api_key exactly once at start (see
+      # dev-cell-executor.sh), then hands ANTHROPIC_API_KEY down to pnagent's
+      # `claude` invocations via `runuser --preserve-environment` — never a
+      # pnagent-readable file, and never a systemd argv.
       Environment=RUNTIME_DIRECTORY=/run/dev-cell
 
-      # Runs as root (the "+" prefix) — only root can read the on-node agent's
-      # mTLS private key. CLAUDE_TMUX_USER=root (overriding that script's own
-      # pnadmin default) keeps /run/dev-cell/api_key root-owned too — this
-      # unit's own process (root) reads-then-deletes it exactly once at start
-      # (see dev-cell-executor.sh), then hands ANTHROPIC_API_KEY down to
-      # pnagent's `claude` invocations via `runuser --preserve-environment`,
-      # never a pnagent-readable file. Never a systemd/tmux argv either,
-      # mirroring claude-tmux-start.sh's own handling of the same secret.
-      Environment=CLAUDE_TMUX_USER=root
-      ExecStartPre=+/usr/local/bin/claude-tmux-fetch-credential.sh
-
       ExecStart=/usr/local/bin/dev-cell-executor.sh
+      # Governs a genuine supervisor fault only — "no credential configured"
+      # never reaches here, the ConditionPathExists gate above answers it.
+      # Deliberately NO RestartPreventExitStatus=: it was inert against the
+      # old pre-hook (a control process), and there is no pre-hook now.
       Restart=on-failure
       RestartSec=30s
-      # Mirrors claude-tmux/claude: exit 78 (EX_CONFIG) from the shared
-      # credential fetch means no credential is configured for this
-      # instance — a deliberate state (an uncredentialed dev-cell cannot
-      # idle-burn API credits), not a fault a restart can clear. Fail once
-      # and stay put; an operator sets a credential, then starts the unit.
-      RestartPreventExitStatus=78
       StandardOutput=journal
       StandardError=journal
 
