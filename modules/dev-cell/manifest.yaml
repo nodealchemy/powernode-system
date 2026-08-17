@@ -941,10 +941,19 @@ services:
       # if it isn't co-assigned on this instance's template.
       ConditionPathExists=/usr/bin/claude
       ConditionPathExists=/usr/local/bin/claude-tmux-fetch-credential.sh
-      # Bounds transient fetch faults. MUST be in [Unit], and the interval
-      # MUST exceed RestartSec x Burst (30s x 5 = 150s) or it can never trip.
+      # Bounds transient fetch faults. MUST be in [Unit].
+      #
+      # Burst is 20, not 5, because StartLimitBurst counts STARTS, NOT
+      # FAILURES: with no RemainAfterExit the executor pulls this unit afresh
+      # on every one of its own starts, and those starts SUCCEED. At Burst=5
+      # successful stagings exhausted the allowance and Requires= surfaced it
+      # on the consumer as "Dependency failed" (observed on dev-cell
+      # 2026-08-17). The budget must clear the consumer's restart budget — the
+      # executor emits at most 5 starts per 1800s — while still bounding a real
+      # fetch loop (20 retries x 30s = 600s, inside the window). The interval
+      # must exceed RestartSec x Burst or the limit could never trip.
       StartLimitIntervalSec=1800
-      StartLimitBurst=5
+      StartLimitBurst=20
 
       [Service]
       Type=oneshot
