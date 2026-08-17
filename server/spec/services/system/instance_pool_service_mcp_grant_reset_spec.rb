@@ -41,7 +41,7 @@ RSpec.describe System::InstancePoolService, "reuse-without-reset MCP grant reset
   let!(:peer) { create(:system_node_instance_peer, node_instance: instance, account: account) }
 
   it "clears a widened MCP grant on release so it does not survive into the next acquirer" do
-    peer.grant_mcp_tools!(["system_*", "platform.*"], mode: :replace)
+    peer.grant_mcp_tools!([ "system_*", "platform.*" ], mode: :replace)
     expect(peer.reload.granted_mcp_tools).to contain_exactly("system_*", "platform.*")
 
     result = described_class.release!(instance: instance, pool: pool)
@@ -58,17 +58,17 @@ RSpec.describe System::InstancePoolService, "reuse-without-reset MCP grant reset
   end
 
   it "leaves granted_peer_skills untouched (a distinct grant, out of this fix's scope)" do
-    peer.grant_peer_skills!(["some-peer-skill"], mode: :replace)
-    peer.grant_mcp_tools!(["system_*"], mode: :replace)
+    peer.grant_peer_skills!([ "some-peer-skill" ], mode: :replace)
+    peer.grant_mcp_tools!([ "system_*" ], mode: :replace)
 
     described_class.release!(instance: instance, pool: pool)
 
-    expect(peer.reload.granted_peer_skills).to eq(["some-peer-skill"])
+    expect(peer.reload.granted_peer_skills).to eq([ "some-peer-skill" ])
   end
 
   it "still reuses the member when the grant reset raises (best-effort, non-blocking), " \
      "but is LOUD about it -- error log + a high-severity FleetEvent, never silent" do
-    peer.grant_mcp_tools!(["system_*"], mode: :replace)
+    peer.grant_mcp_tools!([ "system_*" ], mode: :replace)
     allow_any_instance_of(System::NodeInstancePeer).to receive(:grant_mcp_tools!).and_raise(StandardError, "boom")
     expect(Rails.logger).to receive(:error).with(/granted_mcp_tools reset FAILED/)
 
@@ -79,7 +79,7 @@ RSpec.describe System::InstancePoolService, "reuse-without-reset MCP grant reset
     # Known residual: a failed reset means the member returns to the pool
     # still carrying the prior acquirer's grant -- exactly why this must
     # never be silent. The FleetEvent is the operator's signal to intervene.
-    expect(peer.reload.granted_mcp_tools).to eq(["system_*"])
+    expect(peer.reload.granted_mcp_tools).to eq([ "system_*" ])
 
     event = System::FleetEvent.where(account: account, kind: "system.pool.mcp_grant_reset_failed").last
     expect(event).to be_present

@@ -61,7 +61,6 @@ module Sdwan
 
         "Update SDWAN port mapping #{mapping.name} on #{mapping.network.name}"
       end
-
     end
   end
 end

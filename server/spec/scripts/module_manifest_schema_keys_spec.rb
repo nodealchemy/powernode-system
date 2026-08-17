@@ -40,7 +40,7 @@ RSpec.describe "module manifest build-key schema agreement" do
       next unless build.is_a?(Hash)
 
       extra = build.keys - declared_build_keys
-      [File.basename(File.dirname(path)), extra] if extra.any?
+      [ File.basename(File.dirname(path)), extra ] if extra.any?
     end
     expect(offenders).to be_empty,
       "shipped manifests declare build keys ajv will reject: #{offenders.inspect}"

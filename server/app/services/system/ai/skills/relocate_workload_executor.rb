@@ -440,10 +440,10 @@ module System
           message += "; provisioning-leg failures: #{summarize_entries(leg_failures)}" if leg_failures.any?
 
           message += if reclaim[:success]
-                       "; refused target stack reclaimed"
-                     else
-                       "; refused target stack reclaim INCOMPLETE: #{summarize_entries(reclaim_errors)}"
-                     end
+            "; refused target stack reclaimed"
+          else
+            "; refused target stack reclaim INCOMPLETE: #{summarize_entries(reclaim_errors)}"
+          end
 
           failure(message)
         end

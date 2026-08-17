@@ -75,7 +75,7 @@ RSpec.describe Sdwan::WgConfigRenderer do
     def peer_sections(text)
       # Everything before the first [Peer] is the [Interface] preamble.
       preamble, *sections = text.split("[Peer]")
-      [preamble, sections]
+      [ preamble, sections ]
     end
 
     it "emits each hub's own active public key inside its [Peer] section" do

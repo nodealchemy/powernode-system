@@ -177,7 +177,7 @@ RSpec.describe "smoke_test_k3s_federation tier gate vs. documentation (IMP-c7510
     table = seed_source[/^# Tier semantics:\n((?:#[ \t]+\S.*\n)+)/, 1].to_s
     rows = table.lines.filter_map do |line|
       match = line.match(/^#\s+(?<tiers>[^:]+):\s*(?<description>.+)$/)
-      match && [match[:tiers], match[:description]]
+      match && [ match[:tiers], match[:description] ]
     end
 
     expect(rows).not_to be_empty, "could not parse the header 'Tier semantics:' table"

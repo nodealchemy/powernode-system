@@ -35,7 +35,7 @@ RSpec.describe System::Fleet::Sensors::SdwanServiceHealthSensor do
 
   let(:vip) do
     create(:sdwan_virtual_ip, account: account, network: network,
-                              state: "active", holder_peer_ids: [holder.id])
+                              state: "active", holder_peer_ids: [ holder.id ])
   end
 
   let(:vip_address) { vip.cidr.to_s.split("/").first }

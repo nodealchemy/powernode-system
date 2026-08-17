@@ -3,6 +3,7 @@
 package mount
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -72,6 +73,23 @@ func TestSwapBeneath_Integration(t *testing.T) {
 
 	fdA, err := ComposeOverlayFD([]string{genA, base}, "", "")
 	if err != nil {
+		// euid 0 is NOT the same as holding CAP_SYS_ADMIN. Inside an
+		// unprivileged container the process is root and the kernel is new
+		// enough, so both guards above pass — but the capability was dropped,
+		// and fsopen("overlay") returns EPERM. That is exactly what happens on
+		// the go-agent CI job (ghcr.io/catthehacker/ubuntu:act-24.04), where
+		// this was the ONLY failing package while every sibling passed:
+		//   beneath_test.go:75: compose union A: fsopen overlay: operation not permitted
+		// It held the whole go-agent gate red, which trains readers to ignore
+		// that job — so a real agent regression would land unseen.
+		//
+		// Skip ONLY on the permission errors, never on error generally: a
+		// blanket skip would silently swallow a genuine overlay regression and
+		// recreate the same blindness one layer down.
+		if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+			t.Skipf("requires CAP_SYS_ADMIN for fsopen(overlay), which euid 0 alone does not grant "+
+				"(unprivileged container?): %v", err)
+		}
 		t.Fatalf("compose union A: %v", err)
 	}
 	defer unix.Close(fdA)

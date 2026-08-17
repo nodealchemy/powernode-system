@@ -1391,7 +1391,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
                    "Configuration file 'nodes/dna/qemu-server/9009.conf' does not exist")
       allow(client).to receive(:get)
         .with("/api2/json/cluster/resources", { "type" => "vm" })
-        .and_return([{ "type" => "qemu", "vmid" => 9009, "node" => "rna", "status" => "running" }])
+        .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "rna", "status" => "running" } ])
 
       result = provider.terminate_instance("dna/qemu/9009")
 
@@ -1426,8 +1426,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
                    "Configuration file 'nodes/dna/qemu-server/9009.conf' does not exist")
       allow(client).to receive(:get)
         .with("/api2/json/cluster/resources", { "type" => "vm" })
-        .and_return([{ "type" => "qemu", "vmid" => 9009, "node" => "rna",
-                       "name" => "someone-elses-vm", "status" => "running" }])
+        .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "rna",
+                       "name" => "someone-elses-vm", "status" => "running" } ])
 
       result = provider.terminate_instance("dna/qemu/9009", expected_name: "dryrun-web-1")
 
@@ -1444,8 +1444,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
                    "Configuration file 'nodes/dna/qemu-server/9009.conf' does not exist")
       allow(client).to receive(:get)
         .with("/api2/json/cluster/resources", { "type" => "vm" })
-        .and_return([{ "type" => "qemu", "vmid" => 9009, "node" => "rna",
-                       "name" => "dryrun-web-1", "status" => "running" }])
+        .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "rna",
+                       "name" => "dryrun-web-1", "status" => "running" } ])
 
       result = provider.terminate_instance("dna/qemu/9009", expected_name: "dryrun-web-1")
 
@@ -1463,7 +1463,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
         .and_raise(System::Providers::Proxmox::Client::NotFoundError, "404")
       allow(client).to receive(:get)
         .with("/api2/json/cluster/resources", { "type" => "vm" })
-        .and_return([{ "type" => "qemu", "vmid" => 9009, "node" => "rna", "status" => "running" }])
+        .and_return([ { "type" => "qemu", "vmid" => 9009, "node" => "rna", "status" => "running" } ])
 
       result = provider.terminate_instance("dna/qemu/9009", expected_name: "dryrun-web-1")
 
