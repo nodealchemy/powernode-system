@@ -60,6 +60,39 @@ jobs:
     # matrix entry pays the bundle-install + db-setup cost independently but
     # they run concurrently on separate runners. Target <10 min per suite.
     runs-on: ubuntu-24.04
+    # Serialize every job that publishes postgres/redis to a FIXED host port.
+    #
+    # The addressing design below (host ports + 172.17.0.1) is correct and its
+    # alternatives are already ruled out in the comment that follows — but it
+    # assumes ONE runner, as the ci-hygiene job says outright ("true for
+    # single-runner act-runner deployments"). The fna host now runs THREE.
+    # This matrix alone fans out four entries that each want 0.0.0.0:5432, so
+    # two or more collide on every run and die before a single spec executes:
+    #
+    #   failed to start container: ... Bind for 0.0.0.0:5432 failed:
+    #   port is already allocated
+    #
+    # Measured on run 1673 (develop 1233cb9e): rspec (misc/models-lib/services)
+    # all died on 5432 and provider-specs + worker-specs on 6379 — five of the
+    # seven red jobs, each with a ~1.5 KB log containing no rspec output at all.
+    # So the gate has not been failing on code; it has not been running.
+    #
+    # A SHARED group across rspec + provider-specs + worker-specs (not one per
+    # job) is what actually fixes it — the collision is between those jobs, not
+    # within any one of them. cancel-in-progress is false so a queued suite
+    # waits rather than being discarded.
+    #
+    # Chosen over per-job distinct ports deliberately: parameterising
+    # services.*.ports needs `${{ }}` expansion inside the services block, which
+    # cannot be verified without a live act runner and fails UNSAFE if this
+    # runner does not support it (the literal string becomes the port and every
+    # service dies). An unsupported `concurrency:` key is merely ignored, which
+    # leaves today's behaviour untouched. Correctness of the gate beats
+    # parallelism here; restore parallelism later via distinct ports once
+    # expression support is confirmed, or via the runner-level fix (task #76).
+    concurrency:
+      group: ci-fixed-host-ports-${{ github.ref }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -270,6 +303,11 @@ jobs:
   provider-specs:
     needs: ci-hygiene
     runs-on: ubuntu-24.04
+    # Same SHARED group as the rspec matrix — this job publishes the same fixed
+    # host ports, so it must serialize against them, not just against itself.
+    concurrency:
+      group: ci-fixed-host-ports-${{ github.ref }}
+      cancel-in-progress: false
     # Same postgres/redis sidecars + docker-bridge-gateway addressing as the
     # `rspec` job above — see the long comment there for why localhost and
     # service-name DNS both fail on this act runner.
@@ -549,6 +587,11 @@ jobs:
   worker-specs:
     needs: ci-hygiene
     runs-on: ubuntu-24.04
+    # Same SHARED group as the rspec matrix — this job publishes redis on the
+    # same fixed host port, so it must serialize against those jobs too.
+    concurrency:
+      group: ci-fixed-host-ports-${{ github.ref }}
+      cancel-in-progress: false
     # Same docker-bridge-gateway addressing as the rspec matrix above —
     # see the long comment up there for why localhost and service-name
     # DNS both don't work on this Gitea Actions installation.
