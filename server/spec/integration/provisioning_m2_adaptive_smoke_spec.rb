@@ -40,7 +40,7 @@ RSpec.describe "AI-driven provisioning M2 adaptive evolution smoke", type: :inte
   include PermissionTestHelpers
 
   let(:account)   { create(:account) }
-  let(:admin)     { user_with_permissions("ai.workflows.create", "ai.workflows.execute", account: account) }
+  let(:admin)     { user_with_permissions("ai.loops.create", "ai.loops.execute", account: account) }
   let(:provider)  { create(:ai_provider, account: account, is_active: true) }
   let!(:fleet_agent) do
     create(:ai_agent,

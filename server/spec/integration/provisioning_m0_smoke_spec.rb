@@ -52,7 +52,7 @@ RSpec.describe "AI-driven provisioning M0 end-to-end smoke", type: :integration 
   include PermissionTestHelpers
 
   let(:account)        { create(:account) }
-  let(:admin)          { user_with_permissions("ai.workflows.create", "ai.workflows.execute", account: account) }
+  let(:admin)          { user_with_permissions("ai.loops.create", "ai.loops.execute", account: account) }
   let(:agent)          { create(:ai_agent, account: account) }
   let(:architecture)   { create(:system_node_architecture, :with_checksums) }
   let(:platform)       { create(:system_node_platform, account: account, node_architecture: architecture) }
