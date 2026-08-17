@@ -114,10 +114,42 @@ export ANTHROPIC_API_KEY="$(cat '/run/claude-tmux/api_key')"; rm -f '/run/claude
 key value itself never appears in any process's argv, and the runtime file
 is deleted immediately after the one read that needs it.
 
+## Failure taxonomy: "no credential" is a state, not a fault
+
+`claude-tmux-fetch-credential.sh` distinguishes a *deliberately* uncredentialed
+instance from a broken one, because only the second is worth retrying:
+
+| Condition | Exit | Unit behaviour |
+|---|---|---|
+| Credential staged | `0` | session starts |
+| **HTTP 404 — no credential configured** | **`78`** (`EX_CONFIG`) | **fails once and stays put** (`RestartPreventExitStatus=78`) |
+| Unenrolled, unresolvable platform URL, network/mTLS error, non-200, malformed response | `1` | retried by `Restart=on-failure`, then held down by the start limit |
+
+An instance with no credential is the **intended steady state** — the
+`dev_cell_account_provider_credential_fallback` SiteSetting defaults OFF (inc21,
+2026-07-10) precisely so an idle cell cannot burn API credits. Before this split
+that designed state exited `1` like any transient fault, so `Restart=on-failure`
+turned it into an unbounded crash loop: one full mTLS handshake against the
+control plane every `RestartSec` forever (~17k/day per idle cell), with the
+journal and audit-log noise masking real failures. The stock start limit could
+not stop it either — systemd's defaults (`10s`/`5`) are unreachable against
+`RestartSec=5s`, since only ~2 starts fit in a 10s window. Both units now
+declare a reachable `StartLimitIntervalSec`/`StartLimitBurst` **in `[Unit]`**
+(systemd silently ignores them in `[Service]`).
+
+So on a healthy uncredentialed cell you should expect **one** `res=failed` audit
+record per unit per boot, not a stream. A stream means a genuine fault — read
+the journal line, it names which branch fired.
+
+The same taxonomy governs `dev-cell`'s `executor` unit, which reuses this
+script for its own `ANTHROPIC_API_KEY`.
+
 ## Operator runbook
 
 Set the credential for an instance (one-time; the module's `ExecStartPre`
-will 404-and-refuse-to-start until this exists):
+exits `78` and the unit stays down until this exists — after setting it,
+`systemctl start` the unit or reboot, since a suppressed restart is not
+re-armed automatically):
 
 ```javascript
 // POST /api/v1/system/nodes/:node_id/node_instances/:id/claude_code_credential
