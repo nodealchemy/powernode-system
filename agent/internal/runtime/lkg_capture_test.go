@@ -473,3 +473,131 @@ func TestLKGCapturer_IncompleteBoot_SkipsCapture(t *testing.T) {
 func mountSaveStateBad(path string) error {
 	return os.WriteFile(path, []byte(`{"attached_modules":[{"id":"hub-backend","digest":"sha256:B1-bad-cold-boot","priority":100}]}`), 0o644)
 }
+
+// ── Composed-set gate selection (2026-08-17) ────────────────────────────────
+//
+// The regression these cover: LKGCapturer probed https://127.0.0.1/up on EVERY
+// node because service.go defaulted DefaultAppHealthURL before handing it over.
+// On anything that is not a hub, nothing listens on :443, so the gate could
+// never be satisfied and no LKG was ever captured — measured on dev-cell, 47
+// connection-refused probes in 11 minutes and no assignment-lkg.json at all.
+// BootConfirmer had already been given this gate; the capturer had not.
+
+// The bug, stated as the property that was violated: a node composing no web
+// tier must get a gate it can actually pass.
+func TestLKGCapturer_ResolveGate_NonWebTierComposedSetSelectsTheLocalGate(t *testing.T) {
+	// A real dev-cell composed set, trimmed — no hub-backend, no traefik.
+	bc := &BootComposedBreadcrumb{Modules: []LKGModule{
+		{ID: "m1", Name: "runtime-ruby"},
+		{ID: "m2", Name: "claude-tmux"},
+		{ID: "m3", Name: "dev-cell-docker"},
+	}}
+	c := &LKGCapturer{} // nothing configured a URL — this is the fleet-wide case
+
+	prober, _, _ := c.resolveGate(bc)
+	if _, ok := prober.(*systemdReadyProber); !ok {
+		t.Fatalf("prober = %T, want *systemdReadyProber. A node that serves no web tier cannot "+
+			"answer a loopback /up, so an HTTP gate here is not strict, it is inert — it denies "+
+			"the node an LKG entirely rather than protecting the one it has", prober)
+	}
+}
+
+// The case the old service.go note was protecting, which must NOT regress: a
+// node that DOES compose the web tier keeps the strong /up gate, with no
+// configuration and nothing server-side to deliver (a self-hosted control plane
+// cannot be told anything pre-pivot).
+func TestLKGCapturer_ResolveGate_WebTierInComposedSetKeepsTheHTTPGate(t *testing.T) {
+	bc := &BootComposedBreadcrumb{Modules: []LKGModule{
+		{ID: "m1", Name: "reverse-proxy-traefik"},
+		{ID: "m2", Name: "runtime-ruby"},
+		{ID: "m3", Name: "powernode-hub-backend"},
+	}}
+	c := &LKGCapturer{} // no URL configured anywhere
+
+	prober, _, _ := c.resolveGate(bc)
+	hp, ok := prober.(*HTTPHealthProber)
+	if !ok {
+		t.Fatalf("prober = %T, want *HTTPHealthProber — a node composing the platform web tier "+
+			"can answer /up, and freezing a bad set there is the risk worth gating hardest", prober)
+	}
+	if hp.URL != defaultAppHealthURL {
+		t.Fatalf("URL = %q, want %q", hp.URL, defaultAppHealthURL)
+	}
+}
+
+// BOTH module names are required, and this is not a near-miss. The
+// powernode-hub-worker template composes hub-backend with no reverse proxy, so
+// keying on the app alone would hand every worker-pool node a loopback probe
+// with nothing terminating :443 — reintroducing the very bug this fixes on a
+// different node class.
+func TestLKGCapturer_ResolveGate_WebTierRequiresBothAppAndProxy(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		modules []LKGModule
+	}{
+		{"app without proxy (worker pool)", []LKGModule{{ID: "m1", Name: "powernode-hub-backend"}}},
+		{"proxy without app (frontend)", []LKGModule{{ID: "m1", Name: "reverse-proxy-traefik"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prober, _, _ := (&LKGCapturer{}).resolveGate(&BootComposedBreadcrumb{Modules: tc.modules})
+			if _, ok := prober.(*systemdReadyProber); !ok {
+				t.Fatalf("prober = %T, want *systemdReadyProber — half a web tier still cannot "+
+					"answer /up", prober)
+			}
+		})
+	}
+}
+
+// An explicitly configured URL is an opt-in to the HTTP probe and still wins on
+// a node with no web tier, from either source. Composed-set detection is the
+// FALLBACK for when nobody said anything, not an override of someone who did.
+func TestLKGCapturer_ResolveGate_ExplicitURLWinsOverComposedSetDetection(t *testing.T) {
+	nonWebTier := []LKGModule{{ID: "m1", Name: "runtime-ruby"}}
+
+	t.Run("from config", func(t *testing.T) {
+		c := &LKGCapturer{DefaultAppHealthURL: "https://127.0.0.1/healthz"}
+		prober, _, _ := c.resolveGate(&BootComposedBreadcrumb{Modules: nonWebTier})
+		hp, ok := prober.(*HTTPHealthProber)
+		if !ok || hp.URL != "https://127.0.0.1/healthz" {
+			t.Fatalf("prober = %T (%+v), want the explicitly configured HTTP gate", prober, prober)
+		}
+	})
+
+	t.Run("from breadcrumb", func(t *testing.T) {
+		bc := &BootComposedBreadcrumb{
+			Modules:   nonWebTier,
+			AppHealth: AppHealthCfg{URL: "https://127.0.0.1/api/v1/system/health"},
+		}
+		prober, _, _ := (&LKGCapturer{}).resolveGate(bc)
+		hp, ok := prober.(*HTTPHealthProber)
+		if !ok || hp.URL != "https://127.0.0.1/api/v1/system/health" {
+			t.Fatalf("prober = %T (%+v), want the breadcrumb-delivered HTTP gate", prober, prober)
+		}
+	})
+}
+
+// The local gate's second conjunct must actually be threaded through. systemd
+// reports a clean `running` for a boot whose modules were never composed at all
+// (the units were never installed, so none of them failed), so without
+// ReconcileOK the capturer would freeze a broken composition as last-known-good
+// — a permanent freeze, and the one outcome worse than never capturing.
+func TestLKGCapturer_ResolveGate_LocalGateCarriesReconcileOK(t *testing.T) {
+	bc := &BootComposedBreadcrumb{Modules: []LKGModule{{ID: "m1", Name: "runtime-ruby"}}}
+	c := &LKGCapturer{ReconcileOK: func() bool { return false }}
+
+	prober, _, _ := c.resolveGate(bc)
+	p, ok := prober.(*systemdReadyProber)
+	if !ok {
+		t.Fatalf("prober = %T, want *systemdReadyProber", prober)
+	}
+	if p.reconcileOK == nil {
+		t.Fatal("ReconcileOK was dropped on the way into the local gate — systemd alone cannot " +
+			"see a broken module composition, which is the whole reason for the conjunct")
+	}
+	// Prove it is wired to the capturer's own function, not a stray default:
+	// a failed reconcile must make the gate unhealthy without consulting systemd.
+	healthy, err := p.Healthy(context.Background())
+	if err != nil || healthy {
+		t.Fatalf("Healthy() = (%v, %v), want (false, nil) when reconcile has not succeeded", healthy, err)
+	}
+}

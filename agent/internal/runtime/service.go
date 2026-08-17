@@ -409,24 +409,29 @@ func (s *Service) Run(ctx context.Context) error {
 	// module the reconciler hot-mounts post-boot (whose new code only runs after
 	// a future reboot) can never be promoted as last-known-good.
 	//
-	// NOTE the asymmetry with boot_confirm below, which is deliberate. LKG
-	// capture keeps the loopback default; the bless gate does not. Promoting an
-	// LKG is a PERMANENT composition freeze on a self-hosted control plane
-	// (ops-hub can no longer re-capture), so widening what counts as healthy
-	// here could freeze a bad composition forever, whereas the cost of the
-	// bless gate being unpassable is an image that reverts. Same mechanism,
-	// very different blast radius — revisit LKG separately, not as a rider.
-	healthURL := s.cfg.AppHealthURL
-	if healthURL == "" {
-		healthURL = defaultAppHealthURL
-	}
+	// The asymmetry with boot_confirm that used to be documented here — LKG
+	// capture keeping the loopback default while the bless gate did not — was
+	// REMOVED on 2026-08-17. Its stated reason (LKG promotion is a permanent
+	// freeze, so do not weaken its gate) assumed the loopback default was the
+	// stricter of the two. On a node serving no web tier it is not stricter, it
+	// is unsatisfiable, so the capturer never promoted anything at all and the
+	// whole node class ran with no last-known-good. The full argument, and why
+	// a self-hosted control plane is unaffected, is on LKGCapturer.resolveGate.
+	//
+	// AppHealthURL is passed RAW here, for the same reason boot_confirm passes it
+	// raw below: an unset URL must stay unset so resolveGate can tell "this node
+	// serves /up" apart from "nothing was configured". Defaulting it to
+	// defaultAppHealthURL at this call site is what made the gate unsatisfiable.
 	capturer := &LKGCapturer{
 		BreadcrumbPath:      BootBreadcrumbPath,
 		LKGPath:             BootLKGPath,
-		DefaultAppHealthURL: healthURL,
+		DefaultAppHealthURL: s.cfg.AppHealthURL,
 		Hostname:            desiredHostname(),
 		CachePath:           mount.DefaultLayout().Resolve().ModuleCachePath,
-		OnError:             s.cfg.OnError,
+		// The local gate's other half — systemd cannot see a broken module
+		// composition, and this can. Same source boot_confirm uses.
+		ReconcileOK: reconciler.ComposedOK,
+		OnError:     s.cfg.OnError,
 	}
 	spawn("lkg_capture", func() {
 		if err := capturer.Run(ctx); err != nil {
@@ -441,9 +446,10 @@ func (s *Service) Run(ctx context.Context) error {
 	spawn("boot_confirm", func() {
 		confirmer := &BootConfirmer{
 			BreadcrumbPath: BootBreadcrumbPath,
-			// s.cfg.AppHealthURL RAW, not healthURL — an unset URL must stay
-			// unset so the gate can tell "this node serves /up" apart from
-			// "nothing was configured" and pick a probe the node can pass.
+			// RAW — an unset URL must stay unset so the gate can tell "this node
+			// serves /up" apart from "nothing was configured" and pick a probe
+			// the node can pass. (Both gates now pass it raw; the local
+			// `healthURL` that used to default this for LKG capture is gone.)
 			AppHealthURL: s.cfg.AppHealthURL,
 			Hostname:     desiredHostname(),
 			BootedGitSHA: s.bootedImageGitSHA,

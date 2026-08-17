@@ -59,9 +59,11 @@ sed -i "s#^[[:space:]]*dir[[:space:]].*#dir ${PERSIST_DATA}#" "$CONF"
 # MISCONF, refusing every write.
 #
 # Appended LAST so these win: redis takes the last occurrence of a directive,
-# and everything above came from the apt file. The drop-in deliberately does
-# NOT set maxmemory/eviction or the bind — see the header in powernode.conf for
-# why shipping those would have been wrong.
+# and everything above came from the apt file. The drop-in sets maxmemory +
+# volatile-lru (added 2026-08-17 after this daemon OOM'd a dev-cell at 10.6 GB)
+# but still deliberately does NOT set the bind — see the header in
+# powernode.conf for why volatile-lru is safe for Sidekiq's queues where
+# allkeys-lru would not have been, and why widening the bind would not be.
 #
 # Glob, not a fixed filename, so an operator drop-in also applies. Guarded so a
 # node without the directory still starts.

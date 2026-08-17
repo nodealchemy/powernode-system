@@ -116,11 +116,20 @@ type LKGCapturer struct {
 	Prober         HealthProber
 	BreadcrumbPath string
 	LKGPath        string
-	// DefaultAppHealthURL is the loopback health URL used when the breadcrumb
-	// carries no SiteSetting-delivered override.
+	// DefaultAppHealthURL is an explicitly-configured health URL, used when the
+	// breadcrumb carries no SiteSetting-delivered override. It must be passed
+	// RAW — empty when nothing configured one — because empty is what selects
+	// the composed-set gate in resolveGate. Defaulting it to the loopback URL at
+	// the call site is precisely the bug fixed on 2026-08-17: it made "nobody
+	// configured a URL" indistinguishable from "this node serves /up".
 	DefaultAppHealthURL string
 	// Hostname is the SNI/Host header for the loopback probe.
 	Hostname string
+	// ReconcileOK reports whether the agent's own module reconcile completed
+	// successfully this boot; it is the other half of the local gate, since
+	// systemd cannot see a broken module composition. Nil disables the conjunct
+	// (tests).
+	ReconcileOK func() bool
 	// CachePath maps a digest to its erofs blob path (mount.Layout.ModuleCachePath)
 	// for the capture-time blob-presence belt; nil skips it (tests).
 	CachePath func(digest string) string
@@ -141,6 +150,32 @@ type LKGCapturer struct {
 // use (an injected Prober always wins, for tests) plus the resolved N + interval.
 // This is what lets the gate be strengthened (e.g. /up → a composed-API check,
 // or a longer window) centrally, with NO new agent binary.
+//
+// The composed-set branch was added 2026-08-17, and it deliberately overrides the
+// note that used to sit beside the LKGCapturer construction in service.go —
+// "revisit LKG separately, not as a rider". This IS that separate revisit, and
+// the reasoning it recorded turns out to argue FOR the change rather than
+// against it:
+//
+// That note declined to give LKG capture the same composed-set gate as
+// BootConfirmer because LKG promotion is a PERMANENT composition freeze, so a
+// weaker gate could freeze a bad composition forever, whereas an unpassable
+// bless gate merely reverts an image. That reasoning holds only where the
+// loopback gate is STRICTER. On a node that serves no web tier it is not
+// stricter, it is UNSATISFIABLE: nothing listens on :443, every probe returns
+// connection refused, and the capturer loops at PollInterval for the entire life
+// of the boot without ever promoting anything. Measured on dev-cell 2026-08-17 —
+// 47 refusals in 11 minutes and no assignment-lkg.json on a node that had been
+// up for weeks. An inert gate is not a conservative one; it does not protect the
+// LKG, it denies the node an LKG at all, which is the exact boot-independence
+// the mechanism exists to provide.
+//
+// What the note was actually protecting — a self-hosted control plane freezing a
+// bad set — is untouched. Such a node composes hub-backend + traefik, so
+// servesWebTier keeps it on the strict /up gate; and it boots FromLKG with an
+// already-frozen LKG, so Run returns at the FromLKG and frozenExists bails long
+// before reaching here. The strong gate is preserved exactly where it can be
+// met, and only the dead gate is replaced.
 func (c *LKGCapturer) resolveGate(bc *BootComposedBreadcrumb) (HealthProber, int, time.Duration) {
 	url := c.DefaultAppHealthURL
 	required := c.required()
@@ -156,11 +191,18 @@ func (c *LKGCapturer) resolveGate(bc *BootComposedBreadcrumb) (HealthProber, int
 			interval = time.Duration(bc.AppHealth.PollIntervalSeconds) * time.Second
 		}
 	}
-	prober := c.Prober
-	if prober == nil {
-		prober = newLoopbackProber(url, c.Hostname)
+	switch {
+	case c.Prober != nil:
+		return c.Prober, required, interval
+	case url != "":
+		// Explicitly configured, from either source — that is an opt-in to the
+		// HTTP probe and is honoured verbatim, exactly as BootConfirmer does.
+		return newLoopbackProber(url, c.Hostname), required, interval
+	case bc != nil && servesWebTier(bc.Modules):
+		return newLoopbackProber(defaultAppHealthURL, c.Hostname), required, interval
+	default:
+		return newSystemdReadyProber(c.ReconcileOK), required, interval
 	}
-	return prober, required, interval
 }
 
 // newLoopbackProber builds the shared self-probe used by every health gate on

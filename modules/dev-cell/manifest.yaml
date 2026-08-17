@@ -938,6 +938,14 @@ services:
       # crash-loop if it isn't co-assigned on this instance's template.
       ConditionPathExists=/usr/bin/claude
       ConditionPathExists=/usr/local/bin/claude-tmux-fetch-credential.sh
+      # Hold-down for PERSISTENT faults other than the "no credential
+      # configured" case (which suppresses its own restart via
+      # RestartPreventExitStatus below). MUST be in [Unit] — systemd
+      # silently ignores these in [Service]. Must exceed RestartSec x
+      # Burst (30s x 5 = 150s) or the limit can never trip and the unit
+      # loops forever, which is exactly what the stock 10s/5 defaults did.
+      StartLimitIntervalSec=1800
+      StartLimitBurst=5
 
       [Service]
       Type=simple
@@ -978,6 +986,12 @@ services:
       ExecStart=/usr/local/bin/dev-cell-executor.sh
       Restart=on-failure
       RestartSec=30s
+      # Mirrors claude-tmux/claude: exit 78 (EX_CONFIG) from the shared
+      # credential fetch means no credential is configured for this
+      # instance — a deliberate state (an uncredentialed dev-cell cannot
+      # idle-burn API credits), not a fault a restart can clear. Fail once
+      # and stay put; an operator sets a credential, then starts the unit.
+      RestartPreventExitStatus=78
       StandardOutput=journal
       StandardError=journal
 

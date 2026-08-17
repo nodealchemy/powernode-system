@@ -17,16 +17,41 @@
 # dev-cell-docker is a general-purpose interactive dev daemon (an operator
 # manually running/testing containers), not a CI image-build sandbox — real
 # container networking (bridge + published ports) is expected to work.
+#
+# --data-root replaces the tmpfs var-lib-docker.mount this module used to ship
+# (2026-08-17). That mount put dockerd's ENTIRE image/layer store in RAM —
+# size=8G on a 15.5 GB node with no swap — so every pull and build spent
+# physical memory that was never accounted for anywhere. It was inherited from
+# gitea-act-runner, where a disposable CI sandbox genuinely wants its layers to
+# evaporate; this daemon is the opposite, an interactive dev daemon whose image
+# cache accumulates by design. The two postures were never the same and the
+# copy was the bug.
+#
+# The tmpfs rationale ("overlay2 can't nest on this instance's own overlay
+# rootfs") was true but load-bearing only for `/`. /persist is ext4, where
+# overlay2 nests fine — verified on dev-cell 2026-08-17, `docker info` reports
+# `Backing Filesystem: extfs` with the overlay2 driver on 117 GB of free disk.
+# This is also what the sibling docker-engine module already documents
+# (`/persist/var/lib/docker`), so it is the platform's existing answer, not a
+# new one.
+#
+# --data-root rather than a bind mount because dockerd creates its own data
+# root if absent; a .mount unit cannot create its bind SOURCE, so a bind would
+# fail closed on the first boot after any recompose that reset /persist.
+# RequiresMountsFor makes systemd order us after /persist is actually mounted —
+# without it dockerd could initialise a data root on the overlay underneath the
+# not-yet-mounted /persist and silently lose it.
 [Unit]
 Description=dev-cell Docker Application Container Engine
 Documentation=https://docs.docker.com
 After=network-online.target containerd.service
 Wants=network-online.target containerd.service
 Requires=dev-cell-docker.socket
+RequiresMountsFor=/persist
 
 [Service]
 Type=notify
-ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock --data-root=/persist/var/lib/docker
 ExecReload=/bin/kill -s HUP $MAINPID
 TimeoutSec=0
 RestartSec=2
