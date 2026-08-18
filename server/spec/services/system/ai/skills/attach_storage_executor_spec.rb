@@ -123,6 +123,70 @@ RSpec.describe System::Ai::Skills::AttachStorageExecutor do
       end
     end
 
+    # IMP-0d9e7ca7b166 (sibling) — AttachStorageExecutor has the identical
+    # defect ProvisionFullStackExecutor had: #finalize ALWAYS returns
+    # success(), so a failed attach leaves a volume whose node_instance_id is
+    # nil while the runner marks the step completed. rollback_attach_storage
+    # holds the id but SkillCompositionRunner#rollback_step! is reachable only
+    # from handle_failure, so it never runs — and nothing else can reach a
+    # nil-FK volume. It bills indefinitely.
+    context "when the attach fails" do
+      let(:ok_prov)    { ::System::Runtime::Result.ok(data: { volume: volume_stub }) }
+      let(:bad_attach) { ::System::Runtime::Result.err(error: "no free device paths") }
+
+      before do
+        allow(::System::VolumeManagementService).to receive(:provision).and_return(ok_prov)
+        allow(::System::VolumeManagementService).to receive(:attach).and_return(bad_attach)
+        allow(volume_stub).to receive(:attached?).and_return(false)
+        allow(::System::VolumeManagementService).to receive(:delete)
+          .and_return(::System::Runtime::Result.ok)
+      end
+
+      it "reclaims the volume it could not attach, instead of leaking an unreachable row" do
+        r = exec.execute(instance_id: instance.id, size_gb: 10, mount_point: "/data")
+        d = r[:data]
+
+        expect(::System::VolumeManagementService).to have_received(:delete).with(volume: volume_stub)
+        # No longer advertised as provisioned storage — and this is what the
+        # wrapping ScaleProject/Relocate rollbacks read.
+        expect(d[:outputs][:storage_volume_ids]).to be_empty
+        # Still loud. Reclaiming must not turn the failure silent.
+        expect(d[:failures].map { |f| f[:step] }).to include("attach_volume")
+        # ...and the reclaim is observable rather than a silent delete.
+        expect(d[:planned_actions].map { |a| a[:step] }).to include("reclaim_volume")
+      end
+
+      it "records a reclaim_volume failure and KEEPS the id when the delete also fails" do
+        allow(::System::VolumeManagementService).to receive(:delete)
+          .and_return(::System::Runtime::Result.err(error: "provider refused"))
+
+        r = exec.execute(instance_id: instance.id, size_gb: 10, mount_point: "/data")
+        d = r[:data]
+
+        steps = d[:failures].map { |f| f[:step] }
+        expect(steps).to include("attach_volume")
+        expect(steps).to include("reclaim_volume")
+        # The row survives, so the envelope MUST still name it — otherwise the
+        # guard just moves the leak behind a quieter layer.
+        expect(d[:outputs][:storage_volume_ids]).to eq([ volume_stub.id ])
+      end
+
+      it "reclaims when the attach RAISES, not only when it returns an error" do
+        allow(::System::VolumeManagementService).to receive(:attach)
+          .and_raise(::System::VolumeManagementService::VolumeError, "No available device paths")
+
+        r = exec.execute(instance_id: instance.id, size_gb: 10, mount_point: "/data")
+
+        # A raise escapes to BaseSkillExecutor#execute, which returns a BARE
+        # failure(msg) — and the runner's rollback kwargs come from
+        # metadata["last_outputs"], which only mark_completed writes. So on a
+        # first-run failure the hook fires with EMPTY kwargs and reclaims
+        # nothing. The volume is exactly as unreachable as on the error path.
+        expect(::System::VolumeManagementService).to have_received(:delete).with(volume: volume_stub)
+        expect(r[:success]).to be false
+      end
+    end
+
     context "when mount fails after attach" do
       let(:ok_prov)   { ::System::Runtime::Result.ok(data: { volume: volume_stub }) }
       let(:ok_attach) { ::System::Runtime::Result.ok(data: { device: "/dev/sdg" }) }

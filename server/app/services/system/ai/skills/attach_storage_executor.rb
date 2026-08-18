@@ -146,9 +146,32 @@ module System
           storage_volume_ids << volume.id
           planned_actions << { step: "provision_volume", volume_id: volume.id, size_gb: size }
 
-          attach_result = ::System::VolumeManagementService.attach(volume: volume, instance: instance)
+          # IMP-0d9e7ca7b166 (sibling of the ProvisionFullStackExecutor fix) —
+          # a raise here escapes to BaseSkillExecutor#execute, which returns a
+          # BARE failure(msg). The runner's rollback kwargs come from
+          # metadata["last_outputs"], which only mark_completed writes, so on a
+          # first-run failure rollback_step! fires with EMPTY kwargs and
+          # reclaims nothing. Reclaim first, then re-raise so the step is still
+          # honestly a failure.
+          begin
+            attach_result = ::System::VolumeManagementService.attach(volume: volume, instance: instance)
+          rescue StandardError
+            reclaim_unattachable_volume!(volume: volume, instance: instance, failures: failures,
+                                         storage_volume_ids: storage_volume_ids,
+                                         planned_actions: planned_actions)
+            raise
+          end
+
           unless attach_result.success?
             failures << { step: "attach_volume", volume_id: volume.id, error: attach_result.error }
+            # #finalize ALWAYS returns success(), so the runner marks this step
+            # completed and never dispatches rollback_attach_storage — which
+            # holds this very id. With node_instance_id nil the volume is also
+            # invisible to the scale-in teardown and its orphan sweep, both of
+            # which key on that FK. Nothing else can reach it, so reclaim here.
+            reclaim_unattachable_volume!(volume: volume, instance: instance, failures: failures,
+                                         storage_volume_ids: storage_volume_ids,
+                                         planned_actions: planned_actions)
             return finalize(planned_actions: planned_actions, storage_volume_ids: storage_volume_ids,
                             instance_id: instance.id, mount: mount, device: nil, failures: failures)
           end
@@ -171,6 +194,45 @@ module System
 
           finalize(planned_actions: planned_actions, storage_volume_ids: storage_volume_ids,
                    instance_id: instance.id, mount: mount, device: device, failures: failures)
+        end
+
+        # Delete a volume this step provisioned but could not attach, and stop
+        # advertising it. Deliberately the same shape as
+        # ProvisionFullStackExecutor#reclaim_unattachable_volume! — the two are
+        # separate methods on separate executors, so the parity is stated
+        # rather than shared, matching how this file already treats its
+        # rollback ordering.
+        #
+        # A FAILED reclaim records its own failure and KEEPS the id: if the row
+        # survives, the envelope must still name it, or the guard just moves
+        # the leak somewhere quieter. A SUCCESSFUL one is recorded as an action,
+        # because a silent delete leaves no account of what became of the volume.
+        def reclaim_unattachable_volume!(volume:, instance:, failures:, storage_volume_ids:,
+                                         planned_actions:)
+          if volume.attached?
+            detach = ::System::VolumeManagementService.detach(volume: volume)
+            unless detach.success?
+              failures << { step: "reclaim_volume", instance_id: instance.id,
+                            volume_id: volume.id, error: detach.error }
+              return false
+            end
+          end
+
+          result = ::System::VolumeManagementService.delete(volume: volume)
+          if result.success?
+            storage_volume_ids.delete(volume.id)
+            planned_actions << { step: "reclaim_volume", instance_id: instance.id,
+                                 volume_id: volume.id }
+            true
+          else
+            failures << { step: "reclaim_volume", instance_id: instance.id,
+                          volume_id: volume.id, error: result.error }
+            false
+          end
+        rescue StandardError => e
+          failures << { step: "reclaim_volume", instance_id: instance.id,
+                        volume_id: volume.id, error: e.message }
+          false
         end
 
         def finalize(planned_actions:, storage_volume_ids:, instance_id:, mount:, device:, failures:)
