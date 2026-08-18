@@ -1077,7 +1077,24 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         md = ev.metadata
         expect(md["refusal_reasons"].join).to match(/storage-unready/)
         expect(md["reclaimed"]["node_instance"]).to eq([ target_a.id ])
-        expect(md["reclaimed"]["provider_volume"]).to eq([ volume_a.id ])
+        # IMP-0d9e7ca7b166 — this used to expect [volume_a.id] here. The
+        # provisioning leg now reclaims a volume it could not attach IN-BRANCH,
+        # because for every OTHER caller of ProvisionFullStackExecutor nothing
+        # downstream can reach a nil-FK volume. So by the time this refusal
+        # runs its own reclaim, the volume is already gone and there is
+        # correctly nothing left for it to reclaim.
+        #
+        # The guarantee this example exists to protect is unchanged and is
+        # asserted directly below: no volume survives the refusal. Which LAYER
+        # deleted it is an implementation detail; that it is gone is not.
+        expect(md["reclaimed"]["provider_volume"]).to be_empty
+        # The reclaim still HAPPENED — just one layer down. This context stubs
+        # VolumeManagementService.delete to return ok WITHOUT destroying the
+        # row, so "the row is gone" is unobservable here and the call is the
+        # only available evidence. (The row actually disappearing is asserted
+        # in provision_full_stack_executor_spec, where delete runs for real
+        # against a stubbed provider adapter.)
+        expect(::System::VolumeManagementService).to have_received(:delete).with(volume: volume_a)
         expect(md["survivors"].values.flatten).to be_empty
         expect(md["provisioning_leg_failures"].map { |f| f["step"] }).to include("attach_volume")
       end

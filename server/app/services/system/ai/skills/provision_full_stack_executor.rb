@@ -305,23 +305,40 @@ module System
                 planned_actions << { step: "attach_volume", instance_id: instance.id,
                                      volume_id: volume.id, device: att_result.data[:device] }
               else
-                # Recorded LOUDLY, because nothing reclaims this volume on its
-                # own. The step still returns success — one failed attach must
-                # not terminate a whole provisioned fleet — so the runner marks
-                # it completed and never dispatches the rollback hook that
-                # holds these ids (SkillCompositionRunner#rollback_step! is
-                # reachable only from handle_failure). Its FK is nil, so
-                # scale-in cannot see it either. What surfaces it is the
-                # envelope: `partial` plus this recorded failure, which
-                # VerificationService grades as a failing step_N_failures
-                # check. Silence here is the failure mode this guard exists
-                # to end.
+                # IMP-0d9e7ca7b166 — recorded loudly AND reclaimed, because
+                # nothing downstream can reach this volume. Its FK is nil, and
+                # that FK is how both the scale-in teardown
+                # (ScaleProjectExecutor#victim_volumes) and its orphan sweep
+                # find a victim's volumes. This executor's own rollback DOES
+                # hold the id, but it is dispatched by
+                # SkillCompositionRunner#rollback_step!, reachable only from
+                # handle_failure — and this step deliberately returns SUCCESS
+                # so one bad attach cannot terminate a whole provisioned fleet.
+                # So the rollback never runs and the volume billed forever.
+                # In-branch reclaim is the only path left, which is what
+                # RelocateWorkloadExecutor#refuse_blue_green_cutover! concluded
+                # for the same structural reason.
+                #
+                # The envelope stays loud either way: `partial` plus the
+                # recorded failure is what VerificationService grades.
                 failures << { step: "attach_volume", node_id: node.id, instance_id: instance.id,
                               volume_id: volume.id, error: att_result.error }
+                reclaim_unattachable_volume!(volume: volume, node: node, instance: instance,
+                                             failures: failures,
+                                             storage_volume_ids: storage_volume_ids,
+                                             planned_actions: planned_actions)
               end
             rescue StandardError => e
               failures << { step: "attach_volume", node_id: node.id, instance_id: instance.id,
                             volume_id: volume.id, error: e.message }
+              # Same reclaim on the raise path. attach re-raises ArgumentError
+              # and VolumeError (no free device paths), and a volume orphaned by
+              # a raise is exactly as unreachable as one orphaned by an error
+              # return — guarding only the `else` would fix half the defect.
+              reclaim_unattachable_volume!(volume: volume, node: node, instance: instance,
+                                           failures: failures,
+                                           storage_volume_ids: storage_volume_ids,
+                                           planned_actions: planned_actions)
             end
           end
 
@@ -345,6 +362,60 @@ module System
         # instance names derive from the node's, so the prefix reaches the
         # substrate. mission_id lands in node.config so created nodes and
         # their instances are provenance-queryable regardless of naming.
+        # IMP-0d9e7ca7b166 — delete a volume this step provisioned but could
+        # not attach, and stop advertising it as provisioned storage.
+        #
+        # Why delete rather than leave it for a human: a volume with a nil
+        # node_instance_id is not merely untidy, it is UNREACHABLE. Every
+        # reclaim path keys on that FK, and the one path that holds the raw id
+        # (this executor's rollback) is never dispatched for a step that
+        # returns success. Leaving the row means it bills indefinitely with no
+        # surface that can find it.
+        #
+        # No detach first: the attach is what failed, so the volume is not
+        # attached — but `attached?` is still checked, because a partially
+        # applied attach is exactly the case where the naive assumption is
+        # wrong, and VolumeManagementService#delete refuses an attached volume
+        # outright rather than silently.
+        #
+        # A failed reclaim is recorded as its own `reclaim_volume` failure and
+        # the id is KEPT in storage_volume_ids. That is deliberate: if the row
+        # survives, the envelope must still name it, or this guard would just
+        # move the leak behind a quieter layer.
+        def reclaim_unattachable_volume!(volume:, node:, instance:, failures:, storage_volume_ids:,
+                                         planned_actions:)
+          if volume.attached?
+            detach = ::System::VolumeManagementService.detach(volume: volume)
+            unless detach.success?
+              failures << { step: "reclaim_volume", node_id: node.id, instance_id: instance.id,
+                            volume_id: volume.id, error: detach.error }
+              return false
+            end
+          end
+
+          result = ::System::VolumeManagementService.delete(volume: volume)
+          if result.success?
+            storage_volume_ids.delete(volume.id)
+            # Recorded as its own action. A SILENT reclaim is its own problem:
+            # the envelope would show a volume provisioned, an attach failed,
+            # and no trace of what became of the volume — and any wrapper that
+            # reports what IT reclaimed (RelocateWorkloadExecutor's blue_green
+            # refusal) now legitimately finds nothing left to reclaim, so this
+            # is the only place the reclaim is observable.
+            planned_actions << { step: "reclaim_volume", instance_id: instance.id,
+                                 volume_id: volume.id }
+            true
+          else
+            failures << { step: "reclaim_volume", node_id: node.id, instance_id: instance.id,
+                          volume_id: volume.id, error: result.error }
+            false
+          end
+        rescue StandardError => e
+          failures << { step: "reclaim_volume", node_id: node.id, instance_id: instance.id,
+                        volume_id: volume.id, error: e.message }
+          false
+        end
+
         def create_node!(template:, index:, name_prefix: nil, mission_id: nil)
           base = [ name_prefix.presence, template.name.parameterize ].compact.join("-")
           node_name = "#{base}-#{index + 1}-#{SecureRandom.hex(3)}"
