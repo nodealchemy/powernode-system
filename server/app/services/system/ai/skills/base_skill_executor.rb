@@ -170,8 +170,22 @@ module System
           { success: true, data: payload }
         end
 
-        def failure(msg)
-          { success: false, error: msg }
+        # IMP-2182fd8fcdee — `**extra` is what makes the runner's failure-time
+        # rollback seam reachable at all. SkillCompositionRunner#handle_failure
+        # calls record_failure_outputs BEFORE mark_failed, and its
+        # failure_outputs_from strips the envelope control keys (success, error,
+        # message, errors, failures, partial) off whatever the executor
+        # returned. So a resource-creating executor that fails AFTER creating
+        # can name its orphans right here and rollback_step! will receive them
+        # as kwargs. A bare failure(msg) leaves that payload empty, the rollback
+        # no-ops, and mark_rolled_back then stamps `rolled_back` over resources
+        # that are still live and billing.
+        #
+        # Pass ONLY keys that actually hold ids: an outputs hash that is
+        # "present" while empty displaces a retried step's genuine last_outputs
+        # and fakes compensation in one move.
+        def failure(msg, **extra)
+          { success: false, error: msg }.merge(extra)
         end
 
         # True when this executor is running on behalf of a grant-gated MCP
