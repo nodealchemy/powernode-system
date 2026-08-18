@@ -445,7 +445,29 @@ module System
             "; refused target stack reclaim INCOMPLETE: #{summarize_entries(reclaim_errors)}"
           end
 
-          failure(message)
+          # IMP-2182fd8fcdee — hand the SURVIVORS to the runner's failure-time
+          # rollback seam, keyed by rollback_relocate_workload's own kwarg
+          # names. The durable event above records them for a human, but the
+          # runner cannot act on an event: composers stamp on_failure:
+          # "rollback" by default, so rollback_step! runs next and reads its
+          # kwargs off this envelope. Returning a bare failure here rolled back
+          # nothing and then stamped `rolled_back` over resources that are
+          # still live and billing — the exact state the note above describes
+          # as "a no-op".
+          #
+          # Only classes that ACTUALLY have survivors are included. An outputs
+          # hash that is "present" while holding no ids displaces a retried
+          # step's genuine last_outputs and fakes compensation in one move —
+          # the runner's own failure_outputs_from warns about this shape. A
+          # clean reclaim therefore still returns a bare failure, which is
+          # correct: there is nothing left to compensate.
+          survivor_kwargs = {
+            node_instance_ids: survivors["node_instance"],
+            storage_volume_ids: survivors["provider_volume"],
+            sdwan_peer_ids: survivors["sdwan_peer"]
+          }.reject { |_key, ids| ids.blank? }
+
+          failure(message, **survivor_kwargs)
         end
 
         # IMP-e1903a42c1ab — the storage leg's readiness oracle is ATTACHMENT,

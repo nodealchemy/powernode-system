@@ -834,6 +834,48 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         expect(md["provisioning_leg_failures"].map { |f| f["step"] }).to include("attach_sdwan_peer")
       end
 
+      # IMP-2182fd8fcdee — the durable EVENT above records survivors, but the
+      # runner cannot act on an event. Composers stamp on_failure: "rollback"
+      # by default, so after this failure returns the runner calls
+      # rollback_step! — which reads its kwargs from the failure envelope (or
+      # from last_outputs, empty on a first-run failure). A bare
+      # failure(message) therefore rolls back NOTHING and then stamps
+      # rolled_back over resources that are still live and billing.
+      it "hands surviving resources to the runner's failure-time rollback seam" do
+        allow(::System::VolumeManagementService).to receive(:delete)
+          .and_return(::System::Runtime::Result.err(error: "volume delete refused"))
+
+        r = run_blue_green_relocate
+
+        expect(r[:success]).to be false
+        # Keyed by rollback_relocate_workload's OWN kwarg names, because that
+        # is the hook the runner will invoke with them.
+        expect(r[:storage_volume_ids]).to match_array([ volume_a.id, volume_b.id ])
+      end
+
+      it "omits classes that reclaimed cleanly rather than sending empty arrays" do
+        allow(::System::VolumeManagementService).to receive(:delete)
+          .and_return(::System::Runtime::Result.err(error: "volume delete refused"))
+
+        r = run_blue_green_relocate
+
+        # An outputs hash that is "present" while holding no ids displaces a
+        # retried step's genuine last_outputs and fakes compensation in one
+        # move — the runner's own failure_outputs_from warns about exactly
+        # this shape. Only classes with survivors may appear.
+        expect(r).not_to have_key(:node_instance_ids)
+        expect(r).not_to have_key(:sdwan_peer_ids)
+      end
+
+      it "stays a bare failure when the reclaim was clean, so nothing is faked" do
+        r = run_blue_green_relocate
+
+        expect(r[:success]).to be false
+        expect(r[:storage_volume_ids]).to be_nil
+        expect(r[:node_instance_ids]).to be_nil
+        expect(r[:sdwan_peer_ids]).to be_nil
+      end
+
       it "records survivors per class when the reclaim is incomplete" do
         allow(::System::VolumeManagementService).to receive(:delete)
           .and_return(::System::Runtime::Result.err(error: "volume delete refused"))
