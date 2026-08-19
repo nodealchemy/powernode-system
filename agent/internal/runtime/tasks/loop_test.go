@@ -338,9 +338,24 @@ func TestLoopConcurrencyLimit(t *testing.T) {
 	}
 	close(hold)
 
-	// Drain.
+	// Drain: acquire EVERY slot and HOLD them, which is only possible once
+	// every dispatched goroutine has released its own.
+	//
+	// This used to acquire-then-release inside the loop, which does not prove
+	// that: the second iteration can re-acquire the SAME slot the first one
+	// just freed, so the drain completes while another processTask is still
+	// running. That goroutine then reaches clearInflight -> persistInflight()
+	// and writes tasks_state.json into the t.TempDir() the test framework is
+	// concurrently removing — the intermittent
+	// "TempDir RemoveAll cleanup: directory not empty" failure.
+	//
+	// processTask releases the slot in a defer AFTER clearInflight, so holding
+	// all of them means the persistence is durable and nothing will touch the
+	// temp dir again.
 	for i := 0; i < 2; i++ {
 		loop.sema <- struct{}{}
+	}
+	for i := 0; i < 2; i++ {
 		<-loop.sema
 	}
 
