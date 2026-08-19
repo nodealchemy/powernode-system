@@ -156,18 +156,35 @@ module System
     # metadata["last_outputs"]["outputs"]["node_instance_ids"] — the same seam
     # the runner uses for cross-step data flow.
     #
-    # The NESTED `outputs` level is load-bearing and was wrong here until
-    # IMP-3431f73dabe6. SkillCompositionRunner records
-    # `result_outputs(result)` = the executor's `data:` payload, whose own
-    # keys are dry_run/count/planned_actions/`outputs`/failures — so the ids
-    # sit one level below `last_outputs`. Digging them at the top level always
-    # returned nil, so this method always returned [], so replica_count and
-    # region_count always short-circuited to `unavailable` and ProjectSloSensor
-    # never saw a live sample. Every other reader of this envelope already
-    # digs the deeper path — VerificationService#verify (its per-step count
-    # check) and #removed_instance_ids, AdaptationDispatchService#
-    # produced_instance_ids, DryrunHarness#actuator_reported_orphans. This
-    # reader was the only one that disagreed.
+    # THE WRITER HAS THREE SHAPES; THIS READS ALL OF THEM (IMP-9978fcf23a27).
+    #
+    # SkillCompositionRunner#result_outputs is
+    #   result[:data] || result["data"] || result[:outputs] || result["outputs"] || result.to_h
+    # and #record_outputs stores whatever that returns VERBATIM as
+    # metadata["last_outputs"]. So the envelope decides the depth:
+    #
+    #   :data present  -> last_outputs is the payload; ids under its "outputs"
+    #   :outputs only  -> last_outputs IS the outputs hash; ids at the TOP level
+    #   neither        -> last_outputs is result.to_h; ids at the TOP level
+    #
+    # The nested level was wrong here until IMP-3431f73dabe6: digging the ids at
+    # the top always returned nil, so this returned [], so replica_count and
+    # region_count short-circuited to `unavailable` and ProjectSloSensor never
+    # saw a live sample.
+    #
+    # WHAT THE ENUMERATION FOUND, recorded because the severity claim depends on
+    # it: every executor SkillCompositionRunner.resolve_executor can reach today
+    # — 58 under System::Ai::Skills, 2 under Ai::Skills, CrudFactory subclasses
+    # included — returns BaseSkillExecutor#success, i.e. { success: true, data: }.
+    # So the narrowed dig was NOT silently broken again; the other two branches
+    # are live in the writer with no executor behind them. Reading all three is
+    # hardening against the writer's actual contract rather than repair of an
+    # active defect, and it is what stops the next executor that returns a bare
+    # envelope from re-creating IMP-3431f73dabe6 in silence.
+    #
+    # deep_stringify_keys matches the sibling readers (VerificationService
+    # #last_outputs, AdaptationDispatchService#produced_instance_ids), which all
+    # normalize before digging; this reader was the only one that did not.
     #
     # Returns [] (never raises) so a mission without a resolvable plan
     # degrades to `unavailable`, not a false zero.
@@ -180,12 +197,24 @@ module System
       return [] unless plan
 
       plan.steps.where(status: "completed").flat_map { |step|
-        meta = step.metadata.is_a?(Hash) ? step.metadata : {}
-        Array(meta.dig("last_outputs", "outputs", "node_instance_ids"))
+        step_instance_ids(step)
       }.compact.uniq
     rescue StandardError => e
       Rails.logger.warn("[ProjectMetricsCollector] instance resolution failed for mission=#{@mission&.id}: #{e.class}: #{e.message}")
       []
+    end
+
+    # Both depths, unioned. Deduping is left to the single `.uniq` in the
+    # caller, which already spans every step — a second one here would be a
+    # redundant mechanism, and two guards for one property make a mutation test
+    # unable to tell which of them is actually holding the line.
+    def step_instance_ids(step)
+      meta = step.metadata.is_a?(Hash) ? step.metadata : {}
+      outs = meta["last_outputs"] || meta[:last_outputs] || {}
+      return [] unless outs.is_a?(Hash)
+
+      outs = outs.deep_stringify_keys
+      Array(outs.dig("outputs", "node_instance_ids")) + Array(outs["node_instance_ids"])
     end
 
     def unit_for(metric_name)

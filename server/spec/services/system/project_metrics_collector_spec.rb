@@ -75,6 +75,42 @@ RSpec.describe System::ProjectMetricsCollector do
       end
     end
 
+    # THE WRITER'S THREE SHAPES (IMP-9978fcf23a27).
+    #
+    # SkillCompositionRunner#result_outputs is
+    #   result[:data] || result["data"] || result[:outputs] || result["outputs"] || result.to_h
+    # and whatever it returns is stored VERBATIM as metadata["last_outputs"]
+    # (#record_outputs). So the envelope an executor returns decides how deep the
+    # ids sit, and the three branches put them in two different places:
+    #
+    #   :data present  -> last_outputs is the payload; ids under its "outputs" key
+    #   :outputs only  -> last_outputs IS the outputs hash; ids at the TOP level
+    #   neither        -> last_outputs is result.to_h; ids at the TOP level
+    #
+    # Enumerated rather than assumed, per this task's direction: every executor
+    # resolvable by SkillCompositionRunner.resolve_executor today (58 under
+    # System::Ai::Skills, 2 under Ai::Skills) returns BaseSkillExecutor#success,
+    # i.e. { success: true, data: payload } — CrudFactory subclasses included.
+    # So only the first branch is reached in production right now, and the
+    # collector was not silently broken. The other two are live branches of the
+    # writer with no executor behind them, and a reader that handles one shape of
+    # a three-shape writer is one commit away from the original defect.
+    def data_envelope(instance_ids)
+      { success: true,
+        data: { dry_run: false, count: instance_ids.size, planned_actions: [],
+                outputs: { node_ids: [], node_instance_ids: instance_ids,
+                           sdwan_peer_ids: [], storage_volume_ids: [] },
+                failures: [], partial: false } }
+    end
+
+    def outputs_envelope(instance_ids)
+      { success: true, outputs: { node_instance_ids: instance_ids } }
+    end
+
+    def flat_envelope(instance_ids)
+      { success: true, node_instance_ids: instance_ids, count: instance_ids.size }
+    end
+
     # Builds mission -> GoalPlan -> completed step, recording the step's outputs
     # through the PRODUCTION writer (SkillCompositionRunner#result_outputs +
     # #record_outputs) fed the envelope BaseSkillExecutor#success actually
@@ -82,7 +118,7 @@ RSpec.describe System::ProjectMetricsCollector do
     # survive: this spec used to author `last_outputs.node_instance_ids` — the
     # shape the collector dug for and nothing ever wrote — so it went green while
     # production never reached the live branch at all.
-    def seed_provisioned_mission(instance_ids)
+    def seed_provisioned_mission(instance_ids, result: nil)
       agent = create(:ai_agent, account: account)
       goal  = Ai::AgentGoal.create!(
         account: account, agent: agent, title: "provision",
@@ -103,18 +139,7 @@ RSpec.describe System::ProjectMetricsCollector do
 
       # The literal an executor hands back: { success:, data: <payload> }, the
       # payload carrying its node ids under a NESTED `outputs` key.
-      executor_result = {
-        success: true,
-        data: {
-          dry_run: false,
-          count: instance_ids.size,
-          planned_actions: [],
-          outputs: { node_ids: [], node_instance_ids: instance_ids,
-                     sdwan_peer_ids: [], storage_volume_ids: [] },
-          failures: [],
-          partial: false
-        }
-      }
+      executor_result = result || data_envelope(instance_ids)
 
       # mark_completed, not record_outputs directly: it is the method the
       # runner's success arm calls (skill_composition_runner.rb:195), and it
@@ -162,6 +187,57 @@ RSpec.describe System::ProjectMetricsCollector do
 
       expect(core_ids).to match_array([ inst_a.id, inst_b.id ])
       expect(collector_ids).to match_array(core_ids)
+    end
+
+    # One example per writer branch, each fed through the PRODUCTION writer
+    # (#result_outputs -> #mark_completed) rather than a hand-written metadata
+    # literal — the mistake that let the original defect go green.
+    #
+    # The first is the shape production reaches today; it is here so the three
+    # sit side by side and a future reader can see which branch each pins.
+    describe "every shape SkillCompositionRunner#result_outputs can store" do
+      def resolved_ids_for(envelope, ids)
+        mission, = seed_provisioned_mission(ids, result: envelope)
+        described_class.new(mission: mission).send(:resolvable_instance_ids).map(&:to_s)
+      end
+
+      it "reads ids from a :data envelope (nested under 'outputs')" do
+        inst = create(:system_node_instance, :running, node: create(:system_node, account: account))
+
+        expect(resolved_ids_for(data_envelope([ inst.id ]), [ inst.id ])).to eq([ inst.id ])
+      end
+
+      it "reads ids from an :outputs envelope, where last_outputs IS the outputs hash" do
+        inst = create(:system_node_instance, :running, node: create(:system_node, account: account))
+
+        expect(resolved_ids_for(outputs_envelope([ inst.id ]), [ inst.id ])).to eq([ inst.id ])
+      end
+
+      it "reads ids from a bare envelope that falls through to result.to_h" do
+        inst = create(:system_node_instance, :running, node: create(:system_node, account: account))
+
+        expect(resolved_ids_for(flat_envelope([ inst.id ]), [ inst.id ])).to eq([ inst.id ])
+      end
+
+      # The union must not double-count a step carrying the id at both depths.
+      #
+      # NOTE THE ENVELOPE. An earlier version of this example put :outputs
+      # BESIDE :data at the envelope level — which pins nothing, because
+      # #result_outputs returns result[:data] FIRST and throws the sibling key
+      # away, so only one depth ever reached last_outputs. A mutation test
+      # (dropping the caller's .uniq) killed no example and exposed it.
+      #
+      # Both depths can only coexist INSIDE the stored payload, which is a real
+      # shape: a composing executor whose data echoes its own ids alongside the
+      # nested outputs block it assembled.
+      it "dedupes an id that appears at both levels" do
+        inst = create(:system_node_instance, :running, node: create(:system_node, account: account))
+        both = { success: true,
+                 data: { node_instance_ids: [ inst.id ],
+                         outputs: { node_instance_ids: [ inst.id ] } } }
+
+        expect(resolved_ids_for(both, [ inst.id ])).to eq([ inst.id ])
+      end
     end
 
     it "threads the supplied correlation_id onto every row" do
