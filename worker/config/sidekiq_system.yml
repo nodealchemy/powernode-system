@@ -86,6 +86,19 @@
     queue: maintenance
     description: "Fleet: retention sweep of System::FleetEvent rows"
 
+  # IPFIX flow-samples retention sweep — nightly at 3:15 AM UTC, offset from
+  # the fleet sweep so the two do not contend for the same autovacuum window.
+  # IMP-b24afe85a309: system_sdwan_flow_samples is the extension's
+  # highest-volume table and previously had NO retention path at all. Window,
+  # batch size and per-run ceiling are DB-driven (Account#settings, then
+  # SiteSetting) — see Sdwan::FlowSampleRetentionService; nothing is
+  # configured here.
+  sdwan_flow_sample_retention:
+    cron: "15 3 * * *"
+    class: "SdwanFlowSampleRetentionJob"
+    queue: maintenance
+    description: "SDWAN: retention sweep of Sdwan::FlowSample rows"
+
   # GitOps reconciliation — every 5 minutes.
   # Iterates GitopsRepository rows due for sync (last_synced_at older than
   # 5min OR null); per-repo: clones/pulls → parses fleet.yaml → diffs vs

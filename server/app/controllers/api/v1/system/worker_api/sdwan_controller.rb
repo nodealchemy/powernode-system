@@ -52,6 +52,23 @@ module Api
               cutoff: cutoff.iso8601
             )
           end
+
+          # POST /api/v1/system/worker_api/sdwan/flow_sample_retention_sweep
+          #
+          # IMP-b24afe85a309 — ages out system_sdwan_flow_samples, the
+          # highest-volume table in the extension, which previously had no
+          # retention path at all. The window is DB-driven and the deletes are
+          # batched and bounded; see Sdwan::FlowSampleRetentionService for why
+          # both matter on a table this size.
+          #
+          # Same permission as the fleet retention sweep — this is maintenance
+          # reconciliation, not an SDWAN control-plane mutation.
+          def flow_sample_retention_sweep
+            authorize_worker_permission!("system.fleet.reconcile")
+            return if performed?
+
+            render_success(::Sdwan::FlowSampleRetentionService.call)
+          end
         end
       end
     end

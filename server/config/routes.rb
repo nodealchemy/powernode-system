@@ -795,6 +795,9 @@ Rails.application.routes.draw do
           # Slice 5 (deferred reaper) of the SDWAN plan — daily 90-day
           # audit retention sweep over revoked Sdwan::UserDevice rows.
           post "sdwan/reap_user_devices", to: "sdwan#reap_user_devices"
+          # IMP-b24afe85a309 — nightly retention sweep for the IPFIX
+          # flow-samples firehose (system_sdwan_flow_samples).
+          post "sdwan/flow_sample_retention_sweep", to: "sdwan#flow_sample_retention_sweep"
 
           # Fleet-wide Unix identity reaper — daily sweep over
           # System::ServiceUser/ServiceGroup rows that have been
