@@ -148,11 +148,17 @@ module System
 
           # IMP-0d9e7ca7b166 (sibling of the ProvisionFullStackExecutor fix) —
           # a raise here escapes to BaseSkillExecutor#execute, which returns a
-          # BARE failure(msg). The runner's rollback kwargs come from
-          # metadata["last_outputs"], which only mark_completed writes, so on a
-          # first-run failure rollback_step! fires with EMPTY kwargs and
-          # reclaims nothing. Reclaim first, then re-raise so the step is still
-          # honestly a failure.
+          # BARE failure(msg) carrying no ids. rollback_step! therefore fires
+          # with EMPTY kwargs and reclaims nothing, so reclaim first, then
+          # re-raise, keeping the step honestly a failure.
+          #
+          # IMP-2182fd8fcdee note: the runner no longer reads rollback kwargs
+          # ONLY from metadata["last_outputs"] — handle_failure now also
+          # records a failing envelope's own outputs into
+          # metadata["failure_outputs"]. That does not help HERE, because the
+          # envelope this path produces is synthesised by the rescue in
+          # #execute from an exception message and has no ids in it. The
+          # in-branch reclaim stays load-bearing.
           begin
             attach_result = ::System::VolumeManagementService.attach(volume: volume, instance: instance)
           rescue StandardError

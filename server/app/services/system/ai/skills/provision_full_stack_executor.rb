@@ -239,9 +239,12 @@ module System
             # "scale-out produced a peer" oracle passed vacuously. Enroll
             # per instance instead, and guard it like every other leg —
             # push to `failures` and continue, so a raise can't take out the
-            # step (the runner's rollback reads metadata["last_outputs"],
-            # only written by mark_completed, and would orphan the VMs and
-            # volumes this loop already created).
+            # step and orphan the VMs and volumes this loop already created.
+            # (IMP-2182fd8fcdee: rollback_step! now also reads
+            # metadata["failure_outputs"], not just the mark_completed-written
+            # "last_outputs" — but an escaping raise is turned into a bare
+            # failure(e.message) by BaseSkillExecutor#execute, which carries no
+            # ids, so guarding the leg here is still what protects them.)
             if network
               begin
                 peer = ::Sdwan::PeerEnroller.call(network: network, node_instance: instance)

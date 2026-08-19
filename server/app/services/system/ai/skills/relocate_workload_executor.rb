@@ -335,15 +335,26 @@ module System
         #   - success(partial: true) abandoned the entire stack (VMs + volumes
         #     + enrolled peers, unowned): SkillCompositionRunner reaches
         #     rollback_step! only from handle_failure, so a completed-partial
-        #     step never dispatches the rollback that holds these ids.
-        #   - a bare failure(...) reclaims nothing either: the runner's
-        #     rollback kwargs come from metadata["last_outputs"], which only
-        #     mark_completed writes — on a first-run failure the hook fires
-        #     with empty kwargs, no-ops, and stamps rolled_back over live
-        #     resources.
+        #     step never dispatches the rollback that holds these ids. STILL
+        #     TRUE — this is a property of the runner's control flow, not of
+        #     the envelope.
+        #   - a bare failure(...) reclaimed nothing either: the runner's
+        #     rollback kwargs came from metadata["last_outputs"], which only
+        #     mark_completed writes, so on a first-run failure the hook fired
+        #     with empty kwargs, no-opped, and stamped rolled_back over live
+        #     resources. NO LONGER TRUE as of IMP-1ee509d12a0a (runner half)
+        #     + IMP-2182fd8fcdee (executor half): handle_failure now records
+        #     the failing envelope's own outputs into
+        #     metadata["failure_outputs"], rollback_step! prefers them, and
+        #     this executor hands its survivors up on the failure envelope
+        #     (see the survivor_kwargs below).
         #
-        # So the reclaim runs HERE, reusing the rollback contract this
-        # executor already owns. That contract is target-only by construction:
+        # The reclaim still runs HERE, and deliberately so — but as
+        # BELT-AND-BRACES now rather than because the seam is unavailable.
+        # Reclaiming in-branch keeps the refusal self-contained: it does not
+        # depend on the composer having stamped on_failure: "rollback", which
+        # is a default a plan author can override. It reuses the rollback
+        # contract this executor already owns. That contract is target-only by construction:
         # its kwargs are the ids from the target provisioning envelope, and
         # the sources are not in its kwargs-set (terminated_instance_ids is
         # swallowed by **_extras) — so a refused cutover can never reach the
@@ -410,11 +421,18 @@ module System
 
           # Machine-readable diagnosis, durable on purpose: composers stamp
           # on_failure: "rollback" by default, so after this failure returns
-          # the runner rolls back (a no-op — recorded_outputs_for is empty on
-          # a first-run failure) and mark_rolled_back OVERWRITES the step's
+          # the runner rolls back and mark_rolled_back OVERWRITES the step's
           # result_summary. The human message below does not survive that;
           # this event does. Recorder self-rescues, so it can never turn a
           # refusal into a raise.
+          #
+          # The parenthetical this comment used to carry — "a no-op,
+          # recorded_outputs_for is empty on a first-run failure" — is no
+          # longer true (IMP-1ee509d12a0a + IMP-2182fd8fcdee): the rollback
+          # now receives this executor's survivors. That makes the event MORE
+          # load-bearing, not less. The overwrite of result_summary is what
+          # destroys the diagnosis, and it happens whether the rollback did
+          # something or nothing.
           ::Ai::Introspection::ExecutionEventRecorder.record(
             source: mission,
             event_type: "relocate_cutover_refusal",
