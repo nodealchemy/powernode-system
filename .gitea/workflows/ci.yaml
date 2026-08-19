@@ -536,6 +536,29 @@ jobs:
         with:
           go-version: '1.25'
           cache-dependency-path: agent/go.sum
+      # Nothing enforced gofmt, and 54 files had drifted by 2026-08-19
+      # (IMP-f1c1e6d61104 follow-up). Checked BEFORE the tests so a formatting
+      # failure is not buried under a test log, and with `gofmt -l` rather than
+      # `-w` so CI reports rather than rewrites.
+      #
+      # Deliberately not `gofmt -d`: the diff for a whole-tree drift is
+      # unreadable in a CI log. The file list plus the local command to fix it
+      # is what an engineer actually needs.
+      - name: Check gofmt
+        working-directory: agent
+        run: |
+          if [ ! -f go.mod ]; then
+            echo "agent/ has no go.mod yet — skipping"
+            exit 0
+          fi
+          unformatted=$(gofmt -l ./cmd ./internal)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt drift in $(echo "$unformatted" | wc -l) file(s). Run: cd agent && gofmt -w ./cmd ./internal"
+            echo "$unformatted"
+            exit 1
+          fi
+          echo "gofmt clean"
+
       - name: Run agent tests
         working-directory: agent
         run: |
