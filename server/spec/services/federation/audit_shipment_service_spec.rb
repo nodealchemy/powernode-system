@@ -91,6 +91,69 @@ RSpec.describe ::Federation::AuditShipmentService, type: :service do
     end
   end
 
+  # IMP-e7c366624710 — a revoked peer's final window was structurally unsealable.
+  #
+  # Two rules composed into a hole: seal only events older than the 30-day
+  # boundary, and sweep only non-revoked peers. Everything a peer emitted in its
+  # final 30 days — up to and including `federation.peer.revoked` itself, the
+  # one event an operator opens the log to explain — is inside the hot window at
+  # revocation, and by the time it ages past the cutoff the peer is `revoked`,
+  # which V1_TRANSITIONS makes terminal. It never leaves the excluded set, so
+  # those events are never selected, never sealed, never stamped.
+  #
+  # INTENT, settled before treating it as a defect (the direction requires this,
+  # and the answer is documented rather than inferred): the introducing commit
+  # 94b3fc18 lists "revoked peer skip" as a behaviour with no rationale, and the
+  # code carries no comment. The Social Contract says the opposite three times —
+  # §5 commits to audit excerpts for a requesting peer's interactions with no
+  # carve-out, §11 "Exit and unbinding" lists "Local audit logs preserved per
+  # local retention policy" as a consequence OF revocation, and §12 states that
+  # revocation "does NOT retroactively revoke the acknowledgement — the contract
+  # remains the framework under which the peering operated for forensic and
+  # audit purposes". Preserving a revoked peer's trail is the documented
+  # commitment; excluding it was an oversight.
+  describe "a revoked peer's final window" do
+    it "seals the revocation event the peer itself emitted" do
+      peer.revoke!(reason: "remote signing key compromised")
+
+      event = ::System::FleetEvent.where(account: account, kind: "federation.peer.revoked").last
+      expect(event).to be_present,
+                       "expected revoke! to emit federation.peer.revoked via broadcast_peer_state!"
+
+      # 31 days on, so the revocation event is past the retention boundary.
+      described_class.run!(account: account, now: ::Time.current + 31.days)
+
+      expect(event.reload.payload["worm_shipped_at"]).to be_present,
+                                                         "the revocation event never reached the WORM archive"
+      shipment = ::System::FederationAuditShipment.where(federation_peer: peer).last
+      expect(shipment).to be_present
+      expect(event.payload["shipment_id"]).to eq(shipment.id)
+    end
+
+    # Eligibility, not timing: the boundary still holds for a revoked peer.
+    it "does not seal a revoked peer's events early, inside the hot window" do
+      peer.revoke!(reason: "offboarded")
+
+      result = described_class.run!(account: account, now: ::Time.current + 1.day)
+
+      expect(result.shipped).to eq(0)
+      expect(::System::FederationAuditShipment.where(federation_peer: peer)).to be_empty
+    end
+
+    # ...and once its trail IS sealed, the peer drops out on its own. This is
+    # what keeps "sweep by unsealed work" from meaning "sweep every peer that
+    # ever existed, forever".
+    it "drops out of the sweep once its final events are sealed" do
+      peer.revoke!(reason: "offboarded")
+      described_class.run!(account: account, now: ::Time.current + 31.days)
+
+      result = described_class.run!(account: account, now: ::Time.current + 60.days)
+
+      expect(result.swept_peers).to eq(0)
+      expect(result.shipped).to eq(0)
+    end
+  end
+
   describe "#run!" do
     it "ships events older than the 30-day cutoff and stamps source rows" do
       old_event = make_event(peer_id: peer.id, emitted_at: cutoff - 1.day)
@@ -144,13 +207,37 @@ RSpec.describe ::Federation::AuditShipmentService, type: :service do
       expect(theirs.event_count).to eq(1)
     end
 
-    it "skips revoked peers" do
+    # IMP-e7c366624710 — DELIBERATE BEHAVIOUR CHANGE, not a loosened assertion.
+    #
+    # This example used to revoke a peer, give it a shippable event, and assert
+    # that NOTHING was swept or shipped. It described the implementation
+    # accurately; the implementation contradicted the Social Contract (§5, §11,
+    # §12 — see the "revoked peer's final window" block above), and the peer
+    # whose trail matters most in a dispute was the one guaranteed to be
+    # missing from the archive. A revoked peer holding unsealed events is now
+    # swept precisely so that trail is preserved.
+    #
+    # What the example was really protecting — that a finished peer is not
+    # swept forever — is still a real property and is what it now pins: with
+    # nothing left to seal, a revoked peer is skipped. Eligibility is unsealed
+    # work, so this holds for ANY peer with an empty queue, revoked or not.
+    it "skips a revoked peer that has nothing left to seal" do
+      peer.update!(status: "revoked")
+
+      result = described_class.run!(account: account, now: now)
+
+      expect(result.swept_peers).to eq(0)
+      expect(result.shipped).to eq(0)
+    end
+
+    it "still sweeps a revoked peer that is holding unsealed events" do
       peer.update!(status: "revoked")
       make_event(peer_id: peer.id, emitted_at: cutoff - 1.day)
 
       result = described_class.run!(account: account, now: now)
-      expect(result.swept_peers).to eq(0)
-      expect(result.shipped).to eq(0)
+
+      expect(result.swept_peers).to eq(1)
+      expect(result.shipped).to eq(1)
     end
 
     it "writes a sha256-addressable seal file with the JSON-Lines content" do

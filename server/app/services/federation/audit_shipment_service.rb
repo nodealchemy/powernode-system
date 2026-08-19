@@ -64,8 +64,42 @@ module Federation
 
     private
 
+    # ELIGIBILITY IS UNSEALED WORK, NOT PEER STATUS (IMP-e7c366624710).
+    #
+    # This used to be `where.not(status: %w[revoked])`, which composed with the
+    # retention boundary into a hole exactly where the archive matters most.
+    # An event becomes sealable at emitted_at + 30d. Everything a peer emits in
+    # its final 30 days — up to and including `federation.peer.revoked` itself,
+    # severity "high", the one event an operator opens the log to explain — is
+    # still inside the hot window at revocation; by the time it ages out the
+    # peer is `revoked`, and V1_TRANSITIONS makes that terminal ("revoked" =>
+    # []), so it never re-enters the scope. Those events were never selected,
+    # never sealed, never stamped: they simply sat in system_fleet_events until
+    # something pruned the table.
+    #
+    # The exclusion was not deliberate. The introducing commit (94b3fc18) lists
+    # "revoked peer skip" as a behaviour with no rationale and the code carried
+    # no comment, while the Social Contract this service implements says the
+    # opposite three times: §5 commits to audit excerpts for a peer's
+    # interactions with no carve-out, §11 lists "Local audit logs preserved per
+    # local retention policy" as a consequence OF revocation, and §12 keeps the
+    # contract in force after revocation "for forensic and audit purposes".
+    #
+    # So a peer is swept while it still has shippable events and drops out on
+    # its own once they are sealed — no status special-case in either direction,
+    # and no peer swept forever merely for having existed.
+    #
+    # This narrows what `swept_peers` counts: it was "every non-revoked peer",
+    # it is now "every peer with work to do". A sweep over an idle fleet reports
+    # 0 rather than the peer count, which is the more useful of the two numbers
+    # and the only one that stays true as the fleet grows.
     def peer_scope
-      scope = ::System::FederationPeer.where.not(status: %w[revoked])
+      correlated = shippable_events
+        .select("1")
+        .where("system_fleet_events.account_id = system_federation_peers.account_id")
+        .where("system_fleet_events.payload->>'federation_peer_id' = system_federation_peers.id::text")
+
+      scope = ::System::FederationPeer.where(correlated.arel.exists)
       scope = scope.where(account: @account) if @account
       scope
     end
@@ -113,16 +147,29 @@ module Federation
       raise
     end
 
+    # What "shippable" MEANS: past the retention boundary and not yet sealed.
+    # Peer-independent on purpose — #peer_scope's eligibility test and
+    # #events_for_peer's fetch are both built from this one relation, so the
+    # sweep cannot decide a peer has work by a rule the fetch disagrees with.
+    # Two hand-written copies of this predicate is how a peer gets swept every
+    # tick and ships nothing, or worse, is passed over while holding work.
+    #
+    # Columns are table-qualified because this relation is also used as a
+    # correlated subquery beside system_federation_peers.
+    def shippable_events
+      ::System::FleetEvent
+        .where("system_fleet_events.emitted_at < ?", @cutoff)
+        .where("(system_fleet_events.payload->>'worm_shipped_at') IS NULL")
+    end
+
     # Pick FleetEvent rows for this peer that are older than the cutoff
     # AND not yet stamped as worm_shipped_at. The "for this peer" filter
     # matches FleetEvents whose payload.federation_peer_id is this peer
     # (every federation emitter now stamps that canonical key).
     def events_for_peer(peer)
-      ::System::FleetEvent
+      shippable_events
         .where(account_id: peer.account_id)
-        .where("emitted_at < ?", @cutoff)
         .where("payload->>'federation_peer_id' = ?", peer.id)
-        .where("(payload->>'worm_shipped_at') IS NULL")
         .order(:emitted_at)
         .limit(5_000)
     end
