@@ -19,6 +19,15 @@ RSpec.describe "Api::V1::System::Sdwan::FederationPeers", type: :request do
           headers: auth_headers_for(as).merge("Content-Type" => "application/json")
   end
 
+  # Same PATCH, but the caller controls the WHOLE body — needed for the two
+  # fields that are not peer columns and may ride either beside the peer body
+  # or inside it (the revocation reason, the acceptance token).
+  def patch_raw(peer, body, as:)
+    patch "/api/v1/system/sdwan/federation_peers/#{peer.id}",
+          params: body.to_json,
+          headers: auth_headers_for(as).merge("Content-Type" => "application/json")
+  end
+
   describe "GET /api/v1/system/sdwan/federation_peers" do
     it "forbids callers without sdwan.federation.read" do
       get "/api/v1/system/sdwan/federation_peers", headers: auth_headers_for(stranger)
@@ -137,6 +146,85 @@ RSpec.describe "Api::V1::System::Sdwan::FederationPeers", type: :request do
         expect(peer.reload.status).to eq("proposed")
         expect(peer.acceptance_token_digest).to be_present, "single-use token was consumed by a refused acceptance"
       end
+
+      # IMP-8df377f7d255 — the REST accept surface could not COMPLETE the flow
+      # it refuses above.
+      #
+      # gated_accept! called acceptance_token_error(nil) — hard-coded — and
+      # peer_update_params never permitted acceptance_token, so there was no way
+      # to supply one. Since ProposeFederationPeer mints a token by default,
+      # every REST-proposed peer carries a digest and PATCH {status: "accepted"}
+      # 422'd unconditionally: MCP was the only surface that could accept a
+      # token-protected peer, and the 422's own text said so.
+      #
+      # The token is NOT a peer column, so it is read beside peer_update_params
+      # the same way the revocation reason is — permitting it there would send
+      # it into @peer.update on the ordinary edit path and into the executor's
+      # ride-along attributes, both of which would raise on an unknown attribute.
+      context "with a Phase 11b acceptance token" do
+        let(:plaintext) { peer.generate_acceptance_token! }
+
+        it "defers the acceptance when the correct token rides beside the peer body" do
+          token = plaintext
+
+          expect {
+            patch_raw(peer, { federation_peer: { status: "accepted" }, acceptance_token: token }, as: manager)
+          }.to change(Ai::DeferredOperation, :count).by(1)
+
+          expect(response).to have_http_status(:accepted)
+          expect(peer.reload.status).to eq("proposed"), "acceptance bypassed the approval gate"
+
+          deferred = Ai::DeferredOperation.order(created_at: :desc).first
+          expect(deferred.params["acceptance_token"]).to eq(token),
+                                                         "the token was dropped between the controller and the executor"
+          expect(deferred.params["attributes"]).not_to include("acceptance_token"),
+                                                       "the token leaked into the ride-along attributes accept! writes"
+        end
+
+        it "accepts the token-protected peer once the deferred op is approved" do
+          token = plaintext
+          patch_raw(peer, { federation_peer: { status: "accepted" }, acceptance_token: token }, as: manager)
+          approve_latest_deferred!
+
+          expect(peer.reload.status).to eq("accepted"), "approved acceptance left the peer proposed"
+          expect(peer.acceptance_token_digest).to be_nil, "the single-use token was not consumed"
+          expect(peer.metadata["acceptance_token_used"]).to be(true)
+        end
+
+        it "reads the token from inside the peer body too" do
+          token = plaintext
+
+          patch_raw(peer, { federation_peer: { status: "accepted", acceptance_token: token } }, as: manager)
+
+          expect(response).to have_http_status(:accepted)
+        end
+
+        it "refuses a wrong token up front, before the gate, without consuming it" do
+          plaintext # mint
+
+          expect {
+            patch_raw(peer, { federation_peer: { status: "accepted" }, acceptance_token: "not-the-token" },
+                      as: manager)
+          }.not_to change(Ai::DeferredOperation, :count)
+
+          expect(response).to have_http_status(:unprocessable_content)
+          expect(response.body).to match(/does not match stored digest/)
+          expect(peer.reload.acceptance_token_digest).to be_present
+          expect(peer.status).to eq("proposed")
+        end
+
+        it "refuses an expired token up front" do
+          plaintext
+          peer.update!(acceptance_token_expires_at: 1.minute.ago)
+
+          expect {
+            patch_raw(peer, { federation_peer: { status: "accepted" }, acceptance_token: plaintext }, as: manager)
+          }.not_to change(Ai::DeferredOperation, :count)
+
+          expect(response).to have_http_status(:unprocessable_content)
+          expect(response.body).to match(/expired/)
+        end
+      end
     end
 
     # The mirror image of acceptance: revocation WITHDRAWS trust, and both
@@ -152,12 +240,6 @@ RSpec.describe "Api::V1::System::Sdwan::FederationPeers", type: :request do
       # The reason is not a peer column, so it can arrive either beside the
       # peer body (mirroring POST /revoke) or inside it (the natural shape for
       # a client that wraps everything). Both are threaded.
-      def patch_raw(peer, body, as:)
-        patch "/api/v1/system/sdwan/federation_peers/#{peer.id}",
-              params: body.to_json,
-              headers: auth_headers_for(as).merge("Content-Type" => "application/json")
-      end
-
       it "defers the revocation through the approval gate instead of writing it inline" do
         patch_peer(accepted, { status: "revoked" }, as: manager)
 

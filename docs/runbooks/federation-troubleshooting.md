@@ -34,7 +34,25 @@ Hand the new token off again. If you're scripting accepts, generate the token th
 
 **What happened:** B's accept call didn't include the `acceptance_token` parameter at all, but A's peer record requires one.
 
-**Fix:** include the token in the accept call. From the UI, the "Accept Peer" form has a token field — make sure it's filled. From MCP, pass `acceptance_token: "..."` to `system_sdwan_accept_federation_peer`.
+**Fix:** include the token in the accept call.
+
+- **MCP:** pass `acceptance_token: "..."` to `system_sdwan_accept_federation_peer`.
+- **REST:** send it with the accept PATCH, either beside the peer body or inside it:
+
+  ```bash
+  curl -X PATCH .../api/v1/system/sdwan/federation_peers/<id> \
+    -H 'Content-Type: application/json' \
+    -d '{"federation_peer": {"status": "accepted"}, "acceptance_token": "<token from A>"}'
+  ```
+
+  Both surfaces verify the token BEFORE parking the approval, so a wrong or
+  expired token returns 422 immediately and does not consume the single-use
+  token. A correct one returns 202 and the peer flips to `accepted` once the
+  approval is granted.
+
+There is no "Accept Peer" UI form — this doc previously said there was. The
+federation peer surface has no frontend at all (IMP-8df377f7d255); MCP and REST
+are the two ways in.
 
 **Note:** Phase 11a drill-mode peers (no digest set) accept any caller. If you're in a sandbox and want to skip the token round-trip, omit `generate_acceptance_token!` in step 2 of [setup](./federation-setup.md) — but never do this in production.
 

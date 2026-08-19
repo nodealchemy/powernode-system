@@ -146,32 +146,48 @@ module Api
           # Sdwan::Executors::AcceptFederationPeer owns the state change and
           # this lambda only renders (IMP-322999495307).
           #
-          # The REST surface collects no acceptance token, so a peer carrying a
-          # Phase 11b acceptance_token_digest cannot be accepted here at all —
-          # #create mints one by default (ProposeFederationPeer generates unless
-          # attributes[:generate_token] is false), so that is the COMMON case,
-          # not an edge one. The inline `@peer.update(status: "accepted")` this
-          # replaces never reached accept! and so skipped that verification
-          # entirely; routing through the executor closes the bypass.
+          # A peer carrying a Phase 11b acceptance_token_digest needs the
+          # plaintext token, and #create mints one by default
+          # (ProposeFederationPeer generates unless attributes[:generate_token]
+          # is false) — so that is the COMMON case, not an edge one. The inline
+          # `@peer.update(status: "accepted")` this replaces never reached
+          # accept! and so skipped that verification entirely; routing through
+          # the executor closes the bypass.
+          #
+          # IMP-8df377f7d255 — this used to pass a hard-coded nil, and
+          # peer_update_params never permitted acceptance_token, so the check
+          # below could only ever fail: PATCH {status: "accepted"} 422'd
+          # unconditionally for every default-token peer and MCP was the only
+          # surface that could complete the flow. The 422 was the right call
+          # (see below) but it left this surface unable to do the job it exists
+          # for.
           #
           # It has to be refused UP FRONT rather than at execution: on the
           # :pending path the executor runs from
           # Ai::ApprovalRequest#notify_source_of_decision, which rescues and only
           # logs — an operator would approve, get 200, and never learn the peer
-          # stayed proposed.
+          # stayed proposed. The executor re-runs the same check when it finally
+          # executes; that is the one that enforces.
+          #
+          # The plaintext rides on the deferred operation because the single-use
+          # token has to outlive the approval window to be verified and consumed
+          # there — the same convention as the MCP path. It is not stored in the
+          # clear anywhere an approver reads it: Ai::SensitiveParams.filter runs
+          # at approval-request serialization and masks any key containing
+          # "token". Token-handling hardening beyond that belongs to
+          # IMP-b44483c3c098, not here.
           def gated_accept!
-            if (token_error = @peer.acceptance_token_error(nil))
-              return render_error(
-                "#{token_error}; accept it through system_sdwan_accept_federation_peer, " \
-                "which carries the token",
-                status: :unprocessable_content
-              )
+            token = acceptance_token_param
+
+            if (token_error = @peer.acceptance_token_error(token))
+              return render_error(token_error, status: :unprocessable_content)
             end
 
             gate!(
               action_category: ::Sdwan::Executors::AcceptFederationPeer::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::AcceptFederationPeer",
-              params: { federation_peer_id: @peer.id, attributes: peer_update_params.to_h.except("status") },
+              params: { federation_peer_id: @peer.id, acceptance_token: token,
+                        attributes: peer_update_params.to_h.except("status") },
               source_type: "System::FederationPeer",
               source_id: @peer.id,
               description: "Accept federation peer #{@peer.remote_instance_url}",
@@ -225,6 +241,17 @@ module Api
           # nesting choice.
           def revocation_reason_param
             params[:reason].presence || params.dig(:federation_peer, :reason).presence
+          end
+
+          # Same shape, same reason: the acceptance token is NOT a peer column.
+          #
+          # Deliberately read here rather than added to peer_update_params —
+          # permitting it there would carry it into `@peer.update` on the
+          # ordinary edit path AND into the executor's ride-along attributes,
+          # and both call update! with it, which raises on an unknown attribute.
+          # Reading both nestings also matches what a form-shaped client sends.
+          def acceptance_token_param
+            params[:acceptance_token].presence || params.dig(:federation_peer, :acceptance_token).presence
           end
 
           def set_peer
