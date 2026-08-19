@@ -970,10 +970,36 @@ case "$MODULE" in
     export PATH="/usr/local/go/bin:${PATH}"
     export GOTOOLCHAIN=local
     go version
+    # IMP-f1c1e6d61104 follow-up — STAMP A REAL BUILD IDENTITY.
+    #
+    # cmd/powernode-agent/main.go declares Version/GitCommit/BuildDate as
+    # -ldflags -X targets and its comment claims the Gitea workflow stamps
+    # them. This build path — the one that actually produces the binary the
+    # fleet runs — did not, so every instance heartbeated agent_version "dev"
+    # and nothing server-side could stage a change by agent capability. That
+    # cost two diagnoses: whether the fleet carries the hot-add reconcile work,
+    # and whether the convergence-failure change is live.
+    #
+    # `--verify` is load-bearing here for the same reason it is at the
+    # core-provenance probe above: a BARE `git rev-parse HEAD` outside a repo
+    # prints the literal string "HEAD" and reads like an answer, which is how a
+    # placeholder becomes a fleet-wide constant in the first place.
+    agent_source_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
+    : "${agent_source_sha:=unknown}"
+    agent_build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # Version stays human-readable and sorts by build; GitCommit carries the
+    # exact ref. Both, because a sha alone cannot be compared for "at or past".
+    agent_version_str="${agent_build_date%T*}-${agent_source_sha:0:12}"
+    echo "[stage-1.5] stamping agent version=${agent_version_str} commit=${agent_source_sha}"
+
     echo "[stage-1.5] cross-compiling powernode-agent for amd64…"
     ( cd agent && \
       CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-      /usr/local/go/bin/go build -trimpath -ldflags '-s -w' \
+      /usr/local/go/bin/go build -trimpath \
+        -ldflags "-s -w \
+          -X main.Version=${agent_version_str} \
+          -X main.GitCommit=${agent_source_sha} \
+          -X main.BuildDate=${agent_build_date}" \
         -o /tmp/powernode-agent ./cmd/powernode-agent )
     # Hard guard: the agent binary IS this module's payload. If the
     # build silently produced nothing, fail loudly here rather than
