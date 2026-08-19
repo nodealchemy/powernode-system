@@ -326,8 +326,22 @@ module System
       # human to act, rather than resolving on a fleet tick's timescale: the
       # per-module consent budget is not consumed (below), and an operator's
       # decision on the request is durable (create_pending_approval).
+      # DECLARED SUPPRESSION CAUSES (IMP-fec9abb225c6).
+      #
+      # #create_pending_approval returns nil down four different paths, and from
+      # the outside every one of them looks identical: decision: :pending with no
+      # decision_record. A caller that has to ACT on the difference — the
+      # adaptation lane raises an operator alarm on it — was left inferring, and
+      # inferred wrong: it reported an operator's own rejection as a missing
+      # policy. The cause is now stated rather than guessed.
+      SUPPRESSION_REJECTION_COOLDOWN = "rejection_cooldown"
+      SUPPRESSION_SETTLED_ADVISORY   = "settled_advisory"
+      SUPPRESSION_NO_REQUEST_STORE   = "no_chain_or_request_store"
+
       def gate_action!(action_category, metadata: {}, reasoning: {}, temporal_context: {},
                        force_policy: nil, advisory: false)
+        @suppression = nil
+
         unless permitted_actions.include?(action_category)
           Rails.logger.warn("[FleetAutonomy] Action '#{action_category}' not in agent '#{agent.name}' policies — blocked")
           return { decision: :blocked, reason: "not_permitted" }
@@ -358,7 +372,8 @@ module System
               temporal_context: temporal_context
             )
             return { decision: :pending, gate: "consent_budget_exhausted",
-                     decision_record: request, budget_reason: consent.reason }
+                     decision_record: request, budget_reason: consent.reason,
+                     suppression: @suppression }
           end
         end
 
@@ -382,7 +397,10 @@ module System
             temporal_context: temporal_context,
             advisory: advisory
           )
-          { decision: :pending, gate: "require_approval", decision_record: request }
+          # `suppression` is nil whenever a request was actually minted; it names
+          # WHY not when one wasn't.
+          { decision: :pending, gate: "require_approval", decision_record: request,
+            suppression: @suppression }
         when "block", "silent"
           { decision: :blocked, gate: result[:policy] }
         else
@@ -516,7 +534,12 @@ module System
       end
 
       def create_pending_approval(action_category:, metadata:, reasoning:, temporal_context:, advisory: false)
-        return nil unless defined?(::Ai::ApprovalRequest)
+        @suppression = nil
+
+        unless defined?(::Ai::ApprovalRequest)
+          @suppression = SUPPRESSION_NO_REQUEST_STORE
+          return nil
+        end
 
         request_data = {
           "action_category" => action_category,
@@ -542,6 +565,7 @@ module System
           if advisory && (settled = settled_advisory_request(action_category, name, value))
             Rails.logger.info("[FleetAutonomy] Skipped advisory #{action_category} for #{name}=#{value} — " \
                               "already #{settled.status} (durable operator decision)")
+            @suppression = SUPPRESSION_SETTLED_ADVISORY
             return nil
           end
 
@@ -559,6 +583,7 @@ module System
               [ "request_data->>'action_category' = ? AND request_data->'payload'->>? = ?",
                action_category, name, value ])
             Rails.logger.info("[FleetAutonomy] Skipped #{action_category} for #{name}=#{value} — rejected within cooldown")
+            @suppression = SUPPRESSION_REJECTION_COOLDOWN
             return nil
           end
         end
@@ -567,11 +592,15 @@ module System
         if recently_rejected_approval?(action_category,
             [ "request_data->>'action_category' = ?", action_category ])
           Rails.logger.info("[FleetAutonomy] Skipped #{action_category} — rejected within cooldown")
+          @suppression = SUPPRESSION_REJECTION_COOLDOWN
           return nil
         end
 
         chain = fleet_approval_chain
-        return nil unless chain
+        unless chain
+          @suppression = SUPPRESSION_NO_REQUEST_STORE
+          return nil
+        end
 
         request = chain.create_request!(
           source_type: SOURCE_TYPE,

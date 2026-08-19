@@ -1938,6 +1938,67 @@ RSpec.describe System::Fleet::DecisionEngine do
       expect(pending.validated_at).to be_present
     end
 
+    # IMP-fec9abb225c6 (2) — THE MISLABELLED ALARM.
+    #
+    # held_with_nothing_to_act_on was INFERRED from (gate == ROUTED &&
+    # approval_request_id.nil?). Three different things produce that shape, and
+    # only one of them is a policy gap:
+    #
+    #   * the gate's :blocked arm      — no permitting policy   (a real gap)
+    #   * :pending, request nil        — rejected cooldown       (you just said no)
+    #   * :pending, request nil        — no chain / request store
+    #
+    # The hinge is create_pending_approval returning nil while gate_action! still
+    # reports decision: :pending. Immediately after an operator REJECTS an
+    # adaptation the mission re-proposes, the cooldown suppresses the request,
+    # and the lane raised a HIGH-severity event whose payload said "no permitting
+    # policy" — sending an operator hunting a configuration gap that does not
+    # exist while the truth is that they had just declined it.
+    #
+    # So the gate now DECLARES its cause (the same discipline core already
+    # applies to `authority`) and the engine branches on it, rather than editing
+    # a detail string that nothing parses.
+    context "when the request is suppressed by the rejection cooldown" do
+      let!(:chain) do
+        Ai::ApprovalChain.create!(
+          account: account, name: "Fleet Autonomy Actions", trigger_type: "autonomy_action",
+          status: "active", is_sequential: true, timeout_action: "reject", timeout_hours: 4,
+          steps: [ { "name" => "Operator Approval", "approvers" => [ "*" ], "required_approvals" => 1 } ]
+        )
+      end
+
+      before do
+        # The policy PERMITS the category and asks for a human — this is the
+        # configuration an operator who hit the high-severity alarm would be
+        # told to go and create. It is already here.
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "project.scale_horizontal",
+                                       policy: "require_approval", is_active: true)
+
+        # ...and they already answered. A rejection inside decision_ttl_for
+        # (1h for a non-advancement action) is what silences the next mint.
+        Ai::ApprovalRequest.create!(
+          account: account, approval_chain: chain, request_id: SecureRandom.uuid,
+          source_type: "system_fleet", source_id: "project.scale_horizontal",
+          status: "rejected", completed_at: 5.minutes.ago,
+          description: "adaptation",
+          request_data: { "action_category" => "project.scale_horizontal",
+                          "payload" => { "mission_id" => mission.id } }
+        )
+      end
+
+      it "reports the operator's own rejection rather than a phantom policy gap" do
+        expect { decide_slo_violation }
+          .to change { System::FleetEvent.where(kind: "fleet.adaptation_blocked").count }.by(1)
+
+        event = System::FleetEvent.where(kind: "fleet.adaptation_blocked").last
+        expect(event.payload["cause"]).to eq("suppressed_by_rejection_cooldown")
+        expect(event.severity).to eq("low"),
+                                  "an operator's own rejection is not a high-severity configuration alarm"
+        expect(event.payload["detail"].to_s).not_to match(/blocked by policy/)
+      end
+    end
+
     # The blocked arm had no reader. applied: false is honest but inert, so the
     # only symptom of a missing policy was a mission that silently never
     # adapted. It has to say so out loud.
@@ -1950,6 +2011,39 @@ RSpec.describe System::Fleet::DecisionEngine do
       expect(event.payload["mission_id"]).to eq(mission.id)
       expect(event.payload["action_category"]).to eq("project.scale_horizontal")
       expect(event.payload["detail"]).to match(/blocked by policy/)
+      expect(event.payload["cause"]).to eq("policy_blocked")
+    end
+
+    # IMP-fec9abb225c6 (3) — THE UNBOUNDED ALARM.
+    #
+    # The escalation's comment claimed dedup happened "through the ordinary
+    # fleet event path". EventBroadcaster.emit! does none — it create!s a row
+    # unconditionally and never reads correlation_id — so the only throttle was
+    # the 600s decide cache. The brake is deliberately held, so the SAME plan
+    # re-blocks on every tick: ~144 high-severity rows/day for one mission
+    # missing one policy.
+    it "raises ONE event for a plan that keeps re-blocking, not one per tick" do
+      expect {
+        decide_slo_violation
+        # A second breach on a different fingerprint (the decide cache would
+        # swallow a repeat of the first) folds into the SAME still-blocked plan
+        # and re-offers it to the gate — the re-block this alarm storms on.
+        engine.decide(kind: "system.project_cost_breach", severity: :high,
+                      payload: { "mission_id" => mission.id, "observed_usd" => 260.0,
+                                 "target_usd" => 200.0, "breach_pct" => 30.0 },
+                      fingerprint: "project_cost_breach:#{mission.id}")
+      }.to change { System::FleetEvent.where(kind: "fleet.adaptation_blocked").count }.by(1)
+    end
+
+    # The dedup gate fails CLOSED, unlike the decide cache it sits next to.
+    # A cache we cannot read is not a licence to emit every 60s — failing open
+    # here lifts the storm to 1440/day exactly when the platform is already
+    # unhealthy enough to have lost its cache.
+    it "suppresses the alarm when the dedup cache is broken" do
+      allow(Rails.cache).to receive(:exist?).and_raise(Redis::BaseConnectionError.new("no cache"))
+
+      expect { decide_slo_violation }
+        .not_to change { System::FleetEvent.where(kind: "fleet.adaptation_blocked").count }
     end
 
     # An unrelated second breach absorbed by the in-flight plan must not be
@@ -1963,7 +2057,30 @@ RSpec.describe System::Fleet::DecisionEngine do
                            fingerprint: "project_cost_breach:#{mission.id}")
 
       expect(cost[:remediation][:superseded_by_change_type]).to eq("scale_horizontal")
-      expect(cost[:remediation][:reason]).to match(/project_cost_breach folded into the in-flight/)
+      expect(cost[:remediation][:folded_into]).to match(/project_cost_breach folded into the in-flight/)
+    end
+
+    # IMP-fec9abb225c6 (4) — the fold used to overwrite `reason` unconditionally.
+    #
+    # `reason` is dispatch_adaptation!'s ONLY statement of why nothing moved; it
+    # is present precisely when applied is false. Overwriting it said "folded
+    # into the in-flight proposal" for a plan that was itself policy-blocked —
+    # indistinguishable from a healthy fold into a plan that IS progressing, and
+    # the same ambiguity dispatch_adaptation! documents as a past bug. The fold
+    # note now rides its own key so both facts survive.
+    it "keeps the blocked plan's own reason when it absorbs a different breach" do
+      decide_slo_violation # gate blocks: no project.scale_horizontal policy here
+
+      cost = engine.decide(kind: "system.project_cost_breach", severity: :high,
+                           payload: { "mission_id" => mission.id, "observed_usd" => 260.0,
+                                      "target_usd" => 200.0, "breach_pct" => 30.0 },
+                           fingerprint: "project_cost_breach:#{mission.id}")
+
+      expect(cost[:remediation][:applied]).to be(false),
+                                              "fixture drifted — this example needs a plan that did NOT proceed"
+      expect(cost[:remediation][:reason]).to match(/blocked by policy/),
+                                             "the fold clobbered the only statement of why nothing moved"
+      expect(cost[:remediation][:folded_into]).to match(/project_cost_breach folded into the in-flight/)
     end
 
     # The most dangerous thing this lane could do is create a goal the autonomy

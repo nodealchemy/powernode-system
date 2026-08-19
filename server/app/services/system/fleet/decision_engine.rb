@@ -1243,7 +1243,12 @@ module System
         closed = TERMINAL_PLAN_STATUSES.include?(plan.reload.status.to_s)
         applied = progressing && !held_with_nothing_to_act_on && !closed
 
-        escalate_blocked_adaptation!(mission, plan, result[:detail]) if held_with_nothing_to_act_on
+        # The gate DECLARES why it minted nothing (IMP-fec9abb225c6). Reading it
+        # is the whole difference between "your fleet has no policy for this"
+        # and "you declined this ten minutes ago".
+        if held_with_nothing_to_act_on
+          escalate_blocked_adaptation!(mission, plan, result[:detail], result[:cause])
+        end
 
         {
           applied: applied,
@@ -1315,10 +1320,36 @@ module System
         # Finding 5: a SECOND, unrelated breach absorbed by this plan must not be
         # reported as though the plan addressed it. A cost breach folded into an
         # outstanding scale-out gets the scale-out's ids, so say whose plan it is.
-        result.merge(
+        #
+        # IMP-fec9abb225c6 (4) — the fold note rides its OWN key.
+        #
+        # It used to be merged over `reason`, unconditionally. But `reason` is
+        # dispatch_adaptation!'s only statement of why nothing moved, and it is
+        # emitted precisely when applied is false — so the clobber destroyed the
+        # explanation in exactly the cases that have one. A cost breach folded
+        # into a policy-BLOCKED scale-out reported applied: false with reason
+        # "folded into the in-flight proposal", which is indistinguishable from
+        # the healthy fold into a plan that IS progressing, and re-introduces the
+        # ambiguity dispatch_adaptation! documents as a past bug.
+        #
+        # Both facts are true at once and both are worth reporting: the signal
+        # WAS folded, and the plan it folded into is going nowhere.
+        folded = result.merge(
           superseded_by_change_type: plan_change_type(plan),
-          reason: "#{signal.kind} folded into the in-flight #{plan_change_type(plan)} proposal"
+          folded_signal_kind: signal.kind.to_s,
+          folded_into: fold_note(signal, plan)
         )
+
+        # When the plan IS progressing there is no reason key to protect (the
+        # hash is compacted), so the fold note becomes the reason — the original
+        # intent, kept.
+        return folded if folded[:reason].present?
+
+        folded.merge(reason: fold_note(signal, plan))
+      end
+
+      def fold_note(signal, plan)
+        "#{signal.kind} folded into the in-flight #{plan_change_type(plan)} proposal"
       end
 
       def plan_change_type(plan)
@@ -1332,6 +1363,34 @@ module System
         data = plan.plan_data.is_a?(Hash) ? plan.plan_data : {}
         data["signal_kind"].to_s != signal.kind.to_s
       end
+
+      # Causes that are NOT an operator-actionable configuration gap. An operator
+      # who has just rejected an adaptation does not need a high-severity page
+      # telling them the adaptation did not happen — they know; they are the
+      # reason. It still emits, quietly, because a lane that stays suppressed
+      # long after the cooldown should be visible somewhere.
+      #
+      # Everything else — including an ABSENT cause — stays high. Not knowing
+      # why nothing was minted is worth reporting, and this alarm exists
+      # precisely because a silent failure had its alarm switched off.
+      QUIET_BLOCK_CAUSES = [ ::System::AdaptationGate::CAUSE_REJECTION_COOLDOWN ].freeze
+
+      # One alarm per plan per window, not per tick.
+      #
+      # The comment here used to claim dedup happened "through the ordinary
+      # fleet event path". EventBroadcaster.emit! does none: it unconditionally
+      # create!s a FleetEvent and never reads correlation_id for suppression, so
+      # passing a fingerprint was a no-op. The only throttle was the engine's
+      # 600s decide cache, and since the brake is deliberately held, the same
+      # plan re-blocked every tick — ~144 high-severity rows/day for ONE mission
+      # missing ONE policy, and up to ~432 for a mission breaching on three
+      # fingerprints. (The rejection variant is lower, ~29/day, because each
+      # cycle composes a fresh plan rather than re-offering one.)
+      #
+      # Keyed per PLAN, per the operator direction. A closed-and-recomposed plan
+      # gets a new id and therefore one event per cycle — intended: that is a
+      # genuinely new proposal being blocked, not the same one shouting.
+      BLOCKED_ALARM_TTL_SECONDS = (ENV["FLEET_BLOCKED_ALARM_TTL_SECONDS"] || 6 * 60 * 60).to_i
 
       # The blocked arm has no reader, so it needs a voice.
       #
@@ -1347,16 +1406,20 @@ module System
       # the gate every tick, so adding the policy dispatches the plan that is
       # already composed. Releasing instead would recompose a fresh plan every
       # dedup TTL and re-block it — churn in place of a fix.
-      def escalate_blocked_adaptation!(mission, plan, detail)
+      def escalate_blocked_adaptation!(mission, plan, detail, cause = nil)
+        cause = cause.to_s.presence || ::System::AdaptationGate::CAUSE_UNKNOWN
+        return unless claim_blocked_alarm!(plan)
+
         ::System::Fleet::EventBroadcaster.emit!(
           account: account,
           kind: "fleet.adaptation_blocked",
-          severity: :high,
+          severity: (QUIET_BLOCK_CAUSES.include?(cause) ? :low : :high),
           payload: {
             "mission_id" => mission.id,
             "plan_id" => plan.id,
             "change_type" => plan_change_type(plan),
             "action_category" => ::System::AdaptationGate.action_category_for(plan_change_type(plan).to_s),
+            "cause" => cause,
             "detail" => detail
           }.compact,
           source: "decision_engine.adaptation_blocked",
@@ -1364,6 +1427,31 @@ module System
         )
       rescue StandardError => e
         Rails.logger.warn("[FleetDecisionEngine] blocked-adaptation escalation failed: #{e.message}")
+      end
+
+      # FAILS CLOSED, unlike #recently_decided?.
+      #
+      # That asymmetry is deliberate. recently_decided? gates whether the fleet
+      # REMEDIATES, so a broken cache there must not stop the fleet acting — it
+      # returns false and the tick proceeds. This gates whether we SHOUT, and a
+      # cache we cannot read is not a licence to shout every 60s: failing open
+      # here is what would lift the storm from 144/day to 1440/day, precisely
+      # when the platform is already unhealthy enough to have lost its cache.
+      #
+      # A store with no cache API at all (NullStore) is a different case from a
+      # BROKEN one — there is no storm mechanism to arm and no dedup to be had,
+      # so it emits rather than going silent.
+      def claim_blocked_alarm!(plan)
+        return true unless Rails.cache.respond_to?(:exist?) && Rails.cache.respond_to?(:write)
+
+        key = "fleet:adaptation_blocked:#{account.id}:#{plan.id}"
+        return false if Rails.cache.exist?(key)
+
+        Rails.cache.write(key, Time.current.to_i.to_s, expires_in: BLOCKED_ALARM_TTL_SECONDS)
+        true
+      rescue StandardError => e
+        Rails.logger.warn("[FleetDecisionEngine] blocked-alarm dedup unavailable, suppressing: #{e.message}")
+        false
       end
 
       # Composed but never handed to a runner — a re-ask of the gate is exactly

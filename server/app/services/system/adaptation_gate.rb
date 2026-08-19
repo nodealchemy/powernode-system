@@ -76,6 +76,30 @@ module System
     # help, so the proposal has to be CLOSED rather than held — see #close_plan!.
     TERMINAL_REQUEST_STATUSES = %w[rejected expired cancelled].freeze
 
+    # DECLARED CAUSE for a ROUTED disposition that minted no request
+    # (IMP-fec9abb225c6). Three unrelated conditions produce that shape and the
+    # consumer has to tell them apart: one is a configuration gap worth waking
+    # somebody for, one is the operator's own answer, one is a missing chain.
+    #
+    # Declared, never inferred — the same discipline core already applies to
+    # `authority`. The consumer used to infer "no permitting policy" from
+    # (ROUTED && approval_request_id.nil?), which is true of all three, so an
+    # operator who had just REJECTED an adaptation was sent hunting a policy gap
+    # that did not exist.
+    CAUSE_POLICY_BLOCKED     = "policy_blocked"
+    CAUSE_REJECTION_COOLDOWN = "suppressed_by_rejection_cooldown"
+    CAUSE_NO_REQUEST_STORE   = "no_chain_or_request_store"
+    CAUSE_UNKNOWN            = "unknown"
+
+    # FleetAutonomyService's suppression vocabulary -> ours. Anything unmapped
+    # stays CAUSE_UNKNOWN, which the consumer treats as loudly as a real gap:
+    # not knowing why nothing was minted is itself worth reporting, and quieting
+    # by default is how the silent-failure this alarm exists for got in.
+    SUPPRESSION_CAUSES = {
+      ::System::Fleet::FleetAutonomyService::SUPPRESSION_REJECTION_COOLDOWN => CAUSE_REJECTION_COOLDOWN,
+      ::System::Fleet::FleetAutonomyService::SUPPRESSION_NO_REQUEST_STORE => CAUSE_NO_REQUEST_STORE
+    }.freeze
+
     FLEET_AGENT_NAME = "Fleet Autonomy"
 
     class << self
@@ -112,13 +136,25 @@ module System
             authority: AUTHORITY_POLICY,
             detail: "operator policy #{gate[:gate]}" }
         when :pending
-          { disposition: ROUTED, approval_request_id: gate[:decision_record]&.id,
-            detail: "awaiting operator decision (#{gate[:gate]})" }
+          request_id = gate[:decision_record]&.id
+          return { disposition: ROUTED, approval_request_id: request_id,
+                   detail: "awaiting operator decision (#{gate[:gate]})" } if request_id
+
+          # PENDING WITH NOTHING TO PEND ON. gate_action! reports :pending
+          # whenever the policy says require_approval, but create_pending_approval
+          # declines to mint inside the rejection cooldown and cannot mint at all
+          # without an approval chain. Nothing exists for an operator to answer,
+          # so this is a held plan with no holder — and the two causes want
+          # opposite handling, one quiet and one loud.
+          cause = SUPPRESSION_CAUSES.fetch(gate[:suppression].to_s, CAUSE_UNKNOWN)
+          { disposition: ROUTED, approval_request_id: nil, cause: cause,
+            detail: detail_for_cause(cause, gate) }
         else
           # :blocked — the policy forbids this category, or the agent does not
           # permit it. Not cleared, and deliberately NOT reported as an absent
           # gate: the gate answered, and the answer was no.
           { disposition: ROUTED, approval_request_id: nil,
+            cause: CAUSE_POLICY_BLOCKED,
             detail: "blocked by policy: #{gate[:gate].presence || gate[:reason]}" }
         end
       end
@@ -238,6 +274,20 @@ module System
       end
 
       private
+
+      # The operator-facing sentence for each cause. Kept beside the constants
+      # because the words are the whole point of the fix: the previous text said
+      # "blocked by policy" for every one of these.
+      def detail_for_cause(cause, gate)
+        case cause
+        when CAUSE_REJECTION_COOLDOWN
+          "suppressed by the rejection cooldown — an operator declined this recently"
+        when CAUSE_NO_REQUEST_STORE
+          "no fleet approval chain to route to (#{gate[:gate]})"
+        else
+          "held with no request minted (#{gate[:gate]})"
+        end
+      end
 
       def fleet_agent(account)
         ::Ai::Agent.resolve_for(account.id, name: FLEET_AGENT_NAME, agent_type: "monitor")
