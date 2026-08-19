@@ -91,7 +91,8 @@ module Federation
         federation_peer: peer,
         period_start:    period_start,
         period_end:      period_end,
-        status:          "pending"
+        status:          "pending",
+        metadata:        backfill_provenance(events)
       )
 
       jsonl = events.map { |e| serialize_event(e).to_json }.join("\n") + "\n"
@@ -124,6 +125,39 @@ module Federation
         .where("(payload->>'worm_shipped_at') IS NULL")
         .order(:emitted_at)
         .limit(5_000)
+    end
+
+    # IMP-592827c29ec4 — say WHY this period overlaps an already-sealed one.
+    #
+    # BackfillFederationPeerIdOnFleetEvents repaired peer-state events that were
+    # written under the legacy `peer_id` key and were therefore invisible to
+    # #events_for_peer. They are all older than the 30-day boundary, so they
+    # become shippable the moment they become visible — and #ship_for_peer!
+    # derives the period from the EVENTS' own timestamps, not from the sweep
+    # cutoff, so the period lands back inside one this peer already sealed.
+    #
+    # Nothing prevents that: the only constraint is period_end > period_start.
+    # An auditor comparing shipments would otherwise find two sealed receipts
+    # covering the same window with different contents and no explanation, which
+    # looks exactly like tampering. A complete archive that explains its own
+    # overlap is worth more than a tidy one with a hole in it.
+    #
+    # Absent for an ordinary shipment: a marker on every row would say nothing.
+    def backfill_provenance(events)
+      backfilled = events.count { |e| e.payload.is_a?(::Hash) && e.payload["payload_key_backfilled_at"].present? }
+      return {} if backfilled.zero?
+
+      task = events.filter_map { |e| e.payload["payload_key_backfill_task"] if e.payload.is_a?(::Hash) }.first
+
+      {
+        "backfilled_event_count" => backfilled,
+        "backfill_task"          => task,
+        "note"                   => "#{backfilled} of #{events.size} event(s) in this shipment were " \
+                                    "invisible to the sweep until their payload key was backfilled. " \
+                                    "This period is derived from their own timestamps and may OVERLAP " \
+                                    "an earlier sealed shipment for this peer; the overlap is expected " \
+                                    "and the two receipts are complementary, not contradictory."
+      }
     end
 
     def serialize_event(event)

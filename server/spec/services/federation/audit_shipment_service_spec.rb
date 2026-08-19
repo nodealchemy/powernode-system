@@ -47,6 +47,50 @@ RSpec.describe ::Federation::AuditShipmentService, type: :service do
     )
   end
 
+  # IMP-592827c29ec4 — backfilled events ship in OVERLAPPING periods, on purpose.
+  #
+  # The peer-state rows repaired by BackfillFederationPeerIdOnFleetEvents are
+  # older than the 30-day boundary, so the moment they become visible they ship
+  # — in a period derived from their OWN timestamps (#ship_for_peer!), which
+  # will overlap shipments already sealed for this peer. Nothing raises: the
+  # only constraint is period_end > period_start.
+  #
+  # The operator direction chose a complete-and-explained archive over either a
+  # silent gap or a silent overlap, so the shipment has to say why.
+  describe "backfilled events" do
+    def backfilled_event(emitted_at:)
+      ::System::FleetEvent.create!(
+        account: account, kind: "federation.peer.revoked", severity: "high",
+        emitted_at: emitted_at, source: "federation_peer",
+        payload: { "federation_peer_id" => peer.id,
+                   "peer_id" => peer.id,
+                   "payload_key_backfilled_at" => "2026-08-19T12:00:00Z",
+                   "payload_key_backfill_task" => "IMP-592827c29ec4" }
+      )
+    end
+
+    it "records on the shipment how many of its events were backfilled, and why that overlaps" do
+      backfilled_event(emitted_at: cutoff - 2.days)
+      make_event(peer_id: peer.id, emitted_at: cutoff - 1.day)
+
+      described_class.run!(account: account, now: now)
+
+      shipment = ::System::FederationAuditShipment.order(created_at: :desc).first
+      expect(shipment.metadata["backfilled_event_count"]).to eq(1)
+      expect(shipment.metadata["backfill_task"]).to eq("IMP-592827c29ec4")
+      expect(shipment.metadata["note"].to_s).to match(/overlap/i)
+    end
+
+    it "leaves the metadata clean for an ordinary shipment" do
+      make_event(peer_id: peer.id, emitted_at: cutoff - 1.day)
+
+      described_class.run!(account: account, now: now)
+
+      shipment = ::System::FederationAuditShipment.order(created_at: :desc).first
+      expect(shipment.metadata).not_to have_key("backfilled_event_count")
+    end
+  end
+
   describe "#run!" do
     it "ships events older than the 30-day cutoff and stamps source rows" do
       old_event = make_event(peer_id: peer.id, emitted_at: cutoff - 1.day)
