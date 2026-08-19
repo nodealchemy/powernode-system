@@ -142,6 +142,69 @@ type Reconciler struct {
 	// RunOnce that already holds mu.
 	selfHostMu      sync.Mutex
 	selfHostLatched bool
+
+	// IMP-f1c1e6d61104 — per-module convergence failures observed by the LAST
+	// pass, reset at the top of RunOnce. Read by the apply_config/sync task
+	// handler so a pass that did not converge the desired set FAILS the task
+	// instead of completing.
+	//
+	// Why this exists: every per-module failure below reports through
+	// cfg.OnError, which in service mode is a bare stderr printf — the platform
+	// never sees it. RunOnce returns an error only for whole-pass failures
+	// (fetch-assigned-modules, state lock, load state), so a pass that declined
+	// to materialize a module still returned nil and the task COMPLETED. The
+	// server's ConfigDriftSensor suppresses `system.config_drift` for a node on
+	// a completed apply_config, so a vacuous completion silenced real drift.
+	//
+	// Deliberately NOT folded into composeFailed: that flag is the boot-confirm
+	// bless gate (see ComposedOK) and covers attach/union-mount only. Widening
+	// it would make a scratch-budget abort block an image promotion, which is a
+	// different decision that nobody has taken.
+	//
+	// Its own mutex rather than mu: mu is held across the ENTIRE RunOnce body,
+	// and every writer below runs inside that body, so reusing mu would
+	// self-deadlock (sync.Mutex is not reentrant).
+	convergeMu       sync.Mutex
+	convergeFailures []string
+}
+
+// noteUnconverged records a convergence failure AND reports it through the
+// existing OnError sink, so adding the task-failure channel does not remove the
+// operator-facing log line any of these sites already produced.
+//
+// Recorded as a formatted string rather than a struct on purpose: the consumer
+// is tasks.ConvergenceReporter, and that interface lives in the tasks package
+// to avoid an import cycle — so it cannot name a type defined here.
+func (r *Reconciler) noteUnconverged(stage, moduleID string, err error) {
+	entry := stage
+	if moduleID != "" {
+		entry += " [" + moduleID + "]"
+	}
+	entry += ": " + err.Error()
+
+	r.convergeMu.Lock()
+	r.convergeFailures = append(r.convergeFailures, entry)
+	r.convergeMu.Unlock()
+	r.cfg.OnError(stage, err)
+}
+
+// resetConvergence clears the previous pass's failures. Called at the top of
+// RunOnce so the list always describes the pass the caller just ran, never an
+// older one.
+func (r *Reconciler) resetConvergence() {
+	r.convergeMu.Lock()
+	r.convergeFailures = nil
+	r.convergeMu.Unlock()
+}
+
+// ConvergenceFailures returns the failures observed by the last completed pass.
+// Satisfies tasks.ConvergenceReporter.
+func (r *Reconciler) ConvergenceFailures() []string {
+	r.convergeMu.Lock()
+	defer r.convergeMu.Unlock()
+	out := make([]string, len(r.convergeFailures))
+	copy(out, r.convergeFailures)
+	return out
 }
 
 // NewReconciler validates required fields and returns a Reconciler.
@@ -222,6 +285,9 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// IMP-f1c1e6d61104 — this pass's convergence verdict starts empty.
+	r.resetConvergence()
+
 	// E8: realize the durable-storage binding before module attaches,
 	// so any module unit start (e.g. postgres) finds its data
 	// directory already on the persistent mount. Best-effort: failure
@@ -250,11 +316,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		}
 		m, err := manifest.LoadOrFetch(r.cfg.ManifestClient, r.cfg.ManifestRoot, mod.ID, r.cfg.ManifestTTL)
 		if err != nil {
-			r.cfg.OnError("reconciler:fetch_manifest", fmt.Errorf("module %s: %w", mod.ID, err))
+			r.noteUnconverged("reconciler:fetch_manifest", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
 			continue
 		}
 		if m.Digest == "" {
-			r.cfg.OnError("reconciler:no_digest", fmt.Errorf("module %s has no digest (not published)", mod.ID))
+			r.noteUnconverged("reconciler:no_digest", mod.ID, fmt.Errorf("module %s has no digest (not published)", mod.ID))
 			continue
 		}
 		desired = append(desired, mount.Module{
@@ -493,12 +559,12 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	for _, mod := range attachStack {
 		mf, ok := manifests[mod.ID]
 		if !ok {
-			r.cfg.OnError("reconciler:missing_manifest", fmt.Errorf("module %s: manifest not loaded", mod.ID))
+			r.noteUnconverged("reconciler:missing_manifest", mod.ID, fmt.Errorf("module %s: manifest not loaded", mod.ID))
 			r.composeFailed.Store(true)
 			continue
 		}
 		if err := r.attachModule(ctx, mod, mf); err != nil {
-			r.cfg.OnError("reconciler:attach", fmt.Errorf("module %s: %w", mod.ID, err))
+			r.noteUnconverged("reconciler:attach", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
 			r.composeFailed.Store(true)
 			continue
 		}
@@ -525,7 +591,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		if err := r.attachModule(ctx, mod, mf); err != nil {
-			r.cfg.OnError("reconciler:reattach", fmt.Errorf("module %s: %w", mod.ID, err))
+			r.noteUnconverged("reconciler:reattach", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
 			continue
 		}
 		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
@@ -586,7 +652,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		} else {
 			overlay := &mount.Overlay{Layout: r.cfg.Layout, Runner: r.cfg.MountRunner}
 			if err := overlay.MountUnion(ctx, mount.ModuleStack(current.AttachedModules)); err != nil {
-				r.cfg.OnError("reconciler:union_mount", err)
+				r.noteUnconverged("reconciler:union_mount", "", err)
 				r.composeFailed.Store(true)
 				current.UnionMounted = false
 			} else {
@@ -1013,7 +1079,7 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 		return false
 	}
 	if mf.RebootRequired {
-		r.cfg.OnError("reconciler:reboot_pending",
+		r.noteUnconverged("reconciler:reboot_pending", mod.ID,
 			fmt.Errorf("module %s changed but reboot_required=true; a reboot (or `powernode-agent soft-recompose --execute`) is needed to apply", mod.ID))
 		return false
 	}
@@ -1034,7 +1100,7 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 		// themselves upperdir entries (one real incident produced 14,494
 		// of them from a single pass). Refusing to copy and then deleting,
 		// on a scratch that is already full, is the worst of both.
-		r.cfg.OnError("reconciler:recompose_budget",
+		r.noteUnconverged("reconciler:recompose_budget", mod.ID,
 			fmt.Errorf("module %s: live materialization aborted, skipping this module's prune (`powernode-agent soft-recompose --execute` applies it without the scratch limit): %w", mod.ID, err))
 		// RETRY. The caller stamps LastAttachedManifestHashes before calling
 		// us, so without this the reattach gate sees a matching hash on every
@@ -1051,7 +1117,7 @@ func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifes
 		return true
 	}
 	if err != nil {
-		r.cfg.OnError("reconciler:hot_reconcile", fmt.Errorf("module %s: %w", mod.ID, err))
+		r.noteUnconverged("reconciler:hot_reconcile", mod.ID, fmt.Errorf("module %s: %w", mod.ID, err))
 	}
 	// Same composition smell hot_prune_contested surfaces: two modules
 	// claim one path. Here the higher-priority layer's content was kept,
