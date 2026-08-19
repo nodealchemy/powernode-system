@@ -38,6 +38,19 @@ RSpec.describe "smoke_test_k3s_federation seed (IMP-de7b0ec66dea)" do
     }
   end
 
+  # IMP-0ca5fbe5c532 — the spec supplies the destination, so nothing about this
+  # run depends on what is or is not already sitting in the shared /tmp.
+  let(:kubeconfig_dir) { Dir.mktmpdir("federation-smoke-spec-") }
+
+  around do |example|
+    saved = ENV["SMOKE_K3S_KUBECONFIG_DIR"]
+    ENV["SMOKE_K3S_KUBECONFIG_DIR"] = kubeconfig_dir
+    example.run
+  ensure
+    ENV["SMOKE_K3S_KUBECONFIG_DIR"] = saved
+    FileUtils.remove_entry(kubeconfig_dir) if Dir.exist?(kubeconfig_dir)
+  end
+
   before do
     allow(helpers).to receive(:current_tier).and_return("full")
     allow(helpers).to receive(:tier_gate).and_return("full")
@@ -66,6 +79,61 @@ RSpec.describe "smoke_test_k3s_federation seed (IMP-de7b0ec66dea)" do
 
   def peer
     ::System::FederationPeer.where(account: account).sole
+  end
+
+  # IMP-0ca5fbe5c532 — ISOLATION MUST BE STRUCTURAL, NOT ONE STUB DEEP.
+  #
+  # The seed used to write Site B's kubeconfig to a fixed
+  # /tmp/k3s-smoke-kubeconfig-b. On a host that has ever run a real smoke that
+  # file EXISTS and holds a live cluster's credentials, so the single
+  # `fetch_kubeconfig!` stub in the before block was the only thing standing
+  # between this suite and them — and between a spec run and OVERWRITING them.
+  # Same defect class as the agent tests that mutated a live /persist: a
+  # constant path bypasses every test seam, because a seam only helps where
+  # someone remembered to install one.
+  #
+  # The stub above stays as layered defense. This asserts the layer underneath
+  # it: even unstubbed, the destination is per-run and injectable.
+  describe "kubeconfig destination" do
+    it "fetches into the caller-supplied directory, never the legacy shared path" do
+      captured = nil
+      allow(helpers).to receive(:fetch_kubeconfig!) { |**kw| captured = kw[:dest_path] }
+
+      load seed_path
+
+      expect(captured).to be_present, "the cross-site API leg never fetched a kubeconfig"
+      expect(File.dirname(captured)).to eq(kubeconfig_dir)
+      expect(captured).not_to eq("/tmp/k3s-smoke-kubeconfig-b"),
+                              "a live cluster's kubeconfig is one unstubbed call away"
+    end
+
+    # With no override the default must still be ephemeral — the override is a
+    # convenience for operators who want a stable path, not the thing that
+    # makes this safe.
+    # With no override the default must still be ephemeral. Asserted as the
+    # PROPERTY (two runs never share a directory), not as a string prefix —
+    # mktmpdir keeps the readable "k3s-smoke-kubeconfig-" prefix on purpose, so
+    # an operator can still find it with `ls -d /tmp/k3s-smoke-kubeconfig-*`,
+    # and a prefix assertion would have failed a perfectly safe path.
+    it "defaults to a fresh private tmpdir rather than a predictable name" do
+      ENV.delete("SMOKE_K3S_KUBECONFIG_DIR")
+
+      first = helpers.kubeconfig_dest("b")
+      helpers.reset_kubeconfig_dir!
+      second = helpers.kubeconfig_dest("b")
+
+      expect(first).not_to eq("/tmp/k3s-smoke-kubeconfig-b"), "still the legacy fixed path"
+      expect(File.dirname(first)).not_to eq(File.dirname(second)),
+                                         "two runs shared a directory — collisions are back"
+      # 0700: fetch_kubeconfig! writes with a bare File.write, so the DIRECTORY
+      # is what keeps another local user off a live cluster's credentials.
+      expect(File.stat(File.dirname(first)).mode & 0o777).to eq(0o700)
+    ensure
+      [ first, second ].compact.each do |path|
+        FileUtils.remove_entry(File.dirname(path)) if path && Dir.exist?(File.dirname(path))
+      end
+      helpers.reset_kubeconfig_dir!
+    end
   end
 
   it "proposes and accepts a federation peer through the executor contract" do
