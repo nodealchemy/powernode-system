@@ -1897,9 +1897,18 @@ RSpec.describe System::Fleet::DecisionEngine do
       )).to eq(1)
     end
 
-    # A pending row for the same fingerprint is the SAME unresolved condition —
-    # settle it rather than accumulating a second row for one problem.
-    it "settles an existing pending outcome instead of duplicating it" do
+    # A pending row THIS PLAN minted is the same unresolved condition — settle it
+    # rather than accumulating a second row for one problem.
+    #
+    # IMP-fec9abb225c6 (5): this used to say "for the same fingerprint", and the
+    # fixture below carried no metadata, so the example asserted that ANY
+    # same-fingerprint pending row is settled in place. That is the cross-talk
+    # defect itself — the row may belong to another lane, or to a previous
+    # still-settling SUCCESSFUL adaptation, and re-labelling it fabricates a data
+    # point in the table LEARN reads. The example's intent (one row per
+    # condition, no duplicates) is preserved; its fixture now expresses whose
+    # row it is.
+    it "settles an existing pending outcome it minted instead of duplicating it" do
       fingerprint = "project_slo_violation:#{mission.id}:settling"
       plan = Ai::GoalPlan.create!(
         account: account, goal: Ai::AgentGoal.create!(
@@ -1913,7 +1922,8 @@ RSpec.describe System::Fleet::DecisionEngine do
       pending = System::Fleet::RemediationOutcome.create!(
         account: account, signal_kind: "system.project_slo_violation", fingerprint: fingerprint,
         action_category: "project.scale_horizontal", status: "pending",
-        acted_at: now, settle_until: now + 90
+        acted_at: now, settle_until: now + 90,
+        metadata: { "gate" => "adaptation_applied", "plan_id" => plan.id }
       )
 
       expect {

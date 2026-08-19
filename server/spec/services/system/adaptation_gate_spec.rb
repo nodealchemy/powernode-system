@@ -208,6 +208,55 @@ RSpec.describe System::AdaptationGate do
     end
   end
 
+  # IMP-fec9abb225c6 (1) — close_plan! rejected a plan in ANY status.
+  #
+  # Its only guard was `plan.status == "rejected"`, and Ai::GoalPlan#reject! is a
+  # bare update! with no state machine, so a plan whose latest approval request
+  # becomes cancelled/expired AFTER dispatch flipped to `rejected` while its
+  # appended steps kept running on the mission's live plan. Two consequences,
+  # both state corruption rather than cosmetics:
+  #
+  #   * settle! scopes to status "executing", so the plan never settles and no
+  #     RemediationOutcome is ever minted for it.
+  #   * in_flight_adaptation_plan no longer sees it, so the next breach composes
+  #     a SECOND plan and appends more steps while the first set still runs.
+  #
+  # Driven at close_plan! directly, per the direction: reaching this through the
+  # approve -> dispatch path is impossible, because it needs a mid-execution
+  # policy change to decide an already-dispatched plan's request.
+  describe "closing a plan whose request was decided after dispatch" do
+    def close!(plan_status, request_status: "expired")
+      plan.update!(status: plan_status)
+      described_class.send(:close_plan!, plan, request_status)
+      plan.reload.status
+    end
+
+    it "leaves an executing plan alone" do
+      expect(close!("executing")).to eq("executing"),
+                                     "an executing adaptation was flipped to rejected while its appended steps " \
+                                     "keep running — it can never settle and the next breach appends a second set"
+    end
+
+    it "leaves an approved plan alone" do
+      expect(close!("approved")).to eq("approved")
+    end
+
+    # CONTROLS: the states where closing the proposal IS meaningful must still
+    # close. A guard that refused everything would satisfy the examples above
+    # and silently strand every genuinely undispatched proposal.
+    it "still closes a draft plan" do
+      expect(close!("draft")).to eq("rejected")
+    end
+
+    it "still closes a validated plan" do
+      expect(close!("validated")).to eq("rejected")
+    end
+
+    it "stays a no-op on an already rejected plan" do
+      expect(close!("rejected")).to eq("rejected")
+    end
+  end
+
   describe ".record_adaptation_outcome!" do
     it "mints a pending RemediationOutcome the validator can later score" do
       outcome = described_class.record_adaptation_outcome!(
@@ -277,6 +326,68 @@ RSpec.describe System::AdaptationGate do
       end
 
       expect(System::Fleet::RemediationOutcome.where(account: account).count).to eq(1)
+    end
+  end
+
+  # IMP-fec9abb225c6 (5) — settle_failed_outcome! matched ANY pending row for
+  # the fingerprint, so a failure could re-label a row it never minted.
+  #
+  # This is instrument corruption, not a cosmetic bug: RemediationOutcome is the
+  # ground-truth table the LEARN step reads, so a fabricated `ineffective`
+  # both invents a data point and pushes two genuine failures toward
+  # STUCK_STREAK_THRESHOLD. Both mints already carry metadata["plan_id"], so the
+  # in-place settle can be scoped to the row THIS plan minted.
+  describe "settling a failure when another lane holds a pending row" do
+    let(:other_plan) do
+      Ai::GoalPlan.create!(account: account, goal: goal, agent: agent, status: "executing",
+                           version: 3, plan_data: plan.plan_data)
+    end
+
+    let!(:foreign_pending) do
+      System::Fleet::RemediationOutcome.create!(
+        account: account, agent_id: agent.id, signal_kind: "system.project_slo_violation",
+        fingerprint: "slo:mission:p99", action_category: "project.scale_horizontal",
+        status: "pending", acted_at: Time.current, settle_until: 1.hour.from_now,
+        metadata: { "gate" => "adaptation_applied", "plan_id" => other_plan.id }
+      )
+    end
+
+    it "does not re-label a pending row minted by a different plan" do
+      described_class.send(:settle_failed_outcome!, account, plan,
+                           "slo:mission:p99", "system.project_slo_violation")
+
+      expect(foreign_pending.reload.status).to eq("pending"),
+                                               "a failure re-labelled another plan's still-settling success as " \
+                                               "ineffective — that fabricates a row in the table LEARN reads"
+    end
+
+    it "mints its own ineffective row instead" do
+      expect {
+        described_class.send(:settle_failed_outcome!, account, plan,
+                             "slo:mission:p99", "system.project_slo_violation")
+      }.to change { System::Fleet::RemediationOutcome.where(status: "ineffective").count }.by(1)
+
+      mine = System::Fleet::RemediationOutcome.where(status: "ineffective").last
+      expect(mine.metadata["plan_id"]).to eq(plan.id)
+    end
+
+    # CONTROL: settling in place is still correct for THIS plan's own pending
+    # row — that is the case the method exists for, and scoping must not break
+    # it into a duplicate.
+    it "still settles this plan's own pending row in place" do
+      own = System::Fleet::RemediationOutcome.create!(
+        account: account, agent_id: agent.id, signal_kind: "system.project_slo_violation",
+        fingerprint: "slo:mission:other", action_category: "project.scale_horizontal",
+        status: "pending", acted_at: Time.current, settle_until: 1.hour.from_now,
+        metadata: { "gate" => "adaptation_applied", "plan_id" => plan.id }
+      )
+
+      expect {
+        described_class.send(:settle_failed_outcome!, account, plan,
+                             "slo:mission:other", "system.project_slo_violation")
+      }.not_to change { System::Fleet::RemediationOutcome.count }
+
+      expect(own.reload.status).to eq("ineffective")
     end
   end
 

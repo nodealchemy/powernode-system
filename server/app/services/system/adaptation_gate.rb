@@ -189,13 +189,26 @@ module System
 
       # `validated_at` is set because RemediationOutcome.ineffective_streak
       # orders by it — an unset column would sort the row out of the streak it
-      # is supposed to contribute to. A pending row for the same fingerprint is
-      # the SAME unresolved condition, so it is settled in place rather than
-      # duplicated.
+      # is supposed to contribute to. A pending row THIS PLAN minted is the same
+      # unresolved condition, so it is settled in place rather than duplicated.
+      #
+      # IMP-fec9abb225c6 (5) — scoped to this plan's own row. The lookup used to
+      # be (account_id, fingerprint) alone, which also matches rows minted by a
+      # different lane, or by a previous still-settling SUCCESSFUL adaptation for
+      # the same fingerprint. A later failure could therefore re-label an earlier
+      # success as `ineffective`.
+      #
+      # That is instrument corruption rather than a cosmetic bug:
+      # RemediationOutcome is the ground truth the LEARN step reads, so the
+      # re-label both fabricates a data point and pushes two genuine failures
+      # toward STUCK_STREAK_THRESHOLD. Both mints already carry
+      # metadata["plan_id"], so the scoping needs no new column.
       def settle_failed_outcome!(account, plan, fingerprint, signal_kind)
         now = Time.current
         pending = ::System::Fleet::RemediationOutcome.pending
-                    .find_by(account_id: account.id, fingerprint: fingerprint)
+                    .where(account_id: account.id, fingerprint: fingerprint)
+                    .where("metadata->>'plan_id' = ?", plan.id.to_s)
+                    .first
         if pending
           pending.update!(status: "ineffective", validated_at: now)
           return pending
@@ -285,8 +298,30 @@ module System
       #
       # The gate owns the approval lifecycle, so it owns closing the plan that
       # approval was about.
+      # IMP-fec9abb225c6 (1) — close only a plan that has NOT been dispatched.
+      #
+      # The guard used to be `plan.status == "rejected"`, i.e. everything else
+      # was fair game, and Ai::GoalPlan#reject! is a bare update! with no state
+      # machine. So a plan whose latest approval request became cancelled or
+      # expired AFTER dispatch — which needs a mid-execution policy change, not
+      # the ordinary approve-then-dispatch path — flipped to `rejected` while
+      # its appended steps kept running on the mission's live plan.
+      #
+      # That corrupts two things at once: settle! scopes to status "executing",
+      # so the plan can never settle and no RemediationOutcome is minted for it;
+      # and in_flight_adaptation_plan stops seeing it, so the next breach
+      # composes a SECOND plan and appends more steps while the first set is
+      # still running.
+      #
+      # Shares DecisionEngine's constant rather than restating %w[draft
+      # validated]: the two must agree about what "not yet dispatched" means,
+      # and a copy is free to drift. Same extension, so no core -> extension
+      # dependency is introduced.
       def close_plan!(plan, status)
-        return if plan.nil? || plan.status.to_s == "rejected"
+        return if plan.nil?
+        unless ::System::Fleet::DecisionEngine::UNDISPATCHED_PROPOSAL_STATUSES.include?(plan.status.to_s)
+          return
+        end
 
         plan.reject!(reason: "adaptation approval #{status}")
       rescue StandardError => e
