@@ -194,18 +194,50 @@ module System
         "reused"
       else
         instance.update!(pool_state: "draining", pool_acquired_at: nil)
-        # Same best-effort terminate as the stale-ready recycle: a failure
-        # is logged, not raised — the member is already out of circulation
-        # (draining is never acquirable) and the reaper retries cleanup.
-        begin
-          ::System::ProvisioningService.terminate_instance(instance: instance)
-        rescue StandardError => e
-          Rails.logger.warn(
-            "[InstancePoolService] terminate failed during release-recycle " \
-            "(instance=#{instance.id} pool='#{pool&.name}'): #{e.class}: #{e.message}"
-          )
+
+        # IMP-28ca3e61f7c2 — route through #terminate_member rather than
+        # calling the provider directly.
+        #
+        # This used to call ProvisioningService.terminate_instance inside a
+        # `rescue StandardError` and DISCARD the return value. A provider
+        # failure comes back as an err Result, not an exception, so the rescue
+        # never fired and a failed terminate was indistinguishable from a
+        # successful one — the same defect af978858 fixed at every other
+        # terminate site by introducing #terminate_member. This site was
+        # missed.
+        #
+        # The comment that used to sit here claimed "the reaper retries
+        # cleanup". It does not, and that is what made the miss expensive:
+        # InstancePool exposes ready_members / warming_members /
+        # claimed_members / errored_members and NO draining scope, so every
+        # branch of recycle_stale_members! skips a draining member.
+        # prune_dead_records! cannot see it either — it selects status
+        # terminated/error, which a still-running instance never reaches. A
+        # member stranded here leaked permanently, VM included, taking its
+        # dedicated Node shell and that Node's module assignments with it.
+        #
+        # On failure hand the member to the errored ladder, which is the one
+        # path that DOES retry a terminate (bounded by
+        # errored_terminate_max_attempts, with abandon_errored_member! as the
+        # stop). That mirrors how the stale-warming branch already treats a
+        # member whose VM may exist but whose terminate did not land.
+        if terminate_member(instance, pool: pool, phase: "release-recycle")
+          "recycled"
+        else
+          # Deliberately a direct update rather than #mark_pool_errored!, which
+          # refuses a claimed-or-draining row. That guard exists so nothing
+          # errors a member out from under an acquirer — but here we ARE the
+          # releaser: the lease is finished and the row was taken out of
+          # circulation two lines above, so there is no acquirer to protect.
+          # Going through the guard would silently no-op and re-strand the
+          # member, which is the bug this branch exists to fix.
+          #
+          # The draining-first ordering is preserved on purpose: the member
+          # leaves circulation immediately, even if the provider call hangs.
+          # Only the RESTING state on failure changes.
+          instance.update!(pool_state: "errored")
+          "errored"
         end
-        "recycled"
       end
     end
 

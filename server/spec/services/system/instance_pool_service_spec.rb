@@ -56,6 +56,67 @@ RSpec.describe System::InstancePoolService, type: :service do
   # into the next one. The reset exists; these pin it, because an implemented-
   # but-untested control is not a foundation for the instance-principal
   # authorization decision that depends on how much a grant is worth.
+  # IMP-28ca3e61f7c2 — the RECYCLE branch of #release! (the default, non-reuse
+  # path) had no coverage at all, and it is the one the CI builder pool takes on
+  # every lease release.
+  #
+  # It marks the member pool_state="draining" and then calls
+  # ProvisioningService.terminate_instance DIRECTLY, wrapped in `rescue
+  # StandardError` and DISCARDING the returned Result. That is precisely the
+  # defect commit af978858 fixed everywhere else by routing terminates through
+  # #terminate_member — a provider failure comes back as an err Result, NOT an
+  # exception, so the rescue never fires and a failed terminate is
+  # indistinguishable from a successful one.
+  #
+  # The consequence is worse here than a lost log line, because "draining" is a
+  # blind spot: InstancePool exposes ready_members / warming_members /
+  # claimed_members / errored_members and NO draining scope, so every branch of
+  # recycle_stale_members! skips such a member. prune_dead_records! cannot reach
+  # it either — that selects on status terminated/error, which a still-running
+  # instance never reaches. The row, its Node shell and its module assignments
+  # leak permanently with the VM still running.
+  describe "#release! recycle branch when the provider terminate fails" do
+    let(:instance) { seed_pool_member(state: "claimed", acquired_at: 1.hour.ago) }
+
+    before do
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .and_return(::System::Runtime::Result.err(error: "provider refused"))
+    end
+
+    it "does not strand the member in draining, where no recycle scope can reach it" do
+      described_class.release!(instance: instance, pool: pool)
+
+      expect(instance.reload.pool_state).not_to eq("draining"),
+                                                "a failed terminate left the member in draining: no member scope " \
+                                                "selects it and prune_dead_records! needs status terminated/error, " \
+                                                "so it leaks forever with the VM still running"
+    end
+
+    it "hands it to the errored ladder so the reaper retries the terminate" do
+      described_class.release!(instance: instance, pool: pool)
+
+      expect(instance.reload.pool_state).to eq("errored")
+    end
+  end
+
+  # Positive control: when the terminate genuinely succeeds, draining is the
+  # CORRECT resting state — the row reaches status terminated and
+  # prune_dead_records! collects it (and its Node shell) after the retention
+  # window. The fix must not disturb this path.
+  describe "#release! recycle branch when the provider terminate succeeds" do
+    let(:instance) { seed_pool_member(state: "claimed", acquired_at: 1.hour.ago) }
+
+    before do
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .and_return(::System::Runtime::Result.ok)
+    end
+
+    it "recycles normally and does not mark the member errored" do
+      expect(described_class.release!(instance: instance, pool: pool)).to eq("recycled")
+      expect(instance.reload.pool_state).to eq("draining")
+    end
+  end
+
   describe "#release! on a reuse-without-reset pool" do
     let(:reuse_pool) do
       pool.update!(metadata: { "reuse_without_reset" => true })
