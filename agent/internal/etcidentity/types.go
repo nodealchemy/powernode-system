@@ -4,14 +4,14 @@ package etcidentity
 // some installed module. Field shape matches the JSON the platform's
 // serialize_module_users emits.
 type User struct {
-	Name                 string   `json:"name"`
-	UID                  int      `json:"uid"`
-	PrimaryGID           int      `json:"primary_gid"`
-	PrimaryGroup         string   `json:"primary_group"`
-	Shell                string   `json:"shell"`
-	Home                 string   `json:"home"`
-	Gecos                string   `json:"gecos"`
-	SupplementaryGroups  []string `json:"supplementary_groups,omitempty"`
+	Name                string   `json:"name"`
+	UID                 int      `json:"uid"`
+	PrimaryGID          int      `json:"primary_gid"`
+	PrimaryGroup        string   `json:"primary_group"`
+	Shell               string   `json:"shell"`
+	Home                string   `json:"home"`
+	Gecos               string   `json:"gecos"`
+	SupplementaryGroups []string `json:"supplementary_groups,omitempty"`
 }
 
 // Group is the agent-side typed view of a fleet-managed Unix group.

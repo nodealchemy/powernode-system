@@ -17,10 +17,10 @@
 //
 // # Key types
 //
-//   Layout          — { LowerLayers, UpperLayer, WorkLayer, Target }
-//   Erofs           — loop-mounts each module's erofs image (mount -t erofs)
-//   Overlayfs       — assembles the union mount via mount(2) syscall
-//   BindHelper      — bind-mounts /dev, /proc, /sys, /run from initramfs
+//	Layout          — { LowerLayers, UpperLayer, WorkLayer, Target }
+//	Erofs           — loop-mounts each module's erofs image (mount -t erofs)
+//	Overlayfs       — assembles the union mount via mount(2) syscall
+//	BindHelper      — bind-mounts /dev, /proc, /sys, /run from initramfs
 //
 // Used by the `prepare-root` subcommand during initramfs init-bottom; runs
 // before switch_root.

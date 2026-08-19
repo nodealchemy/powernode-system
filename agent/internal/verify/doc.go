@@ -14,18 +14,18 @@
 //
 // # Key functions
 //
-//   Cosign(ctx, ref, identityRegexp, issuerRegexp) error
-//   FsVerity(path string, expectedDigest string) error
-//   ModuleArtifact(path string, manifest ModuleManifest) error  // both at once
+//	Cosign(ctx, ref, identityRegexp, issuerRegexp) error
+//	FsVerity(path string, expectedDigest string) error
+//	ModuleArtifact(path string, manifest ModuleManifest) error  // both at once
 //
 // # Failure modes
 //
 // Returns specific error types:
 //
-//   ErrCosignIdentityMismatch   — signed by an unexpected publisher
-//   ErrCosignSignatureMissing   — artifact unsigned
-//   ErrFsVerityDigestMismatch   — kernel-computed digest != committed digest
-//   ErrFsVeritySupportMissing   — kernel doesn't support fs-verity (rare; pre-5.4 kernels)
+//	ErrCosignIdentityMismatch   — signed by an unexpected publisher
+//	ErrCosignSignatureMissing   — artifact unsigned
+//	ErrFsVerityDigestMismatch   — kernel-computed digest != committed digest
+//	ErrFsVeritySupportMissing   — kernel doesn't support fs-verity (rare; pre-5.4 kernels)
 //
 // All failures abort mount; the agent reports phase=error to the platform.
 //

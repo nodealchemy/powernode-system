@@ -99,7 +99,7 @@ func TestPolicy_Privileged_SkipsMACAndCaps(t *testing.T) {
 
 func TestUnionEgressPolicy_NoModuleDeclared_NotEnforced(t *testing.T) {
 	policies := []*Policy{
-		{}, // no security block at all
+		{},                                    // no security block at all
 		{Capabilities: []string{"CAP_CHOWN"}}, // has an opinion on caps, none on egress
 		nil,
 	}

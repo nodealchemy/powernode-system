@@ -23,11 +23,11 @@
 //
 // # Key types
 //
-//   ServerManager     — state machine for k3s-server role
-//   AgentManager      — state machine for k3s-agent role
-//   Applier           — interface for shellout side effects
-//   ShellApplier      — production impl; uses apt + systemctl + curl
-//   Handshake         — client for /api/v1/system/node_api/runtime/handshake
+//	ServerManager     — state machine for k3s-server role
+//	AgentManager      — state machine for k3s-agent role
+//	Applier           — interface for shellout side effects
+//	ShellApplier      — production impl; uses apt + systemctl + curl
+//	Handshake         — client for /api/v1/system/node_api/runtime/handshake
 //
 // Multi-cluster (use case 3 in USE_CASE_MATRIX.md): the agent reads
 // metadata.target_cluster_id from the module assignment at boot and passes

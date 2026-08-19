@@ -20,15 +20,15 @@ const ServerModuleName = "k3s-server"
 // The state machine (top-down, first matching branch fires per tick;
 // multi-step transitions take multiple ticks):
 //
-//   1. Module not assigned + daemon running → Stop + ReportStopped
-//   2. Module not assigned + binary installed → Cleanup
-//   3. Module assigned + binary missing → Install
-//   4. Module assigned + binary present + daemon stopped → Start
-//   5. Module assigned + daemon running + cluster NOT yet bootstrapped
-//      → CaptureBootstrapState + Bootstrap call
-//   6. Module assigned + daemon running + cluster bootstrapped + not
-//      yet ack'd ready → ReportReady
-//   7. Otherwise (steady state) → no-op
+//  1. Module not assigned + daemon running → Stop + ReportStopped
+//  2. Module not assigned + binary installed → Cleanup
+//  3. Module assigned + binary missing → Install
+//  4. Module assigned + binary present + daemon stopped → Start
+//  5. Module assigned + daemon running + cluster NOT yet bootstrapped
+//     → CaptureBootstrapState + Bootstrap call
+//  6. Module assigned + daemon running + cluster bootstrapped + not
+//     yet ack'd ready → ReportReady
+//  7. Otherwise (steady state) → no-op
 type ServerManager struct {
 	Client    *Client
 	Modules   ModulesAPI

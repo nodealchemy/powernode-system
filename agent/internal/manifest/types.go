@@ -27,20 +27,20 @@ import (
 // a fallback to legacy `init_start` shell strings — modules without
 // a `services` array are unsupported.
 type Manifest struct {
-	ID                string         `json:"id"`
-	Name              string         `json:"name"`
-	Variety           string         `json:"variety,omitempty"` // config|instance|subscription
-	Priority          int            `json:"priority"`
-	EffectivePriority int            `json:"effective_priority"`
-	Digest            string         `json:"digest,omitempty"` // OCI layer digest of the erofs blob
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Variety           string `json:"variety,omitempty"` // config|instance|subscription
+	Priority          int    `json:"priority"`
+	EffectivePriority int    `json:"effective_priority"`
+	Digest            string `json:"digest,omitempty"` // OCI layer digest of the erofs blob
 	// FsverityRootHash is the fs-verity Merkle root of the erofs blob
 	// the agent will pull. Anchors the on-node read path.
-	FsverityRootHash  string         `json:"fsverity_root_hash,omitempty"`
-	RebootRequired    bool           `json:"reboot_required,omitempty"`
-	DataFileName      string         `json:"data_file_name,omitempty"`
-	DataChecksum      string         `json:"data_checksum,omitempty"`
-	CopyPath          *CopyPath      `json:"copy_path,omitempty"`
-	PuppetModules     []PuppetModule `json:"puppet_modules,omitempty"`
+	FsverityRootHash string         `json:"fsverity_root_hash,omitempty"`
+	RebootRequired   bool           `json:"reboot_required,omitempty"`
+	DataFileName     string         `json:"data_file_name,omitempty"`
+	DataChecksum     string         `json:"data_checksum,omitempty"`
+	CopyPath         *CopyPath      `json:"copy_path,omitempty"`
+	PuppetModules    []PuppetModule `json:"puppet_modules,omitempty"`
 	// Spec arrays are stored base64-encoded server-side but the JSON
 	// response decodes them into plain string arrays.
 	Mask           []string `json:"mask,omitempty"`
@@ -116,8 +116,8 @@ type ManifestSudoer struct {
 //   - Services are started in topological order over Dependencies;
 //     stopped in reverse order
 type Service struct {
-	Name                       string            `json:"name"`
-	StartCommand               string            `json:"start_command"`
+	Name         string `json:"name"`
+	StartCommand string `json:"start_command"`
 	// UnitBody is a verbatim systemd unit file body (option A2),
 	// mutually exclusive with StartCommand. RenderUnitMode passes it
 	// through as-is (plus an appended generated [Unit] dependency
@@ -126,21 +126,21 @@ type Service struct {
 	// the structured fields below. omitempty is LOAD-BEARING: it keeps
 	// ServicesHash byte-identical for every existing (non-unit_body)
 	// service, so this addition doesn't trigger a fleet-wide re-attach.
-	UnitBody                   string            `json:"unit_body,omitempty"`
-	StopCommand                string            `json:"stop_command,omitempty"`
-	RestartPolicy              string            `json:"restart_policy,omitempty"` // always | on-failure | never
-	User                       string            `json:"user,omitempty"`
-	WorkingDirectory           string            `json:"working_directory,omitempty"`
-	Env                        map[string]string `json:"env,omitempty"`
-	ExposedPorts               []any             `json:"exposed_ports,omitempty"` // metadata only
-	Capabilities               []string          `json:"capabilities,omitempty"`
-	HealthEndpoint             string            `json:"health_endpoint,omitempty"`
-	HealthMethod               string            `json:"health_method,omitempty"`
-	HealthIntervalSeconds      int               `json:"health_interval_seconds,omitempty"`
-	HealthTimeoutSeconds       int               `json:"health_timeout_seconds,omitempty"`
-	HealthInitialDelaySeconds  int               `json:"health_initial_delay_seconds,omitempty"`
-	Dependencies               []string          `json:"dependencies,omitempty"` // names of services that must start before this one
-	Metadata                   map[string]any    `json:"metadata,omitempty"`
+	UnitBody                  string            `json:"unit_body,omitempty"`
+	StopCommand               string            `json:"stop_command,omitempty"`
+	RestartPolicy             string            `json:"restart_policy,omitempty"` // always | on-failure | never
+	User                      string            `json:"user,omitempty"`
+	WorkingDirectory          string            `json:"working_directory,omitempty"`
+	Env                       map[string]string `json:"env,omitempty"`
+	ExposedPorts              []any             `json:"exposed_ports,omitempty"` // metadata only
+	Capabilities              []string          `json:"capabilities,omitempty"`
+	HealthEndpoint            string            `json:"health_endpoint,omitempty"`
+	HealthMethod              string            `json:"health_method,omitempty"`
+	HealthIntervalSeconds     int               `json:"health_interval_seconds,omitempty"`
+	HealthTimeoutSeconds      int               `json:"health_timeout_seconds,omitempty"`
+	HealthInitialDelaySeconds int               `json:"health_initial_delay_seconds,omitempty"`
+	Dependencies              []string          `json:"dependencies,omitempty"` // names of services that must start before this one
+	Metadata                  map[string]any    `json:"metadata,omitempty"`
 }
 
 // ServicesHash returns a stable SHA256 hash of the manifest's services

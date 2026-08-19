@@ -1,8 +1,8 @@
 // Package gvisor provisions the gVisor (runsc) container runtime on a node —
 // the first REAL isolation tier of the AI/MCP workload substrate (L0). It:
 //
-//   - installs the runsc binary for the host arch (downloaded + sha512-verified
-//     + written atomically as an executable),
+//   - installs the runsc binary for the host arch (downloaded, sha512-verified
+//     and written atomically as an executable),
 //   - contributes the daemon.json "runtimes" fragment that registers runsc with
 //     the Docker daemon (merged by the dockerd applier's ExtraConfig path), and
 //   - detects whether gVisor is ready (binary runnable + registered).

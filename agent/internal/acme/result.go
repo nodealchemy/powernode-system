@@ -12,18 +12,18 @@ import "time"
 // parses this JSON and writes the PEM material to Vault keyed by
 // AcmeCertificate.id.
 type IssueResult struct {
-	OK             bool      `json:"ok"`
-	Error          string    `json:"error,omitempty"`
-	Domain         string    `json:"domain,omitempty"`
-	SANs           []string  `json:"sans,omitempty"`
-	CertPEM        string    `json:"cert_pem,omitempty"`
-	KeyPEM         string    `json:"key_pem,omitempty"`
-	ChainPEM       string    `json:"chain_pem,omitempty"`
-	AccountKeyPEM  string    `json:"account_key_pem,omitempty"`
-	IssuedAt       time.Time `json:"issued_at,omitempty"`
-	ExpiresAt      time.Time `json:"expires_at,omitempty"`
-	Issuer         string    `json:"issuer,omitempty"`
-	ACMEServer     string    `json:"acme_server,omitempty"`
+	OK            bool      `json:"ok"`
+	Error         string    `json:"error,omitempty"`
+	Domain        string    `json:"domain,omitempty"`
+	SANs          []string  `json:"sans,omitempty"`
+	CertPEM       string    `json:"cert_pem,omitempty"`
+	KeyPEM        string    `json:"key_pem,omitempty"`
+	ChainPEM      string    `json:"chain_pem,omitempty"`
+	AccountKeyPEM string    `json:"account_key_pem,omitempty"`
+	IssuedAt      time.Time `json:"issued_at,omitempty"`
+	ExpiresAt     time.Time `json:"expires_at,omitempty"`
+	Issuer        string    `json:"issuer,omitempty"`
+	ACMEServer    string    `json:"acme_server,omitempty"`
 }
 
 // RenewResult is identical in shape — kept as a separate type so future

@@ -58,11 +58,11 @@ type AnnounceResponse struct {
 	Success bool `json:"success"`
 	Data    struct {
 		Peer struct {
-			ID          string  `json:"id"`
-			Handle      string  `json:"handle"`
-			Status      string  `json:"status"`
-			Enabled     bool    `json:"enabled"`
-			TrustScore  float64 `json:"trust_score"`
+			ID         string  `json:"id"`
+			Handle     string  `json:"handle"`
+			Status     string  `json:"status"`
+			Enabled    bool    `json:"enabled"`
+			TrustScore float64 `json:"trust_score"`
 		} `json:"peer"`
 		Created bool `json:"created"`
 	} `json:"data"`
@@ -80,9 +80,9 @@ type Registrar struct {
 	platformBaseURL string
 	httpClient      HTTPClient
 
-	mu             sync.Mutex
-	lastAnnounce   time.Time
-	announcedHash  string
+	mu              sync.Mutex
+	lastAnnounce    time.Time
+	announcedHash   string
 	consecutiveErrs int
 }
 

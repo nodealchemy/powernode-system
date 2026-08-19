@@ -8,36 +8,36 @@
 //
 // # State machine
 //
-//	             ┌──────────────┐
-//	             │   detected   │  module assignment seen on reconcile tick
-//	             └──────┬───────┘
-//	                    │ install docker-ce
-//	                    ▼
-//	             ┌──────────────┐
-//	             │  installing  │
-//	             └──────┬───────┘
-//	                    │ generate keypair, build CSR
-//	                    ▼
-//	             ┌──────────────┐
-//	             │ wants_cert   │  POST /runtime/handshake (phase=wants_cert)
-//	             └──────┬───────┘
-//	                    │ platform signs CSR; returns cert + chain
-//	                    ▼
-//	             ┌──────────────┐
-//	             │  applying    │  write daemon.json + restart docker.service
-//	             └──────┬───────┘
-//	                    │ verify daemon listens; query /info
-//	                    ▼
-//	             ┌──────────────┐
-//	             │    ready     │  POST /runtime/handshake (phase=ready)
-//	             └──────────────┘
+//	┌──────────────┐
+//	│   detected   │  module assignment seen on reconcile tick
+//	└──────┬───────┘
+//	       │ install docker-ce
+//	       ▼
+//	┌──────────────┐
+//	│  installing  │
+//	└──────┬───────┘
+//	       │ generate keypair, build CSR
+//	       ▼
+//	┌──────────────┐
+//	│ wants_cert   │  POST /runtime/handshake (phase=wants_cert)
+//	└──────┬───────┘
+//	       │ platform signs CSR; returns cert + chain
+//	       ▼
+//	┌──────────────┐
+//	│  applying    │  write daemon.json + restart docker.service
+//	└──────┬───────┘
+//	       │ verify daemon listens; query /info
+//	       ▼
+//	┌──────────────┐
+//	│    ready     │  POST /runtime/handshake (phase=ready)
+//	└──────────────┘
 //
 // # Key types
 //
-//   Manager       — orchestrates the state machine via Tick
-//   Applier       — interface for the side-effect path (install + config + systemd)
-//   ShellApplier  — production implementation; uses apt + systemctl shellouts
-//   Handshake     — client for /api/v1/system/node_api/runtime/handshake
+//	Manager       — orchestrates the state machine via Tick
+//	Applier       — interface for the side-effect path (install + config + systemd)
+//	ShellApplier  — production implementation; uses apt + systemctl shellouts
+//	Handshake     — client for /api/v1/system/node_api/runtime/handshake
 //
 // Slice 10 (config-variety daemon.json overrides) is applied here: child
 // modules with higher effective_priority have their daemon.json contributions

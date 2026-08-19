@@ -22,28 +22,29 @@ type stubApplier struct {
 	mu sync.Mutex
 
 	// Storage
-	Cert        *CertMaterial
-	Config      *DaemonConfig
-	Running     bool
-	Version     string
-	HasCertErr  error
-	IsRunErr    error
-	WriteErr    error
-	StartErr    error
-	StopErr     error
+	Cert       *CertMaterial
+	Config     *DaemonConfig
+	Running    bool
+	Version    string
+	HasCertErr error
+	IsRunErr   error
+	WriteErr   error
+	StartErr   error
+	StopErr    error
 
 	// Call counters
-	HasCertCalls   int
-	WriteCertCalls int
+	HasCertCalls    int
+	WriteCertCalls  int
 	RemoveCertCalls int
-	WriteCfgCalls  int
-	StartCalls     int
-	StopCalls      int
-	VersionCalls   int
+	WriteCfgCalls   int
+	StartCalls      int
+	StopCalls       int
+	VersionCalls    int
 }
 
 func (s *stubApplier) HasCert(_ context.Context) (bool, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.HasCertCalls++
 	if s.HasCertErr != nil {
 		return false, s.HasCertErr
@@ -52,7 +53,8 @@ func (s *stubApplier) HasCert(_ context.Context) (bool, error) {
 }
 
 func (s *stubApplier) WriteCert(_ context.Context, m CertMaterial) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.WriteCertCalls++
 	if s.WriteErr != nil {
 		return s.WriteErr
@@ -62,14 +64,16 @@ func (s *stubApplier) WriteCert(_ context.Context, m CertMaterial) error {
 }
 
 func (s *stubApplier) RemoveCert(_ context.Context) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.RemoveCertCalls++
 	s.Cert = nil
 	return nil
 }
 
 func (s *stubApplier) WriteDaemonConfig(_ context.Context, cfg DaemonConfig) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.WriteCfgCalls++
 	c := cfg
 	s.Config = &c
@@ -77,7 +81,8 @@ func (s *stubApplier) WriteDaemonConfig(_ context.Context, cfg DaemonConfig) err
 }
 
 func (s *stubApplier) IsDaemonRunning(_ context.Context) (bool, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.IsRunErr != nil {
 		return false, s.IsRunErr
 	}
@@ -85,7 +90,8 @@ func (s *stubApplier) IsDaemonRunning(_ context.Context) (bool, error) {
 }
 
 func (s *stubApplier) StartDaemon(_ context.Context) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.StartCalls++
 	if s.StartErr != nil {
 		return s.StartErr
@@ -95,7 +101,8 @@ func (s *stubApplier) StartDaemon(_ context.Context) error {
 }
 
 func (s *stubApplier) StopDaemon(_ context.Context) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.StopCalls++
 	if s.StopErr != nil {
 		return s.StopErr
@@ -105,7 +112,8 @@ func (s *stubApplier) StopDaemon(_ context.Context) error {
 }
 
 func (s *stubApplier) DaemonVersion(_ context.Context) (string, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.VersionCalls++
 	return s.Version, nil
 }
@@ -341,9 +349,11 @@ func TestReconcile_SteadyState_NoOps(t *testing.T) {
 }
 
 // Multi-tick: simulate the full provisioning lifecycle (3 ticks):
-//   T1: cert request
-//   T2: write config + start
-//   T3: report ready
+//
+//	T1: cert request
+//	T2: write config + start
+//	T3: report ready
+//
 // Then re-tick — should be no-op (idempotent).
 func TestReconcile_FullLifecycle_3Ticks(t *testing.T) {
 	a := &stubApplier{Version: "25.0.3"}

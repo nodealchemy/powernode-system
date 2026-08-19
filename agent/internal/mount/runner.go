@@ -56,9 +56,9 @@ func (ExecRunner) Output(ctx context.Context, name string, args ...string) ([]by
 
 // Invocation captures a single Run/Output call for assertion in tests.
 type Invocation struct {
-	Op     string // "Run" or "Output"
-	Name   string
-	Args   []string
+	Op   string // "Run" or "Output"
+	Name string
+	Args []string
 }
 
 // RecorderRunner records every command instead of executing it. Used by

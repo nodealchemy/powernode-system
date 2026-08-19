@@ -38,11 +38,11 @@ func SetDefaultStatePathForTest(path string) (restore func()) {
 // state, which is correct since hash detection should NOT trigger a
 // restart on first observation post-upgrade.
 type persistedState struct {
-	ReadyReportedFor   string    `json:"ready_reported_for,omitempty"`
-	StoppedReportedAt  time.Time `json:"stopped_reported_at,omitempty"`
-	LastConfigHash     string    `json:"last_config_hash,omitempty"`
-	WrittenAt          time.Time `json:"written_at"`
-	SchemaVersion      int       `json:"schema_version"`
+	ReadyReportedFor  string    `json:"ready_reported_for,omitempty"`
+	StoppedReportedAt time.Time `json:"stopped_reported_at,omitempty"`
+	LastConfigHash    string    `json:"last_config_hash,omitempty"`
+	WrittenAt         time.Time `json:"written_at"`
+	SchemaVersion     int       `json:"schema_version"`
 }
 
 const stateSchemaVersion = 2

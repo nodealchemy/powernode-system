@@ -50,10 +50,10 @@ type AcceptRequest struct {
 // Endpoint mirrors the endpoint advertisement schema the parent's
 // AcceptController persists into peer.endpoints.
 type Endpoint struct {
-	URL       string `json:"url"`
-	Scope     string `json:"scope"`
-	Priority  int    `json:"priority"`
-	CIDRHint  string `json:"cidr_hint,omitempty"`
+	URL      string `json:"url"`
+	Scope    string `json:"scope"`
+	Priority int    `json:"priority"`
+	CIDRHint string `json:"cidr_hint,omitempty"`
 }
 
 // AcceptResponse is the body the parent's AcceptController returns
@@ -78,10 +78,10 @@ type AcceptResponse struct {
 // and obtain its mTLS identity — without this step the agent has
 // federation-peer trust but no node-api auth to fetch module assignments.
 type NodeEnrollment struct {
-	BootstrapToken   string `json:"bootstrap_token"`
-	PlatformURL      string `json:"platform_url"`
-	IntendedSubject  string `json:"intended_subject"`
-	ExpiresAt        string `json:"expires_at,omitempty"`
+	BootstrapToken  string `json:"bootstrap_token"`
+	PlatformURL     string `json:"platform_url"`
+	IntendedSubject string `json:"intended_subject"`
+	ExpiresAt       string `json:"expires_at,omitempty"`
 }
 
 // DefaultMarkerPath is where the success marker lives. Once written,
@@ -222,13 +222,13 @@ func writeMarker(path string, resp *AcceptResponse) error {
 		return err
 	}
 	summary := map[string]any{
-		"peer_id":                  resp.Data.PeerID,
-		"status":                   resp.Data.Status,
-		"peer_kind":                resp.Data.PeerKind,
-		"contract_version_agreed":  resp.Data.ContractVersionAgreed,
-		"accepted_at":              resp.Data.AcceptedAt,
-		"handshake_at":             resp.Data.HandshakeAt,
-		"marker_written_at":        time.Now().UTC().Format(time.RFC3339),
+		"peer_id":                 resp.Data.PeerID,
+		"status":                  resp.Data.Status,
+		"peer_kind":               resp.Data.PeerKind,
+		"contract_version_agreed": resp.Data.ContractVersionAgreed,
+		"accepted_at":             resp.Data.AcceptedAt,
+		"handshake_at":            resp.Data.HandshakeAt,
+		"marker_written_at":       time.Now().UTC().Format(time.RFC3339),
 	}
 	data, _ := json.MarshalIndent(summary, "", "  ")
 

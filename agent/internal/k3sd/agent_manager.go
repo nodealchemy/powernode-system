@@ -16,15 +16,15 @@ const AgentModuleName = "k3s-agent"
 // One per agent process. Mirrors ServerManager's shape but with a
 // join_request flow instead of bootstrap:
 //
-//   1. Module not assigned + daemon running → Stop + ReportStopped
-//   2. Module not assigned + binary installed → Cleanup
-//   3. Module assigned + binary missing → Install
-//   4. Module assigned + binary present + no join config → JoinRequest
-//      + WriteJoinConfig
-//   5. Module assigned + join config present + daemon stopped → Start
-//   6. Module assigned + daemon running + not yet ack'd ready
-//      → ReportReady
-//   7. Otherwise → no-op
+//  1. Module not assigned + daemon running → Stop + ReportStopped
+//  2. Module not assigned + binary installed → Cleanup
+//  3. Module assigned + binary missing → Install
+//  4. Module assigned + binary present + no join config → JoinRequest
+//     + WriteJoinConfig
+//  5. Module assigned + join config present + daemon stopped → Start
+//  6. Module assigned + daemon running + not yet ack'd ready
+//     → ReportReady
+//  7. Otherwise → no-op
 //
 // Difference from ServerManager: order matters. Worker needs to
 // fetch its membership material BEFORE starting k3s-agent, because

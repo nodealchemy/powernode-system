@@ -14,33 +14,33 @@ import (
 //
 // Plan reference: E8.1 (transport-aware mount reconciliation).
 type StorageVolumeBinding struct {
-	VolumeID    string            `json:"volume_id"`
-	VolumeName  string            `json:"volume_name"`
-	SizeGB      int               `json:"size_gb"`
-	Transport   string            `json:"transport"`   // "block" | "nfs" | "smb" | "iscsi"
-	MountType   string            `json:"mount_type"`  // "device" | "nfs" | "smb" | "iscsi"
-	DeviceName  string            `json:"device_name"` // populated for block
-	MountPoint  string            `json:"mount_point"`
-	Role        string            `json:"role"`
-	Subpath     string            `json:"subpath,omitempty"` // populated for shared transports
-	AttachedAt  string            `json:"attached_at"`
+	VolumeID   string `json:"volume_id"`
+	VolumeName string `json:"volume_name"`
+	SizeGB     int    `json:"size_gb"`
+	Transport  string `json:"transport"`   // "block" | "nfs" | "smb" | "iscsi"
+	MountType  string `json:"mount_type"`  // "device" | "nfs" | "smb" | "iscsi"
+	DeviceName string `json:"device_name"` // populated for block
+	MountPoint string `json:"mount_point"`
+	Role       string `json:"role"`
+	Subpath    string `json:"subpath,omitempty"` // populated for shared transports
+	AttachedAt string `json:"attached_at"`
 
 	// Transport-specific connection details. Only one of these is
 	// populated per binding; the orchestrator stamps the matching
 	// inner object keyed by the transport name.
-	NFS  *NFSDetails  `json:"nfs,omitempty"`
-	SMB  *SMBDetails  `json:"smb,omitempty"`
+	NFS   *NFSDetails   `json:"nfs,omitempty"`
+	SMB   *SMBDetails   `json:"smb,omitempty"`
 	ISCSI *ISCSIDetails `json:"iscsi,omitempty"`
 }
 
 type NFSDetails struct {
-	Server          string `json:"server"`
-	ServerIP        string `json:"server_ip,omitempty"`
-	ExportPath      string `json:"export_path"`
-	Version         string `json:"version,omitempty"`
-	MountOptions    string `json:"mount_options"`
-	FullExportPath  string `json:"full_export_path,omitempty"` // <server>:<export>/<subpath>
-	Subpath         string `json:"subpath,omitempty"`
+	Server         string `json:"server"`
+	ServerIP       string `json:"server_ip,omitempty"`
+	ExportPath     string `json:"export_path"`
+	Version        string `json:"version,omitempty"`
+	MountOptions   string `json:"mount_options"`
+	FullExportPath string `json:"full_export_path,omitempty"` // <server>:<export>/<subpath>
+	Subpath        string `json:"subpath,omitempty"`
 }
 
 type SMBDetails struct {
@@ -51,10 +51,10 @@ type SMBDetails struct {
 }
 
 type ISCSIDetails struct {
-	Portal      string `json:"portal"`
-	Target      string `json:"target"`
-	LUN         int    `json:"lun,omitempty"`
-	Subpath     string `json:"subpath,omitempty"`
+	Portal  string `json:"portal"`
+	Target  string `json:"target"`
+	LUN     int    `json:"lun,omitempty"`
+	Subpath string `json:"subpath,omitempty"`
 }
 
 // ReconcileStorageVolume idempotently realizes the binding on the

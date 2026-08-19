@@ -16,7 +16,7 @@ import (
 //  2. GET http://169.254.169.254/latest/user-data
 //     header X-aws-ec2-metadata-token: <token> → user data
 type AwsMetadataClient struct {
-	BaseURL string // override for tests; defaults to http://169.254.169.254
+	BaseURL         string // override for tests; defaults to http://169.254.169.254
 	TokenTTLSeconds int
 }
 

@@ -31,7 +31,7 @@ func (f *fakeHTTPClient) Do(req *http.Request) (*http.Response, error) {
 
 func TestAnnounce_Success(t *testing.T) {
 	fake := &fakeHTTPClient{
-		status: 200,
+		status:   200,
 		response: `{"success":true,"data":{"peer":{"id":"peer-1","handle":"instance-abc","status":"active","enabled":false,"trust_score":0.5},"created":true}}`,
 	}
 	r := New("https://platform.example.com", fake)

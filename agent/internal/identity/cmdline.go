@@ -81,9 +81,9 @@ func parseCmdline(raw string) map[string]string {
 // tokenize splits on whitespace, respecting single-/double-quoted runs.
 func tokenize(s string) []string {
 	var (
-		out      []string
-		buf      strings.Builder
-		inQuote  byte
+		out     []string
+		buf     strings.Builder
+		inQuote byte
 	)
 	flush := func() {
 		if buf.Len() > 0 {

@@ -19,11 +19,11 @@ import (
 // returns canned responses keyed by HTTP method + path.
 type recordingHTTP struct {
 	mu        sync.Mutex
-	getResp   map[string]string  // path → body
-	getStatus map[string]int     // path → status (default 200)
-	postResp  map[string]string  // path → body
-	postBody  map[string][]byte  // path → most recent post body
-	postCalls map[string]int     // path → call count
+	getResp   map[string]string // path → body
+	getStatus map[string]int    // path → status (default 200)
+	postResp  map[string]string // path → body
+	postBody  map[string][]byte // path → most recent post body
+	postCalls map[string]int    // path → call count
 	getCalls  map[string]int
 }
 

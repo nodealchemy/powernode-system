@@ -12,12 +12,12 @@ import (
 
 // ProvisionGateway sets up a Shape 2 gateway powernode:
 //
-//   1. mkdir -p ReExportPath
-//   2. mount upstream NFS at ReExportPath (plaintext in v1; v2 wraps with stunnel/tlshd)
-//   3. write a systemd .mount unit so the upstream mount survives reboot
-//   4. write the re-export line to /etc/exports
-//   5. exportfs -ra to apply
-//   6. ensure nfs-kernel-server is active
+//  1. mkdir -p ReExportPath
+//  2. mount upstream NFS at ReExportPath (plaintext in v1; v2 wraps with stunnel/tlshd)
+//  3. write a systemd .mount unit so the upstream mount survives reboot
+//  4. write the re-export line to /etc/exports
+//  5. exportfs -ra to apply
+//  6. ensure nfs-kernel-server is active
 //
 // Per-client ACLs land separately via the storage.exports.apply task.
 // This task only owns the re-export base.
