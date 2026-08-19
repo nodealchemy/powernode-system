@@ -1121,24 +1121,50 @@ module Ai
         success_result(peer: serialize_peer_full(peer))
       end
 
+      # IMP-cf285f21f3a9: routed through Ai::AutonomyGate, matching
+      # PeersController#create. This was the second of the two ungated peer
+      # creation surfaces — the seeded sdwan.peer_create policy matched no gate
+      # call site anywhere, so an agent could attach a node to an overlay
+      # without the operator's configured policy being consulted at all, while
+      # detach_peer's REST twin has been gated since slice 1.
+      #
+      # Internal composition (provision_full_stack, federation acceptance,
+      # storage auto-enroll, the compose skills) keeps calling
+      # Sdwan::PeerEnroller directly and is deliberately NOT gated here.
       def attach_peer(params)
         network = account_networks.find(params[:network_id])
         node_instance = ::System::NodeInstance.joins(:node)
                                               .where(system_nodes: { account_id: @account.id })
                                               .find(params[:node_instance_id])
 
-        peer = ::Sdwan::PeerEnroller.call(
-          network: network,
-          node_instance: node_instance,
+        attributes = {
+          node_instance_id: node_instance.id,
           publicly_reachable: params[:publicly_reachable] || false,
           endpoint_host: params[:endpoint_host],
           endpoint_host_v6: params[:endpoint_host_v6],
           endpoint_host_v4: params[:endpoint_host_v4],
           endpoint_port: params[:endpoint_port],
           listen_port: params[:listen_port] || 51820
-        )
+        }.compact
 
-        success_result(attached: true, peer: serialize_peer_full(peer))
+        gated_result(
+          action_category: ::Sdwan::Executors::CreatePeer::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::CreatePeer",
+          executor_params: { network_id: network.id, attributes: attributes },
+          source_type: "Sdwan::Network",
+          source_id: network.id,
+          # Matches PeersController#create's gate description and
+          # CreatePeer#summarize, so all three speak one sentence.
+          description: "Add SDWAN peer #{::Sdwan::Peer.operator_label_for(
+            node_instance: node_instance,
+            network_name: network.name,
+            endpoint_display: nil,
+            fallback: node_instance.id
+          )}"
+        ) do |result|
+          peer = ::Sdwan::Peer.find(result.result&.dig(:data, :peer_id))
+          { attached: true, peer: serialize_peer_full(peer) }
+        end
       end
 
       def detach_peer(params)
