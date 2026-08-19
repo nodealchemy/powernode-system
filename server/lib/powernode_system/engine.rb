@@ -696,15 +696,25 @@ module PowernodeSystem
         # db/seeds/system_runtime_manager_agent.rb) — but the registration
         # survived here for three months.
         #
-        # A class NAMED for it does exist and is not evidence to the contrary:
-        # app/services/system/executors/runtime/rotate_docker_tls.rb is a
-        # deliberate raising stub whose `perform` always raises
-        # NotYetImplementedError (IMP-967901b9d2e1 made it refuse rather than
-        # keep reporting `rotated: true` without touching TLS material). No
-        # call site names it — executors are dispatched by an explicit
-        # `executor_class:` string at the gating site, and nothing passes this
-        # one. Re-register only alongside a real implementation AND a seeded
-        # policy row.
+        # There is no executor class for it either, as of IMP-75f851ce0bf0.
+        # One used to exist — a deliberate raising stub
+        # (System::Executors::Runtime::RotateDockerTls, IMP-967901b9d2e1) that
+        # refused rather than keep reporting `rotated: true` without touching
+        # TLS material. Raising was the right fix while the category was still
+        # registered and the class therefore dispatchable; once this
+        # registration was removed nothing could reach it, and a raising stub
+        # no dispatcher can name is not a safety net — it is a name that reads
+        # as an implementation to the next person who greps for it. This
+        # comment used to have to say so explicitly, which is the clearest
+        # evidence the ambiguity was real.
+        #
+        # Re-register only alongside a real implementation AND a seeded policy
+        # row. Note the two SIBLING stubs from the same commit
+        # (Runtime::DrainK3sNode, Runtime::UpgradeK3sRuntime) are deliberately
+        # still present and still raising: their categories
+        # (system.runtime_k8s_node_drain, system.runtime_k8s_runtime_upgrade)
+        # ARE registered below, so they remain dispatchable and the raise is
+        # still doing its job there.
         #
         # Three further names are ABSENT for a different reason (IMP-eb60db901f5f)
         # — they were never capabilities, only second SPELLINGS of the three
