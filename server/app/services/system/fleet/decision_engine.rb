@@ -1466,6 +1466,18 @@ module System
           return { applied: false, reason: "reconcile task already in flight" }
         end
 
+        # IMP-f1c1e6d61104 (c) — break the dispatch -> fail -> redispatch loop.
+        #
+        # Once the agent reports a module whose manifest declares
+        # reboot_required (agent part (a) of this task fails the task rather
+        # than completing it), another reconcile cannot converge that module:
+        # its content cannot be materialized live at all, so re-dispatching is
+        # guaranteed to fail again. Escalate the same way
+        # #apply_template_closure_drift does rather than looping.
+        if (escalation = reboot_pending_escalation(instance, command))
+          return escalation
+        end
+
         task = ::System::Task.create!(
           account: account, operable: instance, command: command, status: "pending",
           options: {
@@ -1476,6 +1488,32 @@ module System
           }
         )
         { applied: true, task_id: task.id, command: command }
+      end
+
+      # IMP-f1c1e6d61104 (c) — nil unless this instance's LAST finished reconcile
+      # of the same command failed because a module needs a reboot.
+      #
+      # Ordered by completed_at and status-checked SEPARATELY on purpose:
+      # System::Task stamps completed_at on fail!/abort!/cancel! as well as
+      # complete!, so a timestamp alone cannot tell a failure from a success —
+      # the same trap the parent task's guard clauses were built around. Taking
+      # the most recent finished task and then asking whether it FAILED is what
+      # makes a later successful apply clear the block, rather than the block
+      # persisting for the life of the node.
+      def reboot_pending_escalation(instance, command)
+        last = ::System::Task.where(account: account, operable: instance, command: command)
+                             .where.not(completed_at: nil)
+                             .order(completed_at: :desc)
+                             .first
+        return nil unless last&.status == "failed"
+        return nil unless last.error_message.to_s.include?("reboot_pending")
+
+        {
+          applied: false, instance_id: instance.id, requires_reprovision: true,
+          reason: "last #{command} failed with reboot_pending — the module's content cannot be " \
+                  "materialized live; a reboot (or rolling reprovision) is required, so another " \
+                  "reconcile would fail identically"
+        }
       end
 
       def skill_metadata_payload(signal, skill_result)

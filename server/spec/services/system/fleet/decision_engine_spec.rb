@@ -399,6 +399,67 @@ RSpec.describe System::Fleet::DecisionEngine do
         expect(System::Task.find_by(account: account, command: "apply_config", operable: instance)).to be_present
       end
 
+      # IMP-f1c1e6d61104 part (c) — break the dispatch -> fail -> redispatch loop.
+      #
+      # Once the agent fails apply_config for a module whose manifest declares
+      # reboot_required (part (a) of this task), re-dispatching another
+      # apply_config can never converge it: the module's content cannot be
+      # materialized live no matter how many times the reconcile runs. Without
+      # this, the lane re-dispatches every tick forever, and each failed task
+      # also leaves the node unsuppressed, so the loop is loud AND useless.
+      #
+      # The escalation mirrors apply_template_closure_drift's arm: report
+      # requires_reprovision rather than pretending an apply will fix it.
+      it "escalates to reprovision instead of re-dispatching after a reboot_pending failure" do
+        System::Task.create!(
+          account: account, operable: instance, command: "apply_config", status: "failed",
+          error_message: "reconcile did not converge 1 module(s): " \
+                         "reconciler:reboot_pending [mod-base-os]: reboot_required=true",
+          completed_at: 1.minute.ago
+        )
+
+        d = decide_drift("system.config_drift")
+
+        expect(d[:remediation]).to include(applied: false, requires_reprovision: true)
+        expect(System::Task.where(account: account, command: "apply_config",
+                                  operable: instance, status: "pending").count).to eq(0),
+                                                                                  "re-dispatched an apply that cannot converge a reboot_required module"
+      end
+
+      # CONTROL: an ordinary failure is NOT reboot_pending, so the lane must
+      # still retry. Over-applying the escalation would strand every node whose
+      # apply failed transiently (a scratch-budget abort clears on its own).
+      it "still re-dispatches after a non-reboot_pending failure" do
+        System::Task.create!(
+          account: account, operable: instance, command: "apply_config", status: "failed",
+          error_message: "reconcile did not converge 1 module(s): " \
+                         "reconciler:recompose_budget [mod-a]: scratch exhausted",
+          completed_at: 1.minute.ago
+        )
+
+        d = decide_drift("system.config_drift")
+
+        expect(d[:remediation]).to include(applied: true, command: "apply_config")
+      end
+
+      # CONTROL: a reboot_pending failure that has since been SUPERSEDED by a
+      # completed apply must not keep blocking dispatch — the condition cleared.
+      it "resumes dispatching once a later apply completed" do
+        System::Task.create!(
+          account: account, operable: instance, command: "apply_config", status: "failed",
+          error_message: "reconciler:reboot_pending [mod-base-os]: reboot_required=true",
+          completed_at: 10.minutes.ago
+        )
+        System::Task.create!(
+          account: account, operable: instance, command: "apply_config", status: "complete",
+          completed_at: 1.minute.ago
+        )
+
+        d = decide_drift("system.config_drift")
+
+        expect(d[:remediation]).to include(applied: true, command: "apply_config")
+      end
+
       it "does not duplicate an in-flight reconcile task" do
         System::Task.create!(account: account, operable: instance, command: "sync_modules", status: "pending")
 
