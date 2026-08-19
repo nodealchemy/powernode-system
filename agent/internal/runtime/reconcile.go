@@ -1060,6 +1060,7 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 //     changed == 0, i.e. nothing had actually drifted) is not logged —
 //     OnError is reserved for failures and there's no dedicated
 //     benign/info-log hook in this package.
+//
 // Returns retryNeeded: true ONLY when the materialization was refused for a
 // reason a later tick could resolve on its own. The caller clears the module's
 // manifest-hash stamp in that case, which puts it back into toReattach next
