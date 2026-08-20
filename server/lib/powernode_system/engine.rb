@@ -651,6 +651,7 @@ module PowernodeSystem
           sdwan.ovn_acl_create sdwan.ovn_acl_delete
           sdwan.ipfix_collector_create sdwan.ipfix_collector_delete
           system.sdwan_service_health_investigate
+          system.sdwan_ovn_deployment_investigate
         ])
 
         # Phase 3 (Federation & Multi-Site) — SDWAN-first federation actions.
