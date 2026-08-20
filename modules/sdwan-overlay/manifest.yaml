@@ -1,0 +1,158 @@
+schema_version: 1
+name: sdwan-overlay
+display_name: SDWAN Overlay (WireGuard + nftables + FRR)
+description: >
+  SDWAN overlay binary install layer. Ships wireguard-tools, nftables, and
+  FRR for networks with routing_protocol=ibgp. Runtime topology — peers,
+  keys, AllowedIPs, VRFs, firewall rules, frr.conf — is delivered to the
+  on-node agent via /api/v1/system/node_api/config/sdwan on every heartbeat
+  tick and applied by the agent's sdwan manager (wg_applier / vrf_applier /
+  nftables_applier / frr_applier). This module is the binary install only;
+  no config- or instance-variety children (per the SDWAN plan Section F,
+  runtime state does not flow through the union-mount artifact pipeline).
+license: GPL-2.0-or-later
+category: networking-proxy
+package_spec:
+  - wireguard
+  - wireguard-tools
+  - nftables
+  # FRR (Free Range Routing) is the iBGP daemon for networks with
+  # routing_protocol=ibgp. The agent's frr_applier writes /etc/frr/frr.conf
+  # verbatim and drives the unit via `systemctl reload-or-restart frr` /
+  # `systemctl stop frr`. Networks in static mode never start FRR at all.
+  - frr
+  # frr-pythontools ships /usr/lib/frr/frr-reload.py, which frrinit.sh's
+  # reload path needs — without it `systemctl reload frr` degrades to a
+  # session-dropping restart. Needs python3 from the base userland.
+  - frr-pythontools
+# Unit-enablement decisions (deliberate, per the agent's ownership model):
+#   * wg-quick@.service — MASKED via rootfs symlink to /dev/null (redis
+#     precedent). The agent creates and configures WG interfaces itself
+#     (`ip link add ... type wireguard` + `wg setconf`, wg_applier.go); a
+#     wg-quick instance enabled by hand or preset would fight the agent
+#     for the same interfaces.
+#   * nftables.service — MASKED via rootfs symlink. The stock unit runs
+#     `nft -f /etc/nftables.conf`, and the stock conf begins with
+#     `flush ruleset` — any (re)start would wipe the agent's sdwan filter
+#     and NAT tables (nftables_applier.go / nat_applier.go apply rules
+#     with their own `nft -f` invocations).
+#   * frr.service — NOT masked and NOT preset-enabled. The agent needs the
+#     unit operable (`systemctl reload-or-restart frr`), so masking would
+#     break iBGP; but no enablement symlink is carved (file_spec includes
+#     only the unit file, never /etc/systemd/system/*.wants/), so FRR
+#     stays down at boot and the agent is its sole starter. Which daemons
+#     frr.service spawns comes from /etc/frr/daemons — the distro default
+#     is bgpd=no and NOTHING in the agent manages that file, so this
+#     module ships a rootfs override with bgpd=yes (still inert until the
+#     agent starts the unit for an ibgp-mode network).
+#
+# file_spec: best-effort curated list from the five packages' known Noble
+# layout (curated per redis's precedent — no broad /usr/** carves, which
+# would steal sibling modules' files from the shared fat rootfs).
+# derive-file-spec.sh could not be run at authoring time (no dpkg admindir
+# available on the authoring host); the build's conformance check is the
+# oracle — iterate on its over-/under-carve report rather than widening
+# globs. /etc/wireguard/ and /etc/frr/ are carved via protected_spec below
+# (redis precedent: protected paths are not repeated in file_spec). /var
+# is intentionally omitted — runtime state (/var/run/frr, logs)
+# materializes in the overlay's writable upper layer.
+file_spec:
+  # wireguard (metapackage) + wireguard-tools
+  - /usr/bin/wg
+  - /usr/bin/wg-quick
+  - /usr/lib/systemd/system/wg-quick@.service
+  - /usr/share/bash-completion/completions/wg
+  - /usr/share/bash-completion/completions/wg-quick
+  - /usr/share/doc/wireguard/**
+  - /usr/share/doc/wireguard-tools/**
+  - /usr/share/man/man8/wg.8.gz
+  - /usr/share/man/man8/wg-quick.8.gz
+  # nftables + its non-base shared libs (per-library globs, not a
+  # directory-wide carve — see qemu-guest-agent's file_spec comment)
+  - /etc/nftables.conf
+  - /usr/sbin/nft
+  - /usr/lib/systemd/system/nftables.service
+  - /usr/lib/x86_64-linux-gnu/libnftables.so*
+  - /usr/lib/x86_64-linux-gnu/libnftnl.so*
+  - /usr/lib/x86_64-linux-gnu/libmnl.so*
+  - /usr/lib/x86_64-linux-gnu/libjansson.so*
+  - /usr/lib/x86_64-linux-gnu/libedit.so*
+  - /usr/lib/x86_64-linux-gnu/libgmp.so*
+  - /usr/share/doc/nftables/**
+  - /usr/share/doc/libnftables1/**
+  - /usr/share/doc/libnftnl11/**
+  - /usr/share/doc/libmnl0/**
+  - /usr/share/doc/libjansson4/**
+  - /usr/share/doc/libedit2/**
+  - /usr/share/doc/libgmp10/**
+  - /usr/share/man/man8/nft.8.gz
+  # frr + frr-pythontools (frr-reload.py lands under /usr/lib/frr/) + libs
+  - /usr/bin/vtysh
+  - /usr/bin/mtracebis
+  - /usr/lib/frr/**
+  - /usr/lib/systemd/system/frr.service
+  - /etc/logrotate.d/frr
+  - /etc/pam.d/frr
+  - /etc/rsyslog.d/45-frr.conf
+  - /usr/lib/x86_64-linux-gnu/libyang.so*
+  - /usr/lib/x86_64-linux-gnu/libjson-c.so*
+  - /usr/lib/x86_64-linux-gnu/libcares.so*
+  - /usr/lib/x86_64-linux-gnu/libreadline.so*
+  - /usr/lib/x86_64-linux-gnu/libprotobuf-c.so*
+  - /usr/lib/x86_64-linux-gnu/librtr.so*
+  - /usr/share/doc/frr/**
+  - /usr/share/doc/frr-pythontools/**
+  - /usr/share/doc/libyang2t64/**
+  - /usr/share/doc/libjson-c5/**
+  - /usr/share/doc/libcares2/**
+  - /usr/share/doc/libreadline8t64/**
+  - /usr/share/doc/libprotobuf-c1/**
+  - /usr/share/doc/librtr0/**
+  - /usr/share/man/man1/vtysh.1.gz
+mask: []
+dependency_spec: []
+# /etc/wireguard/ holds per-peer WireGuard PRIVATE KEYS; /etc/frr/ holds
+# the account's BGP topology (frr.conf) plus the daemons file above. No
+# neighbor module may ship anything inside either (carried over from the
+# original sdwan_overlay_module.rb seed's protected_spec intent).
+protected_spec:
+  - /etc/wireguard/**
+  - /etc/frr/**
+reboot_required: false
+
+# FRR's Debian postinst normally creates these; postinst effects on
+# /etc/passwd do not survive the carve, so the identities are declared
+# here and materialized by the platform's UserAllocator on attach. frrvty
+# is the vtysh-socket-access group; the frr user belongs to both.
+groups:
+  - name: frr
+  - name: frrvty
+users:
+  - name: frr
+    primary_group: frr
+    supplementary_groups: [frrvty]
+    shell: /usr/sbin/nologin
+    home: /var/run/frr
+    gecos: "FRRouting suite"
+
+dependencies:
+  requires:
+    # wg/nft/frr binaries link against base-os glibc + friends;
+    # frr-reload.py needs the base userland's python3.
+    - capability:os.userland
+  provides:
+    - network.sdwan-overlay
+    - vpn.wireguard
+
+# No services: block on purpose — this module has no daemon of its own.
+# The system-base agent applies all SDWAN runtime state, and frr.service
+# is a distro unit the agent drives via systemctl (see the unit-enablement
+# comment above).
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: false
+
+build:
+  apt_snapshot: "20260415T000000Z"

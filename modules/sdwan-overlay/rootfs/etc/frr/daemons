@@ -1,0 +1,47 @@
+# /etc/frr/daemons — shipped by the sdwan-overlay module (rootfs overlay,
+# replaces the frr package's conffile in the carved blob).
+#
+# Which daemons frrinit.sh (frr.service) spawns. The distro default is
+# bgpd=no, and nothing in the on-node agent manages this file — the agent's
+# frr_applier only writes /etc/frr/frr.conf and reload-or-restarts the
+# unit. bgpd=yes here is what makes iBGP networks actually run a BGP
+# daemon; it stays inert for static-mode networks because the agent never
+# starts frr.service for them (the unit ships disabled and unmasked).
+#
+# zebra and staticd are always started by frrinit.sh regardless of this
+# file (FRR packaging behavior).
+bgpd=yes
+ospfd=no
+ospf6d=no
+ripd=no
+ripngd=no
+isisd=no
+pimd=no
+pim6d=no
+ldpd=no
+nhrpd=no
+eigrpd=no
+babeld=no
+sharpd=no
+pbrd=no
+bfdd=no
+fabricd=no
+vrrpd=no
+pathd=no
+
+#
+# Command-line options per daemon; -A binds the vty to loopback only.
+#
+zebra_options="  -A 127.0.0.1 -s 90000000"
+bgpd_options="   -A 127.0.0.1"
+staticd_options="-A 127.0.0.1"
+
+# Enable vtysh integrated config (the agent writes one integrated
+# /etc/frr/frr.conf, never per-daemon configs).
+vtysh_enable=yes
+
+# Watchfrr restarts crashed daemons.
+watchfrr_enable=yes
+
+# Increase fd limit for larger peer counts.
+MAX_FDS=1024
