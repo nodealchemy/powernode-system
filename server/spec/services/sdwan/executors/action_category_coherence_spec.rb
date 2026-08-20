@@ -344,10 +344,10 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
   # green while protecting nothing. These floors are the current counts, so no
   # addition of mine can satisfy them by accident.
   it "reads real inputs on every surface it claims to guard" do
-    expect(executor_classes.size).to be >= 26
+    expect(executor_classes.size).to be >= 43
     expect(declared.size).to eq(executor_classes.size)
     expect(seeded_categories.size).to be > 50
-    expect(all_gate_sites.size).to be >= 42
+    expect(all_gate_sites.size).to be >= 57
     expect(all_gate_sites.map { |s| s[:file] }.uniq.size).to be >= 9
     expect(Ai::InterventionPolicy.registered_categories).to include("sdwan.network_create")
   end

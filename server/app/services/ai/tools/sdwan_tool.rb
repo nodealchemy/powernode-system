@@ -1003,7 +1003,31 @@ module Ai
             message: "Approval required: #{action_category}"
           )
         else
-          error_result(result.error || "Action #{action_category} is blocked by policy")
+          error_result(gate_failure_message(result, action_category))
+        end
+      end
+
+      # Ai::AutonomyGate rescues StandardError into a :blocked Result, so once
+      # an arm's write moves inside its executor EVERY failure the write can
+      # raise arrives here flattened to "Gate evaluation failed: <message>" —
+      # losing the field-level errors and the FK wording the inline arms used
+      # to return. Result carries the original `exception` for exactly this
+      # reason; Ai::GatedActions#gate_update! already unwraps it on the REST
+      # side, and this is the MCP twin of that, so one wording serves both.
+      #
+      # A genuine POLICY block carries no exception and falls through to
+      # result.error unchanged.
+      def gate_failure_message(result, action_category)
+        case result.exception
+        when ActiveRecord::RecordInvalid
+          result.exception.record.errors.full_messages.join("; ")
+        when ActiveRecord::InvalidForeignKey
+          "FK blocks destroy: #{result.exception.message}"
+        when ::Sdwan::HostBridgeAllocator::CapacityExhausted,
+             ::Sdwan::HostBridgeAllocator::InvalidArguments
+          result.exception.message
+        else
+          result.error || "Action #{action_category} is blocked by policy"
         end
       end
 
@@ -2667,16 +2691,29 @@ module Ai
 
       # ─── Phase O6 — host bridges (O1) ──────────────────────────────────
 
+      # IMP-97c7b4123d8f — the O6 write family is gated. Allocation assigns a
+      # short_id and a bridge name the compiler emits onto the node, so it
+      # reaches the dataplane rather than merely recording intent.
       def create_host_bridge(params)
         host = ::System::NodeInstance.joins(:node)
                                      .where(system_nodes: { account_id: @account.id })
                                      .find(params[:node_instance_id])
-        bridge = ::Sdwan::HostBridgeAllocator.allocate!(
-          host: host,
-          kind: params[:kind].presence,
-          account: @account
-        )
-        success_result(host_bridge: serialize_host_bridge(bridge))
+        kind = params[:kind].presence
+        if kind && !::Sdwan::HostBridge::KINDS.include?(kind.to_s)
+          return error_result("kind must be one of #{::Sdwan::HostBridge::KINDS.join(', ')}")
+        end
+
+        gated_result(
+          action_category: ::Sdwan::Executors::CreateHostBridge::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateHostBridge",
+          executor_params: { node_instance_id: host.id, kind: params[:kind].presence },
+          source_type: "System::NodeInstance",
+          source_id: host.id,
+          description: "Allocate SDWAN host bridge on #{host.name.presence || host.id}"
+        ) do |result|
+          bridge = ::Sdwan::HostBridge.find(result.result&.dig(:data, :host_bridge_id))
+          { host_bridge: serialize_host_bridge(bridge) }
+        end
       end
 
       def list_host_bridges(params)
@@ -2703,12 +2740,24 @@ module Ai
       # `mark_active`, to come back to life.
       def activate_host_bridge(params)
         bridge = ::Sdwan::HostBridge.where(account_id: @account.id).find(params[:id])
-        unless bridge.mark_active!
+        # Transition matrix first: `may_mark_active?` reads the state machine
+        # without writing, so an impossible activation is refused here rather
+        # than parked as an approval that can only fail.
+        unless bridge.may_mark_active?
           hint = bridge.state == "removed" ? " — use readopt to revive a removed bridge" : ""
           return error_result("cannot activate a #{bridge.state} host bridge#{hint}")
         end
 
-        success_result(host_bridge: serialize_host_bridge(bridge.reload))
+        gated_result(
+          action_category: ::Sdwan::Executors::ActivateHostBridge::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::ActivateHostBridge",
+          executor_params: { host_bridge_id: bridge.id },
+          source_type: "Sdwan::HostBridge",
+          source_id: bridge.id,
+          description: "Activate SDWAN host bridge #{bridge.bridge_name.presence || bridge.id}"
+        ) do |_result|
+          { host_bridge: serialize_host_bridge(bridge.reload) }
+        end
       end
 
       # Release a HostBridge via the allocator. Default `force: false`
@@ -2719,8 +2768,18 @@ module Ai
       # is the equivalent safety net.
       def release_host_bridge(params)
         bridge = ::Sdwan::HostBridge.where(account_id: @account.id).find(params[:id])
-        ::Sdwan::HostBridgeAllocator.release!(bridge, force: params[:force] == true)
-        success_result(host_bridge: serialize_host_bridge(bridge.reload))
+        forced = params[:force] == true
+        gated_result(
+          action_category: ::Sdwan::Executors::ReleaseHostBridge::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::ReleaseHostBridge",
+          executor_params: { host_bridge_id: bridge.id, force: forced },
+          source_type: "Sdwan::HostBridge",
+          source_id: bridge.id,
+          description: "Release SDWAN host bridge #{bridge.bridge_name.presence || bridge.id}" \
+                       "#{forced ? ' (forced)' : ''}"
+        ) do |_result|
+          { host_bridge: serialize_host_bridge(bridge.reload) }
+        end
       end
 
       def serialize_host_bridge(b)
@@ -2744,26 +2803,56 @@ module Ai
       # ─── Phase O6 — OVN deployment + switches + ports + plan (O3) ──────
 
       def create_ovn_deployment(params)
-        deployment = ::Sdwan::OvnDeployment.create!(
+        # Validate BEFORE the gate, per gated_result's contract: a payload
+        # that can only ever fail must not park an approval an operator has
+        # to dispose of. The executor re-runs the checks that count.
+        candidate = ::Sdwan::OvnDeployment.new(
           account: @account,
-          nb_db_endpoint: params[:nb_db_endpoint],
-          sb_db_endpoint: params[:sb_db_endpoint],
+          nb_db_endpoint: params[:nb_db_endpoint], sb_db_endpoint: params[:sb_db_endpoint],
           northd_host: params[:northd_host],
           settings: params[:settings].is_a?(Hash) ? params[:settings] : {}
         )
-        success_result(ovn_deployment: serialize_ovn_deployment(deployment))
+        return error_result(candidate.errors.full_messages.join("; ")) unless candidate.valid?
+
+        gated_result(
+          action_category: ::Sdwan::Executors::CreateOvnDeployment::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateOvnDeployment",
+          executor_params: {
+            nb_db_endpoint: params[:nb_db_endpoint], sb_db_endpoint: params[:sb_db_endpoint],
+            northd_host: params[:northd_host],
+            settings: params[:settings].is_a?(Hash) ? params[:settings] : {}
+          },
+          description: "Create the OVN control-plane deployment"
+        ) do |result|
+          deployment = ::Sdwan::OvnDeployment.find(result.result&.dig(:data, :deployment_id))
+          { ovn_deployment: serialize_ovn_deployment(deployment) }
+        end
       end
 
       def create_ovn_logical_switch(params)
         deployment = account_ovn_deployments.find(params[:deployment_id])
-        switch = deployment.logical_switches.create!(
-          account: @account,
-          name: params[:name],
-          cidr: params[:cidr],
+        candidate = deployment.logical_switches.new(
+          account: @account, name: params[:name], cidr: params[:cidr],
           description: params[:description],
           settings: params[:settings].is_a?(Hash) ? params[:settings] : {}
         )
-        success_result(ovn_logical_switch: serialize_ovn_logical_switch(switch))
+        return error_result(candidate.errors.full_messages.join("; ")) unless candidate.valid?
+
+        gated_result(
+          action_category: ::Sdwan::Executors::CreateOvnLogicalSwitch::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateOvnLogicalSwitch",
+          executor_params: {
+            deployment_id: deployment.id, name: params[:name], cidr: params[:cidr],
+            description: params[:description],
+            settings: params[:settings].is_a?(Hash) ? params[:settings] : {}
+          },
+          source_type: "Sdwan::OvnDeployment",
+          source_id: deployment.id,
+          description: "Create OVN logical switch #{params[:name]}"
+        ) do |result|
+          switch = ::Sdwan::OvnLogicalSwitch.find(result.result&.dig(:data, :logical_switch_id))
+          { ovn_logical_switch: serialize_ovn_logical_switch(switch) }
+        end
       end
 
       def create_ovn_logical_switch_port(params)
@@ -2776,16 +2865,28 @@ module Ai
                                        .find(params[:host_node_instance_id])
         end
 
-        port = switch.ports.new(
-          account: @account,
-          name: params[:name],
-          kind: params[:kind].to_s,
+        candidate = switch.ports.new(
+          account: @account, name: params[:name], kind: params[:kind].to_s,
           host_node_instance: host,
-          addresses: Array(params[:addresses]).map(&:to_s),
-          mac: params[:mac].presence
+          addresses: Array(params[:addresses]).map(&:to_s), mac: params[:mac].presence
         )
-        port.save!
-        success_result(ovn_logical_switch_port: serialize_ovn_logical_switch_port(port))
+        return error_result(candidate.errors.full_messages.join("; ")) unless candidate.valid?
+
+        gated_result(
+          action_category: ::Sdwan::Executors::CreateOvnLogicalSwitchPort::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateOvnLogicalSwitchPort",
+          executor_params: {
+            logical_switch_id: switch.id, name: params[:name], kind: params[:kind].to_s,
+            host_node_instance_id: host&.id,
+            addresses: Array(params[:addresses]).map(&:to_s), mac: params[:mac].presence
+          },
+          source_type: "Sdwan::OvnLogicalSwitch",
+          source_id: switch.id,
+          description: "Create OVN logical switch port #{params[:name]}"
+        ) do |result|
+          port = ::Sdwan::OvnLogicalSwitchPort.find(result.result&.dig(:data, :port_id))
+          { ovn_logical_switch_port: serialize_ovn_logical_switch_port(port) }
+        end
       end
 
       # Mark an OvnLogicalSwitch as `active`. Mirrors activate_host_bridge:
@@ -2801,9 +2902,20 @@ module Ai
       # instead of reporting success on an unchanged row.
       def activate_ovn_logical_switch(params)
         switch = account_ovn_logical_switches.find(params[:logical_switch_id])
-        return error_result("cannot activate a #{switch.state} logical switch") unless switch.mark_active!
+        unless switch.may_mark_active?
+          return error_result("cannot activate a #{switch.state} logical switch")
+        end
 
-        success_result(ovn_logical_switch: serialize_ovn_logical_switch(switch))
+        gated_result(
+          action_category: ::Sdwan::Executors::ActivateOvnLogicalSwitch::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::ActivateOvnLogicalSwitch",
+          executor_params: { logical_switch_id: switch.id },
+          source_type: "Sdwan::OvnLogicalSwitch",
+          source_id: switch.id,
+          description: "Activate OVN logical switch #{switch.name.presence || switch.id}"
+        ) do |_result|
+          { ovn_logical_switch: serialize_ovn_logical_switch(switch.reload) }
+        end
       end
 
       # Mark an OvnLogicalSwitchPort as `active`. Same trap as switches: a
@@ -2811,9 +2923,20 @@ module Ai
       # parent switch is active.
       def activate_ovn_logical_switch_port(params)
         port = account_ovn_logical_switch_ports.find(params[:port_id])
-        return error_result("cannot activate a #{port.state} logical switch port") unless port.mark_active!
+        unless port.may_mark_active?
+          return error_result("cannot activate a #{port.state} logical switch port")
+        end
 
-        success_result(ovn_logical_switch_port: serialize_ovn_logical_switch_port(port))
+        gated_result(
+          action_category: ::Sdwan::Executors::ActivateOvnLogicalSwitchPort::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::ActivateOvnLogicalSwitchPort",
+          executor_params: { port_id: port.id },
+          source_type: "Sdwan::OvnLogicalSwitchPort",
+          source_id: port.id,
+          description: "Activate OVN logical switch port #{port.name.presence || port.id}"
+        ) do |_result|
+          { ovn_logical_switch_port: serialize_ovn_logical_switch_port(port.reload) }
+        end
       end
 
       def compile_ovn_plan(params)
@@ -2848,11 +2971,16 @@ module Ai
 
       def delete_ovn_logical_switch_port(params)
         port = account_ovn_logical_switch_ports.find(params[:port_id])
-        name = port.name
-        port.destroy!
-        success_result(deleted: true, port_id: params[:port_id], name: name)
-      rescue ActiveRecord::InvalidForeignKey => e
-        error_result("FK blocks destroy: #{e.message}")
+        gated_result(
+          action_category: ::Sdwan::Executors::DeleteOvnLogicalSwitchPort::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::DeleteOvnLogicalSwitchPort",
+          executor_params: { port_id: port.id },
+          source_type: "Sdwan::OvnLogicalSwitchPort",
+          source_id: port.id,
+          description: "Delete OVN logical switch port #{port.name.presence || port.id}"
+        ) do |result|
+          { deleted: true, port_id: params[:port_id], name: result.result&.dig(:data, :name) }
+        end
       end
 
       def account_ovn_deployments
@@ -2925,14 +3053,25 @@ module Ai
       # ─── Phase O6 — IPFIX collectors (O5) ──────────────────────────────
 
       def create_ipfix_collector(params)
-        collector = ::Sdwan::IpfixCollector.create!(
-          account: @account,
-          name: params[:name],
-          host: params[:host],
+        candidate = ::Sdwan::IpfixCollector.new(
+          account: @account, name: params[:name], host: params[:host],
           port: params[:port].present? ? params[:port].to_i : 4739,
           sampling_rate: params[:sampling_rate].present? ? params[:sampling_rate].to_i : 1
         )
-        success_result(ipfix_collector: serialize_ipfix_collector(collector))
+        return error_result(candidate.errors.full_messages.join("; ")) unless candidate.valid?
+
+        gated_result(
+          action_category: ::Sdwan::Executors::CreateIpfixCollector::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateIpfixCollector",
+          executor_params: {
+            name: params[:name], host: params[:host],
+            port: params[:port], sampling_rate: params[:sampling_rate]
+          },
+          description: "Create IPFIX collector #{params[:name]}"
+        ) do |result|
+          collector = ::Sdwan::IpfixCollector.find(result.result&.dig(:data, :collector_id))
+          { ipfix_collector: serialize_ipfix_collector(collector) }
+        end
       end
 
       def list_ipfix_collectors(_params)
@@ -2962,34 +3101,60 @@ module Ai
 
       def create_ovn_acl(params)
         switch = account_ovn_logical_switches.find(params[:logical_switch_id])
-        acl = switch.acls.create!(
-          account: @account,
-          name: params[:name],
-          direction: params[:direction].to_s,
+        # The auto-activate that used to sit here now runs INSIDE the
+        # executor, so the gate stands in front of both the write and the
+        # activation rather than between them.
+        candidate = switch.acls.new(
+          account: @account, name: params[:name], direction: params[:direction].to_s,
           priority: params[:priority].present? ? params[:priority].to_i : ::Sdwan::OvnAcl::DEFAULT_PRIORITY,
-          match: params[:match],
-          action: params[:acl_action].to_s
+          match: params[:match], action: params[:acl_action].to_s
         )
-        # Auto-activate so the compiler emits in the same call. Mirrors
-        # the SdwanOvnApplyAclExecutor skill's auto-activate step.
-        acl.mark_active!
-        success_result(ovn_acl: serialize_ovn_acl(acl))
+        return error_result(candidate.errors.full_messages.join("; ")) unless candidate.valid?
+
+        gated_result(
+          action_category: ::Sdwan::Executors::CreateOvnAcl::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateOvnAcl",
+          executor_params: {
+            logical_switch_id: switch.id, name: params[:name],
+            direction: params[:direction].to_s, priority: params[:priority],
+            match: params[:match], acl_action: params[:acl_action].to_s
+          },
+          source_type: "Sdwan::OvnLogicalSwitch",
+          source_id: switch.id,
+          description: "Create OVN ACL #{params[:name]} (#{params[:acl_action]} #{params[:match]})"
+        ) do |result|
+          acl = ::Sdwan::OvnAcl.find(result.result&.dig(:data, :acl_id))
+          { ovn_acl: serialize_ovn_acl(acl) }
+        end
       end
 
       def delete_ovn_acl(params)
         acl = ::Sdwan::OvnAcl.where(account_id: @account.id).find(params[:acl_id])
-        name = acl.name
-        acl.destroy!
-        success_result(deleted: true, acl_id: params[:acl_id], name: name)
+        gated_result(
+          action_category: ::Sdwan::Executors::DeleteOvnAcl::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::DeleteOvnAcl",
+          executor_params: { acl_id: acl.id },
+          source_type: "Sdwan::OvnAcl",
+          source_id: acl.id,
+          description: "Delete OVN ACL #{acl.name.presence || acl.id}"
+        ) do |result|
+          { deleted: true, acl_id: params[:acl_id], name: result.result&.dig(:data, :name) }
+        end
       end
 
       def delete_ovn_logical_switch(params)
         sw = account_ovn_logical_switches.find(params[:logical_switch_id])
-        name = sw.name
-        sw.destroy!
-        success_result(deleted: true, logical_switch_id: params[:logical_switch_id], name: name)
-      rescue ActiveRecord::InvalidForeignKey => e
-        error_result("FK blocks destroy: #{e.message}")
+        gated_result(
+          action_category: ::Sdwan::Executors::DeleteOvnLogicalSwitch::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::DeleteOvnLogicalSwitch",
+          executor_params: { logical_switch_id: sw.id },
+          source_type: "Sdwan::OvnLogicalSwitch",
+          source_id: sw.id,
+          description: "Delete OVN logical switch #{sw.name.presence || sw.id}"
+        ) do |result|
+          { deleted: true, logical_switch_id: params[:logical_switch_id],
+            name: result.result&.dig(:data, :name) }
+        end
       end
 
       def delete_ovn_deployment(params)
@@ -2997,18 +3162,31 @@ module Ai
         # OvnDeployment is the per-account OVN control plane row and has no
         # `name` column/method (unlike acls/switches/ports) — report its
         # status instead so a botched deployment can still be torn down.
-        status = dep.status
-        dep.destroy!
-        success_result(deleted: true, deployment_id: params[:deployment_id], status: status)
-      rescue ActiveRecord::InvalidForeignKey => e
-        error_result("FK blocks destroy: #{e.message}")
+        gated_result(
+          action_category: ::Sdwan::Executors::DeleteOvnDeployment::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::DeleteOvnDeployment",
+          executor_params: { deployment_id: dep.id },
+          source_type: "Sdwan::OvnDeployment",
+          source_id: dep.id,
+          description: "Delete the OVN control-plane deployment #{dep.id}"
+        ) do |result|
+          { deleted: true, deployment_id: params[:deployment_id],
+            status: result.result&.dig(:data, :status) }
+        end
       end
 
       def delete_ipfix_collector(params)
         col = ::Sdwan::IpfixCollector.where(account_id: @account.id).find(params[:collector_id])
-        name = col.name
-        col.destroy!
-        success_result(deleted: true, collector_id: params[:collector_id], name: name)
+        gated_result(
+          action_category: ::Sdwan::Executors::DeleteIpfixCollector::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::DeleteIpfixCollector",
+          executor_params: { collector_id: col.id },
+          source_type: "Sdwan::IpfixCollector",
+          source_id: col.id,
+          description: "Delete IPFIX collector #{col.name.presence || col.id}"
+        ) do |result|
+          { deleted: true, collector_id: params[:collector_id], name: result.result&.dig(:data, :name) }
+        end
       end
 
       def list_ovn_acls(params)

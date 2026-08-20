@@ -156,6 +156,42 @@ sdwan_policies = {
   # User devices — issuing a VPN config notifies, revoking requires approval
   "sdwan.user_device_create"          => "notify_and_proceed",
 
+  # Phase O6 write family (IMP-97c7b4123d8f). These shipped outside the
+  # executor/gate regime entirely — direct model writes with no category, so
+  # no tier was configurable at all.
+  #
+  # For the OVN family specifically, REST is read-only (routes.rb exposes only
+  # index/show for ovn_deployments and no routes at all for switches, ports or
+  # ACLs), so an agent held destructive reach a console operator did not have.
+  # RESIDUAL, deliberately not closed here: host_bridges#destroy (which forces
+  # release, skipping the drain window) and ipfix_collectors#update/#destroy
+  # are REST writes that remain UNGATED, so for those two families the
+  # asymmetry is now inverted rather than removed. Closing it belongs to the
+  # per-family parity tasks that own those controllers.
+  # Tiers follow the sibling precedent: creates and state transitions notify,
+  # deletes require approval.
+  #
+  # Two deletes are sharper than their siblings and are called out rather than
+  # left to the pattern: sdwan.ovn_deployment_delete removes the account's
+  # whole OVN control plane (REST has no equivalent verb), and
+  # sdwan.ovn_acl_delete retracts an isolation rule, which RELAXES multi-tenant
+  # separation rather than merely removing a resource.
+  "sdwan.host_bridge_create"          => "notify_and_proceed",
+  "sdwan.host_bridge_update"          => "notify_and_proceed",
+  "sdwan.host_bridge_delete"          => "require_approval",
+  "sdwan.ovn_deployment_create"       => "notify_and_proceed",
+  "sdwan.ovn_deployment_delete"       => "require_approval",
+  "sdwan.ovn_logical_switch_create"   => "notify_and_proceed",
+  "sdwan.ovn_logical_switch_update"   => "notify_and_proceed",
+  "sdwan.ovn_logical_switch_delete"   => "require_approval",
+  "sdwan.ovn_logical_switch_port_create" => "notify_and_proceed",
+  "sdwan.ovn_logical_switch_port_update" => "notify_and_proceed",
+  "sdwan.ovn_logical_switch_port_delete" => "require_approval",
+  "sdwan.ovn_acl_create"              => "notify_and_proceed",
+  "sdwan.ovn_acl_delete"              => "require_approval",
+  "sdwan.ipfix_collector_create"      => "notify_and_proceed",
+  "sdwan.ipfix_collector_delete"      => "require_approval",
+
   # Federation — cross-instance peering is always sensitive
   "sdwan.federation_peer_propose"     => "require_approval",
   "sdwan.federation_peer_accept"      => "require_approval",

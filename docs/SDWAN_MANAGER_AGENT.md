@@ -32,7 +32,7 @@ What it does **not** own:
 
 ## Intervention Policies
 
-The agent ships with **25 intervention policies** — all `sdwan.*` operator-initiated CRUD (source: `system_sdwan_manager_agent.rb`). Each policy maps an `action_category` to one of four policy types:
+The agent ships with **41 intervention policies** — all `sdwan.*` operator-initiated CRUD (source: `system_sdwan_manager_agent.rb`). Each policy maps an `action_category` to one of four policy types:
 
 | Policy type | Behavior |
 |---|---|

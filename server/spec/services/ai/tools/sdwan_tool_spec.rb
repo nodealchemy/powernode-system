@@ -636,6 +636,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   # ─── Phase O6 — host bridges (O1) ────────────────────────────────────
 
   describe "system_sdwan_create_host_bridge" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let(:host) { sdwan_test_node_instance(node: node) }
 
     it "allocates a HostBridge for the given host (lightweight host → linux kind)" do
@@ -672,6 +678,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   end
 
   describe "system_sdwan_list_host_bridges" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let(:host) { sdwan_test_node_instance(node: node) }
 
     it "lists bridges scoped to the current account" do
@@ -711,6 +723,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   end
 
   describe "system_sdwan_activate_host_bridge" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let(:host) { sdwan_test_node_instance(node: node) }
     let!(:bridge) { ::Sdwan::HostBridgeAllocator.allocate!(host: host, account: account) }
 
@@ -732,6 +750,7 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "reports an error instead of silently no-op'ing on a removed bridge" do
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_call_original
       bridge.mark_removed!
       r = call("system_sdwan_activate_host_bridge", id: bridge.id)
       expect(r[:success]).to be false
@@ -743,6 +762,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   # ─── Phase O6 — OVN deployment + switches + ports + plan (O3) ────────
 
   describe "system_sdwan_create_ovn_deployment" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     it "creates an OvnDeployment with required endpoints" do
       r = call(
         "system_sdwan_create_ovn_deployment",
@@ -759,7 +784,11 @@ RSpec.describe Ai::Tools::SdwanTool do
       expect(deployment[:status]).to eq("pending")
     end
 
+    # IMP-97c7b4123d8f: run against the DEFAULT tier, not the hook's
+    # auto_approve — the claim is that an impossible payload is refused
+    # before the gate, which is only meaningful where a gate would park.
     it "rejects a malformed endpoint" do
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_call_original
       r = call(
         "system_sdwan_create_ovn_deployment",
         nb_db_endpoint: "not-a-real-endpoint",
@@ -770,11 +799,10 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "is per-account unique — second create surfaces a validation error" do
-      call(
-        "system_sdwan_create_ovn_deployment",
-        nb_db_endpoint: "tcp:nb1.example:6641",
-        sb_db_endpoint: "tcp:sb1.example:6642"
-      )
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_call_original
+      create(:sdwan_ovn_deployment, account: account,
+                                    nb_db_endpoint: "tcp:nb1.example:6641",
+                                    sb_db_endpoint: "tcp:sb1.example:6642")
       r2 = call(
         "system_sdwan_create_ovn_deployment",
         nb_db_endpoint: "tcp:nb2.example:6641",
@@ -785,6 +813,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   end
 
   describe "system_sdwan_create_ovn_logical_switch" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let!(:deployment) do
       ::Sdwan::OvnDeployment.create!(
         account: account,
@@ -810,6 +844,7 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "rejects an invalid name" do
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_call_original
       r = call(
         "system_sdwan_create_ovn_logical_switch",
         deployment_id: deployment.id,
@@ -835,6 +870,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   end
 
   describe "system_sdwan_create_ovn_logical_switch_port" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let!(:deployment) do
       ::Sdwan::OvnDeployment.create!(
         account: account,
@@ -893,6 +934,7 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "rejects an invalid kind via model validation" do
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_call_original
       r = call(
         "system_sdwan_create_ovn_logical_switch_port",
         logical_switch_id: switch.id,
@@ -909,6 +951,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   # switch.mark_active!/port.mark_active!, so the documented create -> compile
   # sequence silently produced an empty plan with zero errors.
   describe "the documented create -> compile sequence" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let!(:deployment) do
       ::Sdwan::OvnDeployment.create!(
         account: account,
@@ -953,6 +1001,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   end
 
   describe "system_sdwan_activate_ovn_logical_switch" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let!(:deployment) do
       ::Sdwan::OvnDeployment.create!(
         account: account,
@@ -991,6 +1045,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   end
 
   describe "system_sdwan_activate_ovn_logical_switch_port" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let!(:deployment) do
       ::Sdwan::OvnDeployment.create!(
         account: account,
@@ -1157,6 +1217,12 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     describe "system_sdwan_delete_ovn_logical_switch_port" do
+      # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+      # semantics, not the gate, so they force the gate's :proceed branch and
+      # keep asserting exactly what they always did. The parked branch and the
+      # tier each category carries are covered by
+      # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+      before { auto_approve_policy! }
       it "prunes a single port without touching the switch" do
         r = call("system_sdwan_delete_ovn_logical_switch_port", port_id: port.id)
         expect(r[:success]).to be true
@@ -1177,6 +1243,12 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     describe "system_sdwan_delete_ovn_deployment" do
+      # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+      # semantics, not the gate, so they force the gate's :proceed branch and
+      # keep asserting exactly what they always did. The parked branch and the
+      # tier each category carries are covered by
+      # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+      before { auto_approve_policy! }
       it "destroys the deployment without raising (model has no name column)" do
         r = call("system_sdwan_delete_ovn_deployment", deployment_id: deployment.id)
         expect(r[:success]).to be true
@@ -1214,6 +1286,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   # ─── Phase O6 — IPFIX collectors (O5) ────────────────────────────────
 
   describe "system_sdwan_create_ipfix_collector" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     it "creates an IPFIX collector with defaults" do
       r = call(
         "system_sdwan_create_ipfix_collector",
@@ -1255,13 +1333,20 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "rejects duplicate names within the same account" do
-      call("system_sdwan_create_ipfix_collector", name: "dup", host: "10.0.0.52")
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_call_original
+      create(:sdwan_ipfix_collector, account: account, name: "dup", host: "10.0.0.52")
       r = call("system_sdwan_create_ipfix_collector", name: "dup", host: "10.0.0.53")
       expect(r[:success]).to be false
     end
   end
 
   describe "system_sdwan_list_ipfix_collectors" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     it "lists collectors scoped to the current account" do
       call("system_sdwan_create_ipfix_collector", name: "list-1", host: "10.0.0.60")
       call("system_sdwan_create_ipfix_collector", name: "list-2", host: "10.0.0.61")
