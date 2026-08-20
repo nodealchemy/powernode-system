@@ -57,6 +57,12 @@ RSpec.describe "SDWAN operator-path intervention policies" do
       "sdwan.port_mapping_update"     => "notify_and_proceed",
       "sdwan.port_mapping_delete"     => "notify_and_proceed",
       "sdwan.access_grant_create"     => "notify_and_proceed",
+      # IMP-343163bf37a4: reactivation is the inverse of the revoke below, not
+      # an additive grant, so it carries the revoke's tier rather than the
+      # create's. notify_and_proceed executes inline (Ai::AutonomyGate treats
+      # it as auto_approve), so this row is the whole difference between a
+      # resurrection an operator decides and one that merely gets logged.
+      "sdwan.access_grant_reactivate" => "require_approval",
       "sdwan.access_grant_revoke"     => "require_approval",
       "sdwan.access_grant_delete"     => "require_approval",
       "sdwan.user_device_create"      => "notify_and_proceed",

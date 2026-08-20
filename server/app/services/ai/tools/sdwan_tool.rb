@@ -1324,21 +1324,50 @@ module Ai
         success_result(grants: grants.map { |g| serialize_grant(g) }, count: grants.size)
       end
 
+      # IMP-343163bf37a4: gated on `sdwan.access_grant_create`, matching
+      # AccessGrantsController#create. A grant is unique per (network, user),
+      # so this reuses a revoked user's row and clears its revocation — the
+      # exact inverse of revoke_access_grant below, which is gated. Both map to
+      # the same permission (system.sdwan.user_devices.manage), so leaving this
+      # ungated let an agent refused the revoke reach its inverse instead.
       def create_access_grant(params)
         network = account_networks.find(params[:network_id])
         user = ::User.where(account_id: @account.id).find(params[:user_id])
-        grant = network.access_grants.find_or_initialize_by(user_id: user.id)
-        grant.assign_attributes(
-          account_id: @account.id,
-          status: "active",
-          granted_by_id: @user&.id,
-          granted_at: Time.current,
-          tags: Array(params[:tags]),
-          revoked_at: nil,
-          revocation_reason: nil
-        )
-        grant.save!
-        success_result(grant: serialize_grant(grant))
+
+        # A property of the STORED row, not of the request: reusing a revoked
+        # grant is the inverse of the approval-gated revoke below, while a
+        # fresh grant is additive. Same write either way — only the category,
+        # and so the operator's policy tier, differs.
+        existing = network.access_grants.find_by(user_id: user.id)
+        reactivating = existing&.revoked?
+        network_label = network.name.presence || network.id
+        common = {
+          executor_params: { network_id: network.id, user_id: user.id, tags: params[:tags] },
+          source_type: "Sdwan::Network",
+          source_id: network.id
+        }
+        # Spelled out rather than selected into a variable: the coherence guard
+        # pairs a literal executor_class: with the category beside it.
+        gate = if reactivating
+                 {
+                   action_category: ::Sdwan::Executors::ReactivateAccessGrant::ACTION_CATEGORY,
+                   executor_class: "Sdwan::Executors::ReactivateAccessGrant",
+                   description: "Reinstate SDWAN access for #{user.email} on #{network_label}"
+                 }
+               else
+                 {
+                   action_category: ::Sdwan::Executors::CreateAccessGrant::ACTION_CATEGORY,
+                   executor_class: "Sdwan::Executors::CreateAccessGrant",
+                   # Matches the controller's gate description and the
+                   # executor's #summarize, so all three speak one sentence.
+                   description: "Grant SDWAN access to #{user.email} on #{network_label}"
+                 }
+               end
+
+        gated_result(**common, **gate) do |result|
+          grant = ::Sdwan::AccessGrant.find(result.result&.dig(:data, :grant_id))
+          { grant: serialize_grant(grant) }
+        end
       end
 
       # Revoking a grant cuts a user's VPN access AND cascades to every device

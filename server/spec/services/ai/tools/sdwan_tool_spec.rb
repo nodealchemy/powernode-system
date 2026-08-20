@@ -1603,6 +1603,85 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # IMP-343163bf37a4 — grant CREATION is the inverse of the gated revoke, and
+  # it reached the same state ungated. `find_or_initialize_by(user_id:)` means
+  # a create against an already-revoked user REUSES that row and forces it back
+  # to active with revoked_at nil — so the exact state an operator approval was
+  # required to leave could be re-entered with no gate at all, on either
+  # surface. `sdwan.access_grant_create` was already seeded and registered; it
+  # simply had no executor and no gate site.
+  #
+  # The category is chosen from the STORED row: a fresh grant is additive
+  # (sdwan.access_grant_create, seeded notify_and_proceed) while reusing a
+  # revoked row is a reinstatement (sdwan.access_grant_reactivate, seeded
+  # require_approval like the revoke it undoes). Gating both under `create`
+  # would not have gated the resurrection at all — Ai::AutonomyGate runs
+  # notify_and_proceed inline, exactly as auto_approve.
+  describe "system_sdwan_create_access_grant approval gate (IMP-343163bf37a4)" do
+    let(:network) { create(:sdwan_network, account: account) }
+    let(:member)  { create(:user, account: account) }
+
+    it "does not resurrect a revoked grant inline" do
+      grant  = create(:sdwan_access_grant, account: account, network: network, user: member)
+      device = create(:sdwan_user_device, access_grant: grant)
+      grant.revoke!(reason: "offboarded")
+
+      r = call("system_sdwan_create_access_grant", network_id: network.id, user_id: member.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:pending]).to be true
+      expect(grant.reload.revoked?).to be(true),
+                                       "MCP create_access_grant resurrected a revoked grant without a gate"
+      expect(grant.revoked_at).to be_present
+      expect(device.reload.revoked_at).to be_present
+    end
+
+    it "files the reinstatement under the reactivate category, not create" do
+      grant = create(:sdwan_access_grant, account: account, network: network, user: member)
+      grant.revoke!(reason: "offboarded")
+
+      call("system_sdwan_create_access_grant", network_id: network.id, user_id: member.id, tags: %w[contractor])
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred).to be_present, "no deferred operation was parked — the create was applied inline"
+      expect(deferred.action_category).to eq("sdwan.access_grant_reactivate")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::ReactivateAccessGrant")
+
+      deferred.execute_now!
+
+      expect(grant.reload.status).to eq("active")
+      expect(grant.revoked_at).to be_nil
+      expect(grant.tags).to eq(%w[contractor])
+    end
+
+    it "files a first-time grant under the additive create category" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_create_access_grant", network_id: network.id, user_id: member.id, tags: %w[vpn])
+
+      expect(r[:success]).to be true
+      created = ::Sdwan::AccessGrant.find_by(sdwan_network_id: network.id, user_id: member.id)
+      expect(created).to be_present
+      expect(created.status).to eq("active")
+      expect(created.tags).to eq(%w[vpn])
+      expect(created.account_id).to eq(account.id)
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred.action_category).to eq("sdwan.access_grant_create")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::CreateAccessGrant")
+    end
+
+    it "refuses a user from another account" do
+      auto_approve_policy!
+      outsider = create(:user)
+
+      r = call("system_sdwan_create_access_grant", network_id: network.id, user_id: outsider.id)
+
+      expect(r[:success]).to be false
+      expect(::Sdwan::AccessGrant.where(user_id: outsider.id)).to be_empty
+    end
+  end
+
   # IMP-d172ed7435a2 — MCP/HTTP parity for the GRANT-revoke trust boundary,
   # one blast radius above the device verb gated in IMP-3686f6c236d9.
   #

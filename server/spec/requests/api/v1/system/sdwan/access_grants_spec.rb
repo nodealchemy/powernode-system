@@ -59,6 +59,112 @@ RSpec.describe "Api::V1::System::Sdwan::AccessGrants", type: :request do
     end
   end
 
+  # IMP-343163bf37a4 — create is the inverse of the gated revoke and reached
+  # the same state ungated. find_or_initialize_by(user_id:) REUSES a revoked
+  # user's existing row and forces it back to active with revoked_at nil, so
+  # the state an approval was required to leave could be re-entered with none.
+  #
+  # The category is chosen from the STORED row: a fresh grant is additive
+  # (sdwan.access_grant_create, seeded notify_and_proceed) while reusing a
+  # revoked row is a reinstatement (sdwan.access_grant_reactivate, seeded
+  # require_approval like the revoke it undoes). Gating both under `create`
+  # would not have gated the resurrection at all — Ai::AutonomyGate runs
+  # notify_and_proceed inline, exactly as auto_approve.
+  describe "POST /api/v1/system/sdwan/networks/:network_id/access_grants" do
+    let(:member) { create(:user, account: account) }
+
+    it "does not resurrect a revoked grant inline" do
+      grant  = create(:sdwan_access_grant, account: account, network: network, user: member)
+      device = create(:sdwan_user_device, access_grant: grant)
+      grant.revoke!(reason: "offboarded")
+
+      post "/api/v1/system/sdwan/networks/#{network.id}/access_grants",
+           params: { access_grant: { user_id: member.id } },
+           headers: auth_headers_for(manager), as: :json
+
+      expect(response).to have_http_status(:accepted)
+      expect(grant.reload.revoked?).to be(true),
+                                       "create resurrected a revoked grant without an approval gate"
+      expect(grant.revoked_at).to be_present
+      expect(device.reload.revoked_at).to be_present
+    end
+
+    it "files the reinstatement under the reactivate category, not create" do
+      grant = create(:sdwan_access_grant, account: account, network: network, user: member)
+      grant.revoke!(reason: "offboarded")
+
+      post "/api/v1/system/sdwan/networks/#{network.id}/access_grants",
+           params: { access_grant: { user_id: member.id, tags: %w[contractor] } },
+           headers: auth_headers_for(manager), as: :json
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred.action_category).to eq("sdwan.access_grant_reactivate")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::ReactivateAccessGrant")
+
+      deferred.execute_now!
+
+      expect(grant.reload.status).to eq("active")
+      expect(grant.revoked_at).to be_nil
+      expect(grant.tags).to eq(%w[contractor])
+    end
+
+    it "files a first-time grant under the additive create category" do
+      auto_approve_policy!
+
+      post "/api/v1/system/sdwan/networks/#{network.id}/access_grants",
+           params: { access_grant: { user_id: member.id, tags: %w[vpn] } },
+           headers: auth_headers_for(manager), as: :json
+
+      expect(response).to have_http_status(:created)
+      created = ::Sdwan::AccessGrant.find_by(sdwan_network_id: network.id, user_id: member.id)
+      expect(created).to be_present
+      expect(created.status).to eq("active")
+      expect(created.tags).to eq(%w[vpn])
+      expect(created.granted_by_id).to eq(manager.id)
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred.action_category).to eq("sdwan.access_grant_create")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::CreateAccessGrant")
+    end
+
+    # The one field whose semantics CHANGED when the write moved into the
+    # executor: both old inline paths reset tags to [] on a re-grant, the
+    # executor preserves what the row carries when the caller says nothing.
+    it "preserves existing tags on a reinstatement that names none" do
+      grant = create(:sdwan_access_grant, account: account, network: network,
+                                          user: member, tags: %w[contractor])
+      grant.revoke!(reason: "offboarded")
+
+      post "/api/v1/system/sdwan/networks/#{network.id}/access_grants",
+           params: { access_grant: { user_id: member.id } },
+           headers: auth_headers_for(manager), as: :json
+
+      Ai::DeferredOperation.order(created_at: :desc).first.execute_now!
+
+      expect(grant.reload.tags).to eq(%w[contractor])
+    end
+
+    it "404s for a user in another account" do
+      auto_approve_policy!
+      outsider = create(:user)
+
+      post "/api/v1/system/sdwan/networks/#{network.id}/access_grants",
+           params: { access_grant: { user_id: outsider.id } },
+           headers: auth_headers_for(manager), as: :json
+
+      expect(response).to have_http_status(:not_found)
+      expect(::Sdwan::AccessGrant.where(user_id: outsider.id)).to be_empty
+    end
+
+    it "forbids callers without sdwan.user_devices.manage" do
+      post "/api/v1/system/sdwan/networks/#{network.id}/access_grants",
+           params: { access_grant: { user_id: member.id } },
+           headers: auth_headers_for(stranger), as: :json
+
+      expect(response).to have_http_status(:forbidden)
+    end
+  end
+
   # The update surface is the third route to the `status` column. :revoke and
   # DELETE are both approval-gated; a bare PUT reached the same state with no
   # gate, in both directions — resurrecting a revoked grant (restoring VPN

@@ -135,11 +135,21 @@ sdwan_policies = {
   "sdwan.port_mapping_update"         => "notify_and_proceed",
   "sdwan.port_mapping_delete"         => "notify_and_proceed",
 
-  # Access grants — granting access notifies, revoking requires approval.
+  # Access grants — granting FRESH access notifies, revoking requires approval.
   # Deleting is strictly more destructive than revoking: dependent: :destroy
   # cascades to every VPN device and their Vault keys, leaving nothing for the
   # 90-day audit window, so it is gated at least as tightly.
+  #
+  # IMP-343163bf37a4 splits REACTIVATION out of create. The grant is unique per
+  # (network, user), so a "create" naming a user whose grant was revoked reuses
+  # that row and clears its revocation — it is the inverse of the revoke above,
+  # not an additive grant, and the "granting notifies" rationale never covered
+  # it. notify_and_proceed executes inline (Ai::AutonomyGate treats it exactly
+  # as auto_approve), so leaving reactivation under the create category would
+  # have re-entered the revoked->active state with no human decision at all.
+  # It therefore carries revoke's own tier.
   "sdwan.access_grant_create"         => "notify_and_proceed",
+  "sdwan.access_grant_reactivate"     => "require_approval",
   "sdwan.access_grant_revoke"         => "require_approval",
   "sdwan.access_grant_delete"         => "require_approval",
 

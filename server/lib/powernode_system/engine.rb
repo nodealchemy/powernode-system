@@ -638,7 +638,8 @@ module PowernodeSystem
           sdwan.virtual_ip_create sdwan.virtual_ip_update sdwan.virtual_ip_delete
           sdwan.route_policy_create sdwan.route_policy_update sdwan.route_policy_delete
           sdwan.port_mapping_create sdwan.port_mapping_update sdwan.port_mapping_delete
-          sdwan.access_grant_create sdwan.access_grant_revoke sdwan.access_grant_delete
+          sdwan.access_grant_create sdwan.access_grant_reactivate
+          sdwan.access_grant_revoke sdwan.access_grant_delete
           sdwan.user_device_create
           sdwan.federation_peer_propose sdwan.federation_peer_accept sdwan.federation_peer_revoke
           system.sdwan_service_health_investigate

@@ -28,26 +28,73 @@ module Api
             render_success(access_grant: serialize_grant_full(@grant))
           end
 
+          # IMP-343163bf37a4: gated on `sdwan.access_grant_create`. Creation is
+          # not purely additive — the grant is unique per (network, user), so
+          # find_or_initialize_by REUSES a revoked user's row and clears its
+          # revocation, which is the exact inverse of the approval-gated
+          # :revoke below. Until now that inverse was a silent write.
           def create
             require_permission("system.sdwan.user_devices.manage")
             attrs = grant_params
 
             user = ::User.where(account_id: @account.id).find(attrs[:user_id])
-            grant = @network.access_grants.find_or_initialize_by(user_id: user.id)
-            grant.assign_attributes(
+
+            # Never saved — Sdwan::Executors::CreateAccessGrant stays the sole
+            # authority over the write. This is the candidate gate_create!
+            # validates BEFORE the gate, so an unsaveable payload keeps its
+            # field-level 422 and opens no audit row for an operation that
+            # could never run. Built off the row that ALREADY exists when this
+            # is a re-grant, so uniqueness validates against reality.
+            candidate = @network.access_grants.find_or_initialize_by(user_id: user.id)
+            # Read BEFORE the attributes below overwrite it in memory: this is
+            # what makes a "create" a reactivation, and it is a property of the
+            # stored row rather than anything the request says.
+            reactivating = candidate.persisted? && candidate.revoked?
+            candidate.assign_attributes(
               account_id: @account.id,
               status: "active",
               granted_by_id: current_user&.id,
               granted_at: Time.current,
-              tags: attrs[:tags] || [],
+              tags: attrs[:tags] || candidate.tags || [],
               revoked_at: nil,
               revocation_reason: nil
             )
 
-            if grant.save
-              render_success({ access_grant: serialize_grant_full(grant) }, status: :created)
+            network_label = @network.name.presence || @network.id
+            common = {
+              candidate: candidate,
+              scope: @network.access_grants,
+              result_key: :grant_id,
+              response_key: :access_grant,
+              serializer: ->(g) { serialize_grant_full(g) },
+              params: { network_id: @network.id, user_id: user.id, tags: attrs[:tags] },
+              source_type: "Sdwan::Network",
+              source_id: @network.id
+            }
+
+            # Which category applies is decided by the CURRENT state of the row
+            # this request would write, never by the caller. Reactivation is
+            # the inverse of an approval-gated revoke and carries revoke's own
+            # tier; a fresh grant stays additive and merely notifies. The two
+            # calls are spelled out rather than selected into a variable
+            # because the coherence guard pairs a literal executor_class: with
+            # the category beside it.
+            if reactivating
+              gate_create!(
+                **common,
+                action_category: ::Sdwan::Executors::ReactivateAccessGrant::ACTION_CATEGORY,
+                executor_class: "Sdwan::Executors::ReactivateAccessGrant",
+                # Matches ReactivateAccessGrant#summarize so the request and
+                # the approval card speak one sentence.
+                description: "Reinstate SDWAN access for #{user.email} on #{network_label}"
+              )
             else
-              render_validation_error(grant)
+              gate_create!(
+                **common,
+                action_category: ::Sdwan::Executors::CreateAccessGrant::ACTION_CATEGORY,
+                executor_class: "Sdwan::Executors::CreateAccessGrant",
+                description: "Grant SDWAN access to #{user.email} on #{network_label}"
+              )
             end
           rescue ActiveRecord::RecordNotFound
             render_not_found("User")

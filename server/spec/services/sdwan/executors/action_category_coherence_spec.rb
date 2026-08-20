@@ -22,10 +22,13 @@ require "tempfile"
 #     declared ⊆ seeded          (every declared action has a policy row)
 #     every gate site's category IS its executor's declaration
 #
-# Subset, not equality, in both directions that matter: `sdwan.access_grant_create`
-# is seeded and registered but has no executor class, and that is fine — the
+# Subset, not equality, in both directions that matter: a category may be
+# seeded and registered before any executor claims it, and that is fine — the
 # invariant this file protects is that nothing an executor OWNS can drift away
-# from the surfaces that gate and tune it.
+# from the surfaces that gate and tune it. (`sdwan.access_grant_create` was the
+# standing example until IMP-343163bf37a4 gave it an executor and gate sites on
+# both surfaces; the subset direction is what let it be seeded that whole time
+# while nothing evaluated it.)
 #
 # One deliberate consequence, since the refactor is otherwise behaviour-free:
 # a gate site now RESOLVES its executor class where it used to pass the class
