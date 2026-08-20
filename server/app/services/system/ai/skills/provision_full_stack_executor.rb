@@ -526,8 +526,17 @@ module System
         # no refusal clause anywhere in the run. A second copy of the
         # expression would be the same divergence one refactor later, so the
         # resolution lives here with the order it has to agree with.
+        #
+        # IMP-b439270dab0d — the ORDER now lives in Shared::StorageSizeResolution
+        # (core). Three of the four surfaces that read it are core, and core
+        # cannot depend on an extension: beyond the invariant, core mode runs
+        # with no system extension loaded, so a core caller reaching for this
+        # class would be a NameError on every install without it. This keeps its
+        # name and its callers and delegates, so there is still exactly one
+        # order — the shape Shared::SdwanNetworkResolution already uses for the
+        # fabric declaration.
         def self.resolve_storage_gb(with_storage_gb, storage_gb = nil)
-          [ with_storage_gb, storage_gb ].find(&:present?)
+          ::Shared::StorageSizeResolution.resolve(with_storage_gb, storage_gb)
         end
 
         def storage_requested?(with_storage_gb)
