@@ -259,10 +259,12 @@ export const sdwanApi = {
     return extractGated(response, (d) => d.access_grant);
   },
 
+  // Tags only. Status moves through revokeAccessGrant / deleteAccessGrant,
+  // which are approval-gated; the server no longer permits it here.
   updateAccessGrant: async (
     networkId: string,
     grantId: string,
-    data: { status?: string; tags?: string[] }
+    data: { tags?: string[] }
   ): Promise<Gated<SdwanAccessGrant>> => {
     const response = await apiClient.put<ApiEnvelope<{ access_grant: SdwanAccessGrant }>>(
       `/system/sdwan/networks/${networkId}/access_grants/${grantId}`,

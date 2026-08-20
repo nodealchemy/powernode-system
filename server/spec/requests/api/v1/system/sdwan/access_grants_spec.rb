@@ -59,12 +59,78 @@ RSpec.describe "Api::V1::System::Sdwan::AccessGrants", type: :request do
     end
   end
 
+  # The update surface is the third route to the `status` column. :revoke and
+  # DELETE are both approval-gated; a bare PUT reached the same state with no
+  # gate, in both directions — resurrecting a revoked grant (restoring VPN
+  # access) and half-revoking an active one (flipping status while
+  # AccessGrant#revoke!'s device cascade and revoked_at stamp never ran).
+  # Status now moves only through the gated verbs; update carries tags alone.
+  describe "PUT /api/v1/system/sdwan/networks/:network_id/access_grants/:id" do
+    it "cannot resurrect a revoked grant" do
+      grant = create(:sdwan_access_grant, account: account, network: network)
+      device = create(:sdwan_user_device, access_grant: grant)
+      grant.revoke!(reason: "operator revoked")
+
+      put "/api/v1/system/sdwan/networks/#{network.id}/access_grants/#{grant.id}",
+          params: { access_grant: { status: "active" } },
+          headers: auth_headers_for(manager), as: :json
+
+      expect(grant.reload.status).to eq("revoked")
+      expect(grant.revoked_at).to be_present
+      expect(device.reload.revoked_at).to be_present
+    end
+
+    it "cannot half-revoke an active grant, leaving its devices live" do
+      grant  = create(:sdwan_access_grant, account: account, network: network)
+      device = create(:sdwan_user_device, access_grant: grant)
+
+      put "/api/v1/system/sdwan/networks/#{network.id}/access_grants/#{grant.id}",
+          params: { access_grant: { status: "revoked" } },
+          headers: auth_headers_for(manager), as: :json
+
+      expect(grant.reload.status).to eq("active")
+      expect(grant.revoked_at).to be_nil
+      expect(device.reload.revoked_at).to be_nil
+    end
+
+    it "cannot suspend a grant, which would block device issuance ungated" do
+      grant = create(:sdwan_access_grant, account: account, network: network)
+
+      put "/api/v1/system/sdwan/networks/#{network.id}/access_grants/#{grant.id}",
+          params: { access_grant: { status: "suspended" } },
+          headers: auth_headers_for(manager), as: :json
+
+      expect(grant.reload.status).to eq("active")
+    end
+
+    it "still updates the tags it is meant to carry" do
+      grant = create(:sdwan_access_grant, account: account, network: network, tags: [])
+
+      put "/api/v1/system/sdwan/networks/#{network.id}/access_grants/#{grant.id}",
+          params: { access_grant: { tags: %w[contractor] } },
+          headers: auth_headers_for(manager), as: :json
+
+      expect(response).to have_http_status(:ok)
+      expect(grant.reload.tags).to eq(%w[contractor])
+    end
+
+    it "forbids callers without sdwan.user_devices.manage" do
+      grant = create(:sdwan_access_grant, account: account, network: network)
+
+      put "/api/v1/system/sdwan/networks/#{network.id}/access_grants/#{grant.id}",
+          params: { access_grant: { tags: %w[contractor] } },
+          headers: auth_headers_for(stranger), as: :json
+
+      expect(response).to have_http_status(:forbidden)
+    end
+  end
+
   describe "POST /api/v1/system/sdwan/networks/:network_id/access_grants/:id/revoke" do
     it "requires sdwan.user_devices.manage (the approval-gated revoke is behind the permission)" do
       grant = create(:sdwan_access_grant, account: account, network: network)
 
       post "/api/v1/system/sdwan/networks/#{network.id}/access_grants/#{grant.id}/revoke",
-           headers: auth_headers_for(stranger)
+           headers: auth_headers_for(stranger), as: :json
 
       expect(response).to have_http_status(:forbidden)
     end

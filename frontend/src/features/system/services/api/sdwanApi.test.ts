@@ -522,16 +522,18 @@ describe('sdwanApi.createAccessGrant', () => {
 });
 
 describe('sdwanApi.updateAccessGrant', () => {
+  // Tags only: status is reachable solely through the approval-gated
+  // revoke/delete verbs, so the server stopped permitting it on this route.
   it('PUTs with the access_grant wrapper', async () => {
-    const updated = { ...ACCESS_GRANT, status: 'suspended' as const };
+    const updated = { ...ACCESS_GRANT, tags: ['contractor'] };
     mockPut.mockResolvedValue(envelope({ access_grant: updated }));
 
-    const result = await sdwanApi.updateAccessGrant('net-1', 'ag-1', { status: 'suspended' });
+    const result = await sdwanApi.updateAccessGrant('net-1', 'ag-1', { tags: ['contractor'] });
 
     expect(mockPut).toHaveBeenCalledWith('/system/sdwan/networks/net-1/access_grants/ag-1', {
-      access_grant: { status: 'suspended' },
+      access_grant: { tags: ['contractor'] },
     });
-    expect(result.status).toBe('suspended');
+    expect(result.tags).toEqual(['contractor']);
   });
 });
 

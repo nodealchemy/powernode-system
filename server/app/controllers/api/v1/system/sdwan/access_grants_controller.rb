@@ -125,8 +125,16 @@ module Api
             params.require(:access_grant).permit(:user_id, tags: [])
           end
 
+          # Deliberately excludes :status. The column is a VPN-access switch,
+          # and both gated verbs above reach it — :revoke through
+          # AccessGrant#revoke! (which also stamps revoked_at and cascades to
+          # the user's devices) and DELETE through the executor. Permitting it
+          # here gave the same state a third, ungated route in both directions:
+          # revoked -> active restored access with no approval, and
+          # active -> revoked flipped the column while the cascade never ran,
+          # leaving a grant that read revoked above devices that still worked.
           def grant_update_params
-            params.require(:access_grant).permit(:status, tags: [])
+            params.require(:access_grant).permit(tags: [])
           end
 
           def serialize_grant(g)
