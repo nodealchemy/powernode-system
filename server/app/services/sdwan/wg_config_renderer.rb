@@ -74,7 +74,7 @@ module Sdwan
         # reads one Endpoint line; the comment is operator-facing.
         out.puts "Endpoint   = #{Peer.format_host_port(primary[:host], primary[:port])}"
         out.puts "# Fallback (IPv4): #{fallback[:host]}:#{fallback[:port]}" if fallback
-        out.puts "AllowedIPs = #{@network.cidr_64}"
+        out.puts "AllowedIPs = #{allowed_ips.join(', ')}"
         out.puts "PersistentKeepalive = #{DEFAULT_PERSISTENT_KEEPALIVE}"
         out.puts ""
       end
@@ -83,6 +83,70 @@ module Sdwan
     end
 
     private
+
+    # WHAT THIS CLIENT MAY ROUTE INTO THE TUNNEL (IMP-94f3ec671b15).
+    #
+    # AllowedIPs is a CRYPTOGRAPHIC ROUTING FILTER, not a label: a prefix absent
+    # here is one the client OS never sends into the tunnel (and never accepts
+    # out of it), however correct the rest of the config. This line used to be
+    # the network's /64 alone, so a user device handshook fine and then silently
+    # failed to reach any VirtualIp, any advertised lan_subnet, or any federated
+    # prefix — while HubAndSpoke#spoke_view folds those same classes into a node
+    # spoke's AllowedIPs for exactly this reason ("or the packets are dropped
+    # before they reach the tunnel", its words).
+    #
+    # ENTITLEMENT, checked before widening: Sdwan::AccessGrant is "a user's
+    # entitlement to attach VPN clients to ONE SDWAN network" and its `tags`
+    # column scopes nothing (SelectorResolver resolves PEER tags; no service
+    # reads grant tags). The grant's scope IS the network, and every prefix
+    # below belongs to THIS network — so this widens the filter to the grant's
+    # existing surface and no further. An over-wide AllowedIPs would be a
+    # security regression, which is why the VIP window and the per-network
+    # scoping below are asserted by their own examples.
+    #
+    # TWO DELIBERATE DIVERGENCES from spoke_view, both because a WG client is
+    # not a spoke:
+    #
+    #   * POD CIDRs are excluded. spoke_view gates them on `peer.k3s_host?` — a
+    #     user device is not a k3s node and has no business with pod IPs, so the
+    #     same rule that includes them for a k3s spoke excludes them here.
+    #   * static_subnet_routing? does NOT gate this list. That flag chooses how
+    #     routes are DISTRIBUTED (statically via AllowedIPs, or dynamically via
+    #     FRR/BGP), and a WireGuard client runs no routing daemon — it can only
+    #     ever learn statically. spoke_view already applies exactly this
+    #     reasoning to federation prefixes, which it folds in regardless of the
+    #     flag for the same "the filter must permit it however the route is
+    #     learned" argument.
+    def allowed_ips
+      @allowed_ips ||= ([ @network.cidr_64 ] + vip_cidrs + advertised_lan_subnets + federation_prefixes)
+                       .map { |cidr| cidr.to_s.strip }
+                       .reject(&:empty?)
+                       .uniq
+    end
+
+    # Same window as HubAndSpoke#all_vip_cidrs — active/pending only. A VIP in
+    # any other state is not reachable, and permitting it would widen the filter
+    # past the live surface.
+    def vip_cidrs
+      return [] unless @network.respond_to?(:virtual_ips)
+
+      @network.virtual_ips.where(state: %w[active pending]).pluck(:cidr)
+    end
+
+    # Same source as HubAndSpoke#other_peers_lan_subnets. "Other" is every peer
+    # from a user device's point of view — it is not one of them.
+    def advertised_lan_subnets
+      @network.peers.flat_map { |peer| Array(peer.lan_subnets) }
+    end
+
+    # The resolver's own data-plane convenience, rather than a re-derivation:
+    # `prefixes_for` exists to hand exactly this list to a folding caller,
+    # de-duplicated and stable-ordered.
+    def federation_prefixes
+      return [] unless defined?(::Sdwan::FederationPrefixResolver)
+
+      Array(::Sdwan::FederationPrefixResolver.prefixes_for(@network))
+    end
 
     def hub_label(hub)
       hub.node_instance.name

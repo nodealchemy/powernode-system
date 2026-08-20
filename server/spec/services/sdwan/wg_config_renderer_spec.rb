@@ -119,3 +119,96 @@ RSpec.describe Sdwan::WgConfigRenderer do
     end
   end
 end
+
+# IMP-94f3ec671b15 — AllowedIPs is a CRYPTOGRAPHIC ROUTING FILTER, not a label.
+#
+# The user-device config hardcoded `AllowedIPs = <network.cidr_64>`, so the
+# tunnel handshakes and then the client OS silently declines to route anything
+# outside that /64 into it. HubAndSpoke#spoke_view folds the same four prefix
+# classes into a node spoke's AllowedIPs for exactly this reason — its own
+# comment says "or the packets are dropped before they reach the tunnel" — and
+# the user-device plane simply never received that enrichment.
+#
+# ENTITLEMENT, re-verified on HEAD before widening anything: Sdwan::AccessGrant
+# is "a user's entitlement to attach VPN clients to ONE SDWAN network", and its
+# `tags` column scopes nothing — SelectorResolver resolves PEER tags, and no
+# service reads grant tags at all. So the grant's scope IS the network, and
+# these prefixes are that network's own reachable surface. Nothing here widens
+# past it.
+RSpec.describe Sdwan::WgConfigRenderer, "AllowedIPs completeness" do
+  let(:network) { create(:sdwan_network) }
+  let(:grant)   { create(:sdwan_access_grant, account: network.account, network: network) }
+  let(:device)  { create(:sdwan_user_device, access_grant: grant) }
+
+  let!(:hub) do
+    peer = create(:sdwan_peer, account: network.account, network: network,
+                               publicly_reachable: true, endpoint_host: "hub.example.com",
+                               endpoint_port: 51_820)
+    Sdwan::PeerKey.create!(peer: peer, public_key: Base64.strict_encode64(SecureRandom.bytes(32)))
+    peer
+  end
+
+  before { allow(device).to receive(:private_key_b64).and_return("FAKE-TEST-PLACEHOLDER") }
+
+  def allowed_ips
+    line = described_class.render(device).lines.map(&:chomp).find { |l| l.start_with?("AllowedIPs") }
+    line.to_s.split("=", 2).last.to_s.split(",").map(&:strip)
+  end
+
+  it "still carries the network's own /64" do
+    expect(allowed_ips).to include(network.cidr_64)
+  end
+
+  # A VirtualIp's CIDR is operator-supplied and NOT containment-checked against
+  # cidr_64 (virtual_ip.rb; CreateVirtualIp passes attrs straight to create!),
+  # so it routinely sits outside the /64 the old line permitted.
+  it "routes the network's active VIP CIDRs" do
+    vip = create(:sdwan_virtual_ip, account: network.account, network: network,
+                                    cidr: "fd00:beef:1::/64", state: "active")
+
+    expect(allowed_ips).to include(vip.cidr)
+  end
+
+  it "routes prefixes a peer advertises as lan_subnets" do
+    create(:sdwan_peer, account: network.account, network: network,
+                        lan_subnets: [ "10.50.0.0/16" ])
+
+    expect(allowed_ips).to include("10.50.0.0/16")
+  end
+
+  # Not gated on the routing mode, for the reason spoke_view states for the
+  # same class: a WG client cannot learn a route dynamically, so the filter
+  # must permit the prefix however the route is distributed.
+  it "routes federated remote prefixes" do
+    # Drives the REAL resolver off a real peer rather than stubbing it: a stub
+    # would pin the renderer's use of a seam without proving the seam yields
+    # anything for a federation that actually exists.
+    create(:system_federation_peer, :platform, account: network.account,
+                                               status: "active",
+                                               remote_prefix_advertisement: "fd00:fed:7::/48")
+
+    expect(allowed_ips).to include("fd00:fed:7::/48")
+  end
+
+  # THE SECURITY DIRECTION, asserted rather than assumed: widen only to what the
+  # grant scopes. A VIP belonging to a DIFFERENT network is not this grant's
+  # business and must not appear.
+  it "does not route another network's VIP" do
+    other = create(:sdwan_network, account: network.account)
+    foreign = create(:sdwan_virtual_ip, account: network.account, network: other,
+                                        cidr: "fd00:beef:9::/64", state: "active")
+
+    expect(allowed_ips).not_to include(foreign.cidr)
+  end
+
+  # An unassigned VIP is not reachable, so permitting it would widen the filter
+  # past the live surface. `unassigned` (not "released" — see VirtualIp::STATES)
+  # is outside the active/pending pair the compiler's all_vip_cidrs selects, and
+  # this asserts the renderer uses the same window rather than every row.
+  it "does not route an unassigned VIP" do
+    idle = create(:sdwan_virtual_ip, account: network.account, network: network,
+                                     cidr: "fd00:beef:2::/64", state: "unassigned")
+
+    expect(allowed_ips).not_to include(idle.cidr)
+  end
+end
