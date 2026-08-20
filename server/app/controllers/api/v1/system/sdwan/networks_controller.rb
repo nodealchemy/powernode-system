@@ -64,25 +64,24 @@ module Api
           def update
             require_permission("system.sdwan.networks.manage")
             attrs = network_params.to_h
-            # Validated before the gate so an unsaveable payload keeps its
-            # field-level 422 and opens no audit row for an operation that could
-            # never run. Never saved — UpdateNetwork's update! stays the only
-            # writer, and it takes the account from the operation.
-            @network.assign_attributes(attrs)
-            return render_validation_error(@network) unless @network.valid?
-
-            # Discard the un-gated in-memory changes: nothing may reach the row
-            # except through the executor.
-            @network.reload
-
-            gate!(
+            # The validate -> reload -> gate sequence (and why it is in that
+            # order) lives once in Ai::GatedActions#gate_update!.
+            #
+            # The name is read from the INCOMING attributes: the helper's
+            # arguments are evaluated before it assigns them, and it reloads the
+            # record besides, so `@network.name` here would be the pre-change
+            # value — which is what an approver used to be shown for a rename.
+            gate_update!(
+              record: @network,
+              attributes: attrs,
+              response_key: :network,
+              serializer: ->(n) { serialize_network_full(n) },
               action_category: ::Sdwan::Executors::UpdateNetwork::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::UpdateNetwork",
               params: { network_id: @network.id, attributes: attrs },
               source_type: "Sdwan::Network",
               source_id: @network.id,
-              description: "Update SDWAN network '#{@network.name}'",
-              on_proceed: ->(_r) { render_success(network: serialize_network_full(@network.reload)) }
+              description: "Update SDWAN network '#{attrs['name'].presence || @network.name}'"
             )
           end
 
