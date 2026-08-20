@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -197,10 +198,39 @@ enforced (fail-closed): a refusal is a hard error and no soft-reboot happens.`,
 //     outcome exit 0 and indistinguishable from "would succeed".
 func writePrepareReport(out io.Writer, gateErr error) error {
 	fmt.Fprintln(out, "\nPREPARED — /run/nextroot holds the freshly composed union.")
-	fmt.Fprintln(out, "(Side effect of this dry run: the survival gate re-scanned systemd units via")
-	fmt.Fprintln(out, "`systemctl daemon-reload` to read the mount drop-ins. That rescan is the only")
-	fmt.Fprintln(out, "change made — no breadcrumb was written and no boot state changed.)")
+
+	// The side-effect sentence is only true if the reload actually ran. When the
+	// gate died AT the reload, its effect is unknown — systemd may have rescanned
+	// and then failed, or never rescanned at all — so the report says that
+	// instead of repeating a claim it cannot support (IMP-de738c292bf9).
+	reloadFailed := errors.Is(gateErr, runtime.ErrGateReloadFailed)
+	if reloadFailed {
+		fmt.Fprintln(out, "(Side effect of this dry run: the survival gate ATTEMPTED `systemctl daemon-reload`")
+		fmt.Fprintln(out, "and it did not complete, so whether systemd rescanned its units is unknown. No")
+		fmt.Fprintln(out, "breadcrumb was written and no boot state changed.)")
+	} else {
+		fmt.Fprintln(out, "(Side effect of this dry run: the survival gate re-scanned systemd units via")
+		fmt.Fprintln(out, "`systemctl daemon-reload` to read the mount drop-ins. That rescan is the only")
+		fmt.Fprintln(out, "change made — no breadcrumb was written and no boot state changed.)")
+	}
+
 	if gateErr != nil {
+		// ENVIRONMENT vs REFUSAL. The gate errors for causes that are not the
+		// same kind of thing, and they take different fixes: drop-ins for a
+		// refusal, permissions or a readable mount table for an environment
+		// failure. An UNTYPED error keeps the would-refuse code — failing toward
+		// the louder, boot-relevant reading is the same discipline the gate uses.
+		if errors.Is(gateErr, runtime.ErrGateEnvironment) {
+			fmt.Fprintf(out, "\nAND THE GATE COULD NOT REACH A VERDICT:\n  %v\n\n", gateErr)
+			fmt.Fprintln(out, "This is NOT a refusal: nothing is known about whether the mounts would")
+			fmt.Fprintln(out, "survive, so --execute is unsafe for a different reason. Check that this ran")
+			fmt.Fprintln(out, "as root and that /proc/self/mountinfo is readable, then re-run.")
+			fmt.Fprintln(out, "No breadcrumb was written and no boot state changed, so this prepared root")
+			fmt.Fprintln(out, "is safe to abandon; a full reboot clears it.")
+			return cli.Errorf(cli.ExitDryRunGateUnavailable, "soft-recompose",
+				"the nextroot survival gate could not reach a verdict: %w", gateErr)
+		}
+
 		fmt.Fprintf(out, "\nBUT --execute WOULD BE REFUSED:\n  %v\n\n", gateErr)
 		fmt.Fprintln(out, "No breadcrumb was written and no boot state changed, so this prepared root")
 		fmt.Fprintln(out, "is safe to abandon; a full reboot clears it.")

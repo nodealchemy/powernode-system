@@ -29,4 +29,13 @@ const (
 	// Used by `soft-recompose` (no --execute) when NextrootSurvivalGate would
 	// refuse the soft-reboot.
 	ExitDryRunWouldRefuse = 11
+	// ExitDryRunGateUnavailable is returned by a prepare/dry-run mode when the
+	// gate could not reach a verdict at all — as distinct from reaching one and
+	// refusing (IMP-de738c292bf9). A failed `systemctl daemon-reload` (EPERM for
+	// a non-root caller) or an unreadable mount table means nothing is known
+	// about survival either way. Conflating it with ExitDryRunWouldRefuse told a
+	// CI wrapper "this node needs mount drop-ins" while the real problem — the
+	// gate never ran — was never surfaced, sending the operator after the wrong
+	// fix. Still non-zero: no caller may soft-reboot on an unknown verdict.
+	ExitDryRunGateUnavailable = 12
 )

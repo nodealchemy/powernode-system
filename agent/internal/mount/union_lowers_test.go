@@ -1,6 +1,7 @@
 package mount
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,11 +51,46 @@ func TestLiveUnionLowerDirs_ParsesPivotRoot(t *testing.T) {
 
 // A node whose / is NOT an overlay (the cloud_init model) must report no
 // layers WITHOUT an error — that is a normal topology, not a failure.
-func TestLiveUnionLowerDirs_NonOverlayRootIsNotAnError(t *testing.T) {
+// IMP-de738c292bf9 — DELIBERATE CONTRACT CHANGE, not a loosened assertion.
+//
+// This example was TestLiveUnionLowerDirs_NonOverlayRootIsNotAnError and
+// asserted that an absent overlay yields ([]string{}, nil). That made "no
+// overlay is mounted here" indistinguishable from "the overlay has no lower
+// layers", and both production callers act on the difference:
+//
+//   - NextrootSurvivalGate enumerates the union's layers to report which are
+//     doomed. An empty set read as a clean bill of health — so a concurrent
+//     recompose tearing down /run/nextroot between compose and gate-read
+//     produced "no layer doomed" while --execute went ahead.
+//   - PathInLiveUnion answers "is this module still referenced by the live
+//     root?", and its own doc says callers must fail toward "in use". An
+//     absent overlay answering `false` fails the other way.
+//
+// The narrower empty-set case is preserved directly below: an overlay that IS
+// mounted but carries no lowerdir= genuinely has no lower layers.
+func TestLiveUnionLowerDirs_AbsentOverlayIsAnError(t *testing.T) {
 	withMountInfo(t, "27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n")
+
+	_, err := LiveUnionLowerDirs("/")
+
+	if err == nil {
+		t.Fatal("no overlay at the mount point must ERROR — an empty set reads as 'no layers doomed'")
+	}
+	if !errors.Is(err, ErrNoOverlayAt) {
+		t.Errorf("the error must be identifiable with errors.Is(ErrNoOverlayAt) so callers can branch, got %v", err)
+	}
+}
+
+// The distinction the change turns on: mounted, but with nothing beneath it.
+// That is a real empty set and must NOT be an error, or the gate would refuse
+// every union it was actually able to read.
+func TestLiveUnionLowerDirs_MountedOverlayWithoutLowerdirIsEmptyNotAnError(t *testing.T) {
+	withMountInfo(t, "27 1 0:33 / / rw,relatime shared:1 - overlay overlay rw,upperdir=/u,workdir=/w\n")
+
 	got, err := LiveUnionLowerDirs("/")
+
 	if err != nil {
-		t.Fatalf("a non-overlay root must not error: %v", err)
+		t.Fatalf("an overlay that IS mounted must not error just because it has no lowerdir: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("got %v, want no layers", got)
