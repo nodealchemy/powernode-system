@@ -51,6 +51,13 @@ ExecStartPre=-/bin/sh -c 'modprobe -a nf_nat nft_masq xt_MASQUERADE nft_chain_na
 # supported" post-pivot, one layer deeper than bridge/NAT).
 ExecStartPre=-/bin/sh -c 'modprobe -a veth'
 
+# Same belt for wireguard + vrf + dummy — see powernode-sdwan.conf for the
+# incident this guards against (the agent's SDWAN appliers failing every
+# `ip link add ... type wireguard|vrf|dummy` with "Error: Unknown device
+# type" post-pivot, so apply_vrfs dies first and the SDWAN overlay never
+# comes up).
+ExecStartPre=-/bin/sh -c 'modprobe -a wireguard vrf dummy nft_nat nft_limit nft_reject nft_reject_inet xt_nat'
+
 # Wait until the agent has enrolled. Caps at ~120s — if enrollment never
 # completes, we give up rather than hanging the boot. The unit's `Restart=`
 # isn't applicable to oneshot; if this fails the smoke run continues with
