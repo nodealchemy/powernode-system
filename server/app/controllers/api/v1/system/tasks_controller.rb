@@ -65,7 +65,11 @@ module Api
             # replay, the executor anchors what it actually dereferences.
             source_type: attrs[:operable_type].presence,
             source_id: attrs[:operable_id].presence,
-            description: "#{attrs[:command]} on #{attrs[:operable_type]}##{attrs[:operable_id]}".strip
+            # ONE label for both surfaces of this approval — see
+            # System::Executors::ExecuteTask.gate_description. This used to
+            # build its own raw pair, which disagreed with the card's impact
+            # line for the very same operation (IMP-1dd3ed2b5353).
+            description: ::System::Executors::ExecuteTask.gate_description(attrs)
           )
 
           case gate_result.decision

@@ -82,6 +82,47 @@ module System
       # call sites nest under :task_attributes — so every deferred task's card
       # read "Execute system task: " with impact " on system", naming neither
       # the command nor the target the approver is deciding about.
+      # THE LABEL BOTH SURFACES OF ONE APPROVAL SHOW (IMP-1dd3ed2b5353).
+      #
+      # The approvals API serves `description` — frozen by the gate site at
+      # request time — beside `preview[:impact]`, recomputed from this executor.
+      # Once #impact learned to name the operable, every gate site's raw
+      # "cmd on Type#uuid" became a SECOND, disagreeing label for the same
+      # decision on the same card. Same defect IMP-ee57d0fbe859 fixed for
+      # DeletePeer, and the same fix: one source, consulted by both.
+      #
+      # Deliberately the PREVIEW rather than a parallel formatter. A rival
+      # label path would agree today and drift the next time #impact changes,
+      # which is exactly how this bug arrived. Callers therefore get the
+      # literal string the card will render.
+      #
+      # No deferred_operation exists yet at a gate site, which is the
+      # anchor-less pre-gate case #name_disclosable? already handles: it falls
+      # back to the initiator both HTTP surfaces force into task_attrs, and
+      # #operable_display degrades to the bare Type#id pair wherever the name
+      # cannot be resolved or disclosed. So the fallback below is only reached
+      # if the preview itself raises — a label must never fail a control-plane
+      # request — and it is the same pair #operable_display degrades to, not a
+      # second opinion about how to name things.
+      def self.gate_description(task_attributes)
+        attrs = task_attributes.respond_to?(:to_unsafe_h) ? task_attributes.to_unsafe_h : task_attributes.to_h
+        attrs = attrs.symbolize_keys
+        # Braces are load-bearing: `preview(task_attributes: attrs)` is parsed as
+        # KEYWORDS (preview takes a keyword `deferred_operation:`), leaving the
+        # positional `params` unbound — an ArgumentError this method's own
+        # rescue would have swallowed straight into the fallback.
+        preview({ task_attributes: attrs })[:impact].presence || bare_pair(attrs)
+      rescue StandardError => e
+        Rails.logger.warn("[ExecuteTask] gate_description preview failed: #{e.class}: #{e.message}")
+        bare_pair(attrs || {})
+      end
+
+      def self.bare_pair(attrs)
+        target = [ attrs[:operable_type], attrs[:operable_id] ].compact_blank
+        target.empty? ? attrs[:command].to_s : "#{attrs[:command]} on #{target.join('#')}"
+      end
+      private_class_method :bare_pair
+
       def summarize
         "Execute system task: #{task_attrs[:command]}"
       end
