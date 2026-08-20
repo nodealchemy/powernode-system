@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
-# Operator-facing read API for Sdwan::IpfixCollector. Read-only —
-# creation happens through the SdwanIpfixCollectorComposeExecutor AI
-# skill or the system_sdwan_create_ipfix_collector MCP action.
+# Operator-facing API for Sdwan::IpfixCollector. Creation happens through
+# the SdwanIpfixCollectorComposeExecutor AI skill or the
+# system_sdwan_create_ipfix_collector MCP action. The #update action toggles
+# state (active/disabled), and #destroy deletes a collector.
 #
 # Each row carries an `is_winning_collector` flag in the serialized
 # shape: the topology compiler picks the account's oldest active

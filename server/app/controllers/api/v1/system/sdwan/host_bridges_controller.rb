@@ -1,12 +1,13 @@
 # frozen_string_literal: true
 
-# Operator-facing read API for Sdwan::HostBridge. Read-only — allocation
-# happens through Sdwan::HostBridgeAllocator (the source-of-truth atomic
-# allocator) which is invoked by the on-node agent during reconcile, by
-# the SdwanHostBridgeComposeExecutor AI skill for batch composition, or
-# by the system_sdwan_create_host_bridge MCP action for one-off operator
-# allocation. This controller exists so an operator UI (or external
-# tooling like Postman) can inspect the resulting rows.
+# Operator-facing API for Sdwan::HostBridge. Allocation happens through
+# Sdwan::HostBridgeAllocator (the source-of-truth atomic allocator) which
+# is invoked by the on-node agent during reconcile, by the
+# SdwanHostBridgeComposeExecutor AI skill for batch composition, or by the
+# system_sdwan_create_host_bridge MCP action for one-off operator
+# allocation. The #destroy action force-releases a bridge, bypassing the
+# draining grace window (used by operators who know what they're doing).
+# #index and #show allow operators to inspect the resulting rows.
 #
 # Phase O6 of the OVS+OVN dual-profile networking roadmap.
 module Api
