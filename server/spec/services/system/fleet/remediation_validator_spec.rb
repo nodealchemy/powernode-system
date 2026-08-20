@@ -174,6 +174,74 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
         .not_to change { System::Fleet::RemediationOutcome.count }
     end
 
+    # IMP-71f7ca1ff35b — the same trap, and this one is LIVE.
+    #
+    # DiskImagePublicationFailureStreakSensor is registered in
+    # FleetAutonomyService::SENSORS and emitting today. Its binding
+    # (decision_engine.rb, "DK3") carries `skill: nil` and its own comment
+    # declares why — "No remediation applier: a broken CI pipeline needs
+    # operator investigation, not an automated retry" — while the seeded policy
+    # is notify_and_proceed. So the engine decides :proceed, this validator
+    # minted a pending outcome nothing could ever clear, and every settle window
+    # scored it ineffective until the F3-11 streak manufactured a false
+    # fleet.remediation_stuck HIGH escalation and forced require_approval on a
+    # lane that never acted.
+    #
+    # Exempted by DECLARATION, on the strength of that binding comment — not by
+    # inferring non-remediation from skill:nil, which is exactly what the
+    # constant's own docs refuse.
+    it "skips the disk-image publication investigate lane" do
+      investigate = {
+        decision: :proceed, gate: "notify_and_proceed",
+        signal_kind: "system.disk_image_publication_failure_streak",
+        fingerprint: "disk_image_publication_failure_streak:pub-1",
+        action_category: "system.disk_image_publication_investigate"
+      }
+      signals = [ sig("disk_image_publication_failure_streak:pub-1",
+                      kind: "system.disk_image_publication_failure_streak") ]
+
+      expect { validator.record_proceeded!(decisions: [ investigate ], signals: signals) }
+        .not_to change { System::Fleet::RemediationOutcome.count }
+    end
+
+    it "declares the disk-image investigate category in the exemption list" do
+      expect(described_class::NON_REMEDIATING_ACTION_CATEGORIES)
+        .to include("system.disk_image_publication_investigate")
+    end
+
+    # THE WHOLE FALSE PATH, driven rather than asserted piecewise: mint,
+    # score ineffective past the settle window, repeat to the streak threshold.
+    # On HEAD this reaches STUCK_STREAK_THRESHOLD for a lane that never acted;
+    # with the exemption the streak can never leave zero because nothing is
+    # minted to score.
+    it "contributes nothing to the ineffective streak that trips F3-11" do
+      fingerprint = "disk_image_publication_failure_streak:pub-2"
+      investigate = {
+        decision: :proceed, gate: "notify_and_proceed",
+        signal_kind: "system.disk_image_publication_failure_streak",
+        fingerprint: fingerprint,
+        action_category: "system.disk_image_publication_investigate"
+      }
+      signals = [ sig(fingerprint, kind: "system.disk_image_publication_failure_streak") ]
+
+      # Three windows: the CI pipeline is still broken each time, which is the
+      # normal case for a condition only a person can clear.
+      System::Fleet::DecisionEngine::STUCK_STREAK_THRESHOLD.times do
+        validator.record_proceeded!(decisions: [ investigate ], signals: signals)
+        System::Fleet::RemediationOutcome.where(account: account, fingerprint: fingerprint)
+                                         .update_all(settle_until: 1.hour.ago)
+        validator.validate_due!(current_signals: signals)
+      end
+
+      streak = System::Fleet::RemediationOutcome.ineffective_streak(
+        account: account, fingerprint: fingerprint
+      )
+      expect(streak).to eq(0),
+                        "the notify-only lane fed #{streak} ineffective outcomes to the F3-11 streak, " \
+                        "which at #{System::Fleet::DecisionEngine::STUCK_STREAK_THRESHOLD} manufactures " \
+                        "a false fleet.remediation_stuck HIGH escalation"
+    end
+
     # The list is DECLARED, not derived — a category that merely looks
     # notify-shaped must still be scored, or a real remediation silently
     # stops being validated.

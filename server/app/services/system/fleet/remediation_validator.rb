@@ -46,9 +46,24 @@ module System
       #                                            healthy, so every sdwan_*
       #                                            executor would act on
       #                                            plumbing that is fine).
+      #   system.disk_image_publication_investigate — IMP-71f7ca1ff35b. The
+      #                                            same shape, and unlike the
+      #                                            sdwan lane this one was LIVE:
+      #                                            DiskImagePublicationFailure
+      #                                            StreakSensor is registered in
+      #                                            FleetAutonomyService::SENSORS
+      #                                            and emitting. Its binding
+      #                                            ("DK3") declares the reason
+      #                                            in its own words — "a broken
+      #                                            CI pipeline needs operator
+      #                                            investigation, not an
+      #                                            automated retry" — which is
+      #                                            what earns the exemption;
+      #                                            skill:nil alone would not.
       NON_REMEDIATING_ACTION_CATEGORIES = %w[
         system.observation
         system.sdwan_service_health_investigate
+        system.disk_image_publication_investigate
       ].freeze
 
       def initialize(account:, agent: nil)
