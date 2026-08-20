@@ -346,13 +346,22 @@ module System
               reason: signal.dig(:payload, "reason") }
           }
         },
-        # Audit F3-07 — kinds for the previously-unregistered sensors.
-        # Expiring SDWAN membership credential → rotate the peer keypair
-        # (same executor + auto-execute shape as sdwan_peer_drift).
+        # Audit F3-07 registered this kind; IMP-df40782d3f4d rebound it.
+        # An expiring MembershipCredential means the agent is NOT pulling
+        # (TopologyCompiler's ensure_fresh! refreshes the MC on every
+        # compile), so the credential is the thing to refresh — server-side
+        # via the constellation signer, ready for the agent's next pull.
+        # The previous binding rotated the WireGuard keypair
+        # (SdwanPeerRemediateExecutor under system.sdwan_key_rotate,
+        # auto_approve): that does nothing for the MC but REVOKES the
+        # active key, so hubs drop the old pubkey on their next compile and
+        # the still-connected, not-yet-polling peer loses a WORKING tunnel.
+        # Key rotation stays bound to the drift signal
+        # (system.sdwan_peer_drift above).
         "system.sdwan_credential_expiring" => {
-          skill: ::System::Ai::Skills::SdwanPeerRemediateExecutor,
-          action_category: "system.sdwan_key_rotate",
-          side_effectful: true, # rotates the peer keypair
+          skill: ::System::Ai::Skills::SdwanCredentialRefreshExecutor,
+          action_category: "system.sdwan_credential_refresh",
+          side_effectful: true, # issues + supersedes a membership credential
           dry_run_supported: true,
           input_mapper: ->(signal) { { peer_id: signal.dig(:payload, "peer_id") } }
         },

@@ -118,12 +118,30 @@ fleet_policies = {
   # Ai::AutonomyGate as that agent). Autonomy levels preserved from the prior
   # SDWAN Manager seed.
   "system.sdwan_peer_remediate"        => "notify_and_proceed",
+  # NOTE: no signal routes here since IMP-df40782d3f4d moved
+  # system.sdwan_credential_expiring to system.sdwan_credential_refresh
+  # below. Kept seeded + registered (subset invariant allows a category
+  # without a producer) so live rows stay operator-tunable and a future
+  # true key-TTL lane inherits its recorded intent.
   "system.sdwan_key_rotate"            => "auto_approve",
   "system.sdwan_failover"              => "require_approval",
   "system.sdwan_user_device_revoke"    => "require_approval",
   "system.sdwan_bgp_session_remediate" => "notify_and_proceed",
   "system.sdwan_vip_failover"          => "require_approval",
   "system.sdwan_route_policy_audit"    => "auto_approve",
+
+  # IMP-df40782d3f4d — system.sdwan_credential_expiring routes here now:
+  # a server-side MembershipCredential re-issue (SdwanCredentialRefreshExecutor
+  # → MembershipCredentialSigner.ensure_fresh!), NOT a key rotation — rotating
+  # the WG key revoked the active pubkey and cut the still-working tunnel of
+  # exactly the not-polling peer whose MC was aging out. notify_and_proceed:
+  # the refresh itself is benign and idempotent, but an MC can only near
+  # expiry when the agent has stopped pulling, and the operator should see
+  # that degraded control channel rather than have it silently patched over.
+  # Seeded HERE (not SDWAN Manager) for the same mechanical reason as the 7
+  # actions above — the sensor fires from FleetAutonomyService::SENSORS,
+  # which gates as THIS agent.
+  "system.sdwan_credential_refresh"    => "notify_and_proceed",
   # IMP-c7d663f24a0b — SdwanServiceHealthSensor (sdwan_service_silent +
   # sdwan_portmap_orphaned). notify_and_proceed: notify-level first, no
   # auto-remediation until the signal quality is proven in the field.

@@ -16,10 +16,12 @@
 # newer revision exists for the same (peer, network) pair.
 #
 # The expected response is a system.sdwan_credential_refresh action
-# (re-issue via Sdwan::MembershipCredentialSigner.issue!). This sensor
-# emits the signal; the DecisionEngine routes it to the appropriate
-# executor (registered in N0 only as a stub — Phase N1+ wires the full
-# autonomy executor).
+# (re-issue via Sdwan::MembershipCredentialSigner). This sensor emits
+# the signal; the DecisionEngine routes it to
+# SdwanCredentialRefreshExecutor (IMP-df40782d3f4d — an earlier binding
+# routed it to the WG key-rotation executor, which revoked the active
+# key and cut the working tunnel of exactly the peer that wasn't
+# polling for a replacement).
 #
 # Phase N0 of the in-house encrypted mesh overlay roadmap.
 module System

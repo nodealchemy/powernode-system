@@ -248,7 +248,7 @@ module System
         # upstream package version drift → package_repository.sync gate.
         ::System::Fleet::Sensors::PackageDriftSensor,
         # SDWAN membership-credential expiry + stalled-refresh watch
-        # → sdwan_key_rotate gate / observation.
+        # → sdwan_credential_refresh gate / observation.
         ::System::Fleet::Sensors::SdwanCredentialExpirySensor,
         # Storage assignments stuck pending/degraded/failed
         # → storage_assignment_reconcile gate.
@@ -483,10 +483,13 @@ module System
         when "system.federation_peer_remediate"
           key_value(metadata, "federation_peer_id")
         # Slice 5 of the SDWAN plan: per-peer dedup for remediation/rotation/
-        # failover; per-device for revocation. Without these, repeat sensor
-        # firings would queue duplicate ApprovalRequests every tick.
+        # failover — and (IMP-df40782d3f4d) credential refresh, whose sensor
+        # re-fires each tick while an MC sits in the expiry window; per-device
+        # for revocation. Without these, repeat sensor firings would queue
+        # duplicate ApprovalRequests every tick.
         when "system.sdwan_peer_remediate",
              "system.sdwan_key_rotate",
+             "system.sdwan_credential_refresh",
              "system.sdwan_failover"
           key_value(metadata, "peer_id") || key_value(metadata, "network_id")
         when "system.sdwan_user_device_revoke"

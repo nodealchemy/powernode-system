@@ -632,6 +632,7 @@ module PowernodeSystem
           system.sdwan_peer_remediate system.sdwan_key_rotate system.sdwan_failover
           system.sdwan_user_device_revoke system.sdwan_bgp_session_remediate
           system.sdwan_vip_failover system.sdwan_route_policy_audit
+          system.sdwan_credential_refresh
           sdwan.network_create sdwan.network_update sdwan.network_delete
           sdwan.peer_create sdwan.peer_update sdwan.peer_delete
           sdwan.firewall_rule_create sdwan.firewall_rule_update sdwan.firewall_rule_delete

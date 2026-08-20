@@ -173,7 +173,7 @@ These autonomous remediations are triggered by Fleet sensors emitting `system.sd
 | `sdwan.vip_reachability` → primary unhealthy | `system.sdwan_vip_failover` | `require_approval` |
 | `sdwan.hub_reachability` → hub unreachable | `system.sdwan_failover` | `require_approval` |
 | `sdwan.route_policy_drift` → policy hash mismatch | `system.sdwan_route_policy_audit` | `auto_approve` |
-| Time-based (key TTL) | `system.sdwan_key_rotate` | `auto_approve` |
+| Membership-credential expiry (`SdwanCredentialExpirySensor`) | `system.sdwan_credential_refresh` | `notify_and_proceed` |
 
 > **Manual VIP failover** (operator-initiated, out of band of the sensor loop) works via `system_sdwan_failover_virtual_ip(virtual_ip_id)`. It delegates to `Sdwan::VirtualIp#failover!`; you can bias the promotion by passing an optional `target_peer_id` (a configured failover candidate), which reorders the failover queue before promotion.
 

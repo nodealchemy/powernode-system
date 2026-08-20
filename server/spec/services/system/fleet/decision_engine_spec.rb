@@ -545,6 +545,105 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # IMP-df40782d3f4d — credential-expiry remediation must refresh the
+    # CREDENTIAL, not rotate the key. An MC can only near expiry when the
+    # agent is not pulling (Sdwan::TopologyCompiler#ensure_fresh! refreshes
+    # it on every pull), so the F3-07 binding to SdwanPeerRemediateExecutor
+    # under system.sdwan_key_rotate (auto_approve — no human in the loop)
+    # did nothing for the MC while REVOKING the active WireGuard key: hubs
+    # drop the old pubkey on their next compile and the still-connected,
+    # not-yet-polling peer loses a WORKING tunnel. The remediation converted
+    # a degraded control channel into a broken data plane.
+    context "with a system.sdwan_credential_expiring signal (real peer + MC)" do
+      def policy!(action_category, policy)
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: action_category,
+                                       policy: policy, is_active: true)
+      end
+
+      let(:network) { create(:sdwan_network, account: account) }
+      # :active — a still-connected peer with a working tunnel is exactly
+      # the scenario: its agent has stopped pulling, so its MC ages out
+      # while the data plane is fine.
+      let(:peer) do
+        p = create(:sdwan_peer, :active, account: account, network: network,
+                                         last_compiled_at: 1.hour.ago)
+        Sdwan::KeyDistributor.ensure_key_for!(p)
+        p.reload
+      end
+      # A real signed MC aged into the sensor's advisory window: refresh is
+      # long overdue, hard expiry is 10 minutes out — the exact state the
+      # SdwanCredentialExpirySensor fingerprints. Aged coherently (as if
+      # issued 50 minutes into its 1h TTL) so the row still validates when
+      # the signer supersedes it.
+      let(:expiring_mc) do
+        mc = Sdwan::MembershipCredentialSigner.issue!(peer: peer)
+        mc.update_columns(issued_at: 50.minutes.ago, not_before: 50.minutes.ago,
+                          refresh_after: 20.minutes.ago, not_after: 10.minutes.from_now)
+        mc
+      end
+
+      before do
+        # Both categories seeded as db/seeds/fleet_autonomy_agent.rb ships
+        # them, so this example pins the PROPERTY (which remediation runs)
+        # rather than mirroring whichever binding is currently live.
+        policy!("system.sdwan_key_rotate", "auto_approve")
+        policy!("system.sdwan_credential_refresh", "notify_and_proceed")
+      end
+
+      def decide_expiring!
+        engine.decide(kind: "system.sdwan_credential_expiring", severity: :high,
+                      payload: { "membership_credential_id" => expiring_mc.id,
+                                 "peer_id" => peer.id,
+                                 "network_id" => network.id,
+                                 "revision" => expiring_mc.revision },
+                      fingerprint: "sdwan_credential_expiring:#{expiring_mc.id}")
+      end
+
+      it "refreshes the membership credential without revoking the active WireGuard key" do
+        wg_key = peer.active_key
+
+        d = decide_expiring!
+
+        # THE HARM, pinned first: the working tunnel's key material must be
+        # untouched — key rotation is drift/compromise remediation, not
+        # credential refresh. Under the old binding this is what failed:
+        # the auto_approved SdwanPeerRemediateExecutor revoked the active
+        # key of exactly the peer that isn't polling for a replacement.
+        expect(wg_key.reload.revoked?).to be(false)
+        expect(peer.reload.active_key.id).to eq(wg_key.id)
+        expect(peer.status).to eq("active") # no forced re-handshake
+        expect(peer.last_compiled_at).to be_present # no forced recompile
+
+        expect(d[:decision]).to eq(:proceed)
+        expect(d[:action_category]).to eq("system.sdwan_credential_refresh")
+
+        # A fresh MC now supersedes the expiring one, ready for the agent's
+        # next pull...
+        fresh = Sdwan::MembershipCredential
+                  .where(sdwan_peer_id: peer.id, sdwan_network_id: network.id)
+                  .order(revision: :desc).first
+        expect(fresh.id).not_to eq(expiring_mc.id)
+        expect(fresh.status).to eq("active")
+        expect(fresh.not_after).to be > 30.minutes.from_now
+        expect(d.dig(:skill_result, :success)).to be(true)
+      end
+
+      it "clears the sensor's fingerprint so the validate arc scores the refresh honestly" do
+        decide_expiring!
+
+        # The superseded row leaves the sensor's `.live` window and the new
+        # row is an hour from expiry — the fingerprint
+        # "sdwan_credential_expiring:<mc.id>" vanishes on the next sense
+        # pass, so RemediationValidator scores this lane effective on real
+        # convergence. No NON_REMEDIATING exemption needed (or wanted).
+        sensor = System::Fleet::Sensors::SdwanCredentialExpirySensor.new(account: account)
+        fingerprints = sensor.sense.map(&:fingerprint)
+        expect(fingerprints).not_to include("sdwan_credential_expiring:#{expiring_mc.id}")
+        expect(fingerprints.grep(/^sdwan_credential_refresh_stalled/)).to be_empty
+      end
+    end
+
     # Audit finding F3-07: three sensors existed but were never registered,
     # and their signal kinds had no bindings — even if invoked they would
     # have been discarded as decision :skipped.
@@ -555,16 +654,21 @@ RSpec.describe System::Fleet::DecisionEngine do
                                        policy: policy, is_active: true)
       end
 
-      it "routes sdwan_credential_expiring to the key-rotate gate and invokes the peer remediate executor" do
-        policy!("system.sdwan_key_rotate", "auto_approve")
-        allow_any_instance_of(::System::Ai::Skills::SdwanPeerRemediateExecutor)
-          .to receive(:execute).and_return({ success: true, data: { rotated: true } })
+      # IMP-df40782d3f4d rebound this kind from the key-rotate gate (which
+      # revoked the active WG key) to the credential-refresh gate. The real
+      # end-to-end behavior is pinned in the dedicated context above; this
+      # example keeps the F3-07 registration story: the kind has a binding
+      # and its executor is invoked.
+      it "routes sdwan_credential_expiring to the credential-refresh gate and invokes the refresh executor" do
+        policy!("system.sdwan_credential_refresh", "notify_and_proceed")
+        allow_any_instance_of(::System::Ai::Skills::SdwanCredentialRefreshExecutor)
+          .to receive(:execute).and_return({ success: true, data: { resolved: true } })
 
         d = engine.decide(kind: "system.sdwan_credential_expiring", severity: :high,
                           payload: { "membership_credential_id" => "mc-1", "peer_id" => "peer-1" },
                           fingerprint: "sdwan_credential_expiring:mc-1")
 
-        expect(d[:action_category]).to eq("system.sdwan_key_rotate")
+        expect(d[:action_category]).to eq("system.sdwan_credential_refresh")
         expect(d[:decision]).to eq(:proceed)
         expect(d[:skill_result]).to include(success: true)
       end
