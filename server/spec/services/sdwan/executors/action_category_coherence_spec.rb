@@ -239,6 +239,31 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
                        "to match, or the declaration: #{orphans.inspect}"
   end
 
+  # IMP-051f3811ac60 — the REVERSE direction of the gate-site scan. An
+  # executor no gate site names is not "dormant infrastructure": its seeded
+  # policy row reads as a control that exists while nothing ever evaluates it.
+  # sdwan.network_create and sdwan.user_device_create shipped exactly that way
+  # — and CreateUserDevice's never-called body was additionally WRONG (a bare
+  # create! bypassing UserDeviceIssuer), with deadness the only reason nobody
+  # noticed. Composition-only dispatch is legitimate but must be RECORDED, not
+  # inferred: a `.execute(` reference somewhere in app/ proves a Ruby call,
+  # not that the operator's policy for the category has an evaluation site.
+  it "names every executor at at least one gate site, or records it as composition-only" do
+    # Executors deliberately dispatched ONLY by internal composition (never an
+    # operator gate site). Empty today; adding a name here is the recorded
+    # intent, the way deliberately_shared records category consolidation.
+    composition_only = []
+
+    named   = all_gate_sites.map { |site| site[:executor_class] }.uniq
+    unnamed = executor_classes.map(&:name) - named - composition_only
+
+    expect(unnamed).to be_empty,
+                       "#{unnamed.size} SDWAN executor(s) are named by NO gate site on either operator " \
+                       "surface, so their declared category is seeded and registered but never evaluated: " \
+                       "#{unnamed.join(', ')} — wire a gate site, or record the executor in " \
+                       "composition_only above"
+  end
+
   it "passes each gate site its executor's declared ACTION_CATEGORY, never a literal" do
     offenders = all_gate_sites.reject do |site|
       site[:category_source] == "::#{site[:executor_class]}::ACTION_CATEGORY"
@@ -347,7 +372,7 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
     expect(executor_classes.size).to be >= 43
     expect(declared.size).to eq(executor_classes.size)
     expect(seeded_categories.size).to be > 50
-    expect(all_gate_sites.size).to be >= 57
+    expect(all_gate_sites.size).to be >= 61
     expect(all_gate_sites.map { |s| s[:file] }.uniq.size).to be >= 9
     expect(Ai::InterventionPolicy.registered_categories).to include("sdwan.network_create")
   end
