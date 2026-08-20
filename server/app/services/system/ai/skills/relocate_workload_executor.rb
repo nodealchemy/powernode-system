@@ -180,6 +180,41 @@ module System
           with_storage_gb = ::System::Ai::Skills::ProvisionFullStackExecutor
                             .resolve_storage_gb(with_storage_gb, storage_gb)
 
+          # REFUSED AT THE DOOR (IMP-f5532c5c5bd6), beside the other parameter
+          # validations rather than deep in the run.
+          #
+          # ProvisionFullStackExecutor previews this input as failures because
+          # its own comment refuses to let "a declaration the real run would
+          # record failure entries for ... preview as a clean plan". Relocate
+          # never composes PFSE for its preview — it builds its own plan — so
+          # the operator's :high blast-radius card showed the storage steps
+          # absent, a conditional storage-unready clause about a volume that
+          # appears nowhere in the plan, and ZERO failures.
+          #
+          # WHY REFUSE RATHER THAN RECORD-AND-CONTINUE, since PFSE deliberately
+          # chose the latter: the two executors end differently for this input.
+          # PFSE's contract is to provision what it can and report per-node
+          # failures, so continuing is useful there. Relocate's END STATE for an
+          # unreadable declaration is already a refusal — storage_unready?
+          # refuses the cutover, the targets are reclaimed and the sources are
+          # left alive (pinned by "refuses every declared-but-unreadable storage
+          # shape"). Continuing therefore buys nothing and costs a full
+          # provision-and-reclaim cycle for an input diagnosable before any work
+          # starts. Nothing depended on the tolerance: no caller reaches a
+          # SUCCESSFUL relocate with this value today.
+          #
+          # storage_unreadable? rather than !storage_requested?: a value that is
+          # simply absent is a legitimate no-storage relocate, and only a
+          # DECLARED value that cannot be read is an error. The message must not
+          # quote a size — with_storage_gb.to_i renders an authoritative "0 GB"
+          # for a value that was never read.
+          if storage_unreadable?(with_storage_gb)
+            return failure(
+              "storage declared but unreadable: #{with_storage_gb.inspect.truncate(120)} — " \
+              "with_storage_gb must be a positive integer count of GB"
+            )
+          end
+
           strategy = cutover_strategy.to_s
           return failure("cutover_strategy must be one of: #{STRATEGIES.join(', ')}") unless STRATEGIES.include?(strategy)
 

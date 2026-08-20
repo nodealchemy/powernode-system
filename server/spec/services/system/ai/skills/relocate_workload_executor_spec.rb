@@ -208,6 +208,39 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       let(:second_source_instance) { create(:system_node_instance, :running, node: second_source_node) }
       let(:both_source_ids)        { [ source_instance.id, second_source_instance.id ] }
 
+      # IMP-f5532c5c5bd6 — the dry run must not preview a clean plan for a
+      # declaration the real run already refuses.
+      #
+      # ProvisionFullStackExecutor emits dry_run_storage_failures for exactly
+      # this input, with the rationale stated in its own comment: "a declaration
+      # the real run would record failure entries for must not preview as a
+      # clean plan". Relocate never composes PFSE for the preview — it builds
+      # its own plan and returned `failures: []` unconditionally — so the
+      # operator's :high blast-radius card showed the storage steps absent, a
+      # conditional storage-unready clause about a volume appearing nowhere in
+      # the plan, and ZERO failures.
+      #
+      # Refused at the DOOR rather than previewed-with-failures (operator's
+      # decided option 2): the end-to-end path ALREADY refuses this input — see
+      # "refuses every declared-but-unreadable storage shape" below — so
+      # continuing buys nothing and costs a full provision-and-reclaim cycle for
+      # an input diagnosable before any work starts.
+      it "refuses a declared-but-unreadable storage value instead of previewing a clean plan" do
+        r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                         to_region_id: to_region.id, cutover_strategy: "blue_green",
+                         template_id: template.id,
+                         provider_instance_type_id: instance_type.id, count: 2,
+                         source_instance_ids: both_source_ids,
+                         with_storage_gb: "plenty", dry_run: true)
+
+        expect(r[:success]).to be(false),
+                               "the card previewed a clean plan for a declaration the real run refuses"
+        expect(r[:error]).to include("unreadable")
+        # The size is UNKNOWN on this branch — quoting with_storage_gb.to_i
+        # would render an authoritative "0 GB" for a value never read.
+        expect(r[:error]).not_to include("0 GB")
+      end
+
       def card(strategy:, network_id: nil, source_ids: both_source_ids, with_storage_gb: nil)
         r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
                          to_region_id: to_region.id, cutover_strategy: strategy,
@@ -271,13 +304,15 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         expect(requested.map { |a| a[:condition] })
           .to all(match(/storage-unready/).and(include("25")).and(match(/target stack is reclaimed/)))
 
-        # A DECLARED-but-unreadable value plans no storage steps (the inner
-        # executor creates nothing) yet still refuses the cutover, so the card
-        # must disclose it — and must NOT quote "0 GB" for a size nothing read.
-        unreadable = card(strategy: "blue_green", with_storage_gb: "plenty")
-                       .select { |a| a[:step] == "terminate_source" }
-        expect(unreadable.map { |a| a[:condition] }).to all(match(/storage-unready/))
-        expect(unreadable.map { |a| a[:condition] }.join(" | ")).not_to include("0 GB")
+        # The declared-but-unreadable half of this example MOVED, deliberately
+        # (IMP-f5532c5c5bd6). It used to assert that such a value still
+        # produces a card — one planning no storage steps but carrying a
+        # storage-unready clause. That card was the defect: it previewed a
+        # clean plan (zero failures) for a declaration the run already refuses.
+        # The value is now refused at the door, so there is no card to disclose
+        # anything on, and the assertion lives in
+        # "refuses a declared-but-unreadable storage value instead of
+        # previewing a clean plan" above.
 
         # A 0 is "no storage", not "storage missing" (ProvisionFullStackExecutor
         # #storage_requested?) — the clause must be absent, not merely reworded.
@@ -1053,21 +1088,29 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       # BOTH sub-branches of #storage_unreadable? in one sweep: a String that
       # responds to to_i but reads 0 ("plenty"), and a shape that does not
       # respond to to_i at all — those reach the lane by different routes.
+      # IMP-f5532c5c5bd6 — SAME VERDICT, REACHED EARLIER. This asserted the
+      # refusal after a full provision-and-reclaim cycle: targets came up
+      # diskless, storage_unready? refused the cutover, and the targets were
+      # torn down again. The value is now refused at the door, so the cycle
+      # never runs — which is why the "terminated every target" assertion is
+      # gone rather than loosened: there are no targets to terminate.
+      #
+      # Everything the example existed to protect still holds, and now holds
+      # without provisioning anything: both unreadable shapes refuse, no volume
+      # is created, the source survives, and the message never quotes an
+      # authoritative "0 GB" for a size nothing read.
       it "refuses every declared-but-unreadable storage shape, on which no volume is ever created" do
         [ "plenty", { "gb" => 50 } ].each do |declared|
           r = run_relocate(with_storage_gb: declared)
 
           expect(r[:success]).to be(false), "expected #{declared.inspect} to refuse the cutover"
-          expect(r[:error]).to match(%r{storage-unready \(0/1})
           expect(r[:error]).to include("storage declared but unreadable")
-          # The size is UNKNOWN on this branch — rendering with_storage_gb.to_i
-          # would quote an authoritative "0 GB" for a value that was never read.
           expect(r[:error]).not_to include("0 GB")
         end
 
         expect(::System::VolumeManagementService).not_to have_received(:provision)
-        expect(terminated_ids).to match_array([ target_a.id, target_b.id ])
-        expect(terminated_ids).not_to include(source_instance.id)
+        expect(terminated_ids).to be_empty,
+                                 "the door refusal must not provision anything to reclaim"
         expect(::System::NodeInstance.where(id: source_instance.id)).to exist
       end
 
@@ -1294,12 +1337,14 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       it "refuses a declared-but-unreadable alias, on which no volume is ever created" do
         r = relocate_via_alias(storage_gb: "plenty")
 
+        # Refused at the door now (IMP-f5532c5c5bd6), so no target is
+        # provisioned and none is reclaimed — the alias reaches the same
+        # verdict by the other name, which is what this example is for.
         expect(r[:success]).to be false
-        expect(r[:error]).to match(%r{storage-unready \(0/1})
         expect(r[:error]).to include("storage declared but unreadable")
         expect(r[:error]).not_to include("0 GB")
         expect(::System::VolumeManagementService).not_to have_received(:provision)
-        expect(terminated_ids).to eq([ target_a.id ])
+        expect(terminated_ids).to be_empty
         expect(::System::NodeInstance.where(id: source_instance.id)).to exist
       end
 
