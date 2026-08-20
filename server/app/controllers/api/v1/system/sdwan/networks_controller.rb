@@ -27,16 +27,32 @@ module Api
             render_success(network: serialize_network_full(@network))
           end
 
+          # IMP-051f3811ac60: the create routes through Ai::AutonomyGate.
+          # Sdwan::Executors::CreateNetwork existed but no gate site named it,
+          # so the seeded sdwan.network_create policy matched nothing — while
+          # UPDATE and DELETE on this same controller have been gated for
+          # slices. The candidate is never saved here; gate_create! validates
+          # it BEFORE the gate (an unsaveable payload keeps its field-level
+          # 422 and parks no approval), and the executor stays the sole writer.
+          #
+          # Internal composition (ConfigureSdwanForProjectExecutor and the
+          # federation/multi-tenant composers) creates networks directly and
+          # stays ungated — the same caller split PeersController#create pins.
           def create
             require_permission("system.sdwan.networks.manage")
-            attrs = network_params
+            attrs = network_params.to_h
 
-            network = ::Sdwan::Network.new(attrs.merge(account_id: @account.id))
-            if network.save
-              render_success({ network: serialize_network_full(network) }, status: :created)
-            else
-              render_validation_error(network)
-            end
+            gate_create!(
+              candidate: ::Sdwan::Network.new(attrs.merge(account_id: @account.id)),
+              scope: ::Sdwan::Network.where(account_id: @account.id),
+              result_key: :network_id,
+              response_key: :network,
+              serializer: ->(n) { serialize_network_full(n) },
+              action_category: ::Sdwan::Executors::CreateNetwork::ACTION_CATEGORY,
+              executor_class: "Sdwan::Executors::CreateNetwork",
+              params: { attributes: attrs },
+              description: "Create SDWAN network '#{attrs['name']}'"
+            )
           end
 
           # IMP-c159cc6777b1: the update routes through Ai::AutonomyGate.

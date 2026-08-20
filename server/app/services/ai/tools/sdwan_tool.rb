@@ -211,7 +211,7 @@ module Ai
             parameters: { network_id: { type: "string", required: true, description: "UUID of the SDWAN network to fetch" } }
           },
           "system_sdwan_create_network" => {
-            description: "Create a new SDWAN overlay network. CIDR (/64) is allocated automatically.",
+            description: "Create a new SDWAN overlay network. CIDR (/64) is allocated automatically. Approval-gated (sdwan.network_create) — under require_approval this returns pending: true with a deferred_operation_id and the network is created only once an operator approves.",
             parameters: {
               name: { type: "string", required: true, description: "Display name for the new network" },
               description: { type: "string", required: false, description: "Free-form description of the network's purpose" },
@@ -326,7 +326,7 @@ module Ai
             parameters: { access_grant_id: { type: "string", required: true, description: "UUID of the SDWAN access grant whose devices to list" } }
           },
           "system_sdwan_issue_user_device" => {
-            description: "Issue a fresh WireGuard config for a user. Returns a one-shot bootstrap_url (15-min expiry, single-use) — copy it to the user out-of-band.",
+            description: "Issue a fresh WireGuard config for a user. Returns a one-shot bootstrap_url (15-min expiry, single-use) — copy it to the user out-of-band. Approval-gated (sdwan.user_device_create) — under require_approval this returns pending: true with a deferred_operation_id; the keypair + token are minted only at approval, and the token is then revealed once in the approval decision response, not here.",
             parameters: {
               access_grant_id: { type: "string", required: true, description: "UUID of the SDWAN access grant the device is issued under" },
               label:           { type: "string", required: true, description: "Operator-supplied device label, e.g. 'phone' or 'work-laptop'" }
@@ -1024,7 +1024,8 @@ module Ai
         when ActiveRecord::InvalidForeignKey
           "FK blocks destroy: #{result.exception.message}"
         when ::Sdwan::HostBridgeAllocator::CapacityExhausted,
-             ::Sdwan::HostBridgeAllocator::InvalidArguments
+             ::Sdwan::HostBridgeAllocator::InvalidArguments,
+             ::Sdwan::UserDeviceIssuer::GrantError
           result.exception.message
         else
           result.error || "Action #{action_category} is blocked by policy"
@@ -1064,15 +1065,37 @@ module Ai
         success_result(network: serialize_network_full(network))
       end
 
+      # IMP-051f3811ac60 — routed through Ai::AutonomyGate as
+      # sdwan.network_create, matching NetworksController#create. The category
+      # was seeded and registered from the start but no gate site named it, so
+      # an agent could stand up a new overlay with no policy evaluation while
+      # update/delete on the same resource were gated. The candidate is
+      # validated BEFORE the gate (a doomed payload parks no approval) and
+      # never saved — Sdwan::Executors::CreateNetwork is the sole writer.
+      #
+      # Internal composition (the provisioning/federation/multi-tenant
+      # composers) creates networks directly and stays ungated — the same
+      # caller split attach_peer pins in peers_create_gating_spec.
       def create_network(params)
-        opts = params[:options] || {}
-        network = ::Sdwan::Network.create!(
-          account_id: @account.id,
+        opts = params[:options]
+        attributes = {
           name: params[:name],
           description: params[:description],
           settings: opts.is_a?(Hash) ? opts : {}
-        )
-        success_result(network: serialize_network_full(network))
+        }
+
+        candidate = ::Sdwan::Network.new(attributes.merge(account_id: @account.id))
+        return error_result(candidate.errors.full_messages.join("; ")) unless candidate.valid?
+
+        gated_result(
+          action_category: ::Sdwan::Executors::CreateNetwork::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateNetwork",
+          executor_params: { attributes: attributes },
+          description: "Create SDWAN network '#{params[:name]}'"
+        ) do |result|
+          network = account_networks.find(result.result&.dig(:data, :network_id))
+          { network: serialize_network_full(network) }
+        end
       end
 
       # IMP-2ff1980f7813 — routed through Ai::AutonomyGate as
@@ -1451,14 +1474,52 @@ module Ai
         success_result(devices: devices.map { |d| serialize_user_device(d) }, count: devices.size)
       end
 
+      # IMP-051f3811ac60 — routed through Ai::AutonomyGate as
+      # sdwan.user_device_create, matching UserDevicesController#create.
+      # Issuing mints a WireGuard keypair + a one-shot bootstrap token serving
+      # the full client config, so it is at least as material as the device
+      # revoke below, which has been gated all along.
+      # Sdwan::Executors::CreateUserDevice delegates to the same
+      # UserDeviceIssuer this arm used to call inline; on :proceed the token
+      # rides the executor's raw return, so the response shape (bootstrap_url
+      # embedding the token) is unchanged. The persisted operation row masks
+      # it (SensitiveParams "token" pattern); on the :pending path the mint
+      # happens at approval time and the token reaches the approver through
+      # the reveal-once slot, exactly as federation propose does.
+      #
+      # Pre-checks run in front of the gate — an inactive grant or an invalid
+      # label refuses fast and parks nothing. Only label errors are read off
+      # the candidate: public_key/assigned_address are legitimately absent
+      # until the issuer mints them. The issuer re-runs both checks inside the
+      # executor, which is the enforcement.
       def issue_user_device(params)
         grant = account_access_grants.find(params[:access_grant_id])
-        result = ::Sdwan::UserDeviceIssuer.issue!(grant: grant, label: params[:label])
-        success_result(
-          device: serialize_user_device(result[:device]),
-          bootstrap_url: "/api/v1/system/sdwan/bootstrap/#{result[:bootstrap_token]}",
-          expires_at: result[:expires_at]
-        )
+        unless grant.active?
+          return error_result("grant #{grant.id} is not active (status=#{grant.status}) — devices can only be issued under an active grant")
+        end
+        candidate = grant.user_devices.new(label: params[:label])
+        candidate.valid?
+        if candidate.errors[:label].any?
+          return error_result(candidate.errors.full_messages_for(:label).join("; "))
+        end
+
+        gated_result(
+          action_category: ::Sdwan::Executors::CreateUserDevice::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateUserDevice",
+          executor_params: { grant_id: grant.id, label: params[:label] },
+          source_type: "Sdwan::AccessGrant",
+          source_id: grant.id,
+          description: "Issue SDWAN VPN device '#{params[:label]}' for #{grant.user&.email || grant.id}",
+          pending_extra: { grant_id: grant.id }
+        ) do |result|
+          data = result.result&.dig(:data) || {}
+          device = grant.user_devices.find(data[:device_id])
+          {
+            device: serialize_user_device(device),
+            bootstrap_url: "/api/v1/system/sdwan/bootstrap/#{data[:bootstrap_token]}",
+            expires_at: data[:expires_at]
+          }
+        end
       end
 
       # Revoking a device cuts one user's VPN access, so it goes through

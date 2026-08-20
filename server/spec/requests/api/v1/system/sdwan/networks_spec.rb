@@ -32,7 +32,14 @@ RSpec.describe "Api::V1::System::Sdwan::Networks", type: :request do
   end
 
   describe "POST /api/v1/system/sdwan/networks" do
+    # IMP-051f3811ac60 gated the create; this example is about the WRITE
+    # (allocator, defaults, response shape), so it forces the :proceed branch.
+    # The gate-routing contract itself lives in networks_create_gating_spec.
     it "creates a network with auto-allocated /64" do
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+        { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+      )
+
       post "/api/v1/system/sdwan/networks",
            params: { network: { name: "edge-overlay", description: "perimeter" } }.to_json,
            headers: headers.merge("Content-Type" => "application/json")
