@@ -117,7 +117,7 @@ This is a git submodule. Per root CLAUDE.md:
 - `docs/CONCIERGE_PROVISIONING_GUIDE.md` — operator guide for running a provisioning mission through the System Concierge (phase pipeline, inline approval card, monitoring)
 - `docs/INGRESS_TLS_GUIDE.md` — operator guide for ingress/TLS (Ingress page Routes + Expose-Service wizard, the VIP→port-map→ACME→Traefik expose lifecycle, DNS-01 credentials, staging-vs-prod issuers, split-brain DNS troubleshooting)
 - `docs/MISSION_COMPOSITION_ARCHITECTURE.md` — two composition paths (deterministic vs. LLM-general), hybrid routing, cross-step data flow, and the shared runner + approval gate
-- `docs/FLEET_SENSORS.md` — 25 fleet sensors (tick-registered) + 2 CVE sensors reference + intervention policy table (split per-agent post 2026-05-10)
+- `docs/FLEET_SENSORS.md` — 26 fleet sensors (tick-registered) + 2 CVE sensors reference + intervention policy table (split per-agent post 2026-05-10)
 - `docs/DISK_IMAGE_CI.md` — webhook + CI worker workflow
 - `docs/MCP_API_REFERENCE.md` — `system_*` / `system_sdwan_*` / `kubernetes_*` / `docker_*` MCP tool actions
 - `docs/agent-peering.md` — NodeInstance-as-Agent pattern

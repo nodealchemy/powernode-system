@@ -153,6 +153,20 @@ fleet_policies = {
   # hand or it ships this failure mode.
   "system.sdwan_service_health_investigate" => "notify_and_proceed",
 
+  # IMP-57e9a90598ee — SdwanOvnDeploymentHealthSensor (ovn deployment
+  # degraded / activation stalled). Seeded HERE because the sensor fires from
+  # FleetAutonomyService::SENSORS, which gates as THIS agent (see the
+  # sdwan_service_health_investigate note above — a policy on SDWAN Manager
+  # would be invisible to this tick and every signal would die at the gate).
+  #
+  # notify_and_proceed, never auto_approve: the lane has NO applier by design
+  # — the degraded component is the operator's own OVN control plane (northd,
+  # NB/SB DBs), which the platform does not provision — so "proceed" means
+  # "notify the operator" and nothing else. Also listed in
+  # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES so the persistent
+  # fingerprint cannot manufacture false remediation_stuck escalations.
+  "system.sdwan_ovn_deployment_investigate" => "notify_and_proceed",
+
   # Read/notify
   "system.module_assign"           => "notify_and_proceed",
   "system.instance_reboot"         => "notify_and_proceed",

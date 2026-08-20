@@ -61,6 +61,10 @@ module Api
           def heartbeat
             digests = params[:module_digests]
             digests = digests.to_unsafe_h if digests.respond_to?(:to_unsafe_h)
+            # Captured BEFORE record_heartbeat! stamps last_heartbeat_at: "has
+            # this instance ever heartbeated" is the discriminator that keeps
+            # network-profile auto-classification (below) off the legacy fleet.
+            first_contact = current_instance.last_heartbeat_at.nil?
             current_instance.record_heartbeat!(
               agent_version:        params[:agent_version].presence || "unknown",
               boot_id:              params[:boot_id].presence       || "unknown",
@@ -77,6 +81,40 @@ module Api
             caps = params[:node_capabilities]
             caps = caps.to_unsafe_h if caps.respond_to?(:to_unsafe_h)
             current_instance.record_capabilities!(caps) if caps.present?
+
+            # IMP-57e9a90598ee — first-heartbeat network-profile
+            # classification. record_heartbeat! above just persisted the
+            # agent-observed architecture, which is the last fact
+            # suggest_network_profile needs; this is therefore the first
+            # moment the platform can CLASSIFY rather than guess. Runs only
+            # on the instance's FIRST heartbeat ever (first_contact, captured
+            # above) and only when that heartbeat will transition it into
+            # running — so a legacy host rebooting never auto-classifies (see
+            # the method's guards: never an already-running instance, never
+            # over an operator declaration, never a demotion). Wrapped so a
+            # classification bug cannot bounce telemetry.
+            begin
+              current_instance.classify_network_profile!(first_contact: first_contact)
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] network profile classification failed for #{current_instance.id}: #{e.class}: #{e.message}")
+            end
+
+            # IMP-57e9a90598ee — the agent's OVN NB replay observation
+            # (manager.go OvnNbStatus, previously computed every tick and
+            # thrown away) plus the control-plane NB probe drive the
+            # account's Sdwan::OvnDeployment lifecycle. The reconciler is
+            # observation-only: no block + nothing probeable = no change.
+            # Wrapped so an OVN reconcile bug cannot bounce telemetry.
+            begin
+              ovn_obs = params[:sdwan_ovn_state]
+              ovn_obs = ovn_obs.to_unsafe_h if ovn_obs.respond_to?(:to_unsafe_h)
+              ::Sdwan::Ovn::DeploymentReconciler.reconcile!(
+                instance: current_instance,
+                nb_observation: ovn_obs.presence
+              )
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] OVN deployment reconcile failed for #{current_instance.id}: #{e.class}: #{e.message}")
+            end
 
             # Boot-image upgrade reconcile (campaign 019f505f inc 2): the node
             # reboots mid-task, so the agent's /complete is unreliable — the

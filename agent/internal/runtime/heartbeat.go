@@ -30,6 +30,16 @@ type HeartbeatPayload struct {
 	LoadAverage   string                  `json:"load_average,omitempty"`
 	MemoryFreeKB  int64                   `json:"memory_free_kb,omitempty"`
 	SdwanState    []sdwan.HeartbeatStatus `json:"sdwan_state,omitempty"`
+	// SdwanOvnState is the most recent OVN NB plan replay observation
+	// (IMP-57e9a90598ee). Top-level rather than nested in SdwanState
+	// because the NB replay is host-scoped, not per-network. nil — and
+	// omitted from the wire — means NOT MEASURED: this host has never
+	// replayed an NB plan this boot (lightweight profile, no servable
+	// deployment, or the OVN subsystem's precondition is absent). The
+	// platform's Sdwan::Ovn::DeploymentReconciler consumes it to drive
+	// the OvnDeployment lifecycle (degraded/readopt), so absence must
+	// never be synthesized into an empty-but-present block.
+	SdwanOvnState *sdwan.ObservedOvnNbState `json:"sdwan_ovn_state,omitempty"`
 	// Capabilities is the agent-detected kernel capability set
 	// (erofs, overlayfs, fs-verity). The server records this on every
 	// heartbeat for fleet introspection ("which nodes can mount

@@ -588,6 +588,7 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 	}
 	if sdwanMgr != nil {
 		payload.SdwanState = sdwanMgr.HeartbeatStatuses()
+		payload.SdwanOvnState = sdwanMgr.OvnNbStatus()
 	}
 	// Boot-LKG observability (#39). Two reads of tiny /persist files:
 	//   1. The boot breadcrumb — whether THIS boot fell back to the LKG (+ age),

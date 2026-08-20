@@ -127,6 +127,15 @@ type ObservedOvnNbState struct {
 	CompiledAt      string `json:"compiled_at"`
 	LastReplayAt    string `json:"last_replay_at"`
 	LastError       string `json:"last_error,omitempty"`
+	// CacheHit marks an observation produced by the byte-identical-replay
+	// short-circuit, which EXECUTED NOTHING this tick — its counts and
+	// LastReplayAt re-assert the last real replay rather than a fresh one
+	// (IMP-57e9a90598ee). The cache is only ever seeded by a completed
+	// successful replay and never by a failure, so a full-success
+	// observation with CacheHit still implies a real replay happened
+	// against this endpoint+plan earlier in this process — but a consumer
+	// must not read its timestamp as evidence the NB DB is reachable NOW.
+	CacheHit bool `json:"cache_hit,omitempty"`
 }
 
 // nbAllowedCmds is the allow-list of ovn-nbctl subcommands the applier
@@ -179,10 +188,28 @@ type ShellOvnNbApplier struct {
 	// back to "ovn-nbctl" looked up via $PATH.
 	OvnNbctlBin string
 
+	// CommandTimeout bounds each individual ovn-nbctl invocation. Zero or
+	// negative falls back to defaultNbctlTimeout. Overridable for tests.
+	CommandTimeout time.Duration
+
 	mu            sync.Mutex
 	lastEndpoint  string
 	lastSignature string
 }
+
+// defaultNbctlTimeout bounds each ovn-nbctl invocation. The replay runs
+// synchronously inside the heartbeat loop (Heartbeater.PostSend →
+// Manager.Reconcile), so a BLACKHOLED NB endpoint — host down, firewall
+// drop — must never hold a command for the kernel's TCP timeout: that
+// would delay the docker/k3s reconciles behind it and, at worst, make
+// the node read presumed-dead. Enforced twice per command: ovn-nbctl's
+// own `--timeout` (which fails the command cleanly), and a context
+// deadline nbctlKillGrace later that SIGKILLs a client that ignored it.
+const defaultNbctlTimeout = 15 * time.Second
+
+// nbctlKillGrace is how long past --timeout the process gets before the
+// context deadline kills it outright.
+const nbctlKillGrace = 2 * time.Second
 
 // NewShellOvnNbApplier returns a default-configured applier that shells
 // out to the system `ovn-nbctl`.
@@ -258,6 +285,7 @@ func (a *ShellOvnNbApplier) Apply(ctx context.Context, plan *OvnNbPlan) (*Observ
 			AppliedCommands: len(plan.Plan),
 			CompiledAt:      plan.CompiledAt,
 			LastReplayAt:    nowRFC3339(),
+			CacheHit:        true,
 		}, nil
 	}
 
@@ -298,23 +326,40 @@ func (a *ShellOvnNbApplier) Apply(ctx context.Context, plan *OvnNbPlan) (*Observ
 	}, nil
 }
 
-// replayOne issues a single `ovn-nbctl --db=<endpoint> [--may-exist]
-// <cmd> <args...>`. The subcommand is already allow-list-validated by
+// replayOne issues a single `ovn-nbctl --timeout=<secs> --db=<endpoint>
+// [--may-exist] <cmd> <args...>`, bounded by a context deadline slightly
+// past the --timeout. The subcommand is already allow-list-validated by
 // the caller. Each arg is passed as a distinct argv element — no shell
 // interpolation — so values containing spaces (e.g. an addresses string
 // "02:.. 10.0.0.5") survive intact as one ovn-nbctl argument.
 func (a *ShellOvnNbApplier) replayOne(ctx context.Context, endpoint string, c OvnNbCommand) error {
 	cmd := strings.TrimSpace(c.Cmd)
 
-	argv := make([]string, 0, len(c.Args)+3)
-	argv = append(argv, "--db="+endpoint)
+	timeout := a.CommandTimeout
+	if timeout <= 0 {
+		timeout = defaultNbctlTimeout
+	}
+	secs := int(timeout / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+
+	argv := make([]string, 0, len(c.Args)+4)
+	argv = append(argv, fmt.Sprintf("--timeout=%d", secs), "--db="+endpoint)
 	if _, ok := nbMayExistCmds[cmd]; ok {
 		argv = append(argv, "--may-exist")
 	}
 	argv = append(argv, cmd)
 	argv = append(argv, c.Args...)
 
+	ctx, cancel := context.WithTimeout(ctx, timeout+nbctlKillGrace)
+	defer cancel()
+
 	command := exec.CommandContext(ctx, a.ovnNbctl(), argv...)
+	// Without WaitDelay, Run blocks past the kill on the stdio pipes when a
+	// grandchild inherited them (ovn-nbctl re-execing, a wrapper script) —
+	// exactly the wedge the deadline exists to prevent.
+	command.WaitDelay = nbctlKillGrace
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr

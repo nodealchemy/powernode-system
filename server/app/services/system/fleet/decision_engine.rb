@@ -257,6 +257,24 @@ module System
           skill: nil,
           action_category: "system.sdwan_service_health_investigate"
         },
+        # IMP-57e9a90598ee — SdwanOvnDeploymentHealthSensor. Both kinds are
+        # notify-level with skill: nil under ONE dedicated category, the
+        # SdwanServiceHealthSensor shape and for the same reason: the fleet
+        # seed maps this category to notify_and_proceed so the signal reaches
+        # an operator, while system.observation would auto_approve it into
+        # silence. No executor is bound by design — the degraded/stalled
+        # component is the operator's OVN control infrastructure (northd,
+        # NB/SB DBs), which the platform does not provision and must not
+        # blindly poke; the category is therefore also listed in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
+        "system.sdwan_ovn_deployment_degraded" => {
+          skill: nil,
+          action_category: "system.sdwan_ovn_deployment_investigate"
+        },
+        "system.sdwan_ovn_activation_stalled" => {
+          skill: nil,
+          action_category: "system.sdwan_ovn_deployment_investigate"
+        },
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
           action_category: "system.sdwan_vip_failover",

@@ -593,11 +593,12 @@ func (m *Manager) HeartbeatStatuses() []HeartbeatStatus {
 }
 
 // OvnNbStatus returns the observed result of the most recent OVN
-// Northbound plan replay, or nil on hosts that aren't the OVN control
-// host (Phase 3b-2). Snapshot-style — safe to call concurrently with
-// Reconcile. The heartbeat integration nests this into the SDWAN status
-// payload so the platform's Sdwan::OvnDeployment detail view can show
-// applied/failed command counts and surface LastError.
+// Northbound plan replay, or nil when no replay has run this boot
+// (Phase 3b-2). Snapshot-style — safe to call concurrently with
+// Reconcile. Embedded into the heartbeat as the top-level
+// `sdwan_ovn_state` block (runtime.buildHeartbeat), where the
+// platform's Sdwan::Ovn::DeploymentReconciler consumes it to drive
+// the Sdwan::OvnDeployment lifecycle (IMP-57e9a90598ee).
 func (m *Manager) OvnNbStatus() *ObservedOvnNbState {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -125,13 +125,21 @@ module Sdwan
     # ovn-controller daemon connects to the deployment's SB DB; this
     # returns the endpoints it needs (plus the NB endpoint for operator
     # tooling). Returns nil for lightweight hosts or accounts with no
-    # active OVN deployment — the agent treats nil as "OVN not enabled,
+    # servable OVN deployment — the agent treats nil as "OVN not enabled,
     # skip the OVN reconcile step".
     def self.ovn_control_for(instance)
       return nil unless instance.network_profile == "heavyweight"
 
+      # Servable = bootstrapping | active | degraded (IMP-57e9a90598ee). The
+      # previous active-only gate structurally prevented its own opener:
+      # activation requires an observation, observations come only from a
+      # served chassis, and nothing was served until active. Bootstrapping
+      # is by definition "agents are bringing daemons up" — they need this
+      # payload to do that — and degraded stays served because recovery
+      # evidence has the same sole source.
       deployment = ::Sdwan::OvnDeployment
-                     .where(account_id: instance.account_id, status: "active")
+                     .where(account_id: instance.account_id,
+                            status: ::Sdwan::OvnDeployment::SERVABLE_STATUSES)
                      .first
       return nil unless deployment
 
@@ -172,8 +180,9 @@ module Sdwan
     # whenever the plan is non-empty.
     #
     # Gating mirrors ovn_control_for exactly: only heavyweight hosts
-    # whose account has an active OvnDeployment get a plan. Returns nil
-    # otherwise (agent treats nil as "no OVN logical topology to apply").
+    # whose account has a servable (bootstrapping/active/degraded)
+    # OvnDeployment get a plan. Returns nil otherwise (agent treats nil
+    # as "no OVN logical topology to apply").
     #
     # The plan is served to EVERY heavyweight host (not just a single
     # control host). `northd_host` on the deployment is explicitly an
@@ -187,8 +196,10 @@ module Sdwan
     def self.ovn_nb_plan_for(instance)
       return nil unless instance.network_profile == "heavyweight"
 
+      # Same servable gate as ovn_control_for — see the comment there.
       deployment = ::Sdwan::OvnDeployment
-                     .where(account_id: instance.account_id, status: "active")
+                     .where(account_id: instance.account_id,
+                            status: ::Sdwan::OvnDeployment::SERVABLE_STATUSES)
                      .first
       return nil unless deployment
 

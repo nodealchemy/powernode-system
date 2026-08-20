@@ -272,7 +272,15 @@ module System
         # system.sdwan_service_silent / system.sdwan_portmap_orphaned →
         # system.sdwan_service_health_investigate (notify-level; no
         # auto-remediation until the signal quality is proven).
-        ::System::Fleet::Sensors::SdwanServiceHealthSensor
+        ::System::Fleet::Sensors::SdwanServiceHealthSensor,
+        # IMP-57e9a90598ee — visibility for the OVN activation lane. The
+        # DeploymentReconciler transitions Sdwan::OvnDeployment at heartbeat
+        # ingest (where the observations are); this sensor surfaces the
+        # resulting degraded / stalled states on the tick. Notify-only →
+        # system.sdwan_ovn_deployment_investigate (no applier by design:
+        # the failing component is OVN control infrastructure the platform
+        # does not provision).
+        ::System::Fleet::Sensors::SdwanOvnDeploymentHealthSensor
       ].freeze
 
       def permitted_actions

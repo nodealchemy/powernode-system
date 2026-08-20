@@ -60,10 +60,25 @@ module System
       #                                            automated retry" — which is
       #                                            what earns the exemption;
       #                                            skill:nil alone would not.
+      #   system.sdwan_ovn_deployment_investigate — IMP-57e9a90598ee. A
+      #                                            degraded or stalled OVN
+      #                                            deployment names failing
+      #                                            infrastructure the platform
+      #                                            does not provision (northd,
+      #                                            the NB/SB OVSDB servers).
+      #                                            There is no applier and can
+      #                                            be none until a
+      #                                            daemon-provisioning story
+      #                                            exists; the condition
+      #                                            clears when the operator
+      #                                            fixes their OVN control
+      #                                            plane, far beyond
+      #                                            SETTLE_WINDOW.
       NON_REMEDIATING_ACTION_CATEGORIES = %w[
         system.observation
         system.sdwan_service_health_investigate
         system.disk_image_publication_investigate
+        system.sdwan_ovn_deployment_investigate
       ].freeze
 
       def initialize(account:, agent: nil)

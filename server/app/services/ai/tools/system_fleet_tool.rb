@@ -504,10 +504,11 @@ module Ai
               instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to update (account-scoped)" },
               name: { type: "string", required: false, description: "New display name for the instance" },
               description: { type: "string", required: false, description: "New free-text description for the instance" },
-              config: { type: "object", required: false, description: "Instance config hash (replaces the stored config)" },
+              config: { type: "object", required: false, description: "Instance config hash (replaces the stored config, except the network_profile_source provenance stamp, which survives unless the new hash explicitly sets it)" },
               private_ip_address: { type: "string", required: false, description: "Private/internal IP address of the instance" },
               public_ip_address: { type: "string", required: false, description: "Public IP address of the instance" },
-              vpn_ip_address: { type: "string", required: false, description: "SDWAN/VPN overlay IP address of the instance" }
+              vpn_ip_address: { type: "string", required: false, description: "SDWAN/VPN overlay IP address of the instance" },
+              network_profile: { type: "string", required: false, description: "SDWAN host profile: 'lightweight' (WireGuard-only stack, the default) or 'heavyweight' (adds the OVS/OVN chassis stack — requires ~4GB+ RAM headroom for the daemons). An explicit value is an operator declaration: it wins over and disables the first-heartbeat auto-classification." }
             }
           },
           "system_find_node_with_gpu" => {
@@ -2098,10 +2099,40 @@ module Ai
         attrs = {}
         attrs[:name]               = params[:name]               if params[:name].present?
         attrs[:description]        = params[:description]        if params[:description].present?
-        attrs[:config]             = params[:config]             if params[:config].is_a?(Hash)
+        if params[:config].is_a?(Hash)
+          incoming = params[:config].deep_stringify_keys
+          # `config` replaces the stored hash, but the network_profile_source
+          # stamp is PROVENANCE, not config: erasing it re-arms first-contact
+          # auto-classification, which could then overwrite an explicit
+          # operator declaration. It survives any replace that does not
+          # explicitly supply its own value.
+          existing_stamp = instance.config&.dig("network_profile_source")
+          if existing_stamp.present? && !incoming.key?("network_profile_source")
+            incoming = incoming.merge("network_profile_source" => existing_stamp)
+          end
+          attrs[:config] = incoming
+        end
         attrs[:private_ip_address] = params[:private_ip_address] if params[:private_ip_address].present?
         attrs[:public_ip_address]  = params[:public_ip_address]  if params[:public_ip_address].present?
         attrs[:vpn_ip_address]     = params[:vpn_ip_address]     if params[:vpn_ip_address].present?
+
+        # IMP-57e9a90598ee — the operator-declared network-profile writer.
+        # Until this, the column had no production writer at all, so both OVN
+        # serving gates were closed fleet-wide. An explicit value here is a
+        # DECLARATION and wins over (and permanently disables) the
+        # first-heartbeat auto-classification — recorded via the
+        # network_profile_source stamp.
+        if params[:network_profile].present?
+          profile = params[:network_profile].to_s
+          unless ::System::NodeInstance::NETWORK_PROFILES.include?(profile)
+            return error_result(
+              "network_profile must be one of: #{::System::NodeInstance::NETWORK_PROFILES.join(', ')} (got #{profile.inspect})"
+            )
+          end
+          attrs[:network_profile] = profile
+          attrs[:config] = (attrs[:config] || instance.config || {})
+                             .merge("network_profile_source" => "operator")
+        end
 
         instance.update!(attrs)
         success_result(instance: serialize_instance(instance))

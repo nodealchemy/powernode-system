@@ -552,6 +552,73 @@ module System
       "lightweight"
     end
 
+    # IMP-57e9a90598ee — the production writer suggest_network_profile never
+    # had. Called from the heartbeat endpoint immediately after
+    # record_heartbeat! persisted the agent-observed architecture — the last
+    # fact the suggester needs — and BEFORE mark_running!, so it fires only
+    # on the heartbeat that brings a pre-running instance up.
+    #
+    # first_contact: the caller must declare whether this is the instance's
+    # FIRST heartbeat ever (last_heartbeat_at was nil before this request
+    # stamped it). The caller captures that, because by the time this runs
+    # record_heartbeat! has already written the column. Without this guard,
+    # "first heartbeat" was really "first stamp-less non-running heartbeat":
+    # every pre-existing instance carries no stamp, so the whole legacy fleet
+    # would auto-classify — and eligible hosts silently promote to
+    # heavyweight — on its next pass through a non-running state (a reboot, a
+    # presumed-dead self-heal). That is the fleet-wide profile wave this
+    # method's guards exist to prevent, merely amortised over reboots.
+    #
+    # Guards, each load-bearing:
+    #   - only the instance's first contact ever (first_contact): legacy
+    #     hosts NEVER auto-classify; operators promote them explicitly via
+    #     system_update_instance.
+    #   - only a pre-running instance (may_mark_running?): an established
+    #     fleet must never profile-flip on deploy.
+    #   - only once (the network_profile_source stamp): a classification is
+    #     a birth event, not a reconcile loop.
+    #   - never over an operator declaration ("operator" source wins).
+    #   - never a demotion: the suggester's "lightweight" is its safe
+    #     default, not evidence a heavyweight host lost headroom.
+    #
+    # (architecture needs no guard: the column is NOT NULL + CHECKed, so an
+    # instance without one is unrepresentable; the unknown-fact path is
+    # available_memory_mb returning nil, which the suggester already treats
+    # as "cannot prove headroom" → lightweight.)
+    def classify_network_profile!(first_contact:)
+      return false unless first_contact
+      return false unless may_mark_running?
+      return false if config&.dig("network_profile_source").present?
+
+      suggestion = suggest_network_profile
+      promote = suggestion == "heavyweight" && network_profile == "lightweight"
+
+      update!(
+        network_profile: promote ? "heavyweight" : network_profile,
+        config: (config || {}).merge("network_profile_source" => "suggested_first_heartbeat")
+      )
+
+      if promote
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: account,
+          kind: "system.instance.network_profile_promoted",
+          severity: :low,
+          payload: {
+            instance_id: id,
+            suggested: suggestion,
+            architecture: architecture,
+            memory_mb: send(:available_memory_mb)
+          },
+          source: "node_instance#classify_network_profile!",
+          node_instance_id: id
+        )
+      end
+      promote
+    rescue StandardError => e
+      Rails.logger.warn("[NodeInstance] network profile classification failed for #{id}: #{e.class}: #{e.message}")
+      false
+    end
+
     # === Runtime telemetry (Golden Eclipse M0.M) ===
     # Used by powernode-agent heartbeat path (M0.O / M0.P / M2). Maintains
     # last_heartbeat_at, agent_version, boot_id, and the running_module_digests

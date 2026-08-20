@@ -149,13 +149,19 @@ light_ctrl = ::Sdwan::TopologyCompiler.ovn_control_for(light)
 abort("  ❌ Test 6 FAILED — lightweight host got non-nil ovn_control") unless light_ctrl.nil?
 puts "  ✓ Test 6: lightweight host gets nil ovn_control (skip-OVN signal)"
 
-# ── Test 7: ovn_control nil when no active deployment ─────────────────
+# ── Test 7: ovn_control nil when no servable deployment ───────────────
+# IMP-57e9a90598ee widened the serving gate from active-only to servable
+# (bootstrapping|active|degraded) — a degraded deployment stays served so
+# recovery evidence can arrive. Pending is the state that must not serve.
 
 deployment.update!(status: "degraded")
-ctrl_no_active = ::Sdwan::TopologyCompiler.ovn_control_for(heavy)
-abort("  ❌ Test 7 FAILED — non-active deployment yielded ovn_control") unless ctrl_no_active.nil?
+ctrl_degraded = ::Sdwan::TopologyCompiler.ovn_control_for(heavy)
+abort("  ❌ Test 7 FAILED — degraded deployment must STAY served (recovery evidence needs a served chassis)") if ctrl_degraded.nil?
+deployment.update!(status: "pending")
+ctrl_pending = ::Sdwan::TopologyCompiler.ovn_control_for(heavy)
+abort("  ❌ Test 7 FAILED — pending deployment yielded ovn_control") unless ctrl_pending.nil?
 deployment.update!(status: "active")  # restore
-puts "  ✓ Test 7: heavyweight + degraded deployment → ovn_control nil"
+puts "  ✓ Test 7: degraded deployment stays served; pending → ovn_control nil"
 
 # ── Cleanup ───────────────────────────────────────────────────────────
 
