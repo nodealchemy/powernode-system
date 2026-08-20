@@ -72,8 +72,30 @@ module System
           # can call the node-API to fetch its WG config + the network's
           # hub peer list. The peer's private key stays in Vault and is
           # released only against the cert, never via fw-cfg directly.
+          #
+          # IMP-c6ba8920a51a — via Sdwan::OverlayAddressResolver, the same seam
+          # the other eight overlay-identity call sites use. This one selected
+          # `order(created_at: :desc)` — the NEWEST peer — and was the only
+          # site that did. On a single-homed host every site agrees, which is
+          # why it never surfaced; multi-homing is schema-permitted, since
+          # system_sdwan_peers is UNIQUE on (sdwan_network_id, node_instance_id)
+          # rather than on node_instance_id alone, so an instance peered into
+          # two networks legally has two peers and the seed would then describe
+          # the host by a different address than the Docker provisioner, the
+          # k3s api_endpoint and the OVN Geneve encap IP all use.
+          #
+          # Nothing depended on the newest-peer choice — nothing reads these
+          # keys at all yet. The agent reads exactly ten fw-cfg names and no
+          # sdwan_* key is among them, and `sdwan_overlay_ip` has one reference
+          # in the repository: the write below. That makes this a latent
+          # inconsistency closed before a consumer arrives, which is also why
+          # aligning was safe to do rather than documenting the divergence.
+          #
+          # The resolver returns the PEER, not just an address, which is what
+          # keeps the three keys below describing ONE row: an address-only seam
+          # would let peer_id and network_id drift to a different peer.
           if defined?(::Sdwan::Peer)
-            sdwan_peer = ::Sdwan::Peer.where(node_instance_id: instance.id).order(created_at: :desc).first
+            sdwan_peer = ::Sdwan::OverlayAddressResolver.addressed_peer_for(instance)
             if sdwan_peer
               entries["opt/com.powernode/sdwan_peer_id"]    = sdwan_peer.id
               entries["opt/com.powernode/sdwan_network_id"] = sdwan_peer.sdwan_network_id
