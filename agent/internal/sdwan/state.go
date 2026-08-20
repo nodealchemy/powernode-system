@@ -263,13 +263,86 @@ type PeerStatusReport struct {
 	Status          string `json:"status"` // "active" | "degraded" | "disconnected"
 }
 
+// SubsystemStatus is the outcome of one applier subsystem's most recent
+// run, keyed by the label the Manager's recordError/step already carries
+// (`apply_firewall:<network_id>`, `apply_vrfs`, `apply_bridges[0]`, ...).
+//
+// ORACLE CONTRACT — read this before writing a sensor against it.
+//
+//	State == "error"  the subsystem ran and FAILED. It stays "error" until
+//	                  that same subsystem next SUCCEEDS; another
+//	                  subsystem's success never clears it. The one other
+//	                  way out is to NOT MEASURED — never to "ok" — when
+//	                  its precondition or its subject goes away; see the
+//	                  "no entry at all" rung below.
+//	State == "ok"     the subsystem ran and SUCCEEDED. "Ran" means it did
+//	                  the work: an applier that short-circuits because its
+//	                  precondition is absent has NOT run, and must be
+//	                  recorded as absent rather than "ok" (see the
+//	                  nil/empty OVN NB plan in Manager.Reconcile).
+//	no entry at all   NOT MEASURED. The subsystem has never run on this
+//	                  host, its precondition is absent from the desired
+//	                  config (a network with no compiled firewall, a
+//	                  network with iBGP disabled), or its subject has been
+//	                  removed from the config entirely (a deleted network,
+//	                  a de-trusted constellation).
+//
+// The absence of an entry is deliberately NOT expressible as a healthy
+// value: "ok" is only ever emitted by an observed success, so a consumer
+// that sees nothing must report "unknown", never "green".
+type SubsystemStatus struct {
+	Subsystem string `json:"subsystem"`
+	// Scope is the discriminator the label carried after the ":" (a
+	// network id, an interface name, a constellation handle) or the
+	// "[i]" index for indexed appliers. Empty for host-global
+	// subsystems.
+	Scope      string `json:"scope,omitempty"`
+	State      string `json:"state"` // "ok" | "error"
+	Message    string `json:"message,omitempty"`
+	ObservedAt string `json:"observed_at"` // RFC3339
+}
+
+const (
+	// SubsystemStateOK marks an observed success.
+	SubsystemStateOK = "ok"
+	// SubsystemStateError marks an observed, still-unresolved failure.
+	SubsystemStateError = "error"
+)
+
 // HeartbeatStatus is the SDWAN block that gets nested into the main
 // HeartbeatPayload. One entry per WG interface present on the node.
+//
+// PAYLOAD-SHAPE LIMIT a sensor author must account for: because the block
+// is per-network, a host with ZERO desired networks emits NO entries at
+// all — and therefore reports nothing, including host-global subsystem
+// failures such as apply_vrfs or apply_bridges. On such a host the agent
+// is silent by construction, so "no sdwan_state" must be read as "nothing
+// observable here", never as "SDWAN healthy". This is a pre-existing
+// property of the payload shape, not of the subsystem reporting.
 type HeartbeatStatus struct {
-	Interface       string `json:"interface"`
-	NetworkID       string `json:"network_id"`
-	PeerCount       int    `json:"peer_count"`
-	HealthyPeers    int    `json:"healthy_peers"`
+	Interface string `json:"interface"`
+	NetworkID string `json:"network_id"`
+	PeerCount int    `json:"peer_count"`
+	// HealthyPeers is the number of this network's peers whose last
+	// handshake was inside the active window, as measured by the most
+	// recent reconcile pass that actually read the interface.
+	//
+	// NIL — serialized as `"healthy_peers": null` — means NOT MEASURED:
+	// the pass never got as far as reading kernel state for this
+	// network (MC gate refused it, key lookup failed, the interface
+	// apply failed, or `wg show` errored). A pointer rather than an int
+	// precisely so a fleet sensor can tell "we did not look" apart from
+	// a genuine, measured zero healthy peers.
+	HealthyPeers    *int   `json:"healthy_peers"`
 	LastReconcileAt string `json:"last_reconcile_at"`
-	LastError       string `json:"last_error,omitempty"`
+	// LastError is the message of the newest still-unresolved subsystem
+	// failure visible to this network, kept for consumers that predate
+	// SubsystemStates. Empty means no subsystem is currently failing —
+	// it does NOT mean every subsystem succeeded; only SubsystemStates
+	// can answer that.
+	LastError string `json:"last_error,omitempty"`
+	// SubsystemStates carries every subsystem outcome relevant to this
+	// network: the network-scoped ones plus every host-global one. See
+	// SubsystemStatus for the oracle contract.
+	SubsystemStates []SubsystemStatus `json:"subsystem_states,omitempty"`
 }

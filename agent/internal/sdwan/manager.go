@@ -25,6 +25,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,8 +81,16 @@ type Manager struct {
 
 	mu              sync.Mutex
 	lastReconcileAt time.Time
-	lastError       error
-	lastDesired     *DesiredConfig
+	// subsystems holds one outcome per applier subsystem, keyed by the
+	// exact label recordError/step is called with. An entry persists
+	// until that same label is recorded again — a failure is only ever
+	// cleared by that subsystem's own success. Guarded by mu.
+	subsystems map[string]subsystemOutcome
+	// healthyPeers is the measured healthy-peer count per network id,
+	// rebuilt from scratch on every reconcile pass. A network absent
+	// from the map was NOT measured this pass. Guarded by mu.
+	healthyPeers map[string]int
+	lastDesired  *DesiredConfig
 	// lastOvnNbState holds the observed result of the most recent NB
 	// plan replay (Phase 3b-2). nil on hosts that aren't the OVN control
 	// host. Snapshot-read by OvnNbStatus for the heartbeat block.
@@ -125,14 +135,15 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		m.recordError("fetch_desired_config", err)
 		return
 	}
+	m.recordSuccess("fetch_desired_config")
 
 	// Phase N0: trust every constellation pubkey the controller advertises.
 	// Idempotent; re-trusting an existing handle is a no-op.
 	if m.MCVerifier != nil {
 		for _, c := range desired.Constellations {
-			if err := m.MCVerifier.TrustConstellation(c.Handle, c.PublicKeyB64); err != nil {
-				m.recordError("trust_constellation:"+c.Handle, err)
-			}
+			_ = m.step("trust_constellation:"+c.Handle, func() error {
+				return m.MCVerifier.TrustConstellation(c.Handle, c.PublicKeyB64)
+			})
 		}
 	}
 
@@ -141,9 +152,9 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	// to. Errors are recorded but don't abort the loop; per-network
 	// applies will fail individually if their VRF is missing.
 	if m.VRFApplier != nil {
-		if err := m.VRFApplier.Apply(ctx, desired.VrfAssignments); err != nil {
-			m.recordError("apply_vrfs", err)
-		}
+		_ = m.step("apply_vrfs", func() error {
+			return m.VRFApplier.Apply(ctx, desired.VrfAssignments)
+		})
 	}
 
 	// Phase O1+O2: ensure all host-side bridges exist BEFORE the
@@ -157,9 +168,9 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		if applier == nil {
 			continue
 		}
-		if err := applier.Apply(ctx, desired.HostBridges); err != nil {
-			m.recordError(fmt.Sprintf("apply_bridges[%d]", i), err)
-		}
+		_ = m.step(fmt.Sprintf("apply_bridges[%d]", i), func() error {
+			return applier.Apply(ctx, desired.HostBridges)
+		})
 	}
 
 	// Phase O3: align local ovn-controller state with the per-host
@@ -170,9 +181,9 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	// OVS must be initialized) and BEFORE the per-network loop (so
 	// the daemon is ready when traffic starts flowing).
 	if m.OvnControllerApplier != nil {
-		if err := m.OvnControllerApplier.Apply(ctx, desired.OvnControl); err != nil {
-			m.recordError("apply_ovn_control", err)
-		}
+		_ = m.step("apply_ovn_control", func() error {
+			return m.OvnControllerApplier.Apply(ctx, desired.OvnControl)
+		})
 	}
 
 	// Phase 3b-2: replay the compiled OVN Northbound plan into the
@@ -191,9 +202,22 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	// error is recorded but never aborts the loop — the next tick
 	// re-attempts the full (idempotent) plan.
 	if m.OvnNbApplier != nil {
+		// Apply is called even for a nil/empty plan: that path is how the
+		// applier resets its last-endpoint/last-signature cache, so
+		// skipping the call would strand stale replay state.
 		obs, err := m.OvnNbApplier.Apply(ctx, desired.OvnNbPlan)
-		if err != nil {
+		switch {
+		case err != nil:
 			m.recordError("apply_ovn_nb_plan", err)
+		case desired.OvnNbPlan == nil || len(desired.OvnNbPlan.Plan) == 0:
+			// The applier's nil/empty-plan branch returns nil having
+			// executed nothing — it is a precondition-absent no-op, not
+			// an observed success. Reporting "ok" here would tell every
+			// lightweight host, and every heavyweight host with no active
+			// deployment, that a subsystem it never ran is healthy.
+			m.forget("apply_ovn_nb_plan")
+		default:
+			m.recordSuccess("apply_ovn_nb_plan")
 		}
 		m.mu.Lock()
 		m.lastOvnNbState = obs
@@ -209,6 +233,10 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	// Apply each desired network. We continue on per-network error so a
 	// single bad network doesn't block the others.
 	var reports []PeerStatusReport
+	// Rebuilt from scratch each pass: a network we never got as far as
+	// reading is simply absent, which the heartbeat renders as
+	// `healthy_peers: null` (NOT MEASURED) rather than a healthy-looking 0.
+	healthy := make(map[string]int, len(desired.Networks))
 	for _, net := range desired.Networks {
 		// Phase N0 forwarding gate: no MC, or invalid MC, means we tear
 		// down any existing interface and skip apply for this tick. The
@@ -218,23 +246,39 @@ func (m *Manager) Reconcile(ctx context.Context) {
 				m.recordError("mc_missing:"+net.NetworkID, fmt.Errorf("no MC envelope in config push for peer %s", net.PeerID))
 				_ = m.Applier.RemoveInterface(ctx, net.Interface.Name)
 				m.MCVerifier.Forget(net.PeerID, net.NetworkID)
+				// There is no envelope to validate, so any earlier
+				// mc_validate verdict is about a credential that is gone.
+				m.forget("mc_validate:" + net.NetworkID)
 				continue
 			}
-			if _, err := m.MCVerifier.Validate(net.PeerID, net.NetworkID, net.MC, time.Now()); err != nil {
-				m.recordError("mc_validate:"+net.NetworkID, err)
+			// The envelope is present, so the "no MC in this push" fault
+			// is no longer being observed. Drop it rather than reporting
+			// it as a success — mc_validate below is what actually
+			// measures MC health.
+			m.forget("mc_missing:" + net.NetworkID)
+			if err := m.step("mc_validate:"+net.NetworkID, func() error {
+				_, err := m.MCVerifier.Validate(net.PeerID, net.NetworkID, net.MC, time.Now())
+				return err
+			}); err != nil {
 				_ = m.Applier.RemoveInterface(ctx, net.Interface.Name)
 				continue
 			}
 		}
 
+		// Scoped by interface name like its siblings below: the bare
+		// label was shared by every network in the loop, so one
+		// network's successful lookup would have cleared another's
+		// failure.
 		privateKey, err := m.privateKeyFor(net)
 		if err != nil {
-			m.recordError("private_key_lookup", err)
+			m.recordError("private_key_lookup:"+net.Interface.Name, err)
 			continue
 		}
+		m.recordSuccess("private_key_lookup:" + net.Interface.Name)
 
-		if err := m.Applier.ApplyInterface(ctx, net.Interface, net.Peers, privateKey); err != nil {
-			m.recordError("apply_interface:"+net.Interface.Name, err)
+		if err := m.step("apply_interface:"+net.Interface.Name, func() error {
+			return m.Applier.ApplyInterface(ctx, net.Interface, net.Peers, privateKey)
+		}); err != nil {
 			continue
 		}
 
@@ -244,30 +288,48 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		// (nft tolerates non-existent iif names) but the rules wouldn't
 		// match anything until the interface comes up. Order this way so
 		// each tick converges to a known-good state on the first apply.
-		if net.Firewall != nil && m.NftablesApplier != nil {
-			if err := m.NftablesApplier.ApplyRuleset(ctx, net.NetworkID, net.Firewall); err != nil {
-				m.recordError("apply_firewall:"+net.NetworkID, err)
-				// Don't `continue` — even if firewall failed, the wg state
-				// reporting below is still meaningful for operator triage.
+		if m.NftablesApplier != nil {
+			if net.Firewall != nil {
+				// Don't `continue` on failure — even if firewall failed,
+				// the wg state reporting below is still meaningful for
+				// operator triage.
+				_ = m.step("apply_firewall:"+net.NetworkID, func() error {
+					return m.NftablesApplier.ApplyRuleset(ctx, net.NetworkID, net.Firewall)
+				})
+			} else {
+				// No compiled ruleset for this network any more: the
+				// subsystem has nothing to converge, so its last outcome
+				// stops being an answer about the present.
+				m.forget("apply_firewall:" + net.NetworkID)
 			}
 		}
 
 		// Slice 7b — apply NAT chain (DNAT for hub-published services).
 		// Empty NatConf.Ruleset is the signal to tear down the chain;
 		// the applier handles that path internally.
-		if net.Nat != nil && m.NatApplier != nil {
-			if err := m.NatApplier.ApplyRuleset(ctx, net.NetworkID, net.Nat); err != nil {
-				m.recordError("apply_nat:"+net.NetworkID, err)
+		if m.NatApplier != nil {
+			if net.Nat != nil {
+				_ = m.step("apply_nat:"+net.NetworkID, func() error {
+					return m.NatApplier.ApplyRuleset(ctx, net.NetworkID, net.Nat)
+				})
+			} else {
+				m.forget("apply_nat:" + net.NetworkID)
 			}
 		}
 
-		actual, err := m.Applier.ReadActualState(ctx, net.Interface.Name)
-		if err != nil {
-			m.recordError("read_actual:"+net.Interface.Name, err)
+		var actual *ActualInterfaceState
+		if err := m.step("read_actual:"+net.Interface.Name, func() error {
+			var err error
+			actual, err = m.Applier.ReadActualState(ctx, net.Interface.Name)
+			return err
+		}); err != nil {
 			continue
 		}
 
-		reports = append(reports, peerReportsFromActual(net, actual)...)
+		netReports := peerReportsFromActual(net, actual)
+		// Only networks that reach here have a MEASURED healthy count.
+		healthy[net.NetworkID] = countHealthyPeers(netReports)
+		reports = append(reports, netReports...)
 	}
 
 	// Reap orphan interfaces — those we have no desired config for.
@@ -313,9 +375,7 @@ func (m *Manager) Reconcile(ctx context.Context) {
 				allVips = append(allVips, v)
 			}
 		}
-		if err := m.VipApplier.ApplyVips(ctx, allVips); err != nil {
-			m.recordError("apply_vips", err)
-		}
+		_ = m.step("apply_vips", func() error { return m.VipApplier.ApplyVips(ctx, allVips) })
 	}
 
 	// Slice 9c — FRR is a single host-wide daemon. We use the first
@@ -333,16 +393,17 @@ func (m *Manager) Reconcile(ctx context.Context) {
 				iBgpNetworkIDs = append(iBgpNetworkIDs, net.NetworkID)
 			}
 		}
+		// The two arms are mutually exclusive, so whichever one runs
+		// forgets the other: leaving the idle arm's last outcome standing
+		// would report a subsystem that is no longer being attempted.
 		if firstEnabled != nil {
-			if err := m.FrrApplier.ApplyConfig(ctx, firstEnabled); err != nil {
-				m.recordError("apply_frr", err)
-			}
+			m.forget("disable_frr")
+			_ = m.step("apply_frr", func() error { return m.FrrApplier.ApplyConfig(ctx, firstEnabled) })
 		} else {
 			// No iBGP networks — disable FRR (idempotent; tolerates
 			// "frr already stopped").
-			if err := m.FrrApplier.DisableFrr(ctx); err != nil {
-				m.recordError("disable_frr", err)
-			}
+			m.forget("apply_frr")
+			_ = m.step("disable_frr", func() error { return m.FrrApplier.DisableFrr(ctx) })
 		}
 	}
 
@@ -350,34 +411,89 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	// platform. Polls vtysh once and posts the result; the platform
 	// upserts Sdwan::BgpSession rows so the routing dashboard reflects
 	// reality, not just the desired config we shipped.
+	// A network that is present but not iBGP-enabled has no BGP session to
+	// observe, so any earlier observe_bgp verdict for it describes a
+	// subsystem the platform has stopped asking for. The end-of-pass sweep
+	// cannot catch these: the scope still names a live network, so it looks
+	// current. Forget them here instead, while we still know which networks
+	// are enabled.
+	enabledBgp := make(map[string]struct{}, len(iBgpNetworkIDs))
+	for _, nid := range iBgpNetworkIDs {
+		enabledBgp[nid] = struct{}{}
+	}
+	for _, net := range desired.Networks {
+		if _, on := enabledBgp[net.NetworkID]; !on {
+			m.forget("observe_bgp:" + net.NetworkID)
+		}
+	}
+
 	if m.FrrObserver != nil && len(iBgpNetworkIDs) > 0 {
 		obsCtx, cancel := ObservationContext(ctx)
 		defer cancel()
 		var observations []*ObservedBgpState
 		for _, nid := range iBgpNetworkIDs {
-			obs, err := m.FrrObserver.ObserveBgp(obsCtx, nid)
-			if err != nil {
-				m.recordError("observe_bgp:"+nid, err)
+			var obs *ObservedBgpState
+			if err := m.step("observe_bgp:"+nid, func() error {
+				var err error
+				obs, err = m.FrrObserver.ObserveBgp(obsCtx, nid)
+				return err
+			}); err != nil {
 				continue
 			}
 			observations = append(observations, obs)
 		}
 		if len(observations) > 0 {
-			if err := m.postBgpStatusReport(ctx, observations); err != nil {
-				m.recordError("post_bgp_status", err)
-			}
+			_ = m.step("post_bgp_status", func() error { return m.postBgpStatusReport(ctx, observations) })
+		} else {
+			m.forget("post_bgp_status")
 		}
+	} else {
+		// No observer, or iBGP disabled fleet-wide. This forget must sit
+		// OUTSIDE the guard: post_bgp_status is host-global, so a failure
+		// left behind here would be reported on every network forever.
+		m.forget("post_bgp_status")
 	}
 
 	if len(reports) > 0 {
-		if err := m.postStatusReport(ctx, reports); err != nil {
-			m.recordError("post_status", err)
-		}
+		_ = m.step("post_status", func() error { return m.postStatusReport(ctx, reports) })
+	} else {
+		m.forget("post_status")
 	}
 
 	m.mu.Lock()
+	// Drop outcomes whose SUBJECT the platform has stopped sending — a
+	// removed network, a de-trusted constellation. Their scope no longer
+	// matches anything live, so HeartbeatStatuses would misread them as
+	// host-global and report them on every surviving network; unreaped
+	// they would also grow without bound, one entry per handle ever seen.
+	//
+	// Reaping is deliberately restricted to scope kinds the desired config
+	// actually enumerates. A blanket "delete any scope not present in the
+	// config" would also delete discriminators the config never contains —
+	// apply_bridges[i] scopes to a slice index — silently destroying live
+	// reports. So each kind is added here explicitly, and an unrecognized
+	// scope is left alone.
+	reapable := []struct{ previous, current map[string]struct{} }{
+		{networkScopeSet(m.lastDesired), networkScopeSet(desired)},
+		{constellationScopeSet(m.lastDesired), constellationScopeSet(desired)},
+	}
+	for label := range m.subsystems {
+		_, scope := splitSubsystemLabel(label)
+		if scope == "" {
+			continue
+		}
+		for _, kind := range reapable {
+			if _, was := kind.previous[scope]; !was {
+				continue
+			}
+			if _, still := kind.current[scope]; !still {
+				delete(m.subsystems, label)
+			}
+			break
+		}
+	}
 	m.lastReconcileAt = time.Now()
-	m.lastError = nil
+	m.healthyPeers = healthy
 	m.lastDesired = desired
 	m.mu.Unlock()
 }
@@ -415,15 +531,63 @@ func (m *Manager) HeartbeatStatuses() []HeartbeatStatus {
 	if m.lastDesired == nil {
 		return nil
 	}
+
+	// A scope that names one of the current networks is reported only on
+	// that network. Everything else — an empty scope, or a discriminator
+	// that isn't a network (a constellation handle, a bridge index) — is
+	// host-global and is reported on every network, since a host-wide
+	// failure is relevant to all of them.
+	netScopes := networkScopeSet(m.lastDesired)
+
 	out := make([]HeartbeatStatus, 0, len(m.lastDesired.Networks))
 	for _, net := range m.lastDesired.Networks {
-		out = append(out, HeartbeatStatus{
+		st := HeartbeatStatus{
 			Interface:       net.Interface.Name,
 			NetworkID:       net.NetworkID,
 			PeerCount:       len(net.Peers),
 			LastReconcileAt: m.lastReconcileAt.UTC().Format(time.RFC3339),
-			LastError:       errString(m.lastError),
+		}
+		if measured, ok := m.healthyPeers[net.NetworkID]; ok {
+			// Copy into a fresh variable — callers must never hold a
+			// pointer into manager state.
+			n := measured
+			st.HealthyPeers = &n
+		}
+
+		var newestFailure time.Time
+		for label, o := range m.subsystems {
+			subsystem, scope := splitSubsystemLabel(label)
+			if _, isNetScoped := netScopes[scope]; isNetScoped {
+				if scope != net.NetworkID && scope != net.Interface.Name {
+					continue
+				}
+			}
+			state := SubsystemStateOK
+			if o.failed {
+				state = SubsystemStateError
+				if o.observedAt.After(newestFailure) {
+					newestFailure = o.observedAt
+					st.LastError = o.message
+				}
+			}
+			st.SubsystemStates = append(st.SubsystemStates, SubsystemStatus{
+				Subsystem:  subsystem,
+				Scope:      scope,
+				State:      state,
+				Message:    o.message,
+				ObservedAt: o.observedAt.UTC().Format(time.RFC3339),
+			})
+		}
+		// Map iteration order is random; sort so the payload is stable
+		// across ticks and a diffing consumer sees no phantom churn.
+		sort.Slice(st.SubsystemStates, func(i, j int) bool {
+			if st.SubsystemStates[i].Subsystem != st.SubsystemStates[j].Subsystem {
+				return st.SubsystemStates[i].Subsystem < st.SubsystemStates[j].Subsystem
+			}
+			return st.SubsystemStates[i].Scope < st.SubsystemStates[j].Scope
 		})
+
+		out = append(out, st)
 	}
 	return out
 }
@@ -444,11 +608,110 @@ func (m *Manager) OvnNbStatus() *ObservedOvnNbState {
 // Internals
 // ------------------------------------------------------------------
 
+// subsystemOutcome is the stored half of SubsystemStatus. Kept unexported
+// so the wire shape and the bookkeeping can evolve independently.
+type subsystemOutcome struct {
+	failed     bool
+	message    string
+	observedAt time.Time
+}
+
+// step runs one reconcile step and records its outcome under label. It is
+// the only place a success is written, which keeps "record the outcome"
+// from being copy-pasted across every applier call site. The error is
+// returned unchanged so call sites keep their existing control flow
+// (`continue` on failure, and so on).
+func (m *Manager) step(label string, fn func() error) error {
+	if err := fn(); err != nil {
+		m.recordError(label, err)
+		return err
+	}
+	m.recordSuccess(label)
+	return nil
+}
+
+// recordError marks label as failing. The failure persists until that same
+// label succeeds — no other subsystem, and no end-of-pass sweep, clears it.
 func (m *Manager) recordError(label string, err error) {
 	m.OnError(label, err)
 	m.mu.Lock()
-	m.lastError = err
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	m.putOutcomeLocked(label, subsystemOutcome{failed: true, message: err.Error(), observedAt: time.Now()})
+}
+
+// recordSuccess marks label as having run and succeeded, clearing any
+// prior failure recorded under it.
+func (m *Manager) recordSuccess(label string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.putOutcomeLocked(label, subsystemOutcome{observedAt: time.Now()})
+}
+
+// forget drops label back to NOT MEASURED. Used when a subsystem does not
+// run this pass because its precondition is absent from the desired config
+// (a network that no longer carries a firewall, an FRR arm the other branch
+// now owns) — reporting a stale outcome for something the platform has
+// stopped asking for would be a lie in either direction.
+func (m *Manager) forget(label string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.subsystems, label)
+}
+
+func (m *Manager) putOutcomeLocked(label string, o subsystemOutcome) {
+	if m.subsystems == nil {
+		m.subsystems = make(map[string]subsystemOutcome)
+	}
+	m.subsystems[label] = o
+}
+
+// splitSubsystemLabel separates the subsystem name from the discriminator
+// the call site appended: "apply_firewall:net-abcd" → ("apply_firewall",
+// "net-abcd"), "apply_bridges[1]" → ("apply_bridges", "1"), "apply_vrfs" →
+// ("apply_vrfs", "").
+func splitSubsystemLabel(label string) (subsystem, scope string) {
+	if i := strings.IndexByte(label, ':'); i >= 0 {
+		return label[:i], label[i+1:]
+	}
+	if strings.HasSuffix(label, "]") {
+		if i := strings.IndexByte(label, '['); i >= 0 {
+			return label[:i], label[i+1 : len(label)-1]
+		}
+	}
+	return label, ""
+}
+
+// networkScopeSet collects every scope value that identifies a specific
+// network in the given config — its network id and its interface name,
+// which are the two discriminators the per-network call sites append.
+func networkScopeSet(cfg *DesiredConfig) map[string]struct{} {
+	out := make(map[string]struct{})
+	if cfg == nil {
+		return out
+	}
+	for _, n := range cfg.Networks {
+		out[n.NetworkID] = struct{}{}
+		if n.Interface.Name != "" {
+			out[n.Interface.Name] = struct{}{}
+		}
+	}
+	return out
+}
+
+// constellationScopeSet collects the handles the config currently asks the
+// host to trust — the discriminator trust_constellation: appends. Handles
+// come and go independently of networks, so they need their own reap set;
+// without one the map grows by an entry per handle ever advertised, and
+// each stale entry is misrouted onto every network as host-global.
+func constellationScopeSet(cfg *DesiredConfig) map[string]struct{} {
+	out := make(map[string]struct{})
+	if cfg == nil {
+		return out
+	}
+	for _, c := range cfg.Constellations {
+		out[c.Handle] = struct{}{}
+	}
+	return out
 }
 
 func (m *Manager) fetchDesiredConfig(ctx context.Context) (*DesiredConfig, error) {
@@ -576,9 +839,15 @@ func peerReportsFromActual(net DesiredNetworkConfig, actual *ActualInterfaceStat
 	return out
 }
 
-func errString(err error) string {
-	if err == nil {
-		return ""
+// countHealthyPeers counts the peers this pass observed inside the active
+// handshake window. Callers must only record the result for a network they
+// actually read — an unread network has no count, not a count of zero.
+func countHealthyPeers(reports []PeerStatusReport) int {
+	n := 0
+	for _, r := range reports {
+		if r.Status == "active" {
+			n++
+		}
 	}
-	return err.Error()
+	return n
 }
