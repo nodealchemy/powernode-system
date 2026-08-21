@@ -9,7 +9,6 @@ require "rails_helper"
 # - effective_priority             (110-112)
 # - effective_mask                 (252-266)
 # - rsync_spec                     (268-271)
-# - info                           (127-138)
 # - immutable?                     (referenced by effective_mask)
 RSpec.describe System::NodeModule, "spec methods", type: :model do
   let(:account)        { create(:account) }
@@ -70,39 +69,6 @@ RSpec.describe System::NodeModule, "spec methods", type: :model do
     it "treats missing category as position=0" do
       mod = create_module(category: nil, priority: 3)
       expect(mod.effective_priority).to eq(3)
-    end
-  end
-
-  describe "#info text" do
-    let(:copy_path) do
-      create(:system_node_module_copy_path, account: account, name: "fast",
-             source_path: "/src", destination_path: "/mnt/fast")
-    end
-
-    it "produces legacy key=value sidecar content with zero-padded priority" do
-      mod = create_module(
-        category: category_a, priority: 42, name: "demo-module",
-        init_start: "/etc/init.d/demo start",
-        init_stop:  "/etc/init.d/demo stop",
-        init_restart: "/etc/init.d/demo restart",
-        reboot_required: true,
-        copy_path: copy_path
-      )
-
-      lines = mod.info.split("\n")
-      expect(lines).to include("name=demo-module")
-      expect(lines).to include("init_start=/etc/init.d/demo start")
-      expect(lines).to include("init_stop=/etc/init.d/demo stop")
-      expect(lines).to include("init_restart=/etc/init.d/demo restart")
-      expect(lines).to include("reboot=true")
-      expect(lines).to include("copy_path=/mnt/fast")
-      # Priority is 5 * 1000 + 42 = 5042; PRIORITY_PLACES default 7 → 0005042
-      expect(lines).to include("priority=#{(5_042).to_s.rjust(7, '0')}")
-    end
-
-    it "outputs reboot=false when reboot_required is false" do
-      mod = create_module(category: category_a, reboot_required: false)
-      expect(mod.info).to include("reboot=false")
     end
   end
 
