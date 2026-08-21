@@ -483,6 +483,7 @@ module System
         errored_abandoned: 0,
         terminate_failed: 0,
         records_pruned: 0,
+        node_shells_pruned: 0,
         seed_reloads: seed_reload_count
       }
 
@@ -694,6 +695,7 @@ module System
       # holding the pool's row locks across a cascading destroy would
       # serialise the 60s tick behind it.
       counts[:records_pruned] = prune_dead_records!(pool: pool, now: now)
+      counts[:node_shells_pruned] = prune_orphaned_node_shells!(pool: pool, now: now)
 
       counts.values.sum.positive? &&
         Rails.logger.info("[InstancePoolService] recycled stale members in '#{pool.name}': #{counts}")
@@ -918,8 +920,7 @@ module System
     # certificates go with them — several FKs onto these tables are NO ACTION,
     # and a raw delete would either violate them or orphan rows.
     def prune_dead_records!(pool:, now:)
-      retention_days = pool.metadata.to_h["record_retention_days"].presence&.to_i ||
-                       DEAD_RECORD_RETENTION_DAYS
+      retention_days = record_retention_days(pool)
       return 0 if retention_days <= 0
 
       dead = pool.node_instances
@@ -929,14 +930,68 @@ module System
       pruned = 0
       dead.find_each do |member|
         node = member.node
-        member.destroy!
+
+        # A member whose terminate failed still carries cloud_instance_id, and
+        # that row is the ONLY pointer we hold to a VM that may still be
+        # running and billing. Nothing here can reconcile against the provider,
+        # so name the id in the journal before the row goes: the pointer then
+        # survives an operator audit even though the record does not.
+        Rails.logger.info(
+          "[InstancePoolService] pruning dead pool record " \
+          "(instance=#{member.id} pool='#{pool.name}' status=#{member.status} " \
+          "cloud_instance_id=#{member.cloud_instance_id.inspect}) — if the " \
+          "provider resource was never destroyed this id is the last record of it"
+        )
+
+        # Without this the destroy below was INERT: an enrolled member has a
+        # System::NodeInstancePeer (every builder announces one), and
+        # system_node_instance_peers.node_instance_id is a NO ACTION FK that
+        # NodeInstance declares no `dependent:` for — so destroy! raised
+        # InvalidForeignKey, the rescue logged "record prune failed", and the
+        # same doomed destroy was retried every 60s forever. See
+        # NodeInstance::CASCADE_DEPENDENTS, which classifies each blocker as
+        # nullify (optional FK, audit history kept) vs destroy (required FK).
+        # That list is NOT known to be exhaustive — it is narrower than
+        # SystemFleetTool::DESTROY_INSTANCE_FKS, and NO ACTION FKs exist that
+        # neither list covers — so a member holding one of those still fails
+        # here and still gets logged below. Reconciling the two lists is its
+        # own change; this one unsticks the blocker CI builders actually carry.
+        #
+        # This is destructive beyond the member row: the required-FK arm takes
+        # storage migrations/assignments/credentials and SDWAN peers with it,
+        # and the member's own `dependent: :destroy` tasks go too — for a CI
+        # builder that is its ci.module_build task history, unrecoverable. That
+        # is the accepted price of collecting a record already past its
+        # retention window; the selection above is what keeps it bounded.
+        #
+        # Both statements share ONE transaction, as
+        # cascade_destroy_dependents!'s own doc requires: it commits
+        # internally, so an un-wrapped destroy! failure would leave the
+        # member's peers and storage rows permanently destroyed while the
+        # member itself survived — and the rescue below would log a bare
+        # "record prune failed" that discloses none of it, every 60s forever.
+        cascade_summary = nil
+        ::ActiveRecord::Base.transaction do
+          cascade_summary = member.cascade_destroy_dependents!
+          member.destroy!
+        end
         pruned += 1
+
+        # The cascade's return value is the only record of WHICH dependent
+        # rows went with the member (and which provider volumes were merely
+        # detached, since those outlive the row and keep billing).
+        if cascade_summary && (cascade_summary[:nullified].any? || cascade_summary[:destroyed].any?)
+          Rails.logger.info(
+            "[InstancePoolService] pruned member cascade (instance=#{member.id} " \
+            "pool='#{pool.name}'): #{cascade_summary}"
+          )
+        end
 
         # The pool provisions a dedicated Node per member, so once its last
         # instance is gone the Node is an empty shell. Guarded on there being
         # no surviving instances so a shared or pre-provisioned Node is never
         # taken out from under a live one.
-        node.destroy! if node && node.node_instances.reload.empty?
+        destroy_pool_node_shell!(node) if node && node.node_instances.reload.empty?
       rescue StandardError => e
         Rails.logger.error(
           "[InstancePoolService] record prune failed " \
@@ -945,6 +1000,76 @@ module System
       end
 
       pruned
+    end
+
+    # Second retention phase: pool-provenance Node shells with no instances
+    # left at all.
+    #
+    # prune_dead_records! iterates pool.node_instances, so it can only ever
+    # reach a Node through a surviving member. A Node whose instances are all
+    # gone but whose own destroy! failed — system_node_modules.node_id is a
+    # NO ACTION FK, and Node's has_many :node_modules goes THROUGH
+    # node_module_assignments, a different column, so no `dependent:` covers it
+    # — becomes permanently invisible to the member loop and leaks with no path
+    # to collection. This is that path.
+    #
+    # Deliberately narrow: this pool's own account, pool provenance recorded in
+    # config by provision_warming_member!, zero instances, and past the same
+    # retention window. Provenance is matched with `@>` rather than `->>` so it
+    # uses the GIN jsonb_ops index on system_nodes.config — equivalent for a
+    # string value, but `->>` cannot use that index and this runs every 60s per
+    # pool. Both raw fragments qualify the table because `where.missing` LEFT
+    # JOINs system_node_instances, which has its own `config` and `updated_at`.
+    #
+    # The age guard is load-bearing, not decoration:
+    # provision_warming_member! creates the Node in step 1 and its instance in
+    # step 2, so a just-created Node is legitimately instance-less for the
+    # width of that gap.
+    def prune_orphaned_node_shells!(pool:, now:)
+      retention_days = record_retention_days(pool)
+      return 0 if retention_days <= 0
+
+      cutoff = now - retention_days.days
+      shells = ::System::Node
+               .where(account_id: pool.account_id)
+               .where("system_nodes.config @> ?", { instance_pool_id: pool.id }.to_json)
+               .where("system_nodes.updated_at < ?", cutoff)
+               .where.missing(:node_instances)
+
+      pruned = 0
+      shells.find_each do |node|
+        destroy_pool_node_shell!(node)
+        pruned += 1
+      rescue StandardError => e
+        Rails.logger.error(
+          "[InstancePoolService] node shell prune failed " \
+          "(node=#{node.id} pool='#{pool.name}'): #{e.class}: #{e.message}"
+        )
+      end
+
+      pruned
+    end
+
+    # Node-level analogue of NodeInstance#cascade_destroy_dependents!. Only one
+    # FK onto system_nodes is both NO ACTION and unhandled by a `dependent:`
+    # declaration: system_node_modules.node_id, whose belongs_to is
+    # `optional: true` — so it nullifies, exactly as the optional arm of
+    # CASCADE_DEPENDENTS does, keeping the module row and its history.
+    # (system_node_module_assignments and system_node_instances are covered by
+    # dependent: :destroy; system_bootstrap_tokens.node_id is ON DELETE CASCADE.)
+    def destroy_pool_node_shell!(node)
+      ::ActiveRecord::Base.transaction do
+        ::System::NodeModule.where(node_id: node.id)
+                            .update_all(node_id: nil, updated_at: Time.current)
+        node.destroy!
+      end
+    end
+
+    # Per-pool retention knob, shared by both retention phases so they can
+    # never drift apart. Operator policy — deliberately not changed here.
+    def record_retention_days(pool)
+      pool.metadata.to_h["record_retention_days"].presence&.to_i ||
+        DEAD_RECORD_RETENTION_DAYS
     end
 
     # Best-effort provider resolution for reload_pending_seeds! — a member
