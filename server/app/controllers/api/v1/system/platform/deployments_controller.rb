@@ -203,7 +203,15 @@ module Api
 
           # Counts active NodeInstance rows whose Node references the
           # deployment's template. "active" = pending|provisioning|running|stopped
-          # (anything not terminated/errored). The Node model overrides
+          # — NOT "anything not terminated/errored", as this comment used to
+          # claim: the scope also drops starting/stopping/rebooting. That is
+          # narrower than System::NodeInstance::LIVE_REPLICA_STATUSES, which
+          # mission capacity metrics use, and the two are deliberately
+          # different. This panel reports what an operator can act on right
+          # now and pairs the number with a per-status breakdown (`by_status`
+          # below), so a transitional row is shown rather than hidden; a
+          # capacity metric has no such breakdown and must not read a routine
+          # reboot as lost capacity. The Node model overrides
           # table_name to "system_nodes" so the WHERE clause references
           # the actual table name, not the association name.
           def compute_actual_replicas(deployment)
