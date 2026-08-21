@@ -1018,7 +1018,7 @@ RSpec.describe System::Fleet::DecisionEngine do
     # kind, so every unresolved `capability:<tag>` requirement terminated in
     # the no-binding branch as decision :skipped. The binding routes the gap
     # to the operator and deliberately stops there: closing a gap means
-    # AUTHORING a module, which must pass the human R1/R2/R3 reuse gate
+    # AUTHORING a module, which must pass the R1/R2/R3 reuse gate
     # (docs/runbooks/module-authoring.md Phase 0).
     context "with a system.capability_gap signal (IMP-4019664a524b)" do
       let(:consumer) { create(:system_node_module, account: account, name: "gap-consumer-#{SecureRandom.hex(3)}") }

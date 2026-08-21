@@ -46,6 +46,32 @@ unavailable embedding provider fails loudly rather than returning noise.
 - **R3 — An opt-in heavy payload a node type must be able to EXCLUDE**
   (`dev-cell-browser`, `dev-cell-docker`).
 
+**This gate is machine-enforced over MCP (IMP-a67be4fe9041, 2026-08-21.)** It used to be
+prose only, which meant an agent authoring a module read past it. `system_create_module`
+(and `system_update_module` on the bare-create-then-update path) now REFUSE a
+`manifest_yaml` that would add a new name to the build planner's buildable set unless the
+call carries a `reuse_check`:
+
+```
+reuse_check: {
+  considered: [ { module: "traefik", rejected_because: "terminates TLS, does not scrape" } ],
+  justification: "R2",
+  justification_detail: "vendored upstream binary with its own CVE cadence"
+}
+```
+
+`justification` must be `R1`, `R2` or `R3`; `justification_detail` must be non-blank; every
+`considered[].module` is looked up in the same buildable set that defines novelty, so an
+invented candidate refuses the call by name. The accepted declaration is persisted to
+`node_module.config["reuse_check"]` with a `checked_at` stamp. A bare-field create (no
+manifest) and a re-import onto an already-buildable module (a CVE version bump) are not
+gated — neither is authoring.
+
+The gate covers the **MCP authoring surface only**. The REST `import_manifest` endpoint,
+the CI publish path, and `rails db:seed` call `System::ManifestImportService` directly and
+are deliberately ungated: those are the human/committed paths, and Phase 0 above is the
+gate for them. This is a sprawl gate, not a security boundary.
+
 **Otherwise, bake it into the owning node-type module's own build arm and
 file_spec.** Four of the five candidates in that review failed all three prongs
 and stayed in `dev-cell`; `runtime-go` passed on R2 alone (Go ships security

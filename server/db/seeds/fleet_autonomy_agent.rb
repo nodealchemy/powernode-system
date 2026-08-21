@@ -268,7 +268,7 @@ fleet_policies = {
   # IMP-4019664a524b — CapabilityGapSensor (in FleetAutonomyService::SENSORS,
   # so it gates as THIS agent, same reason as the three above). require_approval
   # is the disposition, not a placeholder: the gap's only remediation is
-  # AUTHORING a module, which must pass the human R1/R2/R3 reuse gate
+  # AUTHORING a module, which must pass the R1/R2/R3 reuse gate
   # (docs/runbooks/module-authoring.md Phase 0), so the operator queue IS the
   # destination. It also keeps #decide at :pending, which RemediationValidator
   # never snapshots — a gap that stands until someone ships a module would

@@ -353,6 +353,21 @@ module System
       )
     end
 
+    # IMP-a67be4fe9041 — the buildable set, asked from OUTSIDE the planner.
+    #
+    # Ai::Tools::SystemFleetTool's reuse gate asks the same question from the
+    # other side: a manifest import that would ADD a name to this set is
+    # authoring a NEW module and must carry a declared reuse check. Exposed as
+    # one definition with two readers rather than a second spelling of "does
+    # this module exist" — a second spelling is how the two drift apart.
+    def self.buildable_module_names(account)
+      ::System::NodeModule
+        .where(account: account)
+        .where.not(manifest_yaml: [ nil, "" ])
+        .pluck(:name)
+        .to_set
+    end
+
     private
 
     # THE SILENT-ZERO GUARD. #guard_against_empty_plan! below only fires once at
@@ -509,11 +524,7 @@ module System
     # imported (its build inputs live under modules/<slug>/). Anything else is
     # reported via #excluded_entries rather than silently dropped.
     def known_module_names(account)
-      ::System::NodeModule
-        .where(account: account)
-        .where.not(manifest_yaml: [ nil, "" ])
-        .pluck(:name)
-        .to_set
+      self.class.buildable_module_names(account)
     end
 
     def all_module_names(account)

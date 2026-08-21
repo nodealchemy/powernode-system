@@ -441,7 +441,7 @@ module System
         # reached anyone.
         #
         # ROUTE, DON'T REMEDIATE. Closing a gap means AUTHORING a module,
-        # which must pass the human R1/R2/R3 reuse gate
+        # which must pass the R1/R2/R3 reuse gate
         # (docs/runbooks/module-authoring.md Phase 0) — automation that made
         # module creation cheap would make module SPRAWL cheap. So: no skill
         # (nothing to plan; the payload already names the capability, the
