@@ -189,10 +189,15 @@ module Sdwan
     # guard is `include?(":")`, which "[fd00::1]" satisfies), and that is the
     # form an operator pastes out of a WireGuard config — so re-bracketing it
     # blindly yields "[[fd00::1]]:51820".
+    #
+    # IMP-9537a74e50fa moved the body to Sdwan::HostPort — five other sites had
+    # their own copies and three had drifted. This name stays published (its
+    # callers are #endpoint_display below plus peers_controller, sdwan_tool,
+    # WgConfigRenderer and both topology strategies) and delegates; the
+    # rationale above is why the shared
+    # body is shaped the way it is.
     def self.format_host_port(host, port)
-      host = host.to_s
-      host = "[#{host}]" if host.include?(":") && !host.start_with?("[")
-      "#{host}:#{port}"
+      ::Sdwan::HostPort.join(host, port)
     end
 
     # "host:port" for the primary endpoint (operator-facing label rung).

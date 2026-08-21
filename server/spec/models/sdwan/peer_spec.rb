@@ -60,6 +60,19 @@ RSpec.describe Sdwan::Peer do
     end
   end
 
+  describe ".format_host_port" do
+    # Published class method with live callers outside this model
+    # (peers_controller, sdwan_tool, WgConfigRenderer, both topology
+    # strategies). IMP-9537a74e50fa moved the body to Sdwan::HostPort; this
+    # pins the delegation so the published name keeps its exact semantics.
+    it "delegates to the one shared implementation" do
+      expect(described_class.format_host_port("fd00::1", 51_820)).to eq("[fd00::1]:51820")
+      expect(described_class.format_host_port("[fd00::1]", 51_820)).to eq("[fd00::1]:51820")
+      expect(described_class.format_host_port("203.0.113.7", 51_820)).to eq("203.0.113.7:51820")
+      expect(described_class.format_host_port("edge.example.net", 51_820)).to eq("edge.example.net:51820")
+    end
+  end
+
   describe "#endpoint_display" do
     it "brackets an IPv6 literal so the port stays unambiguous" do
       peer = create(:sdwan_peer, :hub)

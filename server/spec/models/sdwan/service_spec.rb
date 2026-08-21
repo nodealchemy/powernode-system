@@ -140,5 +140,13 @@ RSpec.describe Sdwan::Service, type: :model do
     it "brackets IPv6 backend hosts in the URL authority" do
       expect(build_service(backend_host: "2001:db8::5").backend_url).to eq("https://[2001:db8::5]:3000")
     end
+
+    it "does not double-bracket an already-bracketed backend host" do
+      # backend_host is a free-form operator string (it may even hold a
+      # hostname — see HEALTH_STATES' "unobservable"), so a pasted
+      # "[2001:db8::5]" reaches the URL builder. Guard shared with
+      # Sdwan::HostPort (IMP-9537a74e50fa).
+      expect(build_service(backend_host: "[2001:db8::5]").backend_url).to eq("https://[2001:db8::5]:3000")
+    end
   end
 end

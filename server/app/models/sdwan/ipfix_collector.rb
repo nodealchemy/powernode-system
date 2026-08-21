@@ -68,9 +68,17 @@ module Sdwan
     # Returns the wire-format target string the agent passes to
     # ovs-vsctl. IPv6 addresses are bracketed per OVS convention so
     # the colon in the address doesn't collide with the port separator.
+    #
+    # `host` is validated for presence ONLY — no format check — and both
+    # write paths (the system_sdwan_create_ipfix_collector MCP action and
+    # SdwanIpfixCollectorComposeExecutor) store the operator's string
+    # verbatim, so an already-bracketed "[fd00::1]" is storable. That is
+    # why this goes through the shared Sdwan::HostPort rather than a local
+    # bracket: the hand-rolled copy this replaced re-bracketed such a host
+    # into "[[fd00::1]]:4739", which ovs-vsctl will not parse
+    # (IMP-9537a74e50fa).
     def target_endpoint
-      bracketed = host.include?(":") ? "[#{host}]" : host
-      "#{bracketed}:#{port}"
+      ::Sdwan::HostPort.join(host, port)
     end
   end
 end
