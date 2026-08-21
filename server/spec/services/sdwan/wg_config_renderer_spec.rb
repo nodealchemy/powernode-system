@@ -113,9 +113,124 @@ RSpec.describe Sdwan::WgConfigRenderer do
       hub = create(:sdwan_peer, :hub, account: network.account, network: network)
       add_active_key!(hub).revoke!(reason: "test rotation")
 
-      _preamble, sections = peer_sections(described_class.render(device))
+      preamble, sections = peer_sections(described_class.render(device))
 
       expect(sections).to be_empty
+      # IMP-3b49cd166b8c: skipping a keyless hub must not be SILENT — the
+      # class header promises "an explicit comment so operators understand
+      # why connection attempts will fail." Named by hub_label, matching the
+      # [Peer] section comment wording used elsewhere in this file.
+      expect(preamble).to include("WARNING")
+      expect(preamble).to include(hub.node_instance.name)
+    end
+  end
+
+  # IMP-3b49cd166b8c: a hub can pass the @hubs reachability filter and still
+  # have no active key (revoked mid-rotation, or a genesis key not yet
+  # generated). The renderer used to `next unless key` in the render loop
+  # with zero explanation — a network whose hubs are all keyless rendered a
+  # 200 OK config with an [Interface] section and NO [Peer] sections, and no
+  # comment saying why. Operator direction: a keyless hub must be NAMED in a
+  # preamble warning, worded differently depending on whether OTHER hubs
+  # still render a usable [Peer] section (degraded redundancy) or not (total
+  # failure — nothing to connect to).
+  describe "keyless-hub preamble warning" do
+    def peer_sections(text)
+      preamble, *sections = text.split("[Peer]")
+      [ preamble, sections ]
+    end
+
+    it "names the hub and states total failure when every hub is keyless" do
+      hub = create(:sdwan_peer, :hub, account: network.account, network: network)
+      # No add_active_key! at all — genesis key never generated.
+
+      preamble, sections = peer_sections(described_class.render(device))
+
+      expect(sections).to be_empty
+      expect(preamble).to include("WARNING")
+      expect(preamble).to include(hub.node_instance.name)
+      # Total-failure wording: nothing usable remains.
+      expect(preamble).to match(/cannot connect/i)
+    end
+
+    it "names the keyless hub as degraded redundancy when another hub is keyed" do
+      keyless_hub = create(:sdwan_peer, :hub, account: network.account, network: network)
+      keyed_hub = create(:sdwan_peer, :hub, account: network.account, network: network,
+                                             endpoint_host_v6: "fd00:abcd:1::2")
+      add_active_key!(keyed_hub)
+      # keyless_hub gets no key at all.
+
+      preamble, sections = peer_sections(described_class.render(device))
+
+      # The keyed hub still renders its section — this config IS usable.
+      expect(sections.length).to eq(1)
+      expect(preamble).to include("WARNING")
+      expect(preamble).to include(keyless_hub.node_instance.name)
+      expect(preamble).not_to include(keyed_hub.node_instance.name)
+      # Degraded-redundancy wording, distinct from the total-failure case:
+      # the config is NOT described as unable to connect.
+      expect(preamble).to match(/degraded/i)
+      expect(preamble).not_to match(/cannot connect/i)
+    end
+
+    it "adds no keyless-hub warning to a fully-keyed network's preamble" do
+      hub_a = create(:sdwan_peer, :hub, account: network.account, network: network)
+      hub_b = create(:sdwan_peer, :hub, account: network.account, network: network,
+                                        endpoint_host_v6: "fd00:abcd:1::2")
+      add_active_key!(hub_a)
+      add_active_key!(hub_b)
+
+      preamble, sections = peer_sections(described_class.render(device))
+
+      expect(sections.length).to eq(2)
+      expect(preamble).not_to include("WARNING")
+    end
+
+    # Reviewer-flagged gap: every example above uses exactly ONE keyless hub,
+    # so the plural branch of the wording (hub/hubs, has/have, was/were,
+    # it is/they are) was never exercised — a swapped singular/plural
+    # ternary would have passed all of them. These two cover ≥2 keyless hubs
+    # for both the total-failure and degraded-redundancy wordings.
+    it "names both hubs and uses plural wording when every hub is keyless (>1 hub)" do
+      hub_a = create(:sdwan_peer, :hub, account: network.account, network: network)
+      hub_b = create(:sdwan_peer, :hub, account: network.account, network: network,
+                                        endpoint_host_v6: "fd00:abcd:1::2")
+      # Neither hub gets a key.
+
+      preamble, sections = peer_sections(described_class.render(device))
+
+      expect(sections).to be_empty
+      expect(preamble).to include(hub_a.node_instance.name)
+      expect(preamble).to include(hub_b.node_instance.name)
+      # Total-failure wording doesn't inflect on hub count ("every ... hub"),
+      # so just confirm it's still there and unbroken.
+      expect(preamble).to match(/cannot connect/i)
+    end
+
+    it "uses plural wording (hubs/have/were/they are) for >1 keyless hub in the degraded case" do
+      keyless_a = create(:sdwan_peer, :hub, account: network.account, network: network)
+      keyless_b = create(:sdwan_peer, :hub, account: network.account, network: network,
+                                            endpoint_host_v6: "fd00:abcd:1::2")
+      keyed_hub = create(:sdwan_peer, :hub, account: network.account, network: network,
+                                            endpoint_host_v6: "fd00:abcd:1::3")
+      add_active_key!(keyed_hub)
+      # keyless_a and keyless_b get no key.
+
+      preamble, sections = peer_sections(described_class.render(device))
+
+      expect(sections.length).to eq(1)
+      expect(preamble).to include(keyless_a.node_instance.name)
+      expect(preamble).to include(keyless_b.node_instance.name)
+      expect(preamble).not_to include(keyed_hub.node_instance.name)
+      # The plural forms — a swapped/unswapped ternary bug would break these
+      # exact substrings (singular "hub ... has ... was ... it is" would not
+      # match).
+      expect(preamble).to include("hubs ")
+      expect(preamble).to include(" have no active key")
+      expect(preamble).to include("were excluded")
+      expect(preamble).to include("until they are re-keyed")
+      expect(preamble).to match(/degraded/i)
+      expect(preamble).not_to match(/cannot connect/i)
     end
   end
 end

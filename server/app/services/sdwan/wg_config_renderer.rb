@@ -54,8 +54,46 @@ module Sdwan
         out.puts ""
       end
 
-      @hubs.each do |hub|
-        key = hub.active_key
+      # IMP-3b49cd166b8c: a hub can pass the @hubs filter (publicly_reachable +
+      # primary_endpoint) and still have no active key — revoked mid-rotation,
+      # or a genesis key not yet generated. The render loop below has to skip
+      # such a hub (no PublicKey to emit), but skipping it silently produced a
+      # config with zero [Peer] sections and no explanation. Compute each hub's
+      # active_key ONCE here (memoized per hub) and reuse it in the loop below —
+      # calling active_key again would re-walk the preloaded `keys` collection
+      # needlessly, and Peer#active_key's own comment is explicit that it uses
+      # keys.find (not keys.where) specifically so includes(:keys) is not
+      # defeated by a second call site.
+      hub_keys = @hubs.map { |hub| [ hub, hub.active_key ] }
+      keyless_hubs = hub_keys.select { |(_hub, key)| key.nil? }.map(&:first)
+      keyed_present = hub_keys.any? { |(_hub, key)| key }
+
+      if keyless_hubs.any?
+        names = keyless_hubs.map { |hub| hub_label(hub) }.join(", ")
+        plural = keyless_hubs.size > 1
+        if keyed_present
+          # Degraded-redundancy notice: at least one hub still renders a usable
+          # [Peer] section below, so the config connects — just with fewer
+          # paths than the network's hub count implies.
+          out.puts "# WARNING: #{plural ? 'hubs' : 'hub'} #{names} #{plural ? 'have' : 'has'} no active key"
+          out.puts "# and #{plural ? 'were' : 'was'} excluded from this config. Other hub(s) below are"
+          out.puts "# still usable, but redundancy is degraded until #{plural ? 'they are' : 'it is'} re-keyed."
+          out.puts ""
+        else
+          # Total-failure notice: every hub that made it past the reachability
+          # filter is keyless, so the loop below emits zero peer sections —
+          # this config genuinely cannot connect. (Wording deliberately avoids
+          # the literal "[Peer]" token — that string is also the section
+          # delimiter callers split on, and using it here would fabricate a
+          # phantom section out of preamble text.)
+          out.puts "# WARNING: every publicly-reachable hub (#{names}) has no active key."
+          out.puts "# This config has no usable peer and cannot connect until at least"
+          out.puts "# one hub is re-keyed."
+          out.puts ""
+        end
+      end
+
+      hub_keys.each do |hub, key|
         next unless key
 
         primary = hub.primary_endpoint
