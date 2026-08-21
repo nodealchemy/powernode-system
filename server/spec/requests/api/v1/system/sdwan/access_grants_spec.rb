@@ -231,14 +231,91 @@ RSpec.describe "Api::V1::System::Sdwan::AccessGrants", type: :request do
     end
   end
 
+  # IMP-800b25c1cc45 — this verb had ONE example, and it only asserted the
+  # permission check in front of the gate. Nothing exercised either branch of
+  # the gate itself, on the arm that cuts off a user's VPN.
   describe "POST /api/v1/system/sdwan/networks/:network_id/access_grants/:id/revoke" do
-    it "requires sdwan.user_devices.manage (the approval-gated revoke is behind the permission)" do
-      grant = create(:sdwan_access_grant, account: account, network: network)
+    let(:grant)   { create(:sdwan_access_grant, account: account, network: network) }
+    let!(:device) { create(:sdwan_user_device, access_grant: grant, label: "work-laptop") }
 
-      post "/api/v1/system/sdwan/networks/#{network.id}/access_grants/#{grant.id}/revoke",
-           headers: auth_headers_for(stranger), as: :json
+    def revoke_path = "/api/v1/system/sdwan/networks/#{network.id}/access_grants/#{grant.id}/revoke"
+
+    def post_revoke(user: manager, **body)
+      post revoke_path, params: body, headers: auth_headers_for(user), as: :json
+    end
+
+    it "requires sdwan.user_devices.manage (the approval-gated revoke is behind the permission)" do
+      post_revoke(user: stranger)
 
       expect(response).to have_http_status(:forbidden)
+      expect(grant.reload.status).to eq("active")
+    end
+
+    it "defers the revoke for approval instead of cutting access inline" do
+      post_revoke(reason: "offboarded")
+
+      expect(response).to have_http_status(:accepted)
+      expect(grant.reload.status).to eq("active"),
+                                     "VPN access was revoked without an approval gate"
+      expect(device.reload.revoked_at).to be_nil,
+                                          "the device was revoked without an approval gate"
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred).to be_present, "revoke did not route through the autonomy gate"
+      expect(deferred.action_category).to eq("sdwan.access_grant_revoke")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::RevokeAccessGrant")
+      expect(deferred.params["grant_id"]).to eq(grant.id)
+      expect(deferred.params["reason"]).to eq("offboarded")
+    end
+
+    # gate! never calls on_proceed on :pending, so the deferred executor is the
+    # only thing that can carry this out — and AccessGrant#revoke! cascades to
+    # every device, which is what makes the revoke effective rather than
+    # cosmetic. Both halves are asserted; a grant reading "revoked" above
+    # devices that still work is the exact state the ungated :status write on
+    # this controller was closed to prevent.
+    it "revokes the grant and cascades to its devices when the deferred op is approved" do
+      post_revoke(reason: "offboarded")
+      expect(response).to have_http_status(:accepted)
+
+      approve_latest_deferred!
+
+      grant.reload
+      expect(grant.status).to eq("revoked"), "approved revoke left the grant active"
+      expect(grant.revocation_reason).to eq("offboarded")
+      expect(device.reload.revoked_at).to be_present, "approved revoke left the device live"
+    end
+
+    it "revokes inline and renders the grant when the policy auto-approves" do
+      auto_approve_policy!
+
+      post_revoke(reason: "offboarded")
+
+      expect(response).to have_http_status(:ok)
+      expect(response.parsed_body.dig("data", "revoked")).to be(true)
+      expect(response.parsed_body.dig("data", "access_grant", "status")).to eq("revoked")
+      expect(grant.reload.status).to eq("revoked"), "answered revoked: true over an active grant"
+      expect(device.reload.revoked_at).to be_present
+      # revoked-with-the-row is also what an UNGATED revoke would answer, so
+      # without this the example cannot tell gated from ungated.
+      expect(Ai::DeferredOperation.last&.executor_class).to eq("Sdwan::Executors::RevokeAccessGrant"),
+                                                            "auto-approved revoke bypassed the gate entirely"
+    end
+
+    # AutonomyGate opens the DeferredOperation BEFORE it branches on policy, so
+    # "no row was opened" proves the gate was never reached.
+    it "404s for a grant on a network in another account and opens no gate row" do
+      other = create(:account)
+      foreign = create(:sdwan_access_grant, account: other,
+                                            network: create(:sdwan_network, account: other))
+
+      expect {
+        post "/api/v1/system/sdwan/networks/#{network.id}/access_grants/#{foreign.id}/revoke",
+             headers: auth_headers_for(manager), as: :json
+        expect(response).to have_http_status(:not_found)
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(foreign.reload.status).to eq("active")
     end
   end
 
