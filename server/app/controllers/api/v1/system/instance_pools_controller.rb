@@ -41,26 +41,38 @@ module Api
         # POST /api/v1/system/instance_pools
         # Pool create is gated — committing capacity is operator-initiated and
         # high-blast (instances begin pre-provisioning to target size).
+        #
+        # The candidate is never saved; System::Executors::InstancePool::CreatePool
+        # stays the sole authority over the write. gate_create! validates it
+        # BEFORE the gate (sequence + rationale: Ai::GatedActions#gate_create!),
+        # so an unsaveable payload keeps its field-level 422 rather than being
+        # parked as an approval that can only ever fail.
+        #
+        # IMP-785d60f5ec3e — what this replaces answered the SAME payload two
+        # different ways depending on something the caller cannot see: 202 on an
+        # account whose policy parks (the gate validated nothing, so the create!
+        # failed later at approval time) and 422 on one whose policy proceeds.
+        # The `rescue ActiveRecord::RecordInvalid` that used to sit here went
+        # with it, and was already dead either way — Ai::AutonomyGate#evaluate
+        # rescues StandardError and returns :blocked, so the executor's
+        # RecordInvalid never reached this frame. The 422 it appeared to produce
+        # actually came from gate!'s :blocked branch as a bare
+        # "Gate evaluation failed", carrying no details.errors.
         def create
           authorize_write!
           attrs = create_params.to_h
-          gate!(
+
+          gate_create!(
+            candidate: ::System::InstancePool.new(attrs.merge(account_id: current_account.id)),
+            scope: ::System::InstancePool.for_account(current_account),
+            result_key: :pool_id,
+            response_key: :pool,
+            serializer: ->(p) { p.to_summary },
             action_category: "system.instance_pool_create",
             executor_class: "System::Executors::InstancePool::CreatePool",
             params: { attributes: attrs },
-            description: "Create instance pool '#{attrs['name']}'",
-            on_proceed: ->(result) {
-              pool_id = result.result&.dig(:data, :pool_id)
-              pool = ::System::InstancePool.find_by(id: pool_id)
-              if pool
-                render_success({ pool: pool.to_summary }, status: :created)
-              else
-                render_error("Pool created but row not found", status: :internal_server_error)
-              end
-            }
+            description: "Create instance pool '#{attrs['name']}'"
           )
-        rescue ActiveRecord::RecordInvalid => e
-          render_error("validation failed: #{e.message}", :unprocessable_content)
         end
 
         # PATCH /api/v1/system/instance_pools/:id

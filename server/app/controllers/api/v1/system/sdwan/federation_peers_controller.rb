@@ -42,24 +42,47 @@ module Api
 
           # POST creates a "proposed" row. Federation peering is sensitive —
           # always gated through Ai::AutonomyGate (default require_approval).
+          #
+          # The candidate is never saved — Sdwan::Executors::ProposeFederationPeer
+          # stays the sole authority over the write. gate_create! validates it
+          # BEFORE the gate (the sequence, and why it is in that order, lives
+          # once in Ai::GatedActions#gate_create!), so an unsaveable payload
+          # keeps its field-level 422 and opens no audit row for an operation
+          # that could never run.
+          #
+          # IMP-785d60f5ec3e — this used to call gate! with raw params and no
+          # candidate, which made the ANSWER track the account's intervention
+          # policy rather than the request: the same invalid propose was PARKED
+          # at 202 where the policy defers (failing later in front of an
+          # approver who could not see it was doomed when submitted) and 422
+          # where the policy proceeds — the latter only because
+          # Ai::AutonomyGate#evaluate rescues the executor's RecordInvalid into
+          # a bare ":blocked / Gate evaluation failed" with no details.errors.
+          #
+          # The control flags are stripped through the executor's OWN constant
+          # rather than trusted to stay absent from peer_params: they steer
+          # token minting and reach no column, so adding one to the permit list
+          # would raise UnknownAttributeError building the candidate here while
+          # the executor went on quietly dropping it.
           def create
             require_permission("system.sdwan.federation.manage")
             attrs = peer_params.to_h
+            candidate_attrs = attrs.except(*::Sdwan::Executors::ProposeFederationPeer::CONTROL_FLAG_KEYS)
 
-            gate!(
+            gate_create!(
+              # status: mirrors what the executor merges, so the candidate is
+              # validated as the row that would actually be written.
+              candidate: ::System::FederationPeer.new(
+                candidate_attrs.merge(account_id: @account.id, status: "proposed")
+              ),
+              scope: ::System::FederationPeer.where(account_id: @account.id),
+              result_key: :federation_peer_id,
+              response_key: :federation_peer,
+              serializer: ->(p) { serialize_peer_full(p) },
               action_category: ::Sdwan::Executors::ProposeFederationPeer::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::ProposeFederationPeer",
               params: { attributes: attrs },
-              description: "Propose federation with #{attrs[:remote_instance_url]}",
-              on_proceed: ->(result) {
-                peer_id = result.result&.dig(:data, :federation_peer_id)
-                peer = ::System::FederationPeer.find(peer_id) if peer_id
-                if peer
-                  render_success({ federation_peer: serialize_peer_full(peer) }, status: :created)
-                else
-                  render_error("Federation peer not found after create", status: :internal_server_error)
-                end
-              }
+              description: "Propose federation with #{attrs[:remote_instance_url]}"
             )
           end
 
