@@ -13,6 +13,36 @@ module Sdwan
     self.table_name = "system_sdwan_peers"
 
     STATUSES = %w[pending active degraded disconnected].freeze
+
+    # IMP-4ed94eef2971 — the ONE caller-writable field set for a peer UPDATE,
+    # read by both surfaces that gate sdwan.peer_update: PeersController#
+    # peer_update_params and Ai::Tools::SdwanTool#update_peer. They carried two
+    # literal lists and the MCP one was seven fields short, so an agent could
+    # not remediate an endpoint or correct a hub election at all.
+    #
+    # Split by SHAPE because strong parameters needs the shape to permit a
+    # non-scalar: an array-declared key drops a non-array and a hash-declared
+    # key drops a non-hash, which is what keeps a mis-shaped value out of a
+    # `null: false` column on both surfaces. Parity is pinned end-to-end in
+    # spec/requests/api/v1/system/sdwan/peer_update_surface_parity_spec.rb —
+    # the constant makes the two lists identical by construction, the spec
+    # proves each field actually REACHES the executor from both arms.
+    #
+    # Deliberately NOT the create set: node_instance_id is create-only
+    # (CreatePeer::PERMITTED_ATTRIBUTES), and reparenting a live peer is a
+    # different action from editing one.
+    UPDATE_SCALAR_ATTRIBUTES = %i[
+      publicly_reachable
+      endpoint_host
+      endpoint_host_v6
+      endpoint_host_v4
+      endpoint_port
+      listen_port
+      bgp_route_reflector_client
+    ].freeze
+    UPDATE_ARRAY_ATTRIBUTES = %i[lan_subnets tags].freeze
+    UPDATE_HASH_ATTRIBUTES  = %i[capabilities].freeze
+    UPDATE_ATTRIBUTES = (UPDATE_SCALAR_ATTRIBUTES + UPDATE_ARRAY_ATTRIBUTES + UPDATE_HASH_ATTRIBUTES).freeze
     HEALTHY_HANDSHAKE_WINDOW = 3.minutes
     DEGRADED_HANDSHAKE_WINDOW = 5.minutes
 
@@ -52,6 +82,16 @@ module Sdwan
     validates :assigned_address, presence: true, uniqueness: { scope: :account_id }
     validates :status, inclusion: { in: STATUSES }
     validates :listen_port, numericality: { only_integer: true, greater_than: 0, less_than_or_equal_to: 65_535 }
+    # IMP-4ed94eef2971 — both columns are `null: false` with a `false` default,
+    # and both are caller-writable on the two gated update surfaces. Nothing
+    # refused an explicit nil, so a caller could park an approval whose only
+    # possible outcome was a NOT NULL violation inside the executor, at
+    # approval time, in front of an operator who could not see it was doomed
+    # when it was submitted (the invariant IMP-785d60f5ec3e established). The
+    # validation is on the MODEL rather than in either permit list so both
+    # surfaces refuse it the same way, before the gate.
+    validates :publicly_reachable, inclusion: { in: [ true, false ] }
+    validates :bgp_route_reflector_client, inclusion: { in: [ true, false ] }
     validates :endpoint_port, numericality: { only_integer: true, greater_than: 0, less_than_or_equal_to: 65_535 },
                               allow_nil: true
     # Slice 9a — every entry in lan_subnets must be a valid CIDR (v4 or v6).

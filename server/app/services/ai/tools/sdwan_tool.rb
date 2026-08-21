@@ -78,6 +78,7 @@ module Ai
         "system_sdwan_list_peers"      => "system.sdwan.peers.read",
         "system_sdwan_get_peer"        => "system.sdwan.peers.read",
         "system_sdwan_attach_peer"     => "system.sdwan.peers.manage",
+        "system_sdwan_update_peer"     => "system.sdwan.peers.manage",
         "system_sdwan_detach_peer"     => "system.sdwan.peers.manage",
         "system_sdwan_get_topology"    => "system.sdwan.peers.read",
         # Slice 2: firewall
@@ -248,6 +249,17 @@ module Ai
               endpoint_host_v4: { type: "string", required: false, description: "IPv4 literal or hostname (slice 7a). Used as fallback if v6 dial fails." },
               endpoint_port: { type: "integer", required: false, description: "UDP port other peers dial this hub on" },
               listen_port: { type: "integer", required: false, description: "WireGuard listen port for this peer (default 51820)" }
+            }
+          },
+          "system_sdwan_update_peer" => {
+            description: "Update an existing peer's endpoint, reachability, routing or labels — the same field set PATCH /sdwan/networks/:id/peers/:id accepts. Routed through the autonomy gate as sdwan.peer_update, which is seeded notify_and_proceed: the change applies immediately and notifies, and returns pending: true with a deferred_operation_id only where an operator has tiered the category up to require_approval. NOTE: `publicly_reachable` is the HUB-ELECTION flag — a peer carrying it becomes a hub other peers dial, whose compiled view carries their user devices, and which acts as a BGP route reflector. Setting it on an already-enrolled peer is a topology change, not a label.",
+            parameters: {
+              peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer to update" },
+              # Field list derived from the one writable set
+              # (Sdwan::Peer::UPDATE_ATTRIBUTES) so the advertised schema, the
+              # refusal message, this arm and the REST twin cannot disagree
+              # about what is accepted.
+              options: { type: "object", required: true, description: "Hash of fields to update: #{peer_update_option_names.join(', ')}. lan_subnets/tags are arrays (empty array clears); capabilities is an object. Omitted fields are left unchanged." }
             }
           },
           "system_sdwan_detach_peer" => {
@@ -805,6 +817,7 @@ module Ai
         when "system_sdwan_list_peers"     then list_peers(params)
         when "system_sdwan_get_peer"       then get_peer(params)
         when "system_sdwan_attach_peer"    then attach_peer(params)
+        when "system_sdwan_update_peer"    then update_peer(params)
         when "system_sdwan_detach_peer"    then detach_peer(params)
         when "system_sdwan_get_topology"   then get_topology(params)
         # Slice 2 firewall actions
@@ -1938,6 +1951,116 @@ module Ai
         executor = build_skill_executor(executor_class)
         result = executor.execute(**inputs.compact)
         result[:success] ? success_result(result[:data]) : error_result(result[:error])
+      end
+
+      # IMP-4ed94eef2971 — the general peer update, mirroring the REST twin
+      # (PeersController#update) field for field through the ONE writable list
+      # on Sdwan::Peer. Until this landed the MCP surface could set only
+      # lan_subnets and tags, so an agent remediating a wrong endpoint — or
+      # correcting a peer's hub election — had no MCP path at all while the
+      # operator HTTP surface gated the whole set.
+      #
+      # A THIN ARM, not a new executor: Sdwan::Executors::UpdatePeer already
+      # takes an attributes hash and is already the sole writer for this
+      # category, so this adds a surface, not a mechanism. The two
+      # single-field setters below STAY: update_peer_lan_subnets gates on
+      # system.sdwan.routing.manage and answers a routing-shaped payload
+      # (advertisement_count), set_peer_tags answers a label-shaped one, and
+      # both are a published contract existing agents call. The permission
+      # difference cuts BOTH ways and neither direction is an escalation: a
+      # routing operator who is not a peers manager reaches lan_subnets only
+      # through the setter, and a peers manager reaches it only through this
+      # arm — which is exactly what peer_update_params has always allowed a
+      # peers manager over HTTP. All three land on ONE action category and ONE
+      # executor, so no path is a policy bypass of another — pinned in
+      # peer_update_surface_parity_spec.rb. Note the split is USER-principal
+      # only: action_permitted? short-circuits on instance_authorized? before
+      # ACTION_PERMISSIONS is read at all.
+      #
+      # publicly_reachable IS THE HUB-ELECTION FLAG (NodeApi::SdwanController#
+      # hubbed_network_ids, and the hub/spoke partition in every topology
+      # strategy). This arm can flip it on an ALREADY-ENROLLED peer, which
+      # attach_peer cannot (the network+instance unique index means create
+      # only ever reaches a peer that does not exist yet). That is deliberate
+      # — MCP is the operator/agent surface, the same one PeersController
+      # serves, and the flag stays unreachable from the node_api INSTANCE
+      # surface, which is the property that stops a node self-electing there.
+      #
+      # WHAT THE GATE ACTUALLY DOES HERE, stated because it is easy to assume
+      # otherwise: sdwan.peer_update is seeded `notify_and_proceed` for BOTH
+      # audiences (system_sdwan_manager_agent.rb seeds the table twice — once
+      # agent-scoped, once agent-less scope-"action_type" for operator/MCP
+      # callers), so on a seeded install this NOTIFIES and executes at once.
+      # It parks an approval only where an operator has tiered the category up.
+      # The gate is the policy seam, not a guarantee of human review, and no
+      # comment or schema string on this arm may imply otherwise.
+      def update_peer(params)
+        peer = account_peers.find(params[:peer_id])
+
+        opts = params[:options] || {}
+        # A `type: "object"` parameter routinely arrives as a JSON STRING (or
+        # an array) from a model that guessed the encoding. Without this,
+        # `to_h` below raises NoMethodError/TypeError past every rescue in the
+        # ladder and the caller gets a 500 instead of a field error. Same
+        # guard create_network carries.
+        unless opts.is_a?(::Hash) || opts.is_a?(::ActionController::Parameters)
+          return error_result("options must be an object of fields to update — permitted: " \
+                              "#{self.class.peer_update_option_names.join(', ')}")
+        end
+
+        attrs = peer_update_attrs(opts)
+        # Requested-but-unusable fails LOUD rather than parking a no-op
+        # approval (see update_port_mapping). The message is derived from the
+        # same list, so it cannot name a field the arm no longer accepts.
+        if attrs.empty?
+          return error_result("no recognized fields to update — permitted (options): " \
+                              "#{self.class.peer_update_option_names.join(', ')}")
+        end
+
+        error = validation_error_before_gate(peer, attrs) do |candidate|
+          # Park what the executor will PERSIST, not the raw input. tags is
+          # the one field in this set the model normalizes (normalize_tags:
+          # trim/dedup/drop-blank), and the approval card renders the parked
+          # attributes — so without this capture an approver reading
+          # `[" Edge ", " Edge ", ""]` would approve a write of `["Edge"]`.
+          # set_peer_tags below has done this since it was gated; the general
+          # arm must not reintroduce the divergence for the same column.
+          attrs[:tags] = candidate.tags.dup if attrs.key?(:tags)
+        end
+        return error if error
+
+        gated_result(
+          action_category: ::Sdwan::Executors::UpdatePeer::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdatePeer",
+          executor_params: { peer_id: peer.id, attributes: attrs },
+          source_type: "Sdwan::Peer",
+          source_id: peer.id,
+          # Matches UpdatePeer#summarize and the REST gate description, so all
+          # three surfaces of the approval speak one sentence (IMP-3a563becb7d7).
+          description: "Update SDWAN peer #{peer.operator_label}"
+        ) { |_result| { peer: serialize_peer_full(peer.reload) } }
+      end
+
+      # The MCP mirror of PeersController#peer_update_params, run through
+      # ActionController::Parameters against the SAME list so the two surfaces
+      # share strong parameters' shape semantics rather than approximating
+      # them: an array-declared key drops a non-array, a hash-declared key
+      # drops a non-hash. That is what keeps a mis-shaped value out of a
+      # `null: false` column here as well as over HTTP, instead of parking an
+      # operation that can only fail at approval time.
+      def peer_update_attrs(source)
+        ::ActionController::Parameters.new(source.to_h).permit(
+          *::Sdwan::Peer::UPDATE_SCALAR_ATTRIBUTES,
+          **::Sdwan::Peer::UPDATE_ARRAY_ATTRIBUTES.index_with { [] },
+          **::Sdwan::Peer::UPDATE_HASH_ATTRIBUTES.index_with { {} }
+        ).to_h.symbolize_keys
+      end
+
+      # The same set under the names a CALLER uses, for the refusal message
+      # and the tool schema's `options` description. A class method because
+      # `self.action_definitions` is the schema's home.
+      def self.peer_update_option_names
+        ::Sdwan::Peer::UPDATE_ATTRIBUTES
       end
 
       # === Slice 9a — Routing (static subnet routing) ===

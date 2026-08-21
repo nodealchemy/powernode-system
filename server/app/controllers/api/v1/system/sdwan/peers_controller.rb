@@ -204,14 +204,16 @@ module Api
                                          capabilities: {})
           end
 
+          # IMP-4ed94eef2971 — the literal list moved to Sdwan::Peer so the MCP
+          # twin (Ai::Tools::SdwanTool#update_peer, gating the same category
+          # through the same executor) cannot drift from it. The permitted SET
+          # is unchanged; only its home moved.
           def peer_update_params
-            params.require(:peer).permit(:publicly_reachable, :endpoint_host,
-                                         :endpoint_host_v6, :endpoint_host_v4,
-                                         :endpoint_port, :listen_port,
-                                         :bgp_route_reflector_client,
-                                         lan_subnets: [],
-                                         tags: [],
-                                         capabilities: {})
+            params.require(:peer).permit(
+              *::Sdwan::Peer::UPDATE_SCALAR_ATTRIBUTES,
+              **::Sdwan::Peer::UPDATE_ARRAY_ATTRIBUTES.index_with { [] },
+              **::Sdwan::Peer::UPDATE_HASH_ATTRIBUTES.index_with { {} }
+            )
           end
 
           def serialize_peer(p)
