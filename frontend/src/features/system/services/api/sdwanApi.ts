@@ -21,7 +21,7 @@ import type {
   SdwanUserDevice,
   SdwanIssueUserDeviceResponse,
   SdwanFederationPeer,
-  SdwanFederationFinding,
+  SdwanFederationScanResult,
   SdwanVirtualIp,
   SdwanVirtualIpCreate,
   SdwanVirtualIpUpdate,
@@ -583,50 +583,22 @@ export const sdwanApi = {
     return extractGated(response, (): Deleted => ({ deleted: true }));
   },
 
-  // Governance scan is exposed through the MCP tool (system_sdwan_federation_scan).
-  // The frontend calls a placeholder /scan action via MCP; the page reads the
-  // findings array directly. For v1 we simulate by re-listing peers — a real
-  // governance endpoint would be a v2 addition.
-  // Currently: post to a synthetic /scan route that the MCP tool also serves.
-  scanFederation: async (): Promise<{ findings: SdwanFederationFinding[]; severity_summary: Record<string, number> }> => {
-    // Federation scan endpoint piggybacks on the MCP path via Ai::Tools::SdwanTool#federation_scan.
-    // Until a dedicated REST endpoint is added, the operator UI surfaces results inline by
-    // composing a synthetic call: re-fetch peers + run client-side governance hints.
-    // For now, return the empty shape — the MCP tool exposes the full scanner.
-    const response = await apiClient.get<ApiEnvelope<{ federation_peers: SdwanFederationPeer[] }>>(
-      '/system/sdwan/federation_peers'
+  // Governance scan — the SERVER scanner is the only scanner. This calls the
+  // REST twin of MCP's system_sdwan_federation_scan; both delegate to
+  // Sdwan::FederationGovernance.scan, so the console and an agent see the same
+  // findings. It used to re-implement two of the scanner's ~13 finding kinds
+  // client-side, which silently reported "no findings" for the other eleven
+  // (IMP-65f479ad8484).
+  scanFederation: async (): Promise<SdwanFederationScanResult> => {
+    const response = await apiClient.get<ApiEnvelope<SdwanFederationScanResult>>(
+      '/system/sdwan/federation_governance/scan'
     );
-    const peers = extractData(response).federation_peers ?? [];
-    // Lightweight client-side mirror of FederationGovernance#scan — surfaces the
-    // expired_trust_jwt finding without a server round-trip. Server-side scan
-    // remains canonical via the MCP tool.
-    const findings: SdwanFederationFinding[] = [];
-    const now = Date.now();
-    for (const p of peers) {
-      if (p.expires_at && new Date(p.expires_at).getTime() < now && p.status !== 'revoked') {
-        findings.push({
-          kind: 'expired_trust_jwt',
-          severity: 'high',
-          federation_peer_id: p.id,
-          message: `Trust JWT expired at ${p.expires_at}. Revoke and re-propose.`,
-          payload: { remote_instance_url: p.remote_instance_url, status: p.status },
-        });
-      }
-      if (p.status === 'accepted' && !p.signed_at) {
-        findings.push({
-          kind: 'stale_accepted_without_handshake',
-          severity: 'medium',
-          federation_peer_id: p.id,
-          message: 'Peer is accepted but the cross-CA handshake never completed.',
-          payload: { remote_instance_url: p.remote_instance_url },
-        });
-      }
-    }
-    const severity_summary = findings.reduce<Record<string, number>>((acc, f) => {
-      acc[f.severity] = (acc[f.severity] ?? 0) + 1;
-      return acc;
-    }, {});
-    return { findings, severity_summary };
+    const data = extractData(response);
+    return {
+      findings: data.findings ?? [],
+      finding_count: data.finding_count ?? 0,
+      severity_summary: data.severity_summary ?? {},
+    };
   },
 
   // -------- Phase O6: HostBridges (read-only) --------

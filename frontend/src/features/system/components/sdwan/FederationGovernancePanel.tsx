@@ -8,15 +8,18 @@ import type {
 } from '../../types/sdwan.types';
 
 /**
- * FederationGovernancePanel — runs the client-side federation governance
- * scan and renders findings. The canonical scanner lives server-side
- * (Sdwan::FederationGovernance#scan, also exposed via MCP), but this
- * panel re-implements the cheap subset (expired_trust_jwt + stale_accepted)
- * client-side so operators see findings without an extra round-trip.
+ * FederationGovernancePanel — runs the federation governance scan and renders
+ * its findings. The scan is the server's
+ * (GET /system/sdwan/federation_governance/scan →
+ * Sdwan::FederationGovernance.scan), which is the same scanner behind the MCP
+ * tool system_sdwan_federation_scan — so an operator and an agent see exactly
+ * the same findings.
  *
- * Heavier checks (prefix overlap with install) require the server
- * Sdwan::Configuration; the operator UI defers to the MCP tool button
- * for those.
+ * This panel used to re-implement two of the scanner's finding kinds in
+ * TypeScript and could not produce the other eleven (prefix overlap needs the
+ * server's Sdwan::Configuration; the platform-peer and migration-chain checks
+ * need rows the console never fetches), so it reported "no findings" on
+ * accounts with critical ones. Fixed in IMP-65f479ad8484.
  */
 export const FederationGovernancePanel: React.FC<{ refreshKey?: number }> = ({ refreshKey }) => {
   const [findings, setFindings] = useState<SdwanFederationFinding[] | null>(null);
@@ -68,16 +71,13 @@ export const FederationGovernancePanel: React.FC<{ refreshKey?: number }> = ({ r
                 <span className="text-xs text-theme-secondary font-mono">{f.kind}</span>
               </div>
               <p className="text-sm text-theme-primary">{f.message}</p>
-              <p className="text-xs text-theme-secondary mt-1 font-mono">peer: {f.federation_peer_id}</p>
+              {f.federation_peer_id && (
+                <p className="text-xs text-theme-secondary mt-1 font-mono">peer: {f.federation_peer_id}</p>
+              )}
             </li>
           ))}
         </ul>
       )}
-
-      <p className="text-xs text-theme-secondary mt-3">
-        For the full server-side scan (including prefix overlap with this install's address space),
-        invoke <code className="font-mono">system_sdwan_federation_scan</code> via the MCP tool.
-      </p>
     </div>
   );
 };

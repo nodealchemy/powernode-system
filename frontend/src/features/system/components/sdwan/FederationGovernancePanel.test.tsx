@@ -7,8 +7,8 @@ import type { SdwanFederationFinding } from '../../types/sdwan.types';
 // Mocks
 //
 // The component calls sdwanApi.scanFederation() exclusively; sdwanApi itself
-// calls apiClient.get internally, but we stub at the sdwanApi layer so we can
-// return shaped findings directly without replicating the client-side logic.
+// calls the server governance scan endpoint, but we stub at the sdwanApi layer
+// so we can return shaped findings directly.
 // =============================================================================
 
 const mockScanFederation = jest.fn();
@@ -52,7 +52,7 @@ function scanResult(findings: SdwanFederationFinding[]) {
     acc[f.severity] = (acc[f.severity] ?? 0) + 1;
     return acc;
   }, {});
-  return { findings, severity_summary };
+  return { findings, finding_count: findings.length, severity_summary };
 }
 
 // =============================================================================
@@ -333,9 +333,31 @@ describe('FederationGovernancePanel', () => {
     expect(screen.getByText('Governance scan')).toBeInTheDocument();
   });
 
-  it('renders the MCP tool reference footer note', () => {
+  // The footer used to point operators at the MCP tool "for the full
+  // server-side scan" — the panel IS the full server-side scan now
+  // (IMP-65f479ad8484), so directing them elsewhere would be wrong.
+  it('does not tell the operator to run the MCP tool for a fuller scan', () => {
     mockScanFederation.mockReturnValue(new Promise(() => {}));
     renderPanel();
-    expect(screen.getByText(/system_sdwan_federation_scan/i)).toBeInTheDocument();
+    expect(screen.queryByText(/system_sdwan_federation_scan/i)).not.toBeInTheDocument();
+  });
+
+  // A migration-chain finding carries no peer, so the peer line must be
+  // omitted rather than rendered blank.
+  it('omits the peer line for a finding with no federation_peer_id', async () => {
+    const CHAIN_FINDING: SdwanFederationFinding = {
+      kind: 'migration_chain_failed',
+      severity: 'high',
+      federation_peer_id: null,
+      message: 'Multi-hop migration chain failed at hop position 2.',
+      payload: { migration_chain_id: 'mc-1' },
+    };
+    mockScanFederation.mockResolvedValue(scanResult([CHAIN_FINDING]));
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText(/Multi-hop migration chain failed/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/^peer:/)).not.toBeInTheDocument();
   });
 });

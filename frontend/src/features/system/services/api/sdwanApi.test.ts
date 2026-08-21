@@ -1090,110 +1090,60 @@ describe('sdwanApi.deletePortMapping', () => {
   });
 });
 
-// ──── Federation scan (client-side governance) ───────────────────────────────
+// ──── Federation scan (server scanner, single source of truth) ──────────────
 
 describe('sdwanApi.scanFederation', () => {
-  it('returns empty findings when all peers are healthy', async () => {
-    const healthyPeer = {
-      ...FEDERATION_PEER,
-      status: 'active' as const,
-      expires_at: '2099-12-31T00:00:00Z',
-      signed_at: '2026-01-01T00:00:00Z',
-    };
-    mockGet.mockResolvedValue(envelope({ federation_peers: [healthyPeer] }));
+  // The scan used to re-fetch /federation_peers and re-derive two of the
+  // server scanner's ~13 finding kinds in TypeScript, so the console reported
+  // "no findings" for the other eleven. It now calls the server scanner's REST
+  // endpoint — the same Sdwan::FederationGovernance.scan behind MCP's
+  // system_sdwan_federation_scan (IMP-65f479ad8484).
+  it('calls the server governance scan endpoint, not the peers list', async () => {
+    mockGet.mockResolvedValue(
+      envelope({ findings: [], finding_count: 0, severity_summary: {} })
+    );
+
+    await sdwanApi.scanFederation();
+
+    expect(mockGet).toHaveBeenCalledWith('/system/sdwan/federation_governance/scan');
+    expect(mockGet).not.toHaveBeenCalledWith('/system/sdwan/federation_peers');
+  });
+
+  it('passes the server findings through verbatim, including kinds no client check could derive', async () => {
+    const findings = [
+      {
+        kind: 'prefix_overlap_with_install',
+        severity: 'critical',
+        federation_peer_id: 'fp-1',
+        message: 'overlaps with this install',
+        payload: { account_id: 'acct-1', status: 'proposed' },
+      },
+      {
+        kind: 'migration_chain_failed',
+        severity: 'high',
+        federation_peer_id: null,
+        message: 'chain failed',
+        payload: { migration_chain_id: 'mc-1' },
+      },
+    ];
+    mockGet.mockResolvedValue(
+      envelope({ findings, finding_count: 2, severity_summary: { critical: 1, high: 1 } })
+    );
 
     const result = await sdwanApi.scanFederation();
 
-    expect(mockGet).toHaveBeenCalledWith('/system/sdwan/federation_peers');
-    expect(result.findings).toEqual([]);
-    expect(result.severity_summary).toEqual({});
+    expect(result.findings).toEqual(findings);
+    expect(result.finding_count).toBe(2);
+    expect(result.severity_summary).toEqual({ critical: 1, high: 1 });
   });
 
-  it('generates expired_trust_jwt finding for peers with past expires_at that are not revoked', async () => {
-    const expiredPeer = {
-      ...FEDERATION_PEER,
-      status: 'accepted' as const,
-      expires_at: '2020-01-01T00:00:00Z',
-      signed_at: '2019-01-01T00:00:00Z',
-    };
-    mockGet.mockResolvedValue(envelope({ federation_peers: [expiredPeer] }));
-
-    const result = await sdwanApi.scanFederation();
-
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].kind).toBe('expired_trust_jwt');
-    expect(result.findings[0].severity).toBe('high');
-    expect(result.findings[0].federation_peer_id).toBe('fp-1');
-    expect(result.severity_summary).toEqual({ high: 1 });
-  });
-
-  it('does NOT flag revoked peers for expired trust JWTs', async () => {
-    const revokedPeer = {
-      ...FEDERATION_PEER,
-      status: 'revoked' as const,
-      expires_at: '2020-01-01T00:00:00Z',
-    };
-    mockGet.mockResolvedValue(envelope({ federation_peers: [revokedPeer] }));
-
-    const result = await sdwanApi.scanFederation();
-
-    expect(result.findings).toHaveLength(0);
-  });
-
-  it('generates stale_accepted_without_handshake finding for accepted peers without signed_at', async () => {
-    const unsignedPeer = {
-      ...FEDERATION_PEER,
-      status: 'accepted' as const,
-      expires_at: null,
-      signed_at: null,
-    };
-    mockGet.mockResolvedValue(envelope({ federation_peers: [unsignedPeer] }));
-
-    const result = await sdwanApi.scanFederation();
-
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].kind).toBe('stale_accepted_without_handshake');
-    expect(result.findings[0].severity).toBe('medium');
-    expect(result.severity_summary).toEqual({ medium: 1 });
-  });
-
-  it('accumulates multiple findings and severity summary correctly', async () => {
-    const expiredPeer = {
-      id: 'fp-expired',
-      remote_instance_url: 'https://expired.example.com',
-      status: 'accepted' as const,
-      expires_at: '2020-01-01T00:00:00Z',
-      signed_at: '2019-01-01T00:00:00Z',
-    };
-    const unsignedPeer = {
-      id: 'fp-unsigned',
-      remote_instance_url: 'https://unsigned.example.com',
-      status: 'accepted' as const,
-      expires_at: null,
-      signed_at: null,
-    };
-    mockGet.mockResolvedValue(envelope({ federation_peers: [expiredPeer, unsignedPeer] }));
-
-    const result = await sdwanApi.scanFederation();
-
-    // expired_trust_jwt (high) + stale_accepted_without_handshake (medium) for unsignedPeer,
-    // and expired_trust_jwt (high) does not apply to unsignedPeer since expires_at is null.
-    // expiredPeer has expired trust JWT but ALSO matches stale check (accepted + no signed_at? no - signed_at is set)
-    // Actually expiredPeer.signed_at is set so no stale_accepted_without_handshake
-    expect(result.findings).toHaveLength(2);
-    const kinds = result.findings.map((f) => f.kind);
-    expect(kinds).toContain('expired_trust_jwt');
-    expect(kinds).toContain('stale_accepted_without_handshake');
-    expect(result.severity_summary.high).toBe(1);
-    expect(result.severity_summary.medium).toBe(1);
-  });
-
-  it('returns empty findings for an empty federation_peers list', async () => {
-    mockGet.mockResolvedValue(envelope({ federation_peers: [] }));
+  it('defaults to an empty result when the envelope omits the keys', async () => {
+    mockGet.mockResolvedValue(envelope({}));
 
     const result = await sdwanApi.scanFederation();
 
     expect(result.findings).toEqual([]);
+    expect(result.finding_count).toBe(0);
     expect(result.severity_summary).toEqual({});
   });
 });
