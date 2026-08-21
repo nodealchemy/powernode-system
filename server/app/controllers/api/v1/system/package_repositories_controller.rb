@@ -265,8 +265,14 @@ module Api
             require_permission("system.package_repositories.manage_shared")
           else
             require_permission("system.package_repositories.update")
+            # IMP-ce5d320d3e4e — RAISE, matching require_permission just above.
+            # This helper is called inline from link_platform/unlink_platform,
+            # so `render_error(...) and return` returned from HERE and the
+            # action ran on to write the link; the resulting DoubleRenderError
+            # was swallowed by ApiResponse's `unless performed?`, leaving the
+            # caller a clean 403 over a committed cross-tenant mutation.
             if @repository.account_id != @account.id
-              render_error("Forbidden", status: :forbidden) and return
+              raise ::Authentication::PermissionDenied, "Forbidden"
             end
           end
         end

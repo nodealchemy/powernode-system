@@ -143,4 +143,62 @@ RSpec.describe "/api/v1/system/package_repositories", type: :request do
       expect(repo.reload.sync_status).to eq("syncing")
     end
   end
+
+  # IMP-ce5d320d3e4e — authorize_repo_mutation! guards link_platform /
+  # unlink_platform, and its cross-tenant arm refused with
+  # `render_error("Forbidden", ...) and return`. That returns from the HELPER,
+  # not from the action: the 403 rendered and link_platform ran straight on to
+  # create the link. (The follow-up render_success raised DoubleRenderError,
+  # which ApiResponse swallows with `unless performed?`, so the caller saw a
+  # clean 403 over a committed cross-tenant link.)
+  #
+  # Reaching that arm needs the accessible_to scope to hand back a foreign
+  # repo, which today it never does (visibility=account ⟺ account_id NOT NULL
+  # is a DB CHECK, and the scope admits only own-account or shared rows). The
+  # arm is defense in depth, so the scope is stubbed to simulate exactly the
+  # leak it defends against — and the oracle is the ABSENCE of the link row,
+  # not the 403, because the 403 was always correct.
+  describe "POST /:id/link_platform (cross-tenant defense in depth)" do
+    let!(:foreign_repo) { create(:system_package_repository, account: account_b) }
+    # Same account as the repo: System::PackageRepositoryPlatform's
+    # account_consistency validation rejects a cross-account link outright, so
+    # a platform on some third account would make link.save fail on its own —
+    # and the count oracle would pass for a reason that has nothing to do with
+    # the halt.
+    let!(:platform)     { create(:system_node_platform, account: account_b) }
+
+    # Positive control. Without it the absence-of-effect example above could
+    # go green because the write path is broken under the stub rather than
+    # because the refusal halted — an oracle passing for the wrong reason is
+    # exactly the failure mode this whole change is about.
+    it "creates the link when the repo belongs to the caller's own account" do
+      own_repo     = create(:system_package_repository, account: account_a)
+      own_platform = create(:system_node_platform, account: account_a)
+
+      expect {
+        post "/api/v1/system/package_repositories/#{own_repo.id}/link_platform",
+             params: { node_platform_id: own_platform.id }.to_json,
+             headers: auth_headers_for(user_a).merge("Content-Type" => "application/json")
+      }.to change { ::System::PackageRepositoryPlatform.count }.by(1)
+
+      expect(response).to have_http_status(:ok)
+      expect(json_response_data["linked"]).to be(true)
+    end
+
+    it "creates no platform link when the repo belongs to another account" do
+      allow(::System::PackageRepository).to receive(:accessible_to)
+        .and_return(::System::PackageRepository.where(id: foreign_repo.id))
+
+      before_count = ::System::PackageRepositoryPlatform.count
+
+      post "/api/v1/system/package_repositories/#{foreign_repo.id}/link_platform",
+           params: { node_platform_id: platform.id }.to_json,
+           headers: auth_headers_for(user_a).merge("Content-Type" => "application/json")
+
+      expect(response).to have_http_status(:forbidden)
+      expect(::System::PackageRepositoryPlatform.count).to eq(before_count),
+                                                           "a cross-tenant platform link was created behind the 403"
+      expect(foreign_repo.reload.package_repository_platforms.count).to eq(0)
+    end
+  end
 end

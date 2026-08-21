@@ -19,9 +19,18 @@ module Api
 
         # ApplicationController.include Authentication already runs
         # authenticate_request as a global before_action — operator JWT auth
-        # is covered. Worker-callable replenish/drain go through the
-        # worker_api namespace (which has its own worker-token auth);
-        # there's no dual-auth path on this operator-facing controller.
+        # is covered.
+        #
+        # This controller IS dual-auth, despite what this comment used to say.
+        # It claimed worker callers reach replenish/drain through the
+        # worker_api namespace and that no dual-auth path exists here — both
+        # false: there is no worker_api instance_pools controller, and
+        # worker/app/jobs/system/instance_pool_replenisher_job.rb calls THESE
+        # operator routes (:58 index, :69 replenish, :94 recycle_stale) with a
+        # worker token. The `worker_authenticated?` short-circuit in
+        # authorize_read!/authorize_write! is therefore load-bearing, not
+        # vestigial — deleting it on the strength of the old comment would
+        # break every replenishment tick.
         before_action :set_pool, only: [ :show, :update, :destroy, :replenish, :drain, :recycle_stale ]
 
         # GET /api/v1/system/instance_pools
@@ -158,19 +167,52 @@ module Api
         # `worker_authenticated?` short-circuit is the standard carve-out
         # used across Reports/Analytics/Accounts/WebhookEvents controllers
         # for the same reason. See feedback_worker_callback_auth in MEMORY.
+        # IMP-ce5d320d3e4e — these RAISE rather than render.
+        #
+        # Both are called INLINE from the action bodies, not as before_actions.
+        # Rails halts a request when a FILTER renders (the chain checks
+        # performed? between callbacks); it does not halt an action because a
+        # helper the action called rendered. The previous
+        # `render_error(...) and return` returned from THIS METHOD only —
+        # control resumed on the next line of the action and ran straight into
+        # the gated write. Ai::AutonomyGate executes inline for auto_approve
+        # and notify_and_proceed, so a caller with no write permission really
+        # created the pool; under require_approval it parked an
+        # ApprovalRequest in the operator's queue. The follow-up
+        # render_success then raised DoubleRenderError, which ApiResponse
+        # swallows with `unless performed?` — so the caller saw a clean 403
+        # over a committed write and nothing looked wrong.
+        #
+        # Authentication::PermissionDenied is the class require_permission
+        # raises, and it inherits Exception (NOT StandardError) precisely so an
+        # inline check survives the `rescue ActiveRecord::RecordInvalid` in
+        # #update, the `rescue PoolError` in #replenish, and ApiResponse's
+        # global `rescue_from StandardError`. Its dedicated rescue_from renders
+        # the canonical 403 AND unwinds the action, so every present and future
+        # call site halts without each one having to remember `return`.
+        #
+        # The predicate is deliberately unchanged (current_user.has_permission?
+        # rather than the controller's delegation-aware has_permission?): this
+        # commit changes only WHETHER the action halts, never WHO is allowed.
         def authorize_read!
           return if worker_authenticated?
-          unless current_user.has_permission?("system.node_instances.read")
-            render_error("permission denied: system.node_instances.read", :forbidden) and return
-          end
+          return if current_user.has_permission?("system.node_instances.read")
+
+          raise ::Authentication::PermissionDenied.new(
+            "permission denied: system.node_instances.read",
+            permission: "system.node_instances.read"
+          )
         end
 
         def authorize_write!
           return if worker_authenticated?
-          unless current_user.has_permission?("system.instances.create") ||
-                 current_user.has_permission?("system.instances.control")
-            render_error("permission denied: system.instances.create or .control", :forbidden) and return
-          end
+          return if current_user.has_permission?("system.instances.create") ||
+                    current_user.has_permission?("system.instances.control")
+
+          raise ::Authentication::PermissionDenied.new(
+            "permission denied: system.instances.create or .control",
+            permission: "system.instances.create"
+          )
         end
       end
     end
