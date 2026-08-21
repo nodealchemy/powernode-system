@@ -178,7 +178,16 @@ module System
 
     private
 
+    # A nil size is already reported by the numericality validators above, and
+    # comparing one here RAISES rather than adding an error — `5 < nil` is an
+    # ArgumentError, not false. That stayed latent while the only caller was
+    # the executor's create! (whose raise the autonomy gate rescued), and
+    # surfaced the moment IMP-785d60f5ec3e put `candidate.valid?` on the
+    # request path in front of the gate: an explicit `"target_size": null`
+    # answered 500 instead of 422. Bail out and let numericality speak.
     def max_gte_target_gte_min
+      return if [ max_size, target_size, min_size ].any?(&:nil?)
+
       if max_size < target_size
         errors.add(:max_size, "must be >= target_size")
       end
