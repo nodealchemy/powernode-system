@@ -32,6 +32,20 @@ module Sdwan
     # auto-detach failed — terminated instances left orphaned peers polluting
     # the fabric config (observed on all three dryrun-20260809d teardowns).
     # A membership credential is meaningless without its peer; destroy it too.
+    # IMP-2f34679b6b73 — sessions observed FOR this peer, and sessions where
+    # this peer is another peer's resolved neighbour. Both FKs are NO ACTION
+    # in the baseline schema, so without these `peer.destroy!` raised
+    # ActiveRecord::InvalidForeignKey for any peer that had ever been
+    # observed — silently breaking Sdwan::Executors::DeletePeer,
+    # Sdwan::PeerDetacher, and the Network cascade on exactly the iBGP hosts
+    # that carry BGP sessions.
+    has_many :bgp_sessions, class_name: "Sdwan::BgpSession",
+             foreign_key: :sdwan_peer_id, dependent: :destroy
+    # nullify, not destroy: the SESSION belongs to the peer that observed it.
+    # Losing the neighbour only loses the FK-resolved name, which is already
+    # the nil case Sdwan::BgpSessionWriter#resolve_neighbor_peer_id handles.
+    has_many :observed_as_neighbor_sessions, class_name: "Sdwan::BgpSession",
+             foreign_key: :neighbor_peer_id, dependent: :nullify
     has_many :membership_credentials, class_name: "Sdwan::MembershipCredential",
              foreign_key: :sdwan_peer_id, dependent: :destroy
 
@@ -58,6 +72,14 @@ module Sdwan
     # rows for removed prefixes. Audit trail lives in the advertisement
     # table; lan_subnets is the operator-facing source-of-truth column.
     after_save :sync_subnet_advertisements_from_lan_subnets, if: :saved_change_to_lan_subnets?
+    # IMP-2f34679b6b73 — keep the multi-iBGP provenance flag from outliving
+    # its condition. Sdwan::PeerEnroller stamps it on the way in, but peers
+    # leave by many routes: Sdwan::PeerDetacher, Sdwan::Executors::DeletePeer,
+    # several composition skills, and `Sdwan::Network has_many :peers,
+    # dependent: :destroy`. Refreshing from the model catches all of them, and
+    # the flagger is idempotent so the enroller's explicit call at the
+    # enrollment seam stays harmless.
+    after_commit :refresh_multi_ibgp_flag, on: :destroy
 
     scope :hubs,    -> { where(publicly_reachable: true) }
     scope :spokes,  -> { where(publicly_reachable: false) }
@@ -217,6 +239,14 @@ module Sdwan
     end
 
     private
+
+    # See the after_commit above. Best-effort: a peer leaving must not be
+    # rolled back because a derived flag could not be refreshed.
+    def refresh_multi_ibgp_flag
+      ::Sdwan::MultiIbgpHostFlagger.refresh!(node_instance: node_instance_id)
+    rescue StandardError => e
+      Rails.logger.warn("[Sdwan::Peer] multi-iBGP flag refresh failed for host #{node_instance_id}: #{e.message}")
+    end
 
     def allocate_host_address
       return if assigned_address.present?

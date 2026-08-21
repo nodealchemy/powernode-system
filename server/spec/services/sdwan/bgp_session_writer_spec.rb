@@ -82,13 +82,34 @@ RSpec.describe Sdwan::BgpSessionWriter, type: :service do
     expect(Sdwan::BgpSession.first.neighbor_peer_id).to eq(peer2.id)
   end
 
+  # An address inside the network's own /64 that no Sdwan::Peer row claims
+  # yet — a neighbour whose peer row has not been created, or one whose
+  # assigned_address moved. It belongs to this network, so it is still filed;
+  # only the FK resolution is missing.
   it "still writes the row when neighbor_peer_id can't be resolved" do
-    payload[0][:sessions][0][:neighbor_address] = "fdf8:dead:beef::999"
+    unclaimed = "#{network.cidr_64.split('/').first}999"
+    payload[0][:sessions][0][:neighbor_address] = unclaimed
     described_class.new(instance: inst1, peer_by_network: { network.id => peer1 },
                         networks_payload: payload).write!
 
     row = Sdwan::BgpSession.first
     expect(row.neighbor_peer_id).to be_nil
-    expect(row.neighbor_address).to eq("fdf8:dead:beef::999")
+    expect(row.neighbor_address).to eq(unclaimed)
+  end
+
+  # IMP-2f34679b6b73 — an address from outside this network's prefix cannot
+  # be one of its iBGP neighbours (Bgp::ConfigCompiler#neighbors_for only ever
+  # returns peers of the same network, and every peer address is allocated out
+  # of that network's /64). Filing it would attribute another network's
+  # session to this one.
+  it "refuses a neighbour address from outside the network's own prefix" do
+    payload[0][:sessions][0][:neighbor_address] = "fdf8:dead:beef::999"
+    described_class.new(instance: inst1, peer_by_network: { network.id => peer1 },
+                        networks_payload: payload).write!
+
+    expect(Sdwan::BgpSession.count).to eq(0)
+    observation = peer1.reload.bgp_session_state["observation"]
+    expect(observation["status"]).to eq("unattributable")
+    expect(observation["rejected_neighbors"]).to eq([ "fdf8:dead:beef::999" ])
   end
 end

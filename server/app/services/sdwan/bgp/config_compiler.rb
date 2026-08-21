@@ -2,8 +2,11 @@
 
 # Sdwan::Bgp::ConfigCompiler — emits a host-wide FRR config rendered as
 # one `router bgp <as> vrf <name>` block per Sdwan::HostVrfAssignment
-# bound to the calling peer's host, plus a single global block for
-# management/loopback context. Cross-VRF prefix import clauses
+# bound to the calling peer's host. There is NO global `router bgp` block
+# — render_per_vrf_bgp_blocks is the only emitter — so on a VRF-assigned
+# host an unscoped `vtysh show bgp summary` describes an instance that
+# does not exist (IMP-2f34679b6b73 relies on this).  Cross-VRF prefix
+# import clauses
 # (Sdwan::RouteLeak) are emitted as `import vrf` directives inside the
 # destination VRF's address-family block.
 #
