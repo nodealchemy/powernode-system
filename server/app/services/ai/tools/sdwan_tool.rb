@@ -67,7 +67,15 @@ module Ai
       #     independently.
       #
       # Historical: the create arms are IMP-6c482005db87, the update arms
-      # IMP-c9798d9d5671.
+      # IMP-c9798d9d5671, and the DESTROY family IMP-800b25c1cc45 — until then
+      # delete_network / detach_peer / delete_firewall_rule / delete_virtual_ip
+      # / delete_port_mapping / delete_route_policy and create_route_policy
+      # called destroy!/save inline while their REST twins were gated, which is
+      # the one direction the parity claim above cannot survive: an agent
+      # refused at the console reached the same row through this tool. Every
+      # executor, category, engine registration and seeded policy row already
+      # existed; only the call did not. Held by
+      # spec/services/ai/tools/sdwan_mcp_destroy_gate_parity_spec.rb.
 
       ACTION_PERMISSIONS = {
         "system_sdwan_list_networks"   => "system.sdwan.networks.read",
@@ -227,7 +235,7 @@ module Ai
             }
           },
           "system_sdwan_delete_network" => {
-            description: "Delete an SDWAN network and all its peers + keys (destructive)",
+            description: "Delete an SDWAN network and all its peers + keys (destructive) Approval-gated (sdwan.network_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: { network_id: { type: "string", required: true, description: "UUID of the SDWAN network to delete" } }
           },
           "system_sdwan_list_peers" => {
@@ -263,7 +271,7 @@ module Ai
             }
           },
           "system_sdwan_detach_peer" => {
-            description: "Detach a peer (revokes key, removes membership)",
+            description: "Detach a peer (revokes key, removes membership) Approval-gated (sdwan.peer_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: { peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer to detach" } }
           },
           "system_sdwan_get_topology" => {
@@ -310,7 +318,7 @@ module Ai
             }
           },
           "system_sdwan_delete_firewall_rule" => {
-            description: "Delete a firewall rule (immediate; takes effect on next agent reconcile)",
+            description: "Delete a firewall rule (immediate; takes effect on next agent reconcile) Approval-gated (sdwan.firewall_rule_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: { firewall_rule_id: { type: "string", required: true, description: "UUID of the SDWAN firewall rule to delete" } }
           },
           # Slice 4: user VPN
@@ -536,7 +544,7 @@ module Ai
             }
           },
           "system_sdwan_delete_virtual_ip" => {
-            description: "Delete a Virtual IP. Closes all active assignments + destroys the row.",
+            description: "Delete a Virtual IP. Destroys the row and, through the association cascade, its holder-assignment history. Approval-gated (sdwan.virtual_ip_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: { virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP to delete" } }
           },
           "system_sdwan_failover_virtual_ip" => {
@@ -580,7 +588,7 @@ module Ai
             parameters: { route_policy_id: { type: "string", required: true, description: "UUID of the SDWAN route policy to fetch" } }
           },
           "system_sdwan_create_route_policy" => {
-            description: "Create a route policy. statements is an ordered list of {match: {...}, action: {...}} objects. Compile output appears in TopologyCompiler#bgp.policies.",
+            description: "Create a route policy. statements is an ordered list of {match: {...}, action: {...}} objects. Compile output appears in TopologyCompiler#bgp.policies. Approval-gated (sdwan.route_policy_create) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               name: { type: "string", required: true, description: "Display name for the route policy" },
               scope: { type: "string", required: true, description: "account | network | peer" },
@@ -599,7 +607,7 @@ module Ai
             }
           },
           "system_sdwan_delete_route_policy" => {
-            description: "Delete a route policy. The next agent reconcile removes the corresponding route-map from frr.conf.",
+            description: "Delete a route policy. The next agent reconcile removes the corresponding route-map from frr.conf. Approval-gated (sdwan.route_policy_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: { route_policy_id: { type: "string", required: true, description: "UUID of the SDWAN route policy to delete" } }
           },
           "system_sdwan_compile_route_policy" => {
@@ -648,7 +656,7 @@ module Ai
             }
           },
           "system_sdwan_delete_port_mapping" => {
-            description: "Delete a port mapping. Agent removes the corresponding nft DNAT rule on next reconcile.",
+            description: "Delete a port mapping. Agent removes the corresponding nft DNAT rule on next reconcile. Approval-gated (sdwan.port_mapping_delete) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: { port_mapping_id: { type: "string", required: true, description: "UUID of the SDWAN port mapping to delete" } }
           },
           # ─── Phase O6 — host bridges (O1) ──────────────────────────────────
@@ -1162,10 +1170,25 @@ module Ai
         ) { |_result| { network: serialize_network_full(network.reload) } }
       end
 
+      # IMP-800b25c1cc45 — routed through Ai::AutonomyGate as
+      # sdwan.network_delete, matching NetworksController#destroy. The category,
+      # the executor and the seeded policy row all pre-dated this call site;
+      # only the call was missing, so an operator who set the tier got it from
+      # the console and an unreviewed cascade destroy from the agent.
       def delete_network(params)
         network = account_networks.find(params[:network_id])
-        network.destroy!
-        success_result(deleted: true, id: network.id)
+        gated_result(
+          action_category: ::Sdwan::Executors::DeleteNetwork::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::DeleteNetwork",
+          executor_params: { network_id: network.id },
+          source_type: "Sdwan::Network",
+          source_id: network.id,
+          # Matches Sdwan::Executors::DeleteNetwork#summarize so the request and
+          # the approval card speak one sentence.
+          description: "Delete SDWAN network '#{network.name}'"
+        ) do |_result|
+          { deleted: true, id: network.id }
+        end
       end
 
       # === Peers ===
@@ -1227,10 +1250,22 @@ module Ai
         end
       end
 
+      # IMP-800b25c1cc45 — routed through Ai::AutonomyGate as sdwan.peer_delete,
+      # matching PeersController#destroy. Detaching drops the node off the
+      # overlay until it is re-attached; that has been approval-gated on the
+      # REST twin since slice 1.
       def detach_peer(params)
         peer = account_peers.find(params[:peer_id])
-        peer.destroy!
-        success_result(detached: true, id: peer.id)
+        gated_result(
+          action_category: ::Sdwan::Executors::DeletePeer::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::DeletePeer",
+          executor_params: { peer_id: peer.id },
+          source_type: "Sdwan::Peer",
+          source_id: peer.id,
+          description: "Delete SDWAN peer #{peer.operator_label}"
+        ) do |_result|
+          { detached: true, id: peer.id }
+        end
       end
 
       def get_topology(params)
@@ -1340,10 +1375,22 @@ module Ai
         ) { |_result| { firewall_rule: serialize_rule(rule.reload) } }
       end
 
+      # IMP-800b25c1cc45 — routed through Ai::AutonomyGate as
+      # sdwan.firewall_rule_delete, matching FirewallRulesController#destroy.
+      # Create and update on this resource were already gated here; only the
+      # destroy — the one that widens what traffic is allowed — was not.
       def delete_firewall_rule(params)
         rule = account_firewall_rules.find(params[:firewall_rule_id])
-        rule.destroy!
-        success_result(deleted: true, id: rule.id)
+        gated_result(
+          action_category: ::Sdwan::Executors::DeleteFirewallRule::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::DeleteFirewallRule",
+          executor_params: { rule_id: rule.id },
+          source_type: "Sdwan::FirewallRule",
+          source_id: rule.id,
+          description: "Delete firewall rule #{rule.name.presence || rule.id}"
+        ) do |_result|
+          { deleted: true, id: rule.id }
+        end
       end
 
       # === Helpers ===
@@ -2345,13 +2392,26 @@ module Ai
         ) { |_result| { virtual_ip: serialize_virtual_ip(vip.reload) } }
       end
 
+      # IMP-800b25c1cc45 — routed through Ai::AutonomyGate as
+      # sdwan.virtual_ip_delete, matching VirtualIpsController#destroy.
+      #
+      # The inline arm released live assignments before destroying. That step is
+      # not carried over and is not lost: VirtualIp declares
+      # `has_many :assignments, dependent: :destroy`, so the holder rows go with
+      # the VIP either way — the release only ever stamped rows a beat before
+      # deleting them. The executor's destroy! runs the same association
+      # callbacks.
       def delete_virtual_ip(params)
         vip = account_virtual_ips.find(params[:virtual_ip_id])
-        ::Sdwan::VirtualIp.transaction do
-          vip.assignments.where(released_at: nil)
-             .update_all(released_at: Time.current, updated_at: Time.current)
-          vip.destroy!
-          success_result(deleted: true, id: vip.id)
+        gated_result(
+          action_category: ::Sdwan::Executors::DeleteVirtualIp::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::DeleteVirtualIp",
+          executor_params: { vip_id: vip.id },
+          source_type: "Sdwan::VirtualIp",
+          source_id: vip.id,
+          description: "Delete SDWAN VIP #{vip.try(:cidr) || vip.id}"
+        ) do |_result|
+          { deleted: true, id: vip.id }
         end
       end
 
@@ -2490,15 +2550,38 @@ module Ai
         error_result("route policy not found")
       end
 
+      # IMP-800b25c1cc45 — routed through Ai::AutonomyGate as
+      # sdwan.route_policy_create, matching RoutePoliciesController#create.
+      #
+      # The candidate is validated BEFORE the gate and never saved
+      # (Sdwan::Executors::CreateRoutePolicy#create! stays the sole writer), so
+      # a payload that could only ever fail keeps its message instead of parking
+      # an approval an operator has to dispose of — the same
+      # validate-before-gate contract every other create arm here keeps.
       def create_route_policy(params)
         attrs = params.slice(:name, :scope, :direction, :scope_resource_id, :description, :enabled)
         attrs[:statements] = params[:statements] if params[:statements].present?
-        attrs[:account_id] = @account.id
-        policy = ::Sdwan::RoutePolicy.new(attrs)
-        if policy.save
-          success_result(route_policy: serialize_route_policy_full(policy))
-        else
-          error_result(policy.errors.full_messages.join("; "))
+        candidate = ::Sdwan::RoutePolicy.new(attrs.merge(account_id: @account.id))
+        unless candidate.valid?
+          return error_result(candidate.errors.full_messages.join("; "))
+        end
+
+        gated_result(
+          action_category: ::Sdwan::Executors::CreateRoutePolicy::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::CreateRoutePolicy",
+          # The executor takes the account from the operation, so `attributes`
+          # carries only what the caller asked for — account_id above belongs to
+          # the candidate, not to the replayed payload.
+          executor_params: { attributes: attrs },
+          # Provenance only: RoutePolicy belongs directly to the account, so
+          # there is no parent row to anchor — same anchor the REST twin passes.
+          source_type: "Account",
+          source_id: @account.id,
+          description: "Create SDWAN route policy #{candidate.name}"
+        ) do |result|
+          policy = ::Sdwan::RoutePolicy.where(account_id: @account.id)
+                                       .find(result.result&.dig(:data, :policy_id))
+          { route_policy: serialize_route_policy_full(policy) }
         end
       end
 
@@ -2531,10 +2614,23 @@ module Ai
         error_result("route policy not found")
       end
 
+      # IMP-800b25c1cc45 — routed through Ai::AutonomyGate as
+      # sdwan.route_policy_delete, matching RoutePoliciesController#destroy.
+      # update_route_policy above was already gated; delete was the odd one out,
+      # and dropping a policy is the direction that widens what a neighbor
+      # accepts.
       def delete_route_policy(params)
-        p = ::Sdwan::RoutePolicy.where(account_id: @account.id).find(params[:route_policy_id])
-        p.destroy!
-        success_result(deleted: true, id: p.id)
+        policy = ::Sdwan::RoutePolicy.where(account_id: @account.id).find(params[:route_policy_id])
+        gated_result(
+          action_category: ::Sdwan::Executors::DeleteRoutePolicy::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::DeleteRoutePolicy",
+          executor_params: { policy_id: policy.id },
+          source_type: "Sdwan::RoutePolicy",
+          source_id: policy.id,
+          description: "Delete route policy '#{policy.name}'"
+        ) do |_result|
+          { deleted: true, id: policy.id }
+        end
       rescue ActiveRecord::RecordNotFound
         error_result("route policy not found")
       end
@@ -2637,12 +2733,23 @@ module Ai
         ) { |_result| { port_mapping: serialize_port_mapping_full(m.reload) } }
       end
 
+      # IMP-800b25c1cc45 — routed through Ai::AutonomyGate as
+      # sdwan.port_mapping_delete, matching PortMappingsController#destroy.
+      # Create and update on this resource were already gated here.
       def delete_port_mapping(params)
         m = port_mapping_in_account(params[:port_mapping_id])
         return error_result("port mapping not found") unless m
 
-        m.destroy!
-        success_result(deleted: true, id: m.id)
+        gated_result(
+          action_category: ::Sdwan::Executors::DeletePortMapping::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::DeletePortMapping",
+          executor_params: { mapping_id: m.id },
+          source_type: "Sdwan::PortMapping",
+          source_id: m.id,
+          description: "Delete port mapping #{m.name.presence || m.id}"
+        ) do |_result|
+          { deleted: true, id: m.id }
+        end
       end
 
       # This surface's name for a port-mapping column that it does not call by
