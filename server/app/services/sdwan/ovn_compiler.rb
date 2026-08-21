@@ -64,6 +64,7 @@ module Sdwan
       {
         deployment_id: @deployment.id,
         plan: build_plan,
+        desired_set: build_desired_set,
         compiled_at: Time.current.utc.iso8601
       }
     end
@@ -80,6 +81,17 @@ module Sdwan
       # ports against a non-existent switch.
       @switches.each do |switch|
         entries << { cmd: "ls-add", args: [ switch.name ] }
+        # IMP-178a7e79fa0d — ownership stamp. The applier's prune pass
+        # may only delete NB rows this platform owns, and switch names
+        # are operator-chosen (no reserved prefix), so ownership must be
+        # stamped explicitly: every emitted switch carries the owning
+        # deployment's id in external_ids. `set` is idempotent, so
+        # re-stamping on every replay is a no-op, and pre-existing
+        # switches created by earlier (stamp-less) plans get adopted on
+        # the first replay of a stamped plan.
+        entries << { cmd: "set",
+                     args: [ "Logical_Switch", switch.name,
+                             "external_ids:powernode_ovn_deployment=#{@deployment.id}" ] }
       end
 
       # Phase 2 — emit all ports for each switch in turn. We iterate
@@ -103,6 +115,32 @@ module Sdwan
       end
 
       entries
+    end
+
+    # IMP-178a7e79fa0d — the desired-set manifest the applier prunes
+    # against. Declares every switch/port/ACL that SHOULD exist (the
+    # same active rows the plan emits), so a retracted ACL or removed
+    # switch is visible to the applier as an omission it can converge
+    # on, instead of silently vanishing from an add-only plan.
+    #
+    # The manifest is ALWAYS present when compile succeeds — an empty
+    # `switches` list is a measured zero, distinct from a missing
+    # manifest (old payload / failed compile), which the applier treats
+    # as NOT MEASURED and never prunes from. ACLs are keyed by
+    # (direction, priority, match) because that is how `ovn-nbctl
+    # acl-del` addresses a row; the active-ACL uniqueness guard on
+    # (switch, direction, priority) makes the pair a stable identity.
+    def build_desired_set
+      {
+        switches: @switches.map(&:name),
+        ports: @switches.to_h { |sw| [ sw.name, ports_for(sw).map(&:name) ] },
+        acls: @switches.to_h do |sw|
+          [ sw.name,
+            acls_for(sw).map do |acl|
+              { direction: acl.direction, priority: acl.priority, match: acl.match }
+            end ]
+        end
+      }
     end
 
     private

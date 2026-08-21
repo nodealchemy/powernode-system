@@ -48,7 +48,7 @@ RSpec.describe Sdwan::OvnCompiler, type: :service do
   describe ".compile_for_deployment" do
     it "returns deployment_id, plan, compiled_at" do
       result = described_class.compile_for_deployment(deployment)
-      expect(result.keys).to contain_exactly(:deployment_id, :plan, :compiled_at)
+      expect(result.keys).to contain_exactly(:deployment_id, :plan, :desired_set, :compiled_at)
       expect(result[:deployment_id]).to eq(deployment.id)
       expect(result[:plan]).to eq([])
       expect(result[:compiled_at]).to match(/\AT?\d{4}-\d{2}-\d{2}T/)
@@ -205,11 +205,15 @@ RSpec.describe Sdwan::OvnCompiler, type: :service do
       make_port(switch: ls_b, name: "p-b-1")
 
       plan = described_class.compile_for_deployment(deployment)[:plan]
-      # Phase 1 emits ls-add for both switches (alphabetical), then phase
-      # 2 emits the per-switch port blocks in the same order.
+      # Phase 1 emits ls-add + the ownership stamp for both switches
+      # (alphabetical), then phase 2 emits the per-switch port blocks in
+      # the same order.
+      stamp = "external_ids:powernode_ovn_deployment=#{deployment.id}"
       expected_sequence = [
         { cmd: "ls-add", args: [ "ls-a" ] },
+        { cmd: "set", args: [ "Logical_Switch", "ls-a", stamp ] },
         { cmd: "ls-add", args: [ "ls-b" ] },
+        { cmd: "set", args: [ "Logical_Switch", "ls-b", stamp ] },
         { cmd: "lsp-add", args: [ "ls-a", "p-a-1" ] },
         { cmd: "lsp-set-addresses", args: [ "p-a-1", "02:11:22:33:44:55" ] },
         { cmd: "lsp-add", args: [ "ls-b", "p-b-1" ] },
@@ -253,6 +257,114 @@ RSpec.describe Sdwan::OvnCompiler, type: :service do
         expect(entry[:args]).to be_a(Array)
         expect(entry[:args]).to all(be_a(String))
       end
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # IMP-178a7e79fa0d — removal convergence. The compiler historically
+  # emitted only ACTIVE rows and nothing else, so a retracted ACL or a
+  # deactivated switch simply vanished from the plan while its NB DB row
+  # lived on forever (the applier is add-only without a desired set to
+  # diff against). These specs pin the prune contract: the compile output
+  # carries a `desired_set` manifest describing every row that SHOULD
+  # exist, so the applier can prune owned NB rows the manifest omits.
+  # ------------------------------------------------------------------
+  describe "desired-set manifest (prune contract, IMP-178a7e79fa0d)" do
+    def make_acl(switch:, name:, direction: "to-lport", priority: 1000,
+                 match: 'ip4.src == 10.0.0.0/24', action: "allow", state: "active")
+      a = Sdwan::OvnAcl.create!(
+        account: account,
+        sdwan_ovn_logical_switch_id: switch.id,
+        name: name,
+        direction: direction,
+        priority: priority,
+        match: match,
+        action: action
+      )
+      a.mark_active! if state == "active"
+      a.mark_removed! if state == "removed"
+      a
+    end
+
+    it "declares desired switches, ports, and acls alongside the plan" do
+      ls = make_switch(name: "ls-keep")
+      make_port(switch: ls, name: "p-keep")
+      make_acl(switch: ls, name: "allow-keep")
+
+      result = described_class.compile_for_deployment(deployment)
+      expect(result).to have_key(:desired_set)
+      expect(result[:desired_set][:switches]).to eq([ "ls-keep" ])
+      expect(result[:desired_set][:ports]).to eq({ "ls-keep" => [ "p-keep" ] })
+      expect(result[:desired_set][:acls]).to eq(
+        { "ls-keep" => [ { direction: "to-lport", priority: 1000,
+                           match: "ip4.src == 10.0.0.0/24" } ] }
+      )
+    end
+
+    it "excludes a RETRACTED acl from the manifest without needing the switch removed (security case)" do
+      # An over-permissive allow ACL that the operator retracts must leave
+      # the desired set even though its parent switch stays active —
+      # that omission is what lets the applier delete it from the NB DB.
+      ls = make_switch(name: "ls-sec")
+      make_acl(switch: ls, name: "allow-too-much",
+               match: "ip4.src == 0.0.0.0/0", action: "allow", state: "removed")
+      make_acl(switch: ls, name: "allow-narrow", priority: 900,
+               match: "ip4.src == 10.9.0.0/24", action: "allow")
+
+      manifest = described_class.compile_for_deployment(deployment)[:desired_set]
+      expect(manifest[:switches]).to eq([ "ls-sec" ])
+      matches = manifest[:acls]["ls-sec"].map { |a| a[:match] }
+      expect(matches).to eq([ "ip4.src == 10.9.0.0/24" ])
+    end
+
+    it "excludes a deactivated switch (and its children) from the manifest" do
+      make_switch(name: "ls-live")
+      gone = make_switch(name: "ls-gone")
+      make_port(switch: gone, name: "p-gone")
+      gone.mark_removed!
+
+      manifest = described_class.compile_for_deployment(deployment)[:desired_set]
+      expect(manifest[:switches]).to eq([ "ls-live" ])
+      expect(manifest[:ports]).not_to have_key("ls-gone")
+      expect(manifest[:acls]).not_to have_key("ls-gone")
+    end
+
+    it "declares a switch with no ports/acls as a measured-zero entry" do
+      make_switch(name: "ls-bare")
+
+      manifest = described_class.compile_for_deployment(deployment)[:desired_set]
+      expect(manifest[:ports]).to eq({ "ls-bare" => [] })
+      expect(manifest[:acls]).to eq({ "ls-bare" => [] })
+    end
+
+    it "still emits the manifest (empty) for a deployment with no switches" do
+      manifest = described_class.compile_for_deployment(deployment)[:desired_set]
+      expect(manifest).to eq({ switches: [], ports: {}, acls: {} })
+    end
+  end
+
+  describe "ownership stamping (prune scoping, IMP-178a7e79fa0d)" do
+    it "stamps every emitted switch with the owning deployment's external_id" do
+      # The prune pass may only ever touch NB rows this platform owns.
+      # Ownership is established at create time: each ls-add is followed
+      # by a `set Logical_Switch <name> external_ids:...` stamp carrying
+      # the deployment id, which the applier later uses to scope its
+      # `find Logical_Switch` prune candidates.
+      make_switch(name: "ls-own")
+
+      plan = described_class.compile_for_deployment(deployment)[:plan]
+      expect(plan).to include(
+        { cmd: "set",
+          args: [ "Logical_Switch", "ls-own",
+                  "external_ids:powernode_ovn_deployment=#{deployment.id}" ] }
+      )
+    end
+
+    it "does not stamp removed switches (they are never emitted)" do
+      make_switch(name: "ls-dead", state: "removed")
+
+      plan = described_class.compile_for_deployment(deployment)[:plan]
+      expect(plan.select { |e| e[:cmd] == "set" }).to be_empty
     end
   end
 end
