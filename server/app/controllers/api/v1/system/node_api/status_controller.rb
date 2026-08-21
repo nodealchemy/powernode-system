@@ -52,7 +52,9 @@ module Api
           # Body (from powernode-agent's runtime.HeartbeatPayload):
           #   boot_id, agent_version, architecture, uptime_seconds,
           #   module_digests (hash of module_id → oci_digest), mount_state,
-          #   load_average, memory_free_kb, booted_image_git_sha
+          #   load_average, memory_free_kb, booted_image_git_sha,
+          #   sdwan_state (per-network applier outcomes — see
+          #   Sdwan::AgentApplyStateWriter), sdwan_ovn_state
           #
           # Persists into the NodeInstance's M0.M runtime telemetry columns
           # (last_heartbeat_at, agent_version, boot_id, running_module_digests,
@@ -114,6 +116,27 @@ module Api
               )
             rescue StandardError => e
               Rails.logger.warn("[StatusController] OVN deployment reconcile failed for #{current_instance.id}: #{e.class}: #{e.message}")
+            end
+
+            # IMP-da1b772c2596 — the agent's SDWAN APPLY observation. The
+            # producer has shipped `sdwan_state` since the SDWAN manager
+            # existed (and per-subsystem applier outcomes since 28460bbb) and
+            # NOTHING on the server read the key, so a node whose nftables /
+            # vrf / bridge apply failed on every tick was indistinguishable
+            # from one that applied cleanly — the platform scored "served" as
+            # "applied". Absent block ⇒ nothing written (absence stays
+            # absence; System::Fleet::Sensors::SdwanApplyHealthSensor reads it
+            # as NOT MEASURED, never as healthy). Wrapped so an ingest bug
+            # cannot bounce telemetry, exactly like the OVN block above.
+            begin
+              apply_obs = params[:sdwan_state]
+              apply_obs = apply_obs.to_unsafe_h if apply_obs.respond_to?(:to_unsafe_h)
+              ::Sdwan::AgentApplyStateWriter.write!(
+                instance: current_instance,
+                payload:  apply_obs
+              )
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] sdwan apply state ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
             end
 
             # Boot-image upgrade reconcile (campaign 019f505f inc 2): the node

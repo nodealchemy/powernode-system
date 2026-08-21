@@ -303,6 +303,32 @@ module System
           skill: nil,
           action_category: "system.sdwan_ovn_deployment_investigate"
         },
+        # IMP-da1b772c2596 — SdwanApplyHealthSensor. The agent's OBSERVED
+        # apply outcome, which nothing on the server read until now: a node
+        # whose nftables/vrf/bridge apply failed every tick was scored as
+        # healthy because the platform had SERVED the config successfully.
+        #
+        # skill: nil, and there is no safe applier to name. A failed apply is
+        # a kernel-side refusal the agent already retries on every tick, so
+        # re-serving the same config remediates nothing; the repair is an
+        # image or a config a person has to change. Same category for both
+        # kinds because they share one disposition (reach an operator) while
+        # keeping distinct kinds and fingerprints so a failing applier and an
+        # unmeasured fleet stay separable.
+        #
+        # DO NOT collapse to system.observation — the fleet seed maps that to
+        # auto_approve, which would file the signal for dashboards and reach
+        # NO operator. Listed in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES for the
+        # standing-fingerprint reason recorded there.
+        "system.sdwan_apply_failed" => {
+          skill: nil,
+          action_category: "system.sdwan_apply_investigate"
+        },
+        "system.sdwan_apply_not_measured" => {
+          skill: nil,
+          action_category: "system.sdwan_apply_investigate"
+        },
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
           action_category: "system.sdwan_vip_failover",

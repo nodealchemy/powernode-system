@@ -280,7 +280,17 @@ module System
         # system.sdwan_ovn_deployment_investigate (no applier by design:
         # the failing component is OVN control infrastructure the platform
         # does not provision).
-        ::System::Fleet::Sensors::SdwanOvnDeploymentHealthSensor
+        ::System::Fleet::Sensors::SdwanOvnDeploymentHealthSensor,
+        # IMP-da1b772c2596 — the SDWAN APPLY oracle. Every other sdwan_*
+        # sensor scores the platform's own work (compiled, served,
+        # handshook); this one reads the agent's observed per-subsystem
+        # APPLY outcome, which nothing on the server consumed until now — a
+        # node whose nftables/vrf/bridge apply failed on every tick was
+        # indistinguishable from one that applied cleanly. Emits
+        # system.sdwan_apply_failed / system.sdwan_apply_not_measured →
+        # system.sdwan_apply_investigate (notify-level; no applier exists,
+        # because the agent already retries the apply every tick).
+        ::System::Fleet::Sensors::SdwanApplyHealthSensor
       ].freeze
 
       def permitted_actions

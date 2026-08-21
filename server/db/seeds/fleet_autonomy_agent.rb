@@ -206,6 +206,22 @@ fleet_policies = {
   # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
   "system.sdwan_bgp_observation_investigate" => "notify_and_proceed",
 
+  # IMP-da1b772c2596 — SdwanApplyHealthSensor (sdwan_apply_failed +
+  # sdwan_apply_not_measured): the agent's OBSERVED per-subsystem apply
+  # outcome, which nothing on the server consumed before this. Seeded HERE for
+  # the same mechanical reason as the three categories above — the sensor
+  # fires from FleetAutonomyService::SENSORS and gates as THIS agent, so a
+  # policy on SDWAN Manager would be invisible to the tick and every signal
+  # would die at the gate.
+  #
+  # notify_and_proceed, never auto_approve: there is NO applier and can be
+  # none — a failed apply is a kernel-side refusal the agent already retries
+  # on every tick, so re-serving the same config remediates nothing. "Proceed"
+  # means "notify the operator". Also in
+  # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because a
+  # persistently failing applier holds one fingerprint indefinitely.
+  "system.sdwan_apply_investigate" => "notify_and_proceed",
+
   # Read/notify
   "system.module_assign"           => "notify_and_proceed",
   "system.instance_reboot"         => "notify_and_proceed",

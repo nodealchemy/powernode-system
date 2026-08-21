@@ -74,12 +74,30 @@ module System
       #                                            fixes their OVN control
       #                                            plane, far beyond
       #                                            SETTLE_WINDOW.
+      #   system.sdwan_apply_investigate         — IMP-da1b772c2596. The
+      #                                            agent's OBSERVED SDWAN
+      #                                            apply failure. There is no
+      #                                            applier and can be none:
+      #                                            the agent already retries
+      #                                            the failing apply on every
+      #                                            tick, so re-serving the
+      #                                            same config remediates
+      #                                            nothing — the repair is an
+      #                                            image or a config a person
+      #                                            changes, far beyond
+      #                                            SETTLE_WINDOW. Its sibling
+      #                                            kind (apply_not_measured)
+      #                                            clears only when a fleet
+      #                                            rollout replaces the
+      #                                            agents, which is slower
+      #                                            still.
       NON_REMEDIATING_ACTION_CATEGORIES = %w[
         system.observation
         system.sdwan_service_health_investigate
         system.disk_image_publication_investigate
         system.sdwan_ovn_deployment_investigate
         system.sdwan_bgp_observation_investigate
+        system.sdwan_apply_investigate
       ].freeze
 
       def initialize(account:, agent: nil)
