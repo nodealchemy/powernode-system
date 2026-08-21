@@ -49,6 +49,38 @@ module System
 
             next if last_apply && last_apply > asgn.updated_at
 
+            # A node with nothing running has no apply target and no on-node
+            # state that can be out of compliance, so this assignment cannot
+            # be "drifted" in any actionable sense. Emitting anyway produced a
+            # signal the only actuator refuses (see instance_ids below):
+            # dispatch_reconcile_task resolves Array(payload["instance_ids"]).first
+            # and returns applied:false "instance not found", so every such
+            # signal minted a permanently ineffective RemediationOutcome —
+            # 115 of ops-hub's 135 nodes are terminated CI-pool shells inside
+            # the 7-day retention window, each still carrying 4 assignments.
+            #
+            # NOT a coverage deletion, in two halves — the distinction matters,
+            # because only the first half is re-routed and claiming both would
+            # overstate it. (a) An instance that is coming up but not up YET is
+            # a LIVENESS condition signalled elsewhere: InstanceStatusSensor
+            # watches running AND starting (system.instance_silent, :high when
+            # it never heartbeat), InstancePoolService's warming-timeout reaper
+            # errors a stuck pool member, and DecisionEngine#reap_presumed_dead!
+            # flips a long-silent one. (b) For every other status (stopped,
+            # pending, provisioning, terminated, error) nothing signals — but
+            # nothing did before either: `running` has ALWAYS been the payload
+            # scope, so the applier refused those nodes already. This skip
+            # stops emitting a signal that was discarded downstream; it does
+            # not stop anything from being acted on.
+            #
+            # And nothing latches: the
+            # sensor is rebuilt from the DB on every 60s tick
+            # (FleetAutonomyService#collect_signals) and holds no state, so a
+            # skipped assignment re-enters the candidate set the moment its
+            # node's first instance reaches `running`.
+            instance_ids = ::System::NodeInstance.running.where(node_id: asgn.node_id).pluck(:id)
+            next if instance_ids.empty?
+
             signal(
               kind: "system.config_drift",
               severity: :medium,
@@ -59,8 +91,11 @@ module System
                 # F3-09: the decision engine resolves the remediation target
                 # (DriftRemediateExecutor + apply_config reconcile task) from
                 # the payload's instance ids — without them every invocation
-                # ran with instance_id: nil.
-                instance_ids: ::System::NodeInstance.running.where(node_id: asgn.node_id).pluck(:id),
+                # ran with instance_id: nil. The engine's find_by(id:) carries
+                # NO status filter, so the `running` scope above is the only
+                # gate on which statuses can ever become an apply target —
+                # mirrored, not referenced, exactly like APPLY_COMMAND.
+                instance_ids: instance_ids,
                 changed_at: asgn.updated_at.iso8601,
                 last_apply_at: last_apply&.iso8601
               },

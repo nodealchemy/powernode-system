@@ -182,6 +182,13 @@ RSpec.describe "System::Fleet::Sensors" do
     subject(:signals) { described_class.new(account: account).sense }
 
     let(:node) { create(:system_node, account: account, node_template: template) }
+    # Required precondition, not scenery: the sensor skips an assignment whose
+    # node has no RUNNING instance, because the only actuator
+    # (DecisionEngine#dispatch_reconcile_task) resolves its target from
+    # payload["instance_ids"] and refuses an empty one. Without this the
+    # "too new" context below would go empty for the wrong reason and stop
+    # testing STALE_THRESHOLD at all.
+    let!(:running_instance) { create(:system_node_instance, :running, node: node) }
     let(:mod) do
       create(:system_node_module, account: account, node_platform: platform,
              category: category, variety: "subscription", name: "cd-mod")
