@@ -112,6 +112,28 @@ RSpec.describe Sdwan::Ovn::DeploymentReconciler do
       expect(deployment.reload.status).to eq("active")
     end
 
+    it "persists prune outcomes for visibility WITHOUT letting them block activation (IMP-178a7e79fa0d)" do
+      # A failed delete with a clean replay is still a positive NB
+      # observation — the topology IS applied — so activation proceeds;
+      # but the failure must be SEEN platform-side, not dropped by the
+      # observation slice: a retracted over-permissive ACL whose acl-del
+      # keeps failing would otherwise stay live invisibly.
+      stub_probe(not_measured)
+
+      obs = observation(applied: 5, planned: 5).merge(
+        "prune_deleted"    => 2,
+        "prune_failed"     => 1,
+        "last_prune_error" => "acl-del sw-a to-lport 1000: simulated failure"
+      )
+      reconcile!(nb_observation: obs)
+
+      expect(deployment.reload.status).to eq("active")
+      last = deployment.nb_observed["last"]
+      expect(last["prune_deleted"]).to eq(2)
+      expect(last["prune_failed"]).to eq(1)
+      expect(last["last_prune_error"]).to include("acl-del")
+    end
+
     it "activates on a cache-hit full success — the applier only caches after a real replay" do
       # ShellOvnNbApplier populates its short-circuit cache exclusively from a
       # completed successful replay and clears it on failure/empty-plan, so a

@@ -165,9 +165,15 @@ module Sdwan
           return nil unless obs["deployment_id"].to_s == deployment.id.to_s
           return nil unless obs["plan_commands"].to_i.positive?
 
+          # The prune_* fields (IMP-178a7e79fa0d) ride along for operator
+          # visibility — a retracted ACL whose delete keeps failing must be
+          # SEEN somewhere platform-side. They deliberately do NOT feed
+          # full_success?: a failed delete with a clean replay is still a
+          # positive NB observation, so it must not flip activation.
           obs.slice("deployment_id", "nb_db_endpoint", "plan_commands",
                     "applied_commands", "compiled_at", "last_replay_at",
-                    "last_error", "cache_hit")
+                    "last_error", "cache_hit",
+                    "prune_deleted", "prune_failed", "last_prune_error")
         end
 
         def full_success?(obs)
