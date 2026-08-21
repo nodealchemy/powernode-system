@@ -89,6 +89,17 @@ module Api
           def update
             require_permission("system.sdwan.firewall.manage")
             attrs = rule_params
+            # IMP-32978416b9d3: strong params drops a nil-valued :port_range
+            # key entirely at permit time (ActionController::Parameters
+            # #hash_filter, `next unless value`) — by the time rule_params
+            # has run, explicit `port_range: null` and an absent key are
+            # indistinguishable. explicit_port_range_clear? reads the RAW,
+            # unpermitted params to catch the null case before that drop, and
+            # routes it through :port_range_hash — whose nil contract IS
+            # "clear" — rather than :port_range, whose nil contract is "not
+            # provided" (IMP-0e44cf2fc80b). {} already clears unaffected: it
+            # survives permit (truthy) and flows through :port_range as today.
+            attrs = attrs.merge(port_range_hash: nil) if explicit_port_range_clear?
             # Validated before the gate so an unsaveable payload keeps its
             # field-level 422 and opens no audit row. Never saved —
             # UpdateFirewallRule's update! stays the only writer. Plain
@@ -146,6 +157,16 @@ module Api
               :name, :priority, :action, :direction, :protocol, :enabled,
               src_selector: {}, dst_selector: {}, port_range: %i[from to]
             )
+          end
+
+          # IMP-32978416b9d3: must read params[:firewall_rule] — the RAW,
+          # unpermitted request params — not rule_params. Strong params'
+          # hash_filter drops a nil-valued key before rule_params ever runs,
+          # so by then an explicit null is already gone; this has to look
+          # earlier than that filtering step.
+          def explicit_port_range_clear?
+            raw = params[:firewall_rule]
+            raw.present? && raw.key?(:port_range) && raw[:port_range].nil?
           end
 
           # SOLE remaining consumer: create's executor replay hash, which
