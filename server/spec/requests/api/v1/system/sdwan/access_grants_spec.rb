@@ -245,10 +245,13 @@ RSpec.describe "Api::V1::System::Sdwan::AccessGrants", type: :request do
     end
 
     it "requires sdwan.user_devices.manage (the approval-gated revoke is behind the permission)" do
-      post_revoke(user: stranger)
+      expect {
+        post_revoke(user: stranger)
+        expect(response).to have_http_status(:forbidden)
+      }.not_to change(Ai::DeferredOperation, :count)
 
-      expect(response).to have_http_status(:forbidden)
       expect(grant.reload.status).to eq("active")
+      expect(device.reload.revoked_at).to be_nil
     end
 
     it "defers the revoke for approval instead of cutting access inline" do

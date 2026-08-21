@@ -199,6 +199,19 @@ RSpec.describe "SdwanTool destroy-family gate parity (IMP-800b25c1cc45)" do
       expect(r[:data][:id]).to eq(rule.id)
       expect(::Sdwan::FirewallRule.exists?(rule.id)).to be(false)
     end
+
+    it "refuses a rule in another account without opening a gate row" do
+      other = create(:account)
+      foreign = create(:sdwan_firewall_rule, account: other,
+                                             network: create(:sdwan_network, account: other))
+
+      expect {
+        r = call("system_sdwan_delete_firewall_rule", firewall_rule_id: foreign.id)
+        expect(r[:success]).to be(false)
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(::Sdwan::FirewallRule.exists?(foreign.id)).to be(true)
+    end
   end
 
   describe "system_sdwan_delete_virtual_ip" do
@@ -244,6 +257,21 @@ RSpec.describe "SdwanTool destroy-family gate parity (IMP-800b25c1cc45)" do
       expect(::Sdwan::VirtualIpAssignment.exists?(assignment.id)).to be(false)
     end
 
+    # Sdwan::VirtualIp takes account_id from its network through a
+    # before_validation hook rather than by direct assignment, so "scoped to the
+    # account" is a derived property here and worth its own guard.
+    it "refuses a VIP in another account without opening a gate row" do
+      other = create(:account)
+      foreign = create(:sdwan_virtual_ip, network: create(:sdwan_network, account: other))
+
+      expect {
+        r = call("system_sdwan_delete_virtual_ip", virtual_ip_id: foreign.id)
+        expect(r[:success]).to be(false)
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(::Sdwan::VirtualIp.exists?(foreign.id)).to be(true)
+    end
+
     # Same holder shape on the branch that PARKS: the approval path must leave
     # the VIP and its live holder row intact until an operator acts.
     it "leaves a live holder row untouched while the destroy is parked" do
@@ -255,7 +283,11 @@ RSpec.describe "SdwanTool destroy-family gate parity (IMP-800b25c1cc45)" do
 
       expect_parked(call("system_sdwan_delete_virtual_ip", virtual_ip_id: vip.id))
 
-      expect(::Sdwan::VirtualIpAssignment.find_by(id: assignment.id)&.released_at).to be_nil
+      # reload, not find_by: an inline destroy takes the assignment with it
+      # through dependent: :destroy, and `find_by(...)&.released_at` would then
+      # read nil — passing for the exact write this example exists to catch.
+      expect(::Sdwan::VirtualIp.exists?(vip.id)).to be(true)
+      expect(assignment.reload.released_at).to be_nil
     end
   end
 
@@ -279,6 +311,22 @@ RSpec.describe "SdwanTool destroy-family gate parity (IMP-800b25c1cc45)" do
       approve!(parked)
 
       expect(::Sdwan::PortMapping.exists?(mapping.id)).to be(false)
+    end
+
+    # port_mapping_in_account scopes through joins(:network) on the NETWORK's
+    # account_id rather than a column on the mapping, and answers nil rather
+    # than raising — a different refusal path from the other arms here.
+    it "refuses a mapping in another account without opening a gate row" do
+      other = create(:account)
+      foreign_network = create(:sdwan_network, account: other)
+      foreign = create(:sdwan_port_mapping, account: other, network: foreign_network)
+
+      expect {
+        r = call("system_sdwan_delete_port_mapping", port_mapping_id: foreign.id)
+        expect(r[:success]).to be(false)
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(::Sdwan::PortMapping.exists?(foreign.id)).to be(true)
     end
 
     it "destroys inline and answers the pre-gate body under notify_and_proceed" do
@@ -378,9 +426,11 @@ RSpec.describe "SdwanTool destroy-family gate parity (IMP-800b25c1cc45)" do
     # to dispose of — the same validate-before-gate contract the REST twin keeps.
     it "refuses an invalid payload up front without opening a gate row" do
       expect {
-        r = call("system_sdwan_create_route_policy", **create_params.merge(name: ""))
-        expect(r[:success]).to be(false)
-      }.not_to change(Ai::DeferredOperation, :count)
+        expect {
+          r = call("system_sdwan_create_route_policy", **create_params.merge(name: ""))
+          expect(r[:success]).to be(false)
+        }.not_to change(Ai::DeferredOperation, :count)
+      }.not_to change(::Sdwan::RoutePolicy, :count)
     end
   end
 end

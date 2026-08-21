@@ -1387,7 +1387,8 @@ module Ai
           executor_params: { rule_id: rule.id },
           source_type: "Sdwan::FirewallRule",
           source_id: rule.id,
-          description: "Delete firewall rule #{rule.name.presence || rule.id}"
+          # Verbatim the REST twin (FirewallRulesController#destroy).
+          description: "Delete firewall rule #{rule.try(:name) || rule.id}"
         ) do |_result|
           { deleted: true, id: rule.id }
         end
@@ -2409,7 +2410,8 @@ module Ai
           executor_params: { vip_id: vip.id },
           source_type: "Sdwan::VirtualIp",
           source_id: vip.id,
-          description: "Delete SDWAN VIP #{vip.try(:cidr) || vip.id}"
+          # Verbatim the REST twin (VirtualIpsController#destroy).
+          description: "Delete VIP #{vip.try(:cidr) || vip.id}"
         ) do |_result|
           { deleted: true, id: vip.id }
         end
@@ -2746,7 +2748,9 @@ module Ai
           executor_params: { mapping_id: m.id },
           source_type: "Sdwan::PortMapping",
           source_id: m.id,
-          description: "Delete port mapping #{m.name.presence || m.id}"
+          # Verbatim the REST twin (PortMappingsController#destroy), so the
+          # approval card reads the same whichever surface opened it.
+          description: "Delete port mapping #{m.id}"
         ) do |_result|
           { deleted: true, id: m.id }
         end
