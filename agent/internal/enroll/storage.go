@@ -91,11 +91,6 @@ type PKIPaths struct {
 	Meta     string // small JSON sidecar with InstanceID, NotAfter, etc.
 }
 
-// DefaultPKIPaths returns the canonical paths under PKIDir.
-func DefaultPKIPaths() PKIPaths {
-	return PathsUnder(PKIDir)
-}
-
 func PathsUnder(dir string) PKIPaths {
 	return PKIPaths{
 		Dir:      dir,
