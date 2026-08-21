@@ -108,7 +108,7 @@ fleet_policies = {
   # dedup TTL self-throttles repeat firings → notify_and_proceed.
   "system.federation_peer_remediate" => "notify_and_proceed",
 
-  # Phase 3 (SDWAN autonomous remediation) — the 7 system.sdwan_* actions below
+  # Phase 3 (SDWAN autonomous remediation) — the 6 system.sdwan_* actions below
   # were MOVED here from system_sdwan_manager_agent.rb. Like
   # federation_peer_remediate, they fire from FleetAutonomyService::SENSORS,
   # whose tick! gates as the "Fleet Autonomy" agent — so gate_action! resolves
@@ -117,6 +117,14 @@ fleet_policies = {
   # initiated sdwan.* CRUD policies stay on SDWAN Manager (gated via
   # Ai::AutonomyGate as that agent). Autonomy levels preserved from the prior
   # SDWAN Manager seed.
+  #
+  # IMP-17bc5546009a (2026-08-21): a 7th, system.sdwan_route_policy_audit, was
+  # seeded here too but DELETED outright — no sensor emitted it, no
+  # DecisionEngine binding routed to it, and no executor carried the category,
+  # so it was a permanently no-op auto_approve row. A real compiled-policy-vs-
+  # FRR-observed drift sensor is a deliberate future build, not something to
+  # back into because this row existed; see FleetAutonomyService#dedup_key_for
+  # spec for the pinned removal.
   "system.sdwan_peer_remediate"        => "notify_and_proceed",
   # NOTE: no signal routes here since IMP-df40782d3f4d moved
   # system.sdwan_credential_expiring to system.sdwan_credential_refresh
@@ -128,7 +136,6 @@ fleet_policies = {
   "system.sdwan_user_device_revoke"    => "require_approval",
   "system.sdwan_bgp_session_remediate" => "notify_and_proceed",
   "system.sdwan_vip_failover"          => "require_approval",
-  "system.sdwan_route_policy_audit"    => "auto_approve",
 
   # IMP-df40782d3f4d — system.sdwan_credential_expiring routes here now:
   # a server-side MembershipCredential re-issue (SdwanCredentialRefreshExecutor

@@ -89,14 +89,21 @@ puts "  ✅ SDWAN Manager agent: #{sdwan_agent.previously_new_record? ? 'created
 # validation passes when these policies are created.
 
 sdwan_policies = {
-  # NOTE: The 7 autonomous SDWAN remediation actions (system.sdwan_peer_remediate,
+  # NOTE: 6 autonomous SDWAN remediation actions (system.sdwan_peer_remediate,
   # system.sdwan_key_rotate, system.sdwan_failover, system.sdwan_user_device_revoke,
-  # system.sdwan_bgp_session_remediate, system.sdwan_vip_failover,
-  # system.sdwan_route_policy_audit) were MOVED to fleet_autonomy_agent.rb.
-  # Those actions fire from FleetAutonomyService::SENSORS, whose tick! gates as
-  # the "Fleet Autonomy" agent, so gate_action! resolves the policy against THAT
-  # agent — seeding them here left them stranded (silently 'not_permitted') in
-  # the sensor path. This mirrors the system.federation_peer_remediate move.
+  # system.sdwan_bgp_session_remediate, system.sdwan_vip_failover) were MOVED to
+  # fleet_autonomy_agent.rb. Those actions fire from FleetAutonomyService::SENSORS,
+  # whose tick! gates as the "Fleet Autonomy" agent, so gate_action! resolves the
+  # policy against THAT agent — seeding them here left them stranded (silently
+  # 'not_permitted') in the sensor path. This mirrors the
+  # system.federation_peer_remediate move.
+  #
+  # IMP-17bc5546009a: a 7th, system.sdwan_route_policy_audit, moved alongside
+  # them but was later DELETED outright (2026-08-21) — it had no sensor, no
+  # DecisionEngine binding, and no executor, so it was a seeded no-op on either
+  # agent. Not re-added here; see fleet_autonomy_agent.rb's history for the
+  # removal.
+  #
   # Only operator-initiated sdwan.* CRUD policies remain here.
   #
   # This table is seeded TWICE, against two different audiences (see the

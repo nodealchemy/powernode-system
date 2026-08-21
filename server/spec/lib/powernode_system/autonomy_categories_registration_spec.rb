@@ -206,4 +206,15 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
     end
     expect(kb_replacement).to be >= 1
   end
+
+  # IMP-17bc5546009a — system.sdwan_route_policy_audit was seeded (on Fleet
+  # Autonomy, auto_approve) and registered here, but nothing emits the signal
+  # it would dedup, no DecisionEngine binding routes to it, and no executor
+  # carries the category. Removed per operator direction (2026-08-21) rather
+  # than built out, same precedent as the runtime_docker_tls_rotate removal in
+  # the 2026-05-19 audit this file already guards above.
+  it "no longer seeds or registers the removed system.sdwan_route_policy_audit lane" do
+    expect(seeded_categories).not_to include("system.sdwan_route_policy_audit")
+    expect(Ai::InterventionPolicy.category_registered?("system.sdwan_route_policy_audit")).to be(false)
+  end
 end

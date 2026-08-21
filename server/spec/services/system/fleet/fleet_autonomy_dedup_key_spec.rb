@@ -77,4 +77,14 @@ RSpec.describe System::Fleet::FleetAutonomyService, "#dedup_key_for" do
   it "still returns nil for a non-signal action with no natural key and no fingerprint" do
     expect(dedup("system.federation_peer_remediate", {})).to be_nil
   end
+
+  # IMP-17bc5546009a — system.sdwan_route_policy_audit was seeded (auto_approve,
+  # dedup'd on route_policy_id) for a lane that has no sensor, no
+  # DecisionEngine binding, and no executor. Removed rather than built per
+  # operator direction (2026-08-21) — a compiled-policy-vs-FRR-observed drift
+  # sensor is real work that should be chosen deliberately, not backed into
+  # because a stray seed row exists. This pins the dedup arm gone.
+  it "has no dedup arm for the removed system.sdwan_route_policy_audit lane" do
+    expect(dedup("system.sdwan_route_policy_audit", { "route_policy_id" => "rp-1" })).to be_nil
+  end
 end

@@ -207,7 +207,7 @@ The compiler emits FRR config to each peer's `/etc/frr/frr.conf` on next reconci
 platform.system_sdwan_list_route_policies({ network_id: "<network-id>" })
 ```
 
-The `system.sdwan_route_policy_audit` autonomy action (auto_approve policy) periodically surfaces inconsistent or shadowed statements.
+There is no automated audit for inconsistent or shadowed statements today — `system.sdwan_route_policy_audit` was a seeded autonomy action naming this, but it had no sensor, no binding, and no executor behind it, and was deleted (IMP-17bc5546009a). Review `system_sdwan_list_route_policies` output manually, or via the `Sdwan::Bgp::RoutePolicyCompiler` output for a given network.
 
 ## Phase 7 — User devices (WireGuard VPN) ✅
 
@@ -335,7 +335,7 @@ platform.system_sdwan_list_federation_peers({})
 | BGP session stuck `Active` | Neighbor doesn't respond to Open message | Verify the neighbor is up + has the route to this peer's `/128`; `sdwan_peer_remediate` if mTLS is the issue |
 | VIP failover doesn't promote | `sdwan_vip_failover` blocked by `require_approval` policy | Check approval queue UI; operator approves → executor runs |
 | VIP failover marks `anycast: true` | Anycast VIP — failover is informational only | This is expected; routing handles failover for anycast |
-| Firewall rule shadows another | Selector specificity — more-specific selectors match first | Use `system.sdwan_route_policy_audit` (auto_approve) to surface shadowed rules |
+| Firewall rule shadows another | Selector specificity — more-specific selectors match first | Review `system_sdwan_list_firewall_rules` output manually — there is no automated shadow-detection today |
 | User device can't connect after issue | Bootstrap URL expired (>15 min) | Re-issue via `create_access_grant` → `issue_user_device` |
 
 ## Composition skills (multi-step topology)

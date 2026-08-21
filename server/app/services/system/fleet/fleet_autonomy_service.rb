@@ -501,8 +501,6 @@ module System
           key_value(metadata, "neighbor_address") || key_value(metadata, "peer_id")
         when "system.sdwan_vip_failover"
           key_value(metadata, "virtual_ip_id")
-        when "system.sdwan_route_policy_audit"
-          key_value(metadata, "route_policy_id")
         # M2 of the AI-driven provisioning conversation. Project-scoped
         # actions dedup on `mission_id` (the project identifier) so that
         # repeat sensor firings for the same breaching mission collapse
