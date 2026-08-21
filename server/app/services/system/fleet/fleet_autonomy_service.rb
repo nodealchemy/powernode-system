@@ -426,6 +426,77 @@ module System
         end
       end
 
+      # IMP-01a025b3: is there already a live operator obligation for exactly
+      # the request #gate_action! would mint for this (action_category, metadata)?
+      #
+      # "Open" means "re-gating would produce no NEW operator-facing artifact",
+      # and it mirrors #create_pending_approval's three suppression arms
+      # one-for-one, read straight off the DATABASE (never Rails.cache — the hub
+      # runs CACHE_STORE=memory_store, which is per-Puma-process and flushes on
+      # restart, so the cache can only ever be an optimization here, never the
+      # correctness mechanism):
+      #
+      #   1. a PENDING request on the same dedup key — the gate would find that
+      #      row and merely update it in place;
+      #   2. a request on that key REJECTED inside #decision_ttl_for's cooldown;
+      #   3. ANY request in the same action_category rejected inside that
+      #      cooldown — the gate's action-level fallback, which suppresses
+      #      regardless of dedup key. Omitting this arm left the caller
+      #      escalating (and consuming consent budget) into a window where the
+      #      gate mints nothing, which is the exact drain this exists to stop.
+      #
+      # Everything else is NOT open, deliberately: approved, expired, cancelled,
+      # and rejected-past-cooldown all re-mint, so a caller that suppresses on
+      # this predicate re-alerts the next time the condition is seen. The
+      # failure mode being avoided in that direction is a lane that alerts once
+      # and then goes silent forever, which is worse than the noise.
+      #
+      # An unattended PENDING request is normally self-limiting: it carries
+      # expires_at (the chain's timeout_hours — 4h on the seeded fleet chain),
+      # and #expire_stale_approvals! at tick start fires timeout_action
+      # ("reject"), moving it into arm 2 and then out of it. That is a property
+      # of the CHAIN, not of the schema: timeout_hours is nullable with no
+      # default, and Ai::ApprovalChain#create_request! leaves expires_at NULL
+      # when it is blank. Both expiry sweeps filter on `expires_at < ?`, which
+      # NULL never satisfies, so a fleet chain configured without a timeout
+      # suppresses this lane for as long as the request sits unanswered.
+      #
+      # Resolution is via #dedup_key_for so the row inspected here is EXACTLY
+      # the row the gate would act on — a divergent key would silence on one
+      # identity while minting on another. Two known divergences, both
+      # unreachable today and both stated rather than assumed: the advisory
+      # settled-request arm (#settled_advisory_request) is not modeled — no
+      # advisory binding can reach a stuck streak, since advisory outcomes are
+      # never recorded — and the dedup key is COARSER than a fingerprint for
+      # actions keyed on module/template identity, so one open request stands
+      # for every fingerprint sharing that key.
+      #
+      # Fails OPEN (false) on any error: a broken query must never be able to
+      # suppress an operator alert. Logged at error level because that
+      # fail-open silently restores the incident this predicate prevents.
+      def open_operator_request?(action_category, metadata: {})
+        return false unless defined?(::Ai::ApprovalRequest)
+
+        if (key = dedup_key_for(action_category, metadata))
+          name, value = key
+          return true if pending_fleet_approvals
+            .where("request_data->>'action_category' = ?", action_category)
+            .where("request_data->'payload'->>? = ?", name, value)
+            .exists?
+
+          return true if recently_rejected_approval?(action_category,
+              [ "request_data->>'action_category' = ? AND request_data->'payload'->>? = ?",
+               action_category, name, value ])
+        end
+
+        recently_rejected_approval?(action_category,
+          [ "request_data->>'action_category' = ?", action_category ])
+      rescue StandardError => e
+        Rails.logger.error("[FleetAutonomy] open-request check failed for #{action_category} " \
+                           "(failing open — escalation will re-fire): #{e.class}: #{e.message}")
+        false
+      end
+
       def policy_for(action_category)
         @policy_service.resolve(action_category: action_category, agent: @agent)
       end

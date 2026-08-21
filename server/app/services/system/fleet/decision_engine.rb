@@ -599,7 +599,10 @@ module System
         # re-running the same futile action is noise, not remediation. Skip
         # the (equally futile) skill re-plan, surface ONE remediation_stuck
         # event, and force the gate to require_approval so an operator
-        # decides. ApprovalRequest dedup keeps this to one open approval.
+        # decides. ApprovalRequest dedup keeps this to one open approval, and
+        # (IMP-01a025b3) that open row is what gives the lane a terminal state:
+        # while it stands, escalate_stuck_remediation! goes quiet instead of
+        # re-emitting and re-gating.
         streak = ineffective_streak(signal)
         if streak >= STUCK_STREAK_THRESHOLD
           decision = escalate_stuck_remediation!(signal, binding, streak)
@@ -831,6 +834,56 @@ module System
       # engine's fingerprint dedup) and gates with a forced require_approval —
       # the resolved policy already proved itself ineffective N times.
       def escalate_stuck_remediation!(signal, binding, streak)
+        metadata = skill_metadata_payload(signal, nil).merge("remediation_stuck_streak" => streak)
+
+        # IMP-01a025b3: the escalation has a TERMINAL STATE. Without one it had
+        # none: this lane skips both the skill and the remediation, and
+        # RemediationValidator only scores decisions that PROCEEDED, so no fresh
+        # outcome is ever recorded for the fingerprint and the streak stays
+        # pinned at the threshold forever. The trio below (HIGH event + forced
+        # require_approval + decision.pending) therefore re-fired every dedup
+        # TTL for as long as the condition stood. ApprovalRequest dedup already
+        # collapsed those to ONE open row — nothing READ that row before
+        # re-escalating.
+        #
+        # Skipping gate_action! is the load-bearing half, not the event
+        # suppression: every non-advisory gate call consumes the target
+        # module's daily consent budget (ConsentBudgetService#check_and_consume!
+        # increments atomically per call), and this binding's metadata carries
+        # the REAL module_id — so the noise drained LIVE modules' budgets and
+        # pushed their genuine remediations down the budget-exhausted branch.
+        #
+        # The read is DB-backed on purpose (see #open_operator_request? for the
+        # definition of "open" and what resolve/reject/expire do): cross-process
+        # and restart-safe, where Rails.cache — memory_store on the hub — is
+        # neither. The engine's own cache dedup stays an optimization in front
+        # of it.
+        #
+        # The terminal state is per OPERATOR OBLIGATION, not per fingerprint,
+        # because the obligation itself is: the gate's dedup key is coarser than
+        # a fingerprint for module/template-keyed actions (config_drift's
+        # fingerprint is per-assignment while its dedup key is module_id), so N
+        # stuck assignments on one module share ONE ApprovalRequest and, now,
+        # one escalation. That is a deliberate trade — the escalation announces
+        # a request the operator does not yet have, and here they already have
+        # it — but it does cost the per-node HIGH events that used to fan out.
+        # The per-assignment detail is still emitted: emit_signal! above is
+        # untouched, and each fingerprint still records its own
+        # decision.awaiting_operator carrying its own correlation_id.
+        if autonomy_service.open_operator_request?(binding[:action_category], metadata: metadata)
+          record_decision!(signal)
+          return {
+            decision: :awaiting_operator,
+            gate: "remediation_stuck",
+            reason: "operator request already open for #{signal.fingerprint} — escalation already delivered",
+            signal_kind: signal.kind,
+            fingerprint: signal.fingerprint,
+            action_category: binding[:action_category],
+            remediation_stuck: true,
+            ineffective_streak: streak
+          }
+        end
+
         ::System::Fleet::EventBroadcaster.emit!(
           account: account,
           kind: "fleet.remediation_stuck",
@@ -848,8 +901,7 @@ module System
 
         gate_result = autonomy_service.gate_action!(
           binding[:action_category],
-          metadata: skill_metadata_payload(signal, nil)
-                      .merge("remediation_stuck_streak" => streak),
+          metadata: metadata,
           reasoning: {
             summary: "Remediation stuck: #{signal.kind} (#{signal.fingerprint}) — " \
                      "#{streak} consecutive ineffective outcomes; operator decision required"

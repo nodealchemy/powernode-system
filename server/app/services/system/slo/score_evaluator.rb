@@ -35,7 +35,8 @@ module System
         uptime_pct = instance_count.zero? ? nil : ((healthy_count * 100.0) / instance_count).round(2)
 
         # Error rate proxy: count of decision.pending + decision.blocked +
-        # *_failed FleetEvents tied to the module / 100, capped at 100.
+        # decision.awaiting_operator + *_failed FleetEvents tied to the module
+        # / 100, capped at 100.
         error_count = error_event_count(defn.node_module, cutoff)
         signal_count = signal_event_count(defn.node_module, cutoff)
         denom = signal_count.zero? ? 1 : signal_count
@@ -92,7 +93,14 @@ module System
         ::System::FleetEvent
           .where(node_module_id: node_module.id)
           .where("emitted_at >= ?", cutoff)
-          .where("kind LIKE 'decision.blocked' OR kind LIKE 'decision.pending' OR kind LIKE '%failed'")
+          # decision.awaiting_operator (IMP-01a025b3) counts for the same reason
+          # decision.pending does: it is the stuck-remediation lane going quiet
+          # because an operator request is already open, i.e. the module is
+          # STILL parked on a human. Omitting it would make an unresolved stuck
+          # condition improve the module's score — the denominator keeps
+          # counting its signals either way.
+          .where("kind LIKE 'decision.blocked' OR kind LIKE 'decision.pending' " \
+                 "OR kind LIKE 'decision.awaiting_operator' OR kind LIKE '%failed'")
           .count
       end
 

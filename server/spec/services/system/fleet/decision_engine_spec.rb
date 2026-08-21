@@ -185,6 +185,185 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # IMP-01a025b3: the stuck lane had no terminal state. Once the streak
+    # pinned at the threshold, decide() short-circuited here forever: the lane
+    # skips both skill and remediation, and RemediationValidator only scores
+    # decisions that PROCEEDED, so no fresh outcome was ever recorded for the
+    # fingerprint and the streak could never move. The trio (fleet.remediation_stuck
+    # HIGH + forced require_approval + decision.pending) re-fired every dedup TTL
+    # forever. The ApprovalRequest was already deduped to one open row per
+    # fingerprint — nothing READ that row before re-escalating.
+    #
+    # The collateral is the reason this is a bug and not just noise: every
+    # non-advisory gate_action! consumes the target module's daily consent
+    # budget (ConsentBudgetService#check_and_consume!, an atomic increment per
+    # call), and config_drift's metadata carries the REAL module_id — so stuck
+    # noise drained LIVE modules' budgets and forced their genuine remediations
+    # into require_approval.
+    #
+    # The gate is the DATABASE (the same open ApprovalRequest
+    # create_pending_approval dedupes on), never Rails.cache: the hub runs
+    # CACHE_STORE=memory_store, which is per-Puma-process and flushes on
+    # restart, so the cache can only ever be an optimization here.
+    context "stuck escalation is terminal while an operator request is open (IMP-01a025b3)" do
+      let(:platform) { create(:system_node_platform, account: account) }
+      let(:node_module) do
+        create(:system_node_module, account: account, node_platform: platform,
+                                    consent_budget_per_day: 10,
+                                    consent_budget_used_count: 0,
+                                    consent_budget_window_start_at: Time.current)
+      end
+      let(:fingerprint) { "config_drift:#{node_module.id}" }
+      let!(:chain) do
+        create(:ai_approval_chain, account: account, trigger_type: "autonomy_action",
+                                   name: "Fleet Autonomy Actions",
+                                   timeout_hours: 4, timeout_action: "reject")
+      end
+
+      before do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.module_assign",
+                                       policy: "auto_approve", is_active: true)
+        described_class::STUCK_STREAK_THRESHOLD.times do |i|
+          System::Fleet::RemediationOutcome.create!(
+            account: account, signal_kind: "system.config_drift", fingerprint: fingerprint,
+            action_category: "system.module_assign", status: "ineffective",
+            acted_at: (10 - i).hours.ago, settle_until: (9 - i).hours.ago,
+            validated_at: (9 - i).hours.ago
+          )
+        end
+      end
+
+      def decide!
+        engine.decide(kind: "system.config_drift", severity: :medium,
+                      payload: { "module_id" => node_module.id },
+                      fingerprint: fingerprint)
+      end
+
+      # Mints the row the previous escalation's gate would have left behind:
+      # same source_type/action_category/dedup key create_pending_approval uses.
+      def escalation_request!(status: "pending", completed_at: nil,
+                              module_id: nil, signal_fingerprint: nil)
+        request = chain.create_request!(
+          source_type: "system_fleet",
+          source_id: "system.module_assign",
+          description: "Remediation stuck",
+          request_data: {
+            "action_category" => "system.module_assign",
+            "payload" => { "module_id" => (module_id || node_module.id),
+                           "signal_fingerprint" => (signal_fingerprint || fingerprint) }
+          }
+        )
+        # update_columns: a status flip through the model fires
+        # #notify_source_of_decision, which has nothing to notify here.
+        request.update_columns(status: status, completed_at: completed_at) unless status == "pending"
+        request
+      end
+
+      it "emits no fleet.remediation_stuck AND consumes no consent budget while a request is open" do
+        escalation_request!
+        events_before   = System::FleetEvent.where(kind: "fleet.remediation_stuck").count
+        budget_before   = node_module.reload.consent_budget_used_count
+        requests_before = Ai::ApprovalRequest.count
+
+        decision = decide!
+
+        expect(System::FleetEvent.where(kind: "fleet.remediation_stuck").count).to eq(events_before)
+        # The load-bearing half: gate_action! is not called at all, so the
+        # module's daily autonomy budget is untouched.
+        expect(node_module.reload.consent_budget_used_count).to eq(budget_before)
+        expect(Ai::ApprovalRequest.count).to eq(requests_before)
+        expect(decision[:decision]).to eq(:awaiting_operator)
+        expect(decision[:remediation_stuck]).to be true
+      end
+
+      it "escalates exactly once — event, gate and consent budget — when no request is open" do
+        expect {
+          @decision = decide!
+        }.to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }.by(1)
+
+        expect(@decision[:decision]).to eq(:pending)
+        expect(@decision[:gate]).to eq("require_approval")
+        expect(@decision[:remediation_stuck]).to be true
+        expect(node_module.reload.consent_budget_used_count).to eq(1)
+        expect(Ai::ApprovalRequest.pending.count).to eq(1)
+      end
+
+      it "escalates again once the operator has APPROVED the open request" do
+        escalation_request!(status: "approved", completed_at: Time.current)
+
+        expect {
+          @decision = decide!
+        }.to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }.by(1)
+        expect(@decision[:decision]).to eq(:pending)
+      end
+
+      it "stays quiet inside the rejection cooldown the gate itself honors" do
+        escalation_request!(status: "rejected", completed_at: 5.minutes.ago)
+        budget_before = node_module.reload.consent_budget_used_count
+
+        expect {
+          @decision = decide!
+        }.not_to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }
+        expect(@decision[:decision]).to eq(:awaiting_operator)
+        expect(node_module.reload.consent_budget_used_count).to eq(budget_before)
+      end
+
+      # The other direction of the same choice: a lane that alerts once and
+      # then goes silent forever is worse than the noise. Once the rejection
+      # cooldown lapses (1h for a non-advancement action) and the condition is
+      # still stuck, the operator gets told again.
+      it "escalates again once the rejection cooldown has lapsed" do
+        escalation_request!(status: "rejected", completed_at: 3.hours.ago)
+
+        expect {
+          @decision = decide!
+        }.to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }.by(1)
+        expect(@decision[:decision]).to eq(:pending)
+      end
+
+      # The gate's action-level fallback: ANY rejected request in the same
+      # action_category inside the cooldown makes create_pending_approval
+      # return nil regardless of dedup key. Escalating into that window emitted
+      # a HIGH event and burned the module's consent budget to mint NOTHING —
+      # the incident verbatim, re-armed by every rejection in the category — so
+      # the predicate models this arm too.
+      it "stays quiet inside the gate's ACTION-WIDE rejection cooldown" do
+        other_module = create(:system_node_module, account: account, node_platform: platform)
+        escalation_request!(status: "rejected", completed_at: 5.minutes.ago,
+                            module_id: other_module.id, signal_fingerprint: "config_drift:other")
+        budget_before = node_module.reload.consent_budget_used_count
+
+        expect {
+          @decision = decide!
+        }.not_to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }
+        expect(@decision[:decision]).to eq(:awaiting_operator)
+        expect(node_module.reload.consent_budget_used_count).to eq(budget_before)
+      end
+
+      # DELIBERATE, and the sharpest edge of this design: config_drift's
+      # fingerprint is per-assignment while its gate dedup key is module_id, so
+      # N stuck assignments on one module share ONE ApprovalRequest — and now
+      # one escalation. The suppressed fingerprint is not dark (its raw
+      # system.config_drift signal event and its own decision.awaiting_operator
+      # still carry its correlation_id); it just does not raise a second HIGH
+      # alert for a request the operator already holds. Change this only by
+      # giving the lane a per-fingerprint durable marker — NOT by scoping the
+      # query on signal_fingerprint, which flip-flops: the gate rewrites the
+      # shared row's payload in place, so each fingerprint would re-escalate
+      # every TTL forever.
+      it "treats one module's open request as covering every fingerprint sharing its dedup key" do
+        escalation_request!(signal_fingerprint: "config_drift:some-other-assignment")
+        budget_before = node_module.reload.consent_budget_used_count
+
+        expect {
+          @decision = decide!
+        }.not_to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }
+        expect(@decision[:decision]).to eq(:awaiting_operator)
+        expect(node_module.reload.consent_budget_used_count).to eq(budget_before)
+      end
+    end
+
     # Audit finding F1-12: a member silent past the presumed-dead threshold
     # was re-detected every 60s tick forever — each tick re-emitted a
     # system.instance_silent FleetEvent (and a decision event) because the
