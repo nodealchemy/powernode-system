@@ -202,7 +202,18 @@ sdwan_policies = {
   # Federation — cross-instance peering is always sensitive
   "sdwan.federation_peer_propose"     => "require_approval",
   "sdwan.federation_peer_accept"      => "require_approval",
-  "sdwan.federation_peer_revoke"      => "require_approval"
+  "sdwan.federation_peer_revoke"      => "require_approval",
+
+  # IMP-9bf58a693634 — data_residency is a compliance DECLARATION, not a
+  # label: Federation::ResidencyEnforcer gates cross-boundary record homing on
+  # it and Sdwan::FederationGovernance raises a finding on an active platform
+  # peer that has not declared one. Rewriting it relaxes or fabricates a
+  # regulatory boundary, so it carries the tier of the three trust-boundary
+  # verbs above rather than the notify_and_proceed the other peer-field edits
+  # take — notify_and_proceed executes INLINE (Ai::AutonomyGate treats it
+  # exactly as auto_approve), which for this field would have bought an audit
+  # row and no human decision at all.
+  "sdwan.federation_peer_data_residency" => "require_approval"
 }
 
 count = System::Seeds::AgentSetupHelpers.upsert_policies!(

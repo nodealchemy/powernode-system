@@ -405,7 +405,7 @@ module Ai
             }
           },
           "system_sdwan_set_data_residency" => {
-            description: "Set a federation peer's data residency region tag (the system_federation_peers.data_residency column, a scalar string ≤64 chars). Used by the residency enforcer to gate which peers may home a given record.",
+            description: "Set a federation peer's data residency region tag (the system_federation_peers.data_residency column, a scalar string ≤64 chars). Used by the residency enforcer to gate which peers may home a given record, so this is a compliance declaration rather than a label. Approval-gated (sdwan.federation_peer_data_residency, seeded require_approval like the propose/accept/revoke trust-boundary verbs) — under require_approval this returns pending: true with a deferred_operation_id and the tag is rewritten only once an operator approves. The applied change is recorded on the peer's own audit trail as a federation.peer.data_residency_changed event, readable through system_sdwan_get_audit_log. Also writable by an operator through PATCH /sdwan/federation_peers/:id, under the same gate.",
             parameters: {
               federation_peer_id: { type: "string", required: true, description: "UUID of the federation peer to tag" },
               data_residency: { type: "string", required: true, description: "Region/residency tag, e.g. 'us-east' or 'eu'" }
@@ -1843,10 +1843,40 @@ module Ai
 
       # Set a federation peer's data residency region tag (scalar
       # system_federation_peers.data_residency column, ≤64 chars).
+      #
+      # IMP-9bf58a693634 — this was a bare `peer.update!`, and
+      # `data_residency` was absent from FederationPeersController's permit
+      # list, so a COMPLIANCE field (Federation::ResidencyEnforcer gates
+      # cross-boundary record homing on it) was writable only by agents,
+      # through no gate, leaving no row naming the change. It now routes
+      # through Ai::AutonomyGate on the category its trust-boundary siblings
+      # carry, and the REST surface permits the field under the same gate.
+      #
+      # The gate is what actually CONSTRAINS this write. The
+      # ACTION_PERMISSIONS entry above it buys provenance, not protection: an
+      # MCP instance principal clears #action_permitted? at its
+      # `instance_authorized?` rung before the permission map is consulted at
+      # all, and carries no User for #has_permission? to ask.
       def set_data_residency(params)
         peer = account_federation_peers.find(params[:federation_peer_id])
-        peer.update!(data_residency: params[:data_residency])
-        success_result(federation_peer: serialize_federation_peer(peer.reload))
+        attributes = { data_residency: params[:data_residency] }
+
+        # Validate BEFORE the gate: an over-long tag would otherwise reach the
+        # column as a StatementInvalid at APPROVAL time, parking a doomed
+        # change for an operator to dispose of (the IMP-785d60f5ec3e oracle).
+        if (invalid = validation_error_before_gate(peer, attributes))
+          return invalid
+        end
+
+        gated_result(
+          action_category: ::Sdwan::Executors::SetFederationPeerDataResidency::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::SetFederationPeerDataResidency",
+          executor_params: { federation_peer_id: peer.id, attributes: attributes },
+          source_type: "System::FederationPeer",
+          source_id: peer.id,
+          description: "Set data residency for federation peer #{peer.remote_instance_url}",
+          pending_extra: { federation_peer: serialize_federation_peer(peer) }
+        ) { { federation_peer: serialize_federation_peer(peer.reload) } }
       end
 
       # Read-only audit trail for a federation peer.

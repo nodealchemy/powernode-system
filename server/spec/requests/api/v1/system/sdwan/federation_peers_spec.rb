@@ -301,6 +301,116 @@ RSpec.describe "Api::V1::System::Sdwan::FederationPeers", type: :request do
       end
     end
 
+    # IMP-9bf58a693634 — data_residency is the compliance tag
+    # Federation::ResidencyEnforcer reads to decide whether a record may cross
+    # a regulatory boundary to this peer. It was writable ONLY over MCP
+    # (SdwanTool#set_data_residency, a bare update!) and absent from this
+    # permit list entirely, so the operator surface could not set it at all.
+    # Permitting it here gives operators the path; routing it through the gate
+    # gives it the same treatment as its trust-boundary siblings.
+    context "when the request changes data_residency (compliance tag)" do
+      let(:peer) { create(:system_federation_peer, account: account, status: "proposed", data_residency: "us-east") }
+
+      it "defers the residency change through the approval gate instead of writing it inline" do
+        patch_peer(peer, { data_residency: "eu-west" }, as: manager)
+
+        expect(response).to have_http_status(:accepted)
+        expect(peer.reload.data_residency).to eq("us-east"),
+                                              "the residency tag was written inline, bypassing the approval gate"
+
+        deferred = Ai::DeferredOperation.order(created_at: :desc).first
+        expect(deferred.action_category).to eq("sdwan.federation_peer_data_residency")
+        expect(deferred.executor_class).to eq("Sdwan::Executors::SetFederationPeerDataResidency")
+        expect(deferred.params["federation_peer_id"]).to eq(peer.id)
+      end
+
+      it "applies the tag when the deferred op is approved" do
+        patch_peer(peer, { data_residency: "eu-west" }, as: manager)
+        approve_latest_deferred!
+
+        expect(peer.reload.data_residency).to eq("eu-west")
+      end
+
+      # Ride-along edits travel WITH the deferral rather than landing ahead of
+      # it — the acceptance leg's rule, for the same reason: one operator
+      # intent, and a half-applied PATCH is what that leg exists to avoid.
+      it "carries same-request field edits into the approval rather than applying them first" do
+        patch_peer(peer, { data_residency: "eu-west", remote_instance_url: "https://elsewhere.example.com" }, as: manager)
+
+        expect(peer.reload.remote_instance_url).not_to eq("https://elsewhere.example.com"),
+                                                       "a ride-along edit was applied ahead of the approval"
+
+        approve_latest_deferred!
+
+        expect(peer.reload.data_residency).to eq("eu-west")
+        expect(peer.remote_instance_url).to eq("https://elsewhere.example.com")
+      end
+
+      # A form-shaped client resends every permitted field on every PATCH. An
+      # unchanged residency tag must not park an approval for a no-op.
+      it "stays inline when the residency tag is resent unchanged" do
+        expect {
+          patch_peer(peer, { data_residency: "us-east", remote_instance_url: "https://elsewhere.example.com" }, as: manager)
+        }.not_to change(Ai::DeferredOperation, :count)
+
+        expect(response).to have_http_status(:ok)
+        expect(peer.reload.remote_instance_url).to eq("https://elsewhere.example.com")
+      end
+
+      # A residency change and a status transition are separately approved and
+      # land in different executors, neither of which performs both writes.
+      # Dispatching on either one alone would silently DROP the other behind a
+      # 202 that reads as success — before this field was permitted, that same
+      # PATCH suspended the peer inline, so accepting it and discarding half
+      # would be a regression, not a new restriction.
+      it "refuses a PATCH that changes residency AND transitions status, applying neither" do
+        peer.update!(status: "accepted")
+
+        expect {
+          patch_peer(peer, { status: "suspended", data_residency: "eu-west" }, as: manager)
+        }.not_to change(Ai::DeferredOperation, :count)
+
+        expect(response).to have_http_status(:unprocessable_content)
+        expect(peer.reload.status).to eq("accepted"), "the status transition was applied despite the refusal"
+        expect(peer.data_residency).to eq("us-east"), "the residency change was applied despite the refusal"
+      end
+
+      # The same rule covers the ACCEPT leg, which forwards every permitted
+      # ride-along field into Sdwan::Executors::AcceptFederationPeer — an
+      # executor that writes attributes but emits no residency audit event. A
+      # residency change riding an acceptance would therefore be gated but
+      # UNTRACEABLE on the peer's trail.
+      it "refuses a residency change riding along on an acceptance" do
+        proposed = create(:system_federation_peer, account: account, status: "proposed", data_residency: "us-east")
+
+        expect {
+          patch_peer(proposed, { status: "accepted", data_residency: "eu-west" }, as: manager)
+        }.not_to change(Ai::DeferredOperation, :count)
+
+        expect(response).to have_http_status(:unprocessable_content)
+        expect(proposed.reload.data_residency).to eq("us-east")
+        expect(proposed.status).to eq("proposed")
+      end
+
+      it "projects the stored tag so an operator can read what they are changing" do
+        get "/api/v1/system/sdwan/federation_peers/#{peer.id}", headers: auth_headers_for(reader)
+
+        expect(response).to have_http_status(:ok)
+        expect(json_response_data["federation_peer"]["data_residency"]).to eq("us-east"),
+                                                                          "the operator surface accepts data_residency on PATCH but never hands it back"
+      end
+
+      # Same oracle as IMP-785d60f5ec3e — a doomed value parks nothing.
+      it "422s an over-long tag without parking an approval" do
+        expect {
+          patch_peer(peer, { data_residency: "e" * 65 }, as: manager)
+        }.not_to change(Ai::DeferredOperation, :count)
+
+        expect(response).to have_http_status(:unprocessable_content)
+        expect(peer.reload.data_residency).to eq("us-east")
+      end
+    end
+
     context "when the status transition does not extend trust" do
       it "suspends inline without an approval gate" do
         accepted = create(:system_federation_peer, account: account, status: "accepted")

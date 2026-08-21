@@ -519,20 +519,138 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # IMP-9bf58a693634 — data_residency is a COMPLIANCE field: the residency
+  # enforcer (Federation::ResidencyEnforcer) reads it to decide whether a
+  # record may cross a regulatory boundary to this peer. It used to be a bare
+  # `peer.update!` on this arm and was absent from the REST permit list, so an
+  # agent could rewrite it inline while an operator could not write it at all
+  # — and no audit row named the change. It now routes through the same
+  # Ai::AutonomyGate treatment as its trust-boundary siblings (propose /
+  # accept / revoke are all seeded require_approval).
   describe "system_sdwan_set_data_residency" do
-    let!(:peer) { create(:system_federation_peer, account: account) }
+    let!(:peer) { create(:system_federation_peer, account: account, data_residency: "us-east") }
 
-    it "sets the data_residency tag and surfaces it in the serializer" do
+    it_behaves_like "an approval-gated sdwan update" do
+      let(:gate_action)  { "system_sdwan_set_data_residency" }
+      let(:gate_request) { { federation_peer_id: peer.id, data_residency: "eu-west" } }
+      let(:pristine_probe)        { -> { peer.reload.data_residency } }
+      let(:pristine_value)        { "us-east" }
+      let(:pristine_failure_hint) { "the residency tag was rewritten inline, bypassing the approval gate" }
+    end
+
+    it "applies the tag when the parked operation is approved" do
       r = call("system_sdwan_set_data_residency", federation_peer_id: peer.id, data_residency: "eu-west")
-      expect(r[:success]).to be true
-      expect(r[:data][:federation_peer][:data_residency]).to eq("eu-west")
+
+      approve_parked_update!(
+        r,
+        category: ::Sdwan::Executors::SetFederationPeerDataResidency::ACTION_CATEGORY,
+        executor: "Sdwan::Executors::SetFederationPeerDataResidency"
+      )
+
       expect(peer.reload.data_residency).to eq("eu-west")
+    end
+
+    # The direction's audit requirement. Ai::DeferredOperation is the gate's
+    # own durable row, but it is keyed by action_category — it is not on the
+    # PEER's audit trail, which is what system_sdwan_get_audit_log and the
+    # WORM shipment sealer read (federation.* FleetEvents filtered by
+    # payload->>'federation_peer_id'). The executor emits there too, so the
+    # residency change is visible where an auditor looks for it.
+    it "writes a peer-scoped audit event naming both the old and new tag" do
+      r = call("system_sdwan_set_data_residency", federation_peer_id: peer.id, data_residency: "eu-west")
+      approve_parked_update!(
+        r,
+        category: ::Sdwan::Executors::SetFederationPeerDataResidency::ACTION_CATEGORY,
+        executor: "Sdwan::Executors::SetFederationPeerDataResidency"
+      )
+
+      event = ::System::FleetEvent.where(account_id: account.id, kind: "federation.peer.data_residency_changed")
+                                 .where("payload->>'federation_peer_id' = ?", peer.id).first
+
+      expect(event).to be_present, "the residency change left no row on the peer's audit trail"
+      expect(event.payload["previous_data_residency"]).to eq("us-east")
+      expect(event.payload["data_residency"]).to eq("eu-west")
+      expect(event.payload["declared_by"]).to eq("local_decision"),
+                                             "the audit row does not distinguish a local decision from a remote peer's own declaration"
+      expect(event.payload["deferred_operation_id"]).to eq(r.dig(:data, :deferred_operation_id)),
+                                                       "the peer-trail row cannot be joined back to the approval that authorised it"
+    end
+
+    it "surfaces the audit event through system_sdwan_get_audit_log" do
+      r = call("system_sdwan_set_data_residency", federation_peer_id: peer.id, data_residency: "eu-west")
+      approve_parked_update!(
+        r,
+        category: ::Sdwan::Executors::SetFederationPeerDataResidency::ACTION_CATEGORY,
+        executor: "Sdwan::Executors::SetFederationPeerDataResidency"
+      )
+
+      log = call("system_sdwan_get_audit_log", federation_peer_id: peer.id)
+
+      expect(log[:data][:events].map { |e| e[:kind] }).to include("federation.peer.data_residency_changed")
+    end
+
+    # Same oracle as IMP-785d60f5ec3e: a value that can only ever fail must
+    # not park an approval an operator has to dispose of. The column is
+    # varchar(64), so an over-long tag used to raise ActiveRecord::
+    # StatementInvalid at execution time — i.e. AFTER the approval.
+    it "refuses an over-long tag without parking anything" do
+      expect {
+        expect {
+          @r = call("system_sdwan_set_data_residency",
+                    federation_peer_id: peer.id, data_residency: "e" * 65)
+        }.not_to change(Ai::DeferredOperation, :count)
+      }.not_to change(Ai::ApprovalRequest, :count)
+
+      expect(@r[:success]).to be false
+      expect(@r[:error]).to match(/residency/i)
+      expect(peer.reload.data_residency).to eq("us-east")
     end
 
     it "rejects a peer belonging to a different account" do
       other_peer = create(:system_federation_peer, account: create(:account))
-      r = call("system_sdwan_set_data_residency", federation_peer_id: other_peer.id, data_residency: "eu-west")
+      expect {
+        @r = call("system_sdwan_set_data_residency", federation_peer_id: other_peer.id, data_residency: "eu-west")
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@r[:success]).to be false
+    end
+
+    # The compliance write and its audit event share one transaction, so an
+    # audit sink that cannot record the change takes the WRITE back with it —
+    # an unaudited residency rewrite is not an outcome worth committing. Driven
+    # through the tool rather than the executor so the whole path is exercised:
+    # gate → executor → rollback → refusal surfaced to the caller.
+    it "rolls the residency write back when its audit event cannot be recorded" do
+      auto_approve_policy!
+      allow(::System::Fleet::EventBroadcaster).to receive(:emit!).and_return(nil)
+
+      r = call("system_sdwan_set_data_residency", federation_peer_id: peer.id, data_residency: "eu-west")
+
       expect(r[:success]).to be false
+      expect(peer.reload.data_residency).to eq("us-east"),
+                                            "an unaudited compliance write was committed"
+    end
+
+    # gate_failure_message unwrapping: a RecordInvalid raised INSIDE the
+    # executor reaches Ai::AutonomyGate flattened to
+    # "Gate evaluation failed: <message>", losing the field-level wording the
+    # inline arm used to return. The other gated arms unwrap it from
+    # result.exception; this one must too. Stubbed at the MODEL so the raise
+    # happens inside the executor's own call, which is the only place that
+    # produces the flattening.
+    it "unwraps an executor validation failure into field-level wording" do
+      auto_approve_policy!
+      allow_any_instance_of(::System::FederationPeer).to receive(:update!)
+        .and_raise(ActiveRecord::RecordInvalid.new(::System::FederationPeer.new.tap { |p|
+          p.errors.add(:data_residency, "is not a recognised region tag")
+        }))
+
+      r = call("system_sdwan_set_data_residency", federation_peer_id: peer.id, data_residency: "eu-west")
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("is not a recognised region tag")
+      expect(r[:error]).not_to include("Gate evaluation failed"),
+                               "the executor's field errors were flattened by the gate instead of unwrapped"
     end
   end
 

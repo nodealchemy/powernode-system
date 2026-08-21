@@ -643,6 +643,7 @@ module PowernodeSystem
           sdwan.access_grant_revoke sdwan.access_grant_delete
           sdwan.user_device_create
           sdwan.federation_peer_propose sdwan.federation_peer_accept sdwan.federation_peer_revoke
+          sdwan.federation_peer_data_residency
           sdwan.host_bridge_create sdwan.host_bridge_update sdwan.host_bridge_delete
           sdwan.ovn_deployment_create sdwan.ovn_deployment_delete
           sdwan.ovn_logical_switch_create sdwan.ovn_logical_switch_update sdwan.ovn_logical_switch_delete

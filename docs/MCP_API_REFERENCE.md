@@ -436,7 +436,7 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 | `system_sdwan_revoke_federation_peer` | Cancel a federation relationship from either side |
 | `system_sdwan_federation_scan` | Scan for proposed-but-not-accepted peers (for operator review) |
 | `system_sdwan_federation_compose` | Stand up a federation overlay topology (hub-and-spoke OR full-mesh) across instances — creates one `Sdwan::Network`, enrolls each member as a peer (hubs `publicly_reachable`), and compiles the routing plan |
-| `system_sdwan_set_data_residency` | Stamp a peer with a scalar `data_residency` region/tag (P9.4 enforcement) |
+| `system_sdwan_set_data_residency` | Stamp a peer with a scalar `data_residency` region/tag (P9.4 enforcement). Approval-gated (`sdwan.federation_peer_data_residency`, seeded `require_approval`) and audited on the peer's trail as `federation.peer.data_residency_changed`; the operator twin is `PATCH /sdwan/federation_peers/:id` with `data_residency` |
 | `system_sdwan_get_audit_log` | Read a peer's per-peer WORM audit log (P9.3) |
 
 **Permissions:** `system.sdwan.federation_peers.{view,propose,accept,revoke}`

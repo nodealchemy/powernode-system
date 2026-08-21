@@ -108,11 +108,57 @@ module Api
           # Free-form string (ISO code, region group, "global"); the
           # ResidencyEnforcer doesn't normalize beyond exact match, so
           # operators must declare consistently.
+          #
+          # This write is NOT approval-gated, unlike the operator and agent
+          # surfaces (IMP-9bf58a693634 gated those through
+          # Sdwan::Executors::SetFederationPeerDataResidency). Deliberately so,
+          # and the asymmetry is the semantics, not an oversight: those two
+          # surfaces let THIS side assert where a remote peer's data lives,
+          # which is a local compliance decision; a heartbeat is the remote
+          # peer declaring its OWN residency, and an inbound heartbeat has
+          # nowhere to park — it cannot wait hours for an operator, and
+          # refusing it would drop liveness with the peer.
+          #
+          # What it must not do is change silently. FederationPeer's own
+          # emitter fires only on saved_change_to_status?, so before this a
+          # remote-driven residency change — the input the enforcer's whole
+          # boundary decision rests on — left no row anywhere. It now writes
+          # the same peer-trail event the gated executor does, tagged with the
+          # source that distinguishes it.
           def stamp_residency!(peer)
             raw = params[:data_residency].to_s.strip
             return if raw.blank?
             return if raw == peer.data_residency
+
+            previous = peer.data_residency
             peer.update!(data_residency: raw)
+            audit_residency_declaration!(peer, previous)
+          end
+
+          # Best-effort, unlike the executor's own emit: the executor refuses to
+          # commit an unaudited compliance write because it can — it holds an
+          # approval and a caller waiting on a result. This runs on the inbound
+          # heartbeat path, where raising would convert an observability failure
+          # into a federation liveness outage. The write is already committed by
+          # the time this runs, so a swallowed failure loses the event, not the
+          # value.
+          def audit_residency_declaration!(peer, previous)
+            ::System::Fleet::EventBroadcaster.emit!(
+              account: peer.account,
+              kind: ::Sdwan::Executors::SetFederationPeerDataResidency::EVENT_KIND,
+              severity: "medium",
+              source: "federation_heartbeat",
+              payload: {
+                federation_peer_id: peer.id,
+                peer_kind: peer.peer_kind,
+                status: peer.status,
+                previous_data_residency: previous,
+                data_residency: peer.data_residency,
+                declared_by: "remote_peer"
+              }
+            )
+          rescue StandardError => e
+            Rails.logger.warn("[FederationApi::Heartbeat] residency audit event skipped for peer #{peer.id}: #{e.message}")
           end
 
           # Return THIS platform's own endpoint advertisement back to the

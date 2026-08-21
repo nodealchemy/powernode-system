@@ -116,8 +116,38 @@ module Api
             #
             # Suspend/enroll/activate narrow or track an existing link and stay
             # inline.
+
+            # A residency change and a status transition cannot ride in one
+            # PATCH. Each of the three dispatches below owns a DIFFERENT
+            # executor, and none of them performs both writes: the accept and
+            # revoke executors apply no residency audit event, and the residency
+            # executor deliberately never flips status (a residency approval is
+            # not a back door to a trust transition). Silently applying half of
+            # such a request — which is what dispatching on either one alone
+            # does — is worse than refusing it, because the dropped half is
+            # returned behind a 200/202 that reads as success. Refused rather
+            # than gated twice: two approvals for one operator intent is not a
+            # shape this surface has anywhere else.
+            if new_status.present? && residency_change_requested?
+              return render_error(
+                "data_residency cannot change in the same request as a status transition — " \
+                "they are separately approved. Send the status change and the residency change as two requests.",
+                status: :unprocessable_content
+              )
+            end
+
             return gated_accept! if new_status == "accepted"
             return gated_revoke! if new_status == "revoked"
+
+            # data_residency is not a status transition, but it is a compliance
+            # DECLARATION rather than a label — Federation::ResidencyEnforcer
+            # gates cross-boundary record homing on it — so a CHANGE to it is
+            # gated alongside the trust-boundary verbs (IMP-9bf58a693634).
+            # Resending the current value is not a change and stays inline: a
+            # form-shaped client resends every permitted field on every PATCH,
+            # and parking an approval for a no-op is what
+            # #residency_change_requested? exists to avoid.
+            return gated_residency! if residency_change_requested?
 
             if @peer.update(peer_update_params)
               render_success(federation_peer: serialize_peer_full(@peer.reload))
@@ -258,6 +288,53 @@ module Api
             )
           end
 
+          # The residency leg of #update — the twin of
+          # Ai::Tools::SdwanTool#set_data_residency, on the same category and
+          # executor, so one approval policy and one audit trail cover both
+          # routes to a rewritten residency tag.
+          #
+          # Ride-along fields of the same PATCH travel WITH the deferral rather
+          # than being written ahead of it, following gated_accept! and for the
+          # same reason: they are one operator intent, and a PATCH answered 202
+          # must not be half-committed. `status` is excluded — the two gated
+          # transitions were already dispatched above, and the inline ones have
+          # their own transition matrix; a residency approval is not a back door
+          # to a status flip.
+          #
+          # Validated BEFORE the gate (Ai::GatedActions#gate_update! carries the
+          # sequence and why): the column is varchar(64) and an over-long tag
+          # would otherwise reach it as a StatementInvalid at approval time,
+          # parking a change that could only ever fail.
+          def gated_residency!
+            attrs = peer_update_params.to_h.except("status")
+
+            gate_update!(
+              record: @peer,
+              attributes: attrs,
+              response_key: :federation_peer,
+              serializer: ->(peer) { serialize_peer_full(peer) },
+              action_category: ::Sdwan::Executors::SetFederationPeerDataResidency::ACTION_CATEGORY,
+              executor_class: "Sdwan::Executors::SetFederationPeerDataResidency",
+              params: { federation_peer_id: @peer.id, attributes: attrs },
+              source_type: "System::FederationPeer",
+              source_id: @peer.id,
+              description: "Set data residency for federation peer #{@peer.remote_instance_url}"
+            )
+          end
+
+          # True only when the PATCH carries data_residency AND it differs from
+          # what is stored. `key?`, not presence: clearing a declared residency
+          # (to nil or "") is itself a compliance change — Federation::
+          # ResidencyEnforcer reads a blank tag as "not declared" and stops
+          # treating the peer as boundary-constrained — so it must gate, not
+          # slip through inline as an absent field would.
+          def residency_change_requested?
+            permitted = peer_update_params
+            return false unless permitted.key?("data_residency")
+
+            permitted["data_residency"].to_s != @peer.data_residency.to_s
+          end
+
           # The reason is not a peer column, so a client may send it beside the
           # peer body (the shape POST /revoke takes) or inside it. Both are read:
           # the audited cause of a trust withdrawal must not be dropped over a
@@ -291,10 +368,17 @@ module Api
             )
           end
 
+          # data_residency is permitted here (IMP-9bf58a693634) so operators
+          # have ANY route to a field that was previously writable only over
+          # MCP. Permitting it does not make it an ordinary inline edit: a
+          # CHANGE to it is dispatched to gated_residency! above, and a change
+          # to it alongside a status transition is refused there — so the only
+          # value that ever rides along into the accept executor's attributes
+          # is the one already stored, which that write is a no-op over.
           def peer_update_params
             params.require(:federation_peer).permit(
               :status, :remote_instance_url, :remote_instance_id, :remote_account_id,
-              :remote_prefix_advertisement, :signed_at, :expires_at,
+              :remote_prefix_advertisement, :signed_at, :expires_at, :data_residency,
               metadata: {}
             )
           end
@@ -319,8 +403,16 @@ module Api
             }
           end
 
+          # data_residency is projected HERE and not in the compact #index
+          # shape, matching how revocation_reason was promoted: an operator
+          # editing a peer reads this projection, and a field the API accepts
+          # on PATCH but never hands back is a write-only control — nothing can
+          # confirm an approved change, and #residency_change_requested?'s
+          # "a form-shaped client resends every permitted field" premise is only
+          # true if the client was given the field to resend.
           def serialize_peer_full(p)
             serialize_peer(p).merge(
+              data_residency: p.data_residency,
               metadata: p.metadata,
               has_trust_jwt: p.vault_path.present? || p.encrypted_credentials.present?,
               v1_allowed_transitions: ::System::FederationPeer::V1_TRANSITIONS.fetch(p.status, [])

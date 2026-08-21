@@ -101,6 +101,17 @@ module System
       message: "must be a /48, /56, or /64 ULA prefix"
     }, allow_blank: true
     validates :remote_instance_id, uniqueness: { scope: :account_id }, allow_nil: true
+    # IMP-9bf58a693634. The value SPACE is deliberately open: Federation::
+    # ResidencyEnforcer compares this tag for equality against the local
+    # instance's POWERNODE_DATA_RESIDENCY, which is operator-supplied free
+    # text, so any closed enum here would make legitimate operator tags
+    # unwritable. The one real constraint is the column's own varchar(64),
+    # which Postgres enforced and the model did not — so an over-long tag
+    # reached the writer as a StatementInvalid at execution time. Since the
+    # residency write is now approval-gated, that landed AFTER the approval:
+    # a doomed change parked for an operator to dispose of. Declaring the
+    # limit here moves the refusal in front of the gate.
+    validates :data_residency, length: { maximum: 64 }, allow_nil: true
     validate :spawn_role_present_when_platform_kind
 
     scope :proposed,        -> { where(status: "proposed") }

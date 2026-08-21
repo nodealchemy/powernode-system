@@ -47,6 +47,60 @@ RSpec.describe "Api::V1::System::FederationApi::Heartbeat", type: :request do
     end
   end
 
+  # IMP-9bf58a693634 — the heartbeat is the one residency writer that is NOT
+  # approval-gated (a remote peer declaring its OWN residency, on a request
+  # that cannot park). It must still not change silently: FederationPeer's own
+  # emitter fires only on saved_change_to_status?, so a residency-only write
+  # used to leave no row on any audit surface — while it is the exact input
+  # Federation::ResidencyEnforcer's boundary decision reads.
+  describe "POST /heartbeat (declared data residency)" do
+    def residency_events(peer)
+      ::System::FleetEvent.where(account_id: peer.account_id,
+                                 kind: "federation.peer.data_residency_changed")
+                          .where("payload->>'federation_peer_id' = ?", peer.id)
+    end
+
+    it "audits a residency declaration that CHANGES the stored tag" do
+      peer.update!(status: "active", data_residency: "us-east")
+
+      post path, params: { data_residency: "eu-west" }, headers: mtls_headers, as: :json
+
+      expect(response).to have_http_status(:ok)
+      expect(peer.reload.data_residency).to eq("eu-west")
+
+      event = residency_events(peer).first
+      expect(event).to be_present, "a remote-driven residency change left no audit row"
+      expect(event.payload["previous_data_residency"]).to eq("us-east")
+      expect(event.payload["data_residency"]).to eq("eu-west")
+      expect(event.payload["declared_by"]).to eq("remote_peer"),
+                                              "the audit row does not distinguish a remote declaration from an operator's"
+      expect(event.source).to eq("federation_heartbeat")
+    end
+
+    it "emits nothing when the heartbeat repeats the tag it already declared" do
+      peer.update!(status: "active", data_residency: "eu-west")
+
+      expect {
+        post path, params: { data_residency: "eu-west" }, headers: mtls_headers, as: :json
+      }.not_to change { residency_events(peer).count }
+
+      expect(response).to have_http_status(:ok)
+    end
+
+    # The audit emit is best-effort HERE (unlike the gated executor, which
+    # refuses to commit unaudited): an observability failure must not become a
+    # federation liveness outage.
+    it "still answers the heartbeat when the audit event cannot be emitted" do
+      peer.update!(status: "active", data_residency: "us-east")
+      allow(::System::Fleet::EventBroadcaster).to receive(:emit!).and_raise(StandardError, "sink down")
+
+      post path, params: { data_residency: "eu-west" }, headers: mtls_headers, as: :json
+
+      expect(response).to have_http_status(:ok)
+      expect(peer.reload.data_residency).to eq("eu-west")
+    end
+  end
+
   describe "POST /heartbeat (auth failures)" do
     it "401s without an mTLS subject header" do
       peer
