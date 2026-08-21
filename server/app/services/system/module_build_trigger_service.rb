@@ -91,9 +91,25 @@ module System
         excluded: planned.excluded
       )
 
-      ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)
+      summary = ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)
+      batch.reload
 
-      Result.new(ok?: true, mode: mode, dispatched: true, shadow: shadow, batch: batch.reload, excluded: planned.excluded)
+      # A dispatch the orchestrator REFUSED (today: the core-mirror divergence
+      # pre-flight, System::CoreMirrorPreflight) must not read as a clean one.
+      # This is the ONLY automated trigger path — a push webhook — and
+      # "mode=native batch=<id>" logged for a refused batch is precisely the
+      # protection-that-looks-present shape the core-provenance work exists to
+      # remove. The reason travels on the batch; carry it out to the caller.
+      refusal = summary.ok? ? nil : batch.error_message.presence
+      unless summary.ok?
+        Rails.logger.error(
+          "[ModuleBuildTriggerService] batch #{batch.id} was REFUSED at dispatch " \
+          "(status=#{batch.status}): #{batch.error_message}"
+        )
+      end
+
+      Result.new(ok?: true, mode: mode, dispatched: true, shadow: shadow, batch: batch,
+                 excluded: planned.excluded, error: refusal)
     end
 
     def failure(message, mode: nil)

@@ -196,7 +196,16 @@ module System
       # to be able to override it without a deploy, the same way
       # system.module_publish.min_artifact_bytes is tunable.
       def enabled?
-        raw = ::SiteSetting.get(ENABLED_SETTING)
+        setting_enabled?(ENABLED_SETTING)
+      end
+
+      # Reads a default-ON operator switch out of SiteSetting. Public and
+      # parameterised because the core-provenance protection now has TWO
+      # switches — this promote gate and System::CoreMirrorPreflight's
+      # dispatch-time refusal — and the `0`/`false`/`off` handling below is
+      # exactly the kind of care that rots when it is written twice.
+      def setting_enabled?(name)
+        raw = ::SiteSetting.get(name)
         return true if raw.nil?
         # SiteSetting returns a real Integer for setting_type "integer", and 0 is
         # TRUTHY in Ruby — an operator who writes 0 meaning "off" would otherwise
@@ -212,23 +221,13 @@ module System
         true
       end
 
-      private
-
-      def pass(state, reason, expected:, actual:, remote:)
-        Verdict.new(promotable: true, state: state, reason: reason,
-                    expected_sha: expected.presence, actual_sha: actual.presence, actual_remote: remote)
-      end
-
-      def refuse(state, reason, expected:, actual:, remote:)
-        Verdict.new(promotable: false, state: state, reason: reason,
-                    expected_sha: expected.presence, actual_sha: actual.presence, actual_remote: remote)
-      end
-
-      def sha_like?(value)
-        SHA_PATTERN.match?(value.to_s.downcase)
-      end
-
-      # Git's own abbreviation rules. Either side may legitimately arrive
+      # Public for System::CoreMirrorPreflight, which compares the SAME two
+      # kinds of value (a resolved core tip against a recorded expectation) and
+      # must answer "is this the same commit" the same way — including the
+      # abbreviation rules below, so the two protections can never disagree
+      # about what "diverged" means.
+      #
+      # Those rules are git's own. Either side may legitimately arrive
       # abbreviated (a webhook head_sha, an operator-supplied ref), and refusing
       # a correct build because one side was short is a false positive — a gate
       # that cries wolf is a gate an operator turns off. A prefix shorter than
@@ -245,8 +244,24 @@ module System
         long.start_with?(short)
       end
 
+      def sha_like?(value)
+        SHA_PATTERN.match?(value.to_s.downcase)
+      end
+
       def short(sha)
         sha.to_s[0, 7].presence || "(none)"
+      end
+
+      private
+
+      def pass(state, reason, expected:, actual:, remote:)
+        Verdict.new(promotable: true, state: state, reason: reason,
+                    expected_sha: expected.presence, actual_sha: actual.presence, actual_remote: remote)
+      end
+
+      def refuse(state, reason, expected:, actual:, remote:)
+        Verdict.new(promotable: false, state: state, reason: reason,
+                    expected_sha: expected.presence, actual_sha: actual.presence, actual_remote: remote)
       end
 
       # The 2026-08-15 incident was a RIGHT BRANCH NAME on a STALE MIRROR —

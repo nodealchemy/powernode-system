@@ -57,6 +57,11 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
 
   before do
     allow(::System::DiskImageRegistryConfig).to receive(:registry_host).and_return("registry.example.com")
+    # The GitHub-mirror pre-flight reaches the network for every Class-B batch.
+    # Default it to NOT MEASURED (the non-blocking state) so examples that are
+    # about something else keep testing their own subject; the examples that
+    # ARE about the pre-flight stub a mirror tip of their own.
+    allow(::System::CoreMirrorPreflight).to receive(:resolve_mirror_tip).and_return(nil)
   end
 
   describe "#dispatch!" do
@@ -401,6 +406,289 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
         .and_return(System::ModulePublicationProcessor::Result.new(ok?: true, node_module_version: nil))
 
       described_class.advance!(batch: batch.reload)
+    end
+  end
+
+  # The dispatch-time half of the core-provenance protection. CoreProvenanceGate
+  # already catches a stale-mirror build at PROMOTE — but only after a full
+  # Class-B build has burned a builder, a lease and ~40 minutes. The expectation
+  # is resolved from the AUTHORITATIVE remote (Gitea) while the artifact is
+  # cloned from the PUBLIC MIRROR (github.com), so both tips are available on
+  # this one code path and the cheap refusal is available here.
+  describe "GitHub-mirror divergence pre-flight at dispatch" do
+    let(:core_sha)   { "409c706ecd758a04f2237fdb8f2a1092106b903d" }
+    let(:mirror_sha) { "b3bc6908e9f9078797488f7e48e61970b78718b0" }
+
+    # A core-SOURCED batch's expectation is its own head_sha — no Gitea call at
+    # all — so these examples isolate the mirror half of the comparison.
+    def class_b_batch(head_sha: "409c706ecd758a04f2237fdb8f2a1092106b903d")
+      mod = create_module("powernode-hub-backend")
+      plan = [ { module: mod.name, oci_ref: head_sha[0, 7] } ]
+      System::ModuleBuildBatch.create_for(
+        account: account, plan: plan, trigger: "manual",
+        base_sha: "b3bc6908e9f9078797488f7e48e61970b78718b0", head_sha: head_sha,
+        source_repo: "powernode/powernode-platform"
+      )
+    end
+
+    def mirror_at(sha)
+      allow(::System::CoreMirrorPreflight).to receive(:resolve_mirror_tip).and_return(sha)
+    end
+
+    def build_tasks
+      System::Task.where(account: account, command: "ci.module_build")
+    end
+
+    context "DIVERGED — both tips read, and they differ" do
+      it "refuses the dispatch instead of burning a build" do
+        seed_pool_member
+        mirror_at(mirror_sha)
+        batch = class_b_batch(head_sha: core_sha)
+
+        result = described_class.dispatch!(batch: batch)
+
+        expect(result.ok?).to be false
+        expect(build_tasks.count).to eq(0)
+      end
+
+      it "leaves the batch terminal rather than queued, so no later sweep dispatches it" do
+        seed_pool_member
+        mirror_at(mirror_sha)
+        batch = class_b_batch(head_sha: core_sha)
+
+        described_class.dispatch!(batch: batch)
+
+        expect(batch.reload.status).to eq("failed")
+        expect(batch.metadata["modules"].values.map { |e| e["state"] }).to all(eq("failed"))
+      end
+
+      it "names BOTH remotes and BOTH shas where an operator will read them" do
+        seed_pool_member
+        mirror_at(mirror_sha)
+        batch = class_b_batch(head_sha: core_sha)
+
+        described_class.dispatch!(batch: batch)
+
+        expect(batch.reload.error_message).to include("github.com/nodealchemy/powernode-platform")
+        expect(batch.error_message).to include("powernode/powernode-platform")
+        expect(batch.error_message).to include(mirror_sha[0, 7])
+        expect(batch.error_message).to include(core_sha[0, 7])
+      end
+
+      it "records the divergence on the batch, distinguishably" do
+        seed_pool_member
+        mirror_at(mirror_sha)
+        batch = class_b_batch(head_sha: core_sha)
+
+        described_class.dispatch!(batch: batch)
+
+        preflight = batch.reload.metadata["core_mirror_preflight"]
+        expect(preflight["state"]).to eq("diverged")
+        expect(preflight["mirror_sha"]).to eq(mirror_sha)
+        expect(preflight["expected_sha"]).to eq(core_sha)
+      end
+    end
+
+    # A batch is routinely MIXED — the planner's reverse-dependency expansion
+    # turned one edit under agent/ into 22 modules. A Class-A module clones no
+    # parent, so a stale mirror cannot reach its artifact; refusing it too
+    # would be a REGRESSION against the promote gate, which withholds only the
+    # Class-B version and lets its siblings publish.
+    context "DIVERGED — a MIXED batch" do
+      def mixed_batch(head_sha: "409c706ecd758a04f2237fdb8f2a1092106b903d")
+        class_b = create_module("powernode-hub-backend")
+        class_a = create_module("runtime-go")
+        plan = [ class_b, class_a ].map { |m| { module: m.name, oci_ref: head_sha[0, 7] } }
+        System::ModuleBuildBatch.create_for(
+          account: account, plan: plan, trigger: "manual",
+          base_sha: "b3bc6908e9f9078797488f7e48e61970b78718b0", head_sha: head_sha,
+          source_repo: "powernode/powernode-platform"
+        )
+      end
+
+      it "refuses ONLY the modules that clone core" do
+        seed_pool_member
+        seed_pool_member
+        mirror_at(mirror_sha)
+        batch = mixed_batch(head_sha: core_sha)
+
+        described_class.dispatch!(batch: batch)
+
+        states = batch.reload.metadata["modules"]
+        expect(states["powernode-hub-backend"]["state"]).to eq("failed")
+        expect(states["runtime-go"]["state"]).to eq("dispatched")
+      end
+
+      it "still reports the dispatch as refused" do
+        seed_pool_member
+        seed_pool_member
+        mirror_at(mirror_sha)
+        batch = mixed_batch(head_sha: core_sha)
+
+        result = described_class.dispatch!(batch: batch)
+
+        expect(result.ok?).to be false
+      end
+
+      it "leaves the refused module TERMINAL, so a later sweep cannot dispatch it" do
+        seed_pool_member
+        seed_pool_member
+        mirror_at(mirror_sha)
+        batch = mixed_batch(head_sha: core_sha)
+        described_class.dispatch!(batch: batch)
+
+        described_class.dispatch!(batch: batch.reload)
+
+        expect(batch.reload.metadata["modules"]["powernode-hub-backend"]["state"]).to eq("failed")
+        expect(System::Task.where(account: account, command: "ci.module_build").count).to eq(1)
+      end
+    end
+
+    context "AGREED — both tips read, and they match" do
+      it "dispatches normally" do
+        seed_pool_member
+        mirror_at(core_sha)
+        batch = class_b_batch(head_sha: core_sha)
+
+        result = described_class.dispatch!(batch: batch)
+
+        expect(result.ok?).to be true
+        expect(result.dispatched).to eq(1)
+        expect(batch.reload.status).to eq("dispatched")
+      end
+
+      it "records agreement on the batch" do
+        seed_pool_member
+        mirror_at(core_sha)
+        batch = class_b_batch(head_sha: core_sha)
+
+        described_class.dispatch!(batch: batch)
+
+        expect(batch.reload.metadata["core_mirror_preflight"]["state"]).to eq("agreed")
+      end
+    end
+
+    # THE design point. Refusing on an unread mirror would brick every Class-B
+    # build on a network blip — a strictly worse failure than the one being
+    # fixed — and CoreProvenanceGate is still the backstop at promote.
+    context "UNDETERMINED — the mirror could not be read" do
+      it "does NOT refuse; it dispatches" do
+        seed_pool_member
+        mirror_at(nil)
+        batch = class_b_batch(head_sha: core_sha)
+
+        result = described_class.dispatch!(batch: batch)
+
+        expect(result.ok?).to be true
+        expect(result.dispatched).to eq(1)
+        expect(batch.reload.status).to eq("dispatched")
+      end
+
+      it "records that the check was not performed — neither agreed nor diverged" do
+        seed_pool_member
+        mirror_at(nil)
+        batch = class_b_batch(head_sha: core_sha)
+
+        described_class.dispatch!(batch: batch)
+
+        preflight = batch.reload.metadata["core_mirror_preflight"]
+        expect(preflight["state"]).to eq("undetermined")
+        expect(preflight["mirror_sha"]).to be_nil
+      end
+
+      it "does not refuse when the mirror read raises outright" do
+        seed_pool_member
+        allow(::System::CoreMirrorPreflight).to receive(:resolve_mirror_tip)
+          .and_raise(StandardError, "egress denied")
+        batch = class_b_batch(head_sha: core_sha)
+
+        result = described_class.dispatch!(batch: batch)
+
+        expect(result.ok?).to be true
+        expect(batch.reload.status).to eq("dispatched")
+      end
+    end
+
+    context "operator kill switch" do
+      it "dispatches a diverged batch when the pre-flight is disabled" do
+        seed_pool_member
+        SiteSetting.set(::System::CoreMirrorPreflight::ENABLED_SETTING, "false", setting_type: "string")
+        mirror_at(mirror_sha)
+        batch = class_b_batch(head_sha: core_sha)
+
+        result = described_class.dispatch!(batch: batch)
+
+        expect(result.ok?).to be true
+        expect(batch.reload.status).to eq("dispatched")
+        expect(batch.metadata["core_mirror_preflight"]["state"]).to eq("disabled")
+      end
+    end
+
+    # head_sha is validated for PRESENCE only and the MCP dispatch tool takes
+    # it as a free string, so a core-sourced batch's expectation can be a
+    # 7-char tag or a branch name. That says nothing about the mirror and must
+    # never be read as a divergence.
+    it "does not refuse a batch whose expectation is not a comparable commit identity" do
+      seed_pool_member
+      mirror_at(mirror_sha)
+      batch = class_b_batch(head_sha: "409c706")
+
+      result = described_class.dispatch!(batch: batch)
+
+      expect(result.ok?).to be true
+      expect(batch.reload.status).to eq("dispatched")
+      expect(batch.metadata["core_mirror_preflight"]["state"]).to eq("unusable_expectation")
+    end
+
+    # The recorded-verdict guard is load-bearing on its OWN, for the case the
+    # `planning?` guard cannot cover: a batch that stayed in `planning` after a
+    # verdict was written. Without it the sweep pays the network call again on
+    # every pass.
+    it "does not re-check a batch still in planning that already recorded a verdict" do
+      seed_pool_member
+      mod = create_module("powernode-hub-backend")
+      batch = build_batch(modules: [ mod ], head_sha: "409c706ecd758a04f2237fdb8f2a1092106b903d")
+      batch.update!(metadata: batch.metadata.merge(
+        "expected_core_sha"     => core_sha,
+        "core_mirror_preflight" => { "state" => "agreed" }
+      ))
+      expect(::System::CoreMirrorPreflight).not_to receive(:check)
+
+      described_class.dispatch!(batch: batch)
+
+      expect(batch.reload.metadata["core_mirror_preflight"]).to eq({ "state" => "agreed" })
+    end
+
+    # Same latency argument as the expectation itself: dispatch! runs
+    # synchronously from CiRunnerLeaseSweepService's sweep loop, and a batch
+    # with no Class-B module can never carry core content.
+    it "makes no mirror call at all for a batch with no Class-B module" do
+      seed_pool_member
+      expect(::System::CoreMirrorPreflight).not_to receive(:check)
+      expect(::System::CoreMirrorPreflight).not_to receive(:resolve_mirror_tip)
+      mod = create_module("runtime-go")
+      batch = build_batch(modules: [ mod ], head_sha: "systemsha987654")
+
+      result = described_class.dispatch!(batch: batch)
+
+      expect(result.ok?).to be true
+      expect(batch.reload.metadata).not_to have_key("core_mirror_preflight")
+    end
+
+    # The sweep re-dispatches every non-terminal batch that still has a queued
+    # module, on a loop. Re-checking there would pay the network call over and
+    # over AND could refuse a batch already half-built.
+    it "does not re-check, or refuse, a batch that has already dispatched" do
+      seed_pool_member
+      mirror_at(core_sha)
+      batch = class_b_batch(head_sha: core_sha)
+      described_class.dispatch!(batch: batch)
+
+      mirror_at(mirror_sha)
+      described_class.dispatch!(batch: batch.reload)
+
+      expect(batch.reload.status).to eq("dispatched")
+      expect(batch.metadata["core_mirror_preflight"]["state"]).to eq("agreed")
     end
   end
 
