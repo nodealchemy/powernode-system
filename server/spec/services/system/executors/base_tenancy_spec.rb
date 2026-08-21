@@ -140,11 +140,76 @@ RSpec.describe System::Executors::Base do
         .to raise_error(::Ai::DeferredOperation::CrossAccountError)
     end
 
-    it "still raises RecordNotFound for an id that does not exist" do
+    # IMP-dae0de4e562b: an id that exists nowhere and an id that exists in
+    # SOMEONE ELSE'S account must be ONE observable. This example previously
+    # pinned the opposite — `raise_error(ActiveRecord::RecordNotFound)` for the
+    # missing id, while the foreign id above raises CrossAccountError — and
+    # that PAIR was an existence oracle: a caller who could not learn WHOSE a
+    # row was could still learn THAT it existed, by telling the two refusals
+    # apart. The old pin is why IMP-973670faeba9 converted inside ExecuteTask
+    # instead of here; unifying at the seam supersedes that local conversion,
+    # so the pin is retargeted rather than kept.
+    #
+    # Anchored refusals are therefore CrossAccountError on BOTH arms. The class
+    # rather than RecordNotFound because it is the shape every caller of this
+    # seam already rescues (ExecuteTask#operable_display, the SDWAN executor
+    # specs), and because Ai::AutonomyGate rescues StandardError and renders
+    # e.message regardless of class — so widening the class would have changed
+    # nothing a caller sees while breaking every handler that names it.
+    it "refuses an id that exists nowhere as a cross-account refusal, not a RecordNotFound" do
       exec = executor({}, deferred_operation: operation_for(account))
 
       expect { exec.send(:resolve_scoped, ::Sdwan::Network, SecureRandom.uuid) }
+        .to raise_error(::Ai::DeferredOperation::CrossAccountError)
+    end
+
+    # The class alone is not the oracle. Ai::AutonomyGate rescues StandardError
+    # and returns `error: e.message` to the caller, so the MESSAGE is the
+    # observable that actually reaches a prober; a unified class carrying two
+    # different messages is the same oracle with an extra step. The two must be
+    # identical up to the id the caller themselves supplied.
+    it "refuses an id that exists nowhere exactly as it refuses a foreign one" do
+      exec = executor({}, deferred_operation: operation_for(foreign_account))
+      missing_id = SecureRandom.uuid
+
+      missing = refusal_from(exec, missing_id)
+      foreign = refusal_from(exec, network.id)
+
+      expect(missing.class).to eq(foreign.class),
+                               "a missing id raises #{missing.class} and a foreign id #{foreign.class} — " \
+                               "a caller can tell them apart"
+      expect(missing.message.sub(missing_id, "<id>"))
+        .to eq(foreign.message.sub(network.id, "<id>")),
+            "the two refusals differ by more than the caller's own id: " \
+            "#{missing.message.inspect} vs #{foreign.message.inspect}"
+    end
+
+    # Neither refusal may name the OWNER either — that is the disclosure the
+    # raise/log split in #resolve_scoped exists for, and unifying the two arms
+    # must not quietly reintroduce it.
+    it "names neither the owning account nor anything the caller did not supply" do
+      exec = executor({}, deferred_operation: operation_for(foreign_account))
+
+      expect(refusal_from(exec, network.id).message).not_to include(account.id),
+                                                            "the refusal echoes the victim's account id back to the caller"
+    end
+
+    # With no anchor there is only ONE possible refusal — the row either exists
+    # or it does not — so there is no pair to tell apart and nothing to unify.
+    # Left as the bare RecordNotFound `find` raises, matching the unscoped
+    # passthrough directly above.
+    it "leaves an unanchored miss as the RecordNotFound find raises" do
+      expect { executor({}).send(:resolve_scoped, ::Sdwan::Network, SecureRandom.uuid) }
         .to raise_error(ActiveRecord::RecordNotFound)
     end
+  end
+
+  # Returns the exception rather than asserting on it inline: the two refusals
+  # have to be COMPARED, which `raise_error` cannot do.
+  def refusal_from(exec, id)
+    exec.send(:resolve_scoped, ::Sdwan::Network, id)
+    nil
+  rescue StandardError => e
+    e
   end
 end

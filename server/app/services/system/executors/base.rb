@@ -343,9 +343,41 @@ module System
       # So this passes through unscoped when there is no account to anchor on,
       # and refuses only when there IS one and the record answers with a
       # different owner.
+      # ONE refusal, two reasons (IMP-dae0de4e562b). "Exists in another account"
+      # and "exists nowhere" both raise CrossAccountError carrying the same
+      # sentence, differing only in the id the CALLER supplied. They used to be
+      # distinguishable — `find` raised RecordNotFound for the second — and that
+      # pair was an existence oracle: not "whose is this row", which the log/raise
+      # split below already withholds, but "is there a row here at all", which a
+      # caller learns by telling the two refusals apart. Ai::AutonomyGate rescues
+      # StandardError and returns `error: e.message` verbatim, so BOTH the class
+      # and the message have to match or the oracle survives the unification.
+      #
+      # Supersedes the ExecuteTask-local conversion (IMP-973670faeba9), which
+      # made this same trade for one executor because this seam's RecordNotFound
+      # contract was pinned. The pin is retargeted (base_tenancy_spec.rb) and the
+      # local copy removed — one mechanism, not two.
+      #
+      # UNANCHORED callers keep the bare RecordNotFound. With no account there is
+      # no cross-account arm, so there is no pair to tell apart and nothing to
+      # unify — and the passthrough directly below is the whole reason this seam
+      # cannot simply `where(account_id:)`.
       def resolve_scoped(model, id)
-        record = model.find(id)
         anchor = account
+
+        record = begin
+          model.find(id)
+        rescue ActiveRecord::RecordNotFound
+          raise if anchor.nil?
+
+          # Same fields as the cross-account line below, so an operator greps
+          # one shape and still learns which arm fired — the distinction the
+          # RAISE gives up is preserved here, which is the whole trade.
+          Rails.logger.warn(
+            "[#{self.class.name}] refused #{model.name} #{id}: no such record, anchor account #{anchor.id}"
+          )
+          raise ::Ai::DeferredOperation::CrossAccountError, scoped_refusal(model.name, id, anchor)
+        end
         return record if anchor.nil?
 
         owner_id = record.account_id if record.respond_to?(:account_id)
@@ -357,8 +389,15 @@ module System
         Rails.logger.warn(
           "[#{self.class.name}] refused #{model.name} #{id}: belongs to account #{owner_id}, not #{anchor.id}"
         )
-        raise ::Ai::DeferredOperation::CrossAccountError,
-              "#{model.name} #{id} is not in account #{anchor.id}"
+        raise ::Ai::DeferredOperation::CrossAccountError, scoped_refusal(model.name, id, anchor)
+      end
+
+      # The single sentence both refusals raise. One builder rather than two
+      # literals: identical text is the whole point, and two copies drift the
+      # first time either arm is edited. Names only what the caller already
+      # holds — the type and id they asked for, and their own account.
+      def scoped_refusal(model_name, id, anchor)
+        "#{model_name} #{id} is not in account #{anchor.id}"
       end
 
       # Guard for update executors whose attributes can carry a NEW parent id.

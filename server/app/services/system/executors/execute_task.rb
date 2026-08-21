@@ -56,24 +56,18 @@ module System
                 "#{type} is not a valid task operable"
         end
 
-        resolve_scoped(type.constantize, id)
-      rescue ActiveRecord::RecordNotFound
         # An id that exists elsewhere and an id that exists nowhere must be
-        # indistinguishable. resolve_scoped's `find` raises RecordNotFound for
-        # the second and CrossAccountError for the first, and Ai::AutonomyGate
-        # renders both messages to the caller — so the PAIR is an existence
-        # oracle even though neither message names an owner.
-        #
-        # Converted here rather than in resolve_scoped: that seam is shared by
-        # every executor and its RecordNotFound contract is pinned
-        # (base_tenancy_spec.rb:110), so changing it there would be a
-        # behavioural change for callers this task has no business touching.
-        # Re-raised unchanged when there is no anchor to name, matching
-        # resolve_scoped's unscoped passthrough.
-        raise unless account
-
-        raise ::Ai::DeferredOperation::CrossAccountError,
-              "#{type} #{id} is not in account #{account.id}"
+        # indistinguishable, or the PAIR is an existence oracle even though
+        # neither message names an owner. IMP-973670faeba9 converted the
+        # RecordNotFound here, because resolve_scoped's RecordNotFound contract
+        # was pinned and could not be changed for one executor's sake.
+        # IMP-dae0de4e562b unified it AT THE SEAM instead — every executor that
+        # resolves a caller-supplied id had the same oracle — so this local
+        # conversion is gone: resolve_scoped now raises one CrossAccountError
+        # for both, with the same message and the same unanchored passthrough
+        # this copy had. Keeping both would be two mechanisms for one rule, and
+        # the redundant one is the one that silently stops mattering.
+        resolve_scoped(type.constantize, id)
       end
 
       # IMP-a449bc347e94: summarize/impact read the same normalized shape
