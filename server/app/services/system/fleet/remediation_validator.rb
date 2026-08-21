@@ -79,6 +79,7 @@ module System
         system.sdwan_service_health_investigate
         system.disk_image_publication_investigate
         system.sdwan_ovn_deployment_investigate
+        system.sdwan_bgp_observation_investigate
       ].freeze
 
       def initialize(account:, agent: nil)

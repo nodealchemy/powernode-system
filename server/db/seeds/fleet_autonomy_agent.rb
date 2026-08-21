@@ -185,6 +185,20 @@ fleet_policies = {
   # fingerprint cannot manufacture false remediation_stuck escalations.
   "system.sdwan_ovn_deployment_investigate" => "notify_and_proceed",
 
+  # IMP-2f34679b6b73 — SdwanBgpSessionHealthSensor's attribution family (a BGP
+  # report the platform could not attribute to the network it arrived under, or
+  # one the agent disclaimed). Seeded HERE for the same reason as the two
+  # categories above: the sensor fires from FleetAutonomyService::SENSORS and
+  # gates as THIS agent, so a policy anywhere else is invisible to the tick and
+  # every signal dies at the gate.
+  #
+  # notify_and_proceed, never auto_approve: the condition is an ABSENCE of a
+  # measurement, and the whole point of surfacing it is that an operator learns
+  # the host is running an agent that polls FRR without naming a VRF. There is
+  # no applier — "proceed" means "notify" — so the category is also in
+  # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
+  "system.sdwan_bgp_observation_investigate" => "notify_and_proceed",
+
   # Read/notify
   "system.module_assign"           => "notify_and_proceed",
   "system.instance_reboot"         => "notify_and_proceed",

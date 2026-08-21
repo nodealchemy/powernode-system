@@ -231,6 +231,34 @@ module System
           skill: nil,
           action_category: "system.observation"
         },
+        # IMP-2f34679b6b73 — SdwanBgpSessionHealthSensor's attribution family.
+        # The writer now refuses to file a BGP session it cannot attribute to
+        # the network it was reported under (a host-wide FRR polled without a
+        # VRF answers for one routing context and was replayed under every
+        # iBGP network the host belongs to). That refusal is the honest
+        # answer, and it is also an ABSENCE, so it has to be routed somewhere
+        # an operator sees it or the fix is silent.
+        #
+        # skill: nil deliberately — SdwanBgpSessionRemediateExecutor restarts
+        # FRR, and restarting FRR does not make an unscoped poll scoped. The
+        # repair is rolling out an agent that names the VRF.
+        #
+        # NOT system.observation: that category is seeded auto_approve, which
+        # collects for dashboards without reaching an operator (see the
+        # sdwan_service_silent note above for the same trap). Its own
+        # notify_and_proceed category instead, which is therefore also listed
+        # in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES — this
+        # lane proceeds but never actuates, and without that membership the
+        # standing fingerprint would manufacture a false
+        # fleet.remediation_stuck escalation.
+        "system.sdwan_bgp_observation_unattributable" => {
+          skill: nil,
+          action_category: "system.sdwan_bgp_observation_investigate"
+        },
+        "system.sdwan_bgp_observation_not_measured" => {
+          skill: nil,
+          action_category: "system.sdwan_bgp_observation_investigate"
+        },
         # IMP-c7d663f24a0b — SdwanServiceHealthSensor. Both kinds are
         # notify-level with skill: nil, deliberately: the sensor's whole point
         # is that the overlay is HEALTHY and the workload is not, so every
