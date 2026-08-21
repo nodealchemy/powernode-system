@@ -7,6 +7,50 @@ module System
     # Constants
     VARIETIES = %w[cloud physical dynamic].freeze
     STATUSES = %w[pending provisioning starting running stopping stopped rebooting terminated error].freeze
+
+    # Statuses that count as a replica the control plane still expects to
+    # serve — capacity metrics (ProjectMetricsCollector's replica_count /
+    # region_count) measure the fleet against this, NOT against `active`.
+    #
+    # Every non-terminal state is in: `pending`/`provisioning` are replicas on
+    # the way up, and `starting`/`stopping`/`rebooting` are mid-lifecycle, not
+    # failed — a replica rebooting is one the mission expects back in seconds,
+    # and treating it as lost would make every routine reboot read as capacity
+    # loss. `stopped` counts too: the mission still owns that replica, and the
+    # remediation it needs is a start, not a second provision.
+    #
+    # That is also why this is NOT the `active` scope below, despite the cost
+    # of a second definition. `active` omits `starting` and `rebooting` — and
+    # those two states are exactly what the platform's OWN remediation
+    # produces (FleetDecisionEngine#reboot_silent_instance issues `reboot` or
+    # `start`). Sizing capacity on `active` would therefore emit capacity
+    # drift for the instance currently being repaired, and propose a
+    # replacement provision alongside the in-flight reboot: a self-amplifying
+    # loop. It would also drift through the whole minutes-long `starting`
+    # window of every fresh cloud provision.
+    #
+    # Only the two states that say the control plane can NOT count on the row
+    # are out. `terminated` is gone. `error` is written by five paths and four
+    # of them are authoritative about the instance, not merely about our view
+    # of it: ProvisioningService#mark_instance_errored (the provision failed —
+    # there is no VM), the two `finalize_state_from_cloud` controller paths and
+    # NodeInstanceGating#execute_local_provider_action_sync! (the PROVIDER
+    # itself reports error), and the `revert_termination` event below (a
+    # terminate stamp whose provider call then failed — a provably unknown
+    # state nothing may size against). The fifth,
+    # FleetDecisionEngine#reap_presumed_dead!, is the weak one: it probes the
+    # control-plane channel, so a partitioned-but-serving VM can land here.
+    # It is still excluded — the honest answer to "we cannot observe this
+    # replica" is never "assume it is fine", which is precisely what counting
+    # it asserted. That case is not silent either way: the reap emits
+    # `system.instance_presumed_dead` at :critical on its own lane.
+    #
+    # Deliberately spelled out rather than derived as `STATUSES - [...]`: a
+    # status added later is excluded until someone decides it belongs, so the
+    # failure mode of forgetting is an over-eager drift signal (visible, and
+    # bounded by the target it converges on) rather than a silently inflated
+    # count (invisible — the exact defect IMP-797a87dbd0bd fixed).
+    LIVE_REPLICA_STATUSES = %w[pending provisioning starting running stopping stopped rebooting].freeze
     MAC_ADDRESS_REGEX = /\A([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})\z/
 
     # Slice 7 — pre-warmed instance pool membership.
@@ -269,6 +313,10 @@ module System
     scope :terminated, -> { where(status: "terminated") }
     scope :errored, -> { where(status: "error") }
     scope :active, -> { where(status: %w[pending provisioning running stopped]) }
+    # Capacity-metric liveness — see LIVE_REPLICA_STATUSES for why this is a
+    # second definition rather than a reuse of `active` (which omits the
+    # transitional states).
+    scope :live_replicas, -> { where(status: LIVE_REPLICA_STATUSES) }
     # Claim-by-ID fleet flow: a physical instance pre-registered by an operator,
     # still pending and not yet bound to a device, is eligible to be claimed by
     # a booting device that presents its ID (baked into /boot/identity.cfg).

@@ -167,6 +167,106 @@ RSpec.describe System::ProjectMetricsCollector do
       expect(region_row.value).to include("observed" => 1, "source" => "live")
     end
 
+    # IMP-797a87dbd0bd. `error` is in NodeInstance::STATUSES, and both samplers
+    # used to filter on `where.not(status: "terminated")` alone — so a replica
+    # the control plane had marked FAILED still counted toward capacity. The
+    # mission reported its full replica count, ProjectSloSensor#detect_drift
+    # compares observed != expected and so stayed silent, and the one case the
+    # drift signal most needs to catch produced nothing.
+    #
+    # Asserted end to end (collector -> metric row -> sensor) rather than on the
+    # sampler alone: the silence was a property of the PAIR, and a collector-only
+    # example would still pass if the sensor stopped reading the row.
+    it "excludes an errored instance from replica_count and drifts on the shortfall" do
+      node   = create(:system_node, account: account)
+      region = create(:system_provider_region)
+      inst_a = create(:system_node_instance, :running, node: node, provider_region: region)
+      inst_b = create(:system_node_instance, :running, node: node, provider_region: region)
+      inst_c = create(:system_node_instance, node: node, provider_region: region, status: "error")
+
+      mission, = seed_provisioned_mission([ inst_a.id, inst_b.id, inst_c.id ])
+      mission.update_columns(
+        configuration: mission.configuration.merge(
+          "brief" => { "scale" => { "initial" => 3 }, "regions" => [ "us-east-1" ] }
+        )
+      )
+
+      described_class.collect!(mission: mission)
+
+      replica = System::ProjectMetric.where(mission_id: mission.id, metric_name: "replica_count").first
+      expect(replica.value).to include("observed" => 2, "source" => "live")
+
+      drift = System::Fleet::Sensors::ProjectSloSensor.new(account: account).sense
+                                                      .find { |s| s.kind == "system.project_drift" }
+      expect(drift).not_to be_nil
+      expect(drift.payload).to include(
+        "drift_type" => "replica_count",
+        "observed"   => 2,
+        "target"     => 3
+      )
+    end
+
+    # region_count carries the SAME filter and the same failure: a region whose
+    # only instance has errored is a region the mission no longer occupies, and
+    # counting it reports full geographic coverage the fleet does not have.
+    # Two live instances in one region plus a lone errored instance in another
+    # separates the two samplers — replica_count drops by one, region_count
+    # drops the whole region.
+    it "drops a region whose only instance has errored from region_count" do
+      node     = create(:system_node, account: account)
+      region_a = create(:system_provider_region)
+      region_b = create(:system_provider_region)
+      inst_a = create(:system_node_instance, :running, node: node, provider_region: region_a)
+      inst_b = create(:system_node_instance, :running, node: node, provider_region: region_a)
+      inst_c = create(:system_node_instance, node: node, provider_region: region_b, status: "error")
+
+      mission, = seed_provisioned_mission([ inst_a.id, inst_b.id, inst_c.id ])
+
+      described_class.collect!(mission: mission)
+
+      region_row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "region_count").first
+      expect(region_row.value).to include("observed" => 1, "source" => "live")
+    end
+
+    # The transitional states are the other half of the decision. `starting`,
+    # `stopping` and `rebooting` are mid-lifecycle, not failed — a replica
+    # rebooting is still a replica the mission expects back within seconds.
+    # Excluding them (which the model's own `active` scope does — it is
+    # pending/provisioning/running/stopped) would make every routine reboot
+    # emit capacity drift and provoke a replacement provision, which is why
+    # this sampler does NOT reuse that scope. Pinned so a later "just use
+    # .active" simplification fails here instead of in production.
+    it "still counts instances in transitional states as live replicas" do
+      node   = create(:system_node, account: account)
+      region = create(:system_provider_region)
+      instances = %w[pending provisioning starting running stopping stopped rebooting].map do |status|
+        create(:system_node_instance, node: node, provider_region: region, status: status)
+      end
+
+      mission, = seed_provisioned_mission(instances.map(&:id))
+
+      described_class.collect!(mission: mission)
+
+      replica = System::ProjectMetric.where(mission_id: mission.id, metric_name: "replica_count").first
+      expect(replica.value).to include("observed" => 7, "source" => "live")
+    end
+
+    # The other terminal exclusion, kept alongside `error` so the pair is one
+    # readable statement of what "live" means here.
+    it "excludes terminated instances from replica_count" do
+      node   = create(:system_node, account: account)
+      region = create(:system_provider_region)
+      inst_a = create(:system_node_instance, :running, node: node, provider_region: region)
+      inst_b = create(:system_node_instance, node: node, provider_region: region, status: "terminated")
+
+      mission, = seed_provisioned_mission([ inst_a.id, inst_b.id ])
+
+      described_class.collect!(mission: mission)
+
+      replica = System::ProjectMetric.where(mission_id: mission.id, metric_name: "replica_count").first
+      expect(replica.value).to include("observed" => 1, "source" => "live")
+    end
+
     # Divergence guard. Several readers dig this one envelope independently, and
     # the defect was possible only because its shape is re-derived in each of
     # them. Compare against AdaptationDispatchService#produced_instance_ids

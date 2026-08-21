@@ -108,24 +108,46 @@ module System
       end
     end
 
-    # replica_count = live (non-terminated) instances this mission provisioned.
+    # replica_count = instances this mission provisioned that the control plane
+    # still expects to serve — NodeInstance::LIVE_REPLICA_STATUSES, which the
+    # `live_replicas` scope is the single spelling of.
+    #
     # `unavailable` when the mission has no resolvable instances (we genuinely
     # can't tell); a resolvable mission with zero live instances reports a real
     # 0 — a meaningful "nothing came up" drift signal, not a stub.
+    #
+    # IMP-797a87dbd0bd: this filtered on `where.not(status: "terminated")`
+    # alone, so an `error` instance — a replica the platform had marked FAILED
+    # — still counted as capacity. ProjectSloSensor#detect_drift only fires on
+    # observed != expected, so a mission whose replica died reported its full
+    # count and drifted silently, in exactly the case the signal exists for.
+    #
+    # Not `active`: that scope (pending/provisioning/running/stopped) also
+    # drops `starting`/`rebooting`, which would make every routine reboot read
+    # as capacity loss and provoke a replacement provision — trading a silent
+    # failure for a noisy false one.
     def sample_replica_count(instance_ids)
       return unavailable_sample("replica_count") if instance_ids.empty?
 
-      count = ::System::NodeInstance.where(id: instance_ids)
-                                    .where.not(status: "terminated").count
+      count = ::System::NodeInstance.where(id: instance_ids).live_replicas.count
       live_sample("replica_count", count)
     end
 
-    # region_count = distinct provider regions across the mission's live instances.
+    # region_count = distinct provider regions across the mission's live
+    # instances, on the SAME liveness definition as replica_count.
+    #
+    # Sharing it is the point: the two metrics are sampled from one instance
+    # set in one tick and land in one observation hash, so a region_count that
+    # counted errored rows while replica_count did not would describe two
+    # different fleets in the same breath. Semantically it is also the right
+    # filter on its own — a region whose only instance has errored is one the
+    # mission no longer occupies, and reporting it as still-occupied overstates
+    # geographic coverage the same way the replica count overstated capacity.
     def sample_region_count(instance_ids)
       return unavailable_sample("region_count") if instance_ids.empty?
 
       count = ::System::NodeInstance.where(id: instance_ids)
-                                    .where.not(status: "terminated")
+                                    .live_replicas
                                     .distinct.count(:provider_region_id)
       live_sample("region_count", count)
     end
