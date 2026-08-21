@@ -378,11 +378,22 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		_ = m.step("apply_vips", func() error { return m.VipApplier.ApplyVips(ctx, allVips) })
 	}
 
-	// Slice 9c — FRR is a single host-wide daemon. We use the first
-	// iBGP-enabled network's BgpConf (works for the single-iBGP-network
-	// case which is the slice 9c MVP). Multi-network aggregation will
-	// merge neighbors + announcements across networks in a follow-up.
-	var iBgpNetworkIDs []string
+	// Slice 9c — FRR is a single host-wide daemon, so exactly one config is
+	// applied per host and we take it from the first iBGP-enabled network.
+	//
+	// That is NOT the single-network limitation the original comment here
+	// described. The BgpConf the platform sends is not per-network: its
+	// FrrText is rendered host-wide by Sdwan::Bgp::ConfigCompiler, which
+	// emits one `router bgp <as> vrf <name>` block for EVERY VRF this host
+	// holds (see render_per_vrf_bgp_blocks). Every iBGP network on the host
+	// is configured by the file we write here, whichever network's BgpConf
+	// carried it — they carry the same host-wide FrrText.
+	//
+	// IMP-2f34679b6b73: what does NOT follow from one host-wide config is
+	// one host-wide observation. Each network's sessions live in its own
+	// VRF, so the poll below has to name the VRF or its answer belongs to
+	// no network in particular. Collect the scope alongside the id.
+	var iBgpScopes []BgpObservationScope
 	if m.FrrApplier != nil {
 		var firstEnabled *BgpConf
 		for _, net := range desired.Networks {
@@ -390,8 +401,22 @@ func (m *Manager) Reconcile(ctx context.Context) {
 				if firstEnabled == nil {
 					firstEnabled = net.Bgp
 				}
-				iBgpNetworkIDs = append(iBgpNetworkIDs, net.NetworkID)
+				iBgpScopes = append(iBgpScopes, BgpObservationScope{
+					NetworkID: net.NetworkID,
+					// Same VrfName the wg iface is bound to — the platform
+					// stamps both from the one HostVrfAssignment row, so the
+					// routing context we poll is the one this network's
+					// traffic actually rides in.
+					VrfName: net.Interface.VrfName,
+				})
 			}
+		}
+		// Only meaningful once the whole set is known: with a single iBGP
+		// network an unscoped answer cannot be confused with another
+		// network's, which is what lets a host whose VRF has not landed yet
+		// keep reporting instead of going dark.
+		for i := range iBgpScopes {
+			iBgpScopes[i].SoleIbgpNetwork = len(iBgpScopes) == 1
 		}
 		// The two arms are mutually exclusive, so whichever one runs
 		// forgets the other: leaving the idle arm's last outcome standing
@@ -417,9 +442,9 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	// cannot catch these: the scope still names a live network, so it looks
 	// current. Forget them here instead, while we still know which networks
 	// are enabled.
-	enabledBgp := make(map[string]struct{}, len(iBgpNetworkIDs))
-	for _, nid := range iBgpNetworkIDs {
-		enabledBgp[nid] = struct{}{}
+	enabledBgp := make(map[string]struct{}, len(iBgpScopes))
+	for _, scope := range iBgpScopes {
+		enabledBgp[scope.NetworkID] = struct{}{}
 	}
 	for _, net := range desired.Networks {
 		if _, on := enabledBgp[net.NetworkID]; !on {
@@ -427,18 +452,27 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		}
 	}
 
-	if m.FrrObserver != nil && len(iBgpNetworkIDs) > 0 {
+	if m.FrrObserver != nil && len(iBgpScopes) > 0 {
 		obsCtx, cancel := ObservationContext(ctx)
 		defer cancel()
 		var observations []*ObservedBgpState
-		for _, nid := range iBgpNetworkIDs {
+		for _, scope := range iBgpScopes {
 			var obs *ObservedBgpState
-			if err := m.step("observe_bgp:"+nid, func() error {
+			if err := m.step("observe_bgp:"+scope.NetworkID, func() error {
 				var err error
-				obs, err = m.FrrObserver.ObserveBgp(obsCtx, nid)
+				obs, err = m.FrrObserver.ObserveBgp(obsCtx, scope)
 				return err
 			}); err != nil {
 				continue
+			}
+			// IMP-2f34679b6b73 — an observation the observer could not
+			// attribute is still POSTED (the platform records why, and an
+			// operator needs to see it), but it must not stand as an `ok`
+			// outcome in the heartbeat. A subsystem with no entry is NOT
+			// MEASURED here, which is exactly what happened, and that state
+			// is never interchangeable with "ok".
+			if obs != nil && !obs.Measured {
+				m.forget("observe_bgp:" + scope.NetworkID)
 			}
 			observations = append(observations, obs)
 		}

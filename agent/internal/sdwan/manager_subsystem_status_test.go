@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -114,13 +115,20 @@ func (o *recordingOvnNb) Apply(ctx context.Context, plan *OvnNbPlan) (*ObservedO
 	return &ObservedOvnNbState{}, nil
 }
 
-type togglingFrrObserver struct{ err error }
+type togglingFrrObserver struct {
+	err error
+	// scopes records every scope the manager asked about, in order — the
+	// only way to see whether the manager is plumbing a routing context
+	// through at all (IMP-2f34679b6b73).
+	scopes []BgpObservationScope
+}
 
-func (t *togglingFrrObserver) ObserveBgp(ctx context.Context, networkID string) (*ObservedBgpState, error) {
+func (t *togglingFrrObserver) ObserveBgp(ctx context.Context, scope BgpObservationScope) (*ObservedBgpState, error) {
+	t.scopes = append(t.scopes, scope)
 	if t.err != nil {
 		return nil, t.err
 	}
-	return &ObservedBgpState{NetworkID: networkID}, nil
+	return &ObservedBgpState{NetworkID: scope.NetworkID, VrfName: scope.VrfName, Measured: true}, nil
 }
 
 // noopFrrApplier lets a test populate iBgpNetworkIDs, which is what gates
@@ -174,6 +182,9 @@ type testHarness struct {
 	ovnNb        *recordingOvnNb
 	bgpObs       *togglingFrrObserver
 	labels       []string
+	// bgpPosts records every POST /status/bgp body, so a test can assert on
+	// what the platform would actually receive (IMP-2f34679b6b73).
+	bgpPosts []string
 }
 
 func newHarness(t *testing.T, networks ...string) *testHarness {
@@ -191,8 +202,16 @@ func newHarness(t *testing.T, networks ...string) *testHarness {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost {
+			isBgp := strings.HasSuffix(r.URL.Path, "/status/bgp")
+			var raw []byte
+			if isBgp {
+				raw, _ = io.ReadAll(r.Body)
+			}
 			h.mu.Lock()
-			fail := h.bgpPostFails && strings.HasSuffix(r.URL.Path, "/status/bgp")
+			if isBgp {
+				h.bgpPosts = append(h.bgpPosts, string(raw))
+			}
+			fail := h.bgpPostFails && isBgp
 			h.mu.Unlock()
 			if fail {
 				w.WriteHeader(http.StatusInternalServerError)
@@ -256,6 +275,17 @@ func (h *testHarness) setConfigWith(extraTopLevel string, networks ...string) {
 }
 
 func (h *testHarness) reconcile() { h.mgr.Reconcile(context.Background()) }
+
+// lastBgpPost returns the most recent POST /status/bgp body.
+func (h *testHarness) lastBgpPost(t *testing.T) string {
+	t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.bgpPosts) == 0 {
+		t.Fatalf("no POST /status/bgp was made")
+	}
+	return h.bgpPosts[len(h.bgpPosts)-1]
+}
 
 // statusFor returns the heartbeat block for one network id.
 func (h *testHarness) statusFor(t *testing.T, netID string) HeartbeatStatus {
@@ -815,11 +845,24 @@ func TestFetchFailureIsReportedAsASubsystemAndClears(t *testing.T) {
 // networkWithBgpJSON renders a network carrying an iBGP config, which is
 // what puts it into iBgpNetworkIDs and enables the observation block.
 func networkWithBgpJSON(netID, iface string, bgpEnabled bool) string {
+	return networkWithBgpAndVrfJSON(netID, iface, bgpEnabled, "")
+}
+
+// networkWithBgpAndVrfJSON adds the interface's VRF name, which is what the
+// observer scopes its vtysh poll by (IMP-2f34679b6b73). Empty vrfName keeps
+// the pre-VRF shape a host looks like before its HostVrfAssignment lands.
+func networkWithBgpAndVrfJSON(netID, iface string, bgpEnabled bool, vrfName string) string {
 	enabled := "false"
 	if bgpEnabled {
 		enabled = "true"
 	}
-	return strings.TrimSuffix(networkJSON(netID, iface, true, true), "}") +
+	body := networkJSON(netID, iface, true, true)
+	if vrfName != "" {
+		body = strings.Replace(body,
+			`"private_key":"k"}`,
+			`"private_key":"k","vrf_name":"`+vrfName+`"}`, 1)
+	}
+	return strings.TrimSuffix(body, "}") +
 		`,"bgp":{"enabled":` + enabled + `,"as_number":65000,"router_id":"10.0.0.1"}}`
 }
 

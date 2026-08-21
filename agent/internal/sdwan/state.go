@@ -162,6 +162,21 @@ type ObservedBgpState struct {
 	LocalAs   int64                `json:"local_as"`
 	Sessions  []ObservedBgpSession `json:"sessions"`
 	LastError string               `json:"last_error,omitempty"`
+
+	// IMP-2f34679b6b73 — an ABSENT measurement and a measurement of zero
+	// sessions are different facts and were previously indistinguishable
+	// on the wire: vtysh missing, FRR down, or a poll the observer could
+	// not attribute to this network all produced `sessions: []`, which the
+	// platform read as "this network has no BGP neighbours" — healthy.
+	//
+	// Measured is emitted unconditionally (no omitempty) so the platform
+	// can tell a new agent that says `false` from an old agent that says
+	// nothing at all; the two need different handling.
+	Measured          bool   `json:"measured"`
+	NotMeasuredReason string `json:"not_measured_reason,omitempty"`
+	// VrfName is the routing context the poll was actually scoped to, as
+	// confirmed by FRR itself. Empty means the global instance.
+	VrfName string `json:"vrf_name,omitempty"`
 }
 
 // ObservedBgpSession — one BGP neighbor's live state.
