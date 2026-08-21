@@ -1364,12 +1364,9 @@ RSpec.describe System::Fleet::DecisionEngine do
     #     to adaptation goals/plans. Those were CORRECTED, not relaxed — see
     #     the comments at the assertions themselves.
     #
-    # NOTE: one example in this file — "routes a cost breach through
-    # project.cost_control into a cost_control plan" — remains RED on
-    # purpose. cost_control composes a scale-IN, and no scale-in strategy
-    # exists yet, so INC-3 made it decline. That expectation is genuinely
-    # obsolete and must be revised when INC-4 (IMP-216a6dbc7e32) lands
-    # `remove_replicas`; it was deliberately not "fixed" here.
+    # (A note here used to flag the cost_control example as deliberately RED
+    # pending INC-4's `remove_replicas`. INC-4 landed and IMP-e68a93c47106
+    # wired the composer, so the example was revised to the composed shape.)
     # ---------------------------------------------------------------------
     def build_mission(status: "active")
       m = create(:ai_mission, account: account, created_by: owner,
@@ -1627,15 +1624,20 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
-    # DECLINE BY DESIGN, not a gap. `scale_project` offers only additive
-    # strategies, so a cost breach — which implies scaling IN — has no actuator
-    # to bind to; composing one would fail at execution with a missing required
-    # input. INC-4 (IMP-216a6dbc7e32) adds `remove_replicas` and wires this
-    # branch up. Until then the honest composition is none at all.
+    # Was a DECLINE-BY-DESIGN example: `scale_project` offered only additive
+    # strategies, so a cost breach had no actuator to bind to. INC-4
+    # (IMP-216a6dbc7e32) added `remove_replicas` and IMP-e68a93c47106 wired the
+    # composer, so the lane composes now.
     #
-    # The decline still routes through project.cost_control and still carries
-    # proposal: true, which is what keeps it out of the validate arc.
-    it "declines to compose a cost_control plan while no scale-in strategy exists" do
+    # THE PROPERTY THAT REPLACES IT IS THE ONE THAT MATTERS HERE: the `before`
+    # block seeds `project.cost_control => notify_and_proceed`, i.e. an
+    # operator policy that WOULD let this lane act unattended. A cost_control
+    # plan destroys replicas, so core hands the gate auto_apply_eligible:
+    # false, the gate forces its approval arm, and the seeded proceed policy is
+    # overridden. If this example ever reports applied/auto-apply, an
+    # autonomous system has gained the ability to terminate instances on a
+    # notify_and_proceed policy alone.
+    it "composes a cost_control plan and holds it for approval despite a proceed policy" do
       decision = nil
       expect {
         decision = engine.decide(kind: "system.project_cost_breach", severity: :high,
@@ -1643,11 +1645,23 @@ RSpec.describe System::Fleet::DecisionEngine do
                                             "target_usd" => 200.0, "breach_pct" => 30.0,
                                             "correlation_id" => "project_slo:#{mission.id}:cost" },
                                  fingerprint: "project_cost_breach:#{mission.id}")
-      }.not_to change { Ai::GoalPlan.count }
+      }.to change { Ai::GoalPlan.count }.by(1)
 
       expect(decision[:action_category]).to eq("project.cost_control")
-      expect(decision[:remediation]).to include(applied: false, proposal: true)
-      expect(decision[:remediation][:reason]).to match(/no diff plan composed/)
+      expect(decision[:remediation]).to include(proposal: true)
+      expect(decision[:remediation][:gate])
+        .to eq(Ai::Provisioning::AdaptationDispatchService::GATE_ROUTED)
+
+      diff_plan = Ai::GoalPlan.find(decision[:remediation][:plan_id])
+      expect(diff_plan.plan_data["change_type"]).to eq("cost_control")
+      expect(diff_plan.steps.first.execution_config.dig("inputs", "scaling_strategy"))
+        .to eq("remove_replicas")
+      # Ground truth: nothing was appended to the mission's LIVE plan, so
+      # nothing ran.
+      mission_live_plan = Ai::GoalPlan.find(mission.reload.configuration.dig("plan", "plan_id"))
+      expect(mission_live_plan.steps.select { |s|
+        s.execution_config["adapted_from_plan_id"].present?
+      }).to be_empty
     end
 
     # Also a decline by design: `relocate_workload` declares required inputs the

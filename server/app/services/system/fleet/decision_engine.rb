@@ -1205,10 +1205,11 @@ module System
                  .propose_from_signals(signals: [ signal ])
         unless plan
           # Not a failure of the lane. The composer declines by design whenever
-          # it cannot bind a step to its executor's contract — cost_control has
-          # no scale-in strategy until INC-4 (IMP-216a6dbc7e32), and relocate
-          # needs inputs no heuristic supplies (offer 019ff49b-a8e5). Declining
-          # beats composing a step that fails at execution.
+          # it cannot bind a step to its executor's contract — relocate needs
+          # inputs no heuristic supplies (offer 019ff49b-a8e5). Declining beats
+          # composing a step that fails at execution. (cost_control used to
+          # reach here too; IMP-e68a93c47106 wired its scale-IN composer, so it
+          # no longer does.)
           return adaptation_declined("no diff plan composed for #{signal.kind}", mission_id: mission.id)
         end
 
