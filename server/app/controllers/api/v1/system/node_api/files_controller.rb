@@ -36,10 +36,11 @@ module Api
           #
           # Route param signature note: the route is
           # `get "files/modules/:id(/:filename)"`, so the id arrives as
-          # params[:id] (earlier code looked up params[:module_id] and
-          # always 404'd).
+          # params[:id] — the only binding. (Earlier code looked up
+          # params[:module_id], which no route ever populates, and so
+          # always 404'd.)
           def module_file
-            module_id = params[:id] || params[:module_id]
+            module_id = params[:id]
             node_module = node_modules.find(module_id)
             artifact = node_module.current_version&.artifact
             return render_not_found("ModuleArtifact") unless artifact
@@ -59,8 +60,10 @@ module Api
           # script.content / script.interpreter — attributes NodeScript does
           # not have. The body column is `data`; the interpreter is inferred
           # from its shebang line for the filename extension.
+          # `files/scripts/:id` is the only route reaching this action, so
+          # params[:id] is always populated.
           def script_file
-            script = node_scripts.find(params[:id] || params[:script_id])
+            script = node_scripts.find(params[:id])
             body = script.data.to_s
 
             render_success(
