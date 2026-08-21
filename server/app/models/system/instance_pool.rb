@@ -180,15 +180,19 @@ module System
 
     # A nil size is already reported by the numericality validators above, and
     # comparing one here RAISES rather than adding an error — `5 < nil` is an
-    # ArgumentError, not false. Two callers reach it, and the raise was visible
-    # on one of them ALREADY: InstancePoolsController#update calls `update!`
-    # with all three sizes permitted and rescues only RecordInvalid, so an
-    # ungated `PATCH` carrying `"target_size": null` has been answering 500
-    # since that action was written. On the executor's `create!` the raise was
-    # latent (the autonomy gate rescued it), until IMP-785d60f5ec3e put
-    # `candidate.valid?` on the request path in front of the gate and the same
-    # payload answered 500 instead of 422 on create too. This guard fixes BOTH
-    # paths. Bail out and let numericality speak.
+    # ArgumentError, not false. A `validate` method must not raise, so the
+    # guard belongs here and not at any one call site — THREE reach this
+    # validator: the gated create's unsaved candidate, the executor's
+    # `create!`, and InstancePoolsController#update's `update!`.
+    #
+    # It was latent on only one of them. The ungated `PATCH` has been
+    # answering 500 for `"target_size": null` since that action was written —
+    # #update permits all three sizes and rescues only RecordInvalid, and
+    # nothing rescues ArgumentError. On the gated create the raise was hidden
+    # instead (Ai::AutonomyGate#evaluate rescues StandardError) until
+    # IMP-785d60f5ec3e put `candidate.valid?` in front of the gate, at which
+    # point the same payload answered 500 there too. This guard repairs both.
+    # Bail out and let numericality speak.
     def max_gte_target_gte_min
       return if [ max_size, target_size, min_size ].any?(&:nil?)
 
