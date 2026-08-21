@@ -124,6 +124,33 @@ RSpec.describe "Api::V1::System::Sdwan::FederationPeers", type: :request do
         expect(peer.remote_prefix_advertisement).to eq("fd00:beef::/48")
       end
 
+      # IMP-a54dd584e500 — a form-shaped client resends the whole metadata blob
+      # on every PATCH, including the accept. peer.update!(ride_along) used to
+      # assign :metadata wholesale, so that resend silently wiped
+      # degraded_reason/suspension_reason/prior audit keys the request never
+      # named, moments before accept! merged its own stamp back on top of the
+      # now-empty hash. The survival is the whole point of this spec — a
+      # request that errored must not be able to pass it by accident, so the
+      # response status is asserted at both PATCH and read time.
+      it "preserves pre-existing metadata keys the accept PATCH does not name" do
+        peer.update!(metadata: { "degraded_reason" => "flaky uplink",
+                                  "suspension_reason" => "manual hold pending review" })
+
+        patch_peer(peer, { status: "accepted", metadata: { "note" => "ops" } }, as: manager)
+        expect(response).to have_http_status(:accepted)
+
+        approve_latest_deferred!
+
+        peer.reload
+        expect(peer.status).to eq("accepted")
+        expect(peer.metadata).to include(
+          "degraded_reason" => "flaky uplink",
+          "suspension_reason" => "manual hold pending review",
+          "note" => "ops",
+          "accepted_by_user_id" => manager.id
+        )
+      end
+
       # The inline path wrote status: "accepted" straight through @peer.update,
       # which never reached FederationPeer#accept! and so never verified the
       # Phase 11b single-use acceptance token. The REST surface collects no
