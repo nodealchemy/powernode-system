@@ -383,6 +383,12 @@ Rails.application.routes.draw do
             member { post :revoke }
           end
 
+          # Read-only governance scan over the account's federation peers.
+          # The REST twin of MCP's system_sdwan_federation_scan — both call
+          # Sdwan::FederationGovernance.scan, so the console and an agent see
+          # the same findings (IMP-65f479ad8484).
+          get "federation_governance/scan", to: "federation_governance#scan"
+
           # Slice 9c: account-level routing/iBGP control plane.
           # Routing controller owns AS allocation, mode introspection,
           # and the live BGP-session matrix.
