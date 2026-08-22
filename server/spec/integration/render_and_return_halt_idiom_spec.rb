@@ -31,17 +31,41 @@ require "tmpdir"
 # example red here until KNOWN_UNFIXED is pruned. That is the intended
 # discipline, not a bug.
 #
-# WHAT THIS GUARD DOES NOT COVER — read before trusting a green run.
-# It matches the `and return` spelling only. The SIBLING defect is a bare
-# `render_error(...)` with NO return at all, which is strictly worse (there is
-# not even a helper-frame return) and is the more common spelling in this
-# codebase — e.g. Api::V1::System::Federation::ServiceOfferingsController's
-# authorize_manage!, whose #create goes on to save the offering behind the 403.
-# Catching that form needs a different discriminator: the helper body alone is
-# ambiguous (several correct controllers pair a bare-render helper with
-# `return if performed?` at every CALL SITE), so it has to be decided at the
-# call site, not the definition. Deliberately left out of IMP-ce5d320d3e4e's
-# pinned scope and queued as its own improvement.
+# IMP-563999967998 EXTENDED THIS GUARD to the sibling spelling: a bare
+# `render_error(...)` with NO return at all. That form is strictly worse (there
+# is not even a helper-frame return) and was the more common spelling here —
+# Api::V1::System::Federation::ServiceOfferingsController's authorize_manage!
+# rendered a bare 403 and #create went straight on to save the offering.
+#
+# It needs a DIFFERENT discriminator, because the helper body alone is
+# ambiguous: several correct controllers pair a bare-render helper with a call
+# site that consumes the outcome. So the second check is decided at the CALL
+# SITE. A bare-render private non-filter helper is an offender only where it is
+# invoked as a BARE STATEMENT (its value discarded) and the next line of code is
+# not a control transfer. The correct shapes all pass:
+#   peer = find_peer / return unless peer   — value-consuming call site
+#   return unless validate_spawn_payload!   — value-consuming call site
+#   authorize! then `return if performed?`  — explicit halt at the call site
+# …as does a call whose next line is `end` / `else` / `when` / `rescue`, where
+# nothing the helper was guarding can run after it (case-dispatch handlers such
+# as Internal::DataDeletionRequestsController's approve_request are that shape).
+#
+# WHAT THIS GUARD STILL DOES NOT COVER — read before trusting a green run.
+#   - A helper defined in one file (a concern) and called from another: both
+#     halves of the discriminator are harvested per-file, so a cross-file pair
+#     is invisible.
+#   - A helper that renders only TRANSITIVELY, by calling another rendering
+#     helper — only a literal `render*` in the body marks a helper.
+#   - A call site that is not a BARE, ARGUMENT-LESS statement. `authorize!(:x)`,
+#     `authorize_manage! unless current_worker`, and any parenthesised or
+#     argument-bearing invocation are invisible, because the call-site match is
+#     an exact-line match on the helper name. Widening it was tried and changed
+#     the offender set across the whole checkout by more than this task could
+#     validate, so it is named here rather than half-done.
+#   - A helper registered as a before_action for SOME actions and also called
+#     inline from others: the filter registration whitelists it wholesale.
+#   - extensions/private/* is deliberately NOT scanned by this second check —
+#     see the note above public_controller_roots.
 #
 # Known blind spots in the discriminator itself, all with the same escape
 # hatch (KNOWN_UNFIXED, which demands a written reason):
@@ -377,6 +401,367 @@ RSpec.describe "render-and-return halt idiom (authorization bypass guard)" do
       RB
 
       expect(offenders.map { |h| h[:method] }).to include("authorize_write")
+    end
+  end
+
+  # ══════════════════════════════════════════════════════════════════════
+  # IMP-563999967998 — the BARE-RENDER form (no return at all).
+  # ══════════════════════════════════════════════════════════════════════
+
+  # `render_forbidden`, `render_error("x", status: :forbidden)`,
+  # `render_success foo` — but NOT `rendered_at = Time.current`.
+  def bare_render_regex = /^\s*render[a-z_]*(?:\s*\(|\s+[^=\s]|\s*$)/
+
+  # A call site is harmless when the next line of code cannot fall through into
+  # the guarded work: the end of the method or branch, the next arm of a
+  # case/if, a rescue/ensure, or an UNCONDITIONAL control transfer.
+  #
+  # "Unconditional" matters. An earlier draft treated any leading `return` as
+  # safe, which let the bug through one rewrite away from the real thing:
+  #
+  #   authorize_cancel!
+  #   return render_error("conflict") if @subscription.terminal?
+  #   @subscription.cancel!              # still reached by a refused caller
+  #
+  # A modifier `if`/`unless` on the transfer means control CAN continue, so it
+  # is not a halt. `return if performed?` is the one conditional form that is a
+  # halt — it is conditional on exactly the thing being checked — so it is
+  # matched explicitly.
+  def branch_end_regex = /\A(?:end\b|else\b|elsif\b|when\b|in\b|rescue\b|ensure\b|\}|\])/
+  def performed_guard_regex = /\Areturn\s+if\s+performed\?/
+  def unconditional_transfer_regex = /\A(?:return|next|break|raise)\b/
+
+  def control_transfer?(line)
+    return true if line.match?(branch_end_regex)
+    return true if line.match?(performed_guard_regex)
+
+    line.match?(unconditional_transfer_regex) && !line.match?(/\s(?:if|unless)\s/)
+  end
+
+  # Private/protected non-filter methods in this file whose body renders
+  # directly. The `and return` spelling is excluded — it belongs to the example
+  # above, and double-reporting one line would make both baselines rot together.
+  def rendering_helpers(lines, filters)
+    visibility = "public"
+    current = nil
+    found = Set.new
+
+    lines.each do |line|
+      stripped = line.strip
+      next if stripped.start_with?("#")
+
+      if line.match?(visibility_regex)
+        visibility = stripped
+        next
+      end
+      if (m = line.match(def_regex))
+        current = { name: m[2], visibility: m[1]&.strip || visibility }
+        next
+      end
+      next if current.nil?
+      next if current[:visibility] == "public"
+      next if filters.include?(current[:name])
+      next unless line.match?(bare_render_regex)
+      next if line.match?(idiom_regex)
+
+      found << current[:name]
+    end
+
+    found
+  end
+
+  # The call-site half of the discriminator. Only a BARE STATEMENT call counts:
+  # `peer = find_peer` and `return unless validate!` consume the helper's
+  # outcome and are the correct shapes, so they are not call sites for this
+  # purpose.
+  def bare_render_call_offenders_in(path)
+    lines = File.readlines(path)
+    filters = filter_methods(lines) | spine_filter_methods
+    helpers = rendering_helpers(lines, filters)
+    return [] if helpers.empty?
+
+    helpers.to_a.flat_map do |helper|
+      call_regex = /\A#{Regexp.escape(helper)}(?:\(\))?\z/
+      hits = []
+
+      lines.each_with_index do |line, idx|
+        stripped = line.strip
+        next if stripped.start_with?("#")
+        next unless stripped.match?(call_regex)
+
+        j = idx + 1
+        j += 1 while j < lines.size && (lines[j].strip.empty? || lines[j].strip.start_with?("#"))
+        following = j < lines.size ? lines[j].strip : "end"
+        next if control_transfer?(following)
+
+        hits << { path: path, line: idx + 1, method: helper,
+                  source: "#{stripped}  ->  #{following}" }
+      end
+
+      hits
+    end
+  end
+
+  # This file is mirrored to a PUBLIC remote. A baseline entry is a literal
+  # path, so baselining an offender inside extensions/private/* would print a
+  # private extension's directory and method names into the public mirror —
+  # exactly the leak spec/integration/private_extension_isolation_spec.rb
+  # exists to prevent, and which it asks to be avoided by DERIVING the private
+  # locations rather than naming them. So they are derived and excluded here.
+  # Private extensions live in their own repositories and carry their own copy
+  # of this guard; nothing about them is decided, or disclosed, in this file.
+  def private_extension_root
+    Pathname.new(File.expand_path("../../../../..", __dir__)).join("extensions", "private")
+  end
+
+  def public_controller_roots
+    prefix = private_extension_root.to_s
+    controller_roots.reject { |root| root.to_s.start_with?(prefix) }
+  end
+
+  def all_bare_render_call_offenders
+    public_controller_roots.flat_map do |root|
+      Dir.glob(root.join("**", "*.rb")).flat_map { |path| bare_render_call_offenders_in(path) }
+    end
+  end
+
+  # Every call site of one helper in one file collapses to a single entry, so
+  # the baseline stays readable; the cost, named here so nobody is surprised, is
+  # that a NEW call site added to an already-listed helper is not caught.
+  #
+  # IMP-563999967998 was pinned to the two federation controllers. Everything
+  # below is the SAME defect class, surfaced by generalizing this guard, and is
+  # reported for its own improvement rather than swept in — a wider sweep is a
+  # separate offer, and batch-fixing auto-discovered authorization sites is
+  # exactly what the bulk-operation rule forbids.
+  KNOWN_UNFIXED_BARE_RENDER = {
+    "server/app/controllers/api/v1/ai/team_templates_reviews_controller.rb#authorize_code_reviews_read!" =>
+      "core (parent repo), outside IMP-563999967998's pinned federation scope - queued",
+    "server/app/controllers/api/v1/ai/team_templates_reviews_controller.rb#authorize_code_reviews_manage!" =>
+      "core (parent repo); create_review_comment/update_review_comment write behind the 403 - queued",
+
+    "extensions/marketing/server/app/controllers/api/v1/marketing/campaign_contents_controller.rb#authorize_read!" =>
+      "marketing extension, outside this task's scope - queued",
+    "extensions/marketing/server/app/controllers/api/v1/marketing/campaign_contents_controller.rb#authorize_manage!" =>
+      "marketing extension; create/update/destroy/generate write behind the 403 - queued",
+    "extensions/marketing/server/app/controllers/api/v1/marketing/campaign_contents_controller.rb#authorize_approve!" =>
+      "marketing extension; approve!/reject! run behind the 403 - queued",
+    "extensions/marketing/server/app/controllers/api/v1/marketing/campaigns_controller.rb#authorize_read!" =>
+      "marketing extension, outside this task's scope - queued",
+    "extensions/marketing/server/app/controllers/api/v1/marketing/campaigns_controller.rb#authorize_manage!" =>
+      "marketing extension; create/update/destroy write behind the 403 - queued",
+    "extensions/marketing/server/app/controllers/api/v1/marketing/campaigns_controller.rb#authorize_execute!" =>
+      "marketing extension; campaign execution runs behind the 403 - queued",
+    "extensions/marketing/server/app/controllers/api/v1/marketing/content_calendar_controller.rb#authorize_read!" =>
+      "marketing extension, outside this task's scope - queued",
+    "extensions/marketing/server/app/controllers/api/v1/marketing/content_calendar_controller.rb#authorize_manage!" =>
+      "marketing extension; create/update/destroy write behind the 403 - queued",
+    "extensions/marketing/server/app/controllers/api/v1/marketing/email_lists_controller.rb#authorize_read!" =>
+      "marketing extension, outside this task's scope - queued",
+    "extensions/marketing/server/app/controllers/api/v1/marketing/email_lists_controller.rb#authorize_manage!" =>
+      "marketing extension; list + subscriber writes run behind the 403 - queued",
+    "extensions/marketing/server/app/controllers/api/v1/marketing/social_media_accounts_controller.rb#authorize_read!" =>
+      "marketing extension, outside this task's scope - queued",
+    "extensions/marketing/server/app/controllers/api/v1/marketing/social_media_accounts_controller.rb#authorize_manage!" =>
+      "marketing extension; account writes + adapter posts run behind the 403 - queued"
+  }.freeze
+
+  it "never calls a bare-render helper as a statement that falls through" do
+    offenders = all_bare_render_call_offenders
+      .reject { |h| KNOWN_UNFIXED_BARE_RENDER.key?(baseline_key(h[:path], h[:method])) }
+      .map { |h| "#{h[:path]}:#{h[:line]} in #{h[:method]} - #{h[:source]}" }
+
+    expect(offenders).to be_empty, <<~MSG
+      A bare `render_...(...)` in a private helper does not halt anything: the
+      helper simply returns and the action runs on into whatever the helper was
+      guarding, with the second render swallowed as a DoubleRenderError. Either
+      raise (for permission checks: Authentication::PermissionDenied, which
+      rescue_from turns into the canonical 403), register the method as a
+      before_action, or consume its outcome at the call site
+      (`return if performed?`, or a truthy return value).
+
+      #{offenders.join("\n")}
+    MSG
+  end
+
+  it "carries no stale bare-render baseline entries" do
+    live = all_bare_render_call_offenders.map { |h| baseline_key(h[:path], h[:method]) }
+    stale = KNOWN_UNFIXED_BARE_RENDER.keys - live
+
+    expect(stale).to be_empty,
+                     "KNOWN_UNFIXED_BARE_RENDER names call sites that no longer fall through. " \
+                     "If you fixed them, delete their lines - a baseline nobody prunes stops " \
+                     "being a decision and becomes permission:\n#{stale.join("\n")}"
+  end
+
+  describe "the bare-render call-site discriminator" do
+    def bare_offenders_for(body)
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "zz_guard_fixture_controller.rb")
+        File.write(path, body)
+        bare_render_call_offenders_in(path)
+      end
+    end
+
+    it "flags a bare-render helper called as a statement before the guarded write" do
+      offenders = bare_offenders_for(<<~RB)
+        class ZzGuardFixtureController < ApplicationController
+          def create
+            authorize_manage!
+            Thing.create!(name: "written anyway")
+          end
+
+          private
+
+          def authorize_manage!
+            return if current_user.has_permission?("x")
+            render_error("Forbidden", status: :forbidden)
+          end
+        end
+      RB
+
+      expect(offenders.map { |h| h[:method] }).to include("authorize_manage!")
+    end
+
+    # The exemption that matters: core's Api::V1::Ai::WorkspacesController
+    # renders bare from authorize_ai_conversations, and it is SAFE precisely
+    # because it is a before_action, where Rails really does halt.
+    it "does not flag a bare-render helper registered as a before_action" do
+      offenders = bare_offenders_for(<<~RB)
+        class ZzGuardFixtureController < ApplicationController
+          before_action :authorize_ai_conversations
+
+          def index
+            authorize_ai_conversations
+            render_success(things: [])
+          end
+
+          private
+
+          def authorize_ai_conversations
+            return if current_user.has_permission?("ai.conversations.read")
+            render_forbidden
+          end
+        end
+      RB
+
+      expect(offenders).to be_empty
+    end
+
+    it "does not flag a call site paired with `return if performed?`" do
+      offenders = bare_offenders_for(<<~RB)
+        class ZzGuardFixtureController < ApplicationController
+          def create
+            authorize_manage!
+            return if performed?
+
+            Thing.create!(name: "guarded")
+          end
+
+          private
+
+          def authorize_manage!
+            return if current_user.has_permission?("x")
+            render_error("Forbidden", status: :forbidden)
+          end
+        end
+      RB
+
+      expect(offenders).to be_empty
+    end
+
+    # The shape used correctly across the federation tree: the helper renders
+    # AND reports, and the call site consumes what it reported.
+    it "does not flag a value-consuming call site" do
+      offenders = bare_offenders_for(<<~RB)
+        class ZzGuardFixtureController < ApplicationController
+          def create
+            return unless validate_payload!
+
+            peer = find_peer
+            return unless peer
+
+            Thing.create!(name: "guarded")
+          end
+
+          private
+
+          def validate_payload!
+            render_error("Missing fields", status: :bad_request)
+            false
+          end
+
+          def find_peer
+            peer = Peer.find_by(id: params[:peer_id])
+            unless peer
+              render_error("Peer not found", status: :not_found)
+              return nil
+            end
+            peer
+          end
+        end
+      RB
+
+      expect(offenders).to be_empty
+    end
+
+    it "does not flag a case-dispatch handler, where nothing follows in the branch" do
+      offenders = bare_offenders_for(<<~RB)
+        class ZzGuardFixtureController < ApplicationController
+          def update
+            case params[:action_type]
+            when "approve"
+              approve_request
+            when "reject"
+              reject_request
+            end
+          end
+
+          private
+
+          def approve_request
+            render_success(ok: true)
+          end
+
+          def reject_request
+            render_success(ok: false)
+          end
+        end
+      RB
+
+      expect(offenders).to be_empty
+    end
+
+    it "does not flag a bare render inside a public action" do
+      offenders = bare_offenders_for(<<~RB)
+        class ZzGuardFixtureController < ApplicationController
+          def create
+            render_error("Forbidden", status: :forbidden)
+          end
+        end
+      RB
+
+      expect(offenders).to be_empty
+    end
+
+    it "does not mistake an assignment whose name starts with render for a render call" do
+      offenders = bare_offenders_for(<<~RB)
+        class ZzGuardFixtureController < ApplicationController
+          def create
+            stamp_render_time
+            Thing.create!(name: "fine")
+          end
+
+          private
+
+          def stamp_render_time
+            rendered_at = Time.current
+            @meta = { rendered_at: rendered_at }
+          end
+        end
+      RB
+
+      expect(offenders).to be_empty
     end
   end
 end
