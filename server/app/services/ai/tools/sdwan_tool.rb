@@ -164,6 +164,8 @@ module Ai
         "system_sdwan_compile_ovn_plan"            => "system.sdwan.ovn.read",
         "system_sdwan_create_ipfix_collector"      => "system.sdwan.ipfix.manage",
         "system_sdwan_list_ipfix_collectors"       => "system.sdwan.ipfix.read",
+        "system_sdwan_get_ipfix_collector"         => "system.sdwan.ipfix.read",
+        "system_sdwan_update_ipfix_collector"      => "system.sdwan.ipfix.manage",
         "system_sdwan_delete_ipfix_collector"      => "system.sdwan.ipfix.manage",
         # Phase O6 follow-up — OVN ACLs (multi-tenant isolation)
         "system_sdwan_create_ovn_acl"              => "system.sdwan.ovn.manage",
@@ -749,6 +751,19 @@ module Ai
             description: "List IPFIX collectors for the current account.",
             parameters: {}
           },
+          "system_sdwan_get_ipfix_collector" => {
+            description: "Fetch one IPFIX collector, including `is_winning_collector` — the compiler stamps only ONE collector onto the account's OVS bridges (the oldest active row), so a fleet may hold several while exactly one exports.",
+            parameters: {
+              collector_id: { type: "string", required: true, description: "Sdwan::IpfixCollector id" }
+            }
+          },
+          "system_sdwan_update_ipfix_collector" => {
+            description: "Enable or disable an IPFIX collector. THIS is how you stop a collector exporting — use it rather than system_sdwan_delete_ipfix_collector, which additionally destroys every flow sample recorded against the collector. Disabling keeps the row and its samples and only drops the ipfix: block from the next topology compile. Approval-gated (sdwan.ipfix_collector_update) — under require_approval this returns pending: true with a deferred_operation_id and the transition is applied only once an operator approves.",
+            parameters: {
+              collector_id: { type: "string", required: true, description: "Sdwan::IpfixCollector id" },
+              state: { type: "string", required: true, description: "active | disabled" }
+            }
+          },
           # ─── Phase O6 follow-up — OVN ACLs ──────────────────────────────
           "system_sdwan_create_ovn_acl" => {
             description: "Create an OVN ACL (firewall rule) on a logical switch. ACLs operate at the intra-host / logical-network scope (compiled to OVS OpenFlow via OVN's logical-flow translation) — distinct from SDWAN nftables firewall rules which operate at inter-peer scope. Heavyweight-profile only in effect.",
@@ -910,6 +925,8 @@ module Ai
         when "system_sdwan_delete_ipfix_collector"         then delete_ipfix_collector(params)
         when "system_sdwan_create_ipfix_collector"         then create_ipfix_collector(params)
         when "system_sdwan_list_ipfix_collectors"          then list_ipfix_collectors(params)
+        when "system_sdwan_get_ipfix_collector"            then get_ipfix_collector(params)
+        when "system_sdwan_update_ipfix_collector"         then update_ipfix_collector(params)
         else error_result("Unknown action: #{params[:action]}")
         end
       rescue ::Sdwan::UserDeviceIssuer::GrantError => e
@@ -3405,6 +3422,69 @@ module Ai
           ipfix_collectors: collectors.map { |c| serialize_ipfix_collector(c) },
           count: collectors.size
         )
+      end
+
+      # REST twin of IpfixCollectorsController#show, down to the
+      # is_winning_collector flag: the topology compiler stamps the account's
+      # OLDEST ACTIVE collector onto every ovs-kind HostBridge and ignores the
+      # rest, so "which of these is actually exporting" is a question the read
+      # surface has to answer or an agent will disable the wrong row.
+      #
+      # Computed per call rather than memoised on the tool instance: one
+      # SdwanTool serves many actions in a session, and a create or a state
+      # toggle in between would make a cached winner wrong.
+      def get_ipfix_collector(params)
+        collector = ::Sdwan::IpfixCollector.where(account_id: @account.id).find(params[:collector_id])
+
+        success_result(
+          ipfix_collector: serialize_ipfix_collector_with_winner(collector)
+        )
+      end
+
+      # The compiler's own selection, re-read on every call rather than
+      # memoised on the tool instance: one SdwanTool serves many actions in a
+      # session, and a create or a state toggle in between would make a cached
+      # winner wrong.
+      def serialize_ipfix_collector_with_winner(collector)
+        winner_id = ::Sdwan::IpfixCollector.for_account(@account).active.order(:created_at).first&.id
+        serialize_ipfix_collector(collector).merge(is_winning_collector: collector.id == winner_id)
+      end
+
+      # The non-destructive way to take a collector out of service. Its
+      # absence from this surface was the defect (IMP-6bbe5c673c38): an agent
+      # asked to stop a mis-sampling collector could only reach
+      # delete_ipfix_collector, which cascades the collector's flow_samples.
+      #
+      # VALIDATE BEFORE THE GATE, per gated_result's contract: an unknown
+      # state can never succeed, so it is refused now rather than parked for
+      # an operator to approve and watch fail. The wording is the REST twin's
+      # verbatim, so the two surfaces naming one operation cannot disagree.
+      def update_ipfix_collector(params)
+        collector = ::Sdwan::IpfixCollector.where(account_id: @account.id).find(params[:collector_id])
+        target = params[:state].to_s
+        return error_result("state must be 'active' or 'disabled'") unless ::Sdwan::IpfixCollector::STATES.include?(target)
+
+        # The TRANSITION, not just the string — the same pre-gate check the
+        # activate arms make with may_mark_active?. Both events accept both
+        # source states today, so this refuses nothing yet; it is here so that
+        # narrowing the state machine surfaces as an immediate refusal rather
+        # than as a doomed operation an operator approves and watches fail.
+        permitted = target == "active" ? collector.may_enable? : collector.may_disable?
+        return error_result("cannot move IPFIX collector from #{collector.state} to #{target}") unless permitted
+
+        gated_result(
+          action_category: ::Sdwan::Executors::UpdateIpfixCollector::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::UpdateIpfixCollector",
+          executor_params: { collector_id: collector.id, state: target },
+          source_type: "Sdwan::IpfixCollector",
+          source_id: collector.id,
+          description: "Set IPFIX collector #{collector.name.presence || collector.id} to #{target}"
+        ) do |_result|
+          # With the winner flag: disabling the winning collector silently
+          # PROMOTES the next-oldest active row, and an agent that just
+          # stopped one export needs to see whether another took over.
+          { ipfix_collector: serialize_ipfix_collector_with_winner(collector.reload) }
+        end
       end
 
       def serialize_ipfix_collector(c)

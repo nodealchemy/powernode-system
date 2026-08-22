@@ -170,11 +170,16 @@ sdwan_policies = {
   # For the OVN family specifically, REST is read-only (routes.rb exposes only
   # index/show for ovn_deployments and no routes at all for switches, ports or
   # ACLs), so an agent held destructive reach a console operator did not have.
-  # RESIDUAL, deliberately not closed here: host_bridges#destroy (which forces
-  # release, skipping the drain window) and ipfix_collectors#update/#destroy
-  # are REST writes that remain UNGATED, so for those two families the
-  # asymmetry is now inverted rather than removed. Closing it belongs to the
-  # per-family parity tasks that own those controllers.
+  # RESIDUAL recorded here, to be closed by the per-family parity tasks that
+  # own those controllers: host_bridges#destroy (which forces release,
+  # skipping the drain window) and ipfix_collectors#update/#destroy were REST
+  # writes that remained UNGATED, so for those two families the asymmetry was
+  # inverted rather than removed.
+  #   - ipfix_collectors#create/#update/#destroy: CLOSED by IMP-6bbe5c673c38,
+  #     which also added sdwan.ipfix_collector_update below. All three now
+  #     route through Ai::AutonomyGate, so the tiers in this table bind on
+  #     both surfaces for this family.
+  #   - host_bridges#destroy: STILL OPEN.
   # Tiers follow the sibling precedent: creates and state transitions notify,
   # deletes require approval.
   #
@@ -197,6 +202,21 @@ sdwan_policies = {
   "sdwan.ovn_acl_create"              => "notify_and_proceed",
   "sdwan.ovn_acl_delete"              => "require_approval",
   "sdwan.ipfix_collector_create"      => "notify_and_proceed",
+  # IMP-6bbe5c673c38 — the state toggle, on the family rule stated above
+  # (creates and state transitions notify). It is the NON-destructive way to
+  # take a collector out of service; the delete below additionally cascades
+  # the collector's flow_samples. Tiering the toggle at or above the delete
+  # would push an agent back toward the destructive verb, which is the defect
+  # this row exists to close, so it sits with its state-transition siblings
+  # (sdwan.host_bridge_update, sdwan.ovn_logical_switch_update).
+  #
+  # Stated plainly because the category is per-verb and cannot separate the
+  # two directions: this tier also covers DISABLE, and disabling the winning
+  # collector stops IPFIX export for the whole account (the compiler stamps
+  # exactly one). notify_and_proceed executes INLINE, so the notification is
+  # the only control on that — accepted because the effect is fully reversible
+  # by one further call and destroys nothing, unlike the delete below.
+  "sdwan.ipfix_collector_update"      => "notify_and_proceed",
   "sdwan.ipfix_collector_delete"      => "require_approval",
 
   # Federation — cross-instance peering is always sensitive

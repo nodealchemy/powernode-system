@@ -650,7 +650,7 @@ module PowernodeSystem
           sdwan.ovn_logical_switch_port_create sdwan.ovn_logical_switch_port_update
           sdwan.ovn_logical_switch_port_delete
           sdwan.ovn_acl_create sdwan.ovn_acl_delete
-          sdwan.ipfix_collector_create sdwan.ipfix_collector_delete
+          sdwan.ipfix_collector_create sdwan.ipfix_collector_update sdwan.ipfix_collector_delete
           system.sdwan_service_health_investigate
           system.sdwan_ovn_deployment_investigate
           system.sdwan_bgp_observation_investigate

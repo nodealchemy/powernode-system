@@ -75,6 +75,12 @@ RSpec.describe "SDWAN operator-path intervention policies" do
       "sdwan.ovn_acl_create"          => "notify_and_proceed",
       "sdwan.ovn_acl_delete"          => "require_approval",
       "sdwan.ipfix_collector_create"  => "notify_and_proceed",
+      # IMP-6bbe5c673c38 — the state toggle sits with the other state
+      # transitions. It must stay STRICTLY cheaper than the delete beside it:
+      # disable keeps the row and its flow samples, delete cascades them, and
+      # tiering the safe verb no lower than the destructive one is what pushes
+      # a caller toward the destructive one.
+      "sdwan.ipfix_collector_update"  => "notify_and_proceed",
       "sdwan.ipfix_collector_delete"  => "require_approval",
       "sdwan.access_grant_create"     => "notify_and_proceed",
       # IMP-343163bf37a4: reactivation is the inverse of the revoke below, not
