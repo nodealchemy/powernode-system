@@ -12,6 +12,56 @@ export interface Identifiable {
 }
 
 // ============================================================
+// Structural-failure guard shared by all three list hooks below
+// ============================================================
+//
+// A fixed-cadence poller (setInterval + refresh()) retrying an endpoint that
+// fails for a STRUCTURAL reason (401/403 — missing permission, expired
+// session) cannot succeed by repeating the identical request: every retry is
+// pure load. Left unchecked this trips server-side abuse throttles, and once
+// blocked every subsequent request 403s too — the poll loop keeps
+// re-confirming its own block forever (self-sealing).
+//
+// Policy:
+//  - 401/403             -> STOP immediately. No further fetch attempts
+//                            until the caller explicitly calls `retry()`.
+//  - anything else        -> bounded exponential backoff, PLUS a circuit
+//    (5xx / network / etc.)  breaker that also stops attempts after
+//                            RETRY_CIRCUIT_BREAKER_THRESHOLD consecutive
+//                            failures — a persistent 5xx is just as much
+//                            "pure load" as a persistent 403 once it has
+//                            been retried that many times.
+//
+// A single transient failure never opens the breaker and never blocks — the
+// very next successful fetch resets the failure count to zero, so
+// legitimate polling recovers on its own without operator intervention.
+
+const RETRY_BACKOFF_BASE_MS = 5000; // matches the current fixed poll cadence
+const RETRY_BACKOFF_MAX_MS = 5 * 60 * 1000; // 5-minute ceiling
+const RETRY_CIRCUIT_BREAKER_THRESHOLD = 5; // consecutive retryable failures
+
+function getErrorStatus(err: unknown): number | undefined {
+  const withResponse = err as { response?: { status?: unknown } } | null | undefined;
+  const responseStatus = withResponse?.response?.status;
+  if (typeof responseStatus === 'number') return responseStatus;
+  const withStatus = err as { status?: unknown } | null | undefined;
+  return typeof withStatus?.status === 'number' ? withStatus.status : undefined;
+}
+
+function isStructuralAuthError(status: number | undefined): boolean {
+  return status === 401 || status === 403;
+}
+
+/** Error state a list hook exposes to its *caller* after a failed fetch —
+ *  the counterpart to the toast notification, which only reaches the user.
+ *  Lets polling/consuming code branch on what happened instead of retrying
+ *  blindly forever. */
+export interface ResourceListError {
+  status?: number;
+  message: string;
+}
+
+// ============================================================
 // Client-side resource list (full collection in memory + client filter)
 // ============================================================
 
@@ -43,6 +93,19 @@ export interface UseResourceListReturn<T extends Identifiable, F> {
   setItems: Dispatch<SetStateAction<T[]>>;
   dropdownOpen: string | null;
   setDropdownOpen: Dispatch<SetStateAction<string | null>>;
+  /** Non-null after the most recent fetch failed. Cleared on the next
+   *  successful fetch (or by `retry()`). */
+  error: ResourceListError | null;
+  /** True once fetching has been suspended after a structural (401/403)
+   *  failure or after the retry circuit breaker opened following repeated
+   *  5xx/network failures. `refresh()` (and any other trigger that routes
+   *  through the internal fetch) becomes a no-op — no network call — while
+   *  this is true. Call `retry()` to resume. */
+  blocked: boolean;
+  /** Clears the error/circuit-breaker state and immediately attempts a
+   *  fetch, bypassing any backoff window. The retry affordance a caller
+   *  should offer once `blocked` is true. */
+  retry: () => void;
 }
 
 /**
@@ -81,6 +144,8 @@ export function useResourceList<T extends Identifiable, F = Record<string, unkno
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [filters, setFilters] = useState<F>(initialFilters);
   const [dropdownOpen, setDropdownOpen] = useState<string | null>(null);
+  const [error, setError] = useState<ResourceListError | null>(null);
+  const [blocked, setBlocked] = useState<boolean>(false);
 
   // Stable refs for fetcher/filterFn so we don't refetch on every parent
   // render that creates a new closure.
@@ -89,12 +154,45 @@ export function useResourceList<T extends Identifiable, F = Record<string, unkno
   useEffect(() => { fetcherRef.current = fetcher; }, [fetcher]);
   useEffect(() => { filterFnRef.current = filterFn; }, [filterFn]);
 
+  // Structural-failure guard state — see the block comment near the top of
+  // this file. Refs (not state) so the guard check inside fetchOnce always
+  // reads the latest value synchronously, with no stale-closure risk.
+  const blockedRef = useRef(false);
+  const consecutiveFailuresRef = useRef(0);
+  const nextAttemptAtRef = useRef(0);
+
   const fetchOnce = useCallback(async () => {
+    if (blockedRef.current || Date.now() < nextAttemptAtRef.current) {
+      // Structurally blocked (401/403) or still inside the backoff window
+      // from a prior retryable failure — skip the network call entirely.
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const data = await fetcherRef.current();
       setItems(data);
-    } catch {
+      setError(null);
+      consecutiveFailuresRef.current = 0;
+      nextAttemptAtRef.current = 0;
+    } catch (err) {
+      const status = getErrorStatus(err);
       addNotification({ type: 'error', message: errorMessage });
+      setError({ status, message: errorMessage });
+      if (isStructuralAuthError(status)) {
+        blockedRef.current = true;
+        setBlocked(true);
+      } else {
+        const failures = consecutiveFailuresRef.current + 1;
+        consecutiveFailuresRef.current = failures;
+        if (failures >= RETRY_CIRCUIT_BREAKER_THRESHOLD) {
+          blockedRef.current = true;
+          setBlocked(true);
+        } else {
+          nextAttemptAtRef.current =
+            Date.now() + Math.min(RETRY_BACKOFF_BASE_MS * 2 ** (failures - 1), RETRY_BACKOFF_MAX_MS);
+        }
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -108,6 +206,16 @@ export function useResourceList<T extends Identifiable, F = Record<string, unkno
   }, [autoLoad, fetchOnce]);
 
   const refresh = useCallback(() => {
+    setRefreshing(true);
+    fetchOnce();
+  }, [fetchOnce]);
+
+  const retry = useCallback(() => {
+    blockedRef.current = false;
+    consecutiveFailuresRef.current = 0;
+    nextAttemptAtRef.current = 0;
+    setBlocked(false);
+    setError(null);
     setRefreshing(true);
     fetchOnce();
   }, [fetchOnce]);
@@ -163,6 +271,9 @@ export function useResourceList<T extends Identifiable, F = Record<string, unkno
     setItems,
     dropdownOpen,
     setDropdownOpen,
+    error,
+    blocked,
+    retry,
   };
 }
 
@@ -271,23 +382,55 @@ export function usePaginatedResourceList<T extends Identifiable, F = Record<stri
     prev_page: null,
   });
   const [dropdownOpen, setDropdownOpen] = useState<string | null>(null);
+  const [error, setError] = useState<ResourceListError | null>(null);
+  const [blocked, setBlocked] = useState<boolean>(false);
 
   const fetcherRef = useRef(fetcher);
   const clientFilterRef = useRef(clientFilterFn);
   useEffect(() => { fetcherRef.current = fetcher; }, [fetcher]);
   useEffect(() => { clientFilterRef.current = clientFilterFn; }, [clientFilterFn]);
 
+  // Structural-failure guard state — see the block comment near the top of
+  // this file.
+  const blockedRef = useRef(false);
+  const consecutiveFailuresRef = useRef(0);
+  const nextAttemptAtRef = useRef(0);
+
   const doFetch = useCallback(async (
     pageArg: number,
     filtersArg: F,
     perPageArg: number
   ) => {
+    if (blockedRef.current || Date.now() < nextAttemptAtRef.current) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const result = await fetcherRef.current({ page: pageArg, per_page: perPageArg, filters: filtersArg });
       setItems(result.items);
       setPagination(result.meta);
-    } catch {
+      setError(null);
+      consecutiveFailuresRef.current = 0;
+      nextAttemptAtRef.current = 0;
+    } catch (err) {
+      const status = getErrorStatus(err);
       addNotification({ type: 'error', message: errorMessage });
+      setError({ status, message: errorMessage });
+      if (isStructuralAuthError(status)) {
+        blockedRef.current = true;
+        setBlocked(true);
+      } else {
+        const failures = consecutiveFailuresRef.current + 1;
+        consecutiveFailuresRef.current = failures;
+        if (failures >= RETRY_CIRCUIT_BREAKER_THRESHOLD) {
+          blockedRef.current = true;
+          setBlocked(true);
+        } else {
+          nextAttemptAtRef.current =
+            Date.now() + Math.min(RETRY_BACKOFF_BASE_MS * 2 ** (failures - 1), RETRY_BACKOFF_MAX_MS);
+        }
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -321,6 +464,16 @@ export function usePaginatedResourceList<T extends Identifiable, F = Record<stri
   }, [serverKey, refetchOnFilterChange]);
 
   const refresh = useCallback(() => {
+    setRefreshing(true);
+    doFetch(page, filters, perPage);
+  }, [doFetch, page, filters, perPage]);
+
+  const retry = useCallback(() => {
+    blockedRef.current = false;
+    consecutiveFailuresRef.current = 0;
+    nextAttemptAtRef.current = 0;
+    setBlocked(false);
+    setError(null);
     setRefreshing(true);
     doFetch(page, filters, perPage);
   }, [doFetch, page, filters, perPage]);
@@ -389,6 +542,9 @@ export function usePaginatedResourceList<T extends Identifiable, F = Record<stri
     setItems,
     dropdownOpen,
     setDropdownOpen,
+    error,
+    blocked,
+    retry,
     page,
     setPage,
     pagination,
@@ -487,6 +643,8 @@ export function useInfiniteResourceList<T extends Identifiable, F = Record<strin
   const [totalCount, setTotalCount] = useState<number>(0);
   const [page, setPage] = useState<number>(1);
   const [dropdownOpen, setDropdownOpen] = useState<string | null>(null);
+  const [error, setError] = useState<ResourceListError | null>(null);
+  const [blocked, setBlocked] = useState<boolean>(false);
 
   const fetcherRef = useRef(fetcher);
   const clientFilterRef = useRef(clientFilterFn);
@@ -498,6 +656,12 @@ export function useInfiniteResourceList<T extends Identifiable, F = Record<strin
   // accumulator.
   const generationRef = useRef<number>(0);
 
+  // Structural-failure guard state — see the block comment near the top of
+  // this file.
+  const blockedRef = useRef(false);
+  const consecutiveFailuresRef = useRef(0);
+  const nextAttemptAtRef = useRef(0);
+
   const fetchPage = useCallback(async (
     pageArg: number,
     filtersArg: F,
@@ -505,6 +669,14 @@ export function useInfiniteResourceList<T extends Identifiable, F = Record<strin
     mode: 'replace' | 'append',
     generation: number
   ) => {
+    if (blockedRef.current || Date.now() < nextAttemptAtRef.current) {
+      if (generation === generationRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+        setRefreshing(false);
+      }
+      return;
+    }
     try {
       const result = await fetcherRef.current({ page: pageArg, per_page: perPageArg, filters: filtersArg });
       // If a newer filter generation has started while we were waiting,
@@ -514,9 +686,28 @@ export function useInfiniteResourceList<T extends Identifiable, F = Record<strin
       setItems(prev => mode === 'replace' ? result.items : [...prev, ...result.items]);
       setTotalCount(result.meta.total_count);
       setHasMore(result.meta.next_page !== null);
-    } catch {
+      setError(null);
+      consecutiveFailuresRef.current = 0;
+      nextAttemptAtRef.current = 0;
+    } catch (err) {
       if (generation !== generationRef.current) return;
+      const status = getErrorStatus(err);
       addNotification({ type: 'error', message: errorMessage });
+      setError({ status, message: errorMessage });
+      if (isStructuralAuthError(status)) {
+        blockedRef.current = true;
+        setBlocked(true);
+      } else {
+        const failures = consecutiveFailuresRef.current + 1;
+        consecutiveFailuresRef.current = failures;
+        if (failures >= RETRY_CIRCUIT_BREAKER_THRESHOLD) {
+          blockedRef.current = true;
+          setBlocked(true);
+        } else {
+          nextAttemptAtRef.current =
+            Date.now() + Math.min(RETRY_BACKOFF_BASE_MS * 2 ** (failures - 1), RETRY_BACKOFF_MAX_MS);
+        }
+      }
     } finally {
       if (generation === generationRef.current) {
         setLoading(false);
@@ -551,6 +742,21 @@ export function useInfiniteResourceList<T extends Identifiable, F = Record<strin
   }, [hasMore, loadingMore, loading, page, filters, initialPerPage, fetchPage]);
 
   const refresh = useCallback(() => {
+    generationRef.current += 1;
+    const gen = generationRef.current;
+    setRefreshing(true);
+    setItems([]);
+    setPage(1);
+    setHasMore(true);
+    fetchPage(1, filters, initialPerPage, 'replace', gen);
+  }, [filters, initialPerPage, fetchPage]);
+
+  const retry = useCallback(() => {
+    blockedRef.current = false;
+    consecutiveFailuresRef.current = 0;
+    nextAttemptAtRef.current = 0;
+    setBlocked(false);
+    setError(null);
     generationRef.current += 1;
     const gen = generationRef.current;
     setRefreshing(true);
@@ -619,6 +825,9 @@ export function useInfiniteResourceList<T extends Identifiable, F = Record<strin
     setItems,
     dropdownOpen,
     setDropdownOpen,
+    error,
+    blocked,
+    retry,
   };
 }
 
