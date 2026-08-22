@@ -183,6 +183,267 @@ RSpec.describe System::InternalCaService do
     end
   end
 
+  # IMP-01a02b0c — every hub minting the local CA stamped the SAME subject
+  # ("/CN=Powernode Internal CA (local-dev)") over a DIFFERENT key, so nothing
+  # observable distinguished one hub's root from another's. That is not
+  # cosmetic: OpenSSL resolves a leaf's issuer BY SUBJECT DN, so two same-named
+  # roots in one federated client-auth bundle collide and only the first is
+  # ever tried.
+  describe "CA identity (a subject DN is not an identity)" do
+    def legacy_subject
+      "/CN=Powernode Internal CA (local-dev)"
+    end
+
+    # Generate a root exactly the way a separate deployment would: its own
+    # persist dir, its own ingress host, no shared state.
+    def generate_hub_ca(dir, host)
+      stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => dir,
+                                       "POWERNODE_INGRESS_HOST" => host))
+      described_class::LocalCaAdapter.new
+    end
+
+    def issue_leaf(adapter, cn)
+      key = OpenSSL::PKey.generate_key("ED25519")
+      csr = OpenSSL::X509::Request.new
+      csr.version    = 0
+      csr.subject    = OpenSSL::X509::Name.parse("/CN=#{cn}")
+      csr.public_key = key
+      csr.sign(key, nil)
+      issued = adapter.issue_certificate(csr_pem: csr.to_pem, ttl_seconds: 3600, common_name: cn)
+      OpenSSL::X509::Certificate.new(issued[:cert_pem])
+    end
+
+    it "gives two independently generated hub CAs different SUBJECTS and different FINGERPRINTS" do
+      Dir.mktmpdir do |a_dir|
+        Dir.mktmpdir do |b_dir|
+          hub_a = generate_hub_ca(a_dir, "ops-hub.example.test")
+          hub_b = generate_hub_ca(b_dir, "ops-hub-b.example.test")
+
+          expect(hub_a.ca_cert.subject.to_s).not_to eq(hub_b.ca_cert.subject.to_s)
+          expect(hub_a.ca_fingerprint).not_to eq(hub_b.ca_fingerprint)
+          expect(hub_a.ca_cert.subject.to_s).to include("ops-hub.example.test")
+          expect(hub_b.ca_cert.subject.to_s).to include("ops-hub-b.example.test")
+
+          # A root is also its own issuer — the collision has to be gone from
+          # BOTH names, since the acceptable-CA list a peer sees is the issuer.
+          expect(hub_a.ca_cert.issuer.to_s).to eq(hub_a.ca_cert.subject.to_s)
+          expect(hub_a.ca_cert.issuer.to_s).not_to eq(hub_b.ca_cert.issuer.to_s)
+
+          # "(local-dev)" is a lie on a deployed Vault-less hub, which runs
+          # this adapter as its NORMAL posture.
+          [ hub_a, hub_b ].each do |hub|
+            expect(hub.ca_cert.subject.to_s).not_to include("local-dev")
+          end
+        end
+      end
+    end
+
+    it "still distinguishes two hubs that share a hostname (cloned image, unset ingress host)" do
+      Dir.mktmpdir do |a_dir|
+        Dir.mktmpdir do |b_dir|
+          hub_a = generate_hub_ca(a_dir, "powernode-hub")
+          hub_b = generate_hub_ca(b_dir, "powernode-hub")
+
+          expect(hub_a.ca_cert.subject.to_s).not_to eq(hub_b.ca_cert.subject.to_s)
+          expect(hub_a.ca_fingerprint).not_to eq(hub_b.ca_fingerprint)
+        end
+      end
+    end
+
+    # THE point of the task. Federating two hubs concatenates both roots into
+    # one client-auth-bundle.pem; a leaf from EACH must verify, and the result
+    # must say which anchor it chained to. With colliding DNs the second hub's
+    # leaf is rejected outright ("certificate signature failure") and the
+    # verified result cannot name its anchor at all.
+    it "verifies a leaf from EACH hub out of one combined bundle, and names the matching anchor" do
+      Dir.mktmpdir do |a_dir|
+        Dir.mktmpdir do |b_dir|
+          hub_a = generate_hub_ca(a_dir, "ops-hub.example.test")
+          hub_b = generate_hub_ca(b_dir, "ops-hub-b.example.test")
+          leaf_a = issue_leaf(hub_a, "fed:peer-a")
+          leaf_b = issue_leaf(hub_b, "fed:peer-b")
+          bundle = [ hub_a.ca_chain_pem, hub_b.ca_chain_pem ].join("\n")
+
+          result_a = ::Security::MtlsClientVerifier.verify(cert_pem: leaf_a.to_pem, anchors: [ bundle ])
+          result_b = ::Security::MtlsClientVerifier.verify(cert_pem: leaf_b.to_pem, anchors: [ bundle ])
+
+          expect(result_a.verified?).to be(true)
+          expect(result_b.verified?).to be(true)
+          expect(result_a.subject_cn).to eq("fed:peer-a")
+          expect(result_b.subject_cn).to eq("fed:peer-b")
+
+          # WHICH anchor matched — the assertion that could not even be
+          # expressed before, because the result carried no anchor identity.
+          expect(result_a.anchor_fingerprint).to eq(hub_a.ca_fingerprint)
+          expect(result_b.anchor_fingerprint).to eq(hub_b.ca_fingerprint)
+          expect(result_a.anchor_fingerprint).not_to eq(result_b.anchor_fingerprint)
+        end
+      end
+    end
+
+    describe "the hub identity stamped into a new subject" do
+      def subject_for_env(dir, env)
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => dir).merge(env))
+        described_class::LocalCaAdapter.new.ca_cert.subject.to_s
+      end
+
+      it "prefers POWERNODE_CA_SUBJECT_HOST over POWERNODE_INGRESS_HOST" do
+        Dir.mktmpdir do |dir|
+          subject = subject_for_env(dir, "POWERNODE_CA_SUBJECT_HOST" => "explicit.example.test",
+                                         "POWERNODE_INGRESS_HOST"   => "ingress.example.test")
+          expect(subject).to include("explicit.example.test")
+          expect(subject).not_to include("ingress.example.test")
+        end
+      end
+
+      it "falls back to the system hostname when neither env var is set" do
+        Dir.mktmpdir do |dir|
+          env = ENV.to_h
+          env.delete("POWERNODE_CA_SUBJECT_HOST")
+          env.delete("POWERNODE_INGRESS_HOST")
+          stub_const("ENV", env.merge("POWERNODE_CA_LOCAL_DIR" => dir))
+          allow(Socket).to receive(:gethostname).and_return("fallback-host")
+
+          expect(described_class::LocalCaAdapter.new.ca_cert.subject.to_s).to include("fallback-host")
+        end
+      end
+
+      it "still produces a usable subject when no identity is resolvable at all" do
+        Dir.mktmpdir do |dir|
+          env = ENV.to_h
+          env.delete("POWERNODE_CA_SUBJECT_HOST")
+          env.delete("POWERNODE_INGRESS_HOST")
+          stub_const("ENV", env.merge("POWERNODE_CA_LOCAL_DIR" => dir))
+          allow(Socket).to receive(:gethostname).and_return("")
+
+          expect(described_class::LocalCaAdapter.new.ca_cert.subject.to_s).to include("unidentified-hub")
+        end
+      end
+
+      # X.509 caps a CN at 64 chars and OpenSSL ENFORCES it — one char over
+      # and Name#new raises, taking CA generation down.
+      it "keeps the CN inside the 64-char X.509 bound for an absurdly long hostname" do
+        Dir.mktmpdir do |dir|
+          subject = subject_for_env(dir, "POWERNODE_CA_SUBJECT_HOST" => "#{'a' * 200}.example.test")
+          cn = OpenSSL::X509::Name.parse(subject).to_a.find { |n, _, _| n == "CN" }[1]
+          expect(cn.length).to be <= 64
+          expect(cn).to start_with("Powernode Internal CA ")
+        end
+      end
+
+      it "strips characters that would not survive a log line or a DN" do
+        Dir.mktmpdir do |dir|
+          subject = subject_for_env(dir, "POWERNODE_CA_SUBJECT_HOST" => "ops hub/CN=evil,O=x")
+          cn = OpenSSL::X509::Name.parse(subject).to_a.find { |n, _, _| n == "CN" }[1]
+          expect(cn).to eq("Powernode Internal CA ops-hub-CN-evil-O-x")
+        end
+      end
+    end
+
+    # THE FLEET-PROTECTING NEGATIVE. ops-hub is live RIGHT NOW on the legacy
+    # DN with worker/agent/node/federation certs chained to it. Adopting the
+    # new subject on an existing root would invalidate every one of them —
+    # the dev-sentinel over-clear failure class. An existing root must load
+    # byte-identical, forever.
+    describe "an EXISTING persisted root is loaded untouched" do
+      # Writes a root exactly as the pre-change code produced it, so the
+      # fixture is a faithful stand-in for what is on ops-hub's disk today.
+      def write_legacy_root!(dir)
+        key  = OpenSSL::PKey.generate_key("ED25519")
+        cert = OpenSSL::X509::Certificate.new
+        cert.serial     = 1
+        cert.version    = 2
+        cert.not_before = Time.current
+        cert.not_after  = Time.current + (10 * 365 * 24 * 3600)
+        cert.public_key = key
+        cert.subject    = OpenSSL::X509::Name.parse(legacy_subject)
+        cert.issuer     = cert.subject
+        ef = OpenSSL::X509::ExtensionFactory.new(cert, cert)
+        cert.add_extension(ef.create_extension("basicConstraints", "CA:TRUE", true))
+        cert.add_extension(ef.create_extension("keyUsage", "keyCertSign, cRLSign", true))
+        cert.add_extension(ef.create_extension("subjectKeyIdentifier", "hash", false))
+        cert.sign(key, nil)
+
+        File.write(File.join(dir, "root.key"), key.private_to_pem, mode: "w", perm: 0o600)
+        File.write(File.join(dir, "root.crt"), cert.to_pem, mode: "w", perm: 0o644)
+        cert
+      end
+
+      it "leaves the legacy root byte-identical — same bytes on disk, same fingerprint, same subject" do
+        Dir.mktmpdir do |dir|
+          fixture   = write_legacy_root!(dir)
+          cert_path = File.join(dir, "root.crt")
+          key_path  = File.join(dir, "root.key")
+          cert_bytes_before = File.binread(cert_path)
+          key_bytes_before  = File.binread(key_path)
+
+          # A hub identity IS available here — it must simply be ignored for
+          # an already-persisted root.
+          stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR"  => dir,
+                                           "POWERNODE_INGRESS_HOST" => "ops-hub.example.test"))
+          adapter = described_class::LocalCaAdapter.new
+
+          expect(File.binread(cert_path)).to eq(cert_bytes_before)
+          expect(File.binread(key_path)).to  eq(key_bytes_before)
+          expect(adapter.ca_cert.to_der).to eq(fixture.to_der)
+          expect(adapter.ca_cert.subject.to_s).to eq(legacy_subject)
+          expect(adapter.ca_fingerprint).to eq(::Security::CaFingerprint.of(fixture))
+          expect(adapter.ca_cert.subject.to_s).not_to include("ops-hub.example.test")
+        end
+      end
+
+      # The generate branch writes BOTH files unconditionally, so reaching it
+      # with one half still on disk would overwrite the survivor — destroying
+      # the live root exactly as a subject rewrite would. A damaged restore
+      # must never be mistaken for "please mint a fresh root".
+      it "REFUSES to generate when root.crt survives but root.key is gone, leaving the cert intact" do
+        Dir.mktmpdir do |dir|
+          write_legacy_root!(dir)
+          cert_path = File.join(dir, "root.crt")
+          cert_bytes_before = File.binread(cert_path)
+          File.delete(File.join(dir, "root.key"))
+
+          stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => dir))
+
+          expect { described_class::LocalCaAdapter.new }
+            .to raise_error(described_class::CaError, /root\.key is missing/)
+          expect(File.binread(cert_path)).to eq(cert_bytes_before)
+        end
+      end
+
+      it "REFUSES to generate when root.key survives but root.crt is gone, leaving the key intact" do
+        Dir.mktmpdir do |dir|
+          write_legacy_root!(dir)
+          key_path = File.join(dir, "root.key")
+          key_bytes_before = File.binread(key_path)
+          File.delete(File.join(dir, "root.crt"))
+
+          stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => dir))
+
+          expect { described_class::LocalCaAdapter.new }
+            .to raise_error(described_class::CaError, /root\.crt is missing/)
+          expect(File.binread(key_path)).to eq(key_bytes_before)
+        end
+      end
+
+      it "keeps issuing certs that chain to the LEGACY root (the live fleet keeps authenticating)" do
+        Dir.mktmpdir do |dir|
+          fixture = write_legacy_root!(dir)
+          stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR"  => dir,
+                                           "POWERNODE_INGRESS_HOST" => "ops-hub.example.test"))
+          adapter = described_class::LocalCaAdapter.new
+          leaf    = issue_leaf(adapter, "worker-1")
+
+          result = ::Security::MtlsClientVerifier.verify(cert_pem: leaf.to_pem,
+                                                         anchors: [ fixture.to_pem ])
+          expect(result.verified?).to be(true)
+          expect(result.subject_cn).to eq("worker-1")
+          expect(result.anchor_fingerprint).to eq(::Security::CaFingerprint.of(fixture))
+        end
+      end
+    end
+  end
+
   # Regression: emit_audit_event! passed `event_type:` to AuditLog.create!,
   # but the column is `action` — every call raised ActiveRecord::RecordInvalid /
   # NoMethodError, silently swallowed by the surrounding rescue, so no CA

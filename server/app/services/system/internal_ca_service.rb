@@ -2,6 +2,8 @@
 
 require "openssl"
 require "ipaddr"
+require "socket"
+require "securerandom"
 
 module System
   # Issues mTLS certificates for NodeInstances against the platform's
@@ -94,6 +96,15 @@ module System
 
       def ca_chain_pem
         adapter.ca_chain_pem
+      end
+
+      # SHA-256 fingerprint of our root — the value an operator should compare
+      # when asking "is this the same CA?", and the one federation
+      # diagnostics quote. A subject DN cannot answer that question: hubs
+      # provisioned before hub-specific subjects all present the identical
+      # "CN=Powernode Internal CA (local-dev)" over different keys.
+      def ca_fingerprint
+        adapter.ca_fingerprint
       end
 
       # Audit plan P1.4 — surface adapter#revoke through the service. LocalCaAdapter
@@ -220,18 +231,52 @@ module System
       # platform's storage tree so it's not lost on /tmp cleanup.
       DEFAULT_PERSIST_DIR = "/var/lib/powernode/internal-ca"
 
+      # Subject components for a NEWLY generated root. The old value —
+      # "/CN=Powernode Internal CA (local-dev)" — was both hub-agnostic AND
+      # misleading on deployed hubs (the local adapter is the normal posture
+      # for any Vault-less hub, not a dev-only fallback).
+      CA_SUBJECT_ORG       = "Powernode"
+      CA_SUBJECT_CN_PREFIX = "Powernode Internal CA"
+
       def initialize
         @persist_dir = ENV.fetch("POWERNODE_CA_LOCAL_DIR", DEFAULT_PERSIST_DIR)
         load_or_create_root
       end
 
+      # An EXISTING persisted root is loaded verbatim and never rewritten —
+      # not its subject, not its extensions, not one byte. Every worker,
+      # agent, node and federation cert on a running hub chains to it, so
+      # re-minting it (e.g. to adopt the hub-specific subject below) would
+      # de-authenticate the whole fleet on every /api/v1/internal route.
+      # Adopting a new subject on an already-provisioned hub is a deliberate
+      # CA ROTATION — new key, trust-bundle overlap window, re-issue of every
+      # leaf — and is explicitly NOT what this method does.
+      #
+      # A HALF-PRESENT pair fails closed. The generate branch below writes
+      # BOTH files unconditionally, so reaching it with one of the two still
+      # on disk would overwrite the survivor — destroying the live root (or
+      # its key) exactly as a subject rewrite would. A directory holding one
+      # half of a CA is a damaged restore, never a "please mint a fresh root"
+      # signal, so refuse and make an operator look at it.
       def load_or_create_root
         key_path  = File.join(@persist_dir, "root.key")
         cert_path = File.join(@persist_dir, "root.crt")
-        if File.exist?(key_path) && File.exist?(cert_path)
+        key_present  = File.exist?(key_path)
+        cert_present = File.exist?(cert_path)
+
+        if key_present && cert_present
           @ca_key  = OpenSSL::PKey.read(File.read(key_path))
           @ca_cert = OpenSSL::X509::Certificate.new(File.read(cert_path))
           return
+        end
+
+        if key_present || cert_present
+          present, missing = key_present ? [ key_path, cert_path ] : [ cert_path, key_path ]
+          raise CaError,
+                "refusing to generate a new internal CA: #{present} exists but #{missing} is missing. " \
+                "Generating would overwrite the surviving half of an existing CA and de-authenticate " \
+                "every certificate chained to it. Restore the missing file, or move the whole " \
+                "directory aside deliberately if a NEW CA is genuinely intended."
         end
 
         @ca_key  = OpenSSL::PKey.generate_key("ED25519")
@@ -293,6 +338,14 @@ module System
         ca_cert.to_pem
       end
 
+      # THE identity of this CA. The subject is a label the CA names itself;
+      # only the fingerprint distinguishes two roots (and every hub
+      # provisioned before hub-specific subjects landed still shares one DN
+      # with every other such hub).
+      def ca_fingerprint
+        ::Security::CaFingerprint.of(ca_cert)
+      end
+
       def preflight_check
         {
           status: :ok,
@@ -301,6 +354,7 @@ module System
             adapter: "local",
             persist_dir: @persist_dir,
             subject: ca_cert.subject.to_s,
+            fingerprint: ca_fingerprint,
             not_after: ca_cert.not_after.iso8601
           }
         }
@@ -322,7 +376,7 @@ module System
         cert.not_before = Time.current
         cert.not_after  = Time.current + (10 * 365 * 24 * 3600) # 10 years
         cert.public_key = key
-        cert.subject    = OpenSSL::X509::Name.parse("/CN=Powernode Internal CA (local-dev)")
+        cert.subject    = new_root_subject
         cert.issuer     = cert.subject # self-signed
 
         ef = OpenSSL::X509::ExtensionFactory.new(cert, cert)
@@ -331,6 +385,71 @@ module System
         cert.add_extension(ef.create_extension("subjectKeyIdentifier", "hash", false))
         cert.sign(key, nil)
         cert
+      end
+
+      # Subject stamped on a NEWLY GENERATED root. Never applied to a root
+      # already on disk — load_or_create_root returns an existing root
+      # untouched, because rewriting a live CA's subject invalidates every
+      # worker/agent/node cert chaining to it (see the class comment).
+      #
+      # Every hub used to mint "/CN=Powernode Internal CA (local-dev)", so
+      # separately-generated roots were indistinguishable BY NAME while having
+      # different keys. That is not cosmetic: OpenSSL resolves a leaf's issuer
+      # by subject DN, so two same-named roots in one federated client-auth
+      # bundle collide and the second one's leaves are rejected outright.
+      # A hub-specific subject makes the collision structurally impossible for
+      # new CAs; Security::CaFingerprint remains the identity of record.
+      def new_root_subject
+        OpenSSL::X509::Name.new(
+          [ [ "O",  CA_SUBJECT_ORG,                                  OpenSSL::ASN1::UTF8STRING ],
+            [ "OU", ca_instance_token,                               OpenSSL::ASN1::UTF8STRING ],
+            [ "CN", "#{CA_SUBJECT_CN_PREFIX} #{ca_host_identity}",   OpenSSL::ASN1::UTF8STRING ] ]
+        )
+      end
+
+      # The hub's own name, as peers address it. Deliberately drawn from
+      # process-level sources ONLY: the local CA is generated lazily on first
+      # `InternalCaService.adapter` — which happens from rake tasks, the
+      # reverse-proxy writer and boot-time config paths — so a DB-backed
+      # identifier is not dependably reachable that early. Specifically NOT
+      # used, and why:
+      #   - NodeInstance id: a hub has no "self" NodeInstance row; the closest
+      #     thing (SiteSetting system.self_hosting_node_id) is DB-backed AND
+      #     unset by default (SelfManagementFence's inert default).
+      #   - Account id: the CA is a platform-wide singleton, not per-account
+      #     (see #audit_account) — there is no one account to name.
+      # POWERNODE_INGRESS_HOST is the same value Core::IngressConfigWriter
+      # already treats as this hub's identity, so the CA name matches the name
+      # peers reach us by.
+      def ca_host_identity
+        raw = ENV["POWERNODE_CA_SUBJECT_HOST"].presence ||
+              ENV["POWERNODE_INGRESS_HOST"].presence ||
+              hostname ||
+              "unidentified-hub"
+        sanitize_dn_value(raw)
+      end
+
+      # Minted once, at generation, and frozen into the persisted root. Two
+      # hubs that genuinely share a hostname (a cloned image, an unset
+      # POWERNODE_INGRESS_HOST) would otherwise still collide; this guarantees
+      # distinctness without needing any external identifier to be correct.
+      def ca_instance_token
+        @ca_instance_token ||= SecureRandom.uuid
+      end
+
+      def hostname
+        Socket.gethostname.presence
+      rescue StandardError
+        nil
+      end
+
+      # A DN travels into logs, TLS acceptable-CA lists and forwarded headers,
+      # so keep it to characters that survive all of them, and inside X.509's
+      # 64-char upper bound for a CN (prefix included).
+      def sanitize_dn_value(raw)
+        cleaned = raw.to_s.scrub("-").strip.gsub(/[^A-Za-z0-9._:-]+/, "-").gsub(/\A-+|-+\z/, "")
+        cleaned = "unidentified-hub" if cleaned.empty?
+        cleaned[0, 64 - CA_SUBJECT_CN_PREFIX.length - 1]
       end
 
       def subject_for(csr, common_name:)
@@ -400,6 +519,12 @@ module System
         @pki.root_certificate_pem
       rescue ::Security::VaultPkiClient::PkiError => e
         raise CaError, "Vault PKI ca_chain fetch failed: #{e.message}"
+      end
+
+      # Parity with LocalCaAdapter#ca_fingerprint so callers never have to ask
+      # which adapter is live before they can identify the CA.
+      def ca_fingerprint
+        ::Security::CaFingerprint.of_pem(ca_chain_pem)
       end
 
       # Audit plan P1.4 — revoke a previously-issued cert by serial.
