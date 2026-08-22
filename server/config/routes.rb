@@ -416,7 +416,12 @@ Rails.application.routes.draw do
           # POST create accepts batched JSON from sidecar collectors.
           # PATCH update toggles state (active/disabled); DELETE
           # destroys the collector + its flow_samples (cascade FK).
-          resources :ipfix_collectors, only: %i[index show update destroy] do
+          # IMP-6bbe5c673c38 added POST create for REST/MCP verb parity:
+          # creation existed only on the AI surfaces
+          # (system_sdwan_create_ipfix_collector and the
+          # SdwanIpfixCollectorComposeExecutor skill). The console form
+          # that would consume it has not landed yet.
+          resources :ipfix_collectors, only: %i[index show create update destroy] do
             resources :flow_samples, only: %i[index create]
           end
         end
