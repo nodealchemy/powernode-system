@@ -192,6 +192,52 @@ puts grant.applies_to?(
 
 **Fix:** revoke the peer and re-propose from scratch so the accept chain re-runs the CSR sign (hierarchical) or CA-anchor exchange (symmetric) and re-stamps `inbound_subject` / `trusted_ca_pem`.
 
+### Identify a CA by FINGERPRINT, never by its subject DN
+
+Hubs provisioned before the internal CA carried a hub-specific subject all
+generated the *same* root name — `CN=Powernode Internal CA (local-dev)` — over
+*different* keys. Two such hubs are indistinguishable by name, and the TLS
+acceptable-client-CA list a peer shows you is **by DN**, so it cannot tell you
+whether that peer trusts *your* CA or some other hub's identically-named one.
+
+Compare fingerprints instead:
+
+```bash
+# ours, from the rails console
+::System::InternalCaService.ca_fingerprint
+# every anchor currently in the Traefik client-auth bundle, in bundle order
+::Acme::TraefikConfigWriter.client_auth_bundle_fingerprints
+```
+
+Both return the `sha256:<64 lowercase hex>` form. To put a PEM you were handed
+into the same form (`openssl` prints colon-separated uppercase):
+
+```bash
+openssl x509 -in peer-ca.pem -noout -fingerprint -sha256 \
+  | sed 's/.*=//; s/://g' | tr 'A-Z' 'a-z' | sed 's/^/sha256:/'
+```
+
+The 401 body itself now names the anchor it checked against
+(`expected anchor sha256:… from peer.trusted_ca_pem`), so the refusal is
+attributable without a console.
+
+**Already-running hubs keep their legacy DN permanently.** Renaming a live root
+would invalidate every worker, agent, node and federation cert chained to it,
+so the platform never rewrites a persisted `root.crt` — new CAs get the
+hub-specific subject, existing ones do not, and both are told apart by
+fingerprint. Adopting the new name on an existing hub is a full **CA rotation**
+(new key, both roots carried in every trust bundle for an overlap window, every
+leaf re-issued, then the old anchor withdrawn) and should only be undertaken
+deliberately, never as a side effect of an upgrade.
+
+Federation between two hubs that both still hold the legacy DN does work. The
+client-auth bundle is evaluated by Traefik, whose Go TLS stack tries every
+same-subject candidate CA rather than only the first, and the backend re-binds
+each peer against that one peer's own anchor — so the shared name never decides
+the outcome. Where a shared DN *would* bite is a single trust blob carrying two
+same-named roots, which is what a rotation overlap window looks like; the
+backend verifier retries such roots individually for that reason.
+
 ---
 
 ## Symptom: `system.federation_peer_*` actions blocked in the approval queue
