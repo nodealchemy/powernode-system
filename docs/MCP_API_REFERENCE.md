@@ -523,11 +523,15 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 
 | Action | What it does |
 |---|---|
-| `system_sdwan_list_ipfix_collectors` | List IPFIX collectors registered for a Network |
+| `system_sdwan_list_ipfix_collectors` | List the account's IPFIX collectors |
+| `system_sdwan_get_ipfix_collector` | Fetch one collector, including `is_winning_collector` (only the oldest active row is stamped onto the OVS bridges) |
 | `system_sdwan_create_ipfix_collector` | Register a collector endpoint (host + port) for flow export |
-| `system_sdwan_delete_ipfix_collector` | Remove a collector (stops flow export to that endpoint) |
+| `system_sdwan_update_ipfix_collector` | Enable/disable a collector — **use this, not delete, to stop flow export** |
+| `system_sdwan_delete_ipfix_collector` | Remove a collector **and every flow sample recorded against it** (`dependent: :destroy` + cascade FK) |
 
-**Permissions:** `system.sdwan.ipfix_collectors.{view,create,delete}` — typically driven by the `sdwan_ipfix_collector_compose` skill (Topology Designer).
+**Permissions:** `system.sdwan.ipfix.read` (list/get) and `system.sdwan.ipfix.manage` (create/update/delete) — see `Ai::Tools::SdwanTool::ACTION_PERMISSIONS`, which is the authority. (The `system.sdwan.ipfix_collectors.{view,create,delete}` names this table carried previously were never implemented.) Composition typically runs through the `sdwan_ipfix_collector_compose` skill (Topology Designer).
+
+Delete is not a stand-in for disable: it cascades the collector's `flow_samples`, taking with it the correlation history `System::Fleet::Sensors::SdwanServiceHealthSensor` reads. `system_sdwan_update_ipfix_collector` stops the export and keeps both (IMP-6bbe5c673c38).
 
 ### `kubernetes_*` — Phase 2 K3s clusters (5 actions)
 
