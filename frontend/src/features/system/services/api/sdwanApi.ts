@@ -617,9 +617,16 @@ export const sdwanApi = {
     return extractData(response).host_bridge;
   },
 
-  deleteHostBridge: async (id: string): Promise<Gated<Deleted>> => {
+  // IMP-53a5c597ec8c — releasing a bridge DRAINS it by default: the row
+  // stays in the compiler's emit set and keeps its short_id reserved so
+  // in-flight taps finish cleanly. Pass force to skip that grace window and
+  // remove the bridge immediately, which is what this call used to do
+  // unconditionally. `force` is omitted from the request unless asked for,
+  // so the server's default is the one that applies.
+  deleteHostBridge: async (id: string, options?: { force?: boolean }): Promise<Gated<Deleted>> => {
     const response = await apiClient.delete<ApiEnvelope<{ deleted: boolean }>>(
-      `/system/sdwan/host_bridges/${id}`
+      `/system/sdwan/host_bridges/${id}`,
+      options?.force ? { params: { force: true } } : undefined
     );
     return extractGated(response, (): Deleted => ({ deleted: true }));
   },

@@ -1183,12 +1183,26 @@ describe('sdwanApi.getHostBridge', () => {
 });
 
 describe('sdwanApi.deleteHostBridge', () => {
-  it('DELETEs a host bridge', async () => {
+  // The absence of a force param is load-bearing, not incidental: the server
+  // defaults to DRAINING, and sending force: false would be indistinguishable
+  // from the default while sending force: true would silently restore the
+  // pre-IMP-53a5c597ec8c hard release this call used to perform.
+  it('DELETEs a host bridge without a force param, so the server default (drain) applies', async () => {
     mockDelete.mockResolvedValue({ data: { success: true } });
 
     await sdwanApi.deleteHostBridge('hb-1');
 
-    expect(mockDelete).toHaveBeenCalledWith('/system/sdwan/host_bridges/hb-1');
+    expect(mockDelete).toHaveBeenCalledWith('/system/sdwan/host_bridges/hb-1', undefined);
+  });
+
+  it('sends force when the caller explicitly opts into a hard release', async () => {
+    mockDelete.mockResolvedValue({ data: { success: true } });
+
+    await sdwanApi.deleteHostBridge('hb-1', { force: true });
+
+    expect(mockDelete).toHaveBeenCalledWith('/system/sdwan/host_bridges/hb-1', {
+      params: { force: true },
+    });
   });
 });
 

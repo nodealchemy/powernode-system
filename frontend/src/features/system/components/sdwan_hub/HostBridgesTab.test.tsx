@@ -473,11 +473,17 @@ describe('HostBridgesTab', () => {
     // Confirm
     fireEvent.click(screen.getByText('Confirm?'));
 
+    // No force param: IMP-53a5c597ec8c made the server default DRAIN, and the
+    // console's arm-and-confirm delete deliberately takes that default rather
+    // than the hard release it used to send.
     await waitFor(() =>
-      expect(mockDelete).toHaveBeenCalledWith('/system/sdwan/host_bridges/hb-001'),
+      expect(mockDelete).toHaveBeenCalledWith('/system/sdwan/host_bridges/hb-001', undefined),
     );
   });
 
+  // "released", not "removed": the bridge drains rather than disappearing, so
+  // a notification promising removal would misreport what the operator's click
+  // actually did. The row's own state column reports where it landed.
   it('shows a success notification after a successful delete', async () => {
     mockGet
       .mockResolvedValueOnce(envelope({ host_bridges: [BRIDGE_ACTIVE] }))
@@ -498,7 +504,7 @@ describe('HostBridgesTab', () => {
       expect(mockAddNotification).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'success',
-          message: 'Bridge ovs-br-001 removed',
+          message: 'Bridge ovs-br-001 released',
         }),
       ),
     );
@@ -530,9 +536,12 @@ describe('HostBridgesTab', () => {
     );
   });
 
+  // Paired with BRIDGE_LINUX rather than BRIDGE_DRAINING: draining rows no
+  // longer carry the control (see below), and this example is about arm
+  // isolation, not about which states offer a button.
   it('arm-and-confirm states are independent per row', async () => {
     mockGet.mockResolvedValue(
-      envelope({ host_bridges: [BRIDGE_ACTIVE, BRIDGE_DRAINING] }),
+      envelope({ host_bridges: [BRIDGE_ACTIVE, BRIDGE_LINUX] }),
     );
 
     renderTab();
@@ -548,8 +557,27 @@ describe('HostBridgesTab', () => {
 
     // The second row's delete button should still show the trash icon (not armed)
     expect(
-      screen.getByTestId('delete-host-bridge-hb-003'),
+      screen.getByTestId('delete-host-bridge-hb-002'),
     ).not.toHaveTextContent('Confirm?');
+  });
+
+  // IMP-53a5c597ec8c — a release against an already-draining bridge is a
+  // no-op server-side (HostBridgeAllocator#release! short-circuits, and
+  // Sdwan::HostBridgeReaper owns the transition to removed once the grace
+  // window elapses). Offering the control there would arm-and-confirm into
+  // nothing and then report success.
+  it('does NOT show a release button for draining bridges', async () => {
+    mockGet.mockResolvedValue(
+      envelope({ host_bridges: [BRIDGE_ACTIVE, BRIDGE_DRAINING] }),
+    );
+
+    renderTab();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('delete-host-bridge-hb-001')).toBeInTheDocument(),
+    );
+
+    expect(screen.queryByTestId('delete-host-bridge-hb-003')).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------

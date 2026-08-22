@@ -497,11 +497,45 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 | Action | What it does |
 |---|---|
 | `system_sdwan_list_host_bridges` | List `Sdwan::HostBridge` rows (per-host bridge allocations) |
+| `system_sdwan_get_host_bridge` | Fetch one bridge by id, with its lifecycle timestamps |
 | `system_sdwan_create_host_bridge` | Allocate a new host bridge (operator or Topology Designer) |
 | `system_sdwan_activate_host_bridge` | Mark a bridge as active so the agent picks it up on next reconcile |
-| `system_sdwan_release_host_bridge` | Release a host bridge back to the pool |
+| `system_sdwan_release_host_bridge` | Release a host bridge — **drains by default**, `force: true` removes it immediately |
 
-**Permissions:** `system.sdwan.host_bridges.{view,allocate,activate,release}`
+**Permissions:** `system.sdwan.host_bridges.read` (list/get) and
+`system.sdwan.host_bridges.manage` (create/activate/release).
+
+**Releasing drains by default.** Without `force`, the bridge moves to
+`draining`: it stays in the compiler's emit set and keeps its `short_id`
+reserved so in-flight taps finish before the id can be reissued.
+`Sdwan::HostBridgeReaper` (daily, `System::HostBridgeReaperJob`) then sweeps
+draining rows past a 24h grace window to `removed`, which is what makes the
+default safe — before IMP-53a5c597ec8c there was no such sweep, the state
+machine had no edge out of `draining`, and a non-forced release left the
+bridge serving on the host indefinitely. `force: true` skips the window and
+marks the bridge `removed` at once — the compiler stops emitting it
+immediately and anything mid-provision against it loses its bridge name.
+
+Two states short-circuit the drain, on every surface, because the drain edge
+is wrong for them: a `pending` bridge was never applied to the host, so
+draining it would instead make it *compilable* and cause the agent to create
+the bridge you just released — it goes straight to `removed`. An already
+`removed` bridge is left untouched rather than silently no-opping. The REST route (`DELETE
+/api/v1/system/sdwan/host_bridges/:id`) carries the identical default and the
+identical `force` opt-in; before IMP-53a5c597ec8c it hard-forced
+unconditionally, so an operator delete skipped a window an agent release
+honored.
+
+**All three write verbs are approval-gated** (`sdwan.host_bridge_create` /
+`_update` / `_delete`) on **both** the MCP and REST surfaces, so the tier an
+operator configures actually binds. Under `require_approval` the call returns
+`pending: true` with a `deferred_operation_id` and nothing is written until an
+operator approves. An approver reading a `host_bridge_delete` card should check
+the operation's `force` param — the same category covers both the drain and
+the immediate teardown.
+
+REST parity: `GET`/`POST` `/api/v1/system/sdwan/host_bridges`, `GET`/`DELETE`
+`…/:id`, and `POST` `…/:id/activate` mirror these five actions one-for-one.
 
 #### OVN logical-network composition (Phase O3 — slice 9 OVN integration)
 
