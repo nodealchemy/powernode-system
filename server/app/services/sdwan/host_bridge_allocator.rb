@@ -27,8 +27,24 @@
 #   * #release! transitions the bridge to draining (default) or
 #     removed (when force: true is passed). draining keeps the row in
 #     the DB so its short_id is still considered "used" until the
-#     agent reports the bridge gone, preventing premature reuse during
+#     drain window elapses, preventing premature reuse during
 #     in-flight tap teardown.
+#   * The window is CLOSED BY Sdwan::HostBridgeReaper (IMP-53a5c597ec8c),
+#     which sweeps draining rows past HostBridgeReaper::GRACE_WINDOW to
+#     removed. Before that reaper existed, `draining` was a one-way door:
+#     the state machine has no draining->active edge, `compilable` INCLUDES
+#     draining, and nothing anywhere transitioned a bridge out of it — so a
+#     non-forced release marked the row and then left the bridge fully
+#     operational forever. A drain window with no closer is not a grace
+#     period, it is a leak.
+#   * Two states short-circuit, because the drain edge is wrong for them:
+#     a `pending` bridge was never applied to the host, so there is no
+#     in-flight tap to protect and draining it would instead make it
+#     COMPILABLE (see the scope below) and cause the agent to CREATE the
+#     bridge a caller just asked to release. A `removed` bridge is already
+#     terminal and `start_drain` has no edge from it, so with
+#     whiny_transitions: false the call would silently do nothing while
+#     reporting success.
 #
 # Phase O1 of the OVS+OVN dual-profile roadmap (lightweight track).
 module Sdwan
@@ -143,12 +159,25 @@ module Sdwan
       existing
     end
 
-    # Mark the bridge as draining (the default — preserves the
-    # short_id while in-flight taps finish) or removed (when
-    # force: true — releases the short_id immediately for reuse).
+    # Mark the bridge as draining (the default — preserves the short_id
+    # while in-flight taps finish, until Sdwan::HostBridgeReaper closes the
+    # window) or removed (when force: true — releases the short_id
+    # immediately for reuse).
+    #
+    # The two short-circuits are argued in the class comment above and are
+    # deliberately HERE rather than at a calling surface: every surface that
+    # releases a bridge routes through this method, so putting them at one
+    # call site would leave the others holding the defect.
     def release!(bridge, force: false)
       ::Sdwan::HostBridge.transaction do
-        if force
+        if bridge.removed?
+          # Already terminal. start_drain has no edge from removed and the
+          # model is whiny_transitions: false, so draining here would be a
+          # silent no-op reported to the caller as a successful release.
+          bridge
+        elsif force || bridge.pending?
+          # pending == never applied to the host. Draining it would ADD it
+          # to `compilable` and provision the very bridge being released.
           bridge.mark_removed!
         else
           bridge.start_drain!

@@ -76,6 +76,11 @@ RSpec.describe Sdwan::HostBridgeAllocator, type: :service do
 
     it "returns the existing draining row idempotently (does not allocate a second one)" do
       hb = described_class.allocate!(host: host_a)
+      # mark_active! is required to reach draining at all (IMP-53a5c597ec8c):
+      # releasing a still-`pending` bridge short-circuits to removed, because
+      # `pending` is NOT compilable while `draining` IS — draining a
+      # never-applied bridge would make the compiler start emitting it.
+      hb.mark_active!
       described_class.release!(hb)  # draining (default)
       hb.reload
       expect(hb.state).to eq("draining")
@@ -164,7 +169,8 @@ RSpec.describe Sdwan::HostBridgeAllocator, type: :service do
   describe ".release!" do
     let!(:bridge) { described_class.allocate!(host: host_a) }
 
-    it "transitions to draining by default" do
+    it "transitions an APPLIED bridge to draining by default" do
+      bridge.mark_active!
       described_class.release!(bridge)
       expect(bridge.reload.state).to eq("draining")
       expect(bridge.draining_at).to be_present
@@ -174,6 +180,33 @@ RSpec.describe Sdwan::HostBridgeAllocator, type: :service do
       described_class.release!(bridge, force: true)
       expect(bridge.reload.state).to eq("removed")
       expect(bridge.removed_at).to be_present
+    end
+
+    # IMP-53a5c597ec8c. `compilable` is active|draining, and start_drain
+    # accepts from: pending — so the old default moved a never-applied bridge
+    # INTO the compiler's emit set, and the agent created the bridge the
+    # caller had just asked to release. Releasing must not provision.
+    it "removes a never-applied pending bridge instead of draining it into existence" do
+      expect(bridge.state).to eq("pending")
+
+      described_class.release!(bridge)
+
+      expect(bridge.reload.state).to eq("removed")
+      expect(::Sdwan::HostBridge.where(id: bridge.id).compilable).to be_empty,
+                                                                    "releasing a pending bridge made it compilable"
+    end
+
+    # start_drain has no edge from removed and the model is
+    # whiny_transitions: false, so this used to write nothing while reporting
+    # a successful release to the caller.
+    it "leaves an already-removed bridge untouched" do
+      described_class.release!(bridge, force: true)
+      removed_at = bridge.reload.removed_at
+
+      described_class.release!(bridge)
+
+      expect(bridge.reload.state).to eq("removed")
+      expect(bridge.reload.removed_at).to eq(removed_at)
     end
   end
 end

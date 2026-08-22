@@ -815,6 +815,11 @@ Rails.application.routes.draw do
           # draining past the 24h grace window AND have no remaining
           # module declaration. Invoked by System::IdentityReaperJob.
           post "identity/reap", to: "identity_reaper#create"
+          # IMP-53a5c597ec8c — closes the host-bridge drain window. Without
+          # this sweep `draining` was terminal: no state-machine edge out of
+          # it, `compilable` includes it, and no agent report retires it, so a
+          # non-forced release left the bridge serving forever.
+          post "sdwan/host_bridges/reap", to: "host_bridge_reaper#create"
 
           # Storage chown completion — the on-node agent POSTs here
           # after finishing a storage.chown task. Transitions the
