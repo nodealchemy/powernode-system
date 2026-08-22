@@ -400,11 +400,24 @@ module Ai
       end
 
       def sync_repository(params)
-        repo = scoped_repos.find(params[:repository_id])
+        repo  = scoped_repos.find(params[:repository_id])
+        force = ::ActiveModel::Type::Boolean.new.cast(params[:force]) || false
+        # IMP-c90ba4ec46da — `force` switches OFF the sync service's
+        # mass-obsoletion guard, so a forced sync of a SHARED repo can
+        # soft-delete an arbitrary fraction of a catalog every tenant reads.
+        # `scoped_repos` is accessible_to(account), which admits every shared
+        # repo to every account, so the forced path needs manage_shared — the
+        # same discriminator every other mutating action here uses. An UNFORCED
+        # sync stays open to a plain `sync` holder (benign idempotent refresh),
+        # and an account-scoped repo's owner may force (own catalog only).
+        if force && repo.shared? && !(@user&.has_permission?("system.package_repositories.manage_shared"))
+          return error_result("permission denied: cannot force-sync a shared repository without manage_shared")
+        end
+
         # Async: a full sync is minutes long — enqueue it (→ detached
         # out-of-puma process) rather than block the MCP call. Poll
         # get_package_repository for sync_status.
-        ::System::PackageRepositorySyncService.enqueue!(repository: repo, force: params[:force])
+        ::System::PackageRepositorySyncService.enqueue!(repository: repo, force: force)
         success_result(
           queued:        true,
           repository_id: repo.id,
