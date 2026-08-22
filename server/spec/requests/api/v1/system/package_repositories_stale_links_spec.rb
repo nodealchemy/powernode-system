@@ -128,4 +128,74 @@ RSpec.describe "Operator API — Package Repositories stale links", type: :reque
       expect(response).to have_http_status(:forbidden)
     end
   end
+
+  # IMP-20318fb182b2 — clean_stale_links is DESTRUCTIVE (it destroys the stale
+  # links AND their auto-generated NodeModules, cascading to versions and
+  # module_artifacts) but `accessible_to` deliberately admits every shared
+  # (account_id IS NULL) repo to every account. Every other mutating action on
+  # this controller branches on `shared?` and demands manage_shared; this one
+  # did not, so an ordinary `delete` holder in any account could purge a
+  # canonical upstream repo shared by every tenant.
+  #
+  # The oracle here is ABSENCE OF EFFECT — row counts before/after — not the
+  # response status. A status-only assertion passes against code that 403s
+  # *after* destroying.
+  context "shared-repository authorization for clean_stale_links" do
+    let(:shared_repo) { create(:system_package_repository, :shared) }
+    let!(:shared_mod) { make_module(name_suffix: "shared-purge") }
+    let!(:shared_link) do
+      create(:system_package_module_link,
+             node_module: shared_mod, package_repository: shared_repo,
+             package_name: "pkg-#{shared_mod.name}",
+             package_version: "1.0.0", architecture: "amd64",
+             auto_generated: true)
+    end
+
+    def link_count = ::System::PackageModuleLink.where(id: shared_link.id).count
+    def module_count = ::System::NodeModule.where(id: shared_mod.id).count
+
+    it "destroys NOTHING on a shared repo when the caller holds delete but not manage_shared" do
+      expect(link_count).to eq(1)
+      expect(module_count).to eq(1)
+
+      post "/api/v1/system/package_repositories/#{shared_repo.id}/clean_stale_links",
+           params: { force: true }.to_json, headers: headers
+
+      # Absence of effect is the oracle.
+      expect(link_count).to eq(1)
+      expect(module_count).to eq(1)
+      expect(response).to have_http_status(:forbidden)
+    end
+
+    # NB: deliberately NO plain `delete` permission here. Granting both would
+    # leave `require_all_permissions(delete, manage_shared)` alive as a mutant —
+    # the pair of examples could not tell "shared needs manage_shared" apart
+    # from "shared needs delete AND manage_shared".
+    it "positive control: a manage_shared holder DOES clean a shared repo" do
+      sharer = user_with_permissions("system.package_repositories.view",
+                                     "system.package_repositories.manage_shared",
+                                     account: account)
+      sharer_headers = auth_headers_for(sharer).merge("Content-Type" => "application/json")
+
+      post "/api/v1/system/package_repositories/#{shared_repo.id}/clean_stale_links",
+           params: { force: true }.to_json, headers: sharer_headers
+
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "destroyed")).to eq(1)
+      expect(link_count).to eq(0)
+      expect(module_count).to eq(0)
+    end
+
+    it "still lets a plain delete holder clean their OWN account-scoped repo" do
+      own_mod  = make_module(name_suffix: "own-purge")
+      own_link = make_link(node_module: own_mod, auto_generated: true)
+
+      post "/api/v1/system/package_repositories/#{repo.id}/clean_stale_links",
+           params: { force: true }.to_json, headers: headers
+
+      expect(response).to have_http_status(:ok)
+      expect(::System::PackageModuleLink.where(id: own_link.id).count).to eq(0)
+      expect(::System::NodeModule.where(id: own_mod.id).count).to eq(0)
+    end
+  end
 end

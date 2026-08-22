@@ -200,7 +200,26 @@ module Api
         # (cascade hits links, versions, module_artifacts). force defaults
         # to false — without force the call is treated as dry_run.
         def clean_stale_links
-          require_permission("system.package_repositories.delete")
+          # IMP-20318fb182b2 — this action DESTROYS the stale links and their
+          # auto-generated NodeModules (cascading to versions + module_artifacts),
+          # but `set_repository` loads through `accessible_to(@account)`, which
+          # deliberately admits every shared (account_id IS NULL) repo to every
+          # account. A flat `delete` gate therefore let a holder of plain
+          # `delete` in ANY account purge a canonical upstream repo shared by
+          # every tenant. (No seeded role grants `delete` without
+          # `manage_shared` — admin gets both — but a custom account role can
+          # grant exactly that pair, so the gate has to hold on its own.)
+          #
+          # Shape copied verbatim from `destroy` above — same discriminator,
+          # same account guard. `update`/`destroy` branch on `shared?` the same
+          # way; `create` branches on the REQUESTED visibility (no record yet)
+          # and link/unlink_platform go through `authorize_repo_mutation!`.
+          if @repository.shared?
+            require_permission("system.package_repositories.manage_shared")
+          else
+            require_permission("system.package_repositories.delete")
+            return render_error("Forbidden", status: :forbidden) if @repository.account_id != @account.id
+          end
 
           force   = ActiveModel::Type::Boolean.new.cast(params[:force])
           dry_run = ActiveModel::Type::Boolean.new.cast(params[:dry_run])
