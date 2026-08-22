@@ -13,12 +13,14 @@ require "rails_helper"
 # tearing down the account's OVN control-plane row.
 #
 # Host bridges and IPFIX were NOT that shape — their controllers carried
-# ungated REST writes (host_bridges#destroy force-releases; ipfix
+# ungated REST writes (host_bridges#destroy force-released; ipfix
 # #update/#destroy) — so for those two the gap this file closes is the MCP
-# half only. IPFIX's REST half was closed afterwards by IMP-6bbe5c673c38
-# (spec/requests/api/v1/system/sdwan/ipfix_collectors_spec.rb, "approval
-# gating on the state toggle and the delete"); host_bridges#destroy is still
-# open.
+# half only. Both REST halves have since been closed:
+# IMP-6bbe5c673c38 for IPFIX (spec/requests/.../ipfix_collectors_spec.rb,
+# "approval gating on the state toggle and the delete") and
+# IMP-53a5c597ec8c for host bridges (spec/requests/.../host_bridges_spec.rb,
+# which also fixed the force/drain divergence between the two surfaces and
+# added REST create + activate).
 #
 # This file is a CLASS guard rather than fifteen bespoke gate specs. The defect
 # was never one arm — it was a whole family shipped outside the regime, and the

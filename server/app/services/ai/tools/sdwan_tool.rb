@@ -154,6 +154,7 @@ module Ai
         # Phase O6 — host bridges (O1) + OVN deployment/switches/ports (O3) + IPFIX (O5)
         "system_sdwan_create_host_bridge"          => "system.sdwan.host_bridges.manage",
         "system_sdwan_list_host_bridges"           => "system.sdwan.host_bridges.read",
+        "system_sdwan_get_host_bridge"             => "system.sdwan.host_bridges.read",
         "system_sdwan_activate_host_bridge"        => "system.sdwan.host_bridges.manage",
         "system_sdwan_release_host_bridge"         => "system.sdwan.host_bridges.manage",
         "system_sdwan_create_ovn_deployment"       => "system.sdwan.ovn.manage",
@@ -676,7 +677,7 @@ module Ai
             }
           },
           "system_sdwan_release_host_bridge" => {
-            description: "Release a HostBridge via Sdwan::HostBridgeAllocator.release!. Default `force: false` transitions the bridge to `draining` (preserves the short_id during in-flight tap teardown). Pass `force: true` to mark the bridge `removed` immediately, releasing the short_id back to the pool.",
+            description: "Release a HostBridge via Sdwan::HostBridgeAllocator.release!. DEFAULTS TO DRAINING: the bridge moves to `draining`, stays in the compiler's `compilable` set and keeps its short_id reserved so in-flight taps finish cleanly. Pass `force: true` to skip that grace window and mark the bridge `removed` immediately — the compiler stops emitting it at once and anything mid-provision against it loses its bridge name. The REST twin (DELETE /api/v1/system/sdwan/host_bridges/:id) carries the same default and the same opt-in. Approval-gated (sdwan.host_bridge_delete) — under require_approval this returns pending: true with a deferred_operation_id and the release happens only once an operator approves.",
             parameters: {
               id: { type: "string", required: true, description: "Sdwan::HostBridge id" },
               force: { type: "boolean", required: false, description: "When true, skip the draining grace window and mark removed immediately (default false)" }
@@ -686,6 +687,12 @@ module Ai
             description: "List HostBridges for the current account. Optionally filter by node_instance_id.",
             parameters: {
               node_instance_id: { type: "string", required: false, description: "Optional UUID of the System::NodeInstance (host) to filter bridges by" }
+            }
+          },
+          "system_sdwan_get_host_bridge" => {
+            description: "Fetch a single HostBridge by id, including its lifecycle timestamps. Use this before activate/release rather than paging the whole account list — `state` is what those two verbs turn on (`pending` is invisible to the compiler; `draining` is already on its way out).",
+            parameters: {
+              id: { type: "string", required: true, description: "Sdwan::HostBridge id" }
             }
           },
           # ─── Phase O6 — OVN deployment + switches + ports + plan (O3) ──────
@@ -905,6 +912,7 @@ module Ai
         # Phase O6 — host bridges (O1) + OVN (O3) + IPFIX (O5)
         when "system_sdwan_create_host_bridge"             then create_host_bridge(params)
         when "system_sdwan_list_host_bridges"              then list_host_bridges(params)
+        when "system_sdwan_get_host_bridge"                then get_host_bridge(params)
         when "system_sdwan_activate_host_bridge"           then activate_host_bridge(params)
         when "system_sdwan_release_host_bridge"            then release_host_bridge(params)
         when "system_sdwan_create_ovn_deployment"          then create_ovn_deployment(params)
@@ -3068,6 +3076,19 @@ module Ai
         )
       end
 
+      # IMP-53a5c597ec8c — the missing single-row read. `list` could page the
+      # whole account, but "what state is THIS bridge in" is the question
+      # every activate/release decision turns on, and answering it by
+      # listing-and-filtering is both wasteful and easy to get wrong on a
+      # busy host. The REST twin (host_bridges#show) has had this since the
+      # controller shipped; this is the MCP half.
+      def get_host_bridge(params)
+        bridge = ::Sdwan::HostBridge.where(account_id: @account.id).find_by(id: params[:id])
+        return error_result("host bridge not found") unless bridge
+
+        success_result(host_bridge: serialize_host_bridge(bridge))
+      end
+
       # Mark a HostBridge as `active`. The compiler's `compilable` scope
       # (`active|draining`) only emits active+draining bridges, so a
       # bridge stuck in `pending` is invisible to provisioning. Without
@@ -3102,15 +3123,20 @@ module Ai
         end
       end
 
-      # Release a HostBridge via the allocator. Default `force: false`
-      # keeps the short_id reserved during the draining grace window
-      # (lets in-flight taps drain without short_id collision); `force:
-      # true` releases immediately. Operators using this from the UI
-      # generally want force: true since the UI's arm-and-confirm gate
-      # is the equivalent safety net.
+      # Release a HostBridge via the allocator. The default DRAINS: the row
+      # stays in `compilable`, so the compiler keeps emitting the bridge and
+      # in-flight taps finish without a short_id collision. `force: true`
+      # skips that window and marks the row removed immediately.
+      #
+      # IMP-53a5c597ec8c — the default and its coercion now live on
+      # Sdwan::Executors::ReleaseHostBridge rather than being re-expressed
+      # here. The REST twin used to hard-force unconditionally while this arm
+      # defaulted to draining, so one act had two safety postures depending on
+      # who asked. `.force?` also accepts the string form REST params arrive
+      # in, so `?force=true` and `force: true` mean the same thing.
       def release_host_bridge(params)
         bridge = ::Sdwan::HostBridge.where(account_id: @account.id).find(params[:id])
-        forced = params[:force] == true
+        forced = ::Sdwan::Executors::ReleaseHostBridge.force?(params[:force])
         gated_result(
           action_category: ::Sdwan::Executors::ReleaseHostBridge::ACTION_CATEGORY,
           executor_class: "Sdwan::Executors::ReleaseHostBridge",

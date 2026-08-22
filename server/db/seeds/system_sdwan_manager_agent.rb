@@ -171,15 +171,31 @@ sdwan_policies = {
   # index/show for ovn_deployments and no routes at all for switches, ports or
   # ACLs), so an agent held destructive reach a console operator did not have.
   # RESIDUAL recorded here, to be closed by the per-family parity tasks that
-  # own those controllers: host_bridges#destroy (which forces release,
+  # own those controllers: host_bridges#destroy (which forced release,
   # skipping the drain window) and ipfix_collectors#update/#destroy were REST
   # writes that remained UNGATED, so for those two families the asymmetry was
-  # inverted rather than removed.
+  # inverted rather than removed. BOTH ARE NOW CLOSED:
   #   - ipfix_collectors#create/#update/#destroy: CLOSED by IMP-6bbe5c673c38,
   #     which also added sdwan.ipfix_collector_update below. All three now
   #     route through Ai::AutonomyGate, so the tiers in this table bind on
   #     both surfaces for this family.
-  #   - host_bridges#destroy: STILL OPEN.
+  #   - host_bridges#destroy: CLOSED by IMP-53a5c597ec8c, which also added
+  #     REST create + activate so all three host-bridge tiers below bind on
+  #     both the REST and MCP surfaces. NOT on a third: the
+  #     SdwanHostBridgeComposeExecutor AI skill allocates (up to MAX_HOSTS
+  #     = 100) and force-releases on rollback through the allocator
+  #     directly, outside Ai::AutonomyGate — BaseSkillExecutor has no gate
+  #     seam. Skills are a separate authorization lane from MCP actions and
+  #     bringing them under these tiers is its own task; stated here so the
+  #     coverage claim is not read wider than it is. That task additionally fixed a SEMANTIC divergence the
+  #     gap was hiding: the REST route hard-forced the release (skipping the
+  #     drain window) while the MCP twin defaulted to draining, so one act
+  #     had opposite safety postures depending on who asked. The default is
+  #     now DRAIN on both surfaces, declared once on
+  #     Sdwan::Executors::ReleaseHostBridge, with force an explicit opt-in.
+  #     NOTE this tier now gates BOTH arms: an approver reading a
+  #     host_bridge_delete card must check the `force` param to know whether
+  #     they are authorizing a drain or an immediate teardown.
   # Tiers follow the sibling precedent: creates and state transitions notify,
   # deletes require approval.
   #

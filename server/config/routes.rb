@@ -403,12 +403,22 @@ Rails.application.routes.draw do
             member { get :compile }
           end
 
-          # Phase O6: read APIs + inline operator destroy/update for
-          # the dual-profile networking models. Bulk creation still
-          # happens through allocators / AI composition skills / MCP
-          # actions; these inline mutations let operators clean up or
-          # toggle individual rows from the operator UI.
-          resources :host_bridges,     only: %i[index show destroy]
+          # Phase O6: read APIs + gated operator writes for the
+          # dual-profile networking models. Bulk creation still happens
+          # through allocators / AI composition skills / MCP actions;
+          # these routes let operators clean up or toggle individual rows.
+          #
+          # IMP-53a5c597ec8c added POST create and POST :id/activate for
+          # REST/MCP verb parity: both verbs existed only on the AI
+          # surfaces, so a console operator could see bridges and delete
+          # them but neither stand one up nor make one take effect
+          # (`compilable` emits active|draining only, so a `pending`
+          # bridge does nothing on the node). Both are gated, as is
+          # DELETE — see the controller for why the residual mattered and
+          # why a bare DELETE now DRAINS rather than force-releasing.
+          resources :host_bridges,     only: %i[index show create destroy] do
+            member { post :activate }
+          end
           resources :ovn_deployments,  only: %i[index show]
           # Phase O6 follow-up: IPFIX flow ingest under the parent
           # collector so each flow batch is attributed to a specific
