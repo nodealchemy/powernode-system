@@ -77,6 +77,22 @@
 #                            (no YAML parser on the host layer — see
 #                            manifest.yaml's package_spec, deliberately
 #                            minimal); unset skips the check entirely.
+#   CORE_REF                    the core (parent powernode-platform) commit
+#                            this batch must be assembled from — the batch's
+#                            own expected_core_sha, which the platform sends
+#                            in ci_build_context and the agent's
+#                            ci.module_build handler puts in this script's
+#                            env. Exported here and inherited by stage15.sh
+#                            through the chroot (same channel as PARENT_PAT,
+#                            but NOT a secret). When set, stage15.sh's
+#                            Class-B arm fetches EXACTLY that ref and FAILS
+#                            the build if the remote (the public GitHub
+#                            mirror, which is pushed separately from the
+#                            Gitea core lands on) does not have it — no
+#                            fallback, deliberately. Unset -> that arm clones
+#                            the default branch and announces itself
+#                            UNPINNED. Only consulted by the same Class-B
+#                            arms as PARENT_PAT.
 #   ARCH                        amd64|arm64. Default: amd64. Forwarded to
 #                            build-one-module.sh's --arch.
 #   PARENT_HOST / PARENT_PATH  forwarded to build-one-module.sh's
@@ -178,6 +194,15 @@ APT_SNAPSHOT="${APT_SNAPSHOT:-}"
 ARCH="${ARCH:-amd64}"
 PARENT_HOST="${PARENT_HOST:-github.com}"
 PARENT_PATH="${PARENT_PATH:-nodealchemy/powernode-platform}"
+# Per-batch core-ref pin. EXPORTED explicitly (unlike PARENT_PAT, which is
+# already in the environment when this script starts and therefore stays
+# exported through the reassignment above) so it reaches stage15.sh inside the
+# chroot deterministically rather than by depending on how the caller set it —
+# the same treatment BUILD_SKIP_UNCHANGED gets below, and for the same reason.
+# NOT a secret and NOT a CLI arg: it varies per batch, so it does not belong
+# with the static --parent-host/--parent-path config that IS threaded as args.
+# Empty is a valid value (stage15.sh's UNPINNED arm); see its header.
+export CORE_REF="${CORE_REF:-}"
 
 require_cmd git
 require_cmd jq

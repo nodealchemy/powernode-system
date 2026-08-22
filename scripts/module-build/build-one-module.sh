@@ -60,6 +60,15 @@
 #                  subprocess (bash propagates env vars to children) — no
 #                  explicit re-export needed.
 #
+# Env (optional, NOT a credential — passes through by the same inheritance):
+#   CORE_REF        the core (parent powernode-platform) commit the batch
+#                  must be assembled from. Consulted only by stage15.sh's
+#                  Class-B arms, which fetch exactly that ref and fail if
+#                  the remote does not have it; unset means an UNPINNED
+#                  parent clone (announced as such). Passes straight
+#                  through this script — it neither reads nor forwards it
+#                  explicitly. See stage15.sh's header.
+#
 # Outputs (same hardcoded /tmp/* contract the workflow's three stages
 # already share):
 #   /tmp/fat                    the assembled fat rootfs
