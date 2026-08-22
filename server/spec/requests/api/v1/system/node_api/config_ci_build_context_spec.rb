@@ -124,6 +124,117 @@ RSpec.describe "Api::V1::System::NodeApi::Config#ci_build_context", type: :reque
     end
   end
 
+  # === Per-batch core-ref pin ===
+  #
+  # stage15.sh used to clone the parent platform repo with no ref at all, so a
+  # Class-B artifact baked whatever sat on the public GitHub mirror's default
+  # branch rather than the core commit the batch was dispatched against — the
+  # 2026-08-15 hub-backend v71 incident (stale core, two outages, every
+  # checkpoint green). `core_ref` is how the batch's expectation reaches the
+  # builder so stage15.sh can fetch EXACTLY that commit.
+  #
+  # The value is deliberately NOT resolved here: it is the batch's own
+  # metadata["expected_core_sha"], the same field CoreMirrorPreflight checks
+  # the mirror against at dispatch and CoreProvenanceGate checks the artifact's
+  # annotation against at promote. These examples pin that it is read from
+  # there and never fabricated.
+  describe "core_ref (per-batch core pin)" do
+    let(:core_sha) { "0f4b6e1db4c2a9f1e8d70c3b5a6f2e1d9c8b7a60" }
+
+    let!(:hub_backend_module) { create(:system_node_module, account: account, name: "powernode-hub-backend") }
+
+    def batch_with(metadata)
+      System::ModuleBuildBatch.create!(
+        account: account, trigger: "push", status: "dispatched",
+        base_sha: "aaaa111", head_sha: "bbbb222", metadata: metadata
+      )
+    end
+
+    # Reproduce the real wiring: NativeModuleBuildOrchestrator#dispatch_one!
+    # puts batch_id in the member Task's options and stamps the task id onto
+    # the lease. That chain is the only link between a leased builder and the
+    # batch whose expectation it must honour.
+    def link_lease_to(batch)
+      task = create(:system_task, account: account, operable: node,
+                                  command: "ci.module_build",
+                                  options: { "module" => "powernode-hub-backend", "batch_id" => batch.id })
+      lease.update!(build_task_id: task.id)
+      task
+    end
+
+    it "sends the batch's expected_core_sha for a Class-B module" do
+      link_lease_to(batch_with("expected_core_sha" => core_sha, "expected_core_repo" => "powernode/powernode-platform"))
+
+      get_context(module_slug: "powernode-hub-backend")
+
+      expect(response).to have_http_status(:ok)
+      expect(json.dig("data", "core_ref")).to eq(core_sha)
+    end
+
+    it "NEVER sends core_ref for a Class-A module, even when the batch has an expectation" do
+      # runtime-ruby clones no parent — stage15.sh's needs_parent arm does not
+      # cover it, so there is nothing for a pin to apply to.
+      link_lease_to(batch_with("expected_core_sha" => core_sha))
+
+      get_context(module_slug: "runtime-ruby")
+
+      expect(response).to have_http_status(:ok)
+      expect(json["data"]).not_to have_key("core_ref")
+    end
+
+    it "omits core_ref when the batch recorded NO expectation" do
+      # The orchestrator deliberately records nothing when core's tip will not
+      # resolve, rather than guessing. Fabricating one here would refuse (or
+      # mis-pin) good builds forever.
+      link_lease_to(batch_with("modules" => {}))
+
+      get_context(module_slug: "powernode-hub-backend")
+
+      expect(response).to have_http_status(:ok)
+      expect(json["data"]).not_to have_key("core_ref")
+    end
+
+    it "omits core_ref when the expectation is an ABBREVIATION rather than a full sha" do
+      # `git fetch <ref>` requires a complete object name; a 7-char head_sha
+      # (which the MCP tool accepts as a free string) would fail the fetch for
+      # a reason unrelated to core drift. CoreMirrorPreflight declines the same
+      # input for the same reason rather than calling it divergence.
+      link_lease_to(batch_with("expected_core_sha" => "0f4b6e1"))
+
+      get_context(module_slug: "powernode-hub-backend")
+
+      expect(response).to have_http_status(:ok)
+      expect(json["data"]).not_to have_key("core_ref")
+    end
+
+    it "omits core_ref when the lease is not linked to any build task" do
+      expect(lease.build_task_id).to be_nil
+
+      get_context(module_slug: "powernode-hub-backend")
+
+      expect(response).to have_http_status(:ok)
+      expect(json["data"]).not_to have_key("core_ref")
+    end
+
+    it "never reaches a batch belonging to a DIFFERENT account" do
+      other_account = create(:account)
+      foreign_batch = System::ModuleBuildBatch.create!(
+        account: other_account, trigger: "push", status: "dispatched",
+        base_sha: "aaaa111", head_sha: "bbbb222",
+        metadata: { "expected_core_sha" => core_sha }
+      )
+      task = create(:system_task, account: account, operable: node,
+                                  command: "ci.module_build",
+                                  options: { "batch_id" => foreign_batch.id })
+      lease.update!(build_task_id: task.id)
+
+      get_context(module_slug: "powernode-hub-backend")
+
+      expect(response).to have_http_status(:ok)
+      expect(json["data"]).not_to have_key("core_ref")
+    end
+  end
+
   describe "authorization gates (BOTH required, fail-closed 403)" do
     it "403s when the instance is NOT provisioned with module-forge, even with an active lease" do
       module_forge_assignment.destroy!
