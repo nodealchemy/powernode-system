@@ -125,16 +125,61 @@ func TestBuildEnv(t *testing.T) {
 	if _, ok := env["APT_SNAPSHOT"]; ok {
 		t.Errorf("APT_SNAPSHOT should be absent when AptSnapshot is empty, got env=%v", env)
 	}
+	// PRESENT-BUT-EMPTY, deliberately — the opposite of PARENT_PAT above.
+	// buildEnv's slice is appended to os.Environ() (execRunner.Run), so
+	// OMITTING CORE_REF would let an ambient one (a unit-file Environment=, an
+	// operator's systemd-run --setenv) survive into the build and pin it to a
+	// commit the platform never chose, while stage15.sh logged "parent
+	// PINNED". Emitting it empty keeps the platform authoritative in the
+	// no-pin state too.
+	if v, ok := env["CORE_REF"]; !ok || v != "" {
+		t.Errorf("CORE_REF must be PRESENT and EMPTY when CoreRef is empty (ok=%v v=%q) — "+
+			"omitting it cannot clear an ambient value", ok, v)
+	}
 
-	// Class-B + snapshot override present -> both vars set.
+	// Class-B + snapshot override + a pinned core ref -> all three set.
 	bctx.ParentPAT = "PARENT-TOK"
 	bctx.AptSnapshot = "20260101T000000Z"
+	bctx.CoreRef = "0f4b6e1db4c2a9f1e8d70c3b5a6f2e1d9c8b7a60"
 	env = envMap(buildEnv(opts, "url", bctx))
 	if env["PARENT_PAT"] != "PARENT-TOK" {
 		t.Errorf("PARENT_PAT = %q, want PARENT-TOK", env["PARENT_PAT"])
 	}
 	if env["APT_SNAPSHOT"] != "20260101T000000Z" {
 		t.Errorf("APT_SNAPSHOT = %q, want 20260101T000000Z", env["APT_SNAPSHOT"])
+	}
+	if env["CORE_REF"] != "0f4b6e1db4c2a9f1e8d70c3b5a6f2e1d9c8b7a60" {
+		t.Errorf("CORE_REF = %q, want the pinned core sha", env["CORE_REF"])
+	}
+}
+
+// The whole reason the agent had to be rebuilt for the core-ref pin:
+// encoding/json decodes ci_build_context into a FIXED struct, so a field the
+// platform sends with no matching struct field is dropped with no error. A
+// `core_ref` that decoded to "" would leave every Class-B build silently
+// unpinned while the platform's logs said it was pinned.
+//
+// Drives the REAL fetchBuildContext -> buildEnv path rather than a hand-copied
+// envelope struct, so it guards the decode as well as the struct tag.
+func TestFetchBuildContextDecodesCoreRefIntoEnv(t *testing.T) {
+	const sha = "0f4b6e1db00c0ffee0000000000000000deadbeef"
+	client := &fakeHTTP{body: `{"success":true,"data":{"source_repo_url":"https://host/o/r.git",` +
+		`"source_token":"tok","parent_pat":"ppat","oras_registry":"reg",` +
+		`"oras_user":"u","oras_password":"p","core_ref":"` + sha + `"}}`}
+
+	bctx, err := fetchBuildContext(client, "powernode-hub-backend")
+	if err != nil {
+		t.Fatalf("fetchBuildContext: %v", err)
+	}
+	if bctx.CoreRef != sha {
+		t.Fatalf("CoreRef = %q, want %q — the core_ref JSON key is not bound to a struct field, "+
+			"so the pin would be dropped silently", bctx.CoreRef, sha)
+	}
+
+	env := envMap(buildEnv(moduleBuildOptions{Module: "powernode-hub-backend", SHA: "s", OCIRef: "t"},
+		"url", bctx))
+	if env["CORE_REF"] != sha {
+		t.Fatalf("CORE_REF = %q, want %q — decoded but never placed in the build env", env["CORE_REF"], sha)
 	}
 }
 
