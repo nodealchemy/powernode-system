@@ -423,9 +423,10 @@ module System
     # A core-triggered batch diffs powernode-platform, so head_sha is a core sha
     # that does not exist in the module source repo; the builder died at
     # `fatal: remote error: upload-pack: not our ref <core sha>` eight seconds in.
-    # Crucially the core TREE never came from BUILD_SHA anyway — stage15.sh clones
-    # the parent from GitHub's powernode-platform default branch (develop), so the
-    # core content is whatever sits on that branch. head_sha's real jobs here are
+    # Crucially the core TREE never came from BUILD_SHA anyway — stage15.sh takes
+    # the parent from the powernode-platform mirror (pinned to this batch's
+    # expected_core_sha when one was recorded, otherwise that remote's default
+    # branch), never from BUILD_SHA. head_sha's real jobs here are
     # the DIFF (which modules to plan) and the TAG; the checkout was a third,
     # incompatible use it was silently doing as well.
     #
@@ -456,15 +457,23 @@ module System
     # Writes down, at dispatch, WHICH core (parent powernode-platform) commit
     # this batch's Class-B artifacts are supposed to be assembled from.
     #
-    # stage15.sh:226 clones the parent with a bare `git clone --depth 1` and NO
-    # ref, against a remote hardcoded at stage15.sh:147-148 to
+    # stage15.sh clones the parent from a remote defaulting to
     # github.com/nodealchemy/powernode-platform — a MIRROR of the Gitea that
     # core is actually pushed to, and one that lags arbitrarily (three days on
-    # 2026-08-15; five merges again on 2026-08-16). The commit that clone lands
-    # on is therefore knowable only after the fact, from the artifact's own
-    # provenance annotation. Without an expectation recorded here there is
-    # nothing to compare that annotation against, and
-    # System::ModulePublicationProcessor's promote gate has no oracle.
+    # 2026-08-15; five merges again on 2026-08-16).
+    #
+    # This value now has THREE consumers, and all three read this one field so
+    # they cannot disagree about what "the expected core" is:
+    #   1. System::CoreMirrorPreflight, which refuses this dispatch if the
+    #      mirror's HEAD disagrees with it;
+    #   2. the per-batch PIN — ConfigController#ci_build_context hands it to the
+    #      builder as CORE_REF, and stage15.sh fetches exactly that commit
+    #      instead of the mirror's default branch (full 40-hex only, since
+    #      `git fetch` needs a complete object name);
+    #   3. System::ModulePublicationProcessor's promote gate, which compares it
+    #      against the sha stamped on the published artifact.
+    # Without an expectation recorded here, (1) does not check, (2) does not
+    # pin, and (3) has no oracle.
     #
     # Idempotent: dispatch! is reachable more than once for a batch, and the
     # expectation is pinned to the moment of dispatch — it must not drift under

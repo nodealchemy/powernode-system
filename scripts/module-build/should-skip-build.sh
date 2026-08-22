@@ -52,6 +52,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   module-forge                                          bakes scripts/module-build/*
 #                                                         into its own rootfs
 #
+# ALSO LOAD-BEARING FOR THE CORE PIN (do not lift the four Class-B entries by
+# simply declaring BUILD_INPUT_PATHS): stage15.sh now fetches the batch's
+# expected core commit via $CORE_REF, but that ref is NOT an input to
+# compute-build-inputs-hash.sh. A batch pinned to a NEW core sha with an
+# unchanged module tree would therefore hash identically, skip, and re-tag the
+# previously-built OLD-core digest — the stale-core shape the pin exists to
+# remove, this time arriving as a promote-gate `mismatch` with no obvious
+# cause. Fold CORE_REF into the hash before enabling skips for these modules.
+#
 # These REFUSE to skip unless the caller declares their real inputs via
 # BUILD_INPUT_PATHS. Encoding it here rather than leaving it to an operator
 # allowlist means BUILD_SKIP_UNCHANGED=1 can be turned on globally and still only

@@ -20,11 +20,11 @@ module System
   #
   # The asymmetry that makes an earlier answer cheap: the batch's expectation is
   # resolved from the AUTHORITATIVE remote (the Gitea core is pushed to, via
-  # NativeModuleBuildOrchestrator#resolve_core_tip), while stage15.sh clones the
-  # parent from the PUBLIC MIRROR — `git clone --depth 1 <url>` with NO ref
-  # against github.com/nodealchemy/powernode-platform, which lags arbitrarily
-  # (three days on 2026-08-15; two outages). One of the two tips is therefore
-  # already in hand at dispatch and the other is one HTTP call away.
+  # NativeModuleBuildOrchestrator#resolve_core_tip), while stage15.sh takes the
+  # parent from the PUBLIC MIRROR (github.com/nodealchemy/powernode-platform),
+  # which lags arbitrarily (three days on 2026-08-15; two outages). One of the
+  # two tips is therefore already in hand at dispatch and the other is one HTTP
+  # call away.
   #
   # THREE STATES, NOT TWO
   #
@@ -41,11 +41,33 @@ module System
   # this exists to prevent. ops-hub is default-deny egress, so "cannot reach
   # github.com" is a NORMAL reading here, not an exceptional one.
   #
+  # THE PIN CHANGED THE QUESTION THIS ANSWERS — READ BEFORE TOUCHING THIS CLASS
+  #
+  # This check was written when stage15.sh cloned the parent with NO ref, so the
+  # build landed on the mirror's HEAD and "is HEAD the expected commit" was
+  # exactly the right question. stage15.sh now FETCHES the batch's
+  # expected_core_sha directly (delivered as CORE_REF via ci_build_context) when
+  # the platform supplies a full 40-hex one, so for those builds the question
+  # that actually decides correctness is "does the mirror CONTAIN commit X",
+  # not "is the mirror's HEAD equal to X".
+  #
+  # The two diverge in one direction: a mirror pushed PAST the expectation
+  # contains the commit, so the pinned fetch would succeed and be correct — and
+  # this check still reads `diverged` and REFUSES the dispatch. That refusal is
+  # now conservative rather than necessary. It is left in place deliberately
+  # (narrowing a live, default-ON protection is an operator decision, not a
+  # side effect of adding the pin), but it is a known over-refusal and the
+  # equality-not-ancestry limitation below is no longer justified by "the clone
+  # is unpinned". The direction that still matters unconditionally is a mirror
+  # BEHIND core: there the pinned fetch fails and the build goes red, and this
+  # check turns that into a cheap refusal before a builder is leased.
+  #
   # WHY HEAD, AND WHY THE GIT ENDPOINT RATHER THAN AN API
   #
-  # The builder clones with no ref, so it lands on whatever the remote's HEAD
-  # points at. HEAD is therefore the only tip whose value answers the question
-  # actually being asked; a named-branch lookup would answer a different one.
+  # HEAD is what the UNPINNED arm still lands on (a batch with no recorded
+  # expectation, and the Gitea Actions path, which sends no CORE_REF), and it
+  # is the cheapest proxy for "has the mirror caught up" for the pinned arm;
+  # a named-branch lookup would answer a different question again.
   # `GET /<path>.git/info/refs?service=git-upload-pack` is the very endpoint
   # that clone begins with: no credential (the mirror is public — stage15.sh
   # deliberately omits PARENT_PAT for a github.com host), no provider-API shape
