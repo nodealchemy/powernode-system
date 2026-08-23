@@ -16,7 +16,26 @@
 #       address: "fd...:.../128",
 #       listen_port: 51820,
 #       mtu: 1420,
-#       private_key_ref: { peer_key_id: "<uuid>" }   # agent fetches via key_distributor
+#       private_key_ref: { peer_key_id: "<uuid>" },  # identifies the active Key
+#                                                     # row; not a fetch handle —
+#                                                     # KeyDistributor only
+#                                                     # generates and rotates
+#                                                     # keys, it exposes no way
+#                                                     # to read one back.
+#       private_key: "<base64>"  # present only when this compiler is invoked
+#                                 # with include_private_key: true — the
+#                                 # node-API path (node_api/sdwan_controller)
+#                                 # passes it explicitly; the operator-facing
+#                                 # topology endpoint never does.
+#                                 # Inlining the key here is currently the ONLY
+#                                 # way the agent obtains it — see manager.go's
+#                                 # privateKeyFor, which hard-errors if this is
+#                                 # absent. A separate short-TTL
+#                                 # /node_api/sdwan/keys endpoint is discussed
+#                                 # there as a future hardening step, but it is
+#                                 # UNBUILT; scheduling that split is the
+#                                 # operator's call, not something callers
+#                                 # should assume already exists.
 #     },
 #     peers: [
 #       {
