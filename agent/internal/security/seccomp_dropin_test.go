@@ -21,7 +21,15 @@ func withTempSystemdRoot(t *testing.T) string {
 func TestWriteSeccompDropInBasic(t *testing.T) {
 	root := withTempSystemdRoot(t)
 
-	if err := WriteSeccompDropIn("nginx.service", "default-deny", "/etc/seccomp/default-deny.json"); err != nil {
+	// Uses a systemd predefined syscall set name, which is the only spelling
+	// that yields a directive systemd actually understands after '@'. A profile
+	// FILE base name ("deny.json") is also accepted by the writer and produces
+	// "SystemCallFilter=@deny.json", which systemd does NOT understand — that
+	// is a pre-existing ambiguity in what security.seccomp_profile means (a
+	// path, per ApplySeccompProfile's os.Stat, or a set name, per this
+	// directive), tracked separately. This test asserts the drop-in SHAPE, and
+	// deliberately does not bless the broken spelling as expected output.
+	if err := WriteSeccompDropIn("nginx.service", "/etc/seccomp/system-service"); err != nil {
 		t.Fatalf("WriteSeccompDropIn: %v", err)
 	}
 
@@ -30,7 +38,7 @@ func TestWriteSeccompDropInBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	want := "[Service]\nSystemCallFilter=@default-deny\nSystemCallErrorNumber=EPERM\n"
+	want := "[Service]\nSystemCallFilter=@system-service\nSystemCallErrorNumber=EPERM\n"
 	if string(got) != want {
 		t.Errorf("body mismatch:\ngot  %q\nwant %q", got, want)
 	}
@@ -53,42 +61,42 @@ func TestWriteSeccompDropInRejectsTraversal(t *testing.T) {
 	}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
-			if err := WriteSeccompDropIn(name, "p", "/path"); err == nil {
+			if err := WriteSeccompDropIn(name, "/path/p.json"); err == nil {
 				t.Errorf("expected rejection of unit name %q", name)
 			}
 		})
 	}
 }
 
-func TestWriteSeccompDropInRequiresAllArgs(t *testing.T) {
+func TestWriteSeccompDropInRejectsUnusableProfilePaths(t *testing.T) {
 	withTempSystemdRoot(t)
-	if err := WriteSeccompDropIn("", "p", "/x"); err == nil {
+	if err := WriteSeccompDropIn("", "/x/p.json"); err == nil {
 		t.Errorf("empty unit should error")
 	}
-	if err := WriteSeccompDropIn("nginx.service", "", "/x"); err == nil {
-		t.Errorf("empty profile should error")
-	}
-	if err := WriteSeccompDropIn("nginx.service", "p", ""); err == nil {
+	if err := WriteSeccompDropIn("nginx.service", ""); err == nil {
 		t.Errorf("empty profilePath should error")
+	}
+	if err := WriteSeccompDropIn("nginx.service", "/etc/seccomp/"); err == nil {
+		t.Errorf("profilePath with no base name should error")
 	}
 }
 
 func TestWriteSeccompDropInOverwrites(t *testing.T) {
 	withTempSystemdRoot(t)
 
-	if err := WriteSeccompDropIn("sshd.service", "old-profile", "/etc/seccomp/old.json"); err != nil {
+	if err := WriteSeccompDropIn("sshd.service", "/etc/seccomp/old-profile.json"); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
-	if err := WriteSeccompDropIn("sshd.service", "new-profile", "/etc/seccomp/new.json"); err != nil {
+	if err := WriteSeccompDropIn("sshd.service", "/etc/seccomp/new-profile.json"); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 
 	dropIn := filepath.Join(systemdDropInRoot, "sshd.service.d", "seccomp.conf")
 	got, _ := os.ReadFile(dropIn)
-	if !strings.Contains(string(got), "@new-profile") {
+	if !strings.Contains(string(got), "@new-profile.json") {
 		t.Errorf("overwrite failed: %q", got)
 	}
-	if strings.Contains(string(got), "@old-profile") {
+	if strings.Contains(string(got), "@old-profile.json") {
 		t.Errorf("old content remained: %q", got)
 	}
 }
@@ -102,7 +110,7 @@ func TestWriteSeccompDropInCreatesParentDir(t *testing.T) {
 		t.Fatalf("parent dir already exists: %v", err)
 	}
 
-	if err := WriteSeccompDropIn("fresh.service", "p", "/path"); err != nil {
+	if err := WriteSeccompDropIn("fresh.service", "/path/p.json"); err != nil {
 		t.Fatalf("WriteSeccompDropIn: %v", err)
 	}
 	if _, err := os.Stat(expectedDir); err != nil {

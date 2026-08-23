@@ -179,6 +179,18 @@ func (p *Policy) Validate() []error {
 			errs = append(errs, fmt.Errorf("unknown capability: %q", cap))
 		}
 	}
+	// SeccompProfile is concatenated into a root-owned systemd drop-in by
+	// WriteSeccompDropIn. Validating it HERE (not only at the writer) is what
+	// makes the refusal loud: the reconciler calls Validate before Apply and
+	// refuses the whole attach on any error, so a hostile profile stops the
+	// module rather than degrading it to "no confinement, quietly" — which is
+	// what a writer-only check would produce, since drop-in write failures are
+	// deliberately non-fatal there.
+	if p.SeccompProfile != "" {
+		if _, err := SeccompFilterName(p.SeccompProfile); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if p.Privileged && (len(p.Capabilities) > 0 || p.SELinuxProfile != "" || p.AppArmorProfile != "" || p.SeccompProfile != "") {
 		errs = append(errs, errors.New("privileged=true is incompatible with explicit MAC/seccomp/capability policy — pick one"))
 	}

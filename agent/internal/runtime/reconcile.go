@@ -961,7 +961,7 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	}
 	if policy.SeccompProfile != "" {
 		for _, unit := range mf.UnitNames() {
-			if err := security.WriteSeccompDropIn(unit, sanitizeProfileName(policy.SeccompProfile), policy.SeccompProfile); err != nil {
+			if err := security.WriteSeccompDropIn(unit, policy.SeccompProfile); err != nil {
 				r.cfg.OnError("reconciler:seccomp_dropin", fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
 			}
 		}
@@ -1420,18 +1420,6 @@ func buildPolicy(m *manifest.Manifest) *security.Policy {
 		p.UserNamespace = v
 	}
 	return p
-}
-
-// sanitizeProfileName returns a base name suitable for the systemd
-// SystemCallFilter directive — strips any path components from the
-// seccomp profile path.
-func sanitizeProfileName(profilePath string) string {
-	for i := len(profilePath) - 1; i >= 0; i-- {
-		if profilePath[i] == '/' {
-			return profilePath[i+1:]
-		}
-	}
-	return profilePath
 }
 
 // LastReconcileAt is exposed for the heartbeat builder.
