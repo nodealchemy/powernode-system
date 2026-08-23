@@ -2,6 +2,22 @@
 
 module System
   module Slo
+    # DORMANT (decided 2026-08-23, IMP-6355c5adc382): #evaluate_all queries
+    # System::Slo::Definition, and repo-wide the only code that ever creates
+    # one is a spec (slo_violation_sensor_spec.rb). So on every fleet tick
+    # this class maps over an empty relation and never runs its evaluation
+    # logic — it is reachable but does no work. Kept intentionally as a
+    # sound, unused design, not deleted. Do NOT build a Definition producer
+    # to revive it; the platform consolidated on System::ProjectMetric as its
+    # one telemetry convention (cron → SystemFleetReconcileJob →
+    # FleetAutonomyService.tick! → collect_project_metrics! →
+    # ProjectMetricsCollector → System::ProjectMetric → ProjectSloSensor →
+    # DecisionEngine). NOTE: this class — not ProjectSloSensor — is the one
+    # that was ever in the System::FleetEvent lane; ProjectSloSensor reads
+    # System::ProjectMetric.recent_for_mission (mission-scoped), never
+    # FleetEvent, so the two must not be conflated. See
+    # spec/services/system/slo/dormancy_guard_spec.rb for the ratchet.
+    #
     # Evaluates each SLO Definition against observed fleet data and returns
     # a structured result that callers (the SloViolationSensor in particular)
     # can act on.
