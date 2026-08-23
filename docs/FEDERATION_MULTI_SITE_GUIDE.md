@@ -119,6 +119,13 @@ platform.system_sdwan_propose_federation_peer
 
 The peer is `status: "proposed"`.
 
+Approval-gated on both surfaces (`sdwan.federation_peer_propose`, seeded
+`require_approval`): under that tier the MCP call answers
+`{ pending: true, deferred_operation_id }` and **no peer row exists** until an
+operator approves. The REST twin (`POST /api/v1/system/sdwan/federation_peers`)
+behaves the same and is the only path that can hand back the single-use
+acceptance token.
+
 The proposing side then mints a **single-use acceptance token**
 (urlsafe-base64, 32 bytes of entropy; only its SHA-256 digest is persisted)
 and hands the plaintext to the accepting operator out of band. **Minting is

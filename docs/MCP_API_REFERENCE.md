@@ -430,10 +430,10 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 |---|---|
 | `system_sdwan_list_federation_peers` | List federation peers on a Network |
 | `system_sdwan_get_federation_peer` | Fetch a federation peer |
-| `system_sdwan_propose_federation_peer` | Account A proposes peering with Account B (out-of-band — does NOT spawn a child platform; use the children-spawn REST endpoint for that) |
+| `system_sdwan_propose_federation_peer` | Account A proposes peering with Account B (out-of-band — does NOT spawn a child platform; use the children-spawn REST endpoint for that). Approval-gated (`sdwan.federation_peer_propose`) — returns `pending: true` + a `deferred_operation_id` and no peer row exists until approved. Acceptance-token minting is refused on this surface (IMP-3a32dc649043); propose over `POST /api/v1/system/sdwan/federation_peers` when you need the token |
 | `system_sdwan_accept_federation_peer` | Account B accepts a proposed peering (moves the row to `status: "accepted"`). Approval-gated (`sdwan.federation_peer_accept`) — returns `pending: true` + a `deferred_operation_id` until approved |
-| `system_sdwan_update_federation_peer` | Update a federation peer (e.g. its priority-ordered `endpoints` list) |
-| `system_sdwan_revoke_federation_peer` | Cancel a federation relationship from either side |
+| `system_sdwan_update_federation_peer` | Update a federation peer (e.g. its priority-ordered `endpoints` list). The two trust-boundary transitions are approval-gated: `status: "accepted"` on `sdwan.federation_peer_accept`, `status: "revoked"` on `sdwan.federation_peer_revoke`; other transitions apply inline |
+| `system_sdwan_revoke_federation_peer` | Cancel a federation relationship from either side — cuts cross-instance routing. Approval-gated (`sdwan.federation_peer_revoke`) — returns `pending: true` + a `deferred_operation_id` and nothing is cut until approved. Same category and executor as `system_sdwan_update_federation_peer` with `status: "revoked"`, so one policy covers every route to a revoked peer |
 | `system_sdwan_federation_scan` | Scan for proposed-but-not-accepted peers (for operator review) |
 | `system_sdwan_federation_compose` | Stand up a federation overlay topology (hub-and-spoke OR full-mesh) across instances — creates one `Sdwan::Network`, enrolls each member as a peer (hubs `publicly_reachable`), and compiles the routing plan |
 | `system_sdwan_set_data_residency` | Stamp a peer with a scalar `data_residency` region/tag (P9.4 enforcement). Approval-gated (`sdwan.federation_peer_data_residency`, seeded `require_approval`) and audited on the peer's trail as `federation.peer.data_residency_changed`; the operator twin is `PATCH /sdwan/federation_peers/:id` with `data_residency` |

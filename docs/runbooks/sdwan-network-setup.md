@@ -291,7 +291,16 @@ The skill is intentionally planning-only in v1 — operators run the recommended
 
 ## Phase 9 — Federation peers (slice 11 — live) ✅
 
-Cross-account peering. Account A proposes; Account B accepts. The full propose / accept / revoke flow is live as of slice 11; both endpoints route through `Sdwan::Executors::{ProposeFederationPeer, AcceptFederationPeer, RevokeFederationPeer}` (the model is `System::FederationPeer`, not `Sdwan::*`).
+Cross-account peering. Account A proposes; Account B accepts. The full propose / accept / revoke flow is live as of slice 11; every endpoint routes through `Sdwan::Executors::{ProposeFederationPeer, AcceptFederationPeer, RevokeFederationPeer}` (the model is `System::FederationPeer`, not `Sdwan::*`).
+
+**All three verbs are approval-gated** (`sdwan.federation_peer_{propose,accept,revoke}`, all seeded `require_approval`) on both halves of the SDWAN federation surface — the `system_sdwan_*` MCP actions below and their `/api/v1/system/sdwan/federation_peers` REST twins — as of IMP-2795453255c3, which routed the last two MCP arms through the gate their REST twins had used all along. Under `require_approval` each call below returns `pending: true` with a `deferred_operation_id` and nothing is written or cut until an operator approves; the snippets show the post-approval (or `notify_and_proceed`) shape.
+
+> The **platform**-peer surface is a different flow and is NOT gated today:
+> `POST /api/v1/system/platform/peers/invite` and `.../revoke`, and
+> `POST /api/v1/system/federation/children/:id/revoke`, write
+> `System::FederationPeer` directly. Use the SDWAN actions here for overlay
+> peering; see [`federation-setup.md`](./federation-setup.md) for the platform
+> flow.
 
 ```javascript
 // Account A proposes (this surface creates a sdwan_only peer_kind; for a
@@ -312,7 +321,10 @@ platform.system_sdwan_accept_federation_peer({
 // → { federation_peer: { id, status: "accepted", ... } }
 
 // Either side can revoke:
-platform.system_sdwan_revoke_federation_peer({ federation_peer_id: "<fed-peer-id>" })
+platform.system_sdwan_revoke_federation_peer({
+  federation_peer_id: "<fed-peer-id>",
+  reason:             "remote signing key rotated"   // optional, recorded on the peer
+})
 
 // List the cross-account peers:
 platform.system_sdwan_list_federation_peers({})
