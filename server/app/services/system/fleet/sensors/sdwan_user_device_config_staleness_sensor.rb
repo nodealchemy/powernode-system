@@ -108,13 +108,25 @@
 # which removes the routine case (enrolling a plain spoke), but an edit to a
 # contributing peer's `tags` or `capabilities` still counts.
 #
-# UNDER-FIRES: a HUB KEY ROTATION is invisible here. Sdwan::KeyDistributor
-# .rotate! creates a new Sdwan::PeerKey row and Sdwan::PeerKey's belongs_to
-# carries no `touch: true`, so peer.updated_at never moves — yet a re-keyed hub
-# breaks every issued config OUTRIGHT, which is strictly worse than a narrowed
-# filter. Adding a fourth arm over PeerKey#created_at is the fix; it is a
-# different defect class from the AllowedIPs drift this task scoped, so it is
-# filed rather than folded in. Removals (a VIP leaving the rendered window, a
+# HUB KEY ROTATION — was under-fired, CLOSED by IMP-8ce5262ee9ec. A re-keyed
+# hub breaks every issued config OUTRIGHT (the client keeps a key the hub no
+# longer has), which is strictly worse than a narrowed filter, and it runs on
+# an autonomous lane with no approval gate (system.sdwan_peer_drift →
+# SdwanPeerRemediateExecutor, action_category system.sdwan_peer_remediate,
+# seeded notify_and_proceed). Sdwan::KeyDistributor.rotate! writes only PeerKey rows,
+# so this arm saw nothing until Sdwan::PeerKey's `belongs_to :peer` gained
+# `touch: true` — read the rationale there, including why that touch adds no
+# false staleness the peer row's own writes were not already producing. It
+# reaches the PEER arm rather than a fourth arm of its own, so a rotation is
+# attributed to "peers" in `changed_surfaces`. RESIDUAL, filed not fixed:
+# #contributing_peers admits a spoke for its lan_subnets, but the renderer
+# emits a key only for a PUBLICLY-REACHABLE peer — so a spoke re-key reached
+# by some future non-executor caller would stale a network whose rendered
+# surface did not move. A dedicated fourth arm over PeerKey#created_at scoped
+# to publicly_reachable peers is what removes that, and it is a change to this
+# sensor rather than to the association.
+#
+# UNDER-FIRES: removals (a VIP leaving the rendered window, a
 # peer deleted, a federation peer suspended) narrow the issued filter and move
 # no maximum(), so they are likewise not detected — that is a posture drift,
 # not a reachability failure.

@@ -263,11 +263,9 @@ RSpec.describe System::Fleet::Sensors::SdwanUserDeviceConfigStalenessSensor do
   # ==========================================================================
   # THE OTHER TWO SURFACE SOURCES.
   # ==========================================================================
-  # NOTE the label: lan_subnets ONLY. A hub KEY rotation is deliberately not
-  # claimed here — Sdwan::PeerKey's belongs_to carries no `touch: true`, so
-  # Sdwan::KeyDistributor.rotate! moves no peer.updated_at and this sensor is
-  # blind to it. That gap is documented in the sensor header and filed, not
-  # papered over with a label.
+  # NOTE the label: lan_subnets ONLY. A hub KEY rotation reaches this same arm
+  # but by a different route (Sdwan::PeerKey's `touch: true`, IMP-8ce5262ee9ec)
+  # and has its own context below, because the two can regress independently.
   context "a contributing peer edited after the device was issued (lan_subnets)" do
     before do
       stamp!(create(:sdwan_peer, account: account, network: network, lan_subnets: [ "fd00:1::/64" ]), 2.days.ago)
@@ -278,6 +276,77 @@ RSpec.describe System::Fleet::Sensors::SdwanUserDeviceConfigStalenessSensor do
       expect(kinds).to eq([ "system.sdwan_user_device_config_stale" ])
       expect(signals.first[:payload]["changed_surfaces"]["peers"]).to be_present
       expect(signals.first[:payload]["changed_surfaces"]["virtual_ips"]).to be_nil
+    end
+  end
+
+  # ==========================================================================
+  # IMP-8ce5262ee9ec — A HUB RE-KEY BREAKS EVERY ISSUED CONFIG OUTRIGHT.
+  # ==========================================================================
+  # WgConfigRenderer emits one [Peer] section per publicly-reachable hub
+  # carrying that hub's CURRENT public key. A node peer re-pulls and converges;
+  # a user device is rendered once, at download time, and the bootstrap URL
+  # 410s straight after. So after a rotation every previously-issued client
+  # holds a key the hub no longer has and its tunnel stops handshaking — worse
+  # than the narrowed-AllowedIPs drift the rest of this file is about, on an
+  # autonomous lane with no approval gate (system.sdwan_peer_drift →
+  # SdwanPeerRemediateExecutor, seeded notify_and_proceed).
+  #
+  # WHICH PATH THESE EXAMPLES DRIVE, AND WHY IT MATTERS
+  # ---------------------------------------------------
+  # `Sdwan::KeyDistributor.rotate!` DIRECTLY — never
+  # System::Ai::Skills::SdwanPeerRemediateExecutor. That executor calls the
+  # same rotate! and THEN does `peer.update_columns(..., updated_at:
+  # Time.current)` for its own reconcile reasons, which moves this arm's stamp
+  # by coincidence. An oracle written against the executor is green with or
+  # without `touch: true` and proves nothing. rotate! on its own writes ONLY
+  # PeerKey rows, and is the path that was genuinely blind.
+  #
+  # AND THE ASSERTION IS THE OUTCOME, NOT THE TIMESTAMP: that the sensor now
+  # reports the device stale. `expect { }.to change { peer.updated_at }` would
+  # pass against a touch no consumer reads.
+  #
+  # No key material is read, printed or asserted on anywhere below — only
+  # signal payloads and row identity.
+  context "a hub re-keyed after the device was issued, rotated via the standalone KeyDistributor path" do
+    let!(:hub)    { stamp!(create(:sdwan_peer, :hub, :active, account: account, network: network, lan_subnets: []), 30.days.ago) }
+    let!(:device) { device!(downloaded_at: 10.days.ago) }
+
+    before { Sdwan::KeyDistributor.ensure_key_for!(hub) }
+
+    # The control. Without it, an example that fires after rotation cannot
+    # distinguish "the rotation was detected" from "this network was already
+    # stale for some unrelated reason" — the genesis key write is itself a
+    # PeerKey write, so the touch fires here too and has to be pinned back
+    # down before the rotation under test.
+    it "is quiet before the rotation" do
+      stamp!(hub, 30.days.ago)
+      expect(signals).to eq([])
+    end
+
+    it "reports the previously-issued config stale — the outcome, not the stamp" do
+      stamp!(hub, 30.days.ago)
+
+      Sdwan::KeyDistributor.rotate!(peer: hub.reload, reason: "spec_standalone_path")
+      # Clear the 15-minute settle window; a rotation stamped at ~now is
+      # deliberately not yet drift (DEFAULT_SETTLE_AFTER_SECONDS).
+      travel 20.minutes
+
+      expect(kinds).to eq([ "system.sdwan_user_device_config_stale" ])
+      payload = signals.first[:payload]
+      expect(payload["stale_devices"].map { |d| d["device_id"] }).to eq([ device.id ])
+      expect(payload["changed_surfaces"]["peers"]).to be_present
+      # Attributed to the peer arm alone — no VIP or federation row exists here,
+      # so nothing else could have moved the surface.
+      expect(payload["changed_surfaces"]["virtual_ips"]).to be_nil
+      expect(payload["changed_surfaces"]["federation_prefixes"]).to be_nil
+    end
+
+    # The settle window is not bypassed by the new write path.
+    it "stays quiet immediately after the rotation" do
+      stamp!(hub, 30.days.ago)
+      Sdwan::KeyDistributor.rotate!(peer: hub.reload, reason: "spec_standalone_path")
+
+      expect(signals).to eq([])
     end
   end
 
