@@ -430,13 +430,13 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 |---|---|
 | `system_sdwan_list_federation_peers` | List federation peers on a Network |
 | `system_sdwan_get_federation_peer` | Fetch a federation peer |
-| `system_sdwan_propose_federation_peer` | Account A proposes peering with Account B (out-of-band — does NOT spawn a child platform; use the children-spawn REST endpoint for that) |
+| `system_sdwan_propose_federation_peer` | Account A proposes peering with Account B (out-of-band — does NOT spawn a child platform; use the children-spawn REST endpoint for that). Approval-gated (`sdwan.federation_peer_propose`) — returns `pending: true` + a `deferred_operation_id` and no peer row exists until approved. Acceptance-token minting is refused on this surface (IMP-3a32dc649043); propose over `POST /api/v1/system/sdwan/federation_peers` when you need the token |
 | `system_sdwan_accept_federation_peer` | Account B accepts a proposed peering (moves the row to `status: "accepted"`). Approval-gated (`sdwan.federation_peer_accept`) — returns `pending: true` + a `deferred_operation_id` until approved |
-| `system_sdwan_update_federation_peer` | Update a federation peer (e.g. its priority-ordered `endpoints` list) |
-| `system_sdwan_revoke_federation_peer` | Cancel a federation relationship from either side |
+| `system_sdwan_update_federation_peer` | Update a federation peer (e.g. its priority-ordered `endpoints` list). The two trust-boundary transitions are approval-gated: `status: "accepted"` on `sdwan.federation_peer_accept`, `status: "revoked"` on `sdwan.federation_peer_revoke`; other transitions apply inline |
+| `system_sdwan_revoke_federation_peer` | Cancel a federation relationship from either side — cuts cross-instance routing. Approval-gated (`sdwan.federation_peer_revoke`) — returns `pending: true` + a `deferred_operation_id` and nothing is cut until approved. Same category and executor as `system_sdwan_update_federation_peer` with `status: "revoked"`, so one policy covers every route to a revoked peer |
 | `system_sdwan_federation_scan` | Scan for proposed-but-not-accepted peers (for operator review) |
 | `system_sdwan_federation_compose` | Stand up a federation overlay topology (hub-and-spoke OR full-mesh) across instances — creates one `Sdwan::Network`, enrolls each member as a peer (hubs `publicly_reachable`), and compiles the routing plan |
-| `system_sdwan_set_data_residency` | Stamp a peer with a scalar `data_residency` region/tag (P9.4 enforcement) |
+| `system_sdwan_set_data_residency` | Stamp a peer with a scalar `data_residency` region/tag (P9.4 enforcement). Approval-gated (`sdwan.federation_peer_data_residency`, seeded `require_approval`) and audited on the peer's trail as `federation.peer.data_residency_changed`; the operator twin is `PATCH /sdwan/federation_peers/:id` with `data_residency` |
 | `system_sdwan_get_audit_log` | Read a peer's per-peer WORM audit log (P9.3) |
 
 **Permissions:** `system.sdwan.federation_peers.{view,propose,accept,revoke}`
@@ -497,11 +497,45 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 | Action | What it does |
 |---|---|
 | `system_sdwan_list_host_bridges` | List `Sdwan::HostBridge` rows (per-host bridge allocations) |
+| `system_sdwan_get_host_bridge` | Fetch one bridge by id, with its lifecycle timestamps |
 | `system_sdwan_create_host_bridge` | Allocate a new host bridge (operator or Topology Designer) |
 | `system_sdwan_activate_host_bridge` | Mark a bridge as active so the agent picks it up on next reconcile |
-| `system_sdwan_release_host_bridge` | Release a host bridge back to the pool |
+| `system_sdwan_release_host_bridge` | Release a host bridge — **drains by default**, `force: true` removes it immediately |
 
-**Permissions:** `system.sdwan.host_bridges.{view,allocate,activate,release}`
+**Permissions:** `system.sdwan.host_bridges.read` (list/get) and
+`system.sdwan.host_bridges.manage` (create/activate/release).
+
+**Releasing drains by default.** Without `force`, the bridge moves to
+`draining`: it stays in the compiler's emit set and keeps its `short_id`
+reserved so in-flight taps finish before the id can be reissued.
+`Sdwan::HostBridgeReaper` (daily, `System::HostBridgeReaperJob`) then sweeps
+draining rows past a 24h grace window to `removed`, which is what makes the
+default safe — before IMP-53a5c597ec8c there was no such sweep, the state
+machine had no edge out of `draining`, and a non-forced release left the
+bridge serving on the host indefinitely. `force: true` skips the window and
+marks the bridge `removed` at once — the compiler stops emitting it
+immediately and anything mid-provision against it loses its bridge name.
+
+Two states short-circuit the drain, on every surface, because the drain edge
+is wrong for them: a `pending` bridge was never applied to the host, so
+draining it would instead make it *compilable* and cause the agent to create
+the bridge you just released — it goes straight to `removed`. An already
+`removed` bridge is left untouched rather than silently no-opping. The REST route (`DELETE
+/api/v1/system/sdwan/host_bridges/:id`) carries the identical default and the
+identical `force` opt-in; before IMP-53a5c597ec8c it hard-forced
+unconditionally, so an operator delete skipped a window an agent release
+honored.
+
+**All three write verbs are approval-gated** (`sdwan.host_bridge_create` /
+`_update` / `_delete`) on **both** the MCP and REST surfaces, so the tier an
+operator configures actually binds. Under `require_approval` the call returns
+`pending: true` with a `deferred_operation_id` and nothing is written until an
+operator approves. An approver reading a `host_bridge_delete` card should check
+the operation's `force` param — the same category covers both the drain and
+the immediate teardown.
+
+REST parity: `GET`/`POST` `/api/v1/system/sdwan/host_bridges`, `GET`/`DELETE`
+`…/:id`, and `POST` `…/:id/activate` mirror these five actions one-for-one.
 
 #### OVN logical-network composition (Phase O3 — slice 9 OVN integration)
 
@@ -523,11 +557,15 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 
 | Action | What it does |
 |---|---|
-| `system_sdwan_list_ipfix_collectors` | List IPFIX collectors registered for a Network |
+| `system_sdwan_list_ipfix_collectors` | List the account's IPFIX collectors |
+| `system_sdwan_get_ipfix_collector` | Fetch one collector, including `is_winning_collector` (only the oldest active row is stamped onto the OVS bridges) |
 | `system_sdwan_create_ipfix_collector` | Register a collector endpoint (host + port) for flow export |
-| `system_sdwan_delete_ipfix_collector` | Remove a collector (stops flow export to that endpoint) |
+| `system_sdwan_update_ipfix_collector` | Enable/disable a collector — **use this, not delete, to stop flow export** |
+| `system_sdwan_delete_ipfix_collector` | Remove a collector **and every flow sample recorded against it** (`dependent: :destroy` + cascade FK) |
 
-**Permissions:** `system.sdwan.ipfix_collectors.{view,create,delete}` — typically driven by the `sdwan_ipfix_collector_compose` skill (Topology Designer).
+**Permissions:** `system.sdwan.ipfix.read` (list/get) and `system.sdwan.ipfix.manage` (create/update/delete) — see `Ai::Tools::SdwanTool::ACTION_PERMISSIONS`, which is the authority. (The `system.sdwan.ipfix_collectors.{view,create,delete}` names this table carried previously were never implemented.) Composition typically runs through the `sdwan_ipfix_collector_compose` skill (Topology Designer).
+
+Delete is not a stand-in for disable: it cascades the collector's `flow_samples`, taking with it the correlation history `System::Fleet::Sensors::SdwanServiceHealthSensor` reads. `system_sdwan_update_ipfix_collector` stops the export and keeps both (IMP-6bbe5c673c38).
 
 ### `kubernetes_*` — Phase 2 K3s clusters (5 actions)
 

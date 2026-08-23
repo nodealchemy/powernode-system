@@ -22,10 +22,13 @@ require "tempfile"
 #     declared ⊆ seeded          (every declared action has a policy row)
 #     every gate site's category IS its executor's declaration
 #
-# Subset, not equality, in both directions that matter: `sdwan.access_grant_create`
-# is seeded and registered but has no executor class, and that is fine — the
+# Subset, not equality, in both directions that matter: a category may be
+# seeded and registered before any executor claims it, and that is fine — the
 # invariant this file protects is that nothing an executor OWNS can drift away
-# from the surfaces that gate and tune it.
+# from the surfaces that gate and tune it. (`sdwan.access_grant_create` was the
+# standing example until IMP-343163bf37a4 gave it an executor and gate sites on
+# both surfaces; the subset direction is what let it be seeded that whole time
+# while nothing evaluated it.)
 #
 # One deliberate consequence, since the refactor is otherwise behaviour-free:
 # a gate site now RESOLVES its executor class where it used to pass the class
@@ -236,6 +239,31 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
                        "to match, or the declaration: #{orphans.inspect}"
   end
 
+  # IMP-051f3811ac60 — the REVERSE direction of the gate-site scan. An
+  # executor no gate site names is not "dormant infrastructure": its seeded
+  # policy row reads as a control that exists while nothing ever evaluates it.
+  # sdwan.network_create and sdwan.user_device_create shipped exactly that way
+  # — and CreateUserDevice's never-called body was additionally WRONG (a bare
+  # create! bypassing UserDeviceIssuer), with deadness the only reason nobody
+  # noticed. Composition-only dispatch is legitimate but must be RECORDED, not
+  # inferred: a `.execute(` reference somewhere in app/ proves a Ruby call,
+  # not that the operator's policy for the category has an evaluation site.
+  it "names every executor at at least one gate site, or records it as composition-only" do
+    # Executors deliberately dispatched ONLY by internal composition (never an
+    # operator gate site). Empty today; adding a name here is the recorded
+    # intent, the way deliberately_shared records category consolidation.
+    composition_only = []
+
+    named   = all_gate_sites.map { |site| site[:executor_class] }.uniq
+    unnamed = executor_classes.map(&:name) - named - composition_only
+
+    expect(unnamed).to be_empty,
+                       "#{unnamed.size} SDWAN executor(s) are named by NO gate site on either operator " \
+                       "surface, so their declared category is seeded and registered but never evaluated: " \
+                       "#{unnamed.join(', ')} — wire a gate site, or record the executor in " \
+                       "composition_only above"
+  end
+
   it "passes each gate site its executor's declared ACTION_CATEGORY, never a literal" do
     offenders = all_gate_sites.reject do |site|
       site[:category_source] == "::#{site[:executor_class]}::ACTION_CATEGORY"
@@ -341,10 +369,10 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
   # green while protecting nothing. These floors are the current counts, so no
   # addition of mine can satisfy them by accident.
   it "reads real inputs on every surface it claims to guard" do
-    expect(executor_classes.size).to be >= 26
+    expect(executor_classes.size).to be >= 43
     expect(declared.size).to eq(executor_classes.size)
     expect(seeded_categories.size).to be > 50
-    expect(all_gate_sites.size).to be >= 42
+    expect(all_gate_sites.size).to be >= 61
     expect(all_gate_sites.map { |s| s[:file] }.uniq.size).to be >= 9
     expect(Ai::InterventionPolicy.registered_categories).to include("sdwan.network_create")
   end

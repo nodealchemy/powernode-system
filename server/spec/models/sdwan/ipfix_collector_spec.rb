@@ -99,5 +99,16 @@ RSpec.describe Sdwan::IpfixCollector, type: :model do
       c = build_collector(host: "fd00::1", port: 4739)
       expect(c.target_endpoint).to eq("[fd00::1]:4739")
     end
+
+    it "does not double-bracket a host stored already bracketed" do
+      # `host` carries presence: true and NOTHING else — no format validation
+      # at all — and both write paths (the system_sdwan_create_ipfix_collector
+      # MCP action and SdwanIpfixCollectorComposeExecutor) pass the operator's
+      # string through untouched. "[fd00::1]" is exactly the form an operator
+      # copies out of an OVS/collector config, so the guard is live, not
+      # theoretical: without it ovs-vsctl receives "[[fd00::1]]:4739".
+      c = build_collector(host: "[fd00::1]", port: 4739)
+      expect(c.target_endpoint).to eq("[fd00::1]:4739")
+    end
   end
 end

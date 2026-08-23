@@ -7,6 +7,50 @@ module System
     # Constants
     VARIETIES = %w[cloud physical dynamic].freeze
     STATUSES = %w[pending provisioning starting running stopping stopped rebooting terminated error].freeze
+
+    # Statuses that count as a replica the control plane still expects to
+    # serve — capacity metrics (ProjectMetricsCollector's replica_count /
+    # region_count) measure the fleet against this, NOT against `active`.
+    #
+    # Every non-terminal state is in: `pending`/`provisioning` are replicas on
+    # the way up, and `starting`/`stopping`/`rebooting` are mid-lifecycle, not
+    # failed — a replica rebooting is one the mission expects back in seconds,
+    # and treating it as lost would make every routine reboot read as capacity
+    # loss. `stopped` counts too: the mission still owns that replica, and the
+    # remediation it needs is a start, not a second provision.
+    #
+    # That is also why this is NOT the `active` scope below, despite the cost
+    # of a second definition. `active` omits `starting` and `rebooting` — and
+    # those two states are exactly what the platform's OWN remediation
+    # produces (FleetDecisionEngine#reboot_silent_instance issues `reboot` or
+    # `start`). Sizing capacity on `active` would therefore emit capacity
+    # drift for the instance currently being repaired, and propose a
+    # replacement provision alongside the in-flight reboot: a self-amplifying
+    # loop. It would also drift through the whole minutes-long `starting`
+    # window of every fresh cloud provision.
+    #
+    # Only the two states that say the control plane can NOT count on the row
+    # are out. `terminated` is gone. `error` is written by five paths and four
+    # of them are authoritative about the instance, not merely about our view
+    # of it: ProvisioningService#mark_instance_errored (the provision failed —
+    # there is no VM), the two `finalize_state_from_cloud` controller paths and
+    # NodeInstanceGating#execute_local_provider_action_sync! (the PROVIDER
+    # itself reports error), and the `revert_termination` event below (a
+    # terminate stamp whose provider call then failed — a provably unknown
+    # state nothing may size against). The fifth,
+    # FleetDecisionEngine#reap_presumed_dead!, is the weak one: it probes the
+    # control-plane channel, so a partitioned-but-serving VM can land here.
+    # It is still excluded — the honest answer to "we cannot observe this
+    # replica" is never "assume it is fine", which is precisely what counting
+    # it asserted. That case is not silent either way: the reap emits
+    # `system.instance_presumed_dead` at :critical on its own lane.
+    #
+    # Deliberately spelled out rather than derived as `STATUSES - [...]`: a
+    # status added later is excluded until someone decides it belongs, so the
+    # failure mode of forgetting is an over-eager drift signal (visible, and
+    # bounded by the target it converges on) rather than a silently inflated
+    # count (invisible — the exact defect IMP-797a87dbd0bd fixed).
+    LIVE_REPLICA_STATUSES = %w[pending provisioning starting running stopping stopped rebooting].freeze
     MAC_ADDRESS_REGEX = /\A([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})\z/
 
     # Slice 7 — pre-warmed instance pool membership.
@@ -269,6 +313,10 @@ module System
     scope :terminated, -> { where(status: "terminated") }
     scope :errored, -> { where(status: "error") }
     scope :active, -> { where(status: %w[pending provisioning running stopped]) }
+    # Capacity-metric liveness — see LIVE_REPLICA_STATUSES for why this is a
+    # second definition rather than a reuse of `active` (which omits the
+    # transitional states).
+    scope :live_replicas, -> { where(status: LIVE_REPLICA_STATUSES) }
     # Claim-by-ID fleet flow: a physical instance pre-registered by an operator,
     # still pending and not yet bound to a device, is eligible to be claimed by
     # a booting device that presents its ID (baked into /boot/identity.cfg).
@@ -550,6 +598,73 @@ module System
       end
 
       "lightweight"
+    end
+
+    # IMP-57e9a90598ee — the production writer suggest_network_profile never
+    # had. Called from the heartbeat endpoint immediately after
+    # record_heartbeat! persisted the agent-observed architecture — the last
+    # fact the suggester needs — and BEFORE mark_running!, so it fires only
+    # on the heartbeat that brings a pre-running instance up.
+    #
+    # first_contact: the caller must declare whether this is the instance's
+    # FIRST heartbeat ever (last_heartbeat_at was nil before this request
+    # stamped it). The caller captures that, because by the time this runs
+    # record_heartbeat! has already written the column. Without this guard,
+    # "first heartbeat" was really "first stamp-less non-running heartbeat":
+    # every pre-existing instance carries no stamp, so the whole legacy fleet
+    # would auto-classify — and eligible hosts silently promote to
+    # heavyweight — on its next pass through a non-running state (a reboot, a
+    # presumed-dead self-heal). That is the fleet-wide profile wave this
+    # method's guards exist to prevent, merely amortised over reboots.
+    #
+    # Guards, each load-bearing:
+    #   - only the instance's first contact ever (first_contact): legacy
+    #     hosts NEVER auto-classify; operators promote them explicitly via
+    #     system_update_instance.
+    #   - only a pre-running instance (may_mark_running?): an established
+    #     fleet must never profile-flip on deploy.
+    #   - only once (the network_profile_source stamp): a classification is
+    #     a birth event, not a reconcile loop.
+    #   - never over an operator declaration ("operator" source wins).
+    #   - never a demotion: the suggester's "lightweight" is its safe
+    #     default, not evidence a heavyweight host lost headroom.
+    #
+    # (architecture needs no guard: the column is NOT NULL + CHECKed, so an
+    # instance without one is unrepresentable; the unknown-fact path is
+    # available_memory_mb returning nil, which the suggester already treats
+    # as "cannot prove headroom" → lightweight.)
+    def classify_network_profile!(first_contact:)
+      return false unless first_contact
+      return false unless may_mark_running?
+      return false if config&.dig("network_profile_source").present?
+
+      suggestion = suggest_network_profile
+      promote = suggestion == "heavyweight" && network_profile == "lightweight"
+
+      update!(
+        network_profile: promote ? "heavyweight" : network_profile,
+        config: (config || {}).merge("network_profile_source" => "suggested_first_heartbeat")
+      )
+
+      if promote
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: account,
+          kind: "system.instance.network_profile_promoted",
+          severity: :low,
+          payload: {
+            instance_id: id,
+            suggested: suggestion,
+            architecture: architecture,
+            memory_mb: send(:available_memory_mb)
+          },
+          source: "node_instance#classify_network_profile!",
+          node_instance_id: id
+        )
+      end
+      promote
+    rescue StandardError => e
+      Rails.logger.warn("[NodeInstance] network profile classification failed for #{id}: #{e.class}: #{e.message}")
+      false
     end
 
     # === Runtime telemetry (Golden Eclipse M0.M) ===

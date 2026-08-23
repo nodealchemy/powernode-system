@@ -115,15 +115,39 @@ module Acme
       # worker routes (Security::MtlsTrust verifies against our CA only).
       # Idempotent; rewriting it is how peer-CA rotation/teardown propagates
       # (Traefik file-watches the directory and reloads).
+      #
+      # Anchors are deduplicated by SHA-256 FINGERPRINT, never by subject DN
+      # and never by raw string equality. Both of the alternatives are wrong
+      # here: `FederationPeer.trusted_ca_pems` .uniq's on the exact string, so
+      # the same CA re-fetched with different trailing whitespace lands twice,
+      # and a hierarchical child whose trusted_ca_pem IS our own root
+      # duplicates our anchor. Deduping by DN would be worse still — hubs
+      # provisioned before InternalCaService stamped a hub-specific subject
+      # all present "CN=Powernode Internal CA (local-dev)", so a DN-keyed
+      # dedupe would silently DROP a real peer's CA and break its certs.
+      # Unparseable entries are kept verbatim (we are not the validator here;
+      # dropping trust material is the more dangerous failure).
       def write_client_auth_bundle!(ca_dir: nil)
         dir = ca_dir || default_ca_dir
         FileUtils.mkdir_p(dir)
         out = File.join(dir, CLIENT_AUTH_BUNDLE_FILENAME)
         pems = [ ::System::InternalCaService.ca_chain_pem ]
         pems.concat(::System::FederationPeer.trusted_ca_pems) if defined?(::System::FederationPeer)
-        body = pems.compact.map { |p| p.to_s.strip }.reject(&:empty?).join("\n")
+        body = dedupe_anchors(pems).join("\n")
         File.write(out, "#{body}\n")
         out
+      end
+
+      # SHA-256 fingerprints of every anchor currently in the client-auth
+      # bundle, in bundle order. The TLS acceptable-client-CA list a peer sees
+      # is BY DN, so it cannot answer "does this peer trust OUR CA?" when two
+      # roots share a name — this is the list an operator should compare
+      # against instead.
+      def client_auth_bundle_fingerprints(ca_dir: nil)
+        path = File.join(ca_dir || default_ca_dir, CLIENT_AUTH_BUNDLE_FILENAME)
+        return [] unless File.exist?(path)
+
+        ::Security::MtlsClientVerifier.anchor_fingerprints([ File.read(path) ])
       end
 
       # Writes the shared dynamic config holding the OPTIONAL-mTLS TLS
@@ -234,6 +258,30 @@ module Acme
 
       def default_ca_dir
         ::Core::IngressConfigWriter.default_ca_dir
+      end
+
+      private
+
+      # Split the supplied PEM blobs into individual certificate blocks and
+      # drop repeats, keyed on the DER SHA-256 fingerprint. Anything that
+      # doesn't parse as a certificate is passed through once, keyed on its
+      # normalized text, so malformed-but-intentional material still reaches
+      # Traefik rather than vanishing here.
+      def dedupe_anchors(pems)
+        seen = {}
+        Array(pems).each do |pem|
+          text = pem.to_s.strip
+          next if text.empty?
+
+          blocks = text.scan(/-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----/m)
+          blocks = [ text ] if blocks.empty?
+          blocks.each do |block|
+            body = block.strip
+            key  = ::Security::CaFingerprint.of_pem(body) || "raw:#{body.gsub(/\s+/, '')}"
+            seen[key] ||= body
+          end
+        end
+        seen.values
       end
     end
 

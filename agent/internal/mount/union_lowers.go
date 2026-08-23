@@ -2,6 +2,7 @@ package mount
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -143,6 +144,13 @@ func readMountInfoEntries(strict bool) ([]mountInfoEntry, error) {
 // that is the ordinary cloud_init case, not a failure. An error means the
 // mount table could not be read at all, which callers must treat as "I do
 // not know", never as "no layers".
+// ErrNoOverlayAt reports that NO overlay is mounted at the requested point —
+// as distinct from one that is mounted and has no lower layers
+// (IMP-de738c292bf9). Callers act on the difference: an absent union means the
+// question was unanswerable, and both production callers must fail toward
+// "still in use" / "cannot verify" rather than toward an empty set.
+var ErrNoOverlayAt = errors.New("no overlay is mounted at the requested mount point")
+
 func LiveUnionLowerDirs(mountPoint string) ([]string, error) {
 	entries, err := readMountInfoEntries(false)
 	if err != nil {
@@ -170,9 +178,12 @@ func LiveUnionLowerDirs(mountPoint string) ([]string, error) {
 			}
 			return out, nil
 		}
-		return []string{}, nil // overlay at this point, but no lowerdir opt
+		// Mounted, but with nothing beneath it — a real empty set, and NOT an
+		// error: the union was read successfully and it genuinely has no lower
+		// layers. Only the absent-overlay case below is unanswerable.
+		return []string{}, nil
 	}
-	return []string{}, nil
+	return nil, fmt.Errorf("%w: %s", ErrNoOverlayAt, want)
 }
 
 // PathInLiveUnion reports whether dir is one of the lower layers of the

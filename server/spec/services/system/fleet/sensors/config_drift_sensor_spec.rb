@@ -43,6 +43,98 @@ RSpec.describe System::Fleet::Sensors::ConfigDriftSensor do
     expect(sensor.sense.first.payload["instance_ids"]).to eq([ running_instance.id ])
   end
 
+  # A node with NO running instance has no apply target, and the sensor must
+  # not emit drift nothing can act on.
+  #
+  # This exclusion and DecisionEngine#dispatch_reconcile_task are a MIRRORED
+  # pair — the same read-side/engine split that APPLY_COMMAND documents below.
+  # The applier resolves its target as
+  #   payload["instance_id"] || Array(payload["instance_ids"]).first
+  # and returns { applied: false, reason: "instance not found" } when that
+  # comes back empty (it find_by(id:)s WITHOUT a status filter, so the
+  # sensor's NodeInstance.running scope is the only gate on what statuses can
+  # ever reach it). An emitted-but-unremediable signal mints a permanent
+  # ineffective RemediationOutcome, which is what the F3-11 streak reads as a
+  # stuck remediation. Whoever moves either side must move both.
+  #
+  # This is a re-route, not a coverage deletion: "assignment exists but
+  # nothing is running on the node" is a LIVENESS condition owned elsewhere —
+  # InstanceStatusSensor (system.instance_silent, :high for an instance that
+  # never heartbeat), InstancePoolService's warming-timeout reaper, and
+  # DecisionEngine#reap_presumed_dead!. And the sensor holds no state across
+  # ticks (FleetAutonomyService#collect_signals builds a fresh sensor each
+  # 60s pass and #signal only constructs an unsaved Fleet::Signal), so an
+  # assignment skipped today re-enters the candidate set the moment a first
+  # instance reaches `running`.
+  describe "assignments whose node has no running instance" do
+    let(:dead_node) { create(:system_node, account: account, node_template: template) }
+
+    def stale_assignment_on!(target_node)
+      create(:system_node_module_assignment, node: target_node).tap do |a|
+        a.update_columns(updated_at: 10.minutes.ago)
+      end
+    end
+
+    # terminated/error are the uncontroversial half. `stopped` and `starting`
+    # are the judgment call — a node that may well come back — so they are
+    # pinned explicitly: this example fails if someone later widens the
+    # `running` scope, which would silently un-gate EMISSION too (the scope is
+    # the emission gate and the targeting gate at once).
+    it "does not signal when no instance on the node is running" do
+      create(:system_node_instance, node: dead_node, status: "terminated")
+      create(:system_node_instance, node: dead_node, status: "error")
+      create(:system_node_instance, node: dead_node, status: "stopped")
+      create(:system_node_instance, node: dead_node, status: "starting")
+      dead_assignment = stale_assignment_on!(dead_node)
+
+      signals = sensor.sense
+
+      expect(signals.map { |s| s.payload["assignment_id"] }).not_to include(dead_assignment.id)
+      expect(signals.map { |s| s.payload["node_id"] }).not_to include(dead_node.id)
+    end
+
+    it "does not signal when the node has no instance rows at all" do
+      dead_assignment = stale_assignment_on!(dead_node)
+
+      expect(sensor.sense.map { |s| s.payload["assignment_id"] }).not_to include(dead_assignment.id)
+    end
+
+    # The positive half is what proves this is a FILTER and not a mute: a
+    # guard that skipped unconditionally would satisfy the two examples above.
+    it "still signals for an otherwise-identical assignment whose node has a running instance" do
+      create(:system_node_instance, node: dead_node, status: "terminated")
+      stale_assignment_on!(dead_node)
+      live_assignment = stale_assignment_on!(node)
+
+      signals = sensor.sense
+
+      expect(signals.size).to eq(1)
+      expect(signals.first.payload["assignment_id"]).to eq(live_assignment.id)
+      expect(signals.first.payload["instance_ids"]).to eq([ running_instance.id ])
+    end
+
+    # The skip is a per-tick filter, NOT a suppression that persists. The
+    # sensor holds no state (a fresh one per tick, and #signal builds an
+    # unsaved Fleet::Signal), the fingerprint is derived from the assignment
+    # id alone, and the engine's dedup is a cache TTL — so the same assignment
+    # must re-enter the candidate set the moment a first instance comes up.
+    # The comments on both sides lean on that property; this makes it an
+    # oracle rather than prose. Deliberately re-uses the SAME sensor object
+    # across both passes, which is the strictest form of the claim.
+    it "signals the same assignment once the node's first instance reaches running" do
+      create(:system_node_instance, node: dead_node, status: "starting")
+      dead_assignment = stale_assignment_on!(dead_node)
+
+      expect(sensor.sense.map { |s| s.payload["assignment_id"] }).not_to include(dead_assignment.id)
+
+      create(:system_node_instance, :running, node: dead_node)
+
+      revived = sensor.sense.find { |s| s.payload["assignment_id"] == dead_assignment.id }
+      expect(revived).to be_present
+      expect(revived.payload["instance_ids"].size).to eq(1)
+    end
+  end
+
   # IMP-a99067b836bf — the "already applied?" guard probed
   # System::Task(operable_type: "System::Node", command LIKE "system.attach%").
   # No such task can exist: `system.attach` appears nowhere else in the repo
@@ -201,8 +293,9 @@ RSpec.describe System::Fleet::Sensors::ConfigDriftSensor do
     # The dead probe ran one system_tasks query per assignment inside find_each;
     # ops-hub has ~450 assignments. Repointing it must not keep that shape.
     # Scope note: this counts system_tasks queries only. #sense also runs one
-    # NodeInstance.running pluck per EMITTED signal (F3-09) — pre-existing, and
-    # untouched here, though suppression now keeps it off the silenced majority.
+    # NodeInstance.running pluck per candidate that survives apply-suppression
+    # (F3-09) — i.e. the emitted signals PLUS the no-running-instance skips,
+    # which is the same set it ran on before that skip existed.
     it "resolves the last apply for every node in a single tasks query" do
       3.times do
         n = create(:system_node, account: account, node_template: template)

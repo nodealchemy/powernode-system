@@ -105,7 +105,15 @@ module Sdwan
 
     def scan
       findings = []
-      peers = ::System::FederationPeer.where(account_id: @account.id).to_a
+      # Eager-load the cert: scan_one_peer's expiry check dereferences
+      # peer.outbound_certificate for EVERY peer, so a bare load is an N+1.
+      # It only mattered for agents before this scanner got a REST surface;
+      # FederationGovernancePanel now runs the account-wide scan on mount and
+      # after every peer mutation (IMP-65f479ad8484).
+      peers = ::System::FederationPeer
+                .where(account_id: @account.id)
+                .includes(:outbound_certificate)
+                .to_a
 
       install_prefix_48 = derive_install_prefix_48
       seen_prefixes = {} # remote_prefix_48 → first peer that claimed it
@@ -238,9 +246,7 @@ module Sdwan
             "Likely running a pre-P9.3 release without the schema-version handshake."
           )
         else
-          negotiation = ::Federation::SchemaVersionNegotiator.negotiate(
-            remote_version: peer.platform_version
-          )
+          negotiation = negotiate_schema_version(peer.platform_version)
           unless negotiation.compatible?
             findings << build_finding(
               :peer_schema_version_drift, peer,
@@ -313,6 +319,15 @@ module Sdwan
           .max || chain.started_at
       return false unless anchor
       anchor < (now - CHAIN_STALL_THRESHOLD)
+    end
+
+    # Peers cluster on a handful of platform_versions, and the negotiator
+    # issues its own queries per call — so resolve each distinct version once
+    # per scan rather than once per peer.
+    def negotiate_schema_version(remote_version)
+      @schema_negotiations ||= {}
+      @schema_negotiations[remote_version] ||=
+        ::Federation::SchemaVersionNegotiator.negotiate(remote_version: remote_version)
     end
 
     def build_chain_finding(kind, chain, peer_id:, message:)

@@ -311,4 +311,131 @@ RSpec.describe System::Fleet::Sensors::ProjectSloSensor do
       expect(slo.payload["observed"]).to eq(500.0)
     end
   end
+
+  # ---------------------------------------------------------------------
+  # IMP-25e75f960dee — sdwan_throughput_bytes_per_s floor.
+  #
+  # The failure this whole block exists to prevent is offer 01a02bfb-84bd:
+  # the collector maps 7 metric names, this sensor reads 5, so cpu_pct and
+  # memory_pct land dark no matter how well they are produced. A metric that
+  # is sampled but never read lights nothing.
+  # ---------------------------------------------------------------------
+  describe "SDWAN throughput floor" do
+    def write_metric(mission, metric_name, observed:, sampled_at: Time.current)
+      metric_type = ::System::ProjectMetricsCollector::METRIC_TYPE_MAP.fetch(metric_name)
+      ::System::ProjectMetric.create!(
+        mission: mission, metric_name: metric_name, metric_type: metric_type,
+        value: { "observed" => observed }, sampled_at: sampled_at
+      )
+    end
+
+    def mission_with_floor(floor, observations: {})
+      build_mission(
+        observations: observations,
+        slo_targets: { "availability_pct" => 99.5, "p99_latency_ms" => 250,
+                       "min_throughput_bytes_per_s" => floor }
+      )
+    end
+
+    let(:metric) { "sdwan_throughput_bytes_per_s" }
+
+    it "reads the metric the collector writes" do
+      mission = mission_with_floor(1_000.0)
+      write_metric(mission, metric, observed: 250.0)
+
+      slo = sensor.sense.find { |s| s.kind == "system.project_slo_violation" }
+      expect(slo).not_to be_nil
+      expect(slo.payload["metric"]).to eq(metric)
+      expect(slo.payload["observed"]).to eq(250.0)
+      expect(slo.payload["target"]).to eq(1_000.0)
+      expect(slo.payload["breach_pct"]).to eq(75.0)
+      expect(slo.fingerprint).to eq("project_slo_violation:#{mission.id}:#{metric}")
+    end
+
+    it "stays silent when throughput is at or above the floor" do
+      mission = mission_with_floor(1_000.0)
+      write_metric(mission, metric, observed: 1_000.0)
+
+      expect(sensor.sense.select { |s| s.kind == "system.project_slo_violation" }).to be_empty
+    end
+
+    # A MEASURED ZERO is the loudest possible breach — tunnels up, nothing
+    # moving. It is also the reading a `.present?`-style guard is most likely
+    # to swallow, so it gets its own example.
+    it "fires on a MEASURED 0.0 — an up-but-silent fabric" do
+      mission = mission_with_floor(500.0)
+      write_metric(mission, metric, observed: 0.0)
+
+      slo = sensor.sense.find { |s| s.kind == "system.project_slo_violation" }
+      expect(slo).not_to be_nil
+      expect(slo.payload["observed"]).to eq(0.0)
+      expect(slo.payload["breach_pct"]).to eq(100.0)
+      expect(slo.severity.to_s).to eq("critical")
+    end
+
+    # THE NULL-VS-ZERO ORACLE. `unavailable` (observed nil) must not read as
+    # 0 bytes/s. This is the example a `by_name[...].to_f` mutation reddens:
+    # nil.to_f is 0.0, which is below every floor, so the sensor would fire a
+    # critical breach for a mission it never measured.
+    it "does NOT fire when the metric is unavailable (observed nil)" do
+      mission = mission_with_floor(500.0)
+      write_metric(mission, metric, observed: nil)
+      write_metric(mission, "replica_count", observed: 3) # keeps the DB arm live
+
+      violations = sensor.sense.select { |s| s.kind == "system.project_slo_violation" }
+      expect(violations).to be_empty
+    end
+
+    it "does NOT fire when the mission has no throughput row at all" do
+      mission = mission_with_floor(500.0)
+      write_metric(mission, "replica_count", observed: 3)
+
+      violations = sensor.sense.select { |s| s.kind == "system.project_slo_violation" }
+      expect(violations).to be_empty
+    end
+
+    # Declared-only, exactly like cost_ceiling_usd. Without this, wiring the
+    # metric would start firing on every existing mission the moment the
+    # collector went live.
+    it "does NOT fire for a mission that declared no floor, even at 0.0" do
+      mission = build_mission(observations: {})
+      write_metric(mission, metric, observed: 0.0)
+
+      violations = sensor.sense.select { |s| s.kind == "system.project_slo_violation" }
+      expect(violations).to be_empty
+    end
+
+    it "does NOT fire for a declared floor of 0" do
+      mission = mission_with_floor(0)
+      write_metric(mission, metric, observed: 0.0)
+
+      violations = sensor.sense.select { |s| s.kind == "system.project_slo_violation" }
+      expect(violations).to be_empty
+    end
+
+    it "yields to a latency breach — the first violated metric wins" do
+      mission = mission_with_floor(1_000.0)
+      write_metric(mission, "p99_latency_ms", observed: 900.0)
+      write_metric(mission, metric, observed: 1.0)
+
+      slo = sensor.sense.find { |s| s.kind == "system.project_slo_violation" }
+      expect(slo.payload["metric"]).to eq("p99_latency_ms")
+    end
+
+    it "also reads the metric from the config observation seam" do
+      mission = mission_with_floor(1_000.0, observations: { metric => 100.0 })
+
+      slo = sensor.sense.find { |s| s.kind == "system.project_slo_violation" }
+      expect(slo).not_to be_nil
+      expect(slo.payload["metric"]).to eq(metric)
+      expect(slo.payload["observed"]).to eq(100.0)
+    end
+
+    it "does NOT fire from the config seam when throughput is simply absent" do
+      mission = mission_with_floor(1_000.0, observations: { "p99_latency_ms" => 100 })
+
+      violations = sensor.sense.select { |s| s.kind == "system.project_slo_violation" }
+      expect(violations).to be_empty
+    end
+  end
 end

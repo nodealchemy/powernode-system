@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
+	"github.com/nodealchemy/powernode-system/agent/internal/runtime"
 )
 
 // Prepare mode (no --execute) runs the survival gate, whose FIRST act is
@@ -177,5 +179,88 @@ func TestPrepareNextrootMounts_RefusesUnsafeSources(t *testing.T) {
 		if dests != nil {
 			t.Errorf("%s (src=%q): a refusal must return no destinations, got %v", name, c.src, dests)
 		}
+	}
+}
+
+// IMP-de738c292bf9 — exit 11 conflated a REFUSAL with an ENVIRONMENT failure.
+//
+// NextrootSurvivalGate errors for causes that are not the same kind of thing.
+// A mount that would not survive is a REFUSAL: the node is configured wrong for
+// soft-reboot and the fix is to ship drop-ins. A failed `systemctl daemon-reload`
+// (EPERM for a non-root caller) or an unreadable mountinfo is an ENVIRONMENT
+// failure: the gate could not reach a verdict at all. Mapping both to exit 11
+// tells a CI wrapper "needs drop-ins" while the real problem — permissions — is
+// never surfaced, and the operator chases the wrong fix.
+func TestWritePrepareReport_EnvironmentFailureIsNotAWouldRefuse(t *testing.T) {
+	var buf bytes.Buffer
+	gateErr := fmt.Errorf("systemctl daemon-reload before probing nextroot mount survival: %w",
+		runtime.ErrGateReloadFailed)
+
+	err := writePrepareReport(&buf, gateErr)
+
+	var ce *cli.CommandError
+	if !errors.As(err, &ce) {
+		t.Fatalf("an environment failure must still carry a structured exit code, got %T: %v", err, err)
+	}
+	if ce.Code == cli.ExitDryRunWouldRefuse {
+		t.Errorf("an environment failure must NOT report the would-refuse code (%d) — "+
+			"a CI wrapper reads that as 'needs drop-ins' and never learns the gate could not run",
+			cli.ExitDryRunWouldRefuse)
+	}
+	if ce.Code == cli.ExitOK {
+		t.Errorf("an environment failure must not exit 0")
+	}
+}
+
+// When the gate died AT the daemon-reload, the reload did not necessarily
+// happen — so the report must not keep asserting it did, nor that the rescan
+// "is the only change made".
+func TestWritePrepareReport_DoesNotClaimTheReloadHappenedWhenItFailed(t *testing.T) {
+	var buf bytes.Buffer
+	gateErr := fmt.Errorf("systemctl daemon-reload before probing nextroot mount survival: %w",
+		runtime.ErrGateReloadFailed)
+
+	_ = writePrepareReport(&buf, gateErr)
+
+	out := buf.String()
+	if strings.Contains(out, "That rescan is the only") {
+		t.Errorf("the report claims the rescan happened and was the only change, but the gate failed "+
+			"AT the reload — its effect is unknown. Got:\n%s", out)
+	}
+}
+
+// A genuine refusal keeps exit 11 — the split must not cost the CI gate the
+// signal it was built for.
+func TestWritePrepareReport_RefusalStillExitsElevenAfterTheSplit(t *testing.T) {
+	var buf bytes.Buffer
+	gateErr := fmt.Errorf("/run/nextroot/persist would not survive the soft-reboot: %w",
+		runtime.ErrGateRefused)
+
+	err := writePrepareReport(&buf, gateErr)
+
+	var ce *cli.CommandError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *cli.CommandError, got %T", err)
+	}
+	if ce.Code != cli.ExitDryRunWouldRefuse {
+		t.Errorf("a real refusal must keep exit %d, got %d", cli.ExitDryRunWouldRefuse, ce.Code)
+	}
+}
+
+// An UNTYPED gate error must fail toward the loud, boot-relevant reading rather
+// than being silently reclassified — the same fail-closed discipline the gate
+// itself uses everywhere else.
+func TestWritePrepareReport_UntypedGateErrorStaysAWouldRefuse(t *testing.T) {
+	var buf bytes.Buffer
+
+	err := writePrepareReport(&buf, errors.New("some cause nobody typed"))
+
+	var ce *cli.CommandError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *cli.CommandError, got %T", err)
+	}
+	if ce.Code != cli.ExitDryRunWouldRefuse {
+		t.Errorf("an untyped gate error must fail toward would-refuse (%d), got %d",
+			cli.ExitDryRunWouldRefuse, ce.Code)
 	}
 }

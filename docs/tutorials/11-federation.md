@@ -130,8 +130,8 @@ curl -X POST https://parent.example.org/api/v1/system/federation/children/spawn 
 
 > **Token handling:** the `acceptance_token` is shown once — never logged,
 > never persisted in plaintext. If you lose it before the handshake
-> completes, revoke the peer (`system_sdwan_revoke_federation_peer`) and
-> propose again.
+> completes, revoke the peer (`system_sdwan_revoke_federation_peer` — approval-gated,
+> so the revocation lands once an operator approves it) and propose again.
 
 ## Step 2 — Watch the child boot + handshake
 
@@ -463,8 +463,12 @@ platform.system_sdwan_get_audit_log({ federation_peer_id })
 ## Cleanup
 
 ```javascript
-platform.system_sdwan_revoke_federation_peer({ id: "..." })
+platform.system_sdwan_revoke_federation_peer({ federation_peer_id: "..." })
 // → status: revoked; routes withdrawn from BGP; firewall rules unaffected (operator cleanup)
+//
+// Approval-gated (sdwan.federation_peer_revoke, seeded require_approval): under
+// that tier the call answers { pending: true, deferred_operation_id } and the
+// peer stays as-is until an operator approves — nothing is cut at call time.
 
 // Terminate the child platform instance if no longer needed
 platform.system_terminate_instance({ id: "<child-instance>" })

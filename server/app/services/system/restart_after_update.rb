@@ -91,11 +91,13 @@ module System
 
     class << self
       # Parses NodeModule#config into normalized declarations. Pure: no DB, no
-      # writes. Anything malformed is dropped rather than raised — the manifest
-      # validator (ManifestImportService#validate_restart_after_update) is the
-      # place that rejects a bad declaration, and it does so at validation time
-      # so CI catches it. By the time a declaration reaches the fleet it has
-      # already been through that gate; a survivor here is corrupt data, and
+      # writes. Anything malformed is dropped rather than raised — the shared
+      # validator (System::ModuleConfigValidator#validate_restart_after_update)
+      # is the place that rejects a bad declaration, and BOTH writers run it:
+      # the manifest-import path at validation time so CI catches it, and
+      # node_modules#create/#update before any `config:` write reaches the
+      # column (IMP-7d4c691ffe91). By the time a declaration reaches the fleet
+      # it has already been through that gate; a survivor here is corrupt data, and
       # dropping it fails closed (no restart) rather than open.
       def declarations(node_module)
         raw = node_module&.config.is_a?(Hash) ? node_module.config[DECLARATION_KEY] : nil

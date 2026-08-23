@@ -27,16 +27,32 @@ module Api
             render_success(network: serialize_network_full(@network))
           end
 
+          # IMP-051f3811ac60: the create routes through Ai::AutonomyGate.
+          # Sdwan::Executors::CreateNetwork existed but no gate site named it,
+          # so the seeded sdwan.network_create policy matched nothing — while
+          # UPDATE and DELETE on this same controller have been gated for
+          # slices. The candidate is never saved here; gate_create! validates
+          # it BEFORE the gate (an unsaveable payload keeps its field-level
+          # 422 and parks no approval), and the executor stays the sole writer.
+          #
+          # Internal composition (ConfigureSdwanForProjectExecutor and the
+          # federation/multi-tenant composers) creates networks directly and
+          # stays ungated — the same caller split PeersController#create pins.
           def create
             require_permission("system.sdwan.networks.manage")
-            attrs = network_params
+            attrs = network_params.to_h
 
-            network = ::Sdwan::Network.new(attrs.merge(account_id: @account.id))
-            if network.save
-              render_success({ network: serialize_network_full(network) }, status: :created)
-            else
-              render_validation_error(network)
-            end
+            gate_create!(
+              candidate: ::Sdwan::Network.new(attrs.merge(account_id: @account.id)),
+              scope: ::Sdwan::Network.where(account_id: @account.id),
+              result_key: :network_id,
+              response_key: :network,
+              serializer: ->(n) { serialize_network_full(n) },
+              action_category: ::Sdwan::Executors::CreateNetwork::ACTION_CATEGORY,
+              executor_class: "Sdwan::Executors::CreateNetwork",
+              params: { attributes: attrs },
+              description: "Create SDWAN network '#{attrs['name']}'"
+            )
           end
 
           # IMP-c159cc6777b1: the update routes through Ai::AutonomyGate.
@@ -64,25 +80,24 @@ module Api
           def update
             require_permission("system.sdwan.networks.manage")
             attrs = network_params.to_h
-            # Validated before the gate so an unsaveable payload keeps its
-            # field-level 422 and opens no audit row for an operation that could
-            # never run. Never saved — UpdateNetwork's update! stays the only
-            # writer, and it takes the account from the operation.
-            @network.assign_attributes(attrs)
-            return render_validation_error(@network) unless @network.valid?
-
-            # Discard the un-gated in-memory changes: nothing may reach the row
-            # except through the executor.
-            @network.reload
-
-            gate!(
+            # The validate -> reload -> gate sequence (and why it is in that
+            # order) lives once in Ai::GatedActions#gate_update!.
+            #
+            # The name is read from the INCOMING attributes: the helper's
+            # arguments are evaluated before it assigns them, and it reloads the
+            # record besides, so `@network.name` here would be the pre-change
+            # value — which is what an approver used to be shown for a rename.
+            gate_update!(
+              record: @network,
+              attributes: attrs,
+              response_key: :network,
+              serializer: ->(n) { serialize_network_full(n) },
               action_category: ::Sdwan::Executors::UpdateNetwork::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::UpdateNetwork",
               params: { network_id: @network.id, attributes: attrs },
               source_type: "Sdwan::Network",
               source_id: @network.id,
-              description: "Update SDWAN network '#{@network.name}'",
-              on_proceed: ->(_r) { render_success(network: serialize_network_full(@network.reload)) }
+              description: "Update SDWAN network '#{attrs['name'].presence || @network.name}'"
             )
           end
 

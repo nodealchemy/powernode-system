@@ -139,9 +139,34 @@ module Api
 
         # POST /api/v1/system/package_repositories/:id/sync
         def sync
-          require_permission("system.package_repositories.sync")
-          unless @repository.account_id.nil? || @repository.account_id == @account.id
-            return render_error("Forbidden", status: :forbidden)
+          # IMP-c90ba4ec46da — `force` is not just a harder refresh: it switches
+          # OFF PackageRepositorySyncService#guard_obsoletion!, the fail-closed
+          # check that stops a broken or partially-fetched upstream from
+          # soft-deleting the whole catalog. `set_repository` loads through
+          # `accessible_to(@account)`, which deliberately admits every shared
+          # (account_id IS NULL) repo to every account, so a flat `sync` gate
+          # let the WEAKEST permission in the family point force:true at a
+          # canonical shared repo every tenant reads and obsolete an arbitrary
+          # fraction of it with the safety net off.
+          #
+          # The branch keys on BOTH `shared?` AND `force` on purpose: an
+          # unforced sync is a benign idempotent refresh that every tenant
+          # legitimately runs on a shared repo, so gating on `shared?` alone
+          # would break routine use. An account-scoped repo's owner MAY force —
+          # the blast radius is their own catalog and force is the documented
+          # recovery from a bad upstream.
+          #
+          # Shape (shared? -> manage_shared, else -> own-permission + account
+          # guard) copied from `destroy` above and `clean_stale_links` below.
+          force = ActiveModel::Type::Boolean.new.cast(params[:force]) || false
+
+          if @repository.shared?
+            require_permission(
+              force ? "system.package_repositories.manage_shared" : "system.package_repositories.sync"
+            )
+          else
+            require_permission("system.package_repositories.sync")
+            return render_error("Forbidden", status: :forbidden) if @repository.account_id != @account.id
           end
 
           # ASYNC: a full apt/rpm sync fetches + parses + upserts tens of
@@ -154,7 +179,7 @@ module Api
           # `force` re-writes every row + bypasses the fingerprint fast-path and
           # the mass-obsoletion guard — for a metadata refresh or overriding a
           # partial-upstream guard trip.
-          ::System::PackageRepositorySyncService.enqueue!(repository: @repository, force: params[:force])
+          ::System::PackageRepositorySyncService.enqueue!(repository: @repository, force: force)
           # NOTE: pass the payload via `data:` — render_success's own `status:`
           # kwarg is the HTTP status, so a top-level `status: "syncing"` would
           # be validated as an HTTP code and 500.
@@ -200,7 +225,26 @@ module Api
         # (cascade hits links, versions, module_artifacts). force defaults
         # to false — without force the call is treated as dry_run.
         def clean_stale_links
-          require_permission("system.package_repositories.delete")
+          # IMP-20318fb182b2 — this action DESTROYS the stale links and their
+          # auto-generated NodeModules (cascading to versions + module_artifacts),
+          # but `set_repository` loads through `accessible_to(@account)`, which
+          # deliberately admits every shared (account_id IS NULL) repo to every
+          # account. A flat `delete` gate therefore let a holder of plain
+          # `delete` in ANY account purge a canonical upstream repo shared by
+          # every tenant. (No seeded role grants `delete` without
+          # `manage_shared` — admin gets both — but a custom account role can
+          # grant exactly that pair, so the gate has to hold on its own.)
+          #
+          # Shape copied verbatim from `destroy` above — same discriminator,
+          # same account guard. `update`/`destroy` branch on `shared?` the same
+          # way; `create` branches on the REQUESTED visibility (no record yet)
+          # and link/unlink_platform go through `authorize_repo_mutation!`.
+          if @repository.shared?
+            require_permission("system.package_repositories.manage_shared")
+          else
+            require_permission("system.package_repositories.delete")
+            return render_error("Forbidden", status: :forbidden) if @repository.account_id != @account.id
+          end
 
           force   = ActiveModel::Type::Boolean.new.cast(params[:force])
           dry_run = ActiveModel::Type::Boolean.new.cast(params[:dry_run])
@@ -265,8 +309,14 @@ module Api
             require_permission("system.package_repositories.manage_shared")
           else
             require_permission("system.package_repositories.update")
+            # IMP-ce5d320d3e4e — RAISE, matching require_permission just above.
+            # This helper is called inline from link_platform/unlink_platform,
+            # so `render_error(...) and return` returned from HERE and the
+            # action ran on to write the link; the resulting DoubleRenderError
+            # was swallowed by ApiResponse's `unless performed?`, leaving the
+            # caller a clean 403 over a committed cross-tenant mutation.
             if @repository.account_id != @account.id
-              render_error("Forbidden", status: :forbidden) and return
+              raise ::Authentication::PermissionDenied, "Forbidden"
             end
           end
         end

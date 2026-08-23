@@ -54,12 +54,6 @@ RSpec.describe "Api::V1::System::Federation::ServiceSubscriptions", type: :reque
       body = JSON.parse(response.body)
       expect(body["data"]["subscriptions"].size).to eq(2)
     end
-
-    it "rejects without read permission" do
-      bare_user = create(:user, account: account)
-      get base_path, headers: auth_headers_for(bare_user)
-      expect(response).to have_http_status(:forbidden)
-    end
   end
 
   describe "GET /service_subscriptions/:id" do
@@ -108,12 +102,95 @@ RSpec.describe "Api::V1::System::Federation::ServiceSubscriptions", type: :reque
       post "#{base_path}/#{sub.id}/cancel", headers: headers
       expect(response).to have_http_status(:conflict)
     end
+  end
 
-    it "rejects without cancel permission" do
-      read_only_user = user_with_permissions("system.service_subscriptions.read", account: account)
-      post "#{base_path}/#{sub.id}/cancel",
-           headers: auth_headers_for(read_only_user).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:forbidden)
+  # IMP-563999967998 — the sibling of ServiceOfferingsController's bypass, and
+  # it is real: authorize_cancel! is a bare `render_error("Forbidden", ...)`
+  # with no return, called INLINE from #cancel, and #cancel then runs on to
+  # `@subscription.cancel!` (terminal? is true only for an already-cancelled
+  # row, so nothing else stopped it). So a caller without
+  # system.service_subscriptions.cancel got a 403 AND the subscription really
+  # was cancelled; the follow-up render_success raised DoubleRenderError, which
+  # ApiResponse swallows via `unless performed?`.
+  #
+  # These examples REPLACE two status-only ones ("rejects without read
+  # permission", "rejects without cancel permission") that passed with the bug
+  # live — the 403 IS rendered, so the status was never the defect.
+  describe "a refused caller (authorization must halt the action)" do
+    let(:no_cancel) { user_with_permissions("system.service_subscriptions.read", account: account) }
+    # NOT `create(:user, account:)` — the first user in an account gets the
+    # OWNER role; see the note in the offerings spec.
+    let(:no_read)   { user_without_permissions(account: account) }
+
+    def json_headers(user)
+      auth_headers_for(user).merge("Content-Type" => "application/json")
+    end
+
+    def sql_touching(table)
+      seen = []
+      collector = lambda do |*, payload|
+        sql = payload[:sql].to_s
+        seen << sql if sql.include?(table) && !sql.start_with?("SAVEPOINT", "RELEASE", "ROLLBACK")
+      end
+      ActiveSupport::Notifications.subscribed(collector, "sql.active_record") { yield }
+      seen
+    end
+
+    describe "POST /:id/cancel (authorize_cancel!)" do
+      let!(:sub) do
+        create(:system_federation_service_subscription, :active,
+                account: account, federation_peer: peer,
+                local_hostname: "git.alice.tld")
+      end
+
+      it "returns 403 AND does not cancel the subscription" do
+        post "#{base_path}/#{sub.id}/cancel",
+             params: { reason: "smuggled" }.to_json,
+             headers: json_headers(no_cancel)
+
+        expect(response).to have_http_status(:forbidden)
+        sub.reload
+        expect(sub.status).to eq("active")
+        expect(sub.cancelled_at).to be_nil
+        expect(sub.metadata["cancellation_reason"]).to be_nil
+      end
+    end
+
+    describe "GET /service_subscriptions (authorize_read!)" do
+      let!(:sub) do
+        create(:system_federation_service_subscription, :active,
+                account: account, federation_peer: peer,
+                local_hostname: "git.alice.tld")
+      end
+
+      # No row changes on a read path, so the absence-of-effect oracle is that
+      # the GUARDED WORK NEVER RUNS: #index has no before_action touching the
+      # subscriptions table, so any SELECT against it proves the action
+      # continued past the refusal. (#show is deliberately absent here: its
+      # set_subscription before_action legitimately reads the same table before
+      # authorize_read! runs, and serialize emits no further query, so that one
+      # call site has no runtime observable at all — the static guard in
+      # spec/integration/render_and_return_halt_idiom_spec.rb is its oracle.)
+      # POSITIVE CONTROL — pins the probe to reality; see the offerings spec.
+      it "the probe sees the listing query when the caller IS authorized" do
+        statements = sql_touching("system_federation_service_subscriptions") do
+          get base_path, headers: headers
+        end
+
+        expect(response).to have_http_status(:ok)
+        expect(statements).not_to be_empty
+      end
+
+      it "returns 403 AND never runs the guarded query" do
+        statements = sql_touching("system_federation_service_subscriptions") do
+          get base_path, headers: json_headers(no_read)
+        end
+
+        expect(response).to have_http_status(:forbidden)
+        expect(statements).to be_empty,
+                              "the action continued past the refusal and listed subscriptions anyway:\n" \
+                              "#{statements.join("\n")}"
+      end
     end
   end
 end

@@ -35,7 +35,7 @@
 module Sdwan
   module TopologyStrategies
     class FullMesh
-      DEFAULT_PERSISTENT_KEEPALIVE = 25
+      DEFAULT_PERSISTENT_KEEPALIVE = ::Sdwan::PeerEntry::DEFAULT_PERSISTENT_KEEPALIVE
 
       def initialize(network:, federation_prefixes: [])
         @network = network
@@ -92,8 +92,8 @@ module Sdwan
           # peer (not every public one) keeps AllowedIPs disjoint per interface.
           allowed += @federation_prefixes if @federation_egress_peer_id && other.id == @federation_egress_peer_id
 
-          build_peer_entry(other, key, allowed_ips: allowed.uniq,
-                                       keepalive: other.publicly_reachable ? DEFAULT_PERSISTENT_KEEPALIVE : nil)
+          ::Sdwan::PeerEntry.build(peer: other, key: key, allowed_ips: allowed.uniq,
+                                   keepalive: other.publicly_reachable ? DEFAULT_PERSISTENT_KEEPALIVE : nil)
         end
 
         peer_entries + user_device_entries
@@ -101,19 +101,11 @@ module Sdwan
 
       private
 
+      # Clients dial outbound, so a device entry carries no endpoint and no
+      # keepalive — the shape is Sdwan::PeerEntry.user_device's, shared with
+      # HubAndSpoke, which had a byte-identical copy of this literal.
       def user_device_entries
-        @user_devices.map do |dev|
-          {
-            peer_id: dev.id,
-            public_key: dev.public_key,
-            endpoint: nil,                          # clients connect outbound; mesh peers don't dial them
-            endpoint_family: nil,
-            fallback_endpoint: nil,
-            allowed_ips: [ dev.assigned_address ],
-            persistent_keepalive: nil,              # client-side handles its own keepalive
-            kind: "user_device"                     # hint for the agent + UI
-          }
-        end
+        @user_devices.map { |dev| ::Sdwan::PeerEntry.user_device(dev) }
       end
 
       # Returns [pod_subnet_prefix] when the network carries flannel pod
@@ -148,30 +140,6 @@ module Sdwan
             acc[peer_id] << vip.cidr
           end
         end
-      end
-
-      # Slice 7a: emits a single-Endpoint [Peer] entry (WireGuard's protocol
-      # accepts only one Endpoint per [Peer]) plus a fallback_endpoint hint
-      # that the agent uses when the primary's reachability fails. Identical
-      # to HubAndSpoke#build_peer_entry — the entry SHAPE is strategy-agnostic.
-      def build_peer_entry(peer, key, allowed_ips:, keepalive:)
-        primary = peer.primary_endpoint
-        fallback = peer.fallback_endpoint
-        {
-          peer_id: peer.id,
-          public_key: key.public_key,
-          # Consumed verbatim by the agent's `wg setconf` (state.go →
-          # wg_applier.go) — Peer.format_host_port brackets IPv6 literals.
-          endpoint: primary && Peer.format_host_port(primary[:host], primary[:port]),
-          endpoint_family: primary && primary[:family].to_s,
-          fallback_endpoint: fallback && {
-            host: fallback[:host],
-            port: fallback[:port],
-            family: fallback[:family].to_s
-          },
-          allowed_ips: allowed_ips,
-          persistent_keepalive: keepalive
-        }
       end
     end
   end

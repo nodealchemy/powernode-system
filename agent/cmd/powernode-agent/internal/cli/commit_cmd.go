@@ -179,11 +179,11 @@ func runCommitCapture(ctx context.Context, opts CommitOptions) (Result, error) {
 	}
 
 	meta := map[string]any{
-		"module_id":    opts.ModuleID,
-		"changelog":    opts.Changelog,
-		"timestamp":    timestamp,
-		"sha256":       digest,
-		"staged_path":  stagePath,
+		"module_id":   opts.ModuleID,
+		"changelog":   opts.Changelog,
+		"timestamp":   timestamp,
+		"sha256":      digest,
+		"staged_path": stagePath,
 	}
 	metaBody, _ := json.MarshalIndent(meta, "", "  ")
 	if err := os.WriteFile(metaPath, metaBody, 0o644); err != nil {

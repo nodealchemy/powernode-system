@@ -56,6 +56,29 @@ function envelope<T>(data: T) {
   return { data: { success: true, data } };
 }
 
+/**
+ * Contract oracle for IMP-c36e14401949.
+ *
+ * The backend "host:port" joiner (Sdwan::HostPort.join, in
+ * extensions/system/server/app/services/sdwan/host_port.rb) brackets the
+ * host whenever it contains a ":" and isn't already bracketed — that's the
+ * only shape an IPv6-literal host can honestly take in a joined
+ * "host:port" string, because otherwise the host/port boundary is
+ * unparseable (you can't tell where the address ends and the port begins).
+ * A fixture endpoint string with more than one ":" that does NOT start
+ * with "[" therefore models a shape the serializer can never emit.
+ *
+ * This pins the CONTRACT rather than a literal value, so it also catches
+ * the next unbracketed-IPv6 fixture, not just this one.
+ */
+function expectBracketedIfV6Literal(value: string | null | undefined) {
+  if (!value) return;
+  const colonCount = (value.match(/:/g) || []).length;
+  if (colonCount > 1) {
+    expect(value.startsWith('[')).toBe(true);
+  }
+}
+
 // =============================================================================
 // Fixtures
 // =============================================================================
@@ -85,7 +108,7 @@ const HUB_PEER: SdwanPeer = {
   endpoint_port: 51820,
   listen_port: 51820,
   status: 'active',
-  effective_endpoint: '2001:db8::1:51820',
+  effective_endpoint: '[2001:db8::1]:51820',
   effective_endpoint_family: 'v6',
   fallback_endpoint: '203.0.113.10:51820',
 };
@@ -245,7 +268,7 @@ describe('PeerEditModal', () => {
 
   it('shows effective_endpoint when present on the peer', () => {
     renderModal({ peer: HUB_PEER });
-    expect(screen.getByText(/2001:db8::1:51820/)).toBeInTheDocument();
+    expect(screen.getByText(/\[2001:db8::1\]:51820/)).toBeInTheDocument();
   });
 
   it('shows effective_endpoint_family badge when present', () => {
@@ -262,6 +285,11 @@ describe('PeerEditModal', () => {
     renderModal({ peer: SPOKE_PEER });
     // SPOKE_PEER has no effective_endpoint
     expect(screen.queryByText(/Currently using/)).not.toBeInTheDocument();
+  });
+
+  it('fixture effective_endpoint/fallback_endpoint are shapes the serializer can actually emit (IMP-c36e14401949)', () => {
+    expectBracketedIfV6Literal(HUB_PEER.effective_endpoint);
+    expectBracketedIfV6Literal(HUB_PEER.fallback_endpoint);
   });
 
   // ──── Legacy endpoint_host back-compat ───────────────────────────────────

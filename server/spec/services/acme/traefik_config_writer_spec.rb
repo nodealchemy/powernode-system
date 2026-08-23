@@ -466,6 +466,64 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         expect(File.read(own)).to include("OURCA")
         expect(File.read(own)).not_to include("PEERCA")
       end
+
+      # IMP-01a02b0c — anchors are identified by SHA-256 fingerprint, never by
+      # subject DN and never by raw string equality.
+      context "anchor identity" do
+        def build_root(cn)
+          key  = OpenSSL::PKey.generate_key("ED25519")
+          cert = OpenSSL::X509::Certificate.new
+          cert.version    = 2
+          cert.serial     = 1
+          cert.not_before = Time.now - 3600
+          cert.not_after  = Time.now + (365 * 24 * 3600)
+          cert.subject    = OpenSSL::X509::Name.parse("/CN=#{cn}")
+          cert.issuer     = cert.subject
+          cert.public_key = key
+          ef = OpenSSL::X509::ExtensionFactory.new(cert, cert)
+          cert.add_extension(ef.create_extension("basicConstraints", "CA:TRUE", true))
+          cert.sign(key, nil)
+          cert
+        end
+
+        def peer_with_ca!(pem)
+          create(:system_federation_peer, :active, account: account).tap do |p|
+            p.update_columns(inbound_subject: "fed:#{p.id}", trusted_ca_pem: pem)
+          end
+        end
+
+        # FederationPeer.trusted_ca_pems .uniq's on the exact STRING, and a
+        # hierarchical child's trusted_ca_pem IS our own root — so our anchor
+        # arrived twice, differing only in trailing whitespace.
+        it "writes one copy of an anchor that arrives twice in different textual forms" do
+          ours = build_root("Powernode Internal CA ops-hub.example.test")
+          allow(::System::InternalCaService).to receive(:ca_chain_pem).and_return(ours.to_pem)
+          peer_with_ca!("#{ours.to_pem.strip}\n\n")
+
+          bundle = File.read(described_class.write_client_auth_bundle!(ca_dir: tmp_ca_dir))
+
+          expect(bundle.scan(/-----BEGIN CERTIFICATE-----/).size).to eq(1)
+          expect(described_class.client_auth_bundle_fingerprints(ca_dir: tmp_ca_dir))
+            .to eq([ ::Security::CaFingerprint.of(ours) ])
+        end
+
+        # The hazard on the other side: deduping by NAME would drop a real
+        # peer's CA, because every hub provisioned before hub-specific
+        # subjects presents "/CN=Powernode Internal CA (local-dev)".
+        it "KEEPS both anchors when two different CAs share a subject DN" do
+          ours = build_root("Powernode Internal CA (local-dev)")
+          theirs = build_root("Powernode Internal CA (local-dev)")
+          expect(ours.subject.to_s).to eq(theirs.subject.to_s)
+          allow(::System::InternalCaService).to receive(:ca_chain_pem).and_return(ours.to_pem)
+          peer_with_ca!(theirs.to_pem)
+
+          described_class.write_client_auth_bundle!(ca_dir: tmp_ca_dir)
+
+          expect(described_class.client_auth_bundle_fingerprints(ca_dir: tmp_ca_dir))
+            .to contain_exactly(::Security::CaFingerprint.of(ours),
+                                ::Security::CaFingerprint.of(theirs))
+        end
+      end
     end
 
     describe "per-cert node-api router" do

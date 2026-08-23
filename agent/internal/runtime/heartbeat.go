@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/probe"
 	"github.com/nodealchemy/powernode-system/agent/internal/sdwan"
 	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
@@ -30,6 +31,28 @@ type HeartbeatPayload struct {
 	LoadAverage   string                  `json:"load_average,omitempty"`
 	MemoryFreeKB  int64                   `json:"memory_free_kb,omitempty"`
 	SdwanState    []sdwan.HeartbeatStatus `json:"sdwan_state,omitempty"`
+	// SdwanOvnState is the most recent OVN NB plan replay observation
+	// (IMP-57e9a90598ee). Top-level rather than nested in SdwanState
+	// because the NB replay is host-scoped, not per-network. nil — and
+	// omitted from the wire — means NOT MEASURED: this host has never
+	// replayed an NB plan this boot (lightweight profile, no servable
+	// deployment, or the OVN subsystem's precondition is absent). The
+	// platform's Sdwan::Ovn::DeploymentReconciler consumes it to drive
+	// the OvnDeployment lifecycle (degraded/readopt), so absence must
+	// never be synthesized into an empty-but-present block.
+	SdwanOvnState *sdwan.ObservedOvnNbState `json:"sdwan_ovn_state,omitempty"`
+	// ModuleVerifyState is the result of running each attached module's
+	// manifest-declared `verify:` probes (IMP-3855ff9908f2). nil — and
+	// omitted from the wire — means NOT MEASURED: no module on this node
+	// declares a probe, or the probe runner has not completed a pass yet.
+	// The platform's System::ModuleVerifyStateWriter must never synthesize
+	// an absent block into an empty-but-present one, because "nothing to
+	// verify" and "verified, nothing wrong" are different facts.
+	//
+	// Per-shell FACTS only, never a roll-up: the server derives the verdict,
+	// so a report covering one shell can never be mistaken for a pass. See
+	// internal/probe.
+	ModuleVerifyState []probe.ModuleReport `json:"module_verify_state,omitempty"`
 	// Capabilities is the agent-detected kernel capability set
 	// (erofs, overlayfs, fs-verity). The server records this on every
 	// heartbeat for fleet introspection ("which nodes can mount

@@ -148,6 +148,43 @@ module System
           { success: errors.empty?, errors: errors }
         end
 
+        # IMP-5eb14352370a — what #run_execute had created at the moment it
+        # stopped, for a caller that received a bare `failure(message)`.
+        #
+        # #run_execute guards each LEG (a failed provision/enroll/attach pushes
+        # to `failures` and continues), but an unguarded raise anywhere else —
+        # `create_node!` hitting RecordInvalid on target 3 of 3 is the recorded
+        # shape — escapes the method entirely. BaseSkillExecutor#execute turns
+        # that into `failure(e.message)`, which carries no `:data`, so the
+        # nodes, instances, volumes and peers this run had ALREADY created
+        # become unreachable: rollback kwargs are read off the envelope, and
+        # the envelope has none of them. They are live and billing regardless.
+        #
+        # Scope is structural, not a filter: one executor instance serves one
+        # #execute call, so this can only ever hold THIS call's own creations —
+        # never a sibling step's, never a prior run's.
+        #
+        # Returns copies; a caller cannot mutate the run through it. Empty
+        # before a run and after a dry_run (which creates nothing).
+        #
+        # `public` is stated rather than inherited from position:
+        # RelocateWorkloadExecutor#provision_target! calls this cross-class, and
+        # a method inserted below the `protected` marker and later moved above
+        # it would otherwise flip this to protected silently.
+        public def in_flight_progress
+          progress = @in_flight_progress || {}
+          outputs  = progress[:outputs] || {}
+          {
+            planned_actions: Array(progress[:planned_actions]).dup,
+            outputs: {
+              node_ids: Array(outputs[:node_ids]).dup,
+              node_instance_ids: Array(outputs[:node_instance_ids]).dup,
+              sdwan_peer_ids: Array(outputs[:sdwan_peer_ids]).dup,
+              storage_volume_ids: Array(outputs[:storage_volume_ids]).dup
+            }
+          }
+        end
+
         protected
 
         # `**_extras` swallows context kwargs that PlanComposerService injects
@@ -156,6 +193,15 @@ module System
         def perform(template_id:, count:, provider_region_id:, provider_instance_type_id:,
                     network_id: nil, with_storage_gb: nil, storage_gb: nil, dry_run: false,
                     name_prefix: nil, mission_id: nil, **_extras)
+          # IMP-5eb14352370a — clear FIRST, so #in_flight_progress can never
+          # report a PRIOR run's live ids to a caller whose second #execute
+          # returns early (bad count, an unresolvable id, dry_run) and so never
+          # reaches #run_execute. Every composer today builds a fresh inner per
+          # call, but "one instance, one execute" is a caller convention, not an
+          # invariant — and the failure mode it would produce is a rollback
+          # acting on resources this call did not create.
+          @in_flight_progress = nil
+
           count = count.to_i
           return failure("count must be between 1 and #{MAX_COUNT}") unless count.between?(1, MAX_COUNT)
 
@@ -210,6 +256,20 @@ module System
           failures = []
           planned_actions = []
 
+          # IMP-5eb14352370a — publish LIVE references to the accumulators, so
+          # #in_flight_progress can report what this run had created if an
+          # unguarded raise escapes before the success envelope is built.
+          #
+          # ALIASING, deliberately: every write below is IN PLACE (`<<`, and
+          # `.delete` in #reclaim_unattachable_volume!). Never REASSIGN one of
+          # these locals — the published view would silently stop tracking the
+          # run and a caller would read a truncated id set as complete.
+          @in_flight_progress = {
+            planned_actions: planned_actions,
+            outputs: { node_ids: node_ids, node_instance_ids: node_instance_ids,
+                       sdwan_peer_ids: sdwan_peer_ids, storage_volume_ids: storage_volume_ids }
+          }
+
           count.times do |i|
             node = create_node!(template: template, index: i,
                                 name_prefix: name_prefix, mission_id: mission_id)
@@ -239,9 +299,12 @@ module System
             # "scale-out produced a peer" oracle passed vacuously. Enroll
             # per instance instead, and guard it like every other leg —
             # push to `failures` and continue, so a raise can't take out the
-            # step (the runner's rollback reads metadata["last_outputs"],
-            # only written by mark_completed, and would orphan the VMs and
-            # volumes this loop already created).
+            # step and orphan the VMs and volumes this loop already created.
+            # (IMP-2182fd8fcdee: rollback_step! now also reads
+            # metadata["failure_outputs"], not just the mark_completed-written
+            # "last_outputs" — but an escaping raise is turned into a bare
+            # failure(e.message) by BaseSkillExecutor#execute, which carries no
+            # ids, so guarding the leg here is still what protects them.)
             if network
               begin
                 peer = ::Sdwan::PeerEnroller.call(network: network, node_instance: instance)
@@ -305,23 +368,40 @@ module System
                 planned_actions << { step: "attach_volume", instance_id: instance.id,
                                      volume_id: volume.id, device: att_result.data[:device] }
               else
-                # Recorded LOUDLY, because nothing reclaims this volume on its
-                # own. The step still returns success — one failed attach must
-                # not terminate a whole provisioned fleet — so the runner marks
-                # it completed and never dispatches the rollback hook that
-                # holds these ids (SkillCompositionRunner#rollback_step! is
-                # reachable only from handle_failure). Its FK is nil, so
-                # scale-in cannot see it either. What surfaces it is the
-                # envelope: `partial` plus this recorded failure, which
-                # VerificationService grades as a failing step_N_failures
-                # check. Silence here is the failure mode this guard exists
-                # to end.
+                # IMP-0d9e7ca7b166 — recorded loudly AND reclaimed, because
+                # nothing downstream can reach this volume. Its FK is nil, and
+                # that FK is how both the scale-in teardown
+                # (ScaleProjectExecutor#victim_volumes) and its orphan sweep
+                # find a victim's volumes. This executor's own rollback DOES
+                # hold the id, but it is dispatched by
+                # SkillCompositionRunner#rollback_step!, reachable only from
+                # handle_failure — and this step deliberately returns SUCCESS
+                # so one bad attach cannot terminate a whole provisioned fleet.
+                # So the rollback never runs and the volume billed forever.
+                # In-branch reclaim is the only path left, which is what
+                # RelocateWorkloadExecutor#refuse_blue_green_cutover! concluded
+                # for the same structural reason.
+                #
+                # The envelope stays loud either way: `partial` plus the
+                # recorded failure is what VerificationService grades.
                 failures << { step: "attach_volume", node_id: node.id, instance_id: instance.id,
                               volume_id: volume.id, error: att_result.error }
+                reclaim_unattachable_volume!(volume: volume, node: node, instance: instance,
+                                             failures: failures,
+                                             storage_volume_ids: storage_volume_ids,
+                                             planned_actions: planned_actions)
               end
             rescue StandardError => e
               failures << { step: "attach_volume", node_id: node.id, instance_id: instance.id,
                             volume_id: volume.id, error: e.message }
+              # Same reclaim on the raise path. attach re-raises ArgumentError
+              # and VolumeError (no free device paths), and a volume orphaned by
+              # a raise is exactly as unreachable as one orphaned by an error
+              # return — guarding only the `else` would fix half the defect.
+              reclaim_unattachable_volume!(volume: volume, node: node, instance: instance,
+                                           failures: failures,
+                                           storage_volume_ids: storage_volume_ids,
+                                           planned_actions: planned_actions)
             end
           end
 
@@ -345,6 +425,60 @@ module System
         # instance names derive from the node's, so the prefix reaches the
         # substrate. mission_id lands in node.config so created nodes and
         # their instances are provenance-queryable regardless of naming.
+        # IMP-0d9e7ca7b166 — delete a volume this step provisioned but could
+        # not attach, and stop advertising it as provisioned storage.
+        #
+        # Why delete rather than leave it for a human: a volume with a nil
+        # node_instance_id is not merely untidy, it is UNREACHABLE. Every
+        # reclaim path keys on that FK, and the one path that holds the raw id
+        # (this executor's rollback) is never dispatched for a step that
+        # returns success. Leaving the row means it bills indefinitely with no
+        # surface that can find it.
+        #
+        # No detach first: the attach is what failed, so the volume is not
+        # attached — but `attached?` is still checked, because a partially
+        # applied attach is exactly the case where the naive assumption is
+        # wrong, and VolumeManagementService#delete refuses an attached volume
+        # outright rather than silently.
+        #
+        # A failed reclaim is recorded as its own `reclaim_volume` failure and
+        # the id is KEPT in storage_volume_ids. That is deliberate: if the row
+        # survives, the envelope must still name it, or this guard would just
+        # move the leak behind a quieter layer.
+        def reclaim_unattachable_volume!(volume:, node:, instance:, failures:, storage_volume_ids:,
+                                         planned_actions:)
+          if volume.attached?
+            detach = ::System::VolumeManagementService.detach(volume: volume)
+            unless detach.success?
+              failures << { step: "reclaim_volume", node_id: node.id, instance_id: instance.id,
+                            volume_id: volume.id, error: detach.error }
+              return false
+            end
+          end
+
+          result = ::System::VolumeManagementService.delete(volume: volume)
+          if result.success?
+            storage_volume_ids.delete(volume.id)
+            # Recorded as its own action. A SILENT reclaim is its own problem:
+            # the envelope would show a volume provisioned, an attach failed,
+            # and no trace of what became of the volume — and any wrapper that
+            # reports what IT reclaimed (RelocateWorkloadExecutor's blue_green
+            # refusal) now legitimately finds nothing left to reclaim, so this
+            # is the only place the reclaim is observable.
+            planned_actions << { step: "reclaim_volume", instance_id: instance.id,
+                                 volume_id: volume.id }
+            true
+          else
+            failures << { step: "reclaim_volume", node_id: node.id, instance_id: instance.id,
+                          volume_id: volume.id, error: result.error }
+            false
+          end
+        rescue StandardError => e
+          failures << { step: "reclaim_volume", node_id: node.id, instance_id: instance.id,
+                        volume_id: volume.id, error: e.message }
+          false
+        end
+
         def create_node!(template:, index:, name_prefix: nil, mission_id: nil)
           base = [ name_prefix.presence, template.name.parameterize ].compact.join("-")
           node_name = "#{base}-#{index + 1}-#{SecureRandom.hex(3)}"
@@ -452,8 +586,17 @@ module System
         # no refusal clause anywhere in the run. A second copy of the
         # expression would be the same divergence one refactor later, so the
         # resolution lives here with the order it has to agree with.
+        #
+        # IMP-b439270dab0d — the ORDER now lives in Shared::StorageSizeResolution
+        # (core). Three of the four surfaces that read it are core, and core
+        # cannot depend on an extension: beyond the invariant, core mode runs
+        # with no system extension loaded, so a core caller reaching for this
+        # class would be a NameError on every install without it. This keeps its
+        # name and its callers and delegates, so there is still exactly one
+        # order — the shape Shared::SdwanNetworkResolution already uses for the
+        # fabric declaration.
         def self.resolve_storage_gb(with_storage_gb, storage_gb = nil)
-          [ with_storage_gb, storage_gb ].find(&:present?)
+          ::Shared::StorageSizeResolution.resolve(with_storage_gb, storage_gb)
         end
 
         def storage_requested?(with_storage_gb)

@@ -265,6 +265,16 @@ install() {
     inst_simple "${moddir}/powernode-veth.conf" \
         /etc/modules-load.d/powernode-veth.conf
 
+    # wireguard + vrf + dummy — the SDWAN data plane's netdev types (WG
+    # tunnel, per-network VRF, VIP anchor). Same force-included-but-never-
+    # explicitly-loaded gap as the families above, hitting the agent's
+    # post-pivot SDWAN appliers instead of dockerd: every `ip link add`
+    # of these types failed "Unknown device type" and the SDWAN overlay
+    # could never come up. See powernode-sdwan.conf for the full incident
+    # writeup.
+    inst_simple "${moddir}/powernode-sdwan.conf" \
+        /etc/modules-load.d/powernode-sdwan.conf
+
     # Cosign trust root + Sigstore Fulcio root.
     # Pinned per-build via $POWERNODE_FULCIO_ROOT env. Default to the
     # public Sigstore root if not set; production should always pin.

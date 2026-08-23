@@ -7,9 +7,9 @@
 //
 // # Key types
 //
-//   Mtls                 — wraps tls.Config for the platform connection
-//   PinnedCABundle       — operator-pinned CA cert(s); rejects unknown CAs
-//   RetryClient          — exponential backoff for transient failures (5xx, network)
+//	Mtls                 — wraps tls.Config for the platform connection
+//	PinnedCABundle       — operator-pinned CA cert(s); rejects unknown CAs
+//	RetryClient          — exponential backoff for transient failures (5xx, network)
 //
 // # Endpoint contract
 //

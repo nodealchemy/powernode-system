@@ -16,7 +16,26 @@
 #       address: "fd...:.../128",
 #       listen_port: 51820,
 #       mtu: 1420,
-#       private_key_ref: { peer_key_id: "<uuid>" }   # agent fetches via key_distributor
+#       private_key_ref: { peer_key_id: "<uuid>" },  # identifies the active Key
+#                                                     # row; not a fetch handle —
+#                                                     # KeyDistributor only
+#                                                     # generates and rotates
+#                                                     # keys, it exposes no way
+#                                                     # to read one back.
+#       private_key: "<base64>"  # present only when this compiler is invoked
+#                                 # with include_private_key: true — the
+#                                 # node-API path (node_api/sdwan_controller)
+#                                 # passes it explicitly; the operator-facing
+#                                 # topology endpoint never does.
+#                                 # Inlining the key here is currently the ONLY
+#                                 # way the agent obtains it — see manager.go's
+#                                 # privateKeyFor, which hard-errors if this is
+#                                 # absent. A separate short-TTL
+#                                 # /node_api/sdwan/keys endpoint is discussed
+#                                 # there as a future hardening step, but it is
+#                                 # UNBUILT; scheduling that split is the
+#                                 # operator's call, not something callers
+#                                 # should assume already exists.
 #     },
 #     peers: [
 #       {
@@ -125,13 +144,21 @@ module Sdwan
     # ovn-controller daemon connects to the deployment's SB DB; this
     # returns the endpoints it needs (plus the NB endpoint for operator
     # tooling). Returns nil for lightweight hosts or accounts with no
-    # active OVN deployment — the agent treats nil as "OVN not enabled,
+    # servable OVN deployment — the agent treats nil as "OVN not enabled,
     # skip the OVN reconcile step".
     def self.ovn_control_for(instance)
       return nil unless instance.network_profile == "heavyweight"
 
+      # Servable = bootstrapping | active | degraded (IMP-57e9a90598ee). The
+      # previous active-only gate structurally prevented its own opener:
+      # activation requires an observation, observations come only from a
+      # served chassis, and nothing was served until active. Bootstrapping
+      # is by definition "agents are bringing daemons up" — they need this
+      # payload to do that — and degraded stays served because recovery
+      # evidence has the same sole source.
       deployment = ::Sdwan::OvnDeployment
-                     .where(account_id: instance.account_id, status: "active")
+                     .where(account_id: instance.account_id,
+                            status: ::Sdwan::OvnDeployment::SERVABLE_STATUSES)
                      .first
       return nil unless deployment
 
@@ -172,8 +199,9 @@ module Sdwan
     # whenever the plan is non-empty.
     #
     # Gating mirrors ovn_control_for exactly: only heavyweight hosts
-    # whose account has an active OvnDeployment get a plan. Returns nil
-    # otherwise (agent treats nil as "no OVN logical topology to apply").
+    # whose account has a servable (bootstrapping/active/degraded)
+    # OvnDeployment get a plan. Returns nil otherwise (agent treats nil
+    # as "no OVN logical topology to apply").
     #
     # The plan is served to EVERY heavyweight host (not just a single
     # control host). `northd_host` on the deployment is explicitly an
@@ -187,8 +215,10 @@ module Sdwan
     def self.ovn_nb_plan_for(instance)
       return nil unless instance.network_profile == "heavyweight"
 
+      # Same servable gate as ovn_control_for — see the comment there.
       deployment = ::Sdwan::OvnDeployment
-                     .where(account_id: instance.account_id, status: "active")
+                     .where(account_id: instance.account_id,
+                            status: ::Sdwan::OvnDeployment::SERVABLE_STATUSES)
                      .first
       return nil unless deployment
 

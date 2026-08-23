@@ -248,7 +248,7 @@ module System
         # upstream package version drift → package_repository.sync gate.
         ::System::Fleet::Sensors::PackageDriftSensor,
         # SDWAN membership-credential expiry + stalled-refresh watch
-        # → sdwan_key_rotate gate / observation.
+        # → sdwan_credential_refresh gate / observation.
         ::System::Fleet::Sensors::SdwanCredentialExpirySensor,
         # Storage assignments stuck pending/degraded/failed
         # → storage_assignment_reconcile gate.
@@ -272,7 +272,43 @@ module System
         # system.sdwan_service_silent / system.sdwan_portmap_orphaned →
         # system.sdwan_service_health_investigate (notify-level; no
         # auto-remediation until the signal quality is proven).
-        ::System::Fleet::Sensors::SdwanServiceHealthSensor
+        ::System::Fleet::Sensors::SdwanServiceHealthSensor,
+        # IMP-57e9a90598ee — visibility for the OVN activation lane. The
+        # DeploymentReconciler transitions Sdwan::OvnDeployment at heartbeat
+        # ingest (where the observations are); this sensor surfaces the
+        # resulting degraded / stalled states on the tick. Notify-only →
+        # system.sdwan_ovn_deployment_investigate (no applier by design:
+        # the failing component is OVN control infrastructure the platform
+        # does not provision).
+        ::System::Fleet::Sensors::SdwanOvnDeploymentHealthSensor,
+        # IMP-da1b772c2596 — the SDWAN APPLY oracle. Every other sdwan_*
+        # sensor scores the platform's own work (compiled, served,
+        # handshook); this one reads the agent's observed per-subsystem
+        # APPLY outcome, which nothing on the server consumed until now — a
+        # node whose nftables/vrf/bridge apply failed on every tick was
+        # indistinguishable from one that applied cleanly. Emits
+        # system.sdwan_apply_failed / system.sdwan_apply_not_measured →
+        # system.sdwan_apply_investigate (notify-level; no applier exists,
+        # because the agent already retries the apply every tick).
+        ::System::Fleet::Sensors::SdwanApplyHealthSensor,
+        # IMP-7034199a5a19 — the POST-ISSUE half of user-device config
+        # correctness. WgConfigRenderer gets AllowedIPs right at download
+        # time; a user device never re-pulls, so every VIP / lan_subnet /
+        # federation prefix added afterwards is absent from every config
+        # already in the field. Emits system.sdwan_user_device_config_stale →
+        # system.sdwan_user_device_config_investigate (notify-only; the
+        # drifted file lives on a laptop the platform cannot reach).
+        ::System::Fleet::Sensors::SdwanUserDeviceConfigStalenessSensor,
+        # IMP-3855ff9908f2 — the `verify:` probe oracle. ModuleDriftSensor
+        # scores digests and ModulePromotionSensor scores publication; neither
+        # can say whether the capability a module exists to provide is
+        # REACHABLE on the node afterwards. The agent answers that from the
+        # manifest's verify: block on every heartbeat. Emits
+        # system.module_verify_failed / system.module_verify_not_measured ->
+        # system.module_verify_investigate (notify-only; no applier exists,
+        # because re-serving the same artifact cannot change what the node
+        # resolved — the gitleaks v4 empty-artifact incident is the proof).
+        ::System::Fleet::Sensors::ModuleVerifyFailedSensor
       ].freeze
 
       def permitted_actions
@@ -326,8 +362,22 @@ module System
       # human to act, rather than resolving on a fleet tick's timescale: the
       # per-module consent budget is not consumed (below), and an operator's
       # decision on the request is durable (create_pending_approval).
+      # DECLARED SUPPRESSION CAUSES (IMP-fec9abb225c6).
+      #
+      # #create_pending_approval returns nil down four different paths, and from
+      # the outside every one of them looks identical: decision: :pending with no
+      # decision_record. A caller that has to ACT on the difference — the
+      # adaptation lane raises an operator alarm on it — was left inferring, and
+      # inferred wrong: it reported an operator's own rejection as a missing
+      # policy. The cause is now stated rather than guessed.
+      SUPPRESSION_REJECTION_COOLDOWN = "rejection_cooldown"
+      SUPPRESSION_SETTLED_ADVISORY   = "settled_advisory"
+      SUPPRESSION_NO_REQUEST_STORE   = "no_chain_or_request_store"
+
       def gate_action!(action_category, metadata: {}, reasoning: {}, temporal_context: {},
                        force_policy: nil, advisory: false)
+        @suppression = nil
+
         unless permitted_actions.include?(action_category)
           Rails.logger.warn("[FleetAutonomy] Action '#{action_category}' not in agent '#{agent.name}' policies — blocked")
           return { decision: :blocked, reason: "not_permitted" }
@@ -358,7 +408,8 @@ module System
               temporal_context: temporal_context
             )
             return { decision: :pending, gate: "consent_budget_exhausted",
-                     decision_record: request, budget_reason: consent.reason }
+                     decision_record: request, budget_reason: consent.reason,
+                     suppression: @suppression }
           end
         end
 
@@ -382,12 +433,86 @@ module System
             temporal_context: temporal_context,
             advisory: advisory
           )
-          { decision: :pending, gate: "require_approval", decision_record: request }
+          # `suppression` is nil whenever a request was actually minted; it names
+          # WHY not when one wasn't.
+          { decision: :pending, gate: "require_approval", decision_record: request,
+            suppression: @suppression }
         when "block", "silent"
           { decision: :blocked, gate: result[:policy] }
         else
           { decision: :blocked, gate: "unknown_policy" }
         end
+      end
+
+      # IMP-01a025b3: is there already a live operator obligation for exactly
+      # the request #gate_action! would mint for this (action_category, metadata)?
+      #
+      # "Open" means "re-gating would produce no NEW operator-facing artifact",
+      # and it mirrors #create_pending_approval's three suppression arms
+      # one-for-one, read straight off the DATABASE (never Rails.cache — the hub
+      # runs CACHE_STORE=memory_store, which is per-Puma-process and flushes on
+      # restart, so the cache can only ever be an optimization here, never the
+      # correctness mechanism):
+      #
+      #   1. a PENDING request on the same dedup key — the gate would find that
+      #      row and merely update it in place;
+      #   2. a request on that key REJECTED inside #decision_ttl_for's cooldown;
+      #   3. ANY request in the same action_category rejected inside that
+      #      cooldown — the gate's action-level fallback, which suppresses
+      #      regardless of dedup key. Omitting this arm left the caller
+      #      escalating (and consuming consent budget) into a window where the
+      #      gate mints nothing, which is the exact drain this exists to stop.
+      #
+      # Everything else is NOT open, deliberately: approved, expired, cancelled,
+      # and rejected-past-cooldown all re-mint, so a caller that suppresses on
+      # this predicate re-alerts the next time the condition is seen. The
+      # failure mode being avoided in that direction is a lane that alerts once
+      # and then goes silent forever, which is worse than the noise.
+      #
+      # An unattended PENDING request is normally self-limiting: it carries
+      # expires_at (the chain's timeout_hours — 4h on the seeded fleet chain),
+      # and #expire_stale_approvals! at tick start fires timeout_action
+      # ("reject"), moving it into arm 2 and then out of it. That is a property
+      # of the CHAIN, not of the schema: timeout_hours is nullable with no
+      # default, and Ai::ApprovalChain#create_request! leaves expires_at NULL
+      # when it is blank. Both expiry sweeps filter on `expires_at < ?`, which
+      # NULL never satisfies, so a fleet chain configured without a timeout
+      # suppresses this lane for as long as the request sits unanswered.
+      #
+      # Resolution is via #dedup_key_for so the row inspected here is EXACTLY
+      # the row the gate would act on — a divergent key would silence on one
+      # identity while minting on another. Two known divergences, both
+      # unreachable today and both stated rather than assumed: the advisory
+      # settled-request arm (#settled_advisory_request) is not modeled — no
+      # advisory binding can reach a stuck streak, since advisory outcomes are
+      # never recorded — and the dedup key is COARSER than a fingerprint for
+      # actions keyed on module/template identity, so one open request stands
+      # for every fingerprint sharing that key.
+      #
+      # Fails OPEN (false) on any error: a broken query must never be able to
+      # suppress an operator alert. Logged at error level because that
+      # fail-open silently restores the incident this predicate prevents.
+      def open_operator_request?(action_category, metadata: {})
+        return false unless defined?(::Ai::ApprovalRequest)
+
+        if (key = dedup_key_for(action_category, metadata))
+          name, value = key
+          return true if pending_fleet_approvals
+            .where("request_data->>'action_category' = ?", action_category)
+            .where("request_data->'payload'->>? = ?", name, value)
+            .exists?
+
+          return true if recently_rejected_approval?(action_category,
+              [ "request_data->>'action_category' = ? AND request_data->'payload'->>? = ?",
+               action_category, name, value ])
+        end
+
+        recently_rejected_approval?(action_category,
+          [ "request_data->>'action_category' = ?", action_category ])
+      rescue StandardError => e
+        Rails.logger.error("[FleetAutonomy] open-request check failed for #{action_category} " \
+                           "(failing open — escalation will re-fire): #{e.class}: #{e.message}")
+        false
       end
 
       def policy_for(action_category)
@@ -457,10 +582,13 @@ module System
         when "system.federation_peer_remediate"
           key_value(metadata, "federation_peer_id")
         # Slice 5 of the SDWAN plan: per-peer dedup for remediation/rotation/
-        # failover; per-device for revocation. Without these, repeat sensor
-        # firings would queue duplicate ApprovalRequests every tick.
+        # failover — and (IMP-df40782d3f4d) credential refresh, whose sensor
+        # re-fires each tick while an MC sits in the expiry window; per-device
+        # for revocation. Without these, repeat sensor firings would queue
+        # duplicate ApprovalRequests every tick.
         when "system.sdwan_peer_remediate",
              "system.sdwan_key_rotate",
+             "system.sdwan_credential_refresh",
              "system.sdwan_failover"
           key_value(metadata, "peer_id") || key_value(metadata, "network_id")
         when "system.sdwan_user_device_revoke"
@@ -472,8 +600,6 @@ module System
           key_value(metadata, "neighbor_address") || key_value(metadata, "peer_id")
         when "system.sdwan_vip_failover"
           key_value(metadata, "virtual_ip_id")
-        when "system.sdwan_route_policy_audit"
-          key_value(metadata, "route_policy_id")
         # M2 of the AI-driven provisioning conversation. Project-scoped
         # actions dedup on `mission_id` (the project identifier) so that
         # repeat sensor firings for the same breaching mission collapse
@@ -516,7 +642,12 @@ module System
       end
 
       def create_pending_approval(action_category:, metadata:, reasoning:, temporal_context:, advisory: false)
-        return nil unless defined?(::Ai::ApprovalRequest)
+        @suppression = nil
+
+        unless defined?(::Ai::ApprovalRequest)
+          @suppression = SUPPRESSION_NO_REQUEST_STORE
+          return nil
+        end
 
         request_data = {
           "action_category" => action_category,
@@ -542,6 +673,7 @@ module System
           if advisory && (settled = settled_advisory_request(action_category, name, value))
             Rails.logger.info("[FleetAutonomy] Skipped advisory #{action_category} for #{name}=#{value} — " \
                               "already #{settled.status} (durable operator decision)")
+            @suppression = SUPPRESSION_SETTLED_ADVISORY
             return nil
           end
 
@@ -559,6 +691,7 @@ module System
               [ "request_data->>'action_category' = ? AND request_data->'payload'->>? = ?",
                action_category, name, value ])
             Rails.logger.info("[FleetAutonomy] Skipped #{action_category} for #{name}=#{value} — rejected within cooldown")
+            @suppression = SUPPRESSION_REJECTION_COOLDOWN
             return nil
           end
         end
@@ -567,11 +700,15 @@ module System
         if recently_rejected_approval?(action_category,
             [ "request_data->>'action_category' = ?", action_category ])
           Rails.logger.info("[FleetAutonomy] Skipped #{action_category} — rejected within cooldown")
+          @suppression = SUPPRESSION_REJECTION_COOLDOWN
           return nil
         end
 
         chain = fleet_approval_chain
-        return nil unless chain
+        unless chain
+          @suppression = SUPPRESSION_NO_REQUEST_STORE
+          return nil
+        end
 
         request = chain.create_request!(
           source_type: SOURCE_TYPE,

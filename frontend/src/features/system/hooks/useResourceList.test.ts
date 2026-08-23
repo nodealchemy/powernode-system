@@ -63,6 +63,32 @@ function filterFn(item: TestItem, filters: TestFilters): boolean {
 }
 
 // =============================================================================
+// Structural-failure guard helpers
+// =============================================================================
+//
+// Axios-shaped rejection: `err.response.status`. `getErrorStatus` in the
+// hook module also accepts a bare `err.status`, but axios (what the real
+// apiClient throws) always nests it under `.response`, so that's what these
+// fixtures model.
+function httpError(status: number, message = `HTTP ${status}`): Error & { response: { status: number } } {
+  return Object.assign(new Error(message), { response: { status } });
+}
+
+// Fake timers only fake Date.now()/setTimeout — native Promise microtasks
+// still flush on their own. The guard logic never uses setTimeout (it just
+// compares Date.now() to a stored deadline), so a few microtask ticks after
+// each trigger is enough to let a fetch's single `await` settle.
+async function flushMicrotasks(times = 3): Promise<void> {
+  // eslint-disable-next-line no-await-in-loop
+  for (let i = 0; i < times; i++) {
+    // eslint-disable-next-line no-await-in-loop
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+}
+
+// =============================================================================
 // useResourceList tests
 // =============================================================================
 
@@ -421,6 +447,332 @@ describe('useResourceList', () => {
     });
 
     expect(result.current.items).toEqual([ITEM_B, ITEM_C]);
+  });
+});
+
+// =============================================================================
+// Structural-failure guard: 401/403 stops polling, retryable failures back
+// off + trip a circuit breaker, and a transient failure still recovers.
+//
+// RED-FIRST ORACLE: the fetcher CALL COUNT, not rendered state. A test
+// asserting only "shows an error toast" passes against the pre-fix code —
+// the toast was never the defect, the unbounded retrying was.
+// =============================================================================
+
+describe('useResourceList — structural-failure guard', () => {
+  beforeEach(() => {
+    mockAddNotification.mockReset();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('stops issuing requests after a persistent 403, even under a fixed-cadence external poller', async () => {
+    const fetcher = jest.fn().mockRejectedValue(httpError(403));
+
+    const { result } = renderHook(() =>
+      useResourceList<TestItem, TestFilters>({
+        fetcher,
+        initialFilters: DEFAULT_FILTERS,
+        filterFn,
+      })
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.current.blocked).toBe(true);
+    expect(result.current.error).toEqual({ status: 403, message: 'Failed to load list' });
+    // The toast still fires (operator visibility) — but it is not the fix.
+    expect(mockAddNotification).toHaveBeenCalledWith({ type: 'error', message: 'Failed to load list' });
+
+    // Simulate PackageRepositoriesTab's own `setInterval(() => list.refresh(), 5000)`
+    // hammering refresh() repeatedly, exactly as it does while the tab stays open.
+    for (let i = 0; i < 15; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      act(() => { result.current.refresh(); });
+      // eslint-disable-next-line no-await-in-loop
+      await flushMicrotasks();
+    }
+
+    // THE ORACLE: call count never rises past the first attempt.
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('a 401 also stops polling immediately (not just 403)', async () => {
+    const fetcher = jest.fn().mockRejectedValue(httpError(401));
+
+    const { result } = renderHook(() =>
+      useResourceList<TestItem, TestFilters>({
+        fetcher,
+        initialFilters: DEFAULT_FILTERS,
+        filterFn,
+      })
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.blocked).toBe(true);
+
+    act(() => { result.current.refresh(); });
+    await flushMicrotasks();
+    act(() => { result.current.refresh(); });
+    await flushMicrotasks();
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('retry() clears the 403 block and resumes fetching', async () => {
+    const fetcher = jest.fn().mockRejectedValue(httpError(403));
+
+    const { result } = renderHook(() =>
+      useResourceList<TestItem, TestFilters>({
+        fetcher,
+        initialFilters: DEFAULT_FILTERS,
+        filterFn,
+      })
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.blocked).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    // Blocked — hammering refresh() does nothing.
+    act(() => { result.current.refresh(); });
+    await flushMicrotasks();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    // Operator fixes the underlying issue (e.g. re-authenticates) and hits
+    // the retry affordance the hook exposes.
+    fetcher.mockResolvedValue([ITEM_A]);
+    act(() => { result.current.retry(); });
+    // `retry()` clears `blocked` synchronously (before the fetch resolves),
+    // so wait on the fetch's own outcome rather than racing that flag.
+    await waitFor(() => expect(result.current.items).toEqual([ITEM_A]));
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(result.current.blocked).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('applies exponential backoff for retryable (500) failures and opens a circuit breaker after repeated failures', async () => {
+    jest.useFakeTimers();
+    const fetcher = jest.fn().mockRejectedValue(httpError(500));
+
+    const { result } = renderHook(() =>
+      useResourceList<TestItem, TestFilters>({
+        fetcher,
+        initialFilters: DEFAULT_FILTERS,
+        filterFn,
+      })
+    );
+
+    // Initial mount fetch: failure #1. Backoff window opens (~5s), breaker
+    // not yet open (threshold is 5).
+    await flushMicrotasks();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.current.blocked).toBe(false);
+
+    // Hammering refresh() at 0 elapsed time (fixed cadence, no backoff
+    // respected by a naive caller) must NOT call the fetcher again — still
+    // inside the backoff window.
+    act(() => { result.current.refresh(); });
+    await flushMicrotasks();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    // Advance through 4 more backoff windows (5s, 10s, 20s, 40s — each
+    // capped by the 5-minute ceiling) to reach the circuit-breaker
+    // threshold of 5 consecutive failures.
+    for (let i = 0; i < 4; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      act(() => { jest.advanceTimersByTime(6 * 60 * 1000); }); // jump well past any backoff window
+      // eslint-disable-next-line no-await-in-loop
+      act(() => { result.current.refresh(); });
+      // eslint-disable-next-line no-await-in-loop
+      await flushMicrotasks();
+    }
+
+    // 5 consecutive failures reached -> circuit breaker open.
+    expect(fetcher).toHaveBeenCalledTimes(5);
+    expect(result.current.blocked).toBe(true);
+
+    // Further hammering, even well past any backoff window, does nothing —
+    // the breaker requires an explicit retry(), same as the 401/403 case.
+    act(() => { jest.advanceTimersByTime(60 * 60 * 1000); });
+    act(() => { result.current.refresh(); });
+    await flushMicrotasks();
+    expect(fetcher).toHaveBeenCalledTimes(5);
+  });
+
+  it('NEGATIVE CASE: a transient failure followed by success still recovers (backoff does not break legitimate polling)', async () => {
+    jest.useFakeTimers();
+    const fetcher = jest.fn()
+      .mockRejectedValueOnce(httpError(503))
+      .mockResolvedValue([ITEM_A]);
+
+    const { result } = renderHook(() =>
+      useResourceList<TestItem, TestFilters>({
+        fetcher,
+        initialFilters: DEFAULT_FILTERS,
+        filterFn,
+      })
+    );
+
+    // Mount fetch fails once (transient 503).
+    await flushMicrotasks();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.current.blocked).toBe(false);
+    expect(result.current.items).toEqual([]);
+
+    // A poll landing inside the backoff window is correctly suppressed.
+    act(() => { result.current.refresh(); });
+    await flushMicrotasks();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    // Once the backoff window elapses, the next legitimate poll succeeds —
+    // fixing the flood must not have broken normal recovery.
+    act(() => { jest.advanceTimersByTime(6000); });
+    act(() => { result.current.refresh(); });
+    await flushMicrotasks();
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(result.current.items).toEqual([ITEM_A]);
+    expect(result.current.blocked).toBe(false);
+    expect(result.current.error).toBeNull();
+
+    // And normal polling continues working afterwards with no lingering
+    // backoff — the failure counter was reset by the successful fetch.
+    act(() => { result.current.refresh(); });
+    await flushMicrotasks();
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('usePaginatedResourceList — structural-failure guard', () => {
+  beforeEach(() => {
+    mockAddNotification.mockReset();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('stops issuing requests after a persistent 403 and exposes blocked/error', async () => {
+    const fetcher = jest.fn().mockRejectedValue(httpError(403));
+
+    const { result } = renderHook(() =>
+      usePaginatedResourceList<TestItem, TestFilters>({
+        fetcher,
+        initialFilters: DEFAULT_FILTERS,
+      })
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const callsAfterMount = fetcher.mock.calls.length;
+    expect(result.current.blocked).toBe(true);
+    expect(result.current.error).toEqual({ status: 403, message: 'Failed to load list' });
+
+    for (let i = 0; i < 10; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      act(() => { result.current.refresh(); });
+      // eslint-disable-next-line no-await-in-loop
+      await flushMicrotasks();
+    }
+
+    expect(fetcher.mock.calls.length).toBe(callsAfterMount);
+  });
+
+  it('a transient failure followed by success still recovers', async () => {
+    jest.useFakeTimers();
+    const fetcher = jest.fn()
+      .mockRejectedValueOnce(httpError(500))
+      .mockResolvedValue({ items: [ITEM_A], meta: makeMeta({ total_count: 1 }) });
+
+    const { result } = renderHook(() =>
+      usePaginatedResourceList<TestItem, TestFilters>({
+        fetcher,
+        initialFilters: DEFAULT_FILTERS,
+        // Isolate the page/perPage mount effect from the filter-change
+        // effect (which also fires on mount — see the "TWO effects on
+        // mount" note on the existing initialPage/perPage test below) so
+        // this test observes exactly one fetch attempt per trigger.
+        refetchOnFilterChange: false,
+      })
+    );
+
+    await flushMicrotasks();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.current.blocked).toBe(false);
+
+    act(() => { jest.advanceTimersByTime(6000); });
+    act(() => { result.current.refresh(); });
+    await flushMicrotasks();
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(result.current.items).toEqual([ITEM_A]);
+    expect(result.current.blocked).toBe(false);
+    jest.useRealTimers();
+  });
+});
+
+describe('useInfiniteResourceList — structural-failure guard', () => {
+  beforeEach(() => {
+    mockAddNotification.mockReset();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('stops issuing requests after a persistent 403 and exposes blocked/error', async () => {
+    const fetcher = jest.fn().mockRejectedValue(httpError(403));
+
+    const { result } = renderHook(() =>
+      useInfiniteResourceList<TestItem, TestFilters>({
+        fetcher,
+        initialFilters: DEFAULT_FILTERS,
+      })
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const callsAfterMount = fetcher.mock.calls.length;
+    expect(result.current.blocked).toBe(true);
+    expect(result.current.error).toEqual({ status: 403, message: 'Failed to load list' });
+
+    for (let i = 0; i < 10; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      act(() => { result.current.refresh(); });
+      // eslint-disable-next-line no-await-in-loop
+      await flushMicrotasks();
+    }
+
+    expect(fetcher.mock.calls.length).toBe(callsAfterMount);
+  });
+
+  it('a transient failure followed by success still recovers', async () => {
+    jest.useFakeTimers();
+    const fetcher = jest.fn()
+      .mockRejectedValueOnce(httpError(500))
+      .mockResolvedValue({ items: [ITEM_A], meta: makeMeta({ total_count: 1, next_page: null }) });
+
+    const { result } = renderHook(() =>
+      useInfiniteResourceList<TestItem, TestFilters>({
+        fetcher,
+        initialFilters: DEFAULT_FILTERS,
+      })
+    );
+
+    await flushMicrotasks();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.current.blocked).toBe(false);
+
+    act(() => { jest.advanceTimersByTime(6000); });
+    act(() => { result.current.refresh(); });
+    await flushMicrotasks();
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(result.current.items).toEqual([ITEM_A]);
+    expect(result.current.blocked).toBe(false);
+    jest.useRealTimers();
   });
 });
 

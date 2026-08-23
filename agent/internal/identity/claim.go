@@ -64,13 +64,13 @@ type claimResponseEnvelope struct {
 }
 
 type claimResponse struct {
-	Status            string `json:"status"`
-	ClaimCode         string `json:"claim_code,omitempty"`
-	BootstrapToken    string `json:"bootstrap_token,omitempty"`
-	InstanceUUID      string `json:"instance_uuid,omitempty"`
-	PlatformURL       string `json:"platform_url,omitempty"`
-	CAPemURL          string `json:"ca_pem_url,omitempty"`
-	PollAfterSeconds  int    `json:"poll_after_seconds,omitempty"`
+	Status           string `json:"status"`
+	ClaimCode        string `json:"claim_code,omitempty"`
+	BootstrapToken   string `json:"bootstrap_token,omitempty"`
+	InstanceUUID     string `json:"instance_uuid,omitempty"`
+	PlatformURL      string `json:"platform_url,omitempty"`
+	CAPemURL         string `json:"ca_pem_url,omitempty"`
+	PollAfterSeconds int    `json:"poll_after_seconds,omitempty"`
 }
 
 func (s *ClaimStrategy) Discover(ctx context.Context) (*Identity, error) {

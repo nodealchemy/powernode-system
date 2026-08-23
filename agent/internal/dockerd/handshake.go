@@ -6,19 +6,19 @@
 //
 // Three phases keyed by `phase`:
 //
-//   wants_cert: agent generates an Ed25519 keypair, builds a CSR with
-//               CN = "docker-daemon-<node_instance_id>", POSTs the CSR.
-//               Platform returns the CA-signed leaf cert + CA chain.
-//               Idempotent — repeated calls re-issue cleanly so cert
-//               rotation rides the same code path.
+//	wants_cert: agent generates an Ed25519 keypair, builds a CSR with
+//	            CN = "docker-daemon-<node_instance_id>", POSTs the CSR.
+//	            Platform returns the CA-signed leaf cert + CA chain.
+//	            Idempotent — repeated calls re-issue cleanly so cert
+//	            rotation rides the same code path.
 //
-//   ready:      agent reports dockerd is up, observed version. Platform
-//               flips the managed Devops::DockerHost row from `pending`
-//               to `connected`. Sent once per dockerd start.
+//	ready:      agent reports dockerd is up, observed version. Platform
+//	            flips the managed Devops::DockerHost row from `pending`
+//	            to `connected`. Sent once per dockerd start.
 //
-//   stopped:    agent reports dockerd is no longer listening (clean
-//               shutdown, module unassignment). Platform flips host to
-//               `disconnected`. Sent best-effort during teardown.
+//	stopped:    agent reports dockerd is no longer listening (clean
+//	            shutdown, module unassignment). Platform flips host to
+//	            `disconnected`. Sent best-effort during teardown.
 //
 // systemctl integration, daemon.json writing, file persistence, and
 // systemd unit lifecycle live in a sibling package
@@ -48,9 +48,10 @@ const HandshakePath = "/api/v1/system/node_api/runtime/handshake"
 
 // RuntimeKind is the daemon family the handshake is for. Controller's
 // RUNTIME_MODULES allow-list expands across phases:
-//   Phase 1 (now):  "docker"
-//   Phase 2:        "k3s_server", "k3s_agent"
-//   Phase 3:        "kubeadm_controlplane", "kubeadm_worker"
+//
+//	Phase 1 (now):  "docker"
+//	Phase 2:        "k3s_server", "k3s_agent"
+//	Phase 3:        "kubeadm_controlplane", "kubeadm_worker"
 type RuntimeKind string
 
 const (
@@ -82,11 +83,11 @@ type HandshakeRequest struct {
 // /etc/docker/daemon.json. NotAfter is informational — agent should
 // rotate well before expiry (refresh recommended at ~75% of lifetime).
 type SignedCertificate struct {
-	CertPEM    string    `json:"cert_pem"`
-	CAChainPEM string    `json:"ca_chain_pem"`
-	Serial     string    `json:"serial"`
-	NotAfter   time.Time `json:"-"`
-	NotAfterISO string   `json:"not_after"`
+	CertPEM     string    `json:"cert_pem"`
+	CAChainPEM  string    `json:"ca_chain_pem"`
+	Serial      string    `json:"serial"`
+	NotAfter    time.Time `json:"-"`
+	NotAfterISO string    `json:"not_after"`
 }
 
 // ReadyAck is the payload returned for phase=ready. Mirrors the platform
@@ -104,8 +105,9 @@ type StoppedAck struct {
 }
 
 // envelope mirrors the platform's render_success shape:
-//   { success: true, data: { ... } } on 2xx
-//   { success: false, error: "..." }  on 4xx/5xx
+//
+//	{ success: true, data: { ... } } on 2xx
+//	{ success: false, error: "..." }  on 4xx/5xx
 type envelope[T any] struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
@@ -154,12 +156,13 @@ func NewClient(t *transport.Client) *Client {
 // alongside the signed cert) plus the platform's signed cert payload.
 //
 // Usage pattern:
-//   kp, signed, err := client.RequestServerCert(ctx, instanceID)
-//   if err != nil { return err }
-//   keyPEM, _ := kp.PrivatePEM()
-//   writeFile("/etc/docker/server-key.pem", keyPEM)
-//   writeFile("/etc/docker/server-cert.pem", []byte(signed.CertPEM))
-//   writeFile("/etc/docker/ca.pem",          []byte(signed.CAChainPEM))
+//
+//	kp, signed, err := client.RequestServerCert(ctx, instanceID)
+//	if err != nil { return err }
+//	keyPEM, _ := kp.PrivatePEM()
+//	writeFile("/etc/docker/server-key.pem", keyPEM)
+//	writeFile("/etc/docker/server-cert.pem", []byte(signed.CertPEM))
+//	writeFile("/etc/docker/ca.pem",          []byte(signed.CAChainPEM))
 func (c *Client) RequestServerCert(ctx context.Context, nodeInstanceID string) (*enroll.Keypair, *SignedCertificate, error) {
 	if nodeInstanceID == "" {
 		return nil, nil, errors.New("RequestServerCert: nodeInstanceID required")

@@ -156,6 +156,31 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
                       <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Listen Port</label>
                       <p className="text-theme-primary font-mono text-xs">{p.listen_port}</p>
                     </div>
+                    {/*
+                      IMP-ab73cc2fca65 — observed tunnel traffic. Always shown,
+                      because "not measured" is itself the thing an operator
+                      needs to see: hiding the card when the counters are null
+                      would read as "this peer has no traffic" rather than "no
+                      heartbeat has reported any". formatBytes renders 0 as
+                      "0 B" and null as "not measured" for exactly that reason.
+
+                      The label says "since interface start" because these are
+                      WireGuard per-incarnation totals: they restart at zero
+                      when the interface is recreated or the peer is re-added,
+                      so an unqualified "Traffic" would read as an all-time
+                      figure that mysteriously drops after every reconnect.
+                    */}
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Traffic since interface start (rx / tx)</label>
+                      <p className="text-theme-primary font-mono text-xs">
+                        {formatBytes(p.rx_bytes)} / {formatBytes(p.tx_bytes)}
+                      </p>
+                      {p.counters_sampled_at && (
+                        <p className="text-theme-secondary text-xs">
+                          sampled {new Date(p.counters_sampled_at).toLocaleString()}
+                        </p>
+                      )}
+                    </div>
                     {p.effective_endpoint && (
                       <div>
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Effective Endpoint</label>
@@ -246,4 +271,26 @@ function peerStatusClass(status: string): string {
     case 'disconnected': return `${base} bg-theme-danger-bg text-theme-danger-fg`;
     default: return `${base} bg-theme-background-secondary text-theme-secondary`;
   }
+}
+
+// IMP-ab73cc2fca65 — render an observed WireGuard byte counter.
+//
+// Local rather than shared on purpose: the shared helper in core's
+// ai/execution-resources DetailSection caps at MB (a 12 GB tunnel would read
+// "12288.0 MB") and renders an absent value as "N/A", which reads as an error
+// rather than as a state. Here the absent case is a first-class fact —
+// NOT MEASURED means no heartbeat has ever carried a counter pair for this
+// peer, and it must never be confused with the measured-zero case of an idle
+// tunnel, which renders as "0 B".
+function formatBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined) return 'not measured';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(1)} ${units[unit]}`;
 }

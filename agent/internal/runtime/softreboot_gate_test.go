@@ -24,10 +24,19 @@ func writeMountInfoFixture(t *testing.T, body string) string {
 	return p
 }
 
-// pinNoNextrootUnion points the mount-table parser at a fixture holding NO
-// overlay at /run/nextroot (so the gate enumerates zero layers) and a
-// childless /persist carrier bind (so the submount walk finds its
-// destination and, correctly, nothing beneath it).
+// pinNextrootUnionWithoutLayers points the mount-table parser at a fixture
+// holding a MOUNTED but layer-less overlay at /run/nextroot (so the gate
+// enumerates zero layers) and a childless /persist carrier bind (so the
+// submount walk finds its destination and, correctly, nothing beneath it).
+//
+// IMP-de738c292bf9 changed what this fixture must contain. It used to omit the
+// overlay entirely, which was a convenient way to get an empty layer report —
+// but an ABSENT union is now an error (mount.ErrNoOverlayAt), because in
+// production the gate runs only AFTER MountUnion composed /run/nextroot, so
+// "nothing is mounted there" means the composition was torn down underneath it
+// rather than "no layer is doomed". The empty-layer report these tests want is
+// still reachable honestly: an overlay that IS mounted and carries no
+// lowerdir=. Pinned as an error by ...RefusesWhenTheNextrootUnionIsAbsent.
 //
 // EVERY gate test must pin the table, including the ones that do not care
 // about layers or submounts. NextrootSurvivalGate reads it unconditionally
@@ -39,13 +48,44 @@ func writeMountInfoFixture(t *testing.T, body string) string {
 // a fixture that omits the carrier bind refuses in the walk (fail closed,
 // pinned by ...RefusesWhenABindDestinationIsAbsentFromTheMountTable), so
 // the carrier line here is load-bearing for every passing-path test.
-func pinNoNextrootUnion(t *testing.T) {
+func pinNextrootUnionWithoutLayers(t *testing.T) {
 	t.Helper()
 	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
 		"27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"+
 			"40 27 8:2 / /persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"+
+			"88 27 0:99 / /run/nextroot rw,relatime shared:9 - overlay overlay rw,upperdir=/run/powernode/nextroot-scratch-gen1/upper,workdir=/run/powernode/nextroot-scratch-gen1/work\n"+
 			"90 27 8:2 / /run/nextroot/persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"))
 	t.Cleanup(restore)
+}
+
+// The concurrent-teardown case the layer report used to read as a clean bill of
+// health: another recompose unmounts /run/nextroot between compose and
+// gate-read, LiveUnionLowerDirs returned an empty set, and the gate reported
+// "no layer doomed" while --execute proceeded. It is an ENVIRONMENT failure —
+// the gate could not reach a verdict — not a refusal.
+func TestNextrootSurvivalGate_RefusesWhenTheNextrootUnionIsAbsent(t *testing.T) {
+	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
+		"27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"+
+			"40 27 8:2 / /persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"+
+			"90 27 8:2 / /run/nextroot/persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"))
+	defer restore()
+
+	run := gateRunner(map[string]string{
+		unionUnit:   propsSurvive,
+		carrierUnit: propsSurvive,
+	})
+
+	doomed, err := NextrootSurvivalGate(context.Background(), run, gateLayout(), gateBindDests)
+
+	if err == nil {
+		t.Fatalf("an absent nextroot union must not read as a clean empty layer report, got doomed=%v", doomed)
+	}
+	if !errors.Is(err, ErrGateEnvironment) {
+		t.Errorf("an absent union is an environment failure, not a refusal, got %v", err)
+	}
+	if errors.Is(err, ErrGateRefused) {
+		t.Errorf("must NOT be classified as a refusal — the fix is not drop-ins, got %v", err)
+	}
 }
 
 func containsPath(paths []string, want string) bool {
@@ -94,7 +134,7 @@ func gateLayout() mount.Layout { return mount.NextrootLayout("gen1") }
 // NOT happen, and (before this gate) soft_recompose.go had already
 // committed a boot breadcrumb asserting that it did.
 func TestNextrootSurvivalGate_RefusesWhenTheUnionItselfWouldBeTornDown(t *testing.T) {
-	pinNoNextrootUnion(t)
+	pinNextrootUnionWithoutLayers(t)
 	run := gateRunner(map[string]string{
 		unionUnit:   propsDoomed,
 		carrierUnit: propsSurvive,
@@ -110,7 +150,7 @@ func TestNextrootSurvivalGate_RefusesWhenTheUnionItselfWouldBeTornDown(t *testin
 // carrying DefaultDependencies=no does NOT extend to it: a per-unit drop-in
 // applies to one unit, and this is a separate, mountinfo-generated one.
 func TestNextrootSurvivalGate_RefusesWhenThePersistCarrierWouldBeTornDown(t *testing.T) {
-	pinNoNextrootUnion(t)
+	pinNextrootUnionWithoutLayers(t)
 	run := gateRunner(map[string]string{
 		unionUnit:   propsSurvive,
 		carrierUnit: propsDoomed,
@@ -125,7 +165,7 @@ func TestNextrootSurvivalGate_RefusesWhenThePersistCarrierWouldBeTornDown(t *tes
 // A compound guard where only one half is exercised is how a broken guard
 // ships (the standing two-critic rule for boot-critical code).
 func TestNextrootSurvivalGate_RefusesOnEveryClauseOfEveryLethalMount(t *testing.T) {
-	pinNoNextrootUnion(t)
+	pinNextrootUnionWithoutLayers(t)
 	clauses := map[string]string{
 		"conflicts only": "DefaultDependencies=no\nConflicts=umount.target\nLoadState=loaded\n",
 		"deps only":      "DefaultDependencies=yes\nConflicts=\nLoadState=loaded\n",
@@ -148,7 +188,7 @@ func TestNextrootSurvivalGate_RefusesOnEveryClauseOfEveryLethalMount(t *testing.
 // unconditionally is not a safety feature, it is the soft-reboot tier
 // deleted. This is the state the two shipped drop-ins produce.
 func TestNextrootSurvivalGate_PassesWhenBothLethalMountsSurvive(t *testing.T) {
-	pinNoNextrootUnion(t)
+	pinNextrootUnionWithoutLayers(t)
 	run := gateRunner(map[string]string{
 		unionUnit:   propsSurvive,
 		carrierUnit: propsSurvive,
@@ -172,7 +212,7 @@ func TestNextrootSurvivalGate_PassesWhenBothLethalMountsSurvive(t *testing.T) {
 // on the scratch it is advice. Without this the gate would refuse on every
 // node whose scratch unit systemd has not adopted yet.
 func TestNextrootSurvivalGate_UnknownLayerUnitIsAdvisoryNotFatal(t *testing.T) {
-	pinNoNextrootUnion(t)
+	pinNextrootUnionWithoutLayers(t)
 	run := gateRunner(map[string]string{
 		unionUnit:   propsSurvive,
 		carrierUnit: propsSurvive,
@@ -255,7 +295,7 @@ func TestNextrootSurvivalGate_ReadsLowerdirsFromTheLiveTableNotTheLayout(t *test
 // rescans unit files. Probing first would read the PRE-delivery properties
 // and refuse on a node that is in fact correctly configured.
 func TestNextrootSurvivalGate_DaemonReloadPrecedesEveryProbe(t *testing.T) {
-	pinNoNextrootUnion(t)
+	pinNextrootUnionWithoutLayers(t)
 	run := gateRunner(map[string]string{
 		unionUnit:   propsSurvive,
 		carrierUnit: propsSurvive,
@@ -286,11 +326,57 @@ func TestNextrootSurvivalGate_DaemonReloadPrecedesEveryProbe(t *testing.T) {
 // A daemon-reload that fails means the drop-ins are unproven, and unproven
 // is the state this file treats as "do not proceed".
 func TestNextrootSurvivalGate_RefusesWhenDaemonReloadFails(t *testing.T) {
-	pinNoNextrootUnion(t)
+	pinNextrootUnionWithoutLayers(t)
 	run := gateRunner(map[string]string{unionUnit: propsSurvive, carrierUnit: propsSurvive})
 	run.StubErr = map[string]error{"systemctl daemon-reload": errStubReload}
 	if _, err := NextrootSurvivalGate(context.Background(), run, gateLayout(), gateBindDests); err == nil {
 		t.Error("a failed daemon-reload leaves the drop-ins unproven and must refuse, got nil")
+	}
+}
+
+// THE GATE MUST TYPE ITS OWN CAUSES (IMP-de738c292bf9).
+//
+// The report-side tests in soft_recompose_test.go construct a typed error and
+// assert what writePrepareReport does with it — which pins the mapping but NOT
+// that the gate ever produces one. A mutation that dropped ErrGateReloadFailed
+// from the gate's wrap left every one of those tests green, so the
+// classification is asserted HERE, against the gate's real error, on both
+// sides: what it is and what it is not.
+func TestNextrootSurvivalGate_ReloadFailureIsTypedAsEnvironmentNotRefusal(t *testing.T) {
+	pinNextrootUnionWithoutLayers(t)
+	run := gateRunner(map[string]string{unionUnit: propsSurvive, carrierUnit: propsSurvive})
+	run.StubErr = map[string]error{"systemctl daemon-reload": errStubReload}
+
+	_, err := NextrootSurvivalGate(context.Background(), run, gateLayout(), gateBindDests)
+
+	if !errors.Is(err, ErrGateReloadFailed) {
+		t.Errorf("a failed reload must be identifiable as ErrGateReloadFailed, got %v", err)
+	}
+	if !errors.Is(err, ErrGateEnvironment) {
+		t.Errorf("ErrGateReloadFailed must also answer to the ErrGateEnvironment class, got %v", err)
+	}
+	if errors.Is(err, ErrGateRefused) {
+		t.Errorf("the gate never reached a verdict, so this must NOT read as a refusal, got %v", err)
+	}
+	if !errors.Is(err, errStubReload) {
+		t.Errorf("the underlying cause must survive the classification wrap, got %v", err)
+	}
+}
+
+// The other side of the same contract: a mount that genuinely would not survive
+// is a REFUSAL, and must not be reclassified as an environment failure — that
+// would send a CI wrapper looking for permissions when the fix is drop-ins.
+func TestNextrootSurvivalGate_DoomedMountIsTypedAsRefusalNotEnvironment(t *testing.T) {
+	pinNextrootUnionWithoutLayers(t)
+	run := gateRunner(map[string]string{unionUnit: propsDoomed, carrierUnit: propsSurvive})
+
+	_, err := NextrootSurvivalGate(context.Background(), run, gateLayout(), gateBindDests)
+
+	if !errors.Is(err, ErrGateRefused) {
+		t.Errorf("a doomed lethal mount is a refusal, got %v", err)
+	}
+	if errors.Is(err, ErrGateEnvironment) {
+		t.Errorf("a reached verdict must NOT read as 'could not reach a verdict', got %v", err)
 	}
 }
 
@@ -380,6 +466,10 @@ func TestNextrootSurvivalGate_RefusesWhenASubmountUnitIsUnknownToSystemd(t *test
 func TestNextrootSurvivalGate_PassesWhenEverySubmountSurvives(t *testing.T) {
 	restore := mount.SetMountInfoPathForTest(writeMountInfoFixture(t,
 		"27 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"+
+			// The composed union itself — layer-less, so the layer report stays
+			// empty without pretending the nextroot is unmounted (an absent one
+			// is now an error; IMP-de738c292bf9).
+			"88 27 0:99 / /run/nextroot rw,relatime shared:9 - overlay overlay rw,upperdir=/run/powernode/nextroot-scratch-gen1/upper,workdir=/run/powernode/nextroot-scratch-gen1/work\n"+
 			"90 27 8:2 / /run/nextroot/persist rw,relatime shared:2 - ext4 /dev/sda2 rw\n"+
 			"95 90 8:16 / /run/nextroot/persist/volumes/pgdata rw,relatime shared:12 - ext4 /dev/sdb1 rw\n"))
 	defer restore()
@@ -466,7 +556,7 @@ func TestNextrootSurvivalGate_RefusesWhenTheMountTableHasAnUnparseableLine(t *te
 // established, not a hard-coded /persist assumption: adding a bind source
 // adds a load-bearing carrier, and the gate has to see it.
 func TestNextrootSurvivalGate_ChecksEveryBindDestinationGiven(t *testing.T) {
-	pinNoNextrootUnion(t)
+	pinNextrootUnionWithoutLayers(t)
 	run := gateRunner(map[string]string{
 		unionUnit:                 propsSurvive,
 		carrierUnit:               propsSurvive,

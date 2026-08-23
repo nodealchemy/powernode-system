@@ -14,10 +14,17 @@
 # Lifecycle (AASM column: status):
 #   pending        → row created; daemons not running yet
 #   bootstrapping  → endpoints set; agents are bringing daemons up
-#   active         → northd is reconciling NB→SB; ≥1 ovn-controller
-#                    has subscribed
-#   degraded       → a probe failed (NB/SB unreachable, northd offline)
-#                    — readopt back to active when the probe recovers
+#   active         → the NB DB itself was positively observed: a chassis
+#                    replayed the full compiled plan against it, or the
+#                    control-plane NbProbe got a list_dbs reply naming
+#                    OVN_Northbound at the endpoint. That is ALL it
+#                    certifies — neither northd's NB→SB reconciliation
+#                    nor any ovn-controller's SB subscription is directly
+#                    measured yet (Sdwan::Ovn::DeploymentReconciler)
+#   degraded       → a MEASURED negative stands: a failed/partial chassis
+#                    replay, or the probe lost an endpoint it had
+#                    confirmed — readopt back to active when the failing
+#                    source itself recovers
 #
 # Phase O3 of the OVS+OVN dual-profile roadmap (heavyweight track).
 module Sdwan
@@ -72,10 +79,21 @@ module Sdwan
     validates :sb_db_endpoint, format: { with: ENDPOINT_FORMAT },
                                if: -> { sb_db_endpoint.present? }
 
+    # The states the TopologyCompiler serves chassis config for. Everything
+    # except pending: bootstrapping is BY DEFINITION "agents are bringing
+    # daemons up" (they need the config to do that), and degraded must stay
+    # served because recovery evidence can only come from a served chassis.
+    # Pending is the one state whose endpoints may be blank, so there is
+    # nothing an agent could act on. (IMP-57e9a90598ee — the previous
+    # active-only gate structurally prevented its own opener: no deployment
+    # could ever produce the observation required to become active.)
+    SERVABLE_STATUSES = %w[bootstrapping active degraded].freeze
+
     scope :active,        -> { where(status: "active") }
     scope :bootstrapping, -> { where(status: "bootstrapping") }
     scope :pending,       -> { where(status: "pending") }
     scope :degraded,      -> { where(status: "degraded") }
+    scope :servable,      -> { where(status: SERVABLE_STATUSES) }
     scope :for_account,   ->(account) { where(account_id: account.id) }
 
     aasm column: :status, whiny_transitions: false do

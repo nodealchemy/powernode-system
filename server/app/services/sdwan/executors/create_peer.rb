@@ -7,12 +7,15 @@ module Sdwan
     # AutonomyGate audit row + chain-of-custody is still useful.
     class CreatePeer < ::System::Executors::Base
       # Single source of this action's autonomy category (IMP-249e01a804e5).
-      # Nothing reaches this executor today — no gate site and no composer name
-      # it, only specs — so there is no surface to read the declaration yet.
-      # The seeded policy row and the engine registration are still pinned to
-      # it by spec/services/sdwan/executors/action_category_coherence_spec.rb,
-      # so whichever surface gates this verb first has a declaration to read
-      # rather than a literal to invent.
+      # Both operator surfaces read it as of IMP-cf285f21f3a9 —
+      # PeersController#create and SdwanTool#attach_peer — so the declaration
+      # this comment was holding open is now actually consumed rather than
+      # waiting. The seeded policy row and the engine registration stay pinned
+      # to it by spec/services/sdwan/executors/action_category_coherence_spec.rb.
+      #
+      # Internal composition does NOT read it: provisioning, federation
+      # acceptance, storage auto-enroll and the compose skills call
+      # Sdwan::PeerEnroller directly and are intentionally ungated.
       ACTION_CATEGORY = "sdwan.peer_create"
 
       protected
@@ -24,7 +27,33 @@ module Sdwan
         # inherit-from-network callback, and account_id was mass-assignable
         # straight out of params[:attributes] — which the gate stores verbatim
         # and replays unvalidated at approval time.
-        peer = network.peers.create!(attrs.merge(account: network.account))
+        # IMP-cf285f21f3a9 — enroll, do not bare-create.
+        #
+        # This used to be `network.peers.create!(...)`. Nothing dispatched this
+        # executor, so that divergence from the real creation seam was never
+        # exercised — and gating peer creation makes this the create path for
+        # BOTH gate outcomes (auto-proceed and post-approval release).
+        #
+        # Every other caller in the codebase joins a node to an overlay through
+        # Sdwan::PeerEnroller, which does four things the bare insert skips:
+        # generates the WireGuard genesis keypair, allocates and activates a
+        # VRF, promotes a `registered` network to `active`, and mirrors the
+        # address + pubkey onto the NodeInstance so the agent learns them. A
+        # peer missing those cannot carry traffic, and it fails SILENTLY —
+        # vip_applier.go and Bgp::ConfigCompiler both read an empty vrf_name as
+        # "nothing to do".
+        #
+        # It also closes a tenancy hole for free: the bare create! scoped only
+        # the NETWORK, so a request naming another account's node_instance
+        # attached it to this overlay. PeerEnroller#verify_account_alignment!
+        # refuses that, and the REST surface already rescues CrossAccountError
+        # into a 422.
+        node_instance = ::System::NodeInstance.find(attrs[:node_instance_id])
+        peer = ::Sdwan::PeerEnroller.call(
+          network: network,
+          node_instance: node_instance,
+          **enroll_options
+        )
         # IMP-ee57d0fbe859: record the connectivity tuple in the same shape
         # Sdwan::Executors::DeletePeer records on removal. This read
         # `peer.try(:endpoint)` — Sdwan::Peer has no `endpoint` method or column,
@@ -62,6 +91,22 @@ module Sdwan
 
       private
 
+      # Only the keys Sdwan::PeerEnroller actually accepts, and only when the
+      # request supplied them — omitting a key preserves the enroller's own
+      # default (listen_port 51820, capabilities {}, lan_subnets []) rather
+      # than overwriting it with nil. node_instance_id is excluded because it
+      # is resolved into the node_instance argument above; the tenancy keys are
+      # already stripped by Base#attrs.
+      ENROLL_KEYS = %i[
+        publicly_reachable endpoint_host endpoint_host_v6 endpoint_host_v4
+        endpoint_port listen_port capabilities lan_subnets
+        bgp_route_reflector_client
+      ].freeze
+
+      def enroll_options
+        attrs.slice(*ENROLL_KEYS).compact
+      end
+
       # IMP-97bb6231a322: the account this label may name rows from.
       #
       # It was `requested_account_id` — params[:attributes][:account_id], read
@@ -81,9 +126,10 @@ module Sdwan
       #      it is the one account on this request nobody supplied. LIVE as of
       #      IMP-4a5094b22df0: Ai::DeferredOperation#preview now threads itself
       #      through Base.preview, so every card composed for a gated peer
-      #      create anchors here. (Peer creation has no gated dispatcher yet —
-      #      it runs through Sdwan::PeerEnroller — so "every card" is still
-      #      none; this arm is correct and waiting, not exercised in production.)
+      #      create anchors here. LIVE as of IMP-cf285f21f3a9: peer creation is
+      #      now gated on both operator surfaces (PeersController#create and
+      #      SdwanTool#attach_peer), so this arm is exercised in production
+      #      rather than correct-and-waiting.
       #      It closes the residual this comment used to end on: a requester
       #      holding a foreign network id AND a node-instance id from that SAME
       #      foreign account no longer gets either row named, because arm 2

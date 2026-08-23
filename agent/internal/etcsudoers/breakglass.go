@@ -105,4 +105,3 @@ func OperatorBreakGlassEnabledFromEnv() bool {
 		return false
 	}
 }
-

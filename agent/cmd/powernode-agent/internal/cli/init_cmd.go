@@ -29,7 +29,9 @@ type InitOptions struct {
 // RunInit executes the init command.
 //
 // start  — write unit files (idempotent) + daemon-reload + start in
-//          topological order over service dependencies.
+//
+//	topological order over service dependencies.
+//
 // stop   — stop in reverse topological order + remove unit files.
 // restart — stop reverse, start forward (preserves unit files).
 // reload / status — apply verb to each unit name.

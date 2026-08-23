@@ -16,10 +16,10 @@
 //
 // # Key types
 //
-//   Registrar     — registers + de-registers the NodeInstance as a peer at
-//                   runtime startup / shutdown
-//   Capabilities  — declared capability set (SSH, kubectl, docker, etc.)
-//   Manifest      — full peer manifest posted to /api/v1/system/node_api/peer
+//	Registrar     — registers + de-registers the NodeInstance as a peer at
+//	                runtime startup / shutdown
+//	Capabilities  — declared capability set (SSH, kubectl, docker, etc.)
+//	Manifest      — full peer manifest posted to /api/v1/system/node_api/peer
 //
 // Server-side counterpart: extensions/system/server/app/services/system/
 // peer_agent_mirror.rb (mirrors the agent registration into Ai::Agent rows

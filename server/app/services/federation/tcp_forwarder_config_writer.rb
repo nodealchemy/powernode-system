@@ -165,9 +165,7 @@ module Federation
     # writer brackets it (a deliberate divergence from
     # ServiceRouteWriter, which has no such requirement).
     def backend_address(vip, port)
-      host = vip.to_s
-      host = "[#{host}]" if host.include?(":") && !host.start_with?("[")
-      "#{host}:#{port}"
+      ::Sdwan::HostPort.join(vip, port)
     end
 
     # Writes to a sibling temp file then renames into place, so the

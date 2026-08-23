@@ -119,14 +119,51 @@ module Api
             render_error("Offering not found", status: :not_found) unless @offering
           end
 
+          # IMP-563999967998 — these RAISE rather than render.
+          #
+          # Both are called INLINE from the action bodies (index/show for
+          # authorize_read!; create/update/destroy/activate/deprecate/retire for
+          # authorize_manage!), not as before_actions. Rails halts a request when
+          # a FILTER renders — the filter chain checks `performed?` between
+          # callbacks — but it does NOT halt an action because a helper the
+          # action called rendered. A bare `render_error(...)` with no return at
+          # all simply falls off the end of the helper and control resumes on the
+          # next line of the action: #create went straight on to `offering.save`,
+          # so a caller with no system.service_offerings.manage permission got a
+          # 403 AND the offering. The follow-up render_success then raised
+          # AbstractController::DoubleRenderError, which ApiResponse swallows with
+          # `unless performed?` — so the caller saw a clean 403 over a committed
+          # write and nothing in the response said otherwise.
+          #
+          # Authentication::PermissionDenied is the class require_permission
+          # already raises, and it inherits Exception (NOT StandardError)
+          # deliberately, so an inline check survives any surrounding
+          # `rescue StandardError` and ApiResponse's global
+          # `rescue_from StandardError`. Its dedicated rescue_from renders the
+          # canonical 403 AND unwinds the action, which makes the halt a property
+          # of the HELPER — the next action added to this controller cannot
+          # forget it, where eight explicit `return`s would have been eight
+          # chances to forget the ninth.
+          #
+          # The predicate is deliberately unchanged (`current_user&.has_permission?`):
+          # this changes only WHETHER the action halts, never WHO is allowed. The
+          # status stays 403 and the message is byte-identical; the rescue_from
+          # path adds a `code: "FORBIDDEN"` key, which no frontend reads
+          # (errorHandler.ts derives its code from the HTTP status).
           def authorize_read!
             return if current_user&.has_permission?("system.service_offerings.read")
-            render_error("Forbidden", status: :forbidden)
+
+            raise ::Authentication::PermissionDenied.new(
+              "Forbidden", permission: "system.service_offerings.read"
+            )
           end
 
           def authorize_manage!
             return if current_user&.has_permission?("system.service_offerings.manage")
-            render_error("Forbidden", status: :forbidden)
+
+            raise ::Authentication::PermissionDenied.new(
+              "Forbidden", permission: "system.service_offerings.manage"
+            )
           end
 
           # The offering's backend is owned by its Sdwan::Service (Phase 2) —

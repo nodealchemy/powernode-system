@@ -21,16 +21,16 @@ import (
 // puppet apply --noop first to check for surprises, then executes
 // the real apply if the diff is within bounds.
 type PuppetApplyOptions struct {
-	Noop                  bool
-	Tags                  []string
-	Timeout               time.Duration
-	AllowChangesOver      int  // refuse if --noop reports more than N changes
-	AllowIdentityChanges  bool // permit changes to /etc/sudoers, /etc/passwd, /etc/ssh
-	JSON                  bool
-	PlatformURL           string
-	PKIDir                string
-	StagingRoot           string // /etc/puppetlabs/code/environments/production
-	Runner                mount.Runner
+	Noop                 bool
+	Tags                 []string
+	Timeout              time.Duration
+	AllowChangesOver     int  // refuse if --noop reports more than N changes
+	AllowIdentityChanges bool // permit changes to /etc/sudoers, /etc/passwd, /etc/ssh
+	JSON                 bool
+	PlatformURL          string
+	PKIDir               string
+	StagingRoot          string // /etc/puppetlabs/code/environments/production
+	Runner               mount.Runner
 }
 
 // RunPuppetApply runs the puppet flow.
@@ -128,14 +128,14 @@ func RunPuppetApply(ctx context.Context, opts PuppetApplyOptions) (Result, error
 	}
 
 	res := Result{
-		Command: "puppet",
-		Status:  conditional(cliCode == ExitOK, "ok", "error"),
+		Command:  "puppet",
+		Status:   conditional(cliCode == ExitOK, "ok", "error"),
 		ExitCode: cliCode,
 		Details: map[string]any{
-			"mode":         "apply",
-			"changes":      changes,
-			"puppet_exit":  applyExit,
-			"output_tail":  tail(applyOut, 8192),
+			"mode":        "apply",
+			"changes":     changes,
+			"puppet_exit": applyExit,
+			"output_tail": tail(applyOut, 8192),
 		},
 	}
 	if cliCode != ExitOK {

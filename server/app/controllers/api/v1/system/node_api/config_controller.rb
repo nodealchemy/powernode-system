@@ -411,6 +411,13 @@ module Api
             }
             payload[:parent_pat] = credential.access_token if class_b_module?(module_slug)
 
+            # The per-batch core-ref pin. Only ever present for a Class-B
+            # module whose batch recorded a usable expectation — see
+            # #pinned_core_ref for why absence is a real state and not an
+            # error, and why it is never fabricated.
+            core_ref = pinned_core_ref(lease: lease, module_slug: module_slug)
+            payload[:core_ref] = core_ref if core_ref.present?
+
             render_success(**payload)
           end
 
@@ -495,6 +502,121 @@ module Api
           # script fails fast on any drift between plan-time and build-time.
           def apt_snapshot_override
             ::SiteSetting.get("system.ci_builder.apt_snapshot_override").presence
+          end
+
+          # === Per-batch core-ref pin ===
+          #
+          # The core (parent powernode-platform) commit stage15.sh must fetch
+          # for a Class-B module, delivered to the builder as CORE_REF.
+          #
+          # THIS IS NOT A NEW EXPECTATION. It is the batch's OWN
+          # `expected_core_sha`, written at dispatch by
+          # System::NativeModuleBuildOrchestrator#record_expected_core_ref! —
+          # the same field System::CoreMirrorPreflight compares the public
+          # mirror's HEAD against before any builder is leased, and the same
+          # field System::CoreProvenanceGate compares the published artifact's
+          # org.powernode.core_source_sha annotation against at promote.
+          # Resolving it independently here would create a fourth answer to
+          # "which core did this batch expect", and a value defined twice is a
+          # value that drifts — which is the entire failure mode being closed.
+          #
+          # NEVER FABRICATED. Three distinct absences all return nil, and all
+          # of them mean "this build is not pinned", never "pin it to something
+          # plausible":
+          #   - not a Class-B module: it clones no parent, so there is nothing
+          #     to pin (and stage15.sh would ignore CORE_REF anyway);
+          #   - no batch reachable from the lease, or the batch recorded no
+          #     expectation (its core tip would not resolve — the orchestrator
+          #     deliberately records nothing rather than guessing, and the
+          #     promote gate stays inert for that batch too);
+          #   - the expectation is not a FULL 40-hex sha.
+          #
+          # That last case is the subtle one and it is deliberate. `git fetch
+          # <ref>` requires a complete object name — an abbreviation is
+          # rejected outright by the remote — so sending a 7-char head_sha
+          # (the MCP tool accepts a free-string head_sha, and this platform's
+          # own tag convention is 7 chars) would fail every Class-B build in
+          # that batch for a reason that has nothing to do with core drift.
+          # CoreMirrorPreflight declines the same input for the same reason
+          # (STATE_UNUSABLE_EXPECTATION) rather than reading it as divergence.
+          # It is logged, not silently dropped: an unpinned Class-B build must
+          # be visible on both ends, and stage15.sh's no-ref arm says UNPINNED
+          # out loud for exactly this reason.
+          def pinned_core_ref(lease:, module_slug:)
+            return nil unless class_b_module?(module_slug)
+
+            batch = build_batch_for(lease)
+            unless batch
+              # Not a benign absence. Every native Class-B build goes through
+              # NativeModuleBuildOrchestrator#dispatch_one!, which sets
+              # lease.build_task_id AND puts batch_id in the task options — so
+              # reaching here means that wiring broke, or the batch belongs to
+              # another account. Silence would make a wiring regression look
+              # exactly like a legacy build.
+              return unpinned!(module_slug, "no build batch is reachable from lease #{lease.id} " \
+                                            "(lease.build_task_id -> Task#options['batch_id'])")
+            end
+
+            expected = batch.metadata.is_a?(Hash) ? batch.metadata["expected_core_sha"].to_s.strip : ""
+            if expected.blank?
+              return unpinned!(module_slug, "batch #{batch.id} recorded no expected core commit " \
+                                            "(its core tip would not resolve at dispatch)")
+            end
+
+            unless expected.match?(/\A[0-9a-f]{40}\z/i)
+              return unpinned!(module_slug, "batch #{batch.id} expects core #{expected.inspect}, which " \
+                                            "is not a full 40-hex commit and cannot be fetched by ref")
+            end
+
+            expected.downcase
+          end
+
+          # One place that says an unpinned Class-B build out loud, and returns
+          # nil. The design principle is that such a build must be visible on
+          # BOTH ends — stage15.sh announces UNPINNED on the builder, this is
+          # the server half — so every absence logs, not just the malformed one.
+          #
+          # The text deliberately does NOT promise that
+          # System::CoreProvenanceGate will quietly backstop this. For a blank
+          # or unreachable expectation the gate is INERT (its `no_expectation`
+          # arm passes). For an ABBREVIATED expectation it is the opposite:
+          # same_commit? rejects any prefix under MIN_ABBREV_LENGTH, so the gate
+          # REFUSES every Class-B promote in that batch as `mismatch`. Both are
+          # fail-safe, but they are different outcomes and an operator reading
+          # this line must not be told the wrong one.
+          def unpinned!(module_slug, reason)
+            Rails.logger.warn(
+              "[ci_build_context] #{module_slug} will build with NO core pin: #{reason}. The parent " \
+              "clone will take whatever the mirror's default branch points at."
+            )
+            nil
+          end
+
+          # The System::ModuleBuildBatch this lease is building for, or nil.
+          # The chain is lease -> build_task_id -> Task#options["batch_id"],
+          # which is what NativeModuleBuildOrchestrator#dispatch_one! wires up
+          # (it sets lease.build_task_id and puts batch_id in the task
+          # options). Account-scoped on the way out: the lease is already
+          # scoped to the calling instance, and the batch lookup must not be
+          # able to reach across accounts even if a task id somehow were.
+          def build_batch_for(lease)
+            return nil if lease.build_task_id.blank?
+
+            task = ::System::Task.find_by(id: lease.build_task_id)
+            return nil unless task
+
+            options  = task.options.is_a?(Hash) ? task.options : {}
+            batch_id = options["batch_id"] || options[:batch_id]
+            return nil if batch_id.blank?
+
+            ::System::ModuleBuildBatch.find_by(id: batch_id, account_id: current_account.id)
+          rescue StandardError => e
+            # Defensive: a build must not 500 because the pin could not be
+            # looked up. An unresolvable batch is the "no pin" state, which is
+            # already a state this endpoint handles.
+            Rails.logger.warn("[ci_build_context] could not resolve the build batch for lease " \
+                              "#{lease.id} (#{e.class}: #{e.message}) — no core pin will be sent")
+            nil
           end
 
           # "owner/repo" of the source repo the cell clones. Config-driven

@@ -13,18 +13,18 @@ type ModulesAPI interface {
 
 // CNI plugin identifiers accepted in BootstrapConfig.CniPlugin.
 //
-//   CniPluginFlannel       — K3s default. Embedded Flannel VXLAN +
-//                            kube-proxy NetworkPolicy (lightweight
-//                            profile). No extra install args.
+//	CniPluginFlannel       — K3s default. Embedded Flannel VXLAN +
+//	                         kube-proxy NetworkPolicy (lightweight
+//	                         profile). No extra install args.
 //
-//   CniPluginOvnKubernetes — Replace Flannel with OVN-Kubernetes
-//                            (heavyweight profile, Phase O4). Agent
-//                            installs K3s with `--flannel-backend=none
-//                            --disable-network-policy` so the K3s
-//                            server skips Flannel + kube-proxy
-//                            NetworkPolicy and the OVN-K8s manifests
-//                            (delivered separately at runtime) own
-//                            the pod network end-to-end.
+//	CniPluginOvnKubernetes — Replace Flannel with OVN-Kubernetes
+//	                         (heavyweight profile, Phase O4). Agent
+//	                         installs K3s with `--flannel-backend=none
+//	                         --disable-network-policy` so the K3s
+//	                         server skips Flannel + kube-proxy
+//	                         NetworkPolicy and the OVN-K8s manifests
+//	                         (delivered separately at runtime) own
+//	                         the pod network end-to-end.
 //
 // Empty string is treated as CniPluginFlannel — same default as K3s.
 // Unknown values fall back to flannel with a logged warning so a
@@ -126,16 +126,16 @@ func (c BootstrapConfig) flannelOverlayArgs() []string {
 // slice) will:
 //   - HasInstalled: stat /usr/local/bin/k3s
 //   - InstallK3sServer: shell out to the k3s install script
-//                       (curl -sfL https://get.k3s.io | sh -s - <args>)
-//                       where <args> are the BootstrapConfig-derived
-//                       flags (CNI selection, etc.).
+//     (curl -sfL https://get.k3s.io | sh -s - <args>)
+//     where <args> are the BootstrapConfig-derived
+//     flags (CNI selection, etc.).
 //   - IsRunning / Start / Stop: systemctl on k3s.service
 //   - Version: parse `k3s --version`
 //   - CaptureBootstrapState: read /etc/rancher/k3s/k3s.yaml
-//                            (kubeconfig) +
-//                            /var/lib/rancher/k3s/server/node-token
-//                            (server_token) — uses same token as
-//                            agent_token in single-cluster v1.
+//     (kubeconfig) +
+//     /var/lib/rancher/k3s/server/node-token
+//     (server_token) — uses same token as
+//     agent_token in single-cluster v1.
 //   - Cleanup: shell out to /usr/local/bin/k3s-uninstall.sh
 type ServerApplier interface {
 	HasInstalled(ctx context.Context) (bool, error)

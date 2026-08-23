@@ -34,6 +34,56 @@ RSpec.describe System::Ai::Skills::PackageRepositorySyncExecutor do
       )
     end
 
+    # IMP-c90ba4ec46da — `force` is NOT a declared descriptor input, but
+    # #perform declares it as a keyword and BaseSkillExecutor#acceptable_inputs
+    # slices the caller's inputs to the keywords perform declares — so a
+    # composed plan step carrying a `force` key reaches it. `accessible_to`
+    # admits every shared repo, and force switches OFF the sync service's
+    # mass-obsoletion guard, so the forced path on a SHARED repo needs
+    # manage_shared. Oracle: nothing is enqueued (the enqueue is the last
+    # observable act before the worker obsoletes rows).
+    context "force gating" do
+      let!(:shared) { create(:system_package_repository, :shared) }
+
+      it "refuses (and enqueues nothing) when the caller cannot manage shared repos" do
+        r = described_class.new(account: account).execute(repository_id: shared.id, force: true)
+
+        expect(::System::WorkerJobEnqueuer).not_to have_received(:enqueue)
+        expect(r[:success]).to be false
+        expect(shared.reload.sync_status).not_to eq("syncing")
+      end
+
+      it "positive control: a manage_shared holder CAN force" do
+        sharer = create(:user, account: account,
+                        permissions: %w[system.package_repositories.manage_shared])
+
+        r = described_class.new(account: account, user: sharer).execute(repository_id: shared.id, force: true)
+
+        expect(r[:success]).to be true
+        expect(::System::WorkerJobEnqueuer).to have_received(:enqueue).with(
+          hash_including(job_class: "SystemPackageRepositorySyncJob", args: [ shared.id, { "force" => true } ])
+        )
+      end
+
+      it "still enqueues an UNFORCED sync of a shared repo" do
+        r = described_class.new(account: account).execute(repository_id: shared.id)
+
+        expect(r[:success]).to be true
+        expect(::System::WorkerJobEnqueuer).to have_received(:enqueue).with(
+          hash_including(job_class: "SystemPackageRepositorySyncJob", args: [ shared.id, { "force" => false } ])
+        )
+      end
+
+      it "still lets an ACCOUNT-SCOPED repo be forced (blast radius is the owner's own catalog)" do
+        r = described_class.new(account: account).execute(repository_id: repo.id, force: true)
+
+        expect(r[:success]).to be true
+        expect(::System::WorkerJobEnqueuer).to have_received(:enqueue).with(
+          hash_including(job_class: "SystemPackageRepositorySyncJob", args: [ repo.id, { "force" => true } ])
+        )
+      end
+    end
+
     it "fails cleanly for an unknown / inaccessible repository" do
       r = exec.execute(repository_id: SecureRandom.uuid)
       expect(r[:success]).to be false

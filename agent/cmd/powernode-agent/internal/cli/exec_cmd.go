@@ -22,15 +22,15 @@ import (
 // privilege model (default = drop to nobody), and runs the script
 // with a deadline. Captures stdout/stderr.
 type ExecOptions struct {
-	ScriptID       string
-	Args           []string
-	PlatformURL    string
-	PKIDir         string
-	Timeout        time.Duration
-	AsUser         string // empty = use script.config.security.user, else root
-	AllowUnsigned  bool   // dev/staging only
-	JSON           bool
-	AllowlistPath  string // /persist/var/lib/powernode/exec_allowlist.json
+	ScriptID      string
+	Args          []string
+	PlatformURL   string
+	PKIDir        string
+	Timeout       time.Duration
+	AsUser        string // empty = use script.config.security.user, else root
+	AllowUnsigned bool   // dev/staging only
+	JSON          bool
+	AllowlistPath string // /persist/var/lib/powernode/exec_allowlist.json
 }
 
 // scriptResponse mirrors the platform's

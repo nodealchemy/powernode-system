@@ -83,21 +83,19 @@ module Api
           def update
             require_permission("system.sdwan.route_policies.manage")
             attrs = policy_params.to_h
-            @policy.assign_attributes(attrs)
-            return render_validation_error(@policy) unless @policy.valid?
-
-            # Discard the un-gated in-memory changes: nothing may reach the row
-            # except through the executor.
-            @policy.reload
-
-            gate!(
+            # Sequence + rationale: Ai::GatedActions#gate_update!. The name comes
+            # from the incoming attributes so a rename's card names the new one.
+            gate_update!(
+              record: @policy,
+              attributes: attrs,
+              response_key: :route_policy,
+              serializer: ->(p) { serialize_full(p) },
               action_category: ::Sdwan::Executors::UpdateRoutePolicy::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::UpdateRoutePolicy",
               params: { policy_id: @policy.id, attributes: attrs },
               source_type: "Sdwan::RoutePolicy",
               source_id: @policy.id,
-              description: "Update SDWAN route policy #{@policy.name}",
-              on_proceed: ->(_r) { render_success(route_policy: serialize_full(@policy.reload)) }
+              description: "Update SDWAN route policy #{attrs['name'].presence || @policy.name}"
             )
           end
 

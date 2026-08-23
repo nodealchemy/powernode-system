@@ -67,6 +67,8 @@ func (execRunner) Run(ctx context.Context, name string, env []string) (stdout, s
 //     (GET config/ci_build_context?module=<slug>);
 //  2. exec module-forge-build.sh with the CONTRACT env vars (MODULE,
 //     BUILD_SHA, OCI_REF, MODULE_SOURCE_URL, PARENT_PAT (Class-B only),
+//     CORE_REF (the batch's pinned core commit; always set, empty when the
+//     platform sent no pin),
 //     ORAS_REGISTRY, ORAS_REGISTRY_USER, ORAS_REGISTRY_PASSWORD,
 //     APT_SNAPSHOT (optional drift-guard assertion)) — matching Part A's
 //     module-forge module EXACTLY (contract confirmed against the landed
@@ -134,6 +136,23 @@ type ciBuildContext struct {
 	OrasUser      string `json:"oras_user"`
 	OrasPassword  string `json:"oras_password"`
 	AptSnapshot   string `json:"apt_snapshot"`
+	// CoreRef is the core (parent powernode-platform) commit this batch must
+	// be assembled from — the batch's own expected_core_sha, the SAME value
+	// System::CoreMirrorPreflight checks the public mirror against at dispatch
+	// and System::CoreProvenanceGate checks the published artifact's
+	// org.powernode.core_source_sha annotation against at promote. Sent only
+	// for a Class-B module (the four that clone core) whose batch recorded a
+	// full 40-hex expectation; absent otherwise.
+	//
+	// THIS FIELD IS WHY THE AGENT HAD TO BE REBUILT. encoding/json decodes
+	// into this FIXED struct and buildEnv maps a FIXED list, so a `core_ref`
+	// the platform started sending would have been dropped here without a
+	// single error — the build would keep taking whatever the mirror's default
+	// branch pointed at while every log line read as if it were pinned. That
+	// silent-drop shape is exactly the defect class the pin exists to remove,
+	// so it must not be reintroduced by adding a server field without the
+	// matching field here.
+	CoreRef string `json:"core_ref"`
 }
 
 // moduleBuildResult is module-forge-build.sh's emitted result JSON (the
@@ -202,6 +221,8 @@ func (h *ModuleBuildHandler) Execute(ctx context.Context, task *tasks.Task) (tas
 // PARENT_PAT / APT_SNAPSHOT only when the platform supplied them (Class-B
 // modules / an operator override, respectively) — an empty env value for an
 // optional var the script doesn't expect is worse than simply omitting it.
+// CORE_REF is the deliberate exception and is ALWAYS emitted; see the comment
+// at its append below for why omission cannot clear it.
 func buildEnv(opts moduleBuildOptions, sourceURL string, bctx *ciBuildContext) []string {
 	env := []string{
 		"MODULE=" + opts.Module,
@@ -218,6 +239,24 @@ func buildEnv(opts moduleBuildOptions, sourceURL string, bctx *ciBuildContext) [
 	if bctx.AptSnapshot != "" {
 		env = append(env, "APT_SNAPSHOT="+bctx.AptSnapshot)
 	}
+	// CORE_REF is ALWAYS emitted, empty included — unlike PARENT_PAT and
+	// APT_SNAPSHOT above, which are omitted when unset.
+	//
+	// The difference is that this slice is appended to os.Environ() (see
+	// execRunner.Run), so OMITTING a var does not clear it: any CORE_REF
+	// already in the agent's own environment — a unit-file Environment=, an
+	// operator's systemd-run --setenv — would be inherited straight through,
+	// module-forge-build.sh's `export CORE_REF="${CORE_REF:-}"` would
+	// faithfully forward it, and the build would pin to a commit the platform
+	// never chose while stage15.sh logged "parent PINNED". That is the same
+	// silently-wrong-provenance defect the pin exists to remove, running in
+	// the other direction.
+	//
+	// Emitting it unconditionally makes the platform authoritative in both
+	// states: exec dedups duplicate keys keeping the LAST, so a real pin
+	// overrides an ambient one and an absent pin deterministically clears it.
+	// stage15.sh reads empty as "no pin" via `[ -n "$core_ref" ]`.
+	env = append(env, "CORE_REF="+bctx.CoreRef)
 	return env
 }
 

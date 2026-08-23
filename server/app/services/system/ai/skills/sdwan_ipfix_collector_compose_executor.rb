@@ -198,12 +198,16 @@ module System
           end
         end
 
-        # Mirrors IpfixCollector#target_endpoint for plan-mode reporting
-        # so dry-run audit logs surface the same wire-format string the
-        # live path will hand to ovs-vsctl. Keep in sync with the model.
+        # Plan-mode endpoint, so dry-run audit logs surface the same
+        # wire-format string the live path hands to ovs-vsctl. This was a
+        # hand-kept mirror of IpfixCollector#target_endpoint: the two stayed
+        # byte-identical to each other, but BOTH had drifted from the
+        # canonical Sdwan::Peer.format_host_port, dropping its
+        # already-bracketed guard and emitting "[[fd00::1]]:4739". Both now
+        # call the same Sdwan::HostPort.join, so there is nothing left to
+        # keep in sync (IMP-9537a74e50fa).
         def projected_endpoint(host:, port:)
-          bracketed = host.include?(":") ? "[#{host}]" : host
-          "#{bracketed}:#{port}"
+          ::Sdwan::HostPort.join(host, port)
         end
 
         # The topology compiler picks the oldest active collector per

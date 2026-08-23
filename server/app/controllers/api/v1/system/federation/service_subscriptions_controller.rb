@@ -72,14 +72,37 @@ module Api
             render_error("Subscription not found", status: :not_found) unless @subscription
           end
 
+          # IMP-563999967998 — these RAISE rather than render, for the same
+          # reason as ServiceOfferingsController's pair (see the long note
+          # there). Both are called INLINE from the actions — authorize_read!
+          # from index/show, authorize_cancel! from #cancel — never as
+          # before_actions, so the bare `render_error(...)` did not halt
+          # anything: #cancel rendered the 403 and then ran on into
+          # `@subscription.cancel!`, really cancelling the subscription for a
+          # caller with no system.service_subscriptions.cancel permission. The
+          # follow-up render_success raised DoubleRenderError, which ApiResponse
+          # swallows via `unless performed?`, leaving the caller a clean 403 over
+          # a committed state transition.
+          #
+          # Authentication::PermissionDenied inherits Exception (NOT
+          # StandardError) so it survives every `rescue StandardError` and the
+          # global rescue_from; its dedicated rescue_from renders the canonical
+          # 403 and unwinds the action. Predicate unchanged, status unchanged,
+          # message byte-identical (the rescue_from path adds `code: "FORBIDDEN"`).
           def authorize_read!
             return if current_user&.has_permission?("system.service_subscriptions.read")
-            render_error("Forbidden", status: :forbidden)
+
+            raise ::Authentication::PermissionDenied.new(
+              "Forbidden", permission: "system.service_subscriptions.read"
+            )
           end
 
           def authorize_cancel!
             return if current_user&.has_permission?("system.service_subscriptions.cancel")
-            render_error("Forbidden", status: :forbidden)
+
+            raise ::Authentication::PermissionDenied.new(
+              "Forbidden", permission: "system.service_subscriptions.cancel"
+            )
           end
 
           def serialize(sub, full: false)

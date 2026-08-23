@@ -23,18 +23,19 @@ import (
 // leave it nil to get the os/exec default.
 //
 // Idempotency contract:
-//   HasCert       — true iff all 3 PEM files exist + are non-empty
-//   WriteCert     — atomic per-file write (.tmp + rename); replaces
-//                   prior material on rotation
-//   RemoveCert    — best-effort delete; tolerates already-absent
-//   WriteDaemonConfig — atomic write; no-op if rendered bytes
-//                   match the on-disk file
-//   IsDaemonRunning — `systemctl is-active <unit>` parsed strictly
-//                   (must equal "active\n"); any other output → false
-//   StartDaemon / StopDaemon — `systemctl start/stop <unit>`;
-//                   tolerates "already started/stopped" exit codes
-//   DaemonVersion — `docker version --format '{{.Server.Version}}'`;
-//                   returns "" + nil when the daemon isn't running
+//
+//	HasCert       — true iff all 3 PEM files exist + are non-empty
+//	WriteCert     — atomic per-file write (.tmp + rename); replaces
+//	                prior material on rotation
+//	RemoveCert    — best-effort delete; tolerates already-absent
+//	WriteDaemonConfig — atomic write; no-op if rendered bytes
+//	                match the on-disk file
+//	IsDaemonRunning — `systemctl is-active <unit>` parsed strictly
+//	                (must equal "active\n"); any other output → false
+//	StartDaemon / StopDaemon — `systemctl start/stop <unit>`;
+//	                tolerates "already started/stopped" exit codes
+//	DaemonVersion — `docker version --format '{{.Server.Version}}'`;
+//	                returns "" + nil when the daemon isn't running
 type ShellApplier struct {
 	// Paths is the on-disk layout. Required.
 	Paths DaemonPaths

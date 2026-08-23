@@ -136,9 +136,17 @@ module Api
               description: "Delete VIP #{address || id}",
               on_proceed: ->(_r) {
                 # Executor handled the destroy + assignment cleanup; double-check
-                # any lingering assignments rows. Idempotent.
-                ::Sdwan::VipAssignment
-                  .where(virtual_ip_id: id, released_at: nil)
+                # any lingering assignment rows. Idempotent.
+                #
+                # IMP-800b25c1cc45: this named ::Sdwan::VipAssignment, which does
+                # not exist — the model is Sdwan::VirtualIpAssignment and its FK
+                # column is sdwan_virtual_ip_id. Every :proceed destroy raised
+                # NameError AFTER the executor had already removed the row, so
+                # the caller saw 500 for a destroy that succeeded. Unreachable
+                # from the default require_approval tier, which is why it stood:
+                # gate! never calls on_proceed on :pending.
+                ::Sdwan::VirtualIpAssignment
+                  .where(sdwan_virtual_ip_id: id, released_at: nil)
                   .update_all(released_at: Time.current, updated_at: Time.current)
                 render_success(deleted: true, id: id)
               }

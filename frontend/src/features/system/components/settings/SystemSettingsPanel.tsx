@@ -17,6 +17,7 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { AutonomyPolicyGroup } from '@/shared/components/autonomy/AutonomyPolicyGroup';
 import { ApprovalChainList } from '@/shared/components/approval-chains/ApprovalChainList';
 import { useSystemAutonomyConfig } from '@system/features/system/hooks/useSystemAutonomyConfig';
+import { systemPolicyBucket } from '@system/features/system/autonomyBucket';
 import type { AutonomyDomainPolicy } from '@/shared/types/autonomy';
 
 interface SystemSettingsPanelProps {
@@ -179,26 +180,100 @@ interface DomainSection extends DomainPresentation {
   key: string;
   actionCount: number;
   groups: AgentGroup[];
+  /**
+   * Categories the payload did not let us place in any group. Kept apart from
+   * `groups` so nothing can render them through the editor by accident, and so
+   * they cannot collide with a group key — a group key is an agent's NAME, and
+   * `Ai::Agent` validates no format, so any sentinel name we invented would be
+   * one a real agent could hold.
+   */
+  unreadableActions: string[];
 }
 
 /**
  * One editor group per agent bucket present in the domain, because a policy row
  * is per (category, scope, agent): the same category is commonly seeded twice —
  * once agent-scoped and once for the operator path — and they can hold
- * different verbs. `agent_bucket` is the server's own by_agent grouping key,
- * shipped on the row so this does not re-derive it.
+ * different verbs.
+ *
+ * `systemPolicyBucket` is the single authority for which bucket a row is in —
+ * the same function `useAutonomyConfig` reads verbs and row identities with, so
+ * a group here always has a verb there. A MISSING `agent_bucket` is not
+ * "Manual Operations" (IMP-82b43009d57b); see that function for the whole
+ * argument, and for why a row can be unplaceable.
+ *
+ * Unplaceable rows are RETURNED, not dropped. Dropping would be the same silent
+ * misrepresentation with fewer rows: the operator would read a complete-looking
+ * modal that omits real policy. A category can appear both in a group and in
+ * `unreadable` — that is the honest reading, since it means one row for the
+ * category was placeable and another was not.
  */
-function buildGroups(rows: AutonomyDomainPolicy[]): AgentGroup[] {
+function buildGroups(rows: AutonomyDomainPolicy[]): {
+  groups: AgentGroup[];
+  unreadable: string[];
+} {
   const byBucket = new Map<string, string[]>();
+  const unreadable: string[] = [];
 
   rows.forEach((row) => {
-    const bucket = row.agent_bucket || 'Manual Operations';
+    const bucket = systemPolicyBucket(row);
+
+    if (bucket === null) {
+      if (!unreadable.includes(row.action_category)) unreadable.push(row.action_category);
+      return;
+    }
+
     const actions = byBucket.get(bucket) || [];
     if (!actions.includes(row.action_category)) actions.push(row.action_category);
     byBucket.set(bucket, actions);
   });
 
-  return Array.from(byBucket, ([bucket, actions]) => ({ bucket, actions }));
+  return {
+    groups: Array.from(byBucket, ([bucket, actions]) => ({ bucket, actions })),
+    unreadable,
+  };
+}
+
+/**
+ * The degraded, honest rendering of rows whose bucket could not be read.
+ *
+ * DELIBERATELY NOT an editor, and deliberately not hidden either. Three
+ * treatments were on the table for undeterminable posture — render it editable
+ * at a default, hide it, or show it read-only — and the first is the dangerous
+ * one: an editable control asserts both a current verb and a row to write it to,
+ * and here we have neither. Hiding trades a visible wrong answer for an
+ * invisible one, which is the defect class this whole change is about. So the
+ * rows are named, their posture is stated as unknown rather than guessed, and no
+ * control offers to change them.
+ *
+ * The degradation is PARTIAL on purpose: the rest of the modal stays editable.
+ * Rows we could place are correctly attributed and safe to save, and refusing
+ * every save would deny the operator the fix for the rows they can still reach.
+ */
+function UnreadablePolicyGroup({ label, actions }: { label: string; actions: string[] }) {
+  return (
+    <div className="rounded-lg border border-theme-warning-border overflow-hidden">
+      <div className="px-4 py-2.5 bg-theme-warning-bg flex items-center justify-between">
+        <span className="text-xs font-semibold text-theme-warning-fg">{label}</span>
+        <span className="text-[10px] text-theme-warning-fg">{actions.length} actions</span>
+      </div>
+      <div className="p-3 space-y-2">
+        <p className="text-[11px] text-theme-secondary">
+          The server did not say which agent owns these policy rows, so this modal cannot show
+          their current setting and will not offer to change it. Their policies are unchanged and
+          still in force. Update the System extension on the server to configure them here.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
+          {actions.map((action) => (
+            <div key={action} className="flex items-center gap-1.5 py-0.5">
+              <span className="text-xs text-theme-primary truncate flex-1 min-w-0">{action}</span>
+              <span className="text-[11px] text-theme-tertiary shrink-0 w-[100px]">Unknown</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const CHAINS_KEY = 'chains';
@@ -221,12 +296,19 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
         )
         .sort(([a], [b]) => sectionRank(a) - sectionRank(b))
         .map(([key, rows]) => {
-          const groups = buildGroups(rows);
+          const { groups, unreadable } = buildGroups(rows);
           return {
             key,
             ...presentationFor(key),
-            actionCount: groups.reduce((sum, g) => sum + g.actions.length, 0),
+            // Rows LISTED, not distinct categories — the established meaning of
+            // this badge, which already counts a category twice when two buckets
+            // each carry a row for it. Unreadable rows are listed too, so they
+            // count: an operator comparing the badge against what they can see
+            // must not find rows missing from the total.
+            actionCount:
+              groups.reduce((sum, g) => sum + g.actions.length, 0) + unreadable.length,
             groups,
+            unreadableActions: unreadable,
           };
         }),
     [autonomy.domains]
@@ -234,6 +316,15 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
 
   const activeSection =
     activeKey === CHAINS_KEY ? undefined : sections.find((s) => s.key === activeKey) || sections[0];
+
+  // Whether ANY section holds rows this modal could not place — not just the one
+  // on screen. An operator who never opens the affected section would otherwise
+  // read the modal as complete, and a partially-readable view is exactly the
+  // state in which a save looks safe and is not.
+  const hasUnreadableRows = useMemo(
+    () => sections.some((s) => s.unreadableActions.length > 0),
+    [sections]
+  );
 
   const handleSave = async () => {
     await autonomy.save();
@@ -301,6 +392,20 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
 
         {/* Content pane */}
         <div className="flex-1 min-w-0">
+          {activeKey !== CHAINS_KEY && hasUnreadableRows && (
+            <div
+              data-testid="autonomy-skew-warning"
+              className="mb-3 rounded border border-theme-warning-border bg-theme-warning-bg px-3 py-2"
+            >
+              <p className="text-xs text-theme-warning-fg">
+                This view is incomplete. The server returned policy rows without the agent they
+                belong to — a sign its System extension is older than this interface. Those rows are
+                listed as <span className="font-semibold">Posture unknown</span> and cannot be read
+                or changed here; everything else on this screen is accurate and safe to save.
+              </p>
+            </div>
+          )}
+
           {activeKey === CHAINS_KEY ? (
             <ApprovalChainList />
           ) : autonomy.loading ? (
@@ -325,6 +430,15 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
                   isDirty={autonomy.isDirty}
                 />
               ))}
+
+              {/* Outside the map, so no key it uses can collide with an agent's
+                  name and no future edit can hand these rows to the editor. */}
+              {activeSection.unreadableActions.length > 0 && (
+                <UnreadablePolicyGroup
+                  label={`${activeSection.label} · Posture unknown`}
+                  actions={activeSection.unreadableActions}
+                />
+              )}
             </div>
           ) : (
             <p className="text-sm text-theme-tertiary py-6 text-center">

@@ -78,6 +78,22 @@ type RunOnceAPI interface {
 	ClearAttachedManifestHashes(moduleID string) error
 }
 
+// ConvergenceReporter is an OPTIONAL companion to RunOnceAPI: a reconciler that
+// can report which modules failed to reach their desired state during the last
+// pass. Kept separate from RunOnceAPI, and consumed via type assertion, so the
+// existing fakes that implement RunOnceAPI keep compiling unchanged.
+//
+// IMP-f1c1e6d61104 — this exists because RunOnce returns an error only for
+// whole-pass failures. Per-module failures (a reboot_required module declining
+// live materialization, a scratch-budget abort, a copy error, an unpublished
+// digest) report through OnError, which in service mode is a stderr printf the
+// platform never sees. The task therefore COMPLETED while the node had not
+// converged, and the server's ConfigDriftSensor suppresses drift for a node on
+// a completed apply_config — so a vacuous completion silenced real drift.
+type ConvergenceReporter interface {
+	ConvergenceFailures() []string
+}
+
 // HTTPClient is the minimal interface task client needs. Both
 // *transport.Client and *transport.SwappableClient satisfy it.
 type HTTPClient interface {

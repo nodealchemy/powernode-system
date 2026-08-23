@@ -39,7 +39,10 @@ RSpec.describe "Api::V1::System::NodeApi::Sdwan callbacks (webhook-500)", type: 
 
   describe Sdwan::BgpSessionWriter do
     it "recovers from a concurrent insert (RecordNotUnique) instead of raising 500" do
-      neighbor = "fd00:abcd:1::9"
+      # Inside the network's own /64: IMP-2f34679b6b73 made the writer refuse
+      # a neighbour address that cannot belong to the reporting network, and
+      # the subject here is the RecordNotUnique recovery, not attribution.
+      neighbor = "#{network.cidr_64.split('/').first}9"
       # The row a concurrent agent tick already inserted for (peer, neighbor).
       existing = Sdwan::BgpSession.create!(
         sdwan_peer_id: peer.id, sdwan_network_id: network.id,
@@ -65,6 +68,48 @@ RSpec.describe "Api::V1::System::NodeApi::Sdwan callbacks (webhook-500)", type: 
 
       expect { writer.write! }.not_to raise_error
       expect(existing.reload.state).to eq("established")
+    end
+  end
+
+  # IMP-2f34679b6b73 — the writer distinguishes a LEGACY agent (no `measured`
+  # key at all) from one that explicitly disclaimed the measurement. Every
+  # unit spec hands it plain symbol-keyed Hashes; the production caller hands
+  # it ActionController::Parameters. Exercise the distinction through the real
+  # controller, which is the only place the difference could break.
+  describe "POST /api/v1/system/node_api/status/bgp" do
+    def post_bgp(network_payload)
+      post "/api/v1/system/node_api/status/bgp",
+           params: { networks: [ network_payload ] }.to_json, headers: auth
+    end
+
+    def observation
+      peer.reload.bgp_session_state["observation"]
+    end
+
+    it "records an explicit measured:false as not_measured, with the agent's reason" do
+      post_bgp(network_id: network.id, measured: false,
+               not_measured_reason: "vrf_scope_unconfirmed", sessions: [])
+
+      expect(response).to have_http_status(:ok)
+      expect(observation["status"]).to eq("not_measured")
+      expect(observation["reason"]).to eq("vrf_scope_unconfirmed")
+      expect(observation["agent_vrf_scoped"]).to be(true)
+    end
+
+    it "records an explicit measured:true with no sessions as a real zero" do
+      post_bgp(network_id: network.id, measured: true, sessions: [])
+
+      expect(response).to have_http_status(:ok)
+      expect(observation["status"]).to eq("measured")
+      expect(observation["sessions_accepted"]).to eq(0)
+      expect(observation["agent_vrf_scoped"]).to be(true)
+    end
+
+    it "marks a report with no measured key at all as coming from an unscoped agent" do
+      post_bgp(network_id: network.id, sessions: [])
+
+      expect(response).to have_http_status(:ok)
+      expect(observation["agent_vrf_scoped"]).to be(false)
     end
   end
 end

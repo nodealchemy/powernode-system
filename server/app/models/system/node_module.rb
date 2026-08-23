@@ -48,7 +48,6 @@ module System
     # (Powernode.config.module_priority_category_multiplier). Override via
     # Rails config if needed.
     PRIORITY_CATEGORY_MULTIPLIER = (Rails.application.config.try(:system_module_priority_category_multiplier) || 1000).freeze
-    PRIORITY_PLACES = (Rails.application.config.try(:system_module_priority_places) || 7).freeze
 
     # Longest description we feed the embedder. Mirrors System::Package —
     # text-embedding-3-small caps at 8191 tokens, and the purpose signal in a
@@ -374,21 +373,6 @@ module System
     def package_spec_text;    decode_spec_text(package_spec); end
     def dependency_spec_text; decode_spec_text(dependency_spec); end
     def protected_spec_text;  decode_spec_text(protected_spec); end
-
-    # `.info` file content the on-node agent receives via
-    # /node_api/modules JSON response. Legacy: node_module.rb:127-138.
-    def info
-      <<~INFO
-        name=#{name}
-        init_restart=#{init_restart}
-        init_start=#{init_start}
-        init_stop=#{init_stop}
-        priority=#{effective_priority.to_s.rjust(PRIORITY_PLACES, '0')}
-        reboot=#{reboot_required ? 'true' : 'false'}
-        version=#{current_version_number}
-        copy_path=#{copy_path&.destination_path}
-      INFO
-    end
 
     # Priority-aware effective mask — the rsync exclude list used when this
     # module's blob is built. Folds:

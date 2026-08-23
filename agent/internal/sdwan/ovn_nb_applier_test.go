@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newNbRecorderBin installs a fake `ovn-nbctl` binary in tempdir.
@@ -402,7 +403,53 @@ func TestOvnNbApplier_ChangedPlanReapplies(t *testing.T) {
 	}
 }
 
-// 13) NoopOvnNbApplier captures plans and reports full apply without
+// 13) Every invocation carries ovn-nbctl's own --timeout — the replay
+// runs synchronously in the heartbeat loop, so an unresponsive NB
+// endpoint must fail the command instead of wedging the tick.
+func TestOvnNbApplier_EveryCallCarriesTimeout(t *testing.T) {
+	nbctlBin, logPath, _ := newNbRecorderBin(t)
+	a := &ShellOvnNbApplier{OvnNbctlBin: nbctlBin}
+
+	if _, err := a.Apply(context.Background(), samplePlan()); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	for _, l := range strings.Split(nbReadCalls(t, logPath), "\n") {
+		if !strings.Contains(l, "--timeout=") {
+			t.Errorf("expected --timeout on every call, missing in: %q", l)
+		}
+	}
+}
+
+// 14) A client that ignores --timeout (here: a shim that just sleeps) is
+// killed by the context deadline — a blackholed NB endpoint must not
+// hold the heartbeat loop for the kernel's TCP timeout.
+func TestOvnNbApplier_ContextDeadlineKillsAHungNbctl(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "ovn-nbctl")
+	if err := os.WriteFile(bin, []byte("#!/usr/bin/env bash\nsleep 30\n"), 0o755); err != nil {
+		t.Fatalf("write hung shim: %v", err)
+	}
+	a := &ShellOvnNbApplier{OvnNbctlBin: bin, CommandTimeout: 1 * time.Second}
+
+	start := time.Now()
+	_, err := a.Apply(context.Background(), &OvnNbPlan{
+		DeploymentID: "dep-1",
+		NbDbEndpoint: "tcp:10.0.0.1:6641",
+		Plan:         []OvnNbCommand{{Cmd: "ls-add", Args: []string{"sw"}}},
+	})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("expected error from hung ovn-nbctl")
+	}
+	// 1s --timeout + 2s kill grace; anything near the shim's 30s sleep
+	// means the deadline never fired.
+	if elapsed > 10*time.Second {
+		t.Fatalf("hung ovn-nbctl was not killed by the deadline; took %v", elapsed)
+	}
+}
+
+// 15) NoopOvnNbApplier captures plans and reports full apply without
 // shelling out — the safe default on a non-Linux dev box.
 func TestNoopOvnNbApplier_CapturesAndReportsApplied(t *testing.T) {
 	n := &NoopOvnNbApplier{}

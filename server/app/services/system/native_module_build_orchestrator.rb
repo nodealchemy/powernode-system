@@ -125,6 +125,10 @@ module System
       end
 
       record_expected_core_ref!(modules)
+
+      refusal = core_mirror_preflight(modules)
+      return refuse_dispatch!(modules, refusal) if refusal&.refuse?
+
       try_dispatch_queued!(modules)
       save_modules_state!(modules)
 
@@ -419,9 +423,10 @@ module System
     # A core-triggered batch diffs powernode-platform, so head_sha is a core sha
     # that does not exist in the module source repo; the builder died at
     # `fatal: remote error: upload-pack: not our ref <core sha>` eight seconds in.
-    # Crucially the core TREE never came from BUILD_SHA anyway — stage15.sh clones
-    # the parent from GitHub's powernode-platform default branch (develop), so the
-    # core content is whatever sits on that branch. head_sha's real jobs here are
+    # Crucially the core TREE never came from BUILD_SHA anyway — stage15.sh takes
+    # the parent from the powernode-platform mirror (pinned to this batch's
+    # expected_core_sha when one was recorded, otherwise that remote's default
+    # branch), never from BUILD_SHA. head_sha's real jobs here are
     # the DIFF (which modules to plan) and the TAG; the checkout was a third,
     # incompatible use it was silently doing as well.
     #
@@ -452,15 +457,23 @@ module System
     # Writes down, at dispatch, WHICH core (parent powernode-platform) commit
     # this batch's Class-B artifacts are supposed to be assembled from.
     #
-    # stage15.sh:226 clones the parent with a bare `git clone --depth 1` and NO
-    # ref, against a remote hardcoded at stage15.sh:147-148 to
+    # stage15.sh clones the parent from a remote defaulting to
     # github.com/nodealchemy/powernode-platform — a MIRROR of the Gitea that
     # core is actually pushed to, and one that lags arbitrarily (three days on
-    # 2026-08-15; five merges again on 2026-08-16). The commit that clone lands
-    # on is therefore knowable only after the fact, from the artifact's own
-    # provenance annotation. Without an expectation recorded here there is
-    # nothing to compare that annotation against, and
-    # System::ModulePublicationProcessor's promote gate has no oracle.
+    # 2026-08-15; five merges again on 2026-08-16).
+    #
+    # This value now has THREE consumers, and all three read this one field so
+    # they cannot disagree about what "the expected core" is:
+    #   1. System::CoreMirrorPreflight, which refuses this dispatch if the
+    #      mirror's HEAD disagrees with it;
+    #   2. the per-batch PIN — ConfigController#ci_build_context hands it to the
+    #      builder as CORE_REF, and stage15.sh fetches exactly that commit
+    #      instead of the mirror's default branch (full 40-hex only, since
+    #      `git fetch` needs a complete object name);
+    #   3. System::ModulePublicationProcessor's promote gate, which compares it
+    #      against the sha stamped on the published artifact.
+    # Without an expectation recorded here, (1) does not check, (2) does not
+    # pin, and (3) has no oracle.
     #
     # Idempotent: dispatch! is reachable more than once for a batch, and the
     # expectation is pinned to the moment of dispatch — it must not drift under
@@ -475,7 +488,7 @@ module System
       # CiRunnerLeaseSweepService — a sweep loop. Paying up to 80s there on every
       # package/runtime batch that can never contain core content would stall
       # lease sweeping fleet-wide whenever Gitea is slow.
-      return unless modules.any? { |_key, entry| ::System::CoreProvenanceGate.class_b?(entry["module"]) }
+      return unless class_b_batch?(modules)
 
       sha = expected_core_sha
       if sha.blank?
@@ -499,6 +512,135 @@ module System
         "[NativeModuleBuildOrchestrator] batch #{@batch.id} expects core #{sha.to_s[0, 7]} " \
         "from #{core_source_repo}"
       )
+    end
+
+    # Only a Class-B module clones core. Shared by #record_expected_core_ref!
+    # and #core_mirror_preflight so the two halves of the core-provenance
+    # protection can never disagree about which batches they apply to — and so
+    # that BOTH network calls sit behind the same guard (see the latency note
+    # above; this one is why the mirror check costs a non-Class-B dispatch
+    # nothing at all, not even a SiteSetting read).
+    def class_b_batch?(modules)
+      modules.any? { |_key, entry| ::System::CoreProvenanceGate.class_b?(entry["module"]) }
+    end
+
+    # === Mirror-divergence pre-flight (dispatch-time refusal) ===
+    #
+    # #record_expected_core_ref! above writes down which core commit this batch
+    # SHOULD be built from, resolved from the authoritative Gitea. stage15.sh
+    # will clone core from the PUBLIC MIRROR instead. This reads the mirror's
+    # HEAD and compares, so a mirror that has diverged from core is caught
+    # BEFORE a builder is leased rather than at promote, after the build burned.
+    #
+    # Returns a System::CoreMirrorPreflight::Verdict, or nil when the check does
+    # not apply. See that class for the three states; only `diverged` refuses.
+    #
+    # Runs at most ONCE per batch, and only while the batch is still `planning`:
+    # CiRunnerLeaseSweepService#redispatch_queued_batches! calls #dispatch!
+    # again for every non-terminal batch that still has a queued module, on a
+    # loop. Re-checking there would pay the network call over and over AND could
+    # refuse a batch that is already half-built — a refusal is only cheap while
+    # nothing has been built yet.
+    def core_mirror_preflight(modules)
+      # Two guards, each load-bearing for a DIFFERENT case, which is why
+      # neither is redundant: `planning?` is what stops a re-dispatch of an
+      # in-flight batch from re-checking (and from refusing work already
+      # building); the recorded-verdict check is what stops a batch that stayed
+      # in `planning` — a mixed batch whose survivors could not be leased, or a
+      # dispatch that raised after the verdict was written — from paying the
+      # network call again on every sweep pass.
+      return nil unless @batch.planning?
+      return nil if @batch.metadata["core_mirror_preflight"].present?
+      return nil unless class_b_batch?(modules)
+
+      verdict = ::System::CoreMirrorPreflight.check(
+        expected_sha:  @batch.metadata["expected_core_sha"],
+        expected_repo: core_source_repo
+      )
+      # The decision must not depend on the audit write succeeding. Recording
+      # runs in its own rescue so a failed metadata update degrades to "no
+      # record of why", never to "a divergence we saw and then discarded".
+      begin
+        record_core_mirror_preflight!(verdict)
+      rescue StandardError => e
+        Rails.logger.error(
+          "[NativeModuleBuildOrchestrator] could not record the mirror pre-flight verdict on batch " \
+          "#{@batch.id} (#{e.class}: #{e.message}) — acting on it anyway: #{verdict.state}"
+        )
+      end
+      verdict
+    rescue StandardError => e
+      # A pre-flight that cannot run is UNDETERMINED, and undetermined never
+      # blocks. An exception escaping here would turn a check meant to save a
+      # build into an outage of the dispatch path itself — including the sweep
+      # loop that calls it.
+      Rails.logger.warn(
+        "[NativeModuleBuildOrchestrator] mirror-divergence pre-flight failed for batch #{@batch.id} " \
+        "(#{e.class}: #{e.message}) — NOT PERFORMED, dispatching anyway; the core-drift promote gate " \
+        "remains the backstop"
+      )
+      nil
+    end
+
+    def record_core_mirror_preflight!(verdict)
+      @batch.update!(metadata: @batch.metadata.merge("core_mirror_preflight" => verdict.to_metadata))
+
+      case verdict.state
+      when ::System::CoreMirrorPreflight::STATE_DIVERGED
+        Rails.logger.error(
+          "[NativeModuleBuildOrchestrator] batch #{@batch.id} REFUSED at dispatch — #{verdict.reason}"
+        )
+      when ::System::CoreMirrorPreflight::STATE_UNDETERMINED
+        Rails.logger.warn(
+          "[NativeModuleBuildOrchestrator] batch #{@batch.id}: #{verdict.reason}"
+        )
+      else
+        Rails.logger.debug(
+          "[NativeModuleBuildOrchestrator] batch #{@batch.id} mirror pre-flight #{verdict.state}: #{verdict.reason}"
+        )
+      end
+    end
+
+    # A refused dispatch leases nothing and creates no Task FOR THE MODULES THAT
+    # CARRY CORE CONTENT — and only those. #class_b_batch? arms on `.any?`, but
+    # a batch is routinely MIXED: ModuleBuildPlannerService's reverse-dependency
+    # expansion turned one edit under agent/ into a 22-module batch (measured
+    # 2026-08-11). A Class-A module clones no parent, so a stale mirror cannot
+    # reach its artifact; failing it here would widen this protection's blast
+    # radius past the defect it exists to catch, and would be a REGRESSION
+    # against the promote gate, which withholds only the Class-B version and
+    # lets its siblings publish.
+    #
+    # The refused entries are left TERMINAL, so
+    # CiRunnerLeaseSweepService#redispatch_queued_batches! can never hand one a
+    # builder 60 seconds later — a non-terminal refusal would re-dispatch itself
+    # and be decorative. A batch with nothing left to build fails outright.
+    def refuse_dispatch!(modules, verdict)
+      modules.each_value do |entry|
+        next if TERMINAL_MODULE_STATES.include?(entry["state"])
+        next unless ::System::CoreProvenanceGate.class_b?(entry["module"])
+
+        entry["state"] = "failed"
+        entry["error"] = verdict.reason
+      end
+
+      survivors = modules.values.any? { |e| !TERMINAL_MODULE_STATES.include?(e["state"]) }
+      try_dispatch_queued!(modules) if survivors
+      save_modules_state!(modules)
+
+      if survivors
+        @batch.dispatch! if @batch.may_dispatch?
+      elsif @batch.may_fail?
+        @batch.fail!(verdict.reason)
+      end
+      @batch.recompute_counts!
+
+      # ok? is FALSE either way: a caller that asked for these modules to be
+      # built did not get that, and the webhook path in particular must be able
+      # to tell a refusal from a clean dispatch.
+      Result.new(ok?: false, dispatched: count_state(modules, "dispatched"),
+                 queued: count_state(modules, "queued"),
+                 succeeded: 0, retried: 0, failed: count_state(modules, "failed"))
     end
 
     # A core-triggered batch EXISTS because core moved to head_sha — that is the

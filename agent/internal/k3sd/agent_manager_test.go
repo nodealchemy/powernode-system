@@ -12,12 +12,12 @@ import (
 type stubAgentApplier struct {
 	mu sync.Mutex
 
-	Installed       bool
-	Running         bool
-	HasJoin         bool
-	Version_        string
-	JoinConfig      AgentJoinConfig
-	WriteJoinErr    error
+	Installed    bool
+	Running      bool
+	HasJoin      bool
+	Version_     string
+	JoinConfig   AgentJoinConfig
+	WriteJoinErr error
 
 	HasInstalledCalls int
 	InstallCalls      int
@@ -31,45 +31,53 @@ type stubAgentApplier struct {
 }
 
 func (s *stubAgentApplier) HasInstalled(_ context.Context) (bool, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.HasInstalledCalls++
 	return s.Installed, nil
 }
 func (s *stubAgentApplier) InstallK3sAgent(_ context.Context) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.InstallCalls++
 	s.Installed = true
 	return nil
 }
 func (s *stubAgentApplier) IsRunning(_ context.Context) (bool, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.IsRunningCalls++
 	return s.Running, nil
 }
 func (s *stubAgentApplier) Start(_ context.Context) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.StartCalls++
 	s.Running = true
 	return nil
 }
 func (s *stubAgentApplier) Stop(_ context.Context) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.StopCalls++
 	s.Running = false
 	return nil
 }
 func (s *stubAgentApplier) Version(_ context.Context) (string, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.VersionCalls++
 	return s.Version_, nil
 }
 func (s *stubAgentApplier) HasJoinConfig(_ context.Context) (bool, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.HasJoinCalls++
 	return s.HasJoin, nil
 }
 func (s *stubAgentApplier) WriteJoinConfig(_ context.Context, cfg AgentJoinConfig) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.WriteJoinCalls++
 	if s.WriteJoinErr != nil {
 		return s.WriteJoinErr
@@ -79,7 +87,8 @@ func (s *stubAgentApplier) WriteJoinConfig(_ context.Context, cfg AgentJoinConfi
 	return nil
 }
 func (s *stubAgentApplier) Cleanup(_ context.Context) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.CleanupCalls++
 	s.Installed = false
 	s.HasJoin = false

@@ -4533,8 +4533,13 @@ end
     end
 
     it "creates a module carrying the imported manifest_yaml + derived specs (so it is buildable)" do
+      # reuse_check is now mandatory on an authoring create (IMP-a67be4fe9041).
+      # This account has no buildable modules yet, so `considered` may be empty
+      # — but the R1/R2/R3 justification is required regardless.
       r = call("system_create_module", name: "ghtest", node_platform_id: platform_record.id,
-                                        category_id: category.id, manifest_yaml: manifest)
+                                        category_id: category.id, manifest_yaml: manifest,
+                                        reuse_check: { justification: "R2", considered: [],
+                                                       justification_detail: "vendored upstream with its own CVE cadence" })
       expect(r[:success]).to be(true)
 
       mod = ::System::NodeModule.find(r[:data][:node_module][:id])
@@ -4550,6 +4555,8 @@ end
       before = ::System::NodeModule.where(account: account).count
       r = call("system_create_module", name: "badmod", node_platform_id: platform_record.id,
                                         category_id: category.id,
+                                        reuse_check: { justification: "R3", considered: [],
+                                                       justification_detail: "opt-in payload a node type must exclude" },
                                         manifest_yaml: "schema_version: 1\nname: badmod\nfile_spec:\n  - \"/home/evil\"\n")
       expect(r[:success]).to be(false)
       expect(r[:error]).to match(/manifest import failed/)
@@ -4557,11 +4564,195 @@ end
     end
 
     it "re-imports a manifest onto an existing module via update" do
-      mod = create(:system_node_module, account: account, node_platform: platform_record, name: "upmod")
+      # The fixture now starts WITH a manifest, because that is what this
+      # example is about — a re-import (the CVE version bump the tool
+      # description names) onto a module the build planner already builds.
+      # It previously started bare, which conflated the re-import with the
+      # bare-create-then-update AUTHORING path; that path is gated by
+      # IMP-a67be4fe9041 and has its own example in the reuse-gate block.
+      mod = create(:system_node_module, account: account, node_platform: platform_record, name: "upmod",
+                                        manifest_yaml: "schema_version: 1\nname: upmod\n")
       r = call("system_update_module", module_id: mod.id,
                                        manifest_yaml: "schema_version: 1\nname: upmod\nfile_spec:\n  - \"/usr/local/bin/upmod\"\nreboot_required: false\n")
       expect(r[:success]).to be(true)
       expect(mod.reload.manifest_yaml).to include("upmod")
+    end
+  end
+
+  # IMP-a67be4fe9041 — the R1/R2/R3 reuse gate.
+  #
+  # Manifest authoring over MCP landed 2026-08-06 (f65e72c7): system_create_module
+  # routes manifest_yaml through System::ManifestImportService, which is exactly
+  # what puts the name into ModuleBuildPlannerService's buildable set. The reuse
+  # gate did NOT land with it — it stayed advisory prose in the tool description
+  # ("run system_discover_modules before authoring") and human-only prose in
+  # docs/runbooks/module-authoring.md Phase 0. An agent could therefore mint a
+  # duplicate module with no reuse check at all.
+  #
+  # Novelty is defined by ONE seam, not a second spelling: a call is authoring a
+  # NEW module iff it would add a name to
+  # System::ModuleBuildPlannerService.buildable_module_names — the same set the
+  # planner builds from.
+  describe "the R1/R2/R3 reuse gate on module authoring (IMP-a67be4fe9041)" do
+    let(:manifest) do
+      <<~YAML
+        schema_version: 1
+        name: newmod
+        file_spec:
+          - "/usr/local/bin/newmod"
+        package_spec: []
+        reboot_required: false
+      YAML
+    end
+
+    # A module already in the buildable set, so `considered:` has something real
+    # to name and the "you considered nothing" prong has something to fire on.
+    let!(:incumbent) do
+      create(:system_node_module, account: account, node_platform: platform_record,
+                                  name: "traefik", manifest_yaml: "schema_version: 1\nname: traefik\n")
+    end
+
+    # Calls execute directly rather than through `call` so a string-keyed
+    # override (the shape MCP JSON actually arrives in) survives the merge.
+    def authored(over = {})
+      tool.execute(params: { action: "system_create_module", name: "newmod",
+                             node_platform_id: platform_record.id, category_id: category.id,
+                             manifest_yaml: manifest }.merge(over))
+    end
+
+    it "refuses a novel manifest-bearing create that declares no reuse check" do
+      before = ::System::NodeModule.where(account: account).count
+      r = authored
+      expect(r[:success]).to be(false)
+      expect(r[:error]).to match(/reuse_check/)
+      expect(r[:error]).to match(/R1|R2|R3/)
+      # and it refuses BEFORE the row exists — no half-authored module.
+      expect(::System::NodeModule.where(account: account).count).to eq(before)
+    end
+
+    it "refuses a justification outside R1/R2/R3" do
+      r = authored(reuse_check: { justification: "R4", justification_detail: "it completes a family",
+                                  considered: [ { module: "traefik", rejected_because: "no TLS" } ] })
+      expect(r[:success]).to be(false)
+      expect(r[:error]).to match(/R1, R2, R3/)
+    end
+
+    it "refuses a considered module that does not exist — the declaration is falsifiable" do
+      r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                  considered: [ { module: "traefik", rejected_because: "no TLS" },
+                                                { module: "no-such-module", rejected_because: "made up" } ] })
+      expect(r[:success]).to be(false)
+      expect(r[:error]).to match(/no-such-module/)
+      expect(r[:error]).not_to match(/traefik/)
+    end
+
+    it "refuses a considered entry with no rejection rationale" do
+      r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                  considered: [ { module: "traefik", rejected_because: "  " } ] })
+      expect(r[:success]).to be(false)
+      expect(r[:error]).to match(/rejected_because/)
+    end
+
+    it "refuses an empty considered list while the catalog has buildable modules" do
+      r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                  considered: [] })
+      expect(r[:success]).to be(false)
+      expect(r[:error]).to match(/considered/)
+    end
+
+    it "refuses a blank justification_detail" do
+      r = authored(reuse_check: { justification: "R2", justification_detail: "",
+                                  considered: [ { module: "traefik", rejected_because: "no TLS" } ] })
+      expect(r[:success]).to be(false)
+      expect(r[:error]).to match(/justification_detail/)
+    end
+
+    it "accepts a declaration naming modules that exist, and persists the outcome" do
+      r = authored(reuse_check: { justification: "R2", justification_detail: "vendored upstream, own CVE cadence",
+                                  considered: [ { module: "traefik", rejected_because: "terminates TLS, does not scrape" } ] })
+      expect(r[:success]).to be(true)
+
+      mod = ::System::NodeModule.find(r[:data][:node_module][:id])
+      expect(mod.manifest_yaml).to be_present
+      recorded = mod.config["reuse_check"]
+      expect(recorded["justification"]).to eq("R2")
+      expect(recorded["considered"].map { |c| c["module"] }).to eq([ "traefik" ])
+      expect(recorded["checked_at"]).to be_present
+    end
+
+    # MCP delivers with_indifferent_access, so symbol access already works over
+    # the wire; this pins the string-keyed fallback for any other in-process
+    # caller and keeps normalize_hash honest.
+    it "accepts string-keyed params" do
+      r = authored("reuse_check" => { "justification" => "R3", "justification_detail" => "opt-in heavy payload",
+                                      "considered" => [ { "module" => "traefik", "rejected_because" => "different purpose" } ] })
+      expect(r[:success]).to be(true)
+    end
+
+    it "does not gate a bare-field create — no manifest, so the planner cannot build it" do
+      r = call("system_create_module", name: "barefields", node_platform_id: platform_record.id,
+                                       category_id: category.id)
+      expect(r[:success]).to be(true)
+    end
+
+    it "does not gate a re-import onto a name already in the buildable set" do
+      r = call("system_update_module", module_id: incumbent.id,
+                                       manifest_yaml: "schema_version: 1\nname: traefik\nfile_spec:\n  - \"/usr/local/bin/traefik\"\nreboot_required: false\n")
+      expect(r[:success]).to be(true)
+    end
+
+    it "gates the create-bare-then-update bypass: the update that FIRST makes a row buildable" do
+      bare = create(:system_node_module, account: account, node_platform: platform_record, name: "sneaky")
+      expect(bare.manifest_yaml).to be_blank
+
+      r = call("system_update_module", module_id: bare.id,
+                                       manifest_yaml: "schema_version: 1\nname: sneaky\nfile_spec:\n  - \"/usr/local/bin/sneaky\"\nreboot_required: false\n")
+      expect(r[:success]).to be(false)
+      expect(r[:error]).to match(/reuse_check/)
+      expect(bare.reload.manifest_yaml).to be_blank
+    end
+
+    it "accepts an authoring UPDATE that declares its reuse check, and persists it" do
+      bare = create(:system_node_module, account: account, node_platform: platform_record, name: "declared")
+      r = call("system_update_module", module_id: bare.id,
+                                       reuse_check: { justification: "R1",
+                                                      justification_detail: "two node types consume it today",
+                                                      considered: [ { module: "traefik", rejected_because: "proxy, not a scraper" } ] },
+                                       manifest_yaml: "schema_version: 1\nname: declared\nfile_spec:\n  - \"/usr/local/bin/declared\"\nreboot_required: false\n")
+      expect(r[:success]).to be(true)
+      expect(bare.reload.manifest_yaml).to be_present
+      expect(bare.config["reuse_check"]["justification"]).to eq("R1")
+    end
+
+    it "ignores a reuse_check on an UNGATED re-import rather than recording it as verified" do
+      # The gate early-returns for a name already in the buildable set, so this
+      # declaration was never checked — recording it would stamp unverified junk
+      # with a checked_at that reads as proof.
+      r = call("system_update_module", module_id: incumbent.id,
+                                       reuse_check: { justification: "R9",
+                                                      considered: [ { module: "invented-module" } ] },
+                                       manifest_yaml: "schema_version: 1\nname: traefik\nfile_spec:\n  - \"/usr/local/bin/traefik\"\nreboot_required: false\n")
+      expect(r[:success]).to be(true)
+      expect(incumbent.reload.config.to_h["reuse_check"]).to be_nil
+    end
+
+    it "does not mint an extra version when it stamps the declaration" do
+      # config is in NodeModule::VERSIONED_ATTRIBUTES, so a plain update! here
+      # would fire after_update :auto_create_version and re-point current_version
+      # at a second, artifact-less version — right after the manifest import
+      # suppressed that same callback to snapshot exactly one.
+      r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                  considered: [ { module: "traefik", rejected_because: "different purpose" } ] })
+      expect(r[:success]).to be(true)
+
+      mod = ::System::NodeModule.find(r[:data][:node_module][:id])
+      expect(mod.versions.count).to eq(1)
+      expect(mod.current_version_id).to eq(r[:data][:node_module_version_id])
+    end
+
+    it "asks the novelty question through the planner's own seam" do
+      expect(::System::ModuleBuildPlannerService.buildable_module_names(account)).to include("traefik")
+      expect(::System::ModuleBuildPlannerService.buildable_module_names(account)).not_to include("newmod")
     end
   end
 

@@ -37,16 +37,17 @@ var DefaultPaths = DaemonPaths{
 // reading kubeconfig + tokens.
 //
 // Idempotency contract:
-//   HasInstalled        — stat BinaryPath; true iff exists + non-zero size
-//   InstallK3sServer    — `curl -sfL https://get.k3s.io | sh -s - server`
-//                         (k3s install script is itself idempotent)
-//   IsRunning / Start / Stop — systemctl on `k3s.service`
-//   Version             — parse `k3s --version` (returns
-//                         "k3s version v1.30.4+k3s1 (abc123)")
-//   CaptureBootstrapState — read kubeconfig + token files; return
-//                          empty strings if not yet populated
-//                          (k3s creates these on first successful boot)
-//   Cleanup             — exec UninstallScriptPath if present
+//
+//	HasInstalled        — stat BinaryPath; true iff exists + non-zero size
+//	InstallK3sServer    — `curl -sfL https://get.k3s.io | sh -s - server`
+//	                      (k3s install script is itself idempotent)
+//	IsRunning / Start / Stop — systemctl on `k3s.service`
+//	Version             — parse `k3s --version` (returns
+//	                      "k3s version v1.30.4+k3s1 (abc123)")
+//	CaptureBootstrapState — read kubeconfig + token files; return
+//	                       empty strings if not yet populated
+//	                       (k3s creates these on first successful boot)
+//	Cleanup             — exec UninstallScriptPath if present
 type ShellServerApplier struct {
 	Paths DaemonPaths
 	Unit  string // defaults to "k3s.service"
@@ -201,13 +202,13 @@ func (s *ShellServerApplier) Cleanup(ctx context.Context) error {
 
 // ShellAgentApplier — production AgentApplier.
 //
-//   InstallK3sAgent — `curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC=agent sh -s -`
-//                     (without K3S_URL/K3S_TOKEN; we write those via
-//                      WriteJoinConfig as a systemd drop-in)
-//   WriteJoinConfig — atomic write of an Environment= override at
-//                     AgentEnvFilePath; daemon-reload to pick it up
-//   HasJoinConfig   — stat AgentEnvFilePath; true iff exists + non-zero
-//   Cleanup         — exec UninstallAgentPath if present
+//	InstallK3sAgent — `curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC=agent sh -s -`
+//	                  (without K3S_URL/K3S_TOKEN; we write those via
+//	                   WriteJoinConfig as a systemd drop-in)
+//	WriteJoinConfig — atomic write of an Environment= override at
+//	                  AgentEnvFilePath; daemon-reload to pick it up
+//	HasJoinConfig   — stat AgentEnvFilePath; true iff exists + non-zero
+//	Cleanup         — exec UninstallAgentPath if present
 type ShellAgentApplier struct {
 	Paths DaemonPaths
 	Unit  string // defaults to "k3s-agent.service"
@@ -307,9 +308,10 @@ func (s *ShellAgentApplier) HasJoinConfig(_ context.Context) (bool, error) {
 // env without editing the unit file.
 //
 // File format:
-//   [Service]
-//   Environment="K3S_URL=https://[fd00::1]:6443"
-//   Environment="K3S_TOKEN=K10agent-tok"
+//
+//	[Service]
+//	Environment="K3S_URL=https://[fd00::1]:6443"
+//	Environment="K3S_TOKEN=K10agent-tok"
 //
 // Atomic write: write to .tmp, rename. Daemon-reload after rename so
 // systemd picks up the new env on next start.
@@ -347,4 +349,3 @@ func (s *ShellAgentApplier) Cleanup(ctx context.Context) error {
 	_, err := s.execCmd(ctx, s.Paths.UninstallAgentPath)
 	return err
 }
-

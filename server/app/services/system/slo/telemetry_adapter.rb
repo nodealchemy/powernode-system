@@ -2,6 +2,22 @@
 
 module System
   module Slo
+    # DORMANT (decided 2026-08-23, IMP-6355c5adc382): #collect_latency_samples
+    # is never invoked in production. Its only caller, ScoreEvaluator#evaluate,
+    # is itself dormant (no System::Slo::Definition is ever created outside a
+    # spec, so ScoreEvaluator#evaluate_all never iterates any). And even if it
+    # ran, nothing anywhere emits a FleetEvent of kind "metric.latency_ms"
+    # (LATENCY_EVENT_KIND below) — see F6-04 /
+    # db/seeds/system_provisioning_mission_template.rb, which independently
+    # documents that no producer exists. Kept intentionally as a sound,
+    # unused design, not deleted. Do NOT wire a producer to revive it; the
+    # platform consolidated on System::ProjectMetric as its one telemetry
+    # convention (cron → SystemFleetReconcileJob → FleetAutonomyService.tick!
+    # → collect_project_metrics! → ProjectMetricsCollector →
+    # System::ProjectMetric → ProjectSloSensor → DecisionEngine). See
+    # spec/services/system/slo/dormancy_guard_spec.rb for the ratchet that
+    # fails loudly if an emitter reappears.
+    #
     # Audit plan P2.8a — replaces the `latency_p99_ms = nil` stub in
     # ScoreEvaluator#evaluate with a real reader. Reads FleetEvent rows
     # tagged `kind="metric.latency_ms"` scoped to the target node_module

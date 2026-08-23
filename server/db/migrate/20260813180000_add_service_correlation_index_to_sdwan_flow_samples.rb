@@ -44,10 +44,33 @@
 # observed_at (ipfix_ingest_service.rb), so a build finishing inside the 900s flow
 # window often leaves no hole at all.
 #
-# `if_not_exists: true` is load-bearing, not
-# decoration: without it this migration raises PG::DuplicateTable over an index
-# an operator pre-built by hand, which is precisely what makes "build it
-# concurrently ahead of the deploy" unavailable as a mitigation today.
+# Tolerating a pre-existing index is load-bearing, not decoration: without it
+# this migration raises PG::DuplicateTable over an index an operator pre-built
+# by hand, which is precisely what makes "build it concurrently ahead of the
+# deploy" unavailable as a mitigation today.
+#
+# That tolerance used to be `if_not_exists: true`, which is NOT safe next to
+# `algorithm: :concurrently` (IMP-7b0b46b4ccc9). A concurrent build runs outside
+# a transaction, so a build that fails partway is not rolled back — it leaves an
+# index with `pg_index.indisvalid = false` that the planner will never use. The
+# migration raises without stamping, the operator re-runs, and IF NOT EXISTS
+# — which matches BY NAME ONLY, consulting neither `indisvalid` nor the
+# definition — silently skips over the corpse and stamps as applied. The index
+# then exists in `db/schema.rb` and in `schema_migrations`, and is permanently
+# dead, with no error anywhere.
+#
+# So this is now the first consumer of
+# `Powernode::MigrationHelpers::ConcurrentIndex#add_index_concurrently`, which
+# keeps the pre-built-by-hand tolerance but decides it from the catalog:
+# an invalid leftover with no build in flight is dropped so the rebuild is real,
+# an identical valid index is a genuine no-op, and a valid index of the same
+# name with a DIFFERENT definition raises and names the index rather than being
+# silently accepted. Critically for the pre-build mitigation above, an index
+# that is invalid only because the operator's CREATE INDEX CONCURRENTLY is
+# STILL RUNNING is refused, never dropped.
+#
+# `up`/`down` rather than `change`, because the helper reads the catalog and so
+# cannot be recorded by the reversible-migration CommandRecorder.
 #
 # Concurrency was added by EDITING this already-applied migration rather than by
 # shipping a follow-up (lead decision, 2026-08-14). A follow-up cannot fix this:
@@ -58,13 +81,22 @@
 # on the unmerged dev-loop/dev-improve checkout, and concurrency changes only HOW
 # the index is built, never WHAT exists afterward.
 class AddServiceCorrelationIndexToSdwanFlowSamples < ActiveRecord::Migration[8.0]
+  include Powernode::MigrationHelpers::ConcurrentIndex
+
   disable_ddl_transaction!
 
-  def change
-    add_index :system_sdwan_flow_samples,
-              %i[account_id dst_ip dst_port observed_at],
-              name: "index_system_sdwan_flow_samples_on_service_correlation",
-              algorithm: :concurrently,
-              if_not_exists: true
+  INDEX_NAME = "index_system_sdwan_flow_samples_on_service_correlation"
+
+  def up
+    add_index_concurrently :system_sdwan_flow_samples,
+                           %i[account_id dst_ip dst_port observed_at],
+                           name: INDEX_NAME
+  end
+
+  def down
+    remove_index :system_sdwan_flow_samples,
+                 name: INDEX_NAME,
+                 algorithm: :concurrently,
+                 if_exists: true
   end
 end

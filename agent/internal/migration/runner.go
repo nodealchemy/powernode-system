@@ -6,15 +6,15 @@
 //
 // Contract steps (per server-side plan["agent_contract"]):
 //
-//   mount_target → snapshot → rsync → verify → cutover → unmount_source
+//	mount_target → snapshot → rsync → verify → cutover → unmount_source
 //
 // Mapped onto the StorageMigration state machine:
 //
-//   approved  → preparing  (mount_target + snapshot)
-//   preparing → syncing    (rsync data)
-//   syncing   → verifying  (rsync --checksum --dry-run; expect no diffs)
-//   verifying → cutover    (atomic rename — old subpath ↔ new subpath)
-//   cutover   → completed  (server-side; agent reports + unmount_source)
+//	approved  → preparing  (mount_target + snapshot)
+//	preparing → syncing    (rsync data)
+//	syncing   → verifying  (rsync --checksum --dry-run; expect no diffs)
+//	verifying → cutover    (atomic rename — old subpath ↔ new subpath)
+//	cutover   → completed  (server-side; agent reports + unmount_source)
 //
 // Plan reference: E8.2 / E8.3.
 package migration
@@ -232,12 +232,12 @@ func (r *Runner) stepVerify(ctx context.Context, m AssignedMigration) error {
 // stepCutover atomically re-points the consumer's canonical mount
 // from source → target. Sequence (all idempotent):
 //
-//	1. systemctl stop <consumer_units>      — release file handles
-//	2. umount <consumer_mount_point>        — source comes down
-//	3. mount target at <consumer_mount_point> — new home in place
-//	4. systemctl start <consumer_units>     — consumer reads target
-//	5. umount source scratch + target scratch — release pool mounts
-//	6. report cutover → completed
+//  1. systemctl stop <consumer_units>      — release file handles
+//  2. umount <consumer_mount_point>        — source comes down
+//  3. mount target at <consumer_mount_point> — new home in place
+//  4. systemctl start <consumer_units>     — consumer reads target
+//  5. umount source scratch + target scratch — release pool mounts
+//  6. report cutover → completed
 //
 // If consumer_mount_point or consumer_units are empty, the agent
 // falls back to the v1 behavior (umount source scratch only). This

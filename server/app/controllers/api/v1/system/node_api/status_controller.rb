@@ -52,7 +52,9 @@ module Api
           # Body (from powernode-agent's runtime.HeartbeatPayload):
           #   boot_id, agent_version, architecture, uptime_seconds,
           #   module_digests (hash of module_id → oci_digest), mount_state,
-          #   load_average, memory_free_kb, booted_image_git_sha
+          #   load_average, memory_free_kb, booted_image_git_sha,
+          #   sdwan_state (per-network applier outcomes — see
+          #   Sdwan::AgentApplyStateWriter), sdwan_ovn_state
           #
           # Persists into the NodeInstance's M0.M runtime telemetry columns
           # (last_heartbeat_at, agent_version, boot_id, running_module_digests,
@@ -61,6 +63,10 @@ module Api
           def heartbeat
             digests = params[:module_digests]
             digests = digests.to_unsafe_h if digests.respond_to?(:to_unsafe_h)
+            # Captured BEFORE record_heartbeat! stamps last_heartbeat_at: "has
+            # this instance ever heartbeated" is the discriminator that keeps
+            # network-profile auto-classification (below) off the legacy fleet.
+            first_contact = current_instance.last_heartbeat_at.nil?
             current_instance.record_heartbeat!(
               agent_version:        params[:agent_version].presence || "unknown",
               boot_id:              params[:boot_id].presence       || "unknown",
@@ -77,6 +83,80 @@ module Api
             caps = params[:node_capabilities]
             caps = caps.to_unsafe_h if caps.respond_to?(:to_unsafe_h)
             current_instance.record_capabilities!(caps) if caps.present?
+
+            # IMP-57e9a90598ee — first-heartbeat network-profile
+            # classification. record_heartbeat! above just persisted the
+            # agent-observed architecture, which is the last fact
+            # suggest_network_profile needs; this is therefore the first
+            # moment the platform can CLASSIFY rather than guess. Runs only
+            # on the instance's FIRST heartbeat ever (first_contact, captured
+            # above) and only when that heartbeat will transition it into
+            # running — so a legacy host rebooting never auto-classifies (see
+            # the method's guards: never an already-running instance, never
+            # over an operator declaration, never a demotion). Wrapped so a
+            # classification bug cannot bounce telemetry.
+            begin
+              current_instance.classify_network_profile!(first_contact: first_contact)
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] network profile classification failed for #{current_instance.id}: #{e.class}: #{e.message}")
+            end
+
+            # IMP-57e9a90598ee — the agent's OVN NB replay observation
+            # (manager.go OvnNbStatus, previously computed every tick and
+            # thrown away) plus the control-plane NB probe drive the
+            # account's Sdwan::OvnDeployment lifecycle. The reconciler is
+            # observation-only: no block + nothing probeable = no change.
+            # Wrapped so an OVN reconcile bug cannot bounce telemetry.
+            begin
+              ovn_obs = params[:sdwan_ovn_state]
+              ovn_obs = ovn_obs.to_unsafe_h if ovn_obs.respond_to?(:to_unsafe_h)
+              ::Sdwan::Ovn::DeploymentReconciler.reconcile!(
+                instance: current_instance,
+                nb_observation: ovn_obs.presence
+              )
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] OVN deployment reconcile failed for #{current_instance.id}: #{e.class}: #{e.message}")
+            end
+
+            # IMP-da1b772c2596 — the agent's SDWAN APPLY observation. The
+            # producer has shipped `sdwan_state` since the SDWAN manager
+            # existed (and per-subsystem applier outcomes since 28460bbb) and
+            # NOTHING on the server read the key, so a node whose nftables /
+            # vrf / bridge apply failed on every tick was indistinguishable
+            # from one that applied cleanly — the platform scored "served" as
+            # "applied". Absent block ⇒ nothing written (absence stays
+            # absence; System::Fleet::Sensors::SdwanApplyHealthSensor reads it
+            # as NOT MEASURED, never as healthy). Wrapped so an ingest bug
+            # cannot bounce telemetry, exactly like the OVN block above.
+            begin
+              apply_obs = params[:sdwan_state]
+              apply_obs = apply_obs.to_unsafe_h if apply_obs.respond_to?(:to_unsafe_h)
+              ::Sdwan::AgentApplyStateWriter.write!(
+                instance: current_instance,
+                payload:  apply_obs
+              )
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] sdwan apply state ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
+            end
+
+            # IMP-3855ff9908f2 — the agent's `verify:` PROBE observation. The
+            # platform can prove it SERVED a module and the agent can prove it
+            # MOUNTED one; neither says whether the capability the module
+            # exists to provide is reachable on the node afterwards. That
+            # answer exists only on the node. Absent block => nothing written
+            # (absence stays absence; ModuleVerifyFailedSensor reads it as NOT
+            # MEASURED, never as verified). Wrapped so an ingest bug cannot
+            # bounce telemetry, exactly like the two blocks above.
+            begin
+              verify_obs = params[:module_verify_state]
+              verify_obs = verify_obs.to_unsafe_h if verify_obs.respond_to?(:to_unsafe_h)
+              ::System::ModuleVerifyStateWriter.write!(
+                instance: current_instance,
+                payload:  verify_obs
+              )
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] module verify state ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
+            end
 
             # Boot-image upgrade reconcile (campaign 019f505f inc 2): the node
             # reboots mid-task, so the agent's /complete is unreliable — the

@@ -53,6 +53,23 @@ export interface SdwanPeer {
   status: SdwanPeerStatus;
   public_key?: string | null;
   last_handshake_at?: string | null;
+  // IMP-ab73cc2fca65 — observed WireGuard byte counters, raw cumulative totals
+  // for the current interface incarnation (they restart at zero when the
+  // interface is recreated, so a later sample may be LOWER than an earlier one).
+  //
+  // null/undefined means NOT MEASURED — no heartbeat has carried a counter pair
+  // for this peer. 0 means measured and idle. Rendering an unmeasured counter
+  // as "0 B" would make a never-reported peer indistinguishable from a quiet
+  // one, so the two states must render differently.
+  //
+  // Typed `number` while the column is bigint: JSON.parse silently rounds past
+  // Number.MAX_SAFE_INTEGER (~9 PB on one interface incarnation). These values
+  // are display-only here, so the rounding is cosmetic — but anything that
+  // starts differencing them client-side needs to read the counters as strings
+  // first.
+  rx_bytes?: number | null;
+  tx_bytes?: number | null;
+  counters_sampled_at?: string | null;
   capabilities?: Record<string, unknown>;
   created_at?: string;
   // Slice 9a — routing layer.
@@ -199,20 +216,44 @@ export interface SdwanFederationPeer {
   created_at?: string;
 }
 
+// Mirrors Sdwan::FederationGovernance::SEVERITY_BY_KIND exactly. The console
+// renders whatever the server scanner emits, so this union has to track that
+// constant — it previously listed only the four kinds the deleted client-side
+// stub could produce (IMP-65f479ad8484).
 export type SdwanFederationFindingKind =
   | 'prefix_overlap_with_install'
   | 'prefix_overlap_with_other_peer'
   | 'stale_accepted_without_handshake'
-  | 'expired_trust_jwt';
+  | 'expired_trust_jwt'
+  | 'peer_heartbeat_stale'
+  | 'peer_capability_drift'
+  | 'peer_cert_expiring'
+  | 'peer_cert_expired'
+  | 'peer_schema_version_drift'
+  | 'peer_schema_version_missing'
+  | 'peer_residency_missing'
+  | 'migration_chain_stalled'
+  | 'migration_chain_failed';
 
 export type SdwanFederationFindingSeverity = 'low' | 'medium' | 'high' | 'critical';
 
 export interface SdwanFederationFinding {
   kind: SdwanFederationFindingKind;
   severity: SdwanFederationFindingSeverity;
-  federation_peer_id: string;
+  // Nullable: the migration-chain findings set this to the destination peer of
+  // the wedged hop "when discoverable", and migration_chain_failed always
+  // passes nil (FederationGovernance#scan_migration_chains).
+  federation_peer_id: string | null;
   message: string;
   payload: Record<string, unknown>;
+}
+
+// The envelope GET /system/sdwan/federation_governance/scan returns, matching
+// Ai::Tools::SdwanTool#federation_scan key for key.
+export interface SdwanFederationScanResult {
+  findings: SdwanFederationFinding[];
+  finding_count: number;
+  severity_summary: Record<string, number>;
 }
 
 // ──── Slice 9a: Routing layer (static subnet routing baseline) ─────

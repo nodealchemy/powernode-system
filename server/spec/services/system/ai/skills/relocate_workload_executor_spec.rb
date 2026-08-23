@@ -208,6 +208,39 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       let(:second_source_instance) { create(:system_node_instance, :running, node: second_source_node) }
       let(:both_source_ids)        { [ source_instance.id, second_source_instance.id ] }
 
+      # IMP-f5532c5c5bd6 — the dry run must not preview a clean plan for a
+      # declaration the real run already refuses.
+      #
+      # ProvisionFullStackExecutor emits dry_run_storage_failures for exactly
+      # this input, with the rationale stated in its own comment: "a declaration
+      # the real run would record failure entries for must not preview as a
+      # clean plan". Relocate never composes PFSE for the preview — it builds
+      # its own plan and returned `failures: []` unconditionally — so the
+      # operator's :high blast-radius card showed the storage steps absent, a
+      # conditional storage-unready clause about a volume appearing nowhere in
+      # the plan, and ZERO failures.
+      #
+      # Refused at the DOOR rather than previewed-with-failures (operator's
+      # decided option 2): the end-to-end path ALREADY refuses this input — see
+      # "refuses every declared-but-unreadable storage shape" below — so
+      # continuing buys nothing and costs a full provision-and-reclaim cycle for
+      # an input diagnosable before any work starts.
+      it "refuses a declared-but-unreadable storage value instead of previewing a clean plan" do
+        r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                         to_region_id: to_region.id, cutover_strategy: "blue_green",
+                         template_id: template.id,
+                         provider_instance_type_id: instance_type.id, count: 2,
+                         source_instance_ids: both_source_ids,
+                         with_storage_gb: "plenty", dry_run: true)
+
+        expect(r[:success]).to be(false),
+                               "the card previewed a clean plan for a declaration the real run refuses"
+        expect(r[:error]).to include("unreadable")
+        # The size is UNKNOWN on this branch — quoting with_storage_gb.to_i
+        # would render an authoritative "0 GB" for a value never read.
+        expect(r[:error]).not_to include("0 GB")
+      end
+
       def card(strategy:, network_id: nil, source_ids: both_source_ids, with_storage_gb: nil)
         r = exec.execute(project_id: mission.id, from_region_id: from_region.id,
                          to_region_id: to_region.id, cutover_strategy: strategy,
@@ -271,13 +304,15 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         expect(requested.map { |a| a[:condition] })
           .to all(match(/storage-unready/).and(include("25")).and(match(/target stack is reclaimed/)))
 
-        # A DECLARED-but-unreadable value plans no storage steps (the inner
-        # executor creates nothing) yet still refuses the cutover, so the card
-        # must disclose it — and must NOT quote "0 GB" for a size nothing read.
-        unreadable = card(strategy: "blue_green", with_storage_gb: "plenty")
-                       .select { |a| a[:step] == "terminate_source" }
-        expect(unreadable.map { |a| a[:condition] }).to all(match(/storage-unready/))
-        expect(unreadable.map { |a| a[:condition] }.join(" | ")).not_to include("0 GB")
+        # The declared-but-unreadable half of this example MOVED, deliberately
+        # (IMP-f5532c5c5bd6). It used to assert that such a value still
+        # produces a card — one planning no storage steps but carrying a
+        # storage-unready clause. That card was the defect: it previewed a
+        # clean plan (zero failures) for a declaration the run already refuses.
+        # The value is now refused at the door, so there is no card to disclose
+        # anything on, and the assertion lives in
+        # "refuses a declared-but-unreadable storage value instead of
+        # previewing a clean plan" above.
 
         # A 0 is "no storage", not "storage missing" (ProvisionFullStackExecutor
         # #storage_requested?) — the clause must be absent, not merely reworded.
@@ -290,20 +325,38 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       # Negative control (positive twins above): drain terminates FIRST — no
       # guard exists on its path, so a conditional marker would promise a
       # safety the run does not have.
-      it "leaves every drain terminate step unconditional, one per source" do
+      #
+      # IMP-49b3e42d9423 — the marker keys stay absent for exactly that
+      # reason, and a `note` now says so in words. The card gained it because
+      # the run gained a terminal state it never described: the same three
+      # arms that make blue_green skip its teardown make drain FAIL after its
+      # teardown has already happened.
+      it "leaves every drain terminate step unconditional, one per source, and says why" do
         # THREE sources against count: 2 targets, so the entries are counted
         # per SOURCE and cannot be coming from the target loop — with two of
         # each, "one terminate per target" is indistinguishable from "one per
         # source". Exact shape, in order: a marker leaking onto any entry, or
         # a step going missing, reds this.
-        terminate = card(strategy: "drain", source_ids: both_source_ids + [ source_instance.id ])
+        network = ::Sdwan::Network.create!(account_id: account.id, name: "drain-card-#{SecureRandom.hex(3)}")
+        terminate = card(strategy: "drain", source_ids: both_source_ids + [ source_instance.id ],
+                         network_id: network.id, with_storage_gb: 25)
                       .select { |a| a[:step] == "terminate_source" }
 
-        expect(terminate).to eq([
+        expect(terminate.map { |a| a.slice(:step, :instance_id) }).to eq([
           { step: "terminate_source", instance_id: source_instance.id },
           { step: "terminate_source", instance_id: second_source_instance.id },
           { step: "terminate_source", instance_id: source_instance.id }
         ])
+        # The guard markers blue_green carries must NOT leak here.
+        expect(terminate.flat_map(&:keys).uniq).to match_array(%i[step instance_id note])
+        # And the note discloses the terminal state, enumerating the same
+        # three arms the run actually gates on.
+        expect(terminate.map { |a| a[:note] }).to all(
+          match(/UNCONDITIONAL/)
+            .and(match(/undersized/)).and(match(/storage-unready/)).and(include("25 GB"))
+            .and(match(/off-fabric/)).and(include(network.id))
+            .and(match(/FAILS/)).and(match(/RETAINED/))
+        )
       end
     end
 
@@ -549,8 +602,16 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       # not: IMP-e1903a42c1ab added the storage arm, and the decision is
       # specced in "blue_green refusal when the target stack's storage leg
       # failed" below. Drain remains the strategy this partial-run shape is
-      # observable on — under blue_green all three legs now gate the teardown,
-      # and drain has no guard at all because it terminates first by design.
+      # observable on — under blue_green all three legs now gate the teardown.
+      #
+      # IMP-49b3e42d9423 — and now drain gates the OUTCOME on the same three
+      # arms, so this shape is a FAILURE on both strategies and the envelope
+      # carries no planned_actions on either. The discriminator did not have
+      # to be given up, only moved: drain's refusal cannot reclaim (its
+      # sources are already gone), so the run trace is the operator's only
+      # record of what the run did to them, and #refuse_drain_outcome!
+      # records it on the durable Ai::ExecutionEvent. It is the same lifted
+      # trace, read from the place it now survives in.
       context "when one of several provisioning legs fails" do
         let(:surviving_instance) { instance_double("System::NodeInstance", id: SecureRandom.uuid) }
 
@@ -572,9 +633,16 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
                            provider_instance_type_id: instance_type.id, count: 2,
                            source_instance_ids: [ source_instance.id ])
 
-          expect(r[:success]).to be true
-          steps = r[:data][:planned_actions]
-          expect(steps.map { |a| a[:step] }).to eq(%w[
+          # A 1-of-2 shortfall is a degraded target with the sources already
+          # gone — refused now, on the same predicate blue_green uses.
+          expect(r[:success]).to be false
+          expect(r[:error]).to match(%r{undersized \(1/2 instances provisioned\)})
+
+          ev = ::Ai::ExecutionEvent.where(account_id: account.id,
+                                          event_type: "relocate_cutover_refusal")
+                                   .order(:created_at).last
+          steps = ev.metadata["planned_actions"]
+          expect(steps.map { |a| a["step"] }).to eq(%w[
             relocate_workload
             terminate_source
             create_node create_node provision_instance
@@ -583,21 +651,334 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
 
           # The surviving leg's steps pair up by node: the one provision belongs
           # to the SECOND node created, and the failed leg's node has none.
-          created_node_ids = steps.select { |a| a[:step] == "create_node" }.map { |a| a[:node_id] }
-          provisioned      = steps.select { |a| a[:step] == "provision_instance" }
+          created_node_ids = steps.select { |a| a["step"] == "create_node" }.map { |a| a["node_id"] }
+          provisioned      = steps.select { |a| a["step"] == "provision_instance" }
           expect(created_node_ids.uniq.size).to eq(2)
-          expect(provisioned.map { |a| a[:node_id] }).to eq([ created_node_ids.last ])
-          expect(provisioned.map { |a| a[:instance_id] }).to eq([ surviving_instance.id ])
+          expect(provisioned.map { |a| a["node_id"] }).to eq([ created_node_ids.last ])
+          expect(provisioned.map { |a| a["instance_id"] }).to eq([ surviving_instance.id ])
 
           # The rollup counts what CAME UP, not what was asked for, and the
-          # failed leg surfaces on the envelope rather than only in the steps.
-          expect(steps.last).to include(step: "provision_target_stack", instance_count: 1)
-          expect(r[:data][:partial]).to be true
-          expect(r[:data][:failures]).to include(
-            hash_including(step: "provision_instance", node_id: created_node_ids.first,
-                           error: "region quota exhausted")
+          # failed leg is recorded rather than only implied by the steps.
+          expect(steps.last).to include("step" => "provision_target_stack", "instance_count" => 1)
+          expect(ev.metadata["provisioning_leg_failures"]).to include(
+            hash_including("step" => "provision_instance", "node_id" => created_node_ids.first,
+                           "error" => "region quota exhausted")
           )
+          # The one instance that DID come up is the mission's only capacity
+          # and is retained, not reclaimed.
+          expect(ev.metadata["retained"]["node_instance"]).to eq([ surviving_instance.id ])
         end
+      end
+    end
+    # IMP-49b3e42d9423 — the drain branch's SAFETY POSTURE, verified by
+    # execution rather than asserted from intent.
+    #
+    # THE QUESTION iteration 275 filed: blue_green's readiness guard protects
+    # blue_green ONLY, and drain "terminates first by design" — does drain
+    # destroy the sources against a degraded target the way blue_green did?
+    #
+    # THE ANSWER, from a probe run against this fixture on the pre-fix code —
+    # each of the three degradation arms driven separately, count: 2, network
+    # and storage declared:
+    #
+    #   arm             envelope                       guard booleans (derived)   guard machinery
+    #   undersized      success:true partial:true      undersized=true            storage_unready? NOT called
+    #   off-fabric      success:true partial:true      off_fabric=true            refuse_..._cutover! NOT called
+    #   storage-unready success:true partial:true      storage_unready=true       (neither, on any arm)
+    #
+    # and in EVERY arm the call log's entry 0 was terminate_instance(<source>).
+    #
+    # So the hazard is NOT a missing pre-terminate guard — no guard is
+    # structurally possible there, because at terminate time the target does
+    # not exist yet to be measured. The operator approved that ordering. What
+    # they did not approve is the OUTCOME REPORT: the run ends with the
+    # sources destroyed and a target that cannot carry the workload, and says
+    # `success: true`. SkillCompositionRunner#execute_step! branches on
+    # `result_success?` alone and ignores `partial` entirely, so that envelope
+    # marks the step COMPLETED, dispatches successors and advances the
+    # mission. `partial` is not a discriminator either: a source whose
+    # terminate merely errored also sets it, on a run that delivered a
+    # perfectly healthy target.
+    #
+    # THE FIX therefore reuses blue_green's three-arm predicate and its
+    # refusal VOCABULARY (one `#cutover_refusal_reasons`, one
+    # `relocate_cutover_refusal` event type, the same reason strings) but
+    # DEPARTS from the shared fail-and-RECLAIM path, and the departure is
+    # forced by the probe: under blue_green the sources still hold the
+    # workload, so reclaiming the refused target is free. Under drain they are
+    # already gone, so that same reclaim would destroy the mission's only live
+    # capacity. The degraded target is RETAINED, its ids recorded, and the
+    # envelope carries NO rollback kwargs — because the runner's
+    # rollback_step! would hand them straight to
+    # `rollback_relocate_workload`, which terminates them.
+    context "drain outcome when the target stack comes up degraded" do
+      let(:network) { ::Sdwan::Network.create!(account_id: account.id, name: "drain-net-#{SecureRandom.hex(3)}") }
+
+      # Real rows: the storage arm's oracle is a persisted FK and the
+      # no-reclaim oracle resolves ids back to records, so a double would make
+      # both vacuous.
+      let(:target_a) { sdwan_test_node_instance(node: sdwan_test_node(account: account)) }
+      let(:target_b) { sdwan_test_node_instance(node: sdwan_test_node(account: account)) }
+      let(:volume_a) { create(:system_provider_volume, account: account, provider_region: to_region) }
+      let(:volume_b) { create(:system_provider_volume, account: account, provider_region: to_region) }
+
+      let(:terminated_ids)  { [] }
+      let(:pending_targets) { [ target_a, target_b ] }
+      let(:pending_volumes) { [ volume_a, volume_b ] }
+
+      before do
+        allow(::System::ProvisioningService).to receive(:provision_instance) do
+          ::System::Runtime::Result.ok(data: { instance: pending_targets.shift, cloud_instance_id: "ci-drain" })
+        end
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |**kwargs|
+          terminated_ids << kwargs[:instance].id
+          ::System::Runtime::Result.ok
+        end
+        allow(::System::VolumeManagementService).to receive(:provision) do
+          ::System::Runtime::Result.ok(data: { volume: pending_volumes.shift })
+        end
+        # Faithful attach — it writes the FK the predicate actually reads.
+        allow(::System::VolumeManagementService).to receive(:attach) do |**kwargs|
+          kwargs[:volume].attach_to!(kwargs[:instance], "/dev/vdb")
+          ::System::Runtime::Result.ok(data: { device: "/dev/vdb" })
+        end
+        allow(::System::VolumeManagementService).to receive(:detach).and_return(::System::Runtime::Result.ok)
+        allow(::System::VolumeManagementService).to receive(:delete).and_return(::System::Runtime::Result.ok)
+      end
+
+      def run_drain(count: 2, with_storage_gb: 25, network: self.network)
+        exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                     to_region_id: to_region.id, cutover_strategy: "drain",
+                     template_id: template.id,
+                     provider_instance_type_id: instance_type.id, count: count,
+                     network_id: network&.id, with_storage_gb: with_storage_gb,
+                     source_instance_ids: [ source_instance.id ])
+      end
+
+      def refusal_event
+        ::Ai::ExecutionEvent.where(account_id: account.id,
+                                   event_type: "relocate_cutover_refusal")
+                            .order(:created_at).last
+      end
+
+      # ARM 1 — capacity. Probe (pre-fix): success:true, partial:true,
+      # failures:[provision_instance "region quota exhausted"],
+      # terminated_instance_ids:[<source>], call log entry 0 = terminate(source).
+      context "when only some of the requested targets came up" do
+        before do
+          only_one = [ target_a ]
+          allow(::System::ProvisioningService).to receive(:provision_instance) do
+            inst = only_one.shift
+            if inst
+              ::System::Runtime::Result.ok(data: { instance: inst, cloud_instance_id: "ci-drain" })
+            else
+              ::System::Runtime::Result.err(error: "region quota exhausted")
+            end
+          end
+        end
+
+        it "reports failure naming the capacity shortfall in blue_green's own words" do
+          r = run_drain
+
+          expect(r[:success]).to be false
+          expect(r[:error]).to match(%r{undersized \(1/2 instances provisioned\)})
+          expect(r[:error]).to include("region quota exhausted")
+        end
+
+        it "states that the sources are ALREADY gone and the target is retained, not reclaimed" do
+          r = run_drain
+
+          expect(r[:error]).to include("source instances ALREADY terminated")
+          expect(r[:error]).to include(source_instance.id)
+          expect(r[:error]).to match(/retained/i)
+          # The departure from blue_green, asserted rather than described: the
+          # one target that DID come up is the mission's only live capacity and
+          # must survive the refusal.
+          expect(terminated_ids).to eq([ source_instance.id ])
+          expect(terminated_ids).not_to include(target_a.id)
+          expect(::System::NodeInstance.where(id: target_a.id)).to exist
+          expect(::System::VolumeManagementService).not_to have_received(:delete)
+        end
+      end
+
+      # ARM 2 — fabric. Probe (pre-fix): success:true, partial:true, 2/2
+      # instances but 1/2 peers, terminate(source) at entry 0.
+      context "when the targets never fully joined the requested network" do
+        before do
+          enrolled = []
+          allow(::Sdwan::PeerEnroller).to receive(:call).and_wrap_original do |orig, **kwargs|
+            raise StandardError, "vrf table exhausted" if enrolled.any?
+
+            orig.call(**kwargs).tap { |peer| enrolled << peer.id }
+          end
+        end
+
+        it "reports failure naming the fabric shortfall in blue_green's own words" do
+          r = run_drain
+
+          expect(r[:success]).to be false
+          expect(r[:error]).to match(/off-fabric/)
+          expect(r[:error]).to include("1/2").and include(network.id)
+          expect(r[:error]).to include("vrf table exhausted")
+        end
+
+        it "leaves both half-enrolled targets standing" do
+          run_drain
+
+          expect(terminated_ids).to eq([ source_instance.id ])
+          expect(::System::NodeInstance.where(id: [ target_a.id, target_b.id ]).count).to eq(2)
+        end
+      end
+
+      # ARM 3 — storage. Probe (pre-fix): success:true, partial:true, 2/2
+      # instances, 2/2 peers, storage_volume_ids EMPTY (the inner executor
+      # reclaims a volume it could not attach, IMP-0d9e7ca7b166), so both
+      # targets are diskless and the sources — which held the only copy of the
+      # data — were terminated at entry 0.
+      context "when no target got its declared data volume" do
+        before do
+          allow(::System::VolumeManagementService).to receive(:attach)
+            .and_return(::System::Runtime::Result.err(error: "no free device paths"))
+        end
+
+        it "reports failure naming the storage shortfall in blue_green's own words" do
+          r = run_drain
+
+          expect(r[:success]).to be false
+          expect(r[:error]).to match(%r{storage-unready \(0/2 instances have its 25 GB data volume attached\)})
+          expect(r[:error]).to include("no free device paths")
+        end
+
+        it "leaves the diskless targets standing — they are the only capacity left" do
+          run_drain
+
+          expect(terminated_ids).to eq([ source_instance.id ])
+          expect(::System::NodeInstance.where(id: [ target_a.id, target_b.id ]).count).to eq(2)
+        end
+      end
+
+      # One refusal vocabulary, two dispositions. A consumer must be able to
+      # read the SAME event type and reason strings on either strategy, and
+      # must NOT be able to mistake drain's retained stack for a reclaimed one.
+      it "records the refusal through the same event type, with a drain-specific disposition" do
+        allow(::System::VolumeManagementService).to receive(:attach)
+          .and_return(::System::Runtime::Result.err(error: "no free device paths"))
+
+        expect { run_drain }
+          .to change { ::Ai::ExecutionEvent.where(account_id: account.id).count }.by(1)
+
+        ev = refusal_event
+        expect(ev.source_type).to eq("Ai::Mission")
+        expect(ev.source_id).to eq(mission.id)
+        expect(ev.status).to eq("target_stack_retained")
+        expect(ev.metadata["cutover_strategy"]).to eq("drain")
+        expect(ev.metadata["refusal_reasons"].join).to match(/storage-unready/)
+        # The ids an operator needs to act: what is gone, and what is still up.
+        expect(ev.metadata["terminated_instance_ids"]).to eq([ source_instance.id ])
+        expect(ev.metadata["retained"]["node_instance"]).to match_array([ target_a.id, target_b.id ])
+        expect(ev.metadata["provisioning_leg_failures"].map { |f| f["step"] }).to include("attach_volume")
+        # Nothing was reclaimed, so the reclaim vocabulary must be absent
+        # rather than present-and-empty — an empty "reclaimed" reads as a
+        # clean unwind that never happened.
+        expect(ev.metadata).not_to have_key("reclaimed")
+        expect(ev.metadata).not_to have_key("survivors")
+      end
+
+      # The runner's rollback_step! reads its kwargs off this envelope and
+      # hands them to rollback_relocate_workload, which TERMINATES instances.
+      # Under drain those ids are the mission's only live capacity, so the
+      # refusal must return a BARE failure — the one place where handing
+      # resources to the standard seam would be destructive.
+      it "hands the runner no rollback kwargs, so the retained stack cannot be torn down by the seam" do
+        allow(::System::VolumeManagementService).to receive(:attach)
+          .and_return(::System::Runtime::Result.err(error: "no free device paths"))
+
+        r = run_drain
+
+        expect(r[:success]).to be false
+        expect(r).not_to have_key(:node_instance_ids)
+        expect(r).not_to have_key(:storage_volume_ids)
+        expect(r).not_to have_key(:sdwan_peer_ids)
+      end
+
+      # Review finding #1 — `terminate_step!` pushes to `terminated` ONLY on
+      # `result.success?`, so "degraded target AND nothing terminated" is
+      # reachable, and the pre-review message asserted "source instances
+      # ALREADY terminated" and "the only live capacity" on it. Both were
+      # false. The DISPOSITION deliberately does not branch (retaining is the
+      # conservative answer whether the source is already gone — "instance not
+      # found" reaches this same empty set — or merely unverified), but the
+      # message has to stop claiming otherwise.
+      it "does not claim the sources are gone when nothing was actually terminated" do
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |**kwargs|
+          if kwargs[:instance].id == source_instance.id
+            ::System::Runtime::Result.err(error: "provider rejected terminate")
+          else
+            terminated_ids << kwargs[:instance].id
+            ::System::Runtime::Result.ok
+          end
+        end
+        allow(::System::VolumeManagementService).to receive(:attach)
+          .and_return(::System::Runtime::Result.err(error: "no free device paths"))
+
+        r = run_drain
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(%r{storage-unready \(0/2})
+        expect(r[:error]).to match(/NO source instance was successfully terminated/)
+        expect(r[:error]).to match(/UNVERIFIED/)
+        # The false claims the review caught must be absent, not merely reworded.
+        expect(r[:error]).not_to match(/ALREADY terminated/)
+        expect(r[:error]).not_to match(/only live capacity/)
+
+        # Still retained, and the terminate failure is diagnosable from the
+        # durable event — it is the only record of which sources survived.
+        ev = refusal_event
+        expect(ev.metadata["terminated_instance_ids"]).to be_empty
+        expect(ev.metadata["retained"]["node_instance"]).to match_array([ target_a.id, target_b.id ])
+        expect(ev.metadata["provisioning_leg_failures"]).to include(
+          hash_including("step" => "terminate_source", "error" => "provider rejected terminate")
+        )
+        expect(terminated_ids).to be_empty
+        expect(::System::NodeInstance.where(id: [ target_a.id, target_b.id ]).count).to eq(2)
+      end
+
+      # Positive control: the identical composition with all three legs
+      # healthy must still cut over, or every example above could be an
+      # unconditional failure passing itself off as the predicate working.
+      it "still cuts over when all three legs are healthy (positive control)" do
+        r = run_drain
+
+        expect(r[:success]).to be true
+        expect(r[:data][:partial]).to be false
+        expect(r[:data][:outputs][:terminated_instance_ids]).to eq([ source_instance.id ])
+        expect(r[:data][:outputs][:node_instance_ids]).to match_array([ target_a.id, target_b.id ])
+        expect(refusal_event).to be_nil
+      end
+
+      # Negative control on the PREDICATE's SCOPE: it asks about the TARGET,
+      # not about the run. A source whose terminate errored also sets
+      # `partial`, and a fix that refused on `failures.any?` would fail every
+      # drain run with a flaky source teardown against a perfectly healthy
+      # target — the mirror error of the one being fixed.
+      it "does not refuse a healthy target just because a source terminate failed" do
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |**kwargs|
+          if kwargs[:instance].id == source_instance.id
+            ::System::Runtime::Result.err(error: "provider rejected terminate")
+          else
+            terminated_ids << kwargs[:instance].id
+            ::System::Runtime::Result.ok
+          end
+        end
+
+        r = run_drain
+
+        expect(r[:success]).to be true
+        expect(r[:data][:partial]).to be true
+        expect(r[:data][:failures]).to include(
+          hash_including(step: "terminate_source", error: "provider rejected terminate")
+        )
+        expect(refusal_event).to be_nil
       end
     end
 
@@ -834,6 +1215,48 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         expect(md["provisioning_leg_failures"].map { |f| f["step"] }).to include("attach_sdwan_peer")
       end
 
+      # IMP-2182fd8fcdee — the durable EVENT above records survivors, but the
+      # runner cannot act on an event. Composers stamp on_failure: "rollback"
+      # by default, so after this failure returns the runner calls
+      # rollback_step! — which reads its kwargs from the failure envelope (or
+      # from last_outputs, empty on a first-run failure). A bare
+      # failure(message) therefore rolls back NOTHING and then stamps
+      # rolled_back over resources that are still live and billing.
+      it "hands surviving resources to the runner's failure-time rollback seam" do
+        allow(::System::VolumeManagementService).to receive(:delete)
+          .and_return(::System::Runtime::Result.err(error: "volume delete refused"))
+
+        r = run_blue_green_relocate
+
+        expect(r[:success]).to be false
+        # Keyed by rollback_relocate_workload's OWN kwarg names, because that
+        # is the hook the runner will invoke with them.
+        expect(r[:storage_volume_ids]).to match_array([ volume_a.id, volume_b.id ])
+      end
+
+      it "omits classes that reclaimed cleanly rather than sending empty arrays" do
+        allow(::System::VolumeManagementService).to receive(:delete)
+          .and_return(::System::Runtime::Result.err(error: "volume delete refused"))
+
+        r = run_blue_green_relocate
+
+        # An outputs hash that is "present" while holding no ids displaces a
+        # retried step's genuine last_outputs and fakes compensation in one
+        # move — the runner's own failure_outputs_from warns about exactly
+        # this shape. Only classes with survivors may appear.
+        expect(r).not_to have_key(:node_instance_ids)
+        expect(r).not_to have_key(:sdwan_peer_ids)
+      end
+
+      it "stays a bare failure when the reclaim was clean, so nothing is faked" do
+        r = run_blue_green_relocate
+
+        expect(r[:success]).to be false
+        expect(r[:storage_volume_ids]).to be_nil
+        expect(r[:node_instance_ids]).to be_nil
+        expect(r[:sdwan_peer_ids]).to be_nil
+      end
+
       it "records survivors per class when the reclaim is incomplete" do
         allow(::System::VolumeManagementService).to receive(:delete)
           .and_return(::System::Runtime::Result.err(error: "volume delete refused"))
@@ -1011,21 +1434,29 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       # BOTH sub-branches of #storage_unreadable? in one sweep: a String that
       # responds to to_i but reads 0 ("plenty"), and a shape that does not
       # respond to to_i at all — those reach the lane by different routes.
+      # IMP-f5532c5c5bd6 — SAME VERDICT, REACHED EARLIER. This asserted the
+      # refusal after a full provision-and-reclaim cycle: targets came up
+      # diskless, storage_unready? refused the cutover, and the targets were
+      # torn down again. The value is now refused at the door, so the cycle
+      # never runs — which is why the "terminated every target" assertion is
+      # gone rather than loosened: there are no targets to terminate.
+      #
+      # Everything the example existed to protect still holds, and now holds
+      # without provisioning anything: both unreadable shapes refuse, no volume
+      # is created, the source survives, and the message never quotes an
+      # authoritative "0 GB" for a size nothing read.
       it "refuses every declared-but-unreadable storage shape, on which no volume is ever created" do
         [ "plenty", { "gb" => 50 } ].each do |declared|
           r = run_relocate(with_storage_gb: declared)
 
           expect(r[:success]).to be(false), "expected #{declared.inspect} to refuse the cutover"
-          expect(r[:error]).to match(%r{storage-unready \(0/1})
           expect(r[:error]).to include("storage declared but unreadable")
-          # The size is UNKNOWN on this branch — rendering with_storage_gb.to_i
-          # would quote an authoritative "0 GB" for a value that was never read.
           expect(r[:error]).not_to include("0 GB")
         end
 
         expect(::System::VolumeManagementService).not_to have_received(:provision)
-        expect(terminated_ids).to match_array([ target_a.id, target_b.id ])
-        expect(terminated_ids).not_to include(source_instance.id)
+        expect(terminated_ids).to be_empty,
+                                 "the door refusal must not provision anything to reclaim"
         expect(::System::NodeInstance.where(id: source_instance.id)).to exist
       end
 
@@ -1077,7 +1508,24 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         md = ev.metadata
         expect(md["refusal_reasons"].join).to match(/storage-unready/)
         expect(md["reclaimed"]["node_instance"]).to eq([ target_a.id ])
-        expect(md["reclaimed"]["provider_volume"]).to eq([ volume_a.id ])
+        # IMP-0d9e7ca7b166 — this used to expect [volume_a.id] here. The
+        # provisioning leg now reclaims a volume it could not attach IN-BRANCH,
+        # because for every OTHER caller of ProvisionFullStackExecutor nothing
+        # downstream can reach a nil-FK volume. So by the time this refusal
+        # runs its own reclaim, the volume is already gone and there is
+        # correctly nothing left for it to reclaim.
+        #
+        # The guarantee this example exists to protect is unchanged and is
+        # asserted directly below: no volume survives the refusal. Which LAYER
+        # deleted it is an implementation detail; that it is gone is not.
+        expect(md["reclaimed"]["provider_volume"]).to be_empty
+        # The reclaim still HAPPENED — just one layer down. This context stubs
+        # VolumeManagementService.delete to return ok WITHOUT destroying the
+        # row, so "the row is gone" is unobservable here and the call is the
+        # only available evidence. (The row actually disappearing is asserted
+        # in provision_full_stack_executor_spec, where delete runs for real
+        # against a stubbed provider adapter.)
+        expect(::System::VolumeManagementService).to have_received(:delete).with(volume: volume_a)
         expect(md["survivors"].values.flatten).to be_empty
         expect(md["provisioning_leg_failures"].map { |f| f["step"] }).to include("attach_volume")
       end
@@ -1235,12 +1683,14 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       it "refuses a declared-but-unreadable alias, on which no volume is ever created" do
         r = relocate_via_alias(storage_gb: "plenty")
 
+        # Refused at the door now (IMP-f5532c5c5bd6), so no target is
+        # provisioned and none is reclaimed — the alias reaches the same
+        # verdict by the other name, which is what this example is for.
         expect(r[:success]).to be false
-        expect(r[:error]).to match(%r{storage-unready \(0/1})
         expect(r[:error]).to include("storage declared but unreadable")
         expect(r[:error]).not_to include("0 GB")
         expect(::System::VolumeManagementService).not_to have_received(:provision)
-        expect(terminated_ids).to eq([ target_a.id ])
+        expect(terminated_ids).to be_empty
         expect(::System::NodeInstance.where(id: source_instance.id)).to exist
       end
 
@@ -1261,6 +1711,199 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         expect(card.map { |a| a[:step] }).not_to include("provision_storage")
         expect(card.select { |a| a[:step] == "terminate_source" }.map { |a| a[:condition] }.join(" | "))
           .not_to match(/storage/)
+      end
+    end
+
+    # IMP-5eb14352370a — a WHOLESALE inner failure: an unguarded raise mid-loop
+    # inside ProvisionFullStackExecutor#run_execute (here: target 3 of 3, after
+    # targets 1 and 2 created real rows). BaseSkillExecutor#execute turns it
+    # into `failure(e.message)` — no `:data` — so `provision_target!` used to
+    # record only `{step: "provision_target_stack", error:}` and return nil.
+    #
+    # d44b0300 (IMP-666a6e904650) lifted the inner steps on the SUCCESS path
+    # only. On this path the nodes, instances, volumes and peers already
+    # created for the earlier targets appeared in NEITHER planned_actions NOR
+    # outputs — and rollback kwargs are read off this envelope, so live,
+    # billing resources were invisible to rollback, to grading, and to the
+    # operator, in precisely the run where the record matters most.
+    context "when the inner target provisioning fails WHOLESALE mid-loop" do
+      let(:network) { ::Sdwan::Network.create!(account_id: account.id, name: "reloc-net-#{SecureRandom.hex(3)}") }
+
+      # Real rows: the reclaim resolves ids back to records, so an
+      # instance_double id would make every rollback loop skip via find_by(nil)
+      # and each reclaim assertion would pass vacuously.
+      let(:target_a) { sdwan_test_node_instance(node: sdwan_test_node(account: account)) }
+      let(:target_b) { sdwan_test_node_instance(node: sdwan_test_node(account: account)) }
+
+      let(:volume_a) do
+        create(:system_provider_volume, :attached, account: account,
+               provider_region: to_region, node_instance: target_a)
+      end
+      let(:volume_b) do
+        create(:system_provider_volume, :attached, account: account,
+               provider_region: to_region, node_instance: target_b)
+      end
+
+      let(:terminated_ids) { [] }
+      let(:detached_ids)   { [] }
+      let(:deleted_ids)    { [] }
+
+      # The raise is NOT a leg failure the inner executor guards — it escapes
+      # #run_execute entirely, which is the whole point of the shape.
+      let(:wholesale_error) { "Validation failed: Name has already been taken" }
+
+      before do
+        targets = [ target_a, target_b ]
+        allow(::System::ProvisioningService).to receive(:provision_instance) do
+          instance = targets.shift
+          # `raise <instance>, msg` calls Exception#exception(msg), which CLONES
+          # the RecordInvalid and swaps its message — it does not re-run
+          # RecordInvalid#initialize, so the record arg is not re-derived.
+          raise ActiveRecord::RecordInvalid.new(::System::Node.new), wholesale_error if instance.nil?
+
+          ::System::Runtime::Result.ok(data: { instance: instance, cloud_instance_id: "ci-#{instance.id}" })
+        end
+
+        volumes = [ volume_a, volume_b ]
+        allow(::System::VolumeManagementService).to receive(:provision) do
+          ::System::Runtime::Result.ok(data: { volume: volumes.shift })
+        end
+        allow(::System::VolumeManagementService).to receive(:attach)
+          .and_return(::System::Runtime::Result.ok(data: { device: "/dev/vdb" }))
+        allow(::System::VolumeManagementService).to receive(:detach) do |**kwargs|
+          detached_ids << kwargs[:volume].id
+          ::System::Runtime::Result.ok
+        end
+        allow(::System::VolumeManagementService).to receive(:delete) do |**kwargs|
+          deleted_ids << kwargs[:volume].id
+          ::System::Runtime::Result.ok
+        end
+
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |**kwargs|
+          terminated_ids << kwargs[:instance].id
+          ::System::Runtime::Result.ok
+        end
+      end
+
+      def run_relocate(strategy)
+        exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                     to_region_id: to_region.id, cutover_strategy: strategy,
+                     template_id: template.id,
+                     provider_instance_type_id: instance_type.id, count: 3,
+                     network_id: network.id, with_storage_gb: 25,
+                     source_instance_ids: [ source_instance.id ])
+      end
+
+      def orphan_instance_ids = [ target_a.id, target_b.id ]
+      def orphan_volume_ids   = [ volume_a.id, volume_b.id ]
+
+      context "under drain" do
+        # IMP-49b3e42d9423 — the ids and the trace both still exist; they moved
+        # from the success envelope to the refusal's durable event, because
+        # this run now correctly FAILS (see the semantics example below).
+        it "records the earlier targets' steps AND ids on the refusal event" do
+          run_relocate("drain")
+
+          ev = ::Ai::ExecutionEvent.where(account_id: account.id,
+                                          event_type: "relocate_cutover_refusal")
+                                   .order(:created_at).last
+          steps = ev.metadata["planned_actions"]
+          # The inner run's own detail steps, in execution order, for the two
+          # targets that DID come up before the raise.
+          expect(steps.map { |a| a["step"] }).to eq(%w[
+            relocate_workload
+            terminate_source
+            create_node provision_instance attach_sdwan_peer provision_storage attach_volume
+            create_node provision_instance attach_sdwan_peer provision_storage attach_volume
+            create_node
+            provision_target_stack_orphaned
+          ])
+          expect(steps.select { |a| a["step"] == "provision_instance" }.map { |a| a["instance_id"] })
+            .to eq(orphan_instance_ids)
+          expect(steps.last).to include("step" => "provision_target_stack_orphaned",
+                                        "instance_count" => 2, "volume_count" => 2,
+                                        "node_count" => 3, "sdwan_peer_count" => 2)
+
+          # RETAINED, not reclaimed — under drain these rows are the mission's
+          # only live capacity, so the union of delivered and orphaned ids is
+          # what an operator is handed.
+          expect(ev.metadata["retained"]["node_instance"]).to match_array(orphan_instance_ids)
+          expect(ev.metadata["retained"]["provider_volume"]).to match_array(orphan_volume_ids)
+          expect(ev.metadata["retained"]["sdwan_peer"].size).to eq(2)
+          expect(ev.metadata["node_ids_left_for_inspection"].size).to eq(3)
+        end
+
+        # SEMANTICS DELIBERATELY CHANGED (IMP-49b3e42d9423). This example used
+        # to assert success(partial: true), under the heading "drain has no
+        # readiness guard and has always returned success here" — a statement
+        # of what the code did, filed as a question rather than a decision.
+        # The decision is now made and it is the other way: this run terminated
+        # every source and then delivered NOTHING (the inner provisioning
+        # raised wholesale), which is the single worst outcome this executor
+        # can reach. Reporting it as success is not survivable — the runner
+        # branches on `result_success?` alone, so it would mark the step
+        # completed, dispatch successors and advance the mission past a fleet
+        # that no longer exists.
+        it "fails the step, leaving the sources gone and the debris retained" do
+          r = run_relocate("drain")
+
+          expect(r[:success]).to be false
+          expect(r[:error]).to match(/\Adrain cutover degraded: target stack is empty;/)
+          expect(r[:error]).to include(wholesale_error)
+          expect(r[:error]).to include("source instances ALREADY terminated")
+          expect(r[:error]).to match(/RETAINED/)
+
+          # drain terminates the sources FIRST by design; the orphans are still
+          # NOT reclaimed on this path — under drain that reclaim would destroy
+          # the only rows left. This is the departure from blue_green, which
+          # reclaims exactly these ids (see "under blue_green" below).
+          expect(terminated_ids).to eq([ source_instance.id ])
+          expect(detached_ids).to be_empty
+          expect(deleted_ids).to be_empty
+          expect(::System::NodeInstance.where(id: orphan_instance_ids).count).to eq(2)
+
+          # And no rollback kwargs: the runner's rollback_step! would hand
+          # them to rollback_relocate_workload, which terminates instances.
+          expect(r).not_to have_key(:node_instance_ids)
+          expect(r).not_to have_key(:storage_volume_ids)
+          expect(r).not_to have_key(:sdwan_peer_ids)
+        end
+      end
+
+      context "under blue_green" do
+        # SEMANTICS UNCHANGED: still a failure, still the SAME refusal reason
+        # ("empty" — nothing was DELIVERED; the orphans are debris, not
+        # targets), still carrying the inner wholesale error, still refusing to
+        # terminate the sources.
+        it "keeps the failure semantics exactly as they were" do
+          r = run_relocate("blue_green")
+
+          expect(r[:success]).to be false
+          expect(r[:error]).to match(/\Ablue_green cutover refused: target stack is empty; /)
+          expect(r[:error]).to include("source instances not terminated")
+          expect(r[:error]).to include(wholesale_error)
+          expect(terminated_ids).not_to include(source_instance.id)
+        end
+
+        it "records the earlier targets' steps and reclaims them" do
+          r = run_relocate("blue_green")
+
+          ev = ::Ai::ExecutionEvent.where(account_id: account.id,
+                                          event_type: "relocate_cutover_refusal")
+                                   .order(:created_at).last
+          expect(ev.metadata["reclaimed"]["node_instance"]).to match_array(orphan_instance_ids)
+          expect(ev.metadata["reclaimed"]["provider_volume"]).to match_array(orphan_volume_ids)
+          expect(ev.metadata["reclaimed"]["sdwan_peer"].size).to eq(2)
+          expect(ev.metadata["node_ids_left_for_inspection"].size).to eq(3)
+          expect(ev.metadata["provisioning_leg_failures"].to_s).to include(wholesale_error)
+
+          # The reclaim ACTED on this operation's own orphans — and on nothing
+          # else: the source instance is untouched.
+          expect(terminated_ids).to match_array(orphan_instance_ids)
+          expect(detached_ids).to match_array(orphan_volume_ids)
+          expect(deleted_ids).to match_array(orphan_volume_ids)
+          expect(r[:success]).to be false
+        end
       end
     end
   end

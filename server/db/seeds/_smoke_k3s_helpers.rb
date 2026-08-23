@@ -34,6 +34,7 @@
 require "json"
 require "open3"
 require "fileutils"
+require "tmpdir"
 
 module System
   module Seeds
@@ -435,6 +436,42 @@ module System
       # Fetch a kubeconfig YAML for the given cluster via the platform's
       # MCP tool (matches the real operator path). Writes to dest_path
       # and returns the path. Caller is responsible for cleanup.
+      # Where a fetched kubeconfig lands (IMP-0ca5fbe5c532).
+      #
+      # The phase seeds used to hardcode /tmp/k3s-smoke-kubeconfig-<site>. Two
+      # problems with a constant path, and the second is the one that bites:
+      #
+      #   * it holds a LIVE CLUSTER'S CREDENTIALS at a name any local user can
+      #     guess, written by #fetch_kubeconfig! with a bare File.write and so
+      #     with default (world-readable) permissions;
+      #   * it bypasses every test seam. A spec that loads a phase seed is one
+      #     un-stubbed call away from overwriting — or reading — the kubeconfig
+      #     a real smoke left on that host. Isolation that depends on somebody
+      #     remembering to stub a specific method is one stub deep; this makes
+      #     it structural, so the unstubbed path is safe too.
+      #
+      # Default is a fresh 0700 tmpdir per process, so two concurrent smokes
+      # cannot collide either. SMOKE_K3S_KUBECONFIG_DIR overrides it for an
+      # operator who wants a stable location to point kubectl at — the same
+      # escape-hatch shape as SMOKE_K3S_KUBECTL. Specs set it to a tmpdir they
+      # own and delete.
+      def kubeconfig_dest(label)
+        File.join(kubeconfig_dir, "k3s-smoke-kubeconfig-#{label}")
+      end
+
+      def kubeconfig_dir
+        override = ENV["SMOKE_K3S_KUBECONFIG_DIR"].to_s
+        return override unless override.empty?
+
+        @kubeconfig_dir ||= Dir.mktmpdir("k3s-smoke-kubeconfig-")
+      end
+
+      # Drop the memo so a caller that changes the override mid-process (only
+      # specs do) is not served the previous run's directory.
+      def reset_kubeconfig_dir!
+        @kubeconfig_dir = nil
+      end
+
       def fetch_kubeconfig!(cluster:, user:, dest_path:)
         prov_tool = ::Ai::Tools::KubernetesProvisioningTool.new(
           account: cluster.account, agent: nil, user: user

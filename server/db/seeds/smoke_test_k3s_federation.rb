@@ -150,7 +150,10 @@ h.fail_with("kubectl binary not found (override via SMOKE_K3S_KUBECTL)") unless 
 # reachable from any host that is also a federation peer. The smoke
 # is running on the platform host, which IS a federation participant
 # via the FederationPeer rows just created.
-b_kubeconfig = "/tmp/k3s-smoke-kubeconfig-b"
+# Per-run destination, not a fixed /tmp name — see
+# SmokeK3sHelpers#kubeconfig_dest. Printed below so an operator can point
+# kubectl at it; set SMOKE_K3S_KUBECONFIG_DIR for a stable location.
+b_kubeconfig = h.kubeconfig_dest("b")
 h.fetch_kubeconfig!(cluster: b_cluster, user: account.users.first, dest_path: b_kubeconfig)
 h.ok("Site B kubeconfig fetched (#{b_kubeconfig})")
 

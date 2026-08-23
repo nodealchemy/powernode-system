@@ -399,7 +399,27 @@ module System
       # provisioned for the same node within the same second — the timestamp
       # alone isn't unique at sub-second cadence, and `name` is unique per
       # node_id, so a bare timestamp would raise RecordInvalid on the second.
-      "#{base_name}-#{timestamp}-#{SecureRandom.hex(2)}"
+      #
+      # BUDGETED (IMP-fd3397eef4b1). This name becomes the guest hostname
+      # (build_provider_params below passes it as `hostname:`, which cloud-init
+      # writes verbatim), and node.name already carries a prefix and a template
+      # name — so a realistic dryrun fleet reached 72 characters, past both the
+      # 63-char DNS label limit and the kernel's 64-char HOST_NAME_MAX.
+      #
+      # The MIDDLE gives, never this tail: the timestamp and random suffix are
+      # what keep two instances provisioned for the same node in the same second
+      # from colliding on `name`, which is unique per node_id. Truncating them
+      # would re-open the collision the suffix exists to close.
+      #
+      # Enforced here rather than downstream because the two layers below
+      # disagree about the limit: etcidentity.ApplyHostname caps at 64 and
+      # cloud-init makes its own choice, so an over-long name leaves the
+      # platform's record and the guest's /etc/hostname describing the same
+      # machine differently.
+      ::System::HostnameBudget.fit(
+        variable: base_name,
+        fixed_tail: "-#{timestamp}-#{SecureRandom.hex(2)}"
+      )
     end
 
     # Ensure a partially-provisioned instance never lingers in :pending after a

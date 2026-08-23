@@ -97,9 +97,7 @@ module Sdwan
     # The upstream URL Traefik dials over the overlay (IPv6 hosts bracketed for
     # the URL authority). Scheme defaults to the service protocol.
     def backend_url(scheme: protocol)
-      host = backend_address.to_s
-      host = "[#{host}]" if host.include?(":") && !host.start_with?("[")
-      "#{scheme}://#{host}:#{backend_port}"
+      "#{scheme}://#{::Sdwan::HostPort.join(backend_address, backend_port)}"
     end
 
     # The overlay address (VIP host or static host) without scheme/port.

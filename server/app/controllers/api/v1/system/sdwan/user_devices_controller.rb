@@ -34,25 +34,76 @@ module Api
           # in the response; we don't persist it (it's recoverable from the
           # device by re-issuing if lost, since each issuance creates a
           # NEW UserDevice with a fresh keypair — old keys remain auditable).
+          #
+          # IMP-051f3811ac60: routed through Ai::AutonomyGate. Issuing mints a
+          # WireGuard keypair + a bootstrap token that serves the full client
+          # config, so it is at least as material as the device REVOKE below,
+          # which has been gated all along. Sdwan::Executors::CreateUserDevice
+          # delegates to the same UserDeviceIssuer this action used to call
+          # inline, and on the :proceed branch the token rides the executor's
+          # raw return — the response shape is unchanged. On :pending the
+          # token is minted at approval time and reaches the approver through
+          # the reveal-once slot (Ai::DeferredOperation#take_revealed_result!);
+          # the persisted operation row masks it (SensitiveParams "token").
+          #
+          # Not gate_create!: its on_proceed renders only the serialized row,
+          # and the one-shot bootstrap block would be dropped on the floor.
+          #
+          # Pre-checks run IN FRONT of the gate so a doomed request refuses
+          # fast instead of parking an approval that can only ever fail. Only
+          # label errors are read off the candidate — public_key and
+          # assigned_address are legitimately absent until the issuer mints
+          # them. Neither check is the enforcement: the issuer re-runs both
+          # inside the executor when the operation executes.
           def create
             require_permission("system.sdwan.user_devices.manage")
             attrs = device_params
 
-            result = ::Sdwan::UserDeviceIssuer.issue!(grant: @grant, label: attrs[:label])
-            device = result[:device]
+            unless @grant.active?
+              return render_error("grant is not active", status: :unprocessable_content)
+            end
+            candidate = @grant.user_devices.new(label: attrs[:label])
+            candidate.valid?
+            if candidate.errors[:label].any?
+              return render_error(candidate.errors.full_messages_for(:label).join("; "),
+                                  status: :unprocessable_content)
+            end
 
-            render_success({
-              user_device: serialize_device(device),
-              bootstrap: {
-                token: result[:bootstrap_token],
-                url: bootstrap_url(result[:bootstrap_token]),
-                expires_at: result[:expires_at]
+            gate!(
+              action_category: ::Sdwan::Executors::CreateUserDevice::ACTION_CATEGORY,
+              executor_class: "Sdwan::Executors::CreateUserDevice",
+              params: { grant_id: @grant.id, label: attrs[:label] },
+              source_type: "Sdwan::AccessGrant",
+              source_id: @grant.id,
+              description: "Issue SDWAN VPN device '#{attrs[:label]}' for #{@grant.user&.email || @grant.id}",
+              on_proceed: lambda { |result|
+                data = result.result&.dig(:data) || {}
+                device = @grant.user_devices.find(data[:device_id])
+                render_success({
+                  user_device: serialize_device(device),
+                  bootstrap: {
+                    token: data[:bootstrap_token],
+                    url: bootstrap_url(data[:bootstrap_token]),
+                    expires_at: data[:expires_at]
+                  }
+                }, status: :created)
+              },
+              # A gate is an error-path change: AutonomyGate flattens every
+              # raise into one :blocked string, so the issuer's typed errors
+              # are unwrapped off Result#exception to keep the wording this
+              # action returned when it called the issuer inline.
+              on_blocked: lambda { |result|
+                case result.exception
+                when ::Sdwan::UserDeviceIssuer::GrantError
+                  render_error(result.exception.message, status: :unprocessable_content)
+                when ActiveRecord::RecordInvalid
+                  render_validation_error(result.exception.record)
+                else
+                  render_error(result.error || "Action blocked by policy",
+                               status: :unprocessable_content)
+                end
               }
-            }, status: :created)
-          rescue ::Sdwan::UserDeviceIssuer::GrantError => e
-            render_error(e.message, status: :unprocessable_content)
-          rescue ActiveRecord::RecordInvalid => e
-            render_validation_error(e.record)
+            )
           end
 
           def destroy

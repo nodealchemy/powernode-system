@@ -2,6 +2,20 @@
 
 module System
   module Slo
+    # DORMANT (decided 2026-08-23, IMP-6355c5adc382): no code outside a spec
+    # (spec/services/system/fleet/sensors/slo_violation_sensor_spec.rb)
+    # creates a row of this class. Without a producer, ScoreEvaluator#evaluate_all
+    # always iterates an empty relation, so this class is reachable but inert —
+    # kept intentionally, not deleted, as the record of a sound design that
+    # simply has no data source. Do NOT add a producer to close that gap; the
+    # platform consolidated on System::ProjectMetric as its one telemetry
+    # convention instead (cron → SystemFleetReconcileJob →
+    # FleetAutonomyService.tick! → collect_project_metrics! →
+    # ProjectMetricsCollector → System::ProjectMetric → ProjectSloSensor →
+    # DecisionEngine). See System::Slo::ScoreEvaluator, TelemetryAdapter, and
+    # Fleet::Sensors::SloViolationSensor for the rest of this dormant chain,
+    # and spec/services/system/slo/dormancy_guard_spec.rb for the ratchet
+    # that fails loudly if a producer reappears.
     class Definition < BaseRecord
       self.table_name = "system_slo_definitions"
 

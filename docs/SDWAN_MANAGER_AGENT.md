@@ -32,7 +32,7 @@ What it does **not** own:
 
 ## Intervention Policies
 
-The agent ships with **25 intervention policies** — all `sdwan.*` operator-initiated CRUD (source: `system_sdwan_manager_agent.rb`). Each policy maps an `action_category` to one of four policy types:
+The agent ships with **41 intervention policies** — all `sdwan.*` operator-initiated CRUD (source: `system_sdwan_manager_agent.rb`). Each policy maps an `action_category` to one of four policy types:
 
 | Policy type | Behavior |
 |---|---|
@@ -154,7 +154,7 @@ The four autonomous SDWAN remediation executors (`app/services/system/ai/skills/
 - `sdwan_bgp_session_remediate_executor` — iBGP session restart + reconfiguration
 - `sdwan_vip_failover_executor` — VIP holder promotion
 
-> **Gap: `system.sdwan_route_policy_audit` has no skill executor.** The autonomy policy exists (on Fleet Autonomy) but there is no `route_policy_audit` executor under `app/services/system/ai/skills/` — only the four executors above. The audit policy is currently a no-op binding; route-policy drift surfaces via the `sdwan.route_policy_drift` sensor signal but has no remediation skill to invoke.
+> **Removed (IMP-17bc5546009a, 2026-08-21): `system.sdwan_route_policy_audit`.** This autonomy policy was seeded (on Fleet Autonomy) for a lane that never existed end-to-end — no sensor emitted it, no DecisionEngine binding routed to it, and no executor under `app/services/system/ai/skills/` ever backed it (only the four above do). It was a permanently no-op `auto_approve` row and was deleted outright rather than built out. A compiled-policy-vs-FRR-observed route-policy drift sensor remains a real, undone capability — if you want it, file it as its own piece of work.
 
 Cross-cutting composition skills (`system-sdwan-host-bridge-compose`, `system-sdwan-ovn-compose-topology`, `system-sdwan-ipfix-collector-compose`, `system-sdwan-compose-full-topology`, `system-sdwan-ovn-apply-acl`) are bound to **System Topology Designer**, not to SDWAN Manager. Use the topology designer (invoked via Concierge) when you need an end-to-end topology composition; SDWAN Manager gates the steady-state CRUD on the resulting topology.
 
@@ -172,8 +172,7 @@ These autonomous remediations are triggered by Fleet sensors emitting `system.sd
 | `sdwan.bgp_session` → down | `system.sdwan_bgp_session_remediate` | `notify_and_proceed` |
 | `sdwan.vip_reachability` → primary unhealthy | `system.sdwan_vip_failover` | `require_approval` |
 | `sdwan.hub_reachability` → hub unreachable | `system.sdwan_failover` | `require_approval` |
-| `sdwan.route_policy_drift` → policy hash mismatch | `system.sdwan_route_policy_audit` | `auto_approve` |
-| Time-based (key TTL) | `system.sdwan_key_rotate` | `auto_approve` |
+| Membership-credential expiry (`SdwanCredentialExpirySensor`) | `system.sdwan_credential_refresh` | `notify_and_proceed` |
 
 > **Manual VIP failover** (operator-initiated, out of band of the sensor loop) works via `system_sdwan_failover_virtual_ip(virtual_ip_id)`. It delegates to `Sdwan::VirtualIp#failover!`; you can bias the promotion by passing an optional `target_peer_id` (a configured failover candidate), which reorders the failover queue before promotion.
 

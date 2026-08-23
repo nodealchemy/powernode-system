@@ -8,19 +8,19 @@
 //
 // Per-tick (default interval 30s, configurable via Config.HeartbeatInterval):
 //
-//   1. POST /node_api/status with heartbeat (uptime, version, last result)
-//   2. POST /node_api/modules → reconcile assignments → mount erofs + overlay union
-//   3. dockerd.Manager.Tick (if docker-engine module assigned)
-//   4. k3sd.Manager.Tick (if k3s-server / k3s-agent module assigned)
-//   5. sdwan.Manager.Tick — apply wg + nft + FRR config from platform
-//   6. transport.Mtls.RotateIfNearExpiry — auto-renews cert at 30 days
-//   7. Sleep until next interval
+//  1. POST /node_api/status with heartbeat (uptime, version, last result)
+//  2. POST /node_api/modules → reconcile assignments → mount erofs + overlay union
+//  3. dockerd.Manager.Tick (if docker-engine module assigned)
+//  4. k3sd.Manager.Tick (if k3s-server / k3s-agent module assigned)
+//  5. sdwan.Manager.Tick — apply wg + nft + FRR config from platform
+//  6. transport.Mtls.RotateIfNearExpiry — auto-renews cert at 30 days
+//  7. Sleep until next interval
 //
 // # Key types
 //
-//   Config            — { PlatformURL, AgentVersion, HeartbeatInterval, PKIDir, ... }
-//   Service           — orchestrates the tick loop; lifecycle: New → Run(ctx) → Cancel
-//   ReconcilerState   — persisted between restarts at /var/lib/powernode-agent/reconciler.json
+//	Config            — { PlatformURL, AgentVersion, HeartbeatInterval, PKIDir, ... }
+//	Service           — orchestrates the tick loop; lifecycle: New → Run(ctx) → Cancel
+//	ReconcilerState   — persisted between restarts at /var/lib/powernode-agent/reconciler.json
 //
 // Reconciler state cache (per recent commit cff010a) survives across agent
 // restarts — avoids re-doing module pulls on quick service restart.

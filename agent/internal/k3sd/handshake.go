@@ -3,22 +3,22 @@
 // /api/v1/system/node_api/runtime/handshake) is shared with the
 // docker daemon flow but uses K3s-specific phases:
 //
-//   bootstrap     (k3s_server only) — agent reports a fresh K3s
-//                 cluster came up. Body carries the captured
-//                 kubeconfig + server/agent join tokens. Platform
-//                 creates a Devops::KubernetesCluster row.
+//	bootstrap     (k3s_server only) — agent reports a fresh K3s
+//	              cluster came up. Body carries the captured
+//	              kubeconfig + server/agent join tokens. Platform
+//	              creates a Devops::KubernetesCluster row.
 //
-//   join_request  (k3s_agent only) — agent asks the platform for the
-//                 cluster's api_endpoint + agent_token so it can
-//                 invoke `k3s agent --server <api> --token <token>`.
-//                 Returns the membership material.
+//	join_request  (k3s_agent only) — agent asks the platform for the
+//	              cluster's api_endpoint + agent_token so it can
+//	              invoke `k3s agent --server <api> --token <token>`.
+//	              Returns the membership material.
 //
-//   ready         (both) — agent reports the kubelet is up.
-//                 Platform flips the corresponding KubernetesNode
-//                 to status=active.
+//	ready         (both) — agent reports the kubelet is up.
+//	              Platform flips the corresponding KubernetesNode
+//	              to status=active.
 //
-//   stopped       (both) — agent reports clean shutdown. Platform
-//                 flips the node to status=disconnected.
+//	stopped       (both) — agent reports clean shutdown. Platform
+//	              flips the node to status=disconnected.
 //
 // systemctl integration, k3s install, and config file writing live
 // in a sibling package internal/k3sd/applier — extracted in a
@@ -149,8 +149,9 @@ type StoppedAck struct {
 }
 
 // envelope mirrors the platform's render_success shape:
-//   { success: true, data: { ... } } on 2xx
-//   { success: false, error: "..." }  on 4xx/5xx
+//
+//	{ success: true, data: { ... } } on 2xx
+//	{ success: false, error: "..." }  on 4xx/5xx
 type envelope[T any] struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`

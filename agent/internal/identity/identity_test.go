@@ -11,10 +11,10 @@ import (
 func TestParseCmdline(t *testing.T) {
 	got := parseCmdline(`BOOT_IMAGE=/vmlinuz powernode.instance_uuid=abc-123 powernode.platform_url="https://p.example.com/foo bar" simple_flag`)
 	want := map[string]string{
-		"BOOT_IMAGE":               "/vmlinuz",
-		"powernode.instance_uuid":  "abc-123",
-		"powernode.platform_url":   "https://p.example.com/foo bar",
-		"simple_flag":              "",
+		"BOOT_IMAGE":              "/vmlinuz",
+		"powernode.instance_uuid": "abc-123",
+		"powernode.platform_url":  "https://p.example.com/foo bar",
+		"simple_flag":             "",
 	}
 	for k, v := range want {
 		if got[k] != v {

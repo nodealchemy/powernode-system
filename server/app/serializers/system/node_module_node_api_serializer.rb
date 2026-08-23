@@ -31,9 +31,10 @@ module System
 
     private
 
-    # Combines legacy data_file metadata with M1 OCI artifact
-    # metadata so the agent always has a usable file.* block.
     # Builds the `file` block of the modules/:id/download response.
+    # `name` and `download_url` are derived from the module (its name and
+    # id); `size`, `checksum`, and `content_type` come straight off the M1
+    # OCI artifact hash. The pre-M1 data_file metadata is no longer read.
     # The agent's oci.Puller consumes this for streaming + sha256
     # verification.
     def build_file_payload(mod, artifact)

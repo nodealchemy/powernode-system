@@ -18,7 +18,7 @@
 //   - AzureIdentityStrategy   — IMDS endpoint (M2.B planned)
 //   - DigitalOceanStrategy    — DO metadata (M2.B planned)
 //   - ClaimStrategy           — pre-claimed device polls /node_api/claim until
-//                                an operator binds it to an account
+//     an operator binds it to an account
 //
 // The boot subcommand iterates strategies in priority order; first one that
 // returns a non-error result wins.

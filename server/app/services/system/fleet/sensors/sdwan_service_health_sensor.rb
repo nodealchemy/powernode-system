@@ -87,16 +87,22 @@ module System
           port_mapping_signals + service_signals
         end
 
+        # IMP-b24afe85a309 — public because Sdwan::FlowSampleRetentionService
+        # derives its retention floor from this window. Retention that cut
+        # inside the correlation window would delete the rows this sensor is
+        # about to read and make it alarm that every service is silent, so the
+        # two must agree by construction; a second copy of the resolution in
+        # the sweep would be free to drift.
+        def flow_window_seconds
+          @flow_window_seconds ||= setting_seconds("flow_window_seconds",
+                                                   DEFAULT_FLOW_WINDOW_SECONDS)
+        end
+
         private
 
         def models_loaded?
           defined?(::Sdwan::Service) && defined?(::Sdwan::FlowSample) &&
             defined?(::Sdwan::PortMapping) && defined?(::Sdwan::IpfixCollector)
-        end
-
-        def flow_window_seconds
-          @flow_window_seconds ||= setting_seconds("flow_window_seconds",
-                                                   DEFAULT_FLOW_WINDOW_SECONDS)
         end
 
         def handshake_fresh_seconds

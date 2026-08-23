@@ -233,4 +233,85 @@ RSpec.describe "Api::V1::System::Sdwan::RoutePolicies", type: :request do
                                                "an unsaveable update still opened an autonomy-gate audit row"
     end
   end
+
+  # IMP-800b25c1cc45 — DELETE was gated from the start and had NO spec on
+  # either branch, while create and update above carried four each. Dropping a
+  # policy is the direction that widens what a BGP neighbor accepts, so it is
+  # the arm on this controller least able to afford an unexercised gate.
+  describe "DELETE /api/v1/system/sdwan/route_policies/:id" do
+    let!(:policy) do
+      create(:sdwan_route_policy, account: account, name: "drop-me",
+                                  scope: "account", direction: "import")
+    end
+
+    def member_path = "#{collection_path}/#{policy.id}"
+
+    def delete_policy(user: manager)
+      delete member_path, headers: auth_headers_for(user), as: :json
+    end
+
+    it "requires system.sdwan.route_policies.manage" do
+      delete_policy(user: reader)
+
+      expect(response).to have_http_status(:forbidden)
+      expect(::Sdwan::RoutePolicy.exists?(policy.id)).to be(true)
+    end
+
+    it "defers the destroy through the autonomy gate instead of deleting inline" do
+      delete_policy
+
+      expect(response).to have_http_status(:accepted)
+      expect(::Sdwan::RoutePolicy.exists?(policy.id)).to be(true),
+                                                        "the route policy was destroyed without an approval gate"
+
+      deferred = ::Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred).to be_present, "DELETE did not route through the autonomy gate"
+      expect(deferred.action_category).to eq("sdwan.route_policy_delete")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::DeleteRoutePolicy")
+      expect(deferred.params["policy_id"]).to eq(policy.id)
+    end
+
+    # gate! never calls on_proceed on :pending, so the executor is the only
+    # thing that can perform this write — a params-key mismatch between the
+    # controller and DeleteRoutePolicy surfaces here and nowhere else.
+    it "destroys the policy when the deferred operation is approved" do
+      delete_policy
+      expect(response).to have_http_status(:accepted)
+
+      approve_latest_deferred!
+
+      expect(::Sdwan::RoutePolicy.exists?(policy.id)).to be(false),
+                                                        "approved destroy left the policy in place"
+    end
+
+    it "destroys inline and answers deleted when the policy auto-approves" do
+      auto_approve_policy!
+
+      delete_policy
+
+      expect(response).to have_http_status(:ok)
+      expect(response.parsed_body.dig("data", "deleted")).to be(true)
+      expect(response.parsed_body.dig("data", "id")).to eq(policy.id)
+      expect(::Sdwan::RoutePolicy.exists?(policy.id)).to be(false),
+                                                        "answered deleted over a policy that is still there"
+      # deleted-with-the-id is also what an UNGATED destroy would answer, so
+      # without this the example cannot tell gated from ungated.
+      expect(::Ai::DeferredOperation.last&.executor_class).to eq("Sdwan::Executors::DeleteRoutePolicy"),
+                                                              "auto-approved destroy bypassed the gate entirely"
+    end
+
+    # AutonomyGate opens the DeferredOperation BEFORE it branches on policy, so
+    # "no row was opened" proves the gate was never reached — the request was
+    # refused on scope rather than parking an operation that could not run.
+    it "404s for a policy in another account and opens no gate row" do
+      foreign = create(:sdwan_route_policy, account: create(:account))
+
+      expect {
+        delete "#{collection_path}/#{foreign.id}", headers: auth_headers_for(manager), as: :json
+        expect(response).to have_http_status(:not_found)
+      }.not_to change(::Ai::DeferredOperation, :count)
+
+      expect(::Sdwan::RoutePolicy.exists?(foreign.id)).to be(true)
+    end
+  end
 end

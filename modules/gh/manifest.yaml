@@ -76,6 +76,18 @@ security:
 
 skills: []
 
+# IMP-3855ff9908f2 — post-deploy self-proof. Same shape and same reason as
+# gitleaks (whose sibling v2 in the same 2026-08-07 batch also published empty):
+# this module's entire payload is one binary at one path, so "the module is
+# installed" and "the binary at that path answers the name" are exactly the
+# claim worth proving. Asserts the RESOLVED PATH, never existence, in BOTH a
+# login and a non-login shell. See System::ModuleVerify.
+verify:
+  probes:
+    - name: gh-binary
+      command: gh
+      resolves_to: /usr/local/bin/gh
+
 build:
   apt_snapshot: "20260415T000000Z"
   # gh release fetched + sha256-verified in Stage 1.5 (see the gh case in

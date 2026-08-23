@@ -19,7 +19,7 @@ const (
 // Human output renders the same fields with `KEY: value` lines.
 type Result struct {
 	Command    string         `json:"command"`
-	Status     string         `json:"status"`               // "ok" | "error" | "noop"
+	Status     string         `json:"status"` // "ok" | "error" | "noop"
 	ExitCode   int            `json:"exit_code"`
 	DurationMs int64          `json:"duration_ms,omitempty"`
 	Stage      string         `json:"stage,omitempty"`

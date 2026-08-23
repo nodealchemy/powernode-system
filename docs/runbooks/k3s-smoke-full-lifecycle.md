@@ -261,9 +261,25 @@ The headline operator claim is "pod traffic flows over the encrypted
 SDWAN overlay." At site+ tier phase 4 deploys the nginx test workload;
 verifying actual traffic on `wg-sdwan-<handle>` is a manual sudo step.
 
+The kubeconfig phase 4 fetches lands in a per-run private directory, not a
+fixed path (IMP-0ca5fbe5c532 — a constant `/tmp` name left a live cluster's
+credentials world-readable at a guessable location, and one un-stubbed call in
+the spec suite away from being overwritten). The smoke prints the path it used:
+
+```
+✓ kubeconfig written to /tmp/k3s-smoke-kubeconfig-XXXXXX/k3s-smoke-kubeconfig-a
+```
+
+Export it, or set `SMOKE_K3S_KUBECONFIG_DIR` before the run for a stable
+location:
+
+```bash
+export KUBECONFIG_A="$(ls -t /tmp/k3s-smoke-kubeconfig-*/k3s-smoke-kubeconfig-a | head -1)"
+```
+
 ```bash
 # 1. Get pod IPs after phase 4 completes the nginx deploy
-kubectl --kubeconfig=/tmp/k3s-smoke-kubeconfig-a get pods -o wide
+kubectl --kubeconfig="$KUBECONFIG_A" get pods -o wide
 
 # 2. Get the network handle for site A's SDWAN network
 NET_HANDLE=$(bundle exec rails runner "puts Sdwan::Network.find_by(name: 'k3s-site-a').network_handle")
@@ -273,7 +289,7 @@ IFACE="wg-sdwan-${NET_HANDLE}"
 sudo tcpdump -i $IFACE -n -c 20 host <pod-a-ip> and host <pod-b-ip>
 
 # 4. From inside pod A, hit pod B
-kubectl --kubeconfig=/tmp/k3s-smoke-kubeconfig-a exec pod-a -- wget -qO- http://<pod-b-ip>
+kubectl --kubeconfig="$KUBECONFIG_A" exec pod-a -- wget -qO- http://<pod-b-ip>
 
 # Expected: tcpdump captures 20 packets between the pods on $IFACE
 # (proves flannel host-gw is routing pod traffic over the WireGuard tunnel)

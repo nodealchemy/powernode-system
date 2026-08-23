@@ -84,21 +84,20 @@ module Api
           def update
             require_permission("system.sdwan.port_mappings.manage")
             attrs = mapping_params.to_h
-            @mapping.assign_attributes(attrs)
-            return render_validation_error(@mapping) unless @mapping.valid?
-
-            # Discard the un-gated in-memory changes: nothing may reach the row
-            # except through the executor.
-            @mapping.reload
-
-            gate!(
+            # Sequence + rationale: Ai::GatedActions#gate_update!. The name comes
+            # from the incoming attributes so a rename's card names the new one.
+            gate_update!(
+              record: @mapping,
+              attributes: attrs,
+              response_key: :port_mapping,
+              serializer: ->(m) { serialize_full(m) },
               action_category: ::Sdwan::Executors::UpdatePortMapping::ACTION_CATEGORY,
               executor_class: "Sdwan::Executors::UpdatePortMapping",
               params: { mapping_id: @mapping.id, attributes: attrs },
               source_type: "Sdwan::PortMapping",
               source_id: @mapping.id,
-              description: "Update SDWAN port mapping #{@mapping.name} on #{@network.name}",
-              on_proceed: ->(_r) { render_success(port_mapping: serialize_full(@mapping.reload)) }
+              description: "Update SDWAN port mapping " \
+                           "#{attrs['name'].presence || @mapping.name} on #{@network.name}"
             )
           end
 

@@ -38,8 +38,8 @@ func RunUpdate(ctx context.Context, opts UpdateOptions) (Result, error) {
 		Command: "update",
 		Status:  "ok",
 		Details: map[string]any{
-			"dry_run":            opts.DryRun,
-			"last_reconcile_at":  r.LastReconcileAt(),
+			"dry_run":           opts.DryRun,
+			"last_reconcile_at": r.LastReconcileAt(),
 		},
 	}
 	if r.LastError() != nil {

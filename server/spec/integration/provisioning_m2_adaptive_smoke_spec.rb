@@ -315,14 +315,20 @@ RSpec.describe "AI-driven provisioning M2 adaptive evolution smoke", type: :inte
     expect(cost.payload["observed_usd"]).to eq(280.0)
     expect(cost.payload["target_usd"]).to eq(200.0)
 
-    # The sensor still classifies the breach; the PROPOSER now declines to
-    # compose for it. A cost breach implies scaling IN, and `scale_project`
-    # offers only additive strategies — the step this used to compose named
-    # that skill while carrying none of its required kwargs, so it could
-    # only fail at execution ("missing required input: project_id").
-    # INC-4 (IMP-216a6dbc7e32) adds `remove_replicas`; restore actuation then.
+    # The sensor classifies the breach and the proposer composes the scale-IN
+    # for it. This asserted a DECLINE while `scale_project` offered only
+    # additive strategies — a step naming that skill without its required
+    # kwargs could only fail at execution. INC-4 (IMP-216a6dbc7e32) added
+    # `remove_replicas` and IMP-e68a93c47106 wired this arm to it.
     proposer = Ai::Provisioning::AdaptationProposerService.new(account: account, mission: mission)
-    expect(proposer.propose_from_signals(signals: [ cost ])).to be_nil
+    plan = proposer.propose_from_signals(signals: [ cost ])
+
+    inputs = plan.steps.in_order.first.execution_config["inputs"]
+    expect(inputs["scaling_strategy"])
+      .to eq(Ai::Provisioning::AdaptationProposerService::REMOVAL_STRATEGY)
+    expect(inputs["project_id"]).to eq(mission.id)
+    # A removal is DESTRUCTIVE and never auto-applies, whatever the ceiling.
+    expect(proposer.auto_apply?(plan: plan)).to be false
   end
 
   it "registers the six project.* intervention policies with the expected defaults" do

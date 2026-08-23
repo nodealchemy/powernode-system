@@ -34,8 +34,17 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
 )
 
-// Version is set at build time via -ldflags. The Gitea Actions workflow
-// stamps the SHA + tag automatically.
+// Version is set at build time via -ldflags, and reaches the platform as
+// NodeInstance#agent_version (commands.go passes it as ServiceConfig.
+// AgentVersion, which service.go sends on every heartbeat).
+//
+// The defaults below are what an UNSTAMPED build reports. That is not
+// hypothetical: until 2026-08-19 the module-build path — the one that actually
+// produces the binary the fleet runs — passed only `-ldflags '-s -w'`, so every
+// instance in the fleet heartbeated "dev" and nothing server-side could stage a
+// change by agent capability. scripts/module-build/stage15.sh now stamps all
+// three. If you add another build path, stamp them there too, or it silently
+// reintroduces a fleet-wide constant that reads like a version.
 var (
 	Version   = "dev"
 	GitCommit = "unknown"

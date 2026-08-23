@@ -56,7 +56,39 @@ RSpec.describe "SDWAN operator-path intervention policies" do
       "sdwan.port_mapping_create"     => "notify_and_proceed",
       "sdwan.port_mapping_update"     => "notify_and_proceed",
       "sdwan.port_mapping_delete"     => "notify_and_proceed",
+      # IMP-97c7b4123d8f — the Phase O6 write family, which shipped with no
+      # category at all. Deletes require approval like every sibling; the two
+      # sharpest are ovn_deployment_delete (removes the account's whole OVN
+      # control plane, with no REST equivalent) and ovn_acl_delete (retracts a
+      # multi-tenant isolation rule).
+      "sdwan.host_bridge_create"      => "notify_and_proceed",
+      "sdwan.host_bridge_update"      => "notify_and_proceed",
+      "sdwan.host_bridge_delete"      => "require_approval",
+      "sdwan.ovn_deployment_create"   => "notify_and_proceed",
+      "sdwan.ovn_deployment_delete"   => "require_approval",
+      "sdwan.ovn_logical_switch_create" => "notify_and_proceed",
+      "sdwan.ovn_logical_switch_update" => "notify_and_proceed",
+      "sdwan.ovn_logical_switch_delete" => "require_approval",
+      "sdwan.ovn_logical_switch_port_create" => "notify_and_proceed",
+      "sdwan.ovn_logical_switch_port_update" => "notify_and_proceed",
+      "sdwan.ovn_logical_switch_port_delete" => "require_approval",
+      "sdwan.ovn_acl_create"          => "notify_and_proceed",
+      "sdwan.ovn_acl_delete"          => "require_approval",
+      "sdwan.ipfix_collector_create"  => "notify_and_proceed",
+      # IMP-6bbe5c673c38 — the state toggle sits with the other state
+      # transitions. It must stay STRICTLY cheaper than the delete beside it:
+      # disable keeps the row and its flow samples, delete cascades them, and
+      # tiering the safe verb no lower than the destructive one is what pushes
+      # a caller toward the destructive one.
+      "sdwan.ipfix_collector_update"  => "notify_and_proceed",
+      "sdwan.ipfix_collector_delete"  => "require_approval",
       "sdwan.access_grant_create"     => "notify_and_proceed",
+      # IMP-343163bf37a4: reactivation is the inverse of the revoke below, not
+      # an additive grant, so it carries the revoke's tier rather than the
+      # create's. notify_and_proceed executes inline (Ai::AutonomyGate treats
+      # it as auto_approve), so this row is the whole difference between a
+      # resurrection an operator decides and one that merely gets logged.
+      "sdwan.access_grant_reactivate" => "require_approval",
       "sdwan.access_grant_revoke"     => "require_approval",
       "sdwan.access_grant_delete"     => "require_approval",
       "sdwan.user_device_create"      => "notify_and_proceed",

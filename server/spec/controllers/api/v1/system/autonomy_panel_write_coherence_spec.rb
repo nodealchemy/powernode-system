@@ -56,6 +56,10 @@ RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request
   # A `let` rather than a constant: a constant declared inside a describe block
   # lands on Object, and this suite has been bitten by two files clobbering one
   # name in a defined-order run.
+  #
+  # IMP-17bc5546009a (2026-08-21): was 7 — system.sdwan_route_policy_audit is
+  # gone. It had no sensor, no DecisionEngine binding, and no executor, so it
+  # was a permanently no-op auto_approve row; deleted rather than built out.
   let(:autonomous_sdwan_categories) do
     %w[
       system.sdwan_peer_remediate
@@ -64,7 +68,6 @@ RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request
       system.sdwan_user_device_revoke
       system.sdwan_bgp_session_remediate
       system.sdwan_vip_failover
-      system.sdwan_route_policy_audit
     ].freeze
   end
 
@@ -197,7 +200,7 @@ RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request
   # The seven the finding named. Kept separate from the derived sweep above
   # because the sweep proves coherence for whatever the pivot happens to ship,
   # and this proves the pivot ships THESE under Fleet Autonomy.
-  describe "the 7 autonomous system.sdwan_* categories" do
+  describe "the 6 autonomous system.sdwan_* categories" do
     # The finding's actual subject, and the one thing the two examples below
     # CANNOT see: they assert against rows this file's own `before` block
     # created, so they would stay green if the seeds relocated these categories

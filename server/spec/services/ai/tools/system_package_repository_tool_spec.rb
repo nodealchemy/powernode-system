@@ -106,6 +106,61 @@ RSpec.describe Ai::Tools::SystemPackageRepositoryTool do
       )
     end
 
+    # IMP-c90ba4ec46da — every other mutating action on this tool branches on
+    # `repo.shared?` and demands manage_shared; sync_repository did not, and it
+    # accepts `force`, which switches OFF PackageRepositorySyncService's
+    # mass-obsoletion guard. `scoped_repos` is `accessible_to(account)`, which
+    # deliberately admits every shared repo to every account, so an agent
+    # holding only `system.package_repositories.sync` could force-sync a
+    # canonical shared repo with the safety net off.
+    #
+    # Oracle: the sync must never be ENQUEUED (this tool hands off to the
+    # worker, so the enqueue is the last observable act before obsoletion).
+    it "refuses to FORCE a shared repo without manage_shared, and enqueues nothing" do
+      shared = create(:system_package_repository, :shared)
+      syncer = create(:user, account: account, permissions: %w[system.package_repositories.sync])
+      scoped = described_class.new(account: account, user: syncer)
+      allow(::System::WorkerJobEnqueuer).to receive(:enqueue)
+
+      r = scoped.execute(params: { action: "system_sync_package_repository",
+                                   repository_id: shared.id, force: true })
+
+      expect(::System::WorkerJobEnqueuer).not_to have_received(:enqueue)
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("manage_shared")
+      expect(shared.reload.sync_status).not_to eq("syncing")
+    end
+
+    it "still allows an UNFORCED sync of a shared repo for a plain sync holder" do
+      shared = create(:system_package_repository, :shared)
+      syncer = create(:user, account: account, permissions: %w[system.package_repositories.sync])
+      scoped = described_class.new(account: account, user: syncer)
+      allow(::System::WorkerJobEnqueuer).to receive(:enqueue)
+
+      r = scoped.execute(params: { action: "system_sync_package_repository", repository_id: shared.id })
+
+      expect(r[:success]).to be true
+      expect(::System::WorkerJobEnqueuer).to have_received(:enqueue).with(
+        hash_including(job_class: "SystemPackageRepositorySyncJob", args: [ shared.id, { "force" => false } ])
+      )
+    end
+
+    it "positive control: a manage_shared holder CAN force-sync a shared repo" do
+      shared = create(:system_package_repository, :shared)
+      sharer = create(:user, account: account,
+                      permissions: %w[system.package_repositories.sync system.package_repositories.manage_shared])
+      scoped = described_class.new(account: account, user: sharer)
+      allow(::System::WorkerJobEnqueuer).to receive(:enqueue)
+
+      r = scoped.execute(params: { action: "system_sync_package_repository",
+                                   repository_id: shared.id, force: true })
+
+      expect(r[:success]).to be true
+      expect(::System::WorkerJobEnqueuer).to have_received(:enqueue).with(
+        hash_including(job_class: "SystemPackageRepositorySyncJob", args: [ shared.id, { "force" => true } ])
+      )
+    end
+
     it "returns a structured error (not an exception) for an unknown repository id" do
       r = call("system_get_package_repository", repository_id: SecureRandom.uuid)
       expect(r[:success]).to be false

@@ -168,6 +168,41 @@ module System
         @policy_service.resolve(action_category: action_category, agent: @agent)
       end
 
+      # IMP-01a025b3: the CVE half of the DecisionEngine's collaborator
+      # contract. The engine's stuck-remediation lane consults this before
+      # escalating, so a service that misses it raises NoMethodError out of an
+      # unrescued decide_all and takes the whole CVE tick down — this service
+      # is the OTHER `autonomy_service` DecisionEngine is constructed with
+      # (see CveResponderService#tick!).
+      #
+      # Semantics mirror FleetAutonomyService#open_operator_request? against
+      # THIS service's own request store (SOURCE_TYPE, #dedup_key_for,
+      # #decision_ttl_for): "open" = re-gating would produce no new
+      # operator-facing artifact, so the caller can go quiet without losing the
+      # operator's only actionable row. Fails open, for the same reason.
+      def open_operator_request?(action_category, metadata: {})
+        return false unless defined?(::Ai::ApprovalRequest)
+
+        if (key = dedup_key_for(action_category, metadata))
+          name, value = key
+          return true if pending_cve_approvals
+            .where("request_data->>'action_category' = ?", action_category)
+            .where("request_data->'payload'->>? = ?", name, value)
+            .exists?
+
+          return true if recently_rejected_approval?(action_category,
+              [ "request_data->>'action_category' = ? AND request_data->'payload'->>? = ?",
+               action_category, name, value ])
+        end
+
+        recently_rejected_approval?(action_category,
+          [ "request_data->>'action_category' = ?", action_category ])
+      rescue StandardError => e
+        Rails.logger.error("[CveResponder] open-request check failed for #{action_category} " \
+                           "(failing open — escalation will re-fire): #{e.class}: #{e.message}")
+        false
+      end
+
       private
 
       # Inline dispatch path for `proceed` decisions. Critical CVEs land

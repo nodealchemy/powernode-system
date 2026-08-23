@@ -111,7 +111,7 @@ if h.tier_at_least?("site")
 
   h.fail_with("kubectl binary not found in PATH (override via SMOKE_K3S_KUBECTL)") unless h.kubectl_available?
 
-  kubeconfig_path = "/tmp/k3s-smoke-kubeconfig-#{site}"
+  kubeconfig_path = h.kubeconfig_dest(site)
   h.fetch_kubeconfig!(cluster: cluster, user: account.users.first, dest_path: kubeconfig_path)
   h.ok("kubeconfig written to #{kubeconfig_path}")
 

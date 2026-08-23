@@ -48,6 +48,28 @@ RSpec.describe Federation::TcpForwarderConfigWriter, type: :service do
       end
     end
 
+    context "with a backend_vip the remote peer already bracketed" do
+      let!(:sub) do
+        create(:system_federation_service_subscription, :active, :site_local, account: account,
+                                                                                local_hostname: "localhost:5433",
+                                                                                backend_vip: "[fd00:b0b::30]",
+                                                                                backend_port: 5433)
+      end
+
+      it "does not double-bracket it" do
+        # backend_vip is an unvalidated string column populated from a REMOTE
+        # peer's offering, so the bracketed form is not ours to rule out.
+        # The Go forwarder dials Backend verbatim (net.Dial in
+        # agent/internal/tcpfwd/forwarder.go), which rejects
+        # "[[fd00:b0b::30]]:5433".
+        # Guard shared with Sdwan::HostPort (IMP-9537a74e50fa).
+        result = described_class.write!(account: account, config_path: config_path)
+        forward = JSON.parse(File.read(result[:output_path]))["forwards"].first
+
+        expect(forward["backend"]).to eq("[fd00:b0b::30]:5433")
+      end
+    end
+
     context "with an active site-local subscription (127.0.0.1: hostname)" do
       let!(:sub) do
         create(:system_federation_service_subscription, :active, :site_local, account: account,

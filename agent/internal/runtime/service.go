@@ -24,6 +24,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/migration"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/oci"
+	"github.com/nodealchemy/powernode-system/agent/internal/probe"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks/handlers"
 	"github.com/nodealchemy/powernode-system/agent/internal/sdwan"
@@ -71,6 +72,20 @@ type Service struct {
 	cfg               Config
 	capabilities      *NodeCapabilities
 	bootedImageGitSHA string
+	// verifyProbes runs each attached module's manifest-declared `verify:`
+	// probes (IMP-3855ff9908f2). Snapshot-style, like sdwan.Manager:
+	// buildHeartbeat only READS the stored snapshot, so assembling a
+	// heartbeat never spawns a subshell.
+	//
+	// The probing itself runs from PostSend, which the heartbeat loop calls
+	// SYNCHRONOUSLY between one beat and the next — so a pass does delay the
+	// following heartbeat. That is bounded by probe.DefaultRefreshBudget
+	// (20s against a 30s beat), and on a steady fleet a pass does no work at
+	// all: a module is re-probed only when its digest changes or its refresh
+	// interval elapses. Without that bound a slow filesystem could push the
+	// node past the platform's 600s live-heartbeat window and make it read as
+	// SILENT — an outage manufactured by an observability feature.
+	verifyProbes *probe.Evaluator
 }
 
 func New(cfg Config) *Service {
@@ -95,6 +110,7 @@ func New(cfg Config) *Service {
 		cfg:               cfg,
 		capabilities:      DetectCapabilities(),
 		bootedImageGitSHA: identity.BootedImageGitSHA(),
+		verifyProbes:      newVerifyEvaluator(cfg),
 	}
 }
 
@@ -276,6 +292,14 @@ func (s *Service) Run(ctx context.Context) error {
 			// authorized_keys is deliberately NOT here — it runs on its own
 			// timer so key sync survives a failing heartbeat (AuthorizedKeysSyncer).
 			sdwanMgr.Reconcile(ctx)
+			// IMP-3855ff9908f2 — re-run each attached module's `verify:`
+			// probes. Cheap on a steady fleet (a module whose digest is
+			// unchanged is skipped until the refresh interval elapses) and
+			// immediate on a NEW digest, which is the moment a bad publish
+			// is detectable. Never returns an error into the loop; a run
+			// that cannot happen leaves the previous snapshot in place, and
+			// the platform ages that out on the agent's own clock.
+			s.verifyProbes.Refresh(ctx)
 			// Order matters: SDWAN must reconcile FIRST so the docker
 			// reconciler sees a fresh overlay address. The address is
 			// snapshotted into dockerMgr each tick so multi-network
@@ -588,7 +612,13 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 	}
 	if sdwanMgr != nil {
 		payload.SdwanState = sdwanMgr.HeartbeatStatuses()
+		payload.SdwanOvnState = sdwanMgr.OvnNbStatus()
 	}
+	// Pure snapshot read — the probes themselves run in PostSend. nil stays
+	// nil (omitempty): "no module here declares a probe" is an absence the
+	// platform records as NOT MEASURED, and must never be sent as an empty
+	// block that could read as "verified, nothing wrong".
+	payload.ModuleVerifyState = s.verifyProbes.Snapshot()
 	// Boot-LKG observability (#39). Two reads of tiny /persist files:
 	//   1. The boot breadcrumb — whether THIS boot fell back to the LKG (+ age),
 	//      and whether it composed an incomplete set.
@@ -755,4 +785,17 @@ func generateBootID() string {
 		return fmt.Sprintf("boot-%d", time.Now().UnixNano())
 	}
 	return "boot-" + hex.EncodeToString(b[:])
+}
+
+// newVerifyEvaluator builds the module-verify probe evaluator, pointed at the
+// SAME attach-state file the rest of the service uses. Threading cfg.StatePath
+// through rather than letting the evaluator fall back to the mount.StatePath
+// constant is what keeps a test-configured agent (and any future non-default
+// deployment) from reading the host's live /persist state.
+func newVerifyEvaluator(cfg Config) *probe.Evaluator {
+	e := probe.NewEvaluator(cfg.OnError)
+	if cfg.StatePath != "" {
+		e.StatePath = cfg.StatePath
+	}
+	return e
 }

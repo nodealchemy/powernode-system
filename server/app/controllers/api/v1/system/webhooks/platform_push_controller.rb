@@ -102,7 +102,12 @@ module Api
             end
 
             if result.dispatched
-              "mode=#{result.mode} shadow=#{result.shadow} batch=#{result.batch&.id}"
+              summary = "mode=#{result.mode} shadow=#{result.shadow} batch=#{result.batch&.id}"
+              # A batch the orchestrator refused at dispatch (core-mirror
+              # divergence) still reaches here with dispatched=true — some of
+              # its modules may have gone out. Say so, or an automated push
+              # reports a refusal as a clean build.
+              result.error.present? ? "#{summary} REFUSED: #{result.error}" : summary
             else
               "mode=#{result.mode} no-op"
             end

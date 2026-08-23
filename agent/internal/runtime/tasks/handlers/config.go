@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 )
@@ -48,6 +49,23 @@ func (h *SyncHandler) Execute(ctx context.Context, task *tasks.Task) (tasks.Resu
 	if err := h.deps.Reconciler.RunOnce(ctx); err != nil {
 		return nil, fmt.Errorf("reconciler: %w", err)
 	}
+
+	// IMP-f1c1e6d61104 — a pass that did not converge the desired set must FAIL
+	// the task, not complete it. RunOnce returns nil for per-module failures
+	// (they report through OnError, a stderr printf in service mode), so
+	// without this an apply_config that materialized nothing still reported
+	// success — and the server suppresses config_drift for a node on a
+	// COMPLETED apply_config, turning a vacuous completion into silence.
+	//
+	// Type assertion rather than a RunOnceAPI method so existing fakes keep
+	// compiling; a reconciler that cannot report is treated as before.
+	if reporter, ok := h.deps.Reconciler.(tasks.ConvergenceReporter); ok {
+		if failures := reporter.ConvergenceFailures(); len(failures) > 0 {
+			return nil, fmt.Errorf("reconcile did not converge %d module(s): %s",
+				len(failures), strings.Join(failures, "; "))
+		}
+	}
+
 	if forced {
 		return tasks.Result{"status": "resynced", "module_id": moduleID, "scope": resyncScope(moduleID)}, nil
 	}

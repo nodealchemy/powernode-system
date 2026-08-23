@@ -56,6 +56,67 @@ RSpec.describe System::InstancePoolService, type: :service do
   # into the next one. The reset exists; these pin it, because an implemented-
   # but-untested control is not a foundation for the instance-principal
   # authorization decision that depends on how much a grant is worth.
+  # IMP-28ca3e61f7c2 — the RECYCLE branch of #release! (the default, non-reuse
+  # path) had no coverage at all, and it is the one the CI builder pool takes on
+  # every lease release.
+  #
+  # It marks the member pool_state="draining" and then calls
+  # ProvisioningService.terminate_instance DIRECTLY, wrapped in `rescue
+  # StandardError` and DISCARDING the returned Result. That is precisely the
+  # defect commit af978858 fixed everywhere else by routing terminates through
+  # #terminate_member — a provider failure comes back as an err Result, NOT an
+  # exception, so the rescue never fires and a failed terminate is
+  # indistinguishable from a successful one.
+  #
+  # The consequence is worse here than a lost log line, because "draining" is a
+  # blind spot: InstancePool exposes ready_members / warming_members /
+  # claimed_members / errored_members and NO draining scope, so every branch of
+  # recycle_stale_members! skips such a member. prune_dead_records! cannot reach
+  # it either — that selects on status terminated/error, which a still-running
+  # instance never reaches. The row, its Node shell and its module assignments
+  # leak permanently with the VM still running.
+  describe "#release! recycle branch when the provider terminate fails" do
+    let(:instance) { seed_pool_member(state: "claimed", acquired_at: 1.hour.ago) }
+
+    before do
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .and_return(::System::Runtime::Result.err(error: "provider refused"))
+    end
+
+    it "does not strand the member in draining, where no recycle scope can reach it" do
+      described_class.release!(instance: instance, pool: pool)
+
+      expect(instance.reload.pool_state).not_to eq("draining"),
+                                                "a failed terminate left the member in draining: no member scope " \
+                                                "selects it and prune_dead_records! needs status terminated/error, " \
+                                                "so it leaks forever with the VM still running"
+    end
+
+    it "hands it to the errored ladder so the reaper retries the terminate" do
+      described_class.release!(instance: instance, pool: pool)
+
+      expect(instance.reload.pool_state).to eq("errored")
+    end
+  end
+
+  # Positive control: when the terminate genuinely succeeds, draining is the
+  # CORRECT resting state — the row reaches status terminated and
+  # prune_dead_records! collects it (and its Node shell) after the retention
+  # window. The fix must not disturb this path.
+  describe "#release! recycle branch when the provider terminate succeeds" do
+    let(:instance) { seed_pool_member(state: "claimed", acquired_at: 1.hour.ago) }
+
+    before do
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .and_return(::System::Runtime::Result.ok)
+    end
+
+    it "recycles normally and does not mark the member errored" do
+      expect(described_class.release!(instance: instance, pool: pool)).to eq("recycled")
+      expect(instance.reload.pool_state).to eq("draining")
+    end
+  end
+
   describe "#release! on a reuse-without-reset pool" do
     let(:reuse_pool) do
       pool.update!(metadata: { "reuse_without_reset" => true })
@@ -1098,6 +1159,187 @@ RSpec.describe System::InstancePoolService, type: :service do
       counts = described_class.recycle_stale_members!(pool: pool)
 
       expect(counts[:records_pruned]).to eq(1)
+    end
+
+    # The reaper was INERT, not missing. Every enrolled CI builder announces a
+    # NodeInstancePeer (peer_controller#announce -> AgentPeeringService), and
+    # `system_node_instance_peers.node_instance_id` is a NO ACTION FK that
+    # NodeInstance declares no `dependent:` for. So the bare `member.destroy!`
+    # raised InvalidForeignKey, the surrounding `rescue StandardError` logged
+    # "record prune failed", and the same doomed destroy was retried every 60s
+    # forever. NodeInstance::CASCADE_DEPENDENTS documents exactly this trap and
+    # #cascade_destroy_dependents! exists to clear it — the prune path just
+    # never called it. A dependent-free member passes against the broken code
+    # and proves nothing; these carry the real blocker.
+    describe "a past-retention member with a blocking dependent" do
+      let!(:blocked) { seed_dead_member(status: "terminated", age: 30.days) }
+      let!(:peer) { create(:system_node_instance_peer, node_instance: blocked) }
+
+      it "actually deletes the member instead of retrying a doomed destroy forever" do
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::NodeInstance.where(id: blocked.id)).not_to exist,
+                                                                 "the NO ACTION FK from system_node_instance_peers " \
+                                                                 "blocked the bare destroy!, so the reaper logged " \
+                                                                 "'record prune failed' and left the row forever"
+      end
+
+      it "removes the Node shell too, not just the instance" do
+        node_id = blocked.node_id
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::Node.where(id: node_id)).not_to exist
+      end
+
+      it "counts it as pruned" do
+        counts = described_class.recycle_stale_members!(pool: pool)
+
+        expect(counts[:records_pruned]).to eq(1)
+      end
+
+      it "takes the blocking peer row with it" do
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::NodeInstancePeer.where(id: peer.id)).not_to exist
+      end
+
+      # cascade_destroy_dependents! commits its OWN transaction, so if the
+      # member destroy that follows is not enrolled in the same one, a failure
+      # there leaves the member alive with its peers and storage rows already
+      # permanently destroyed — and the rescue logs a bare "record prune
+      # failed" disclosing none of it, every 60s forever. The method's own doc
+      # requires the shared transaction; this pins that the caller honours it.
+      it "does not half-destroy a member when the destroy after the cascade fails" do
+        allow_any_instance_of(System::NodeInstance).to receive(:destroy!)
+          .and_raise(ActiveRecord::InvalidForeignKey, "some FK the cascade does not cover")
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::NodeInstance.where(id: blocked.id)).to exist
+        expect(System::NodeInstancePeer.where(id: peer.id)).to exist,
+                                                              "the cascade committed while the member survived: " \
+                                                              "its dependents are gone and nothing says so"
+      end
+    end
+
+    # Phase 2 — the zero-instance Node shell. prune_dead_records! iterates
+    # pool.node_instances, so a Node whose instances are all gone but whose own
+    # destroy! failed (system_node_modules.node_id is a NO ACTION FK that no
+    # `dependent:` on Node covers — its has_many :node_modules goes THROUGH
+    # assignments, a different column) is permanently invisible to the member
+    # loop. It leaks with no path to collection at all.
+    describe "orphaned pool Node shells with no instances left" do
+      def seed_pool_node_shell(age:, config: { "instance_pool_id" => pool.id })
+        node = create(:system_node, account: account, node_template: node_template,
+                                    lifecycle_class: "ephemeral", config: config)
+        node.update_columns(created_at: age.ago, updated_at: age.ago)
+        node
+      end
+
+      it "collects a past-retention shell the member loop can never reach" do
+        shell = seed_pool_node_shell(age: 30.days)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::Node.where(id: shell.id)).not_to exist
+      end
+
+      it "clears the NO ACTION node_modules reference that blocks the shell destroy" do
+        shell = seed_pool_node_shell(age: 30.days)
+        mod = create(:system_node_module, account: account, node: shell)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::Node.where(id: shell.id)).not_to exist
+        expect(mod.reload.node_id).to be_nil
+      end
+
+      it "reports the shells it collected" do
+        seed_pool_node_shell(age: 30.days)
+
+        counts = described_class.recycle_stale_members!(pool: pool)
+
+        expect(counts[:node_shells_pruned]).to eq(1)
+      end
+
+      it "never touches a shell inside the retention window (provisioning creates the Node first, instance second)" do
+        fresh = seed_pool_node_shell(age: 1.hour)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::Node.where(id: fresh.id)).to exist
+      end
+
+      it "never touches a Node without pool provenance, however old" do
+        foreign = seed_pool_node_shell(age: 90.days, config: {})
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::Node.where(id: foreign.id)).to exist
+      end
+
+      it "never touches a shell belonging to a DIFFERENT account" do
+        other_account = create(:account)
+        other_template = create(:system_node_template, account: other_account)
+        foreign = create(:system_node, account: other_account, node_template: other_template,
+                                       lifecycle_class: "ephemeral",
+                                       config: { "instance_pool_id" => pool.id })
+        foreign.update_columns(created_at: 90.days.ago, updated_at: 90.days.ago)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::Node.where(id: foreign.id)).to exist
+      end
+
+      it "honours a per-pool retention override, exactly as the member phase does" do
+        pool.update!(metadata: pool.metadata.merge("record_retention_days" => 60))
+        shell = seed_pool_node_shell(age: 30.days)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::Node.where(id: shell.id)).to exist
+      end
+
+      it "is disabled outright by a zero retention override" do
+        pool.update!(metadata: pool.metadata.merge("record_retention_days" => 0))
+        shell = seed_pool_node_shell(age: 90.days)
+
+        counts = described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::Node.where(id: shell.id)).to exist
+        expect(counts[:node_shells_pruned]).to eq(0)
+      end
+
+      it "reports zero when there is nothing to collect" do
+        counts = described_class.recycle_stale_members!(pool: pool)
+
+        expect(counts[:node_shells_pruned]).to eq(0)
+      end
+
+      it "never touches a shell belonging to a DIFFERENT pool" do
+        other_pool = System::InstancePool.create!(
+          account: account, node_template: node_template, name: "other-pool",
+          target_size: 1, min_size: 0, max_size: 2,
+          lifecycle_class: "ephemeral", status: "active",
+          provider_region: provider_region, provider_instance_type: provider_instance_type
+        )
+        foreign = seed_pool_node_shell(age: 90.days, config: { "instance_pool_id" => other_pool.id })
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::Node.where(id: foreign.id)).to exist
+      end
+
+      it "never touches a shell that still has an instance attached" do
+        live = seed_pool_member(state: "ready")
+        live.node.update!(config: { "instance_pool_id" => pool.id })
+        live.node.update_columns(created_at: 90.days.ago, updated_at: 90.days.ago)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(System::Node.where(id: live.node_id)).to exist
+      end
     end
   end
 end

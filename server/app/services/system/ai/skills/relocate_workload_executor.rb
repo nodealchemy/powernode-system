@@ -14,6 +14,21 @@ module System
       #                gap window between teardown and bring-up. v0 issues
       #                terminate sequentially in source order.
       #
+      # ONE readiness predicate (#cutover_refusal_reasons — undersized /
+      # off-fabric / storage-unready), TWO dispositions, because the two
+      # strategies differ in where the workload lives when it trips
+      # (IMP-49b3e42d9423):
+      #
+      #   blue_green — the predicate GATES the teardown. The sources still
+      #                hold the workload, so the refused target stack is
+      #                reclaimed and the sources are left untouched.
+      #   drain      — the predicate cannot gate anything: the sources are
+      #                already gone by the time a target exists to measure.
+      #                It gates the OUTCOME REPORT instead — the run fails
+      #                rather than reporting success over a fleet that cannot
+      #                serve — and the degraded stack is RETAINED, because it
+      #                is the only live capacity left to retain.
+      #
       # Composes:
       #   - ProvisionFullStackExecutor (target region) for the new stack
       #   - System::ProvisioningService.terminate_instance for source teardown
@@ -154,7 +169,7 @@ module System
                     dry_run: false, **_extras)
           # IMP-01a774a80f7a — the ONE resolution site for this run's storage
           # declaration, and everything below reads its result: the approval
-          # card (#build_plan), the cutover guard (#storage_unready?) and the
+          # card (#build_plan), the cutover guard (#cutover_refusal_reasons) and the
           # forward to the executor that actually buys the disk
           # (#provision_target!). The inner executor tolerates `storage_gb` as
           # an alias and CostEstimatorService#declared_gb prices it, but this
@@ -179,6 +194,41 @@ module System
           # idempotently.
           with_storage_gb = ::System::Ai::Skills::ProvisionFullStackExecutor
                             .resolve_storage_gb(with_storage_gb, storage_gb)
+
+          # REFUSED AT THE DOOR (IMP-f5532c5c5bd6), beside the other parameter
+          # validations rather than deep in the run.
+          #
+          # ProvisionFullStackExecutor previews this input as failures because
+          # its own comment refuses to let "a declaration the real run would
+          # record failure entries for ... preview as a clean plan". Relocate
+          # never composes PFSE for its preview — it builds its own plan — so
+          # the operator's :high blast-radius card showed the storage steps
+          # absent, a conditional storage-unready clause about a volume that
+          # appears nowhere in the plan, and ZERO failures.
+          #
+          # WHY REFUSE RATHER THAN RECORD-AND-CONTINUE, since PFSE deliberately
+          # chose the latter: the two executors end differently for this input.
+          # PFSE's contract is to provision what it can and report per-node
+          # failures, so continuing is useful there. Relocate's END STATE for an
+          # unreadable declaration is already a refusal — the storage arm of
+          # #cutover_refusal_reasons refuses it, the targets are reclaimed and the sources are
+          # left alive (pinned by "refuses every declared-but-unreadable storage
+          # shape"). Continuing therefore buys nothing and costs a full
+          # provision-and-reclaim cycle for an input diagnosable before any work
+          # starts. Nothing depended on the tolerance: no caller reaches a
+          # SUCCESSFUL relocate with this value today.
+          #
+          # storage_unreadable? rather than !storage_requested?: a value that is
+          # simply absent is a legitimate no-storage relocate, and only a
+          # DECLARED value that cannot be read is an error. The message must not
+          # quote a size — with_storage_gb.to_i renders an authoritative "0 GB"
+          # for a value that was never read.
+          if storage_unreadable?(with_storage_gb)
+            return failure(
+              "storage declared but unreadable: #{with_storage_gb.inspect.truncate(120)} — " \
+              "with_storage_gb must be a positive integer count of GB"
+            )
+          end
 
           strategy = cutover_strategy.to_s
           return failure("cutover_strategy must be one of: #{STRATEGIES.join(', ')}") unless STRATEGIES.include?(strategy)
@@ -226,8 +276,41 @@ module System
           terminated = []
           failures = []
           provision_data = nil
+          # IMP-5eb14352370a — out-param, same idiom as `failures` and
+          # `planned_actions` above: what the inner target provisioning had
+          # already created when it failed WHOLESALE (see #provision_target!).
+          # Empty on every other path.
+          orphaned = {}
 
           if strategy == "drain"
+            # DRAIN'S SAFETY POSTURE, stated explicitly because iteration 275
+            # left it neither guarded nor argued (IMP-49b3e42d9423).
+            #
+            # A pre-terminate readiness guard is STRUCTURALLY IMPOSSIBLE here,
+            # and that is not a judgement — it is the ordering: the terminate
+            # below runs before `provision_target!`, so at the moment the
+            # sources are destroyed there is no target to measure. The
+            # operator approves that ordering when they choose drain ("cheaper
+            # but with a gap window"), and the approval card says so.
+            #
+            # What they do NOT approve is the run reporting SUCCESS when the
+            # target it then brought up cannot carry the workload. Verified by
+            # execution before the guard below existed: with count: 2 and a
+            # network and storage declared, each of the three degradation arms
+            # driven separately (1-of-2 instances / 1-of-2 peers / 0-of-2
+            # volumes attached) returned `success: true, partial: true` with
+            # the degradation visible only as an entry in `failures`, and in
+            # every arm the first provider call of the run was
+            # terminate_instance on the source.
+            #
+            # That envelope is acted on, not merely displayed:
+            # SkillCompositionRunner#execute_step! branches on
+            # `result_success?` and ignores `partial` entirely, so it marks the
+            # step COMPLETED, dispatches successors and advances the mission
+            # past a fleet that no longer serves. `partial` cannot stand in for
+            # the guard either — a source whose terminate merely errored sets
+            # it too, on a run that delivered a perfectly healthy target. The
+            # predicate has to ask about the TARGET.
             terminate_step!(source_ids: source_ids, terminated: terminated,
                             failures: failures, planned_actions: planned_actions)
 
@@ -236,14 +319,31 @@ module System
                                                provider_instance_type_id: provider_instance_type_id,
                                                network_id: network_id, with_storage_gb: with_storage_gb,
                                                failures: failures, planned_actions: planned_actions,
-                                               mission: mission)
+                                               mission: mission, orphaned: orphaned)
+
+            # THE SAME three-arm predicate blue_green gates on, in the same
+            # words — one #cutover_refusal_reasons, so the two strategies can
+            # never drift on what "ready" means.
+            reasons = cutover_refusal_reasons(
+              outputs: provision_data.is_a?(Hash) ? (provision_data[:outputs] || {}) : {},
+              count: count, network_id: network_id, with_storage_gb: with_storage_gb
+            )
+
+            if reasons.any?
+              return refuse_drain_outcome!(
+                mission: mission, reasons: reasons, terminated: terminated,
+                planned_actions: planned_actions,
+                provision_data: provision_data, step_failures: failures,
+                orphaned_outputs: orphaned
+              )
+            end
           else # blue_green
             provision_data = provision_target!(template_id: template_id,
                                                count: count, to_region_id: to_region_id,
                                                provider_instance_type_id: provider_instance_type_id,
                                                network_id: network_id, with_storage_gb: with_storage_gb,
                                                failures: failures, planned_actions: planned_actions,
-                                               mission: mission)
+                                               mission: mission, orphaned: orphaned)
 
             # Only tear down the source if we actually have a healthy target.
             #
@@ -277,26 +377,29 @@ module System
             # existed: a failing volume attach left undersized=false and
             # off_fabric=false, the guard passed, the sources were terminated,
             # and the run reported success(partial: true).
-            target_outputs      = provision_data.is_a?(Hash) ? (provision_data[:outputs] || {}) : {}
-            target_instance_ids = Array(target_outputs[:node_instance_ids])
-            attached_peer_ids   = Array(target_outputs[:sdwan_peer_ids])
-            undersized = target_instance_ids.size < count
-            off_fabric = network_id.present? && attached_peer_ids.size < target_instance_ids.size
-            storage_unready = storage_unready?(
-              with_storage_gb: with_storage_gb,
-              target_instance_ids: target_instance_ids,
-              volume_ids: Array(target_outputs[:storage_volume_ids])
+            #
+            # IMP-49b3e42d9423 — the three arms now live in ONE
+            # #cutover_refusal_reasons, which both strategies gate on and both
+            # refusals quote. The guard used to compute three booleans here and
+            # #refuse_blue_green_cutover! re-derived the matching reason strings
+            # from the same inputs a few lines later: two mechanisms for one
+            # property, free to drift, and the drain branch could not reuse
+            # either without copying both.
+            reasons = cutover_refusal_reasons(
+              outputs: provision_data.is_a?(Hash) ? (provision_data[:outputs] || {}) : {},
+              count: count, network_id: network_id, with_storage_gb: with_storage_gb
             )
 
-            if undersized || off_fabric || storage_unready
+            if reasons.any?
               # IMP-6b497651d670 — every refusal is a FAILURE with an
               # in-branch reclaim, not a success(partial: true): see
               # #refuse_blue_green_cutover! for why neither standard envelope
               # shape can delegate the reclaim to the runner.
               return refuse_blue_green_cutover!(
                 mission: mission, network_id: network_id, count: count,
-                with_storage_gb: with_storage_gb,
-                provision_data: provision_data, step_failures: failures
+                reasons: reasons,
+                provision_data: provision_data, step_failures: failures,
+                orphaned_outputs: orphaned
               )
             else
               terminate_step!(source_ids: source_ids, terminated: terminated,
@@ -304,11 +407,27 @@ module System
             end
           end
 
-          provision_outputs = provision_data ? (provision_data[:outputs] || {}) : empty_outputs
+          # `provision_data` is non-nil by construction from here on: a
+          # WHOLESALE inner failure returns nil, which makes the delivered
+          # outputs empty, which makes #cutover_refusal_reasons say "target
+          # stack is empty" — and BOTH strategies now return a refusal above
+          # on that. So this success envelope is only ever built over a real
+          # inner envelope (IMP-49b3e42d9423).
+          #
+          # IMP-5eb14352370a's out-param survives that change and is still
+          # load-bearing — it is just consumed one level up now. Its rationale
+          # said the orphans had to ride THIS envelope's outputs so a later
+          # rollback and ProjectSloSensor's replica_count could reach them,
+          # which was true while drain reported success(partial: true) on a
+          # wholesale failure. That path is now a refusal, so the orphan ids
+          # are consumed by #refuse_drain_outcome! (recorded as RETAINED) and
+          # by #refuse_blue_green_cutover! (reclaimed as debris) instead. See
+          # #refuse_drain_outcome! for what that costs replica_count.
+          provision_outputs = provision_data[:outputs] || {}
           # The inner executor reports per-leg failures in its own envelope and
           # keeps going; dropping them here left an enrollment or volume error
           # with nowhere to surface — the runner records only what we return.
-          failures.concat(provision_data ? Array(provision_data[:failures]) : [])
+          failures.concat(Array(provision_data[:failures]))
 
           success(
             dry_run: false,
@@ -335,15 +454,26 @@ module System
         #   - success(partial: true) abandoned the entire stack (VMs + volumes
         #     + enrolled peers, unowned): SkillCompositionRunner reaches
         #     rollback_step! only from handle_failure, so a completed-partial
-        #     step never dispatches the rollback that holds these ids.
-        #   - a bare failure(...) reclaims nothing either: the runner's
-        #     rollback kwargs come from metadata["last_outputs"], which only
-        #     mark_completed writes — on a first-run failure the hook fires
-        #     with empty kwargs, no-ops, and stamps rolled_back over live
-        #     resources.
+        #     step never dispatches the rollback that holds these ids. STILL
+        #     TRUE — this is a property of the runner's control flow, not of
+        #     the envelope.
+        #   - a bare failure(...) reclaimed nothing either: the runner's
+        #     rollback kwargs came from metadata["last_outputs"], which only
+        #     mark_completed writes, so on a first-run failure the hook fired
+        #     with empty kwargs, no-opped, and stamped rolled_back over live
+        #     resources. NO LONGER TRUE as of IMP-1ee509d12a0a (runner half)
+        #     + IMP-2182fd8fcdee (executor half): handle_failure now records
+        #     the failing envelope's own outputs into
+        #     metadata["failure_outputs"], rollback_step! prefers them, and
+        #     this executor hands its survivors up on the failure envelope
+        #     (see the survivor_kwargs below).
         #
-        # So the reclaim runs HERE, reusing the rollback contract this
-        # executor already owns. That contract is target-only by construction:
+        # The reclaim still runs HERE, and deliberately so — but as
+        # BELT-AND-BRACES now rather than because the seam is unavailable.
+        # Reclaiming in-branch keeps the refusal self-contained: it does not
+        # depend on the composer having stamped on_failure: "rollback", which
+        # is a default a plan author can override. It reuses the rollback
+        # contract this executor already owns. That contract is target-only by construction:
         # its kwargs are the ids from the target provisioning envelope, and
         # the sources are not in its kwargs-set (terminated_instance_ids is
         # swallowed by **_extras) — so a refused cutover can never reach the
@@ -353,33 +483,37 @@ module System
         # already gone. The System::Node shells are deliberately NOT
         # reclaimed — they stay for inspection, the same rationale as
         # ProvisionFullStackExecutor's rollback.
-        def refuse_blue_green_cutover!(mission:, network_id:, count:, with_storage_gb:,
-                                       provision_data:, step_failures:)
+        def refuse_blue_green_cutover!(mission:, network_id:, count:, reasons:,
+                                       provision_data:, step_failures:, orphaned_outputs:)
           outputs     = provision_data.is_a?(Hash) ? (provision_data[:outputs] || {}) : {}
           node_ids    = Array(outputs[:node_ids])
           target_ids  = Array(outputs[:node_instance_ids])
           volume_ids  = Array(outputs[:storage_volume_ids])
           peer_ids    = Array(outputs[:sdwan_peer_ids])
 
-          reasons = []
-          if target_ids.empty?
-            reasons << "target stack is empty"
-          elsif target_ids.size < count
-            reasons << "target stack is undersized (#{target_ids.size}/#{count} instances provisioned)"
-          end
-          if network_id.present? && peer_ids.size < target_ids.size
-            reasons << "target stack is off-fabric (#{peer_ids.size}/#{target_ids.size} " \
-                       "instances enrolled on network #{network_id})"
-          end
-          # Computed BEFORE the reclaim below, which detaches and deletes the
-          # very rows this reads (IMP-e1903a42c1ab).
-          if storage_declared?(with_storage_gb)
-            with_disk = instances_with_attached_volume(volume_ids: volume_ids, target_instance_ids: target_ids)
-            if with_disk.size < target_ids.size
-              reasons << "target stack is storage-unready (#{with_disk.size}/#{target_ids.size} " \
-                         "instances have #{declared_volume_phrase(with_storage_gb)} attached)"
-            end
-          end
+          # IMP-5eb14352370a — a WHOLESALE inner failure returns no envelope at
+          # all, so the four sets above are empty even when the inner run had
+          # created real rows for the earlier targets. Those rows are this
+          # operation's own debris (#provision_target! sources them from the
+          # inner executor instance this call built), and they are exactly what
+          # this branch exists to reclaim. They are DELIBERATELY kept out of the
+          # readiness sets above: `reasons` describes what was DELIVERED, and a
+          # raise delivered nothing — so "target stack is empty" stays the
+          # refusal, unchanged, while the debris gets torn down instead of
+          # billing forever with its ids recorded nowhere.
+          orphan_node_ids   = Array(orphaned_outputs[:node_ids])
+          orphan_target_ids = Array(orphaned_outputs[:node_instance_ids])
+          orphan_volume_ids = Array(orphaned_outputs[:storage_volume_ids])
+          orphan_peer_ids   = Array(orphaned_outputs[:sdwan_peer_ids])
+
+          reclaim_target_ids = target_ids | orphan_target_ids
+          reclaim_volume_ids = volume_ids | orphan_volume_ids
+          reclaim_peer_ids   = peer_ids   | orphan_peer_ids
+
+          # `reasons` arrives from #run_execute's guard, computed BEFORE the
+          # reclaim below — which detaches and deletes the very rows the
+          # storage arm reads (IMP-e1903a42c1ab). Re-deriving them here would
+          # read a stack this method has already torn down.
 
           # The inner executor's own leg failures — the REASON the stack is
           # refused. step_failures covers the provision_data-nil shape (a
@@ -388,9 +522,9 @@ module System
           leg_failures = Array(step_failures) + (provision_data.is_a?(Hash) ? Array(provision_data[:failures]) : [])
 
           reclaim = rollback_relocate_workload(
-            node_instance_ids: target_ids,
-            storage_volume_ids: volume_ids,
-            sdwan_peer_ids: peer_ids
+            node_instance_ids: reclaim_target_ids,
+            storage_volume_ids: reclaim_volume_ids,
+            sdwan_peer_ids: reclaim_peer_ids
           )
           reclaim_errors = Array(reclaim[:errors])
 
@@ -403,18 +537,25 @@ module System
             "sdwan_peer"      => reclaim_errors.select { |e| e[:resource] == "sdwan_peer" }.map { |e| e[:id] }
           }
           reclaimed = {
-            "node_instance"   => target_ids - survivors["node_instance"],
-            "provider_volume" => volume_ids - survivors["provider_volume"],
-            "sdwan_peer"      => peer_ids - survivors["sdwan_peer"]
+            "node_instance"   => reclaim_target_ids - survivors["node_instance"],
+            "provider_volume" => reclaim_volume_ids - survivors["provider_volume"],
+            "sdwan_peer"      => reclaim_peer_ids - survivors["sdwan_peer"]
           }
 
           # Machine-readable diagnosis, durable on purpose: composers stamp
           # on_failure: "rollback" by default, so after this failure returns
-          # the runner rolls back (a no-op — recorded_outputs_for is empty on
-          # a first-run failure) and mark_rolled_back OVERWRITES the step's
+          # the runner rolls back and mark_rolled_back OVERWRITES the step's
           # result_summary. The human message below does not survive that;
           # this event does. Recorder self-rescues, so it can never turn a
           # refusal into a raise.
+          #
+          # The parenthetical this comment used to carry — "a no-op,
+          # recorded_outputs_for is empty on a first-run failure" — is no
+          # longer true (IMP-1ee509d12a0a + IMP-2182fd8fcdee): the rollback
+          # now receives this executor's survivors. That makes the event MORE
+          # load-bearing, not less. The overwrite of result_summary is what
+          # destroys the diagnosis, and it happens whether the rollback did
+          # something or nothing.
           ::Ai::Introspection::ExecutionEventRecorder.record(
             source: mission,
             event_type: "relocate_cutover_refusal",
@@ -424,7 +565,7 @@ module System
               refusal_reasons: reasons,
               network_id: network_id,
               requested_count: count,
-              node_ids_left_for_inspection: node_ids,
+              node_ids_left_for_inspection: node_ids | orphan_node_ids,
               reclaimed: reclaimed,
               survivors: survivors,
               reclaim_errors: reclaim_errors,
@@ -445,7 +586,29 @@ module System
             "; refused target stack reclaim INCOMPLETE: #{summarize_entries(reclaim_errors)}"
           end
 
-          failure(message)
+          # IMP-2182fd8fcdee — hand the SURVIVORS to the runner's failure-time
+          # rollback seam, keyed by rollback_relocate_workload's own kwarg
+          # names. The durable event above records them for a human, but the
+          # runner cannot act on an event: composers stamp on_failure:
+          # "rollback" by default, so rollback_step! runs next and reads its
+          # kwargs off this envelope. Returning a bare failure here rolled back
+          # nothing and then stamped `rolled_back` over resources that are
+          # still live and billing — the exact state the note above describes
+          # as "a no-op".
+          #
+          # Only classes that ACTUALLY have survivors are included. An outputs
+          # hash that is "present" while holding no ids displaces a retried
+          # step's genuine last_outputs and fakes compensation in one move —
+          # the runner's own failure_outputs_from warns about this shape. A
+          # clean reclaim therefore still returns a bare failure, which is
+          # correct: there is nothing left to compensate.
+          survivor_kwargs = {
+            node_instance_ids: survivors["node_instance"],
+            storage_volume_ids: survivors["provider_volume"],
+            sdwan_peer_ids: survivors["sdwan_peer"]
+          }.reject { |_key, ids| ids.blank? }
+
+          failure(message, **survivor_kwargs)
         end
 
         # IMP-e1903a42c1ab — the storage leg's readiness oracle is ATTACHMENT,
@@ -501,17 +664,189 @@ module System
           storage_requested?(with_storage_gb) || storage_unreadable?(with_storage_gb)
         end
 
-        # Per-instance parity, matching what the approval card promises: the
-        # plan lists one provision_storage + attach_volume pair PER target, so
-        # a stack where only some targets got their disk is refused for the
-        # same reason a partially-enrolled stack is off-fabric — the workload
-        # cannot run on it, and the sources still hold the only copy.
-        def storage_unready?(with_storage_gb:, target_instance_ids:, volume_ids:)
-          return false unless storage_declared?(with_storage_gb)
+        # IMP-49b3e42d9423 — drain's half of the refusal. Same predicate, same
+        # reason strings, same event type as blue_green; the DISPOSITION is
+        # deliberately the opposite, and this is a considered departure from
+        # "reuse the fail-and-reclaim path", not an oversight.
+        #
+        # WHY NOT RECLAIM. #refuse_blue_green_cutover! can tear the refused
+        # stack down because under blue_green the sources are still alive and
+        # still hold the workload — the reclaim costs nothing but the target's
+        # bill. Under drain they are gone: `terminate_step!` ran before the
+        # target existed. The same reclaim here would destroy the mission's
+        # ONLY live capacity and turn a degraded fleet into no fleet at all.
+        # So the stack is RETAINED, its ids are recorded, and an operator
+        # decides — repair it, or relocate again from it.
+        #
+        # WHY A BARE failure(). The runner's rollback_step! reads its kwargs
+        # off this envelope and hands them to #rollback_relocate_workload,
+        # which terminates instances and deletes volumes. Every id this branch
+        # could hand up is capacity that must survive, so the one correct
+        # payload is none. Composers stamp on_failure: "rollback" by default,
+        # so the runner will still call the hook — with empty kwargs, where it
+        # no-ops (verified in the runner: rollback_outputs_for falls back to
+        # `last_outputs`, which a first-run failure never wrote), then stamps
+        # `rolled_back(noop: true)` carrying the failure message forward. The
+        # durable diagnosis is the event below.
+        #
+        # THAT SAFETY HAS A DEPENDENCY, named here so it is not lost: it holds
+        # because `last_outputs` is empty, and `last_outputs` is empty because
+        # a GoalPlanStep can never re-enter execute_step! once it has run
+        # (CLAIMABLE_STATUSES is %w[pending]; nothing resets a step to
+        # pending). The day a retry path is added, a drain refusal on a step
+        # that previously COMPLETED would fall back to the prior run's ids and
+        # terminate the mission's live fleet. Anyone adding that retry must
+        # give this branch an explicit empty rollback payload rather than
+        # relying on the fallback being empty.
+        #
+        # WHAT THIS COSTS, stated because it IS a behaviour change: a failed
+        # step is not `completed`, so the runner never writes
+        # metadata["last_outputs"], and System::ProjectMetricsCollector
+        # #resolvable_instance_ids — which reads only completed steps —
+        # resolves nothing for this mission. replica_count then reports
+        # `unavailable` rather than the retained stack's size. That is the
+        # honest reading for a relocate that failed, and unavailable is
+        # explicitly not the "false zero" IMP-5eb14352370a guarded against;
+        # the ids themselves stay findable in the event.
+        def refuse_drain_outcome!(mission:, reasons:, terminated:, planned_actions:,
+                                  provision_data:, step_failures:, orphaned_outputs:)
+          outputs    = provision_data.is_a?(Hash) ? (provision_data[:outputs] || {}) : {}
+          node_ids   = Array(outputs[:node_ids])   | Array(orphaned_outputs[:node_ids])
+          target_ids = Array(outputs[:node_instance_ids]) | Array(orphaned_outputs[:node_instance_ids])
+          volume_ids = Array(outputs[:storage_volume_ids]) | Array(orphaned_outputs[:storage_volume_ids])
+          peer_ids   = Array(outputs[:sdwan_peer_ids]) | Array(orphaned_outputs[:sdwan_peer_ids])
 
-          instances_with_attached_volume(
-            volume_ids: volume_ids, target_instance_ids: target_instance_ids
-          ).size < target_instance_ids.size
+          # Orphans from a WHOLESALE inner failure are unioned in here, unlike
+          # in the blue_green refusal which keeps them out of the DELIVERED
+          # sets: there they are debris to reclaim, here they are live rows
+          # nobody is going to tear down, so an operator needs their ids in
+          # the same place as the rest. `reasons` is unaffected — it was
+          # computed from the delivered outputs alone, so a raise still reads
+          # "target stack is empty".
+          leg_failures = Array(step_failures) + (provision_data.is_a?(Hash) ? Array(provision_data[:failures]) : [])
+
+          ::Ai::Introspection::ExecutionEventRecorder.record(
+            source: mission,
+            event_type: "relocate_cutover_refusal",
+            status: "target_stack_retained",
+            metadata: {
+              cutover_strategy: "drain",
+              refusal_reasons: reasons,
+              terminated_instance_ids: Array(terminated),
+              # NOT `reclaimed`/`survivors`: nothing was reclaimed, and those
+              # keys present-and-empty read as a clean unwind that never
+              # happened. A different disposition gets a different word.
+              retained: {
+                "node_instance" => target_ids,
+                "provider_volume" => volume_ids,
+                "sdwan_peer" => peer_ids
+              },
+              node_ids_left_for_inspection: node_ids,
+              # Includes the terminate_source entries (they land in
+              # run_execute's `failures`, which arrives as step_failures), so
+              # the branch where NOTHING was terminated is diagnosable: those
+              # entries are the only record of which sources survived and why.
+              provisioning_leg_failures: leg_failures,
+              # The RUN TRACE, carried here because a failure envelope has no
+              # `data` to carry it — and under drain the run really did tear
+              # the sources down and create rows, so this is the operator's
+              # only step-by-step record of what happened to them. The
+              # blue_green refusal needs no equivalent: it reclaims everything
+              # it made, so there is no surviving state to trace.
+              planned_actions: planned_actions
+            }.compact
+          )
+
+          message = "drain cutover degraded: #{reasons.join('; ')}"
+          message += if Array(terminated).any?
+            "; source instances ALREADY terminated (#{Array(terminated).join(', ')}) — " \
+            "drain tears them down before the target exists, so no readiness guard can protect them; " \
+            "#{target_ids.size} target instance(s) RETAINED and NOT reclaimed — they are the only " \
+            "live capacity for this workload"
+          else
+            # Review finding #1 — the disposition is the same, but the reason
+            # for it is NOT, and the message must not claim the sources are
+            # gone when `terminated` is empty. It can be empty two ways and
+            # they look identical from here: `terminate_step!` records a
+            # failure both when the row does not resolve ("instance not found"
+            # — the source is already gone, so there is no fallback capacity
+            # at all) and when the provider rejected or half-completed the
+            # teardown (state unknown). Retaining is the conservative answer
+            # to BOTH, which is why the disposition does not branch: the
+            # target is the only capacity whose state this run actually
+            # observed, and reclaiming it on the strength of an unverified
+            # source would be the irreversible move.
+            "; NO source instance was successfully terminated (see the terminate_source failures) — " \
+            "their state is UNVERIFIED, so the #{target_ids.size} target instance(s) are RETAINED " \
+            "and NOT reclaimed rather than destroying the only capacity this run can vouch for"
+          end
+          message += "; provisioning-leg failures: #{summarize_entries(leg_failures)}" if leg_failures.any?
+
+          failure(message)
+        end
+
+        # THE readiness predicate — the single one, for both strategies
+        # (IMP-49b3e42d9423). Empty means the delivered target stack can carry
+        # the workload; every entry is a reason it cannot, phrased for an
+        # operator and reused verbatim in the refusal message and the
+        # execution event.
+        #
+        # It answers ONLY about the target, deliberately. `failures.any?` /
+        # `partial` are not substitutes: a source whose terminate errored sets
+        # both on a run that delivered a flawless stack, and refusing there
+        # would be the mirror of the bug this closes.
+        #
+        # The storage arm's oracle is ATTACHMENT, not the id count
+        # (IMP-e1903a42c1ab): ProvisionFullStackExecutor pushes a volume id
+        # onto `storage_volume_ids` before it attempts the attach, so a failed
+        # attach yields full count parity over a volume whose
+        # `node_instance_id` is nil. Per-instance parity, matching what the
+        # approval card promises — the plan lists one provision_storage +
+        # attach_volume pair PER target.
+        #
+        # Callers must evaluate this BEFORE any reclaim: the storage arm reads
+        # rows a reclaim detaches and deletes.
+        def cutover_refusal_reasons(outputs:, count:, network_id:, with_storage_gb:)
+          target_ids = Array(outputs[:node_instance_ids])
+          peer_ids   = Array(outputs[:sdwan_peer_ids])
+          volume_ids = Array(outputs[:storage_volume_ids])
+
+          reasons = []
+          if target_ids.empty?
+            reasons << "target stack is empty"
+          elsif target_ids.size < count
+            reasons << "target stack is undersized (#{target_ids.size}/#{count} instances provisioned)"
+          end
+          if network_id.present? && peer_ids.size < target_ids.size
+            reasons << "target stack is off-fabric (#{peer_ids.size}/#{target_ids.size} " \
+                       "instances enrolled on network #{network_id})"
+          end
+          if storage_declared?(with_storage_gb)
+            with_disk = instances_with_attached_volume(volume_ids: volume_ids, target_instance_ids: target_ids)
+            if with_disk.size < target_ids.size
+              reasons << "target stack is storage-unready (#{with_disk.size}/#{target_ids.size} " \
+                         "instances have #{declared_volume_phrase(with_storage_gb)} attached)"
+            end
+          end
+          reasons
+        end
+
+        # The card's rendering of #cutover_refusal_reasons' three arms, shared
+        # by both strategies' terminate steps (IMP-49b3e42d9423) so the card
+        # cannot describe a different guard from the one that runs. The storage
+        # clause tracks the GUARD's predicate (`storage_declared?`), which is
+        # deliberately WIDER than the provision_storage steps: an unreadable
+        # declaration plans no volume steps yet still trips the arm, so a card
+        # silent about it would understate the guard on exactly the input that
+        # reaches it. An explicit 0 is declared-as-none and stays out of both.
+        def readiness_clauses(network_id:, with_storage_gb:)
+          clauses = [ "undersized (fewer instances than requested)" ]
+          clauses << "off-fabric (not fully enrolled on network #{network_id})" if network_id.present?
+          if storage_declared?(with_storage_gb)
+            clauses << "storage-unready (#{declared_volume_phrase(with_storage_gb)} not " \
+                       "attached to every target)"
+          end
+          clauses
         end
 
         # The unreadable branch must NOT quote a size: `with_storage_gb.to_i`
@@ -577,7 +912,7 @@ module System
         # is the single derivation both sides of the rail already read.
         def provision_target!(template_id:, count:, to_region_id:,
                               provider_instance_type_id:, network_id:, with_storage_gb:,
-                              failures:, planned_actions:, mission:)
+                              failures:, planned_actions:, mission:, orphaned:)
           inner = executor(::System::Ai::Skills::ProvisionFullStackExecutor)
           result = inner.execute(
             template_id: template_id, count: count,
@@ -605,6 +940,43 @@ module System
             data
           else
             failures << { step: "provision_target_stack", error: result[:error] }
+
+            # IMP-5eb14352370a — d44b0300 (IMP-666a6e904650) lifted the inner
+            # steps on the SUCCESS path only. A WHOLESALE inner failure — an
+            # unguarded raise mid-loop, `Node.create!` RecordInvalid on target
+            # 3 of 3 being the recorded shape — is turned into a bare
+            # `failure(message)` by BaseSkillExecutor#execute and carries no
+            # `:data`, so the nodes, instances, volumes and peers already
+            # created for the EARLIER targets landed in neither
+            # planned_actions nor outputs. Rollback kwargs are read off this
+            # envelope, which made them invisible to rollback, to grading and
+            # to the operator at once — in precisely the run where the graded
+            # record matters most.
+            #
+            # ORPHANS, not delivered targets, and the distinction is
+            # load-bearing: the inner executor never returned an envelope, so
+            # nothing here attests that any of these is complete or healthy.
+            # They are recorded and reclaimed as debris, while the blue_green
+            # readiness guard downstream keeps reading `provision_data` (nil ⇒
+            # "target stack is empty"), which stays the honest description of
+            # what was DELIVERED. Counting them as provisioned targets would
+            # assert a health this path cannot observe.
+            #
+            # Scoped by construction: `inner` is this call's own executor
+            # instance, so its in-flight progress can only hold what THIS
+            # provisioning attempt created — never a sibling step's resources,
+            # never a prior relocate's.
+            progress = inner.in_flight_progress
+            planned_actions.concat(Array(progress[:planned_actions]))
+            orphaned.merge!(progress[:outputs])
+            if orphaned.any? { |_class, ids| ids.present? }
+              planned_actions << { step: "provision_target_stack_orphaned",
+                                   to_region_id: to_region_id,
+                                   node_count: Array(orphaned[:node_ids]).size,
+                                   instance_count: Array(orphaned[:node_instance_ids]).size,
+                                   sdwan_peer_count: Array(orphaned[:sdwan_peer_ids]).size,
+                                   volume_count: Array(orphaned[:storage_volume_ids]).size }
+            end
             nil
           end
         end
@@ -704,19 +1076,30 @@ module System
             # it. An explicit 0 is declared-as-none and stays out of both:
             # promising a storage refusal there would describe a refusal the
             # run cannot reach, the mirror of the same understatement.
-            clauses = [ "undersized (fewer instances than requested)" ]
-            clauses << "off-fabric (not fully enrolled on network #{network_id})" if network_id.present?
-            if storage_declared?(with_storage_gb)
-              clauses << "storage-unready (#{declared_volume_phrase(with_storage_gb)} not " \
-                         "attached to every target)"
-            end
-            condition = "skipped when the target stack comes up #{clauses.join(' or ')}; " \
+            condition = "skipped when the target stack comes up " \
+                        "#{readiness_clauses(network_id: network_id, with_storage_gb: with_storage_gb).join(' or ')}; " \
                         "on refusal the fresh target stack is reclaimed and sources are left untouched"
             terminate_steps.each do |step|
               step[:conditional] = true
               step[:guard] = "blue_green_cutover"
               step[:condition] = condition
             end
+          else # drain
+            # IMP-49b3e42d9423 — the card's statement of drain's safety
+            # posture, and deliberately NOT a `conditional`/`guard` marker: the
+            # teardown really is unconditional, and a marker would promise a
+            # protection the run does not have. What the card was missing is
+            # the TERMINAL STATE the same three arms now produce here — the
+            # run can end with these sources destroyed and a target that
+            # cannot carry the workload, which an operator approving a :high
+            # blast-radius destruction has to be told before they approve it.
+            clauses = readiness_clauses(network_id: network_id, with_storage_gb: with_storage_gb)
+            note = "UNCONDITIONAL — the source is torn down before any target exists, so no " \
+                   "readiness guard can protect it; if the target then comes up " \
+                   "#{clauses.join(' or ')} the run FAILS with these sources already torn down (or, " \
+                   "where a teardown itself failed, in an unverified state) and the degraded target " \
+                   "RETAINED — never reclaimed, because it is the only capacity the run can vouch for"
+            terminate_steps.each { |step| step[:note] = note }
           end
 
           steps.concat(strategy == "drain" ? terminate_steps + provision_steps : provision_steps + terminate_steps)

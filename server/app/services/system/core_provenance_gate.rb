@@ -8,11 +8,22 @@ module System
   # WHY THIS EXISTS
   #
   # A Class-B module's payload is built on top of a parent clone that
-  # scripts/module-build/stage15.sh makes with a bare
-  # `git clone --depth 1 "$clone_url" /tmp/parent` — no ref, no pin — against a
-  # remote hardcoded at stage15.sh:147-148 to github.com/nodealchemy/powernode-
-  # platform. Core pushes go to Gitea; GitHub is a separately-pushed mirror that
-  # lags arbitrarily. An artifact assembled from a stale mirror is INDISTIN-
+  # scripts/module-build/stage15.sh makes against a remote defaulting to
+  # github.com/nodealchemy/powernode-platform. Core pushes go to Gitea; GitHub
+  # is a separately-pushed mirror that lags arbitrarily.
+  #
+  # HISTORY, because it explains this gate's shape: that clone used to be a bare
+  # `git clone --depth 1 "$clone_url" /tmp/parent` — no ref, no pin — so the
+  # build took whatever the mirror's default branch happened to point at.
+  # stage15.sh now fetches the batch's own expected_core_sha when the platform
+  # supplies one (delivered as CORE_REF via ci_build_context), which is a THIRD
+  # layer alongside this gate and System::CoreMirrorPreflight. This gate is not
+  # redundant: the pinned arm is skipped whenever no expectation was recorded,
+  # the Gitea-Actions path sends no pin at all, and — the reason it must keep
+  # measuring rather than trusting — a pin is an INTENTION while the annotation
+  # this reads is what is actually on disk.
+  #
+  # An artifact assembled from a stale mirror is INDISTIN-
   # GUISHABLE from a correct one at every checkpoint the platform already has:
   # it has a real oci_digest, a real fs-verity root, a valid cosign signature, a
   # size far above the non-empty floor, and a batch that reports success. Publish
@@ -64,16 +75,17 @@ module System
     SHA_ANNOTATION    = "org.powernode.core_source_sha"
     REMOTE_ANNOTATION = "org.powernode.core_source_remote"
 
-    # stage15.sh:274-275 records this literal when `git rev-parse --verify HEAD`
-    # fails, specifically so an unresolved value is never indistinguishable from
-    # a successful one. It means "this artifact HAS core content and the sha
+    # stage15.sh's provenance capture records this literal when
+    # `git rev-parse --verify HEAD` fails, specifically so an unresolved value
+    # is never indistinguishable from a successful one. It means "this artifact HAS core content and the sha
     # could not be resolved" — which cannot be promoted on.
     UNRESOLVED_SHA = "unknown"
 
     # What module-forge-build.sh reports for a module that clones no parent.
     # Today it never reaches an OCI annotation — a Class-A artifact simply
-    # carries none (stage15.sh:200 rm -f's the provenance file before deciding,
-    # and only the needs_parent arm rewrites it) — and the module-NAME check is
+    # carries none (stage15.sh rm -f's the provenance file before deciding
+    # whether to clone a parent, and only the needs_parent arm rewrites it) —
+    # and the module-NAME check is
     # what recognises that case. Named here so that if a future push.sh does
     # stamp it, a Class-B artifact carrying it is refused rather than silently
     # excused by its own self-report.
@@ -196,7 +208,16 @@ module System
       # to be able to override it without a deploy, the same way
       # system.module_publish.min_artifact_bytes is tunable.
       def enabled?
-        raw = ::SiteSetting.get(ENABLED_SETTING)
+        setting_enabled?(ENABLED_SETTING)
+      end
+
+      # Reads a default-ON operator switch out of SiteSetting. Public and
+      # parameterised because the core-provenance protection now has TWO
+      # switches — this promote gate and System::CoreMirrorPreflight's
+      # dispatch-time refusal — and the `0`/`false`/`off` handling below is
+      # exactly the kind of care that rots when it is written twice.
+      def setting_enabled?(name)
+        raw = ::SiteSetting.get(name)
         return true if raw.nil?
         # SiteSetting returns a real Integer for setting_type "integer", and 0 is
         # TRUTHY in Ruby — an operator who writes 0 meaning "off" would otherwise
@@ -212,23 +233,13 @@ module System
         true
       end
 
-      private
-
-      def pass(state, reason, expected:, actual:, remote:)
-        Verdict.new(promotable: true, state: state, reason: reason,
-                    expected_sha: expected.presence, actual_sha: actual.presence, actual_remote: remote)
-      end
-
-      def refuse(state, reason, expected:, actual:, remote:)
-        Verdict.new(promotable: false, state: state, reason: reason,
-                    expected_sha: expected.presence, actual_sha: actual.presence, actual_remote: remote)
-      end
-
-      def sha_like?(value)
-        SHA_PATTERN.match?(value.to_s.downcase)
-      end
-
-      # Git's own abbreviation rules. Either side may legitimately arrive
+      # Public for System::CoreMirrorPreflight, which compares the SAME two
+      # kinds of value (a resolved core tip against a recorded expectation) and
+      # must answer "is this the same commit" the same way — including the
+      # abbreviation rules below, so the two protections can never disagree
+      # about what "diverged" means.
+      #
+      # Those rules are git's own. Either side may legitimately arrive
       # abbreviated (a webhook head_sha, an operator-supplied ref), and refusing
       # a correct build because one side was short is a false positive — a gate
       # that cries wolf is a gate an operator turns off. A prefix shorter than
@@ -245,8 +256,24 @@ module System
         long.start_with?(short)
       end
 
+      def sha_like?(value)
+        SHA_PATTERN.match?(value.to_s.downcase)
+      end
+
       def short(sha)
         sha.to_s[0, 7].presence || "(none)"
+      end
+
+      private
+
+      def pass(state, reason, expected:, actual:, remote:)
+        Verdict.new(promotable: true, state: state, reason: reason,
+                    expected_sha: expected.presence, actual_sha: actual.presence, actual_remote: remote)
+      end
+
+      def refuse(state, reason, expected:, actual:, remote:)
+        Verdict.new(promotable: false, state: state, reason: reason,
+                    expected_sha: expected.presence, actual_sha: actual.presence, actual_remote: remote)
       end
 
       # The 2026-08-15 incident was a RIGHT BRANCH NAME on a STALE MIRROR —

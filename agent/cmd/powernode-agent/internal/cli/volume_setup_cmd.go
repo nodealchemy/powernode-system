@@ -18,15 +18,15 @@ import (
 // via multiple safety guards — see the README + risk table for
 // the full set.
 type VolumeSetupOptions struct {
-	Device              string
-	PolicyName          string
-	Force               bool
-	ConfirmDeviceWipe   string // must match Device exactly when --force
-	DryRun              bool
-	JSON                bool
-	PlatformURL         string
-	PKIDir              string
-	Runner              mount.Runner
+	Device            string
+	PolicyName        string
+	Force             bool
+	ConfirmDeviceWipe string // must match Device exactly when --force
+	DryRun            bool
+	JSON              bool
+	PlatformURL       string
+	PKIDir            string
+	Runner            mount.Runner
 	// MarkerPath is the canonical "this disk is the system root"
 	// marker — if present, volume-setup REFUSES regardless of flags.
 	// Defaults to /etc/powernode-system.
@@ -161,7 +161,7 @@ type diskPolicy struct {
 }
 
 type profile struct {
-	Layout []layoutEntry      `json:"layout"`
+	Layout []layoutEntry          `json:"layout"`
 	Format map[string]formatBlock `json:"format"`
 	Mount  map[string]mountBlock  `json:"mount"`
 }

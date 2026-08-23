@@ -185,6 +185,185 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # IMP-01a025b3: the stuck lane had no terminal state. Once the streak
+    # pinned at the threshold, decide() short-circuited here forever: the lane
+    # skips both skill and remediation, and RemediationValidator only scores
+    # decisions that PROCEEDED, so no fresh outcome was ever recorded for the
+    # fingerprint and the streak could never move. The trio (fleet.remediation_stuck
+    # HIGH + forced require_approval + decision.pending) re-fired every dedup TTL
+    # forever. The ApprovalRequest was already deduped to one open row per
+    # fingerprint — nothing READ that row before re-escalating.
+    #
+    # The collateral is the reason this is a bug and not just noise: every
+    # non-advisory gate_action! consumes the target module's daily consent
+    # budget (ConsentBudgetService#check_and_consume!, an atomic increment per
+    # call), and config_drift's metadata carries the REAL module_id — so stuck
+    # noise drained LIVE modules' budgets and forced their genuine remediations
+    # into require_approval.
+    #
+    # The gate is the DATABASE (the same open ApprovalRequest
+    # create_pending_approval dedupes on), never Rails.cache: the hub runs
+    # CACHE_STORE=memory_store, which is per-Puma-process and flushes on
+    # restart, so the cache can only ever be an optimization here.
+    context "stuck escalation is terminal while an operator request is open (IMP-01a025b3)" do
+      let(:platform) { create(:system_node_platform, account: account) }
+      let(:node_module) do
+        create(:system_node_module, account: account, node_platform: platform,
+                                    consent_budget_per_day: 10,
+                                    consent_budget_used_count: 0,
+                                    consent_budget_window_start_at: Time.current)
+      end
+      let(:fingerprint) { "config_drift:#{node_module.id}" }
+      let!(:chain) do
+        create(:ai_approval_chain, account: account, trigger_type: "autonomy_action",
+                                   name: "Fleet Autonomy Actions",
+                                   timeout_hours: 4, timeout_action: "reject")
+      end
+
+      before do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.module_assign",
+                                       policy: "auto_approve", is_active: true)
+        described_class::STUCK_STREAK_THRESHOLD.times do |i|
+          System::Fleet::RemediationOutcome.create!(
+            account: account, signal_kind: "system.config_drift", fingerprint: fingerprint,
+            action_category: "system.module_assign", status: "ineffective",
+            acted_at: (10 - i).hours.ago, settle_until: (9 - i).hours.ago,
+            validated_at: (9 - i).hours.ago
+          )
+        end
+      end
+
+      def decide!
+        engine.decide(kind: "system.config_drift", severity: :medium,
+                      payload: { "module_id" => node_module.id },
+                      fingerprint: fingerprint)
+      end
+
+      # Mints the row the previous escalation's gate would have left behind:
+      # same source_type/action_category/dedup key create_pending_approval uses.
+      def escalation_request!(status: "pending", completed_at: nil,
+                              module_id: nil, signal_fingerprint: nil)
+        request = chain.create_request!(
+          source_type: "system_fleet",
+          source_id: "system.module_assign",
+          description: "Remediation stuck",
+          request_data: {
+            "action_category" => "system.module_assign",
+            "payload" => { "module_id" => (module_id || node_module.id),
+                           "signal_fingerprint" => (signal_fingerprint || fingerprint) }
+          }
+        )
+        # update_columns: a status flip through the model fires
+        # #notify_source_of_decision, which has nothing to notify here.
+        request.update_columns(status: status, completed_at: completed_at) unless status == "pending"
+        request
+      end
+
+      it "emits no fleet.remediation_stuck AND consumes no consent budget while a request is open" do
+        escalation_request!
+        events_before   = System::FleetEvent.where(kind: "fleet.remediation_stuck").count
+        budget_before   = node_module.reload.consent_budget_used_count
+        requests_before = Ai::ApprovalRequest.count
+
+        decision = decide!
+
+        expect(System::FleetEvent.where(kind: "fleet.remediation_stuck").count).to eq(events_before)
+        # The load-bearing half: gate_action! is not called at all, so the
+        # module's daily autonomy budget is untouched.
+        expect(node_module.reload.consent_budget_used_count).to eq(budget_before)
+        expect(Ai::ApprovalRequest.count).to eq(requests_before)
+        expect(decision[:decision]).to eq(:awaiting_operator)
+        expect(decision[:remediation_stuck]).to be true
+      end
+
+      it "escalates exactly once — event, gate and consent budget — when no request is open" do
+        expect {
+          @decision = decide!
+        }.to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }.by(1)
+
+        expect(@decision[:decision]).to eq(:pending)
+        expect(@decision[:gate]).to eq("require_approval")
+        expect(@decision[:remediation_stuck]).to be true
+        expect(node_module.reload.consent_budget_used_count).to eq(1)
+        expect(Ai::ApprovalRequest.pending.count).to eq(1)
+      end
+
+      it "escalates again once the operator has APPROVED the open request" do
+        escalation_request!(status: "approved", completed_at: Time.current)
+
+        expect {
+          @decision = decide!
+        }.to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }.by(1)
+        expect(@decision[:decision]).to eq(:pending)
+      end
+
+      it "stays quiet inside the rejection cooldown the gate itself honors" do
+        escalation_request!(status: "rejected", completed_at: 5.minutes.ago)
+        budget_before = node_module.reload.consent_budget_used_count
+
+        expect {
+          @decision = decide!
+        }.not_to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }
+        expect(@decision[:decision]).to eq(:awaiting_operator)
+        expect(node_module.reload.consent_budget_used_count).to eq(budget_before)
+      end
+
+      # The other direction of the same choice: a lane that alerts once and
+      # then goes silent forever is worse than the noise. Once the rejection
+      # cooldown lapses (1h for a non-advancement action) and the condition is
+      # still stuck, the operator gets told again.
+      it "escalates again once the rejection cooldown has lapsed" do
+        escalation_request!(status: "rejected", completed_at: 3.hours.ago)
+
+        expect {
+          @decision = decide!
+        }.to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }.by(1)
+        expect(@decision[:decision]).to eq(:pending)
+      end
+
+      # The gate's action-level fallback: ANY rejected request in the same
+      # action_category inside the cooldown makes create_pending_approval
+      # return nil regardless of dedup key. Escalating into that window emitted
+      # a HIGH event and burned the module's consent budget to mint NOTHING —
+      # the incident verbatim, re-armed by every rejection in the category — so
+      # the predicate models this arm too.
+      it "stays quiet inside the gate's ACTION-WIDE rejection cooldown" do
+        other_module = create(:system_node_module, account: account, node_platform: platform)
+        escalation_request!(status: "rejected", completed_at: 5.minutes.ago,
+                            module_id: other_module.id, signal_fingerprint: "config_drift:other")
+        budget_before = node_module.reload.consent_budget_used_count
+
+        expect {
+          @decision = decide!
+        }.not_to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }
+        expect(@decision[:decision]).to eq(:awaiting_operator)
+        expect(node_module.reload.consent_budget_used_count).to eq(budget_before)
+      end
+
+      # DELIBERATE, and the sharpest edge of this design: config_drift's
+      # fingerprint is per-assignment while its gate dedup key is module_id, so
+      # N stuck assignments on one module share ONE ApprovalRequest — and now
+      # one escalation. The suppressed fingerprint is not dark (its raw
+      # system.config_drift signal event and its own decision.awaiting_operator
+      # still carry its correlation_id); it just does not raise a second HIGH
+      # alert for a request the operator already holds. Change this only by
+      # giving the lane a per-fingerprint durable marker — NOT by scoping the
+      # query on signal_fingerprint, which flip-flops: the gate rewrites the
+      # shared row's payload in place, so each fingerprint would re-escalate
+      # every TTL forever.
+      it "treats one module's open request as covering every fingerprint sharing its dedup key" do
+        escalation_request!(signal_fingerprint: "config_drift:some-other-assignment")
+        budget_before = node_module.reload.consent_budget_used_count
+
+        expect {
+          @decision = decide!
+        }.not_to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }
+        expect(@decision[:decision]).to eq(:awaiting_operator)
+        expect(node_module.reload.consent_budget_used_count).to eq(budget_before)
+      end
+    end
+
     # Audit finding F1-12: a member silent past the presumed-dead threshold
     # was re-detected every 60s tick forever — each tick re-emitted a
     # system.instance_silent FleetEvent (and a decision event) because the
@@ -399,6 +578,67 @@ RSpec.describe System::Fleet::DecisionEngine do
         expect(System::Task.find_by(account: account, command: "apply_config", operable: instance)).to be_present
       end
 
+      # IMP-f1c1e6d61104 part (c) — break the dispatch -> fail -> redispatch loop.
+      #
+      # Once the agent fails apply_config for a module whose manifest declares
+      # reboot_required (part (a) of this task), re-dispatching another
+      # apply_config can never converge it: the module's content cannot be
+      # materialized live no matter how many times the reconcile runs. Without
+      # this, the lane re-dispatches every tick forever, and each failed task
+      # also leaves the node unsuppressed, so the loop is loud AND useless.
+      #
+      # The escalation mirrors apply_template_closure_drift's arm: report
+      # requires_reprovision rather than pretending an apply will fix it.
+      it "escalates to reprovision instead of re-dispatching after a reboot_pending failure" do
+        System::Task.create!(
+          account: account, operable: instance, command: "apply_config", status: "failed",
+          error_message: "reconcile did not converge 1 module(s): " \
+                         "reconciler:reboot_pending [mod-base-os]: reboot_required=true",
+          completed_at: 1.minute.ago
+        )
+
+        d = decide_drift("system.config_drift")
+
+        expect(d[:remediation]).to include(applied: false, requires_reprovision: true)
+        expect(System::Task.where(account: account, command: "apply_config",
+                                  operable: instance, status: "pending").count).to eq(0),
+                                                                                  "re-dispatched an apply that cannot converge a reboot_required module"
+      end
+
+      # CONTROL: an ordinary failure is NOT reboot_pending, so the lane must
+      # still retry. Over-applying the escalation would strand every node whose
+      # apply failed transiently (a scratch-budget abort clears on its own).
+      it "still re-dispatches after a non-reboot_pending failure" do
+        System::Task.create!(
+          account: account, operable: instance, command: "apply_config", status: "failed",
+          error_message: "reconcile did not converge 1 module(s): " \
+                         "reconciler:recompose_budget [mod-a]: scratch exhausted",
+          completed_at: 1.minute.ago
+        )
+
+        d = decide_drift("system.config_drift")
+
+        expect(d[:remediation]).to include(applied: true, command: "apply_config")
+      end
+
+      # CONTROL: a reboot_pending failure that has since been SUPERSEDED by a
+      # completed apply must not keep blocking dispatch — the condition cleared.
+      it "resumes dispatching once a later apply completed" do
+        System::Task.create!(
+          account: account, operable: instance, command: "apply_config", status: "failed",
+          error_message: "reconciler:reboot_pending [mod-base-os]: reboot_required=true",
+          completed_at: 10.minutes.ago
+        )
+        System::Task.create!(
+          account: account, operable: instance, command: "apply_config", status: "complete",
+          completed_at: 1.minute.ago
+        )
+
+        d = decide_drift("system.config_drift")
+
+        expect(d[:remediation]).to include(applied: true, command: "apply_config")
+      end
+
       it "does not duplicate an in-flight reconcile task" do
         System::Task.create!(account: account, operable: instance, command: "sync_modules", status: "pending")
 
@@ -484,6 +724,105 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # IMP-df40782d3f4d — credential-expiry remediation must refresh the
+    # CREDENTIAL, not rotate the key. An MC can only near expiry when the
+    # agent is not pulling (Sdwan::TopologyCompiler#ensure_fresh! refreshes
+    # it on every pull), so the F3-07 binding to SdwanPeerRemediateExecutor
+    # under system.sdwan_key_rotate (auto_approve — no human in the loop)
+    # did nothing for the MC while REVOKING the active WireGuard key: hubs
+    # drop the old pubkey on their next compile and the still-connected,
+    # not-yet-polling peer loses a WORKING tunnel. The remediation converted
+    # a degraded control channel into a broken data plane.
+    context "with a system.sdwan_credential_expiring signal (real peer + MC)" do
+      def policy!(action_category, policy)
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: action_category,
+                                       policy: policy, is_active: true)
+      end
+
+      let(:network) { create(:sdwan_network, account: account) }
+      # :active — a still-connected peer with a working tunnel is exactly
+      # the scenario: its agent has stopped pulling, so its MC ages out
+      # while the data plane is fine.
+      let(:peer) do
+        p = create(:sdwan_peer, :active, account: account, network: network,
+                                         last_compiled_at: 1.hour.ago)
+        Sdwan::KeyDistributor.ensure_key_for!(p)
+        p.reload
+      end
+      # A real signed MC aged into the sensor's advisory window: refresh is
+      # long overdue, hard expiry is 10 minutes out — the exact state the
+      # SdwanCredentialExpirySensor fingerprints. Aged coherently (as if
+      # issued 50 minutes into its 1h TTL) so the row still validates when
+      # the signer supersedes it.
+      let(:expiring_mc) do
+        mc = Sdwan::MembershipCredentialSigner.issue!(peer: peer)
+        mc.update_columns(issued_at: 50.minutes.ago, not_before: 50.minutes.ago,
+                          refresh_after: 20.minutes.ago, not_after: 10.minutes.from_now)
+        mc
+      end
+
+      before do
+        # Both categories seeded as db/seeds/fleet_autonomy_agent.rb ships
+        # them, so this example pins the PROPERTY (which remediation runs)
+        # rather than mirroring whichever binding is currently live.
+        policy!("system.sdwan_key_rotate", "auto_approve")
+        policy!("system.sdwan_credential_refresh", "notify_and_proceed")
+      end
+
+      def decide_expiring!
+        engine.decide(kind: "system.sdwan_credential_expiring", severity: :high,
+                      payload: { "membership_credential_id" => expiring_mc.id,
+                                 "peer_id" => peer.id,
+                                 "network_id" => network.id,
+                                 "revision" => expiring_mc.revision },
+                      fingerprint: "sdwan_credential_expiring:#{expiring_mc.id}")
+      end
+
+      it "refreshes the membership credential without revoking the active WireGuard key" do
+        wg_key = peer.active_key
+
+        d = decide_expiring!
+
+        # THE HARM, pinned first: the working tunnel's key material must be
+        # untouched — key rotation is drift/compromise remediation, not
+        # credential refresh. Under the old binding this is what failed:
+        # the auto_approved SdwanPeerRemediateExecutor revoked the active
+        # key of exactly the peer that isn't polling for a replacement.
+        expect(wg_key.reload.revoked?).to be(false)
+        expect(peer.reload.active_key.id).to eq(wg_key.id)
+        expect(peer.status).to eq("active") # no forced re-handshake
+        expect(peer.last_compiled_at).to be_present # no forced recompile
+
+        expect(d[:decision]).to eq(:proceed)
+        expect(d[:action_category]).to eq("system.sdwan_credential_refresh")
+
+        # A fresh MC now supersedes the expiring one, ready for the agent's
+        # next pull...
+        fresh = Sdwan::MembershipCredential
+                  .where(sdwan_peer_id: peer.id, sdwan_network_id: network.id)
+                  .order(revision: :desc).first
+        expect(fresh.id).not_to eq(expiring_mc.id)
+        expect(fresh.status).to eq("active")
+        expect(fresh.not_after).to be > 30.minutes.from_now
+        expect(d.dig(:skill_result, :success)).to be(true)
+      end
+
+      it "clears the sensor's fingerprint so the validate arc scores the refresh honestly" do
+        decide_expiring!
+
+        # The superseded row leaves the sensor's `.live` window and the new
+        # row is an hour from expiry — the fingerprint
+        # "sdwan_credential_expiring:<mc.id>" vanishes on the next sense
+        # pass, so RemediationValidator scores this lane effective on real
+        # convergence. No NON_REMEDIATING exemption needed (or wanted).
+        sensor = System::Fleet::Sensors::SdwanCredentialExpirySensor.new(account: account)
+        fingerprints = sensor.sense.map(&:fingerprint)
+        expect(fingerprints).not_to include("sdwan_credential_expiring:#{expiring_mc.id}")
+        expect(fingerprints.grep(/^sdwan_credential_refresh_stalled/)).to be_empty
+      end
+    end
+
     # Audit finding F3-07: three sensors existed but were never registered,
     # and their signal kinds had no bindings — even if invoked they would
     # have been discarded as decision :skipped.
@@ -494,16 +833,21 @@ RSpec.describe System::Fleet::DecisionEngine do
                                        policy: policy, is_active: true)
       end
 
-      it "routes sdwan_credential_expiring to the key-rotate gate and invokes the peer remediate executor" do
-        policy!("system.sdwan_key_rotate", "auto_approve")
-        allow_any_instance_of(::System::Ai::Skills::SdwanPeerRemediateExecutor)
-          .to receive(:execute).and_return({ success: true, data: { rotated: true } })
+      # IMP-df40782d3f4d rebound this kind from the key-rotate gate (which
+      # revoked the active WG key) to the credential-refresh gate. The real
+      # end-to-end behavior is pinned in the dedicated context above; this
+      # example keeps the F3-07 registration story: the kind has a binding
+      # and its executor is invoked.
+      it "routes sdwan_credential_expiring to the credential-refresh gate and invokes the refresh executor" do
+        policy!("system.sdwan_credential_refresh", "notify_and_proceed")
+        allow_any_instance_of(::System::Ai::Skills::SdwanCredentialRefreshExecutor)
+          .to receive(:execute).and_return({ success: true, data: { resolved: true } })
 
         d = engine.decide(kind: "system.sdwan_credential_expiring", severity: :high,
                           payload: { "membership_credential_id" => "mc-1", "peer_id" => "peer-1" },
                           fingerprint: "sdwan_credential_expiring:mc-1")
 
-        expect(d[:action_category]).to eq("system.sdwan_key_rotate")
+        expect(d[:action_category]).to eq("system.sdwan_credential_refresh")
         expect(d[:decision]).to eq(:proceed)
         expect(d[:skill_result]).to include(success: true)
       end
@@ -853,7 +1197,7 @@ RSpec.describe System::Fleet::DecisionEngine do
     # kind, so every unresolved `capability:<tag>` requirement terminated in
     # the no-binding branch as decision :skipped. The binding routes the gap
     # to the operator and deliberately stops there: closing a gap means
-    # AUTHORING a module, which must pass the human R1/R2/R3 reuse gate
+    # AUTHORING a module, which must pass the R1/R2/R3 reuse gate
     # (docs/runbooks/module-authoring.md Phase 0).
     context "with a system.capability_gap signal (IMP-4019664a524b)" do
       let(:consumer) { create(:system_node_module, account: account, name: "gap-consumer-#{SecureRandom.hex(3)}") }
@@ -1199,12 +1543,9 @@ RSpec.describe System::Fleet::DecisionEngine do
     #     to adaptation goals/plans. Those were CORRECTED, not relaxed — see
     #     the comments at the assertions themselves.
     #
-    # NOTE: one example in this file — "routes a cost breach through
-    # project.cost_control into a cost_control plan" — remains RED on
-    # purpose. cost_control composes a scale-IN, and no scale-in strategy
-    # exists yet, so INC-3 made it decline. That expectation is genuinely
-    # obsolete and must be revised when INC-4 (IMP-216a6dbc7e32) lands
-    # `remove_replicas`; it was deliberately not "fixed" here.
+    # (A note here used to flag the cost_control example as deliberately RED
+    # pending INC-4's `remove_replicas`. INC-4 landed and IMP-e68a93c47106
+    # wired the composer, so the example was revised to the composed shape.)
     # ---------------------------------------------------------------------
     def build_mission(status: "active")
       m = create(:ai_mission, account: account, created_by: owner,
@@ -1462,15 +1803,20 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
-    # DECLINE BY DESIGN, not a gap. `scale_project` offers only additive
-    # strategies, so a cost breach — which implies scaling IN — has no actuator
-    # to bind to; composing one would fail at execution with a missing required
-    # input. INC-4 (IMP-216a6dbc7e32) adds `remove_replicas` and wires this
-    # branch up. Until then the honest composition is none at all.
+    # Was a DECLINE-BY-DESIGN example: `scale_project` offered only additive
+    # strategies, so a cost breach had no actuator to bind to. INC-4
+    # (IMP-216a6dbc7e32) added `remove_replicas` and IMP-e68a93c47106 wired the
+    # composer, so the lane composes now.
     #
-    # The decline still routes through project.cost_control and still carries
-    # proposal: true, which is what keeps it out of the validate arc.
-    it "declines to compose a cost_control plan while no scale-in strategy exists" do
+    # THE PROPERTY THAT REPLACES IT IS THE ONE THAT MATTERS HERE: the `before`
+    # block seeds `project.cost_control => notify_and_proceed`, i.e. an
+    # operator policy that WOULD let this lane act unattended. A cost_control
+    # plan destroys replicas, so core hands the gate auto_apply_eligible:
+    # false, the gate forces its approval arm, and the seeded proceed policy is
+    # overridden. If this example ever reports applied/auto-apply, an
+    # autonomous system has gained the ability to terminate instances on a
+    # notify_and_proceed policy alone.
+    it "composes a cost_control plan and holds it for approval despite a proceed policy" do
       decision = nil
       expect {
         decision = engine.decide(kind: "system.project_cost_breach", severity: :high,
@@ -1478,11 +1824,23 @@ RSpec.describe System::Fleet::DecisionEngine do
                                             "target_usd" => 200.0, "breach_pct" => 30.0,
                                             "correlation_id" => "project_slo:#{mission.id}:cost" },
                                  fingerprint: "project_cost_breach:#{mission.id}")
-      }.not_to change { Ai::GoalPlan.count }
+      }.to change { Ai::GoalPlan.count }.by(1)
 
       expect(decision[:action_category]).to eq("project.cost_control")
-      expect(decision[:remediation]).to include(applied: false, proposal: true)
-      expect(decision[:remediation][:reason]).to match(/no diff plan composed/)
+      expect(decision[:remediation]).to include(proposal: true)
+      expect(decision[:remediation][:gate])
+        .to eq(Ai::Provisioning::AdaptationDispatchService::GATE_ROUTED)
+
+      diff_plan = Ai::GoalPlan.find(decision[:remediation][:plan_id])
+      expect(diff_plan.plan_data["change_type"]).to eq("cost_control")
+      expect(diff_plan.steps.first.execution_config.dig("inputs", "scaling_strategy"))
+        .to eq("remove_replicas")
+      # Ground truth: nothing was appended to the mission's LIVE plan, so
+      # nothing ran.
+      mission_live_plan = Ai::GoalPlan.find(mission.reload.configuration.dig("plan", "plan_id"))
+      expect(mission_live_plan.steps.select { |s|
+        s.execution_config["adapted_from_plan_id"].present?
+      }).to be_empty
     end
 
     # Also a decline by design: `relocate_workload` declares required inputs the
@@ -1836,9 +2194,18 @@ RSpec.describe System::Fleet::DecisionEngine do
       )).to eq(1)
     end
 
-    # A pending row for the same fingerprint is the SAME unresolved condition —
-    # settle it rather than accumulating a second row for one problem.
-    it "settles an existing pending outcome instead of duplicating it" do
+    # A pending row THIS PLAN minted is the same unresolved condition — settle it
+    # rather than accumulating a second row for one problem.
+    #
+    # IMP-fec9abb225c6 (5): this used to say "for the same fingerprint", and the
+    # fixture below carried no metadata, so the example asserted that ANY
+    # same-fingerprint pending row is settled in place. That is the cross-talk
+    # defect itself — the row may belong to another lane, or to a previous
+    # still-settling SUCCESSFUL adaptation, and re-labelling it fabricates a data
+    # point in the table LEARN reads. The example's intent (one row per
+    # condition, no duplicates) is preserved; its fixture now expresses whose
+    # row it is.
+    it "settles an existing pending outcome it minted instead of duplicating it" do
       fingerprint = "project_slo_violation:#{mission.id}:settling"
       plan = Ai::GoalPlan.create!(
         account: account, goal: Ai::AgentGoal.create!(
@@ -1852,7 +2219,8 @@ RSpec.describe System::Fleet::DecisionEngine do
       pending = System::Fleet::RemediationOutcome.create!(
         account: account, signal_kind: "system.project_slo_violation", fingerprint: fingerprint,
         action_category: "project.scale_horizontal", status: "pending",
-        acted_at: now, settle_until: now + 90
+        acted_at: now, settle_until: now + 90,
+        metadata: { "gate" => "adaptation_applied", "plan_id" => plan.id }
       )
 
       expect {
@@ -1867,6 +2235,67 @@ RSpec.describe System::Fleet::DecisionEngine do
       expect(pending.validated_at).to be_present
     end
 
+    # IMP-fec9abb225c6 (2) — THE MISLABELLED ALARM.
+    #
+    # held_with_nothing_to_act_on was INFERRED from (gate == ROUTED &&
+    # approval_request_id.nil?). Three different things produce that shape, and
+    # only one of them is a policy gap:
+    #
+    #   * the gate's :blocked arm      — no permitting policy   (a real gap)
+    #   * :pending, request nil        — rejected cooldown       (you just said no)
+    #   * :pending, request nil        — no chain / request store
+    #
+    # The hinge is create_pending_approval returning nil while gate_action! still
+    # reports decision: :pending. Immediately after an operator REJECTS an
+    # adaptation the mission re-proposes, the cooldown suppresses the request,
+    # and the lane raised a HIGH-severity event whose payload said "no permitting
+    # policy" — sending an operator hunting a configuration gap that does not
+    # exist while the truth is that they had just declined it.
+    #
+    # So the gate now DECLARES its cause (the same discipline core already
+    # applies to `authority`) and the engine branches on it, rather than editing
+    # a detail string that nothing parses.
+    context "when the request is suppressed by the rejection cooldown" do
+      let!(:chain) do
+        Ai::ApprovalChain.create!(
+          account: account, name: "Fleet Autonomy Actions", trigger_type: "autonomy_action",
+          status: "active", is_sequential: true, timeout_action: "reject", timeout_hours: 4,
+          steps: [ { "name" => "Operator Approval", "approvers" => [ "*" ], "required_approvals" => 1 } ]
+        )
+      end
+
+      before do
+        # The policy PERMITS the category and asks for a human — this is the
+        # configuration an operator who hit the high-severity alarm would be
+        # told to go and create. It is already here.
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "project.scale_horizontal",
+                                       policy: "require_approval", is_active: true)
+
+        # ...and they already answered. A rejection inside decision_ttl_for
+        # (1h for a non-advancement action) is what silences the next mint.
+        Ai::ApprovalRequest.create!(
+          account: account, approval_chain: chain, request_id: SecureRandom.uuid,
+          source_type: "system_fleet", source_id: "project.scale_horizontal",
+          status: "rejected", completed_at: 5.minutes.ago,
+          description: "adaptation",
+          request_data: { "action_category" => "project.scale_horizontal",
+                          "payload" => { "mission_id" => mission.id } }
+        )
+      end
+
+      it "reports the operator's own rejection rather than a phantom policy gap" do
+        expect { decide_slo_violation }
+          .to change { System::FleetEvent.where(kind: "fleet.adaptation_blocked").count }.by(1)
+
+        event = System::FleetEvent.where(kind: "fleet.adaptation_blocked").last
+        expect(event.payload["cause"]).to eq("suppressed_by_rejection_cooldown")
+        expect(event.severity).to eq("low"),
+                                  "an operator's own rejection is not a high-severity configuration alarm"
+        expect(event.payload["detail"].to_s).not_to match(/blocked by policy/)
+      end
+    end
+
     # The blocked arm had no reader. applied: false is honest but inert, so the
     # only symptom of a missing policy was a mission that silently never
     # adapted. It has to say so out loud.
@@ -1879,6 +2308,39 @@ RSpec.describe System::Fleet::DecisionEngine do
       expect(event.payload["mission_id"]).to eq(mission.id)
       expect(event.payload["action_category"]).to eq("project.scale_horizontal")
       expect(event.payload["detail"]).to match(/blocked by policy/)
+      expect(event.payload["cause"]).to eq("policy_blocked")
+    end
+
+    # IMP-fec9abb225c6 (3) — THE UNBOUNDED ALARM.
+    #
+    # The escalation's comment claimed dedup happened "through the ordinary
+    # fleet event path". EventBroadcaster.emit! does none — it create!s a row
+    # unconditionally and never reads correlation_id — so the only throttle was
+    # the 600s decide cache. The brake is deliberately held, so the SAME plan
+    # re-blocks on every tick: ~144 high-severity rows/day for one mission
+    # missing one policy.
+    it "raises ONE event for a plan that keeps re-blocking, not one per tick" do
+      expect {
+        decide_slo_violation
+        # A second breach on a different fingerprint (the decide cache would
+        # swallow a repeat of the first) folds into the SAME still-blocked plan
+        # and re-offers it to the gate — the re-block this alarm storms on.
+        engine.decide(kind: "system.project_cost_breach", severity: :high,
+                      payload: { "mission_id" => mission.id, "observed_usd" => 260.0,
+                                 "target_usd" => 200.0, "breach_pct" => 30.0 },
+                      fingerprint: "project_cost_breach:#{mission.id}")
+      }.to change { System::FleetEvent.where(kind: "fleet.adaptation_blocked").count }.by(1)
+    end
+
+    # The dedup gate fails CLOSED, unlike the decide cache it sits next to.
+    # A cache we cannot read is not a licence to emit every 60s — failing open
+    # here lifts the storm to 1440/day exactly when the platform is already
+    # unhealthy enough to have lost its cache.
+    it "suppresses the alarm when the dedup cache is broken" do
+      allow(Rails.cache).to receive(:exist?).and_raise(Redis::BaseConnectionError.new("no cache"))
+
+      expect { decide_slo_violation }
+        .not_to change { System::FleetEvent.where(kind: "fleet.adaptation_blocked").count }
     end
 
     # An unrelated second breach absorbed by the in-flight plan must not be
@@ -1892,7 +2354,30 @@ RSpec.describe System::Fleet::DecisionEngine do
                            fingerprint: "project_cost_breach:#{mission.id}")
 
       expect(cost[:remediation][:superseded_by_change_type]).to eq("scale_horizontal")
-      expect(cost[:remediation][:reason]).to match(/project_cost_breach folded into the in-flight/)
+      expect(cost[:remediation][:folded_into]).to match(/project_cost_breach folded into the in-flight/)
+    end
+
+    # IMP-fec9abb225c6 (4) — the fold used to overwrite `reason` unconditionally.
+    #
+    # `reason` is dispatch_adaptation!'s ONLY statement of why nothing moved; it
+    # is present precisely when applied is false. Overwriting it said "folded
+    # into the in-flight proposal" for a plan that was itself policy-blocked —
+    # indistinguishable from a healthy fold into a plan that IS progressing, and
+    # the same ambiguity dispatch_adaptation! documents as a past bug. The fold
+    # note now rides its own key so both facts survive.
+    it "keeps the blocked plan's own reason when it absorbs a different breach" do
+      decide_slo_violation # gate blocks: no project.scale_horizontal policy here
+
+      cost = engine.decide(kind: "system.project_cost_breach", severity: :high,
+                           payload: { "mission_id" => mission.id, "observed_usd" => 260.0,
+                                      "target_usd" => 200.0, "breach_pct" => 30.0 },
+                           fingerprint: "project_cost_breach:#{mission.id}")
+
+      expect(cost[:remediation][:applied]).to be(false),
+                                              "fixture drifted — this example needs a plan that did NOT proceed"
+      expect(cost[:remediation][:reason]).to match(/blocked by policy/),
+                                             "the fold clobbered the only statement of why nothing moved"
+      expect(cost[:remediation][:folded_into]).to match(/project_cost_breach folded into the in-flight/)
     end
 
     # The most dangerous thing this lane could do is create a goal the autonomy

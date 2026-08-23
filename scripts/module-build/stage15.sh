@@ -102,6 +102,25 @@
 #                                empty. Set in the calling
 #                                environment (the workflow step's `env:`
 #                                block) — never pass secrets as CLI args.
+#   CORE_REF (env var, NOT a flag)   the core (parent powernode-platform)
+#                                commit this batch must be assembled from —
+#                                the batch's own expected_core_sha, set by
+#                                the platform at dispatch and delivered via
+#                                ci_build_context -> the agent's
+#                                ci.module_build handler -> module-forge-
+#                                build.sh's export -> here, by plain process-
+#                                environment inheritance (same channel as
+#                                PARENT_PAT, though this one is NOT a
+#                                secret; it is an env var because it varies
+#                                PER BATCH, unlike the static --parent-*
+#                                config flags). When set, the Class-B arm
+#                                fetches EXACTLY that ref and fails the
+#                                build if the remote does not have it —
+#                                there is deliberately no fallback. When
+#                                unset (the Gitea Actions path; a batch
+#                                whose core tip would not resolve) the arm
+#                                clones the remote's default branch and says
+#                                UNPINNED out loud. Default: empty.
 #   --parent-host HOST             default: github.com (PUBLIC repo)
 #   --parent-path OWNER/REPO       default: nodealchemy/powernode-platform
 #   --arch amd64|arm64             default: amd64
@@ -232,15 +251,157 @@ if [ "$needs_parent" = "1" ]; then
       ;;
   esac
 
-  echo "Cloning parent ${parent_host}/${parent_path}..."
-  git clone --depth 1 "$clone_url" /tmp/parent
+  # --- BEGIN per-batch core-ref pin ---
+  # $CORE_REF is the core (parent powernode-platform) commit the PLATFORM
+  # decided, at dispatch, that this batch must be assembled from. It is the
+  # batch's own metadata["expected_core_sha"] — the SAME value
+  # System::CoreMirrorPreflight compares the mirror's HEAD against before any
+  # builder is leased, and the SAME value System::CoreProvenanceGate compares
+  # the published artifact's org.powernode.core_source_sha annotation against
+  # at promote. One field, three layers: they cannot disagree about what "the
+  # expected core" is.
+  #
+  # It reaches this script the way PARENT_PAT does — process-environment
+  # inheritance, set by the agent's ci.module_build handler from
+  # ci_build_context's `core_ref` and exported through the chroot by
+  # module-forge-build.sh. It is NOT a credential and NOT a CLI arg (the two
+  # CLI knobs here, --parent-host/--parent-path, are static config; this one is
+  # per-batch).
+  #
+  # ACCEPTED CONSEQUENCE, decided by the operator: $clone_url still points at
+  # the public MIRROR (github.com), which is pushed separately from the Gitea
+  # core actually lands on. Pinning therefore converts "the mirror lags -> we
+  # silently ship stale core" into "the mirror lags -> this build FAILS until
+  # the mirror is pushed". That is the trade. It is not to be softened.
+  core_ref="${CORE_REF:-}"
+  clone_remote="${parent_host}/${parent_path}"
+
+  if [ -n "$core_ref" ]; then
+    echo "Fetching parent ${clone_remote} at pinned core ref ${core_ref}..."
+
+    # WHY NOT `git clone --depth 1 --branch`: --branch takes a branch or tag
+    # NAME only and REJECTS a raw commit sha, so it cannot express this pin at
+    # all. init + remote add + fetch <ref> + checkout --detach FETCH_HEAD is
+    # the only form that fetches an ARBITRARY ref (a full sha included) at
+    # depth 1. It needs the server to honour fetch-by-sha
+    # (uploadpack.allowReachableSHA1InWant), which github.com does.
+    #
+    # ############################################################
+    # DO NOT ADD A FALLBACK ARM TO ANY LINE BELOW. NOT `|| git clone ...`,
+    # not `|| git fetch origin HEAD`, not a retry that drops the ref.
+    #
+    # This is not a style rule. An unpinned clone here IS the 2026-08-15
+    # incident: hub-backend v71 shipped with three-day-old core, passed every
+    # checkpoint the platform had (real oci_digest, real fs-verity root, valid
+    # signature, batch success, auto-promote), reached the fleet, and cost two
+    # outages. It was found by unpacking the layer and diffing a file by hand.
+    # A `||` here restores exactly that, and restores it SILENTLY.
+    #
+    # A failed pinned fetch means the remote does not have the commit this
+    # batch was dispatched against. The correct outcome is a RED BUILD.
+    # `set -euo pipefail` (line 139) already makes an unhandled failure fatal;
+    # the explicit `if !` forms below exist so there is no `||` for anyone to
+    # innocently extend.
+    # ############################################################
+    # `git init <dir>` creates the directory itself, so no mkdir. The rm gets
+    # its own named failure: everything else in this block dies with a message
+    # naming the ref and the remote, and a bare `set -e` abort here would be
+    # the one silent exit on the pinned path.
+    rm -rf /tmp/parent || die "could not clear /tmp/parent before the pinned fetch of ${core_ref}" \
+                              "from ${clone_remote}"
+    git init -q /tmp/parent
+    git -C /tmp/parent remote add origin "$clone_url"
+
+    # git's OWN stderr is redacted before it is shown. The remote is
+    # $clone_url, which for a PRIVATE host embeds PARENT_PAT in its userinfo
+    # (see the case statement above), and git prints the configured remote
+    # verbatim on a failed fetch. That failure is no longer exceptional — it
+    # is the DESIGNED outcome whenever the mirror lags — so this path now runs
+    # routinely and must not become a recurring credential leak into the build
+    # log. Captured to a file rather than a process substitution so git's exit
+    # status is unambiguous under `set -e` and there is no async interleaving.
+    #
+    # Today $parent_host defaults to github.com, whose URL carries no
+    # credential at all; this is the guard for the day it does not.
+    fetch_err="/tmp/parent-fetch.err"
+    fetch_ok=1
+    git -C /tmp/parent fetch --depth 1 origin "$core_ref" 2>"$fetch_err" || fetch_ok=0
+    sed -E 's#//[^@/]*@#//#g' "$fetch_err" >&2 || true
+    rm -f "$fetch_err"
+
+    if [ "$fetch_ok" != "1" ]; then
+      # BOTH the ref AND the remote: the incident was a RIGHT ref name on a
+      # STALE MIRROR, and a message naming only one of the two reads as
+      # entirely plausible while sending the operator to the wrong place.
+      # $clone_remote, never $clone_url — for a private host that URL embeds
+      # PARENT_PAT in its userinfo and this text is logged.
+      die "could not fetch pinned core ref ${core_ref} from ${clone_remote} — that remote does not" \
+          "have this batch's core commit (the public mirror is pushed SEPARATELY from the Gitea core" \
+          "lands on, and lags). Push the mirror and re-dispatch. Building an UNPINNED parent instead" \
+          "is what shipped stale core on 2026-08-15."
+    fi
+
+    git -C /tmp/parent checkout --detach FETCH_HEAD
+
+    # ASSERT the pin actually took. "the fetch succeeded" and "we are standing
+    # on that commit" are different claims, and a REF NAME can resolve
+    # anywhere — which is precisely how this bug happened. Only meaningful
+    # when $core_ref is a full commit identity; a 40-hex sha names exactly one
+    # object, whereas an abbreviation or a branch name does not, so the
+    # comparison is conditional on the shape rather than skipped or faked.
+    # (The platform only ever sends 40-hex today — see
+    # ConfigController#pinned_core_ref — so this arm is the live one.)
+    if [[ "$core_ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+      resolved_head="$(git -C /tmp/parent rev-parse --verify HEAD)"
+      want_ref="$(printf '%s' "$core_ref" | tr 'A-Z' 'a-z')"
+      got_ref="$(printf '%s' "$resolved_head" | tr 'A-Z' 'a-z')"
+      if [ "$got_ref" != "$want_ref" ]; then
+        die "pinned parent fetch landed on ${got_ref} but this batch pinned core ${core_ref}" \
+            "(remote ${clone_remote}) — the pin is NOT what was checked out"
+      fi
+      echo "[stage-1.5] parent PINNED to ${core_ref} from ${clone_remote} (identity VERIFIED)"
+    else
+      # A ref that is not a full commit identity was fetched successfully, but
+      # nothing was verified — and saying "PINNED" here would report a NAME
+      # that resolved on a mirror as a pin, which is the 2026-08-15 incident
+      # restated in the reassuring direction. The platform never sends this
+      # shape (ConfigController#pinned_core_ref requires 40-hex); a hand run or
+      # the Gitea workflow could.
+      echo "[stage-1.5] WARNING: CORE_REF ${core_ref} is not a 40-hex commit — it was fetched from" \
+           "${clone_remote} but NOT verified; a name can resolve to a different commit on a mirror" >&2
+      echo "[stage-1.5] parent fetched at ref ${core_ref} from ${clone_remote} (identity NOT verified)"
+    fi
+  else
+    # No pin supplied. This is a REAL, non-fabricated state, not an error:
+    #   - the legacy Gitea Actions path (.gitea/workflows/build-platform-
+    #     modules.yaml) calls this script with no CORE_REF at all;
+    #   - a native batch whose core tip would not resolve records no
+    #     expectation, deliberately (NativeModuleBuildOrchestrator
+    #     #record_expected_core_ref! never fabricates one, and
+    #     CoreProvenanceGate stays inert for that batch rather than refusing
+    #     good builds forever).
+    # So it still builds — but it must NEVER read as if it were pinned. The
+    # failure mode this whole mechanism exists to remove is a protection that
+    # looks present and is not.
+    echo "[stage-1.5] WARNING: no CORE_REF supplied — parent clone is UNPINNED; this build takes" \
+         "whatever ${clone_remote} HEAD points at right now, which may not be the core this batch" \
+         "expects" >&2
+    echo "Cloning parent ${clone_remote} (UNPINNED)..."
+    git clone --depth 1 "$clone_url" /tmp/parent
+  fi
+  # --- END per-batch core-ref pin ---
 
   # --- BEGIN core-source provenance capture ---
   # Record WHICH core commit this build actually landed on (IMP-b2aebb9f4b17).
   #
-  # The clone above is deliberately UNPINNED — a bare `--depth 1` of whatever
-  # the remote's default branch points at right now — so the commit it resolved
-  # to is knowable only here, after the fact. Downstream, `built_from_sha` is
+  # STILL REQUIRED AFTER THE CORE-REF PIN ABOVE, for two independent reasons:
+  # (1) the unpinned arm exists and is reachable (no CORE_REF supplied — the
+  # Gitea Actions path, a batch with no resolved core tip), and there the
+  # commit is knowable only here, after the fact; (2) even on the pinned arm
+  # this is the value the PROMOTE gate reads, and a provenance capture that
+  # trusted the pin instead of measuring the checkout would be attesting to an
+  # intention rather than to what is on disk — the whole class of defect this
+  # exists to close. Measure, do not assume. Downstream, `built_from_sha` is
   # the MODULE-SOURCE sha (this repo), not core; without this capture a Class-B
   # artifact assembled from a stale core mirror reports IDENTICALLY to a correct
   # one at every checkpoint (real oci_digest, real fsverity root, batch success,
@@ -970,10 +1131,36 @@ case "$MODULE" in
     export PATH="/usr/local/go/bin:${PATH}"
     export GOTOOLCHAIN=local
     go version
+    # IMP-f1c1e6d61104 follow-up — STAMP A REAL BUILD IDENTITY.
+    #
+    # cmd/powernode-agent/main.go declares Version/GitCommit/BuildDate as
+    # -ldflags -X targets and its comment claims the Gitea workflow stamps
+    # them. This build path — the one that actually produces the binary the
+    # fleet runs — did not, so every instance heartbeated agent_version "dev"
+    # and nothing server-side could stage a change by agent capability. That
+    # cost two diagnoses: whether the fleet carries the hot-add reconcile work,
+    # and whether the convergence-failure change is live.
+    #
+    # `--verify` is load-bearing here for the same reason it is at the
+    # core-provenance probe above: a BARE `git rev-parse HEAD` outside a repo
+    # prints the literal string "HEAD" and reads like an answer, which is how a
+    # placeholder becomes a fleet-wide constant in the first place.
+    agent_source_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
+    : "${agent_source_sha:=unknown}"
+    agent_build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # Version stays human-readable and sorts by build; GitCommit carries the
+    # exact ref. Both, because a sha alone cannot be compared for "at or past".
+    agent_version_str="${agent_build_date%T*}-${agent_source_sha:0:12}"
+    echo "[stage-1.5] stamping agent version=${agent_version_str} commit=${agent_source_sha}"
+
     echo "[stage-1.5] cross-compiling powernode-agent for amd64…"
     ( cd agent && \
       CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-      /usr/local/go/bin/go build -trimpath -ldflags '-s -w' \
+      /usr/local/go/bin/go build -trimpath \
+        -ldflags "-s -w \
+          -X main.Version=${agent_version_str} \
+          -X main.GitCommit=${agent_source_sha} \
+          -X main.BuildDate=${agent_build_date}" \
         -o /tmp/powernode-agent ./cmd/powernode-agent )
     # Hard guard: the agent binary IS this module's payload. If the
     # build silently produced nothing, fail loudly here rather than

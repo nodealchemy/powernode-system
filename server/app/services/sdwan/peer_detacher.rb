@@ -32,13 +32,26 @@ module Sdwan
     end
 
     def call
-      peers.map do |peer|
+      detached = peers.map do |peer|
         ::Sdwan::Peer.transaction do
           unmirror_capability_from_node_instance_peer(peer)
           peer.destroy!
         end
         peer.id
       end
+
+      # IMP-2f34679b6b73 — the inverse of PeerEnroller#flag_multi_ibgp_host!.
+      # A host that drops back to a single iBGP network is no longer in the
+      # shape where an unscoped BGP poll is unattributable, and a flag left
+      # standing would keep the sensor escalating for a condition that ended.
+      #
+      # Sdwan::Peer's after_commit(on: :destroy) already covers this — and has
+      # to, because Sdwan::Executors::DeletePeer and the Network cascade never
+      # come through here. Kept anyway so the detach seam reads symmetrically
+      # with the enroll seam; the flagger is idempotent.
+      ::Sdwan::MultiIbgpHostFlagger.refresh!(node_instance: @node_instance) if detached.any?
+
+      detached
     end
 
     private

@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,8 +73,9 @@ func ApplySeccompProfile(ctx context.Context, runner mount.Runner, profilePath s
 var systemdDropInRoot = "/etc/systemd/system"
 
 // WriteSeccompDropIn renders a systemd drop-in that adds
-// `SystemCallFilter=@<profile>` to the named unit. The drop-in lands
-// at <root>/<unit>.d/seccomp.conf where <root> defaults to
+// `SystemCallFilter=@<name>` to the named unit, where <name> is derived
+// from the module's manifest-declared seccomp_profile value. The drop-in
+// lands at <root>/<unit>.d/seccomp.conf where <root> defaults to
 // /etc/systemd/system.
 //
 // The caller MUST run `systemctl daemon-reload` after a batch of
@@ -84,15 +86,18 @@ var systemdDropInRoot = "/etc/systemd/system"
 // Path-traversal guard: rejects unit names containing `..`, `/`, or
 // any leading dash (which would parse as a flag). Defense in depth —
 // callers should already validate unit names before reaching here.
-func WriteSeccompDropIn(unit, profile, profilePath string) error {
+//
+// The profile value is UNTRUSTED — it comes from a module's config
+// block, which no path validates before it reaches this node. It is run
+// through SeccompFilterName, which refuses any value that could open a
+// second directive in this root-owned unit; the derivation is done HERE
+// rather than by the caller so there is no signature through which an
+// unvalidated name can reach the file. A refusal is a returned error and
+// NO file is written — the caller must treat that as a policy failure,
+// never as "start the unit unconfined".
+func WriteSeccompDropIn(unit, profilePath string) error {
 	if unit == "" {
 		return errors.New("WriteSeccompDropIn: empty unit")
-	}
-	if profile == "" {
-		return errors.New("WriteSeccompDropIn: empty profile")
-	}
-	if profilePath == "" {
-		return errors.New("WriteSeccompDropIn: empty profilePath")
 	}
 	if strings.ContainsAny(unit, "/\\\x00") || strings.Contains(unit, "..") {
 		return errors.New("WriteSeccompDropIn: invalid unit name (path traversal)")
@@ -100,13 +105,17 @@ func WriteSeccompDropIn(unit, profile, profilePath string) error {
 	if strings.HasPrefix(unit, "-") {
 		return errors.New("WriteSeccompDropIn: invalid unit name (leading dash)")
 	}
+	name, err := SeccompFilterName(profilePath)
+	if err != nil {
+		return fmt.Errorf("WriteSeccompDropIn: %w", err)
+	}
 
 	dropInDir := filepath.Join(systemdDropInRoot, unit+".d")
 	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
 		return errors.New("WriteSeccompDropIn: mkdir " + dropInDir + ": " + err.Error())
 	}
 	dropInPath := filepath.Join(dropInDir, "seccomp.conf")
-	body := "[Service]\nSystemCallFilter=@" + profile + "\nSystemCallErrorNumber=EPERM\n"
+	body := "[Service]\nSystemCallFilter=@" + name + "\nSystemCallErrorNumber=EPERM\n"
 	if err := os.WriteFile(dropInPath, []byte(body), 0o644); err != nil {
 		return errors.New("WriteSeccompDropIn: write " + dropInPath + ": " + err.Error())
 	}

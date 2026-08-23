@@ -29,6 +29,22 @@ module Api
             render_success(peer: serialize_peer_full(@peer))
           end
 
+          # IMP-cf285f21f3a9: routed through Ai::AutonomyGate. The seeded
+          # sdwan.peer_create policy matched NO gate call site — this surface
+          # and the MCP attach_peer twin both went straight to
+          # Sdwan::PeerEnroller — so the operator's configured policy for
+          # joining a node to an overlay was decorative on both. Attaching a
+          # peer is a fabric-membership change at least as consequential as a
+          # firewall rule, which has been gated since ac2a92d5.
+          #
+          # DELETE on this same controller has been gated (sdwan.peer_delete)
+          # since slice 1, so until now a peer could be added without a policy
+          # check and only removing it consulted one.
+          #
+          # Internal composition is deliberately NOT routed here: provisioning,
+          # federation acceptance, storage auto-enroll and the compose skills
+          # keep calling Sdwan::PeerEnroller directly. Gating those would put an
+          # operator policy in the middle of automated provisioning.
           def create
             require_permission("system.sdwan.peers.manage")
             attrs = peer_params
@@ -37,21 +53,34 @@ module Api
                                                   .where(system_nodes: { account_id: @account.id })
                                                   .find(attrs[:node_instance_id])
 
-            peer = ::Sdwan::PeerEnroller.call(
-              network: @network,
-              node_instance: node_instance,
-              publicly_reachable: attrs[:publicly_reachable] || false,
-              endpoint_host: attrs[:endpoint_host],
-              endpoint_host_v6: attrs[:endpoint_host_v6],
-              endpoint_host_v4: attrs[:endpoint_host_v4],
-              endpoint_port: attrs[:endpoint_port],
-              listen_port: attrs[:listen_port] || 51820,
-              capabilities: attrs[:capabilities] || {},
-              lan_subnets: Array(attrs[:lan_subnets]),
-              bgp_route_reflector_client: attrs[:bgp_route_reflector_client] || false
-            )
+            # Never saved — Sdwan::Executors::CreatePeer (via PeerEnroller)
+            # stays the authority. gate_create! validates this candidate BEFORE
+            # the gate so an unsaveable payload keeps its field-level 422 and
+            # opens no audit row.
+            candidate = @network.peers.new(account_id: @account.id)
+            candidate.assign_attributes(enroll_attributes(attrs).merge(node_instance: node_instance))
 
-            render_success({ peer: serialize_peer_full(peer) }, status: :created)
+            gate_create!(
+              candidate: candidate,
+              scope: @network.peers,
+              result_key: :peer_id,
+              response_key: :peer,
+              serializer: ->(p) { serialize_peer_full(p) },
+              action_category: ::Sdwan::Executors::CreatePeer::ACTION_CATEGORY,
+              executor_class: "Sdwan::Executors::CreatePeer",
+              params: { network_id: @network.id,
+                        attributes: enroll_attributes(attrs).merge(node_instance_id: node_instance.id) },
+              source_type: "Sdwan::Network",
+              source_id: @network.id,
+              # Matches Sdwan::Executors::CreatePeer#summarize so the request
+              # and the approval card speak one sentence.
+              description: "Add SDWAN peer #{::Sdwan::Peer.operator_label_for(
+                node_instance: node_instance,
+                network_name: @network.name,
+                endpoint_display: nil,
+                fallback: node_instance.id
+              )}"
+            )
           rescue ActiveRecord::RecordNotFound
             render_not_found("NodeInstance")
           rescue ActiveRecord::RecordInvalid => e
@@ -149,6 +178,19 @@ module Api
             render_not_found("SDWAN Peer")
           end
 
+          # The subset Sdwan::PeerEnroller accepts, in the shape
+          # Sdwan::Executors::CreatePeer replays. Kept to
+          # CreatePeer::ENROLL_KEYS so the parked params and the executor agree;
+          # `tags` is permitted by peer_params but deliberately omitted, because
+          # the pre-gate create never passed it to the enroller either and
+          # adding it here would be a silent behaviour change riding on a
+          # gating task.
+          def enroll_attributes(attrs)
+            attrs.to_h.symbolize_keys
+                 .slice(*::Sdwan::Executors::CreatePeer::ENROLL_KEYS)
+                 .compact
+          end
+
           def peer_params
             params.require(:peer).permit(:node_instance_id, :publicly_reachable,
                                          :endpoint_host, :endpoint_host_v6, :endpoint_host_v4,
@@ -162,14 +204,16 @@ module Api
                                          capabilities: {})
           end
 
+          # IMP-4ed94eef2971 — the literal list moved to Sdwan::Peer so the MCP
+          # twin (Ai::Tools::SdwanTool#update_peer, gating the same category
+          # through the same executor) cannot drift from it. The permitted SET
+          # is unchanged; only its home moved.
           def peer_update_params
-            params.require(:peer).permit(:publicly_reachable, :endpoint_host,
-                                         :endpoint_host_v6, :endpoint_host_v4,
-                                         :endpoint_port, :listen_port,
-                                         :bgp_route_reflector_client,
-                                         lan_subnets: [],
-                                         tags: [],
-                                         capabilities: {})
+            params.require(:peer).permit(
+              *::Sdwan::Peer::UPDATE_SCALAR_ATTRIBUTES,
+              **::Sdwan::Peer::UPDATE_ARRAY_ATTRIBUTES.index_with { [] },
+              **::Sdwan::Peer::UPDATE_HASH_ATTRIBUTES.index_with { {} }
+            )
           end
 
           def serialize_peer(p)
@@ -200,7 +244,13 @@ module Api
               tags: Array(p.tags),
               bgp_route_reflector_client: p.bgp_route_reflector_client,
               bgp_router_id_override: p.bgp_router_id_override,
-              advertised_prefix_count: p.subnet_advertisements.count(&:active?)
+              advertised_prefix_count: p.subnet_advertisements.count(&:active?),
+              # IMP-ab73cc2fca65 — observed WireGuard byte counters. nil means
+              # NOT MEASURED (no heartbeat has carried a usable pair); 0 means
+              # measured and idle. Model-owned so this surface and the MCP one
+              # cannot drift apart. Splatted LAST on both surfaces so the two
+              # also agree on which side wins a future key collision.
+              **p.observed_traffic
             }
           end
 

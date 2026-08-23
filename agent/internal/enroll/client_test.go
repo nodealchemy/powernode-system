@@ -142,7 +142,7 @@ func TestClient_Enroll_HappyPath(t *testing.T) {
 		PlatformURL:  srv.URL,
 		CABundlePEM:  []byte("dummy"), // bypassed when HTTPClient overridden
 		AgentVersion: "test-0.1",
-		HTTPClient:   srv.Client(),    // httptest provides one
+		HTTPClient:   srv.Client(), // httptest provides one
 	}
 	id, err := c.Enroll(context.Background(), EnrollRequest{
 		BootstrapToken: "good-token",

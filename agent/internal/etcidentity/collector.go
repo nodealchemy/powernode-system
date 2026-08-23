@@ -91,11 +91,11 @@ func Collect(manifests []*manifest.Manifest) (*Set, []Conflict) {
 // Collect resolved via first-wins. Surface these via the agent's
 // OnError hook so operators learn about server-side allocator drift.
 type Conflict struct {
-	Kind          string // "user" or "group"
-	Name          string
-	KeptValue     int
-	DroppedValue  int
-	SourceModule  string
+	Kind         string // "user" or "group"
+	Name         string
+	KeptValue    int
+	DroppedValue int
+	SourceModule string
 }
 
 func mergeStrings(a, b []string) []string {

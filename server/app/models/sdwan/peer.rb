@@ -13,6 +13,36 @@ module Sdwan
     self.table_name = "system_sdwan_peers"
 
     STATUSES = %w[pending active degraded disconnected].freeze
+
+    # IMP-4ed94eef2971 — the ONE caller-writable field set for a peer UPDATE,
+    # read by both surfaces that gate sdwan.peer_update: PeersController#
+    # peer_update_params and Ai::Tools::SdwanTool#update_peer. They carried two
+    # literal lists and the MCP one was seven fields short, so an agent could
+    # not remediate an endpoint or correct a hub election at all.
+    #
+    # Split by SHAPE because strong parameters needs the shape to permit a
+    # non-scalar: an array-declared key drops a non-array and a hash-declared
+    # key drops a non-hash, which is what keeps a mis-shaped value out of a
+    # `null: false` column on both surfaces. Parity is pinned end-to-end in
+    # spec/requests/api/v1/system/sdwan/peer_update_surface_parity_spec.rb —
+    # the constant makes the two lists identical by construction, the spec
+    # proves each field actually REACHES the executor from both arms.
+    #
+    # Deliberately NOT the create set: node_instance_id is create-only
+    # (CreatePeer::PERMITTED_ATTRIBUTES), and reparenting a live peer is a
+    # different action from editing one.
+    UPDATE_SCALAR_ATTRIBUTES = %i[
+      publicly_reachable
+      endpoint_host
+      endpoint_host_v6
+      endpoint_host_v4
+      endpoint_port
+      listen_port
+      bgp_route_reflector_client
+    ].freeze
+    UPDATE_ARRAY_ATTRIBUTES = %i[lan_subnets tags].freeze
+    UPDATE_HASH_ATTRIBUTES  = %i[capabilities].freeze
+    UPDATE_ATTRIBUTES = (UPDATE_SCALAR_ATTRIBUTES + UPDATE_ARRAY_ATTRIBUTES + UPDATE_HASH_ATTRIBUTES).freeze
     HEALTHY_HANDSHAKE_WINDOW = 3.minutes
     DEGRADED_HANDSHAKE_WINDOW = 5.minutes
 
@@ -32,12 +62,36 @@ module Sdwan
     # auto-detach failed — terminated instances left orphaned peers polluting
     # the fabric config (observed on all three dryrun-20260809d teardowns).
     # A membership credential is meaningless without its peer; destroy it too.
+    # IMP-2f34679b6b73 — sessions observed FOR this peer, and sessions where
+    # this peer is another peer's resolved neighbour. Both FKs are NO ACTION
+    # in the baseline schema, so without these `peer.destroy!` raised
+    # ActiveRecord::InvalidForeignKey for any peer that had ever been
+    # observed — silently breaking Sdwan::Executors::DeletePeer,
+    # Sdwan::PeerDetacher, and the Network cascade on exactly the iBGP hosts
+    # that carry BGP sessions.
+    has_many :bgp_sessions, class_name: "Sdwan::BgpSession",
+             foreign_key: :sdwan_peer_id, dependent: :destroy
+    # nullify, not destroy: the SESSION belongs to the peer that observed it.
+    # Losing the neighbour only loses the FK-resolved name, which is already
+    # the nil case Sdwan::BgpSessionWriter#resolve_neighbor_peer_id handles.
+    has_many :observed_as_neighbor_sessions, class_name: "Sdwan::BgpSession",
+             foreign_key: :neighbor_peer_id, dependent: :nullify
     has_many :membership_credentials, class_name: "Sdwan::MembershipCredential",
              foreign_key: :sdwan_peer_id, dependent: :destroy
 
     validates :assigned_address, presence: true, uniqueness: { scope: :account_id }
     validates :status, inclusion: { in: STATUSES }
     validates :listen_port, numericality: { only_integer: true, greater_than: 0, less_than_or_equal_to: 65_535 }
+    # IMP-4ed94eef2971 — both columns are `null: false` with a `false` default,
+    # and both are caller-writable on the two gated update surfaces. Nothing
+    # refused an explicit nil, so a caller could park an approval whose only
+    # possible outcome was a NOT NULL violation inside the executor, at
+    # approval time, in front of an operator who could not see it was doomed
+    # when it was submitted (the invariant IMP-785d60f5ec3e established). The
+    # validation is on the MODEL rather than in either permit list so both
+    # surfaces refuse it the same way, before the gate.
+    validates :publicly_reachable, inclusion: { in: [ true, false ] }
+    validates :bgp_route_reflector_client, inclusion: { in: [ true, false ] }
     validates :endpoint_port, numericality: { only_integer: true, greater_than: 0, less_than_or_equal_to: 65_535 },
                               allow_nil: true
     # Slice 9a — every entry in lan_subnets must be a valid CIDR (v4 or v6).
@@ -58,6 +112,14 @@ module Sdwan
     # rows for removed prefixes. Audit trail lives in the advertisement
     # table; lan_subnets is the operator-facing source-of-truth column.
     after_save :sync_subnet_advertisements_from_lan_subnets, if: :saved_change_to_lan_subnets?
+    # IMP-2f34679b6b73 — keep the multi-iBGP provenance flag from outliving
+    # its condition. Sdwan::PeerEnroller stamps it on the way in, but peers
+    # leave by many routes: Sdwan::PeerDetacher, Sdwan::Executors::DeletePeer,
+    # several composition skills, and `Sdwan::Network has_many :peers,
+    # dependent: :destroy`. Refreshing from the model catches all of them, and
+    # the flagger is idempotent so the enroller's explicit call at the
+    # enrollment seam stays harmless.
+    after_commit :refresh_multi_ibgp_flag, on: :destroy
 
     scope :hubs,    -> { where(publicly_reachable: true) }
     scope :spokes,  -> { where(publicly_reachable: false) }
@@ -111,12 +173,13 @@ module Sdwan
     end
 
     # Pure "host:port" formatter, bracketing the host only when it is an IPv6
-    # LITERAL. Shared by the operator-facing #endpoint_display AND the
-    # data-plane consumers routed through it (WgConfigRenderer's Endpoint
-    # line, the peer serializers' effective_endpoint) — one function, so a
-    # readability edit to the operator label can never corrupt the config
-    # text those consumers emit. (The compiled topology plans still hand-roll
-    # their endpoint strings — tracked as a separate offer.)
+    # LITERAL. Shared by the operator-facing #endpoint_display AND the peer
+    # serializers' effective_endpoint — one function, so a readability edit to
+    # the operator label can never corrupt the endpoint those surfaces emit.
+    # (The DATA-PLANE consumers no longer call this: IMP-915b24d21f4f routed
+    # the WireGuard [Peer] Endpoint line through Sdwan::PeerEntry, which calls
+    # Sdwan::HostPort.join directly rather than loading a model to format a
+    # string.)
     #
     # The bracket cannot be keyed on the tuple's :family —
     # endpoint_host_v6_must_be_v6_or_hostname explicitly accepts a hostname in
@@ -127,10 +190,14 @@ module Sdwan
     # guard is `include?(":")`, which "[fd00::1]" satisfies), and that is the
     # form an operator pastes out of a WireGuard config — so re-bracketing it
     # blindly yields "[[fd00::1]]:51820".
+    #
+    # IMP-9537a74e50fa moved the body to Sdwan::HostPort — five other sites had
+    # their own copies and three had drifted. This name stays published (its
+    # callers are #endpoint_display below plus peers_controller and sdwan_tool)
+    # and delegates; the rationale above is why the shared body is shaped the
+    # way it is.
     def self.format_host_port(host, port)
-      host = host.to_s
-      host = "[#{host}]" if host.include?(":") && !host.start_with?("[")
-      "#{host}:#{port}"
+      ::Sdwan::HostPort.join(host, port)
     end
 
     # "host:port" for the primary endpoint (operator-facing label rung).
@@ -201,6 +268,60 @@ module Sdwan
       new_status
     end
 
+    # IMP-ab73cc2fca65 — the observed-traffic slice both peer serializers
+    # emit. It lives on the model because the two surfaces that publish a peer
+    # (Api::V1::System::Sdwan::PeersController#serialize_peer and
+    # Ai::Tools::SdwanTool#serialize_peer) are hand-maintained whitelists that
+    # have already drifted once — the same failure UPDATE_ATTRIBUTES above was
+    # introduced to end. A new column added to only one of them is invisible on
+    # the other, which is precisely how a measured signal ends up dark.
+    #
+    # nil is NOT MEASURED and is published as nil. It is never coerced to 0:
+    # an idle tunnel really does report rx_bytes: 0, so a consumer that cannot
+    # separate "no sample" from "sampled, no traffic" would read every
+    # never-reported peer as an idle one. counters_sampled_at is what makes a
+    # rate computable (updated_at cannot serve: the heartbeat writes through
+    # update_columns and never bumps it) — the counters are raw cumulative
+    # kernel totals, and
+    # WireGuard restarts them at zero when the interface is recreated, so a
+    # reader differencing two samples must treat `newer < older` as a reset and
+    # take the newer value as the interval's traffic.
+    def observed_traffic
+      {
+        rx_bytes: rx_bytes,
+        tx_bytes: tx_bytes,
+        counters_sampled_at: counters_sampled_at&.iso8601
+      }
+    end
+
+    # IMP-25e75f960dee — the reset-aware differencing rule stated above, AS
+    # CODE, because this is where the second reader will come looking for it.
+    # `observed_traffic` publishes RAW CUMULATIVE counters, so every reader
+    # that wants an interval figure has to re-derive the same three rules, and
+    # a reader that gets any one of them wrong fabricates traffic:
+    #
+    #   older is nil  -> NO BASELINE. The interval is unmeasurable, so the
+    #                    answer is nil, NOT 0. A peer measured for the first
+    #                    time has not been observed to move zero bytes; it has
+    #                    not been observed over an interval at all.
+    #   newer is nil  -> NOT MEASURED this time round. Same answer: nil.
+    #   newer < older -> the WireGuard interface was recreated and the kernel
+    #                    restarted the counter at zero. The interval's traffic
+    #                    is `newer` ITSELF — everything counted since the
+    #                    reset. Clamping to 0 loses it; `newer - older` is
+    #                    negative and lies about the direction.
+    #   otherwise     -> newer - older, which is legitimately 0 for a peer
+    #                    that was up and idle.
+    #
+    # Returns Integer or nil, and the two are DIFFERENT FACTS: 0 is MEASURED
+    # AND IDLE, nil is NOT MEASURABLE. A caller that collapses them re-creates
+    # exactly the confusion the nullable columns exist to prevent.
+    def self.counter_delta(older:, newer:)
+      return nil if older.nil? || newer.nil?
+
+      newer < older ? newer : newer - older
+    end
+
     # Returns true when this peer's NodeInstance is running k3s — i.e.
     # the underlying Node has either the `k3s-server` or `k3s-agent`
     # module assigned. Used by the SDWAN routing compilers to decide
@@ -217,6 +338,14 @@ module Sdwan
     end
 
     private
+
+    # See the after_commit above. Best-effort: a peer leaving must not be
+    # rolled back because a derived flag could not be refreshed.
+    def refresh_multi_ibgp_flag
+      ::Sdwan::MultiIbgpHostFlagger.refresh!(node_instance: node_instance_id)
+    rescue StandardError => e
+      Rails.logger.warn("[Sdwan::Peer] multi-iBGP flag refresh failed for host #{node_instance_id}: #{e.message}")
+    end
 
     def allocate_host_address
       return if assigned_address.present?

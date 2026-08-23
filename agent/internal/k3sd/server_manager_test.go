@@ -44,12 +44,14 @@ type stubServerApplier struct {
 }
 
 func (s *stubServerApplier) HasInstalled(_ context.Context) (bool, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.HasInstalledCalls++
 	return s.Installed, nil
 }
 func (s *stubServerApplier) InstallK3sServer(_ context.Context, cfg BootstrapConfig) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.InstallCalls++
 	s.LastInstallConfig = cfg
 	if s.InstallErr != nil {
@@ -59,12 +61,14 @@ func (s *stubServerApplier) InstallK3sServer(_ context.Context, cfg BootstrapCon
 	return nil
 }
 func (s *stubServerApplier) IsRunning(_ context.Context) (bool, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.IsRunningCalls++
 	return s.Running, nil
 }
 func (s *stubServerApplier) Start(_ context.Context) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.StartCalls++
 	if s.StartErr != nil {
 		return s.StartErr
@@ -73,18 +77,21 @@ func (s *stubServerApplier) Start(_ context.Context) error {
 	return nil
 }
 func (s *stubServerApplier) Stop(_ context.Context) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.StopCalls++
 	s.Running = false
 	return nil
 }
 func (s *stubServerApplier) Version(_ context.Context) (string, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.VersionCalls++
 	return s.Version_, nil
 }
 func (s *stubServerApplier) CaptureBootstrapState(_ context.Context) (BootstrapState, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.CaptureCalls++
 	if s.BootstrapStateErr != nil {
 		return BootstrapState{}, s.BootstrapStateErr
@@ -92,7 +99,8 @@ func (s *stubServerApplier) CaptureBootstrapState(_ context.Context) (BootstrapS
 	return s.BootstrapState, nil
 }
 func (s *stubServerApplier) Cleanup(_ context.Context) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.CleanupCalls++
 	s.Installed = false
 	return nil
@@ -115,13 +123,13 @@ func (s *stubModulesAPI) AssignedModules(_ context.Context) ([]string, error) {
 type fakeK3sPlatform struct {
 	server *httptest.Server
 
-	mu              sync.Mutex
-	Bootstrap       int
-	Ready           int
-	Stopped         int
-	JoinRequest     int
-	LastBootstrap   HandshakeRequest
-	LastReady       HandshakeRequest
+	mu                 sync.Mutex
+	Bootstrap          int
+	Ready              int
+	Stopped            int
+	JoinRequest        int
+	LastBootstrap      HandshakeRequest
+	LastReady          HandshakeRequest
 	BootstrapClusterID string
 }
 
@@ -174,7 +182,7 @@ func (fp *fakeK3sPlatform) respond(w http.ResponseWriter, data map[string]any) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": data})
 }
-func (fp *fakeK3sPlatform) close()  { fp.server.Close() }
+func (fp *fakeK3sPlatform) close() { fp.server.Close() }
 func (fp *fakeK3sPlatform) client() *Client {
 	return NewClient(&transport.Client{Client: fp.server.Client(), PlatformURL: fp.server.URL})
 }

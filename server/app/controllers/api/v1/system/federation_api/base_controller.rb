@@ -55,12 +55,56 @@ module Api
             # another peer's name. No PEM forwarded (pre-symmetric posture) →
             # Traefik's our-CA chain-check is authoritative.
             anchor = peer.trusted_ca_pem.presence || ::Security::MtlsTrust.own_ca_pem
-            verified = ::Security::MtlsTrust.verify_request_against(request, anchors: [ anchor ])
-            if verified != :no_pem && (verified.blank? || verified != subject_cn)
-              return render_unauthorized("Client certificate not issued by this peer's CA")
+            result = ::Security::MtlsTrust.verify_request_against_detailed(request, anchors: [ anchor ])
+            if result != :no_pem && (!result.verified? || result.subject_cn != subject_cn)
+              return render_unauthorized(peer_binding_refusal(peer, anchor, result, subject_cn))
             end
 
             @current_federation_peer = peer
+          end
+
+          # An ATTRIBUTABLE refusal.
+          #
+          # "Client certificate not issued by this peer's CA" was unactionable
+          # on its own: it named the anchor only implicitly, and until
+          # InternalCaService began stamping a hub-specific subject, EVERY
+          # hub's local root presented the identical
+          # "CN=Powernode Internal CA (local-dev)" over a different key — so
+          # neither side could tell from the message (nor from the TLS
+          # acceptable-CA list, which is BY DN) whether the mismatch was the
+          # wrong CA, the wrong peer, or a legitimate cert their bundle had
+          # simply lost the race to a same-named root.
+          #
+          # So the refusal quotes the SHA-256 fingerprint of the anchor we
+          # actually checked against, plus the distinct failure mode. All of
+          # this is public certificate material — no key material, no secrets
+          # (result.error is one of four fixed MtlsClientVerifier strings).
+          #
+          # WHERE the anchor came from (a configured peer.trusted_ca_pem vs
+          # our own CA) stays in the LOG only. This renders on a 401, to a
+          # caller that has not authenticated and whose peer was resolved from
+          # a forgeable header, so a prober guessing an inbound_subject must
+          # not learn that peer's trust-configuration state. The fingerprint
+          # is public and is the whole point; the config oracle buys the
+          # remote nothing.
+          def peer_binding_refusal(peer, anchor, result, subject_cn)
+            expected = result.anchor_fingerprint ||
+                       ::Security::MtlsClientVerifier.anchor_fingerprints([ anchor ]).first
+            detail =
+              if !result.verified?
+                "presented certificate did not chain to it (#{result.error})"
+              else
+                "certificate verified against it but carries CN=#{result.subject_cn.inspect}, " \
+                "not the #{subject_cn.inspect} this peer was assigned"
+              end
+
+            ::Rails.logger.warn(
+              "[FederationApi] mTLS peer binding refused peer=#{peer.id} subject_cn=#{subject_cn.inspect} " \
+              "anchor_source=#{peer.trusted_ca_pem.presence ? 'peer.trusted_ca_pem' : 'own_ca'} " \
+              "expected_anchor=#{expected.inspect} matched_anchor=#{result.anchor_fingerprint.inspect}"
+            )
+            "Client certificate not issued by this peer's CA " \
+              "(expected anchor #{expected || 'unavailable'}; #{detail})"
           end
 
           attr_reader :current_federation_peer

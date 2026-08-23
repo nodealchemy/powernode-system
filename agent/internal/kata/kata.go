@@ -37,8 +37,8 @@ const (
 
 	// Confidential-compute runtimes: Kata selecting a TEE-enabled hypervisor
 	// config so guest memory is hardware-encrypted + attestable.
-	SNPRuntimeName = "kata-qemu-snp" // AMD SEV-SNP
-	TDXRuntimeName = "kata-qemu-tdx" // Intel TDX
+	SNPRuntimeName       = "kata-qemu-snp" // AMD SEV-SNP
+	TDXRuntimeName       = "kata-qemu-tdx" // Intel TDX
 	DefaultSNPConfigPath = "/opt/kata/share/defaults/kata-containers/configuration-qemu-snp.toml"
 	DefaultTDXConfigPath = "/opt/kata/share/defaults/kata-containers/configuration-qemu-tdx.toml"
 )

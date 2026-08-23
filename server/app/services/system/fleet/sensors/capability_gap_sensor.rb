@@ -28,7 +28,7 @@ module System
       # providing module, which by definition does not exist yet).
       #
       # Deliberately advisory. Closing a capability gap means authoring a new
-      # module, which must pass the human R1/R2/R3 reuse gate in
+      # module, which must pass the R1/R2/R3 reuse gate in
       # docs/runbooks/module-authoring.md — automation that made module
       # creation cheap would make module SPRAWL cheap. This reports; it does
       # not remediate.

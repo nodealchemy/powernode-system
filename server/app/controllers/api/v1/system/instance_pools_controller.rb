@@ -19,9 +19,18 @@ module Api
 
         # ApplicationController.include Authentication already runs
         # authenticate_request as a global before_action — operator JWT auth
-        # is covered. Worker-callable replenish/drain go through the
-        # worker_api namespace (which has its own worker-token auth);
-        # there's no dual-auth path on this operator-facing controller.
+        # is covered.
+        #
+        # This controller IS dual-auth, despite what this comment used to say.
+        # It claimed worker callers reach replenish/drain through the
+        # worker_api namespace and that no dual-auth path exists here — both
+        # false: there is no worker_api instance_pools controller, and
+        # worker/app/jobs/system/instance_pool_replenisher_job.rb calls THESE
+        # operator routes (:58 index, :69 replenish, :94 recycle_stale) with a
+        # worker token. The `worker_authenticated?` short-circuit in
+        # authorize_read!/authorize_write! is therefore load-bearing, not
+        # vestigial — deleting it on the strength of the old comment would
+        # break every replenishment tick.
         before_action :set_pool, only: [ :show, :update, :destroy, :replenish, :drain, :recycle_stale ]
 
         # GET /api/v1/system/instance_pools
@@ -41,26 +50,38 @@ module Api
         # POST /api/v1/system/instance_pools
         # Pool create is gated — committing capacity is operator-initiated and
         # high-blast (instances begin pre-provisioning to target size).
+        #
+        # The candidate is never saved; System::Executors::InstancePool::CreatePool
+        # stays the sole authority over the write. gate_create! validates it
+        # BEFORE the gate (sequence + rationale: Ai::GatedActions#gate_create!),
+        # so an unsaveable payload keeps its field-level 422 rather than being
+        # parked as an approval that can only ever fail.
+        #
+        # IMP-785d60f5ec3e — what this replaces answered the SAME payload two
+        # different ways depending on something the caller cannot see: 202 on an
+        # account whose policy parks (the gate validated nothing, so the create!
+        # failed later at approval time) and 422 on one whose policy proceeds.
+        # The `rescue ActiveRecord::RecordInvalid` that used to sit here went
+        # with it, and was already dead either way — Ai::AutonomyGate#evaluate
+        # rescues StandardError and returns :blocked, so the executor's
+        # RecordInvalid never reached this frame. The 422 it appeared to produce
+        # actually came from gate!'s :blocked branch as a bare
+        # "Gate evaluation failed", carrying no details.errors.
         def create
           authorize_write!
           attrs = create_params.to_h
-          gate!(
+
+          gate_create!(
+            candidate: ::System::InstancePool.new(attrs.merge(account_id: current_account.id)),
+            scope: ::System::InstancePool.for_account(current_account),
+            result_key: :pool_id,
+            response_key: :pool,
+            serializer: ->(p) { p.to_summary },
             action_category: "system.instance_pool_create",
             executor_class: "System::Executors::InstancePool::CreatePool",
             params: { attributes: attrs },
-            description: "Create instance pool '#{attrs['name']}'",
-            on_proceed: ->(result) {
-              pool_id = result.result&.dig(:data, :pool_id)
-              pool = ::System::InstancePool.find_by(id: pool_id)
-              if pool
-                render_success({ pool: pool.to_summary }, status: :created)
-              else
-                render_error("Pool created but row not found", status: :internal_server_error)
-              end
-            }
+            description: "Create instance pool '#{attrs['name']}'"
           )
-        rescue ActiveRecord::RecordInvalid => e
-          render_error("validation failed: #{e.message}", :unprocessable_content)
         end
 
         # PATCH /api/v1/system/instance_pools/:id
@@ -146,19 +167,52 @@ module Api
         # `worker_authenticated?` short-circuit is the standard carve-out
         # used across Reports/Analytics/Accounts/WebhookEvents controllers
         # for the same reason. See feedback_worker_callback_auth in MEMORY.
+        # IMP-ce5d320d3e4e — these RAISE rather than render.
+        #
+        # Both are called INLINE from the action bodies, not as before_actions.
+        # Rails halts a request when a FILTER renders (the chain checks
+        # performed? between callbacks); it does not halt an action because a
+        # helper the action called rendered. The previous
+        # `render_error(...) and return` returned from THIS METHOD only —
+        # control resumed on the next line of the action and ran straight into
+        # the gated write. Ai::AutonomyGate executes inline for auto_approve
+        # and notify_and_proceed, so a caller with no write permission really
+        # created the pool; under require_approval it parked an
+        # ApprovalRequest in the operator's queue. The follow-up
+        # render_success then raised DoubleRenderError, which ApiResponse
+        # swallows with `unless performed?` — so the caller saw a clean 403
+        # over a committed write and nothing looked wrong.
+        #
+        # Authentication::PermissionDenied is the class require_permission
+        # raises, and it inherits Exception (NOT StandardError) precisely so an
+        # inline check survives the `rescue ActiveRecord::RecordInvalid` in
+        # #update, the `rescue PoolError` in #replenish, and ApiResponse's
+        # global `rescue_from StandardError`. Its dedicated rescue_from renders
+        # the canonical 403 AND unwinds the action, so every present and future
+        # call site halts without each one having to remember `return`.
+        #
+        # The predicate is deliberately unchanged (current_user.has_permission?
+        # rather than the controller's delegation-aware has_permission?): this
+        # commit changes only WHETHER the action halts, never WHO is allowed.
         def authorize_read!
           return if worker_authenticated?
-          unless current_user.has_permission?("system.node_instances.read")
-            render_error("permission denied: system.node_instances.read", :forbidden) and return
-          end
+          return if current_user.has_permission?("system.node_instances.read")
+
+          raise ::Authentication::PermissionDenied.new(
+            "permission denied: system.node_instances.read",
+            permission: "system.node_instances.read"
+          )
         end
 
         def authorize_write!
           return if worker_authenticated?
-          unless current_user.has_permission?("system.instances.create") ||
-                 current_user.has_permission?("system.instances.control")
-            render_error("permission denied: system.instances.create or .control", :forbidden) and return
-          end
+          return if current_user.has_permission?("system.instances.create") ||
+                    current_user.has_permission?("system.instances.control")
+
+          raise ::Authentication::PermissionDenied.new(
+            "permission denied: system.instances.create or .control",
+            permission: "system.instances.create"
+          )
         end
       end
     end

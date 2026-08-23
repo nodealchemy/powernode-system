@@ -68,12 +68,12 @@ type UnmountTask struct {
 // ExportsApplyTask is dispatched to the backend peer (Shape 1: storage
 // host; Shape 2: gateway) to write /etc/exports.d/<account>.exports.
 type ExportsApplyTask struct {
-	StorageID       string          `json:"storage_id"`
-	AccountID       string          `json:"account_id"`
-	ExportPath      string          `json:"export_path"`
-	DeploymentShape string          `json:"deployment_shape"`
-	Action          string          `json:"action,omitempty"` // "grant" (default), "revoke", "reconcile"
-	Entries         []ExportsEntry  `json:"entries"`
+	StorageID       string         `json:"storage_id"`
+	AccountID       string         `json:"account_id"`
+	ExportPath      string         `json:"export_path"`
+	DeploymentShape string         `json:"deployment_shape"`
+	Action          string         `json:"action,omitempty"` // "grant" (default), "revoke", "reconcile"
+	Entries         []ExportsEntry `json:"entries"`
 }
 
 // ExportsEntry is one client peer's grant line in the exports file.

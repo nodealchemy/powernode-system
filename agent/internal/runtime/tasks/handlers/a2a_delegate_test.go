@@ -34,10 +34,10 @@ func TestParseDelegation(t *testing.T) {
 	}
 
 	bad := []map[string]any{
-		{"peer_url": "https://x", "skill": "ping"}, // no token
-		{"peer_url": "https://x", "capability_token": map[string]any{"envelope": "e", "signature": "s"}},                       // no skill
-		{"skill": "ping", "capability_token": map[string]any{"envelope": "e", "signature": "s"}},                              // no peer_url/addresses
-		{"peer_url": "https://x", "skill": "ping", "capability_token": map[string]any{"envelope": "e"}},                       // half token
+		{"peer_url": "https://x", "skill": "ping"},                                                       // no token
+		{"peer_url": "https://x", "capability_token": map[string]any{"envelope": "e", "signature": "s"}}, // no skill
+		{"skill": "ping", "capability_token": map[string]any{"envelope": "e", "signature": "s"}},         // no peer_url/addresses
+		{"peer_url": "https://x", "skill": "ping", "capability_token": map[string]any{"envelope": "e"}},  // half token
 	}
 	for i, opts := range bad {
 		if _, err := parseDelegation(opts); err == nil {

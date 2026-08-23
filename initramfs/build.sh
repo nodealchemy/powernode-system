@@ -195,9 +195,14 @@ build_kernel_initrd() {
   # agent's mount/ loop-mounts each module blob with `mount -t erofs`
   # (internal/mount/erofs.go). Pre-pivot ComposeForPivot builds the union root
   # from these erofs lowers, so without erofs the initramfs can mount NO module
-  # — including base-os-ubuntu-noble, which itself ships as an erofs blob AND
-  # carries the full /lib/modules tree: chicken-and-egg, the module that would
-  # provide erofs.ko can't be mounted without erofs.ko. Result is an agent-only
+  # — including base-os-ubuntu-noble, which itself ships as an erofs blob:
+  # chicken-and-egg, the module that would provide erofs.ko can't be mounted
+  # without erofs.ko. (An earlier version of this comment claimed base-os
+  # "carries the full /lib/modules tree". That is FALSE and was actively
+  # misleading in exactly this file: base-os-ubuntu-noble's package_spec
+  # contains no linux-* package at all, the rootfs is an mmdebstrap minbase,
+  # and live nodes have no /lib/modules — which is WHY this whole
+  # force_drivers list exists. See the nf_tables writeup 17 lines below.) Result is an agent-only
   # pivot with zero app modules (postgres/Rails/…) composed. erofs is
   # CONFIG_EROFS_FS=m on Ubuntu 24.04, so — like isofs/ahci above — it must be
   # force-included; dracut won't auto-detect it (no erofs rootfs at build time).
@@ -292,7 +297,39 @@ build_kernel_initrd() {
   # actually started (not at daemon startup, which is why this stayed
   # invisible through every prior round). Zero module dependencies of its
   # own.
-  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack bridge br_netfilter llc stp nf_nat nft_masq xt_MASQUERADE nft_chain_nat nft_compat xt_conntrack xt_addrtype xt_tcpudp xt_multiport veth"
+  # wireguard + vrf + dummy: the SDWAN data plane's three netdev types —
+  # same mmdebstrap-minbase /lib/modules gap as bridge/veth above, hitting
+  # the agent's post-pivot SDWAN appliers instead of dockerd. Proven
+  # 2026-08-20 on two freshly provisioned Proxmox nodes and reproduced on
+  # dev-cell: every 30s reconcile tick logs "apply_vrfs: create vrf
+  # sdwan-1: ip link add: exit status 2; Error: Unknown device type", then
+  # the same for wg-sdwan-1 — apply_vrfs dies before wg_applier runs, so
+  # the SDWAN overlay can never exist. All three are CONFIG_*=m on Ubuntu
+  # 24.04 generic (none builtin — verified empirically on a live node: no
+  # dummy_setup/wg_socket_init/vrf_newlink symbols in /proc/kallsyms, and
+  # `ip link add ... type dummy` fails "Unknown device type" just like
+  # wireguard/vrf), and there is no on-disk /lib/modules post-pivot to
+  # autoload them from.
+  # wireguard — wg_applier's `ip link add <ifname> type wireguard`
+  # (agent/internal/sdwan/wg_applier.go). Its modinfo deps (udp_tunnel,
+  # ip6_udp_tunnel, plus the chacha20/poly1305/curve25519 crypto lib
+  # modules) are the module's OWN deps, so dracut's dep resolution pulls
+  # them (same as nfnetlink for nf_tables / libahci for ahci above) —
+  # deliberately NOT hand-listed here because the crypto lib names are
+  # ARCH-SPECIFIC (curve25519-x86_64 on amd64 vs -neon on arm64) and any
+  # name missing on the build host fails the entire dracut-install batch.
+  # vrf — vrf_applier's `ip link add <name> type vrf table <id>`. Zero
+  # modinfo deps of its own; its l3mdev core is CONFIG_NET_L3_MASTER_DEV=y
+  # (a builtin bool, so NOT listed — see dracut.conf.d/powernode-amd64.conf
+  # on builtins failing the batch).
+  # dummy — vip_applier's VIP anchor interfaces (`ip link add <name> type
+  # dummy`). Included NOW rather than discovered on the next real-boot
+  # verification the way nf_nat → nft_chain_nat → nft_compat → veth each
+  # cost a separate round-trip: with wireguard+vrf fixed, the very next
+  # thing the SDWAN reconciler does is create VIP dummies.
+  # (`ip rule` needs nothing here: fib_rules is builtin — fib_rules_register
+  # is present in /proc/kallsyms on the same kernel.)
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack bridge br_netfilter llc stp nf_nat nft_masq xt_MASQUERADE nft_chain_nat nft_compat xt_conntrack xt_addrtype xt_tcpudp xt_multiport veth wireguard vrf dummy nft_nat nft_limit nft_reject nft_reject_inet xt_nat"
 
   # dracut discovers custom modules ONLY under /usr/lib/dracut/modules.d (there
   # is no CLI flag for an extra search dir). The powernode module-setup hook

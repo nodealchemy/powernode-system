@@ -89,14 +89,21 @@ puts "  ✅ SDWAN Manager agent: #{sdwan_agent.previously_new_record? ? 'created
 # validation passes when these policies are created.
 
 sdwan_policies = {
-  # NOTE: The 7 autonomous SDWAN remediation actions (system.sdwan_peer_remediate,
+  # NOTE: 6 autonomous SDWAN remediation actions (system.sdwan_peer_remediate,
   # system.sdwan_key_rotate, system.sdwan_failover, system.sdwan_user_device_revoke,
-  # system.sdwan_bgp_session_remediate, system.sdwan_vip_failover,
-  # system.sdwan_route_policy_audit) were MOVED to fleet_autonomy_agent.rb.
-  # Those actions fire from FleetAutonomyService::SENSORS, whose tick! gates as
-  # the "Fleet Autonomy" agent, so gate_action! resolves the policy against THAT
-  # agent — seeding them here left them stranded (silently 'not_permitted') in
-  # the sensor path. This mirrors the system.federation_peer_remediate move.
+  # system.sdwan_bgp_session_remediate, system.sdwan_vip_failover) were MOVED to
+  # fleet_autonomy_agent.rb. Those actions fire from FleetAutonomyService::SENSORS,
+  # whose tick! gates as the "Fleet Autonomy" agent, so gate_action! resolves the
+  # policy against THAT agent — seeding them here left them stranded (silently
+  # 'not_permitted') in the sensor path. This mirrors the
+  # system.federation_peer_remediate move.
+  #
+  # IMP-17bc5546009a: a 7th, system.sdwan_route_policy_audit, moved alongside
+  # them but was later DELETED outright (2026-08-21) — it had no sensor, no
+  # DecisionEngine binding, and no executor, so it was a seeded no-op on either
+  # agent. Not re-added here; see fleet_autonomy_agent.rb's history for the
+  # removal.
+  #
   # Only operator-initiated sdwan.* CRUD policies remain here.
   #
   # This table is seeded TWICE, against two different audiences (see the
@@ -135,21 +142,114 @@ sdwan_policies = {
   "sdwan.port_mapping_update"         => "notify_and_proceed",
   "sdwan.port_mapping_delete"         => "notify_and_proceed",
 
-  # Access grants — granting access notifies, revoking requires approval.
+  # Access grants — granting FRESH access notifies, revoking requires approval.
   # Deleting is strictly more destructive than revoking: dependent: :destroy
   # cascades to every VPN device and their Vault keys, leaving nothing for the
   # 90-day audit window, so it is gated at least as tightly.
+  #
+  # IMP-343163bf37a4 splits REACTIVATION out of create. The grant is unique per
+  # (network, user), so a "create" naming a user whose grant was revoked reuses
+  # that row and clears its revocation — it is the inverse of the revoke above,
+  # not an additive grant, and the "granting notifies" rationale never covered
+  # it. notify_and_proceed executes inline (Ai::AutonomyGate treats it exactly
+  # as auto_approve), so leaving reactivation under the create category would
+  # have re-entered the revoked->active state with no human decision at all.
+  # It therefore carries revoke's own tier.
   "sdwan.access_grant_create"         => "notify_and_proceed",
+  "sdwan.access_grant_reactivate"     => "require_approval",
   "sdwan.access_grant_revoke"         => "require_approval",
   "sdwan.access_grant_delete"         => "require_approval",
 
   # User devices — issuing a VPN config notifies, revoking requires approval
   "sdwan.user_device_create"          => "notify_and_proceed",
 
+  # Phase O6 write family (IMP-97c7b4123d8f). These shipped outside the
+  # executor/gate regime entirely — direct model writes with no category, so
+  # no tier was configurable at all.
+  #
+  # For the OVN family specifically, REST is read-only (routes.rb exposes only
+  # index/show for ovn_deployments and no routes at all for switches, ports or
+  # ACLs), so an agent held destructive reach a console operator did not have.
+  # RESIDUAL recorded here, to be closed by the per-family parity tasks that
+  # own those controllers: host_bridges#destroy (which forced release,
+  # skipping the drain window) and ipfix_collectors#update/#destroy were REST
+  # writes that remained UNGATED, so for those two families the asymmetry was
+  # inverted rather than removed. BOTH ARE NOW CLOSED:
+  #   - ipfix_collectors#create/#update/#destroy: CLOSED by IMP-6bbe5c673c38,
+  #     which also added sdwan.ipfix_collector_update below. All three now
+  #     route through Ai::AutonomyGate, so the tiers in this table bind on
+  #     both surfaces for this family.
+  #   - host_bridges#destroy: CLOSED by IMP-53a5c597ec8c, which also added
+  #     REST create + activate so all three host-bridge tiers below bind on
+  #     both the REST and MCP surfaces. NOT on a third: the
+  #     SdwanHostBridgeComposeExecutor AI skill allocates (up to MAX_HOSTS
+  #     = 100) and force-releases on rollback through the allocator
+  #     directly, outside Ai::AutonomyGate — BaseSkillExecutor has no gate
+  #     seam. Skills are a separate authorization lane from MCP actions and
+  #     bringing them under these tiers is its own task; stated here so the
+  #     coverage claim is not read wider than it is. That task additionally fixed a SEMANTIC divergence the
+  #     gap was hiding: the REST route hard-forced the release (skipping the
+  #     drain window) while the MCP twin defaulted to draining, so one act
+  #     had opposite safety postures depending on who asked. The default is
+  #     now DRAIN on both surfaces, declared once on
+  #     Sdwan::Executors::ReleaseHostBridge, with force an explicit opt-in.
+  #     NOTE this tier now gates BOTH arms: an approver reading a
+  #     host_bridge_delete card must check the `force` param to know whether
+  #     they are authorizing a drain or an immediate teardown.
+  # Tiers follow the sibling precedent: creates and state transitions notify,
+  # deletes require approval.
+  #
+  # Two deletes are sharper than their siblings and are called out rather than
+  # left to the pattern: sdwan.ovn_deployment_delete removes the account's
+  # whole OVN control plane (REST has no equivalent verb), and
+  # sdwan.ovn_acl_delete retracts an isolation rule, which RELAXES multi-tenant
+  # separation rather than merely removing a resource.
+  "sdwan.host_bridge_create"          => "notify_and_proceed",
+  "sdwan.host_bridge_update"          => "notify_and_proceed",
+  "sdwan.host_bridge_delete"          => "require_approval",
+  "sdwan.ovn_deployment_create"       => "notify_and_proceed",
+  "sdwan.ovn_deployment_delete"       => "require_approval",
+  "sdwan.ovn_logical_switch_create"   => "notify_and_proceed",
+  "sdwan.ovn_logical_switch_update"   => "notify_and_proceed",
+  "sdwan.ovn_logical_switch_delete"   => "require_approval",
+  "sdwan.ovn_logical_switch_port_create" => "notify_and_proceed",
+  "sdwan.ovn_logical_switch_port_update" => "notify_and_proceed",
+  "sdwan.ovn_logical_switch_port_delete" => "require_approval",
+  "sdwan.ovn_acl_create"              => "notify_and_proceed",
+  "sdwan.ovn_acl_delete"              => "require_approval",
+  "sdwan.ipfix_collector_create"      => "notify_and_proceed",
+  # IMP-6bbe5c673c38 — the state toggle, on the family rule stated above
+  # (creates and state transitions notify). It is the NON-destructive way to
+  # take a collector out of service; the delete below additionally cascades
+  # the collector's flow_samples. Tiering the toggle at or above the delete
+  # would push an agent back toward the destructive verb, which is the defect
+  # this row exists to close, so it sits with its state-transition siblings
+  # (sdwan.host_bridge_update, sdwan.ovn_logical_switch_update).
+  #
+  # Stated plainly because the category is per-verb and cannot separate the
+  # two directions: this tier also covers DISABLE, and disabling the winning
+  # collector stops IPFIX export for the whole account (the compiler stamps
+  # exactly one). notify_and_proceed executes INLINE, so the notification is
+  # the only control on that — accepted because the effect is fully reversible
+  # by one further call and destroys nothing, unlike the delete below.
+  "sdwan.ipfix_collector_update"      => "notify_and_proceed",
+  "sdwan.ipfix_collector_delete"      => "require_approval",
+
   # Federation — cross-instance peering is always sensitive
   "sdwan.federation_peer_propose"     => "require_approval",
   "sdwan.federation_peer_accept"      => "require_approval",
-  "sdwan.federation_peer_revoke"      => "require_approval"
+  "sdwan.federation_peer_revoke"      => "require_approval",
+
+  # IMP-9bf58a693634 — data_residency is a compliance DECLARATION, not a
+  # label: Federation::ResidencyEnforcer gates cross-boundary record homing on
+  # it and Sdwan::FederationGovernance raises a finding on an active platform
+  # peer that has not declared one. Rewriting it relaxes or fabricates a
+  # regulatory boundary, so it carries the tier of the three trust-boundary
+  # verbs above rather than the notify_and_proceed the other peer-field edits
+  # take — notify_and_proceed executes INLINE (Ai::AutonomyGate treats it
+  # exactly as auto_approve), which for this field would have bought an audit
+  # row and no human decision at all.
+  "sdwan.federation_peer_data_residency" => "require_approval"
 }
 
 count = System::Seeds::AgentSetupHelpers.upsert_policies!(

@@ -8,29 +8,39 @@ module Api
         # Provides access to module data files and other resources
         class FilesController < BaseController
           # GET /api/v1/system/node_api/files/modules/:id(/:filename)
-          # Streams the module blob to the on-node agent. Two pathways:
+          # Streams the module blob to the on-node agent. There is exactly
+          # one pathway: the module's current version must carry an OCI
+          # artifact, which is proxied via System::OciBlobProxyService. The
+          # first request per (digest) pulls from the upstream registry into
+          # a local cache; all subsequent requests serve from disk. Response
+          # Content-Type is the composefs media type and the X-Module-Digest
+          # header carries the sha256 for the agent's verifier.
           #
-          # 1. M1 OCI artifact present — proxy the composefs layer via
-          #    System::OciBlobProxyService. The first request per (digest)
-          #    pulls from the upstream registry into a local cache; all
-          #    subsequent requests serve from disk. Response Content-Type
-          #    is the composefs media type and the X-Module-Digest header
-          #    carries the sha256 for the agent's verifier.
+          # The pre-M1 operator-uploaded data_file pathway is gone, but the
+          # `/:filename` URL shape is NOT historical — it is still emitted
+          # today by Api::V1::System::WorkerApi::ModulesController
+          # #module_download_url. The segment is accepted so that URL keeps
+          # routing; it is never read here, because the blob is always
+          # located by module id + artifact digest. A traversal-shaped
+          # :filename is therefore inert (pinned in the request spec).
           #
-          # 2. Legacy operator-uploaded data file — preserved for back-compat
-          #    with the pre-M1 publish flow. Matches when no OCI artifact
-          #    exists AND the requested filename matches data_file_name.
-          #
-          # The 404 path differs by failure mode so operators can tell at a
-          # glance whether the issue is "no published artifact" vs "filename
-          # mismatch on a legacy data_file" vs "no module visible to this node".
+          # Three non-200 exits, none of them conditional on a filename:
+          #   - 404 "NodeModule"     — no enabled module with that id is
+          #                            assigned to the requesting node.
+          #   - 404 "ModuleArtifact" — the module is visible but its current
+          #                            version has no published OCI artifact.
+          #   - 502                  — OciBlobProxyService::PullError, i.e.
+          #                            the module and artifact both exist but
+          #                            the upstream registry fetch failed.
+          #                            This is the registry/DNS-fault branch.
           #
           # Route param signature note: the route is
-          # `get "files/modules/:id(/:filename)"` — the controller reads
-          # params[:id] (NOT params[:module_id]; earlier code looked up the
-          # wrong key and always 404'd).
+          # `get "files/modules/:id(/:filename)"`, so the id arrives as
+          # params[:id] — the only binding. (Earlier code looked up
+          # params[:module_id], which no route ever populates, and so
+          # always 404'd.)
           def module_file
-            module_id = params[:id] || params[:module_id]
+            module_id = params[:id]
             node_module = node_modules.find(module_id)
             artifact = node_module.current_version&.artifact
             return render_not_found("ModuleArtifact") unless artifact
@@ -50,8 +60,10 @@ module Api
           # script.content / script.interpreter — attributes NodeScript does
           # not have. The body column is `data`; the interpreter is inferred
           # from its shebang line for the filename extension.
+          # `files/scripts/:id` is the only route reaching this action, so
+          # params[:id] is always populated.
           def script_file
-            script = node_scripts.find(params[:id] || params[:script_id])
+            script = node_scripts.find(params[:id])
             body = script.data.to_s
 
             render_success(

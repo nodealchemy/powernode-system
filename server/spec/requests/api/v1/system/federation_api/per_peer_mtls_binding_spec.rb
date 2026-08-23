@@ -64,4 +64,24 @@ RSpec.describe "Federation per-peer mTLS binding", type: :request do
     post path, params: {}, headers: headers(peer.inbound_subject, cert), as: :json
     expect(response).to have_http_status(:unauthorized)
   end
+
+  # IMP-01a02b0c — build_ca names every CA "/CN=Peer CA", exactly the shape
+  # the fleet was in when every hub's root was "Powernode Internal CA
+  # (local-dev)": the refusal must be attributable to a SPECIFIC anchor, which
+  # only the fingerprint can do.
+  it "names the anchor it checked against, by FINGERPRINT, when it refuses" do
+    other_ca = build_ca
+    expect(other_ca[1].subject.to_s).to eq(peer_ca[1].subject.to_s) # premise: DNs collide
+    cert = leaf_pem(peer.inbound_subject, other_ca[0], other_ca[1])
+
+    post path, params: {}, headers: headers(peer.inbound_subject, cert), as: :json
+
+    message = response.parsed_body["error"] || response.parsed_body["message"]
+    expect(message).to include(::Security::CaFingerprint.of(peer_ca[1]))
+    expect(message).not_to include(::Security::CaFingerprint.of(other_ca[1]))
+    # ...but NOT where that anchor came from: this renders on a 401 to an
+    # unauthenticated caller whose peer was resolved from a forgeable header,
+    # so it must not disclose whether trusted_ca_pem is configured.
+    expect(message).not_to include("trusted_ca_pem")
+  end
 end

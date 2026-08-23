@@ -218,20 +218,46 @@ var CriticalSoftRebootMounts = []string{"/persist"}
 // pre-delivery properties and refuses on a node that is correctly configured. A
 // reload that fails leaves the drop-ins unproven, which this file treats as "do not
 // proceed".
+// The gate fails for two DIFFERENT KINDS of reason, and a caller that acts on
+// the verdict has to tell them apart (IMP-de738c292bf9):
+//
+//   - ErrGateRefused — the gate reached a verdict and the verdict is NO. A
+//     mount would not survive, or a submount's origin cannot be derived. The
+//     node is configured wrong for soft-reboot; the fix is drop-ins.
+//   - ErrGateEnvironment — the gate could not reach a verdict AT ALL. The
+//     daemon-reload failed (EPERM for a non-root caller), the mount table could
+//     not be walked, or the union is not mounted where it should be. Nothing is
+//     known about survival either way.
+//
+// Both are still hard failures — no caller may soft-reboot on either — but they
+// point at different fixes, and `soft-recompose`'s dry run maps them to
+// different exit codes so a CI wrapper is not told "needs drop-ins" when the
+// real problem is that the gate never ran.
+//
+// ErrGateReloadFailed wraps ErrGateEnvironment, so errors.Is answers true for
+// both: callers that only care about the class get it, and the one caller that
+// must not claim the rescan happened can ask the narrower question.
+var (
+	ErrGateRefused      = errors.New("nextroot survival gate refused the soft-reboot")
+	ErrGateEnvironment  = errors.New("nextroot survival gate could not reach a verdict")
+	ErrGateReloadFailed = fmt.Errorf("%w: systemctl daemon-reload did not complete", ErrGateEnvironment)
+)
+
 func NextrootSurvivalGate(ctx context.Context, run mount.Runner, layout mount.Layout, bindDests []string) ([]string, error) {
 	if err := run.Run(ctx, "systemctl", "daemon-reload"); err != nil {
 		return nil, fmt.Errorf("systemctl daemon-reload before probing nextroot mount survival: %w "+
-			"(without a reload systemd may not have loaded the mount drop-ins, so their properties cannot be trusted)", err)
+			"(without a reload systemd may not have loaded the mount drop-ins, so their properties cannot be trusted): %w",
+			ErrGateReloadFailed, err)
 	}
 
 	lethal := append([]string{layout.SysRoot}, bindDests...)
 	for _, path := range lethal {
 		if ok, why := mountSurvivesSoftReboot(ctx, run, path); !ok {
-			return nil, fmt.Errorf("%s would not survive the soft-reboot (%s). "+
+			return nil, fmt.Errorf("%w: %s would not survive the soft-reboot (%s). "+
 				"systemd tears down every mount except /run unless its unit sets DefaultDependencies=no and does not Conflicts=umount.target. "+
 				"%s so soft-rebooting now would %s. "+
 				"Ship the %s drop-in in powernode-system-base (and daemon-reload) before using --execute; a full reboot applies this composition safely in the meantime",
-				path, why,
+				ErrGateRefused, path, why,
 				lethalRole(path, layout.SysRoot),
 				lethalConsequence(path, layout.SysRoot),
 				MountUnitName(path))
@@ -253,8 +279,9 @@ func NextrootSurvivalGate(ctx context.Context, run mount.Runner, layout mount.La
 	for _, dest := range bindDests {
 		subs, err := mount.SubmountsBeneath(dest)
 		if err != nil {
-			return nil, fmt.Errorf("walk the live mount table for submounts beneath %s: %w "+
-				"(what the rbind carried under it is unknown, and unknown is not a state to soft-reboot from)", dest, err)
+			return nil, fmt.Errorf("%w: walk the live mount table for submounts beneath %s: %w "+
+				"(what the rbind carried under it is unknown, and unknown is not a state to soft-reboot from)",
+				ErrGateEnvironment, dest, err)
 		}
 		for _, sub := range subs {
 			// The source-side path: bind destinations are established at
@@ -266,8 +293,9 @@ func NextrootSurvivalGate(ctx context.Context, run mount.Runner, layout mount.La
 			// proven to survive — refuse rather than guess.
 			srcSub := strings.TrimPrefix(sub, strings.TrimSuffix(layout.SysRoot, "/"))
 			if srcSub == sub || !strings.HasPrefix(srcSub, "/") {
-				return nil, fmt.Errorf("submount %s beneath bind destination %s does not sit under the nextroot %s, so its source mount cannot be derived — "+
-					"a submount whose origin is unknown cannot be proven to survive, and unknown is not a state to soft-reboot from", sub, dest, layout.SysRoot)
+				return nil, fmt.Errorf("%w: submount %s beneath bind destination %s does not sit under the nextroot %s, so its source mount cannot be derived — "+
+					"a submount whose origin is unknown cannot be proven to survive, and unknown is not a state to soft-reboot from",
+					ErrGateRefused, sub, dest, layout.SysRoot)
 			}
 			for _, side := range []struct{ path, role, consequence string }{
 				{srcSub, "the SOURCE mount of a submount the rbind carried beneath " + dest,
@@ -292,8 +320,9 @@ func NextrootSurvivalGate(ctx context.Context, run mount.Runner, layout mount.La
 	// see the doc comment.
 	lowers, err := mount.LiveUnionLowerDirs(layout.SysRoot)
 	if err != nil {
-		return nil, fmt.Errorf("read the live mount table to enumerate %s's layers: %w "+
-			"(the layer set is unknown, and unknown is not a state to soft-reboot from)", layout.SysRoot, err)
+		return nil, fmt.Errorf("%w: read the live mount table to enumerate %s's layers: %w "+
+			"(the layer set is unknown, and unknown is not a state to soft-reboot from)",
+			ErrGateEnvironment, layout.SysRoot, err)
 	}
 	var doomed []string
 	for _, path := range append(lowers, layout.ScratchRoot) {

@@ -37,23 +37,29 @@ module System
     # request that, on approval, recreates the instance op via the
     # ExecuteTask executor.
     def gate_or_execute(event)
+      # ONE label, shared by the task row, the gate description and the card's
+      # impact line — see System::Executors::ExecuteTask.gate_description.
+      # Each of these built its own raw "cmd Type#uuid" before
+      # IMP-1dd3ed2b5353, so an approver read two disagreeing labels for one
+      # decision while #create_instance_operation (the UNGATED path in this
+      # same file) had used the friendly name all along.
+      task_attributes = {
+        command: event.to_s,
+        operable_type: @instance.class.name,
+        operable_id: @instance.id,
+        initiated_by_id: current_user.id
+      }
+      label = ::System::Executors::ExecuteTask.gate_description(task_attributes)
+
       gate_result = ::Ai::AutonomyGate.evaluate(
         action_category: "system.task.#{event}",
         executor_class: "System::Executors::ExecuteTask",
-        params: {
-          task_attributes: {
-            command: event.to_s,
-            description: "#{event} #{@instance.class.name}##{@instance.id}",
-            operable_type: @instance.class.name,
-            operable_id: @instance.id,
-            initiated_by_id: current_user.id
-          }
-        },
+        params: { task_attributes: task_attributes.merge(description: label) },
         account: current_account,
         requested_by: current_user,
         source_type: @instance.class.name,
         source_id: @instance.id,
-        description: "#{event} instance #{@instance.id}"
+        description: label
       )
 
       case gate_result.decision
@@ -86,23 +92,29 @@ module System
     # which don't go through the AASM lifecycle (no may_event? predicate)
     # but still need an audit row + the same gate semantics.
     def gate_ip_action(event)
+      # ONE label, shared by the task row, the gate description and the card's
+      # impact line — see System::Executors::ExecuteTask.gate_description.
+      # Each of these built its own raw "cmd Type#uuid" before
+      # IMP-1dd3ed2b5353, so an approver read two disagreeing labels for one
+      # decision while #create_instance_operation (the UNGATED path in this
+      # same file) had used the friendly name all along.
+      task_attributes = {
+        command: event.to_s,
+        operable_type: @instance.class.name,
+        operable_id: @instance.id,
+        initiated_by_id: current_user.id
+      }
+      label = ::System::Executors::ExecuteTask.gate_description(task_attributes)
+
       gate_result = ::Ai::AutonomyGate.evaluate(
         action_category: "system.task.#{event}",
         executor_class: "System::Executors::ExecuteTask",
-        params: {
-          task_attributes: {
-            command: event.to_s,
-            description: "#{event} #{@instance.class.name}##{@instance.id}",
-            operable_type: @instance.class.name,
-            operable_id: @instance.id,
-            initiated_by_id: current_user.id
-          }
-        },
+        params: { task_attributes: task_attributes.merge(description: label) },
         account: current_account,
         requested_by: current_user,
         source_type: @instance.class.name,
         source_id: @instance.id,
-        description: "#{event} on instance #{@instance.id}"
+        description: label
       )
 
       case gate_result.decision

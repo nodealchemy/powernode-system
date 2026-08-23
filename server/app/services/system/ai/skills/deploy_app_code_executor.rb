@@ -254,9 +254,10 @@ module System
           ]
         end
 
-        def failure(msg, **extra)
-          { success: false, error: msg }.merge(extra)
-        end
+        # (The local failure(msg, **extra) override lived here until
+        # IMP-2182fd8fcdee lifted it into BaseSkillExecutor — this executor was
+        # the only one that could reach the rollback seam precisely because it
+        # carried this shape locally.)
       end
     end
   end

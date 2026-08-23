@@ -383,6 +383,12 @@ Rails.application.routes.draw do
             member { post :revoke }
           end
 
+          # Read-only governance scan over the account's federation peers.
+          # The REST twin of MCP's system_sdwan_federation_scan — both call
+          # Sdwan::FederationGovernance.scan, so the console and an agent see
+          # the same findings (IMP-65f479ad8484).
+          get "federation_governance/scan", to: "federation_governance#scan"
+
           # Slice 9c: account-level routing/iBGP control plane.
           # Routing controller owns AS allocation, mode introspection,
           # and the live BGP-session matrix.
@@ -397,12 +403,22 @@ Rails.application.routes.draw do
             member { get :compile }
           end
 
-          # Phase O6: read APIs + inline operator destroy/update for
-          # the dual-profile networking models. Bulk creation still
-          # happens through allocators / AI composition skills / MCP
-          # actions; these inline mutations let operators clean up or
-          # toggle individual rows from the operator UI.
-          resources :host_bridges,     only: %i[index show destroy]
+          # Phase O6: read APIs + gated operator writes for the
+          # dual-profile networking models. Bulk creation still happens
+          # through allocators / AI composition skills / MCP actions;
+          # these routes let operators clean up or toggle individual rows.
+          #
+          # IMP-53a5c597ec8c added POST create and POST :id/activate for
+          # REST/MCP verb parity: both verbs existed only on the AI
+          # surfaces, so a console operator could see bridges and delete
+          # them but neither stand one up nor make one take effect
+          # (`compilable` emits active|draining only, so a `pending`
+          # bridge does nothing on the node). Both are gated, as is
+          # DELETE — see the controller for why the residual mattered and
+          # why a bare DELETE now DRAINS rather than force-releasing.
+          resources :host_bridges,     only: %i[index show create destroy] do
+            member { post :activate }
+          end
           resources :ovn_deployments,  only: %i[index show]
           # Phase O6 follow-up: IPFIX flow ingest under the parent
           # collector so each flow batch is attributed to a specific
@@ -410,7 +426,12 @@ Rails.application.routes.draw do
           # POST create accepts batched JSON from sidecar collectors.
           # PATCH update toggles state (active/disabled); DELETE
           # destroys the collector + its flow_samples (cascade FK).
-          resources :ipfix_collectors, only: %i[index show update destroy] do
+          # IMP-6bbe5c673c38 added POST create for REST/MCP verb parity:
+          # creation existed only on the AI surfaces
+          # (system_sdwan_create_ipfix_collector and the
+          # SdwanIpfixCollectorComposeExecutor skill). The console form
+          # that would consume it has not landed yet.
+          resources :ipfix_collectors, only: %i[index show create update destroy] do
             resources :flow_samples, only: %i[index create]
           end
         end
@@ -795,12 +816,20 @@ Rails.application.routes.draw do
           # Slice 5 (deferred reaper) of the SDWAN plan — daily 90-day
           # audit retention sweep over revoked Sdwan::UserDevice rows.
           post "sdwan/reap_user_devices", to: "sdwan#reap_user_devices"
+          # IMP-b24afe85a309 — nightly retention sweep for the IPFIX
+          # flow-samples firehose (system_sdwan_flow_samples).
+          post "sdwan/flow_sample_retention_sweep", to: "sdwan#flow_sample_retention_sweep"
 
           # Fleet-wide Unix identity reaper — daily sweep over
           # System::ServiceUser/ServiceGroup rows that have been
           # draining past the 24h grace window AND have no remaining
           # module declaration. Invoked by System::IdentityReaperJob.
           post "identity/reap", to: "identity_reaper#create"
+          # IMP-53a5c597ec8c — closes the host-bridge drain window. Without
+          # this sweep `draining` was terminal: no state-machine edge out of
+          # it, `compilable` includes it, and no agent report retires it, so a
+          # non-forced release left the bridge serving forever.
+          post "sdwan/host_bridges/reap", to: "host_bridge_reaper#create"
 
           # Storage chown completion — the on-node agent POSTs here
           # after finishing a storage.chown task. Transitions the

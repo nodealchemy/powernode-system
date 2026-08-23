@@ -12,7 +12,13 @@ RSpec.describe Sdwan::Executors::CreatePeer do
   describe ".execute" do
     let(:account)  { create(:account) }
     let(:network)  { create(:sdwan_network, account: account) }
-    let(:instance) { create(:system_node_instance) }
+    # Account-aligned on purpose: peer creation now goes through
+    # Sdwan::PeerEnroller, which refuses a node instance from another
+    # account. These examples are about the audit tuple, not tenancy —
+    # the unscoped fixture they used to carry only validated because the
+    # bare create! never checked ownership.
+    let(:node)     { create(:system_node, account: account) }
+    let(:instance) { create(:system_node_instance, node: node, account: account) }
 
     it "records the peer connectivity tuple in the audit payload" do
       result = described_class.execute(
@@ -308,6 +314,95 @@ RSpec.describe Sdwan::Executors::CreatePeer do
       expect(preview[:summary]).not_to include("someone-elses")
       expect(preview[:summary]).not_to include("victim-edge")
       expect(preview[:summary]).to eq("Add SDWAN peer #{victim.id} on #{foreign.id}")
+    end
+  end
+
+  # IMP-cf285f21f3a9 — ENROLLMENT PARITY.
+  #
+  # Gating peer creation makes this executor the create path for BOTH gate
+  # outcomes: gate_create! hands the create to it when the policy auto-proceeds
+  # AND again when an approver releases a parked operation. Until this task
+  # nothing dispatched it, so its divergence from the real creation seam was
+  # never exercised.
+  #
+  # Every other caller in the codebase creates peers through
+  # Sdwan::PeerEnroller, which does four things beyond inserting the row:
+  # generates the WireGuard genesis keypair (Sdwan::KeyDistributor), allocates
+  # and activates a VRF, promotes a registered network to active, and mirrors
+  # the address + pubkey onto the NodeInstance's capabilities so the agent
+  # learns them. A bare `network.peers.create!` skips all four and yields a peer
+  # that cannot carry traffic — and an empty vrf_name reads as "nothing to do"
+  # to both vip_applier.go and Bgp::ConfigCompiler, so it fails silently.
+  describe "enrollment parity with the ungated path" do
+    let(:account)  { create(:account) }
+    let(:network)  { create(:sdwan_network, account: account) }
+    let(:node)     { create(:system_node, account: account) }
+    let(:instance) { create(:system_node_instance, node: node, account: account) }
+
+    def create_via_executor
+      described_class.execute(
+        { network_id: network.id, attributes: { node_instance_id: instance.id } },
+        deferred_operation: nil
+      )
+    end
+
+    it "generates the WireGuard genesis keypair" do
+      result = create_via_executor
+      peer = ::Sdwan::Peer.find(result[:data][:peer_id])
+
+      expect(peer.active_key).to be_present,
+                                 "peer has no key — the gated path would mint a tunnel that cannot come up"
+    end
+
+    it "allocates and activates a VRF for the host" do
+      result = create_via_executor
+      peer = ::Sdwan::Peer.find(result[:data][:peer_id])
+
+      assignment = ::Sdwan::HostVrfAssignment.find_by(node_instance_id: instance.id,
+                                                      sdwan_network_id: network.id)
+      expect(assignment).to be_present,
+                            "no VRF — vip_applier.go and Bgp::ConfigCompiler both read an empty vrf_name as nothing to do"
+      expect(assignment.state).to eq("active")
+      expect(peer).to be_present
+    end
+
+    it "mirrors the address and pubkey onto the NodeInstance so the agent learns them" do
+      central = ::System::NodeInstancePeer.find_by(node_instance_id: instance.id) ||
+                create(:system_node_instance_peer, node_instance: instance)
+
+      result = create_via_executor
+      peer = ::Sdwan::Peer.find(result[:data][:peer_id])
+
+      sdwan_block = central.reload.capabilities["sdwan"]
+      expect(sdwan_block).to be_present, "capability never mirrored — the agent never learns its overlay address"
+      expect(sdwan_block["networks"].map { |n| n["network_id"] }).to include(network.id)
+      expect(sdwan_block["networks"].map { |n| n["address"] }).to include(peer.assigned_address.to_s)
+
+      # NOT asserted: sdwan_block["wg_pubkey"] == peer.active_key.public_key.
+      # It is nil here, and nil on EVERY peer the platform enrols, gated or
+      # not — Sdwan::KeyDistributor.ensure_key_for! loads peer.keys before
+      # creating the key from the other side, so PeerEnroller's mirror reads a
+      # stale association. Pre-existing and independent of gating, filed as its
+      # own finding (mirrored-wg-pubkey-always-nil-stale-association) rather
+      # than pinned to the buggy value here, which would cement it.
+      expect(peer.reload.active_key).to be_present
+    end
+
+    # PeerEnroller refuses a node instance from another account; the bare
+    # create! only ever scoped the NETWORK, so the executor would happily
+    # attach a victim's instance to the requester's overlay.
+    # System::Executors::Base#call re-raises rather than returning
+    # success: false, and the REST surface already rescues this exact class
+    # into a 422 — so the refusal is a raise, not a falsy result.
+    it "refuses a node instance belonging to another account" do
+      foreign = create(:system_node_instance)
+
+      expect {
+        described_class.execute(
+          { network_id: network.id, attributes: { node_instance_id: foreign.id } },
+          deferred_operation: nil
+        )
+      }.to raise_error(::Sdwan::PeerEnroller::CrossAccountError)
     end
   end
 end

@@ -28,8 +28,23 @@ module System
       "memory_pct"       => "utilization",
       "replica_count"    => "capacity",
       "region_count"     => "topology",
-      "cost_usd_mtd"     => "cost"
+      "cost_usd_mtd"     => "cost",
+      # IMP-25e75f960dee — aggregate SDWAN throughput across the peers of the
+      # instances this mission provisioned. "utilization" rather than a new
+      # METRIC_TYPE: it is bandwidth consumption, the same family as cpu/memory,
+      # and inventing a sixth type would make System::ProjectMetric::METRIC_TYPES
+      # a moving target for one metric.
+      "sdwan_throughput_bytes_per_s" => "utilization"
     }.freeze
+
+    # The metric this collector samples from Sdwan::Peer counters. Named once
+    # so the sampler, the unit table and the state key cannot drift apart.
+    THROUGHPUT_METRIC = "sdwan_throughput_bytes_per_s"
+
+    # Key under ProjectMetric#value holding the per-peer counter snapshot this
+    # tick observed. It is the NEXT tick's baseline — computation state, not an
+    # observation (see #prune_superseded_peer_counters!).
+    PEER_COUNTERS_KEY = "peer_counters"
 
     # Class-level entry point — mirrors the FleetAutonomyService.tick! shape
     # so callers don't have to construct the collector directly.
@@ -63,6 +78,10 @@ module System
           )
         end
       end
+
+      # The row we just superseded no longer needs to carry the peer counter
+      # snapshot; only the newest one is a usable baseline.
+      prune_superseded_peer_counters!
 
       records
     end
@@ -104,30 +123,279 @@ module System
       case metric_name
       when "replica_count" then sample_replica_count(instance_ids)
       when "region_count"  then sample_region_count(instance_ids)
+      when THROUGHPUT_METRIC then sample_sdwan_throughput(instance_ids)
       else unavailable_sample(metric_name)
       end
     end
 
-    # replica_count = live (non-terminated) instances this mission provisioned.
+    # replica_count = instances this mission provisioned that the control plane
+    # still expects to serve — NodeInstance::LIVE_REPLICA_STATUSES, which the
+    # `live_replicas` scope is the single spelling of.
+    #
     # `unavailable` when the mission has no resolvable instances (we genuinely
     # can't tell); a resolvable mission with zero live instances reports a real
     # 0 — a meaningful "nothing came up" drift signal, not a stub.
+    #
+    # IMP-797a87dbd0bd: this filtered on `where.not(status: "terminated")`
+    # alone, so an `error` instance — a replica the platform had marked FAILED
+    # — still counted as capacity. ProjectSloSensor#detect_drift only fires on
+    # observed != expected, so a mission whose replica died reported its full
+    # count and drifted silently, in exactly the case the signal exists for.
+    #
+    # Not `active`: that scope (pending/provisioning/running/stopped) also
+    # drops `starting`/`rebooting`, which would make every routine reboot read
+    # as capacity loss and provoke a replacement provision — trading a silent
+    # failure for a noisy false one.
     def sample_replica_count(instance_ids)
       return unavailable_sample("replica_count") if instance_ids.empty?
 
-      count = ::System::NodeInstance.where(id: instance_ids)
-                                    .where.not(status: "terminated").count
+      count = ::System::NodeInstance.where(id: instance_ids).live_replicas.count
       live_sample("replica_count", count)
     end
 
-    # region_count = distinct provider regions across the mission's live instances.
+    # region_count = distinct provider regions across the mission's live
+    # instances, on the SAME liveness definition as replica_count.
+    #
+    # Sharing it is the point: the two metrics are sampled from one instance
+    # set in one tick and land in one observation hash, so a region_count that
+    # counted errored rows while replica_count did not would describe two
+    # different fleets in the same breath. Semantically it is also the right
+    # filter on its own — a region whose only instance has errored is one the
+    # mission no longer occupies, and reporting it as still-occupied overstates
+    # geographic coverage the same way the replica count overstated capacity.
     def sample_region_count(instance_ids)
       return unavailable_sample("region_count") if instance_ids.empty?
 
       count = ::System::NodeInstance.where(id: instance_ids)
-                                    .where.not(status: "terminated")
+                                    .live_replicas
                                     .distinct.count(:provider_region_id)
       live_sample("region_count", count)
+    end
+
+    # IMP-25e75f960dee — aggregate SDWAN throughput for this mission, derived
+    # from the per-peer WireGuard byte counters IMP-ab73cc2fca65 put on
+    # Sdwan::Peer. Those counters were measured, transmitted and persisted but
+    # had no autonomy consumer at all: no sensor read them, and the metric
+    # vocabulary had no slot to put them in. This is the slot.
+    #
+    # ATTRIBUTION — mission -> instances -> peers.
+    # `resolvable_instance_ids` already resolves a mission to the NodeInstance
+    # ids it provisioned (via the plan's recorded step outputs); it is the same
+    # derivation replica_count and region_count are built on, and reusing it is
+    # deliberate. `Sdwan::Peer belongs_to :node_instance` is a single non-null
+    # FK, so the last hop is exact rather than heuristic: a peer counts for
+    # this mission iff its node_instance is one this mission provisioned.
+    # Nothing here filters by module name (the traversal Peer#k3s_host? needs)
+    # because that walk goes the OTHER way — peer down to the node's module
+    # list — and is not on this path.
+    #
+    # Also scoped by account_id, which the sibling samplers are not: the
+    # instance ids come out of plan metadata, which is data, and a metric must
+    # never aggregate another tenant's peers if that data is ever wrong.
+    #
+    # WHAT THE NUMBER MEANS: the sum over the mission's peers of
+    # (rx + tx) / that peer's own observation interval. Both directions of
+    # every tunnel endpoint are counted, so traffic between two instances of
+    # the SAME mission contributes four times (each endpoint's rx and its tx).
+    # It is a measure of fabric activity, not of distinct payload bytes, and an
+    # operator declaring `min_throughput_bytes_per_s` is declaring against that
+    # definition.
+    #
+    # RATE, NOT TOTAL, and the two-sample requirement that follows from it.
+    # The stored counters are RAW CUMULATIVE kernel totals for the current
+    # interface incarnation, so a single sample says nothing about an interval.
+    # The rate needs a baseline, and the only place to keep one is the previous
+    # ProjectMetric row — so this sampler both reads and writes
+    # PEER_COUNTERS_KEY. Until a second observation exists the metric is
+    # honestly `unavailable` (observed nil), never 0.
+    #
+    # PER-PEER differencing, then summed — NOT the difference of two sums. A
+    # peer whose interface was recreated restarts its counter at zero; against
+    # an aggregate that either shows up as a decrease (and Peer.counter_delta
+    # would then hand back the whole aggregate as one interval's traffic — an
+    # enormous fabricated spike) or is masked entirely by the other peers'
+    # growth. Differencing each peer against its own baseline is the only
+    # arrangement in which the reset rule means what it says.
+    #
+    # FULL COVERAGE OR NOTHING — the aggregate's own null-vs-zero rule, and the
+    # one that is easiest to get wrong. Per-peer discipline is not enough: a
+    # sum over the peers that happened to be ratable, published as `live`, is a
+    # fabricated zero one level up. A mission with five peers of which four
+    # have stalled clocks and one is measured-and-idle would otherwise report
+    # observed 0.0 with source "live", and because a FLOOR breach fires on
+    # `observed < target`, an incomplete sum can only ever UNDERSTATE and so
+    # can only ever fabricate a breach — never suppress a real one. So a sum
+    # that does not cover every peer of the mission's instances is not this
+    # mission's throughput and is not published as an observation. The counts
+    # stay in the blob so an operator can see WHY it went dark.
+    def sample_sdwan_throughput(instance_ids)
+      return unavailable_sample(THROUGHPUT_METRIC, "mission has no resolvable instances") if instance_ids.empty?
+      return unavailable_sample(THROUGHPUT_METRIC, "Sdwan::Peer unavailable") unless defined?(::Sdwan::Peer)
+
+      peer_rows = mission_peer_rows(instance_ids)
+      return unavailable_sample(THROUGHPUT_METRIC, "mission's instances carry no SDWAN peers") if peer_rows.empty?
+
+      current = measured_peer_counters(peer_rows)
+
+      # Resolved unconditionally, BEFORE the no-measurement return: this same
+      # row is the prune target, and a tick that measures nothing must leave
+      # the standing baseline alone rather than orphan it (an orphaned map is
+      # never read again and never pruned again).
+      baseline = previous_peer_counters
+
+      if current.empty?
+        return unavailable_sample(
+          THROUGHPUT_METRIC,
+          "none of this mission's #{peer_rows.size} peer(s) has reported WireGuard counters yet"
+        ).merge("peer_count" => peer_rows.size, "rated_peer_count" => 0)
+      end
+
+      rates = current.filter_map { |peer_id, now| peer_rate(baseline[peer_id], now) }
+      @banked_peer_counters = true
+
+      sample =
+        if rates.size == peer_rows.size
+          live_sample(THROUGHPUT_METRIC, rates.sum.round(2))
+        else
+          unavailable_sample(
+            THROUGHPUT_METRIC,
+            "partial coverage: #{rates.size} of #{peer_rows.size} peer(s) yielded a measurable interval"
+          )
+        end
+
+      sample.merge(
+        PEER_COUNTERS_KEY => current,
+        "peer_count" => peer_rows.size,
+        "rated_peer_count" => rates.size
+      )
+    rescue StandardError => e
+      # A raise here would cost the mission its ENTIRE metric batch for the
+      # tick — sample_all has no per-metric rescue and collect_project_metrics!
+      # only rescues per mission — taking replica_count and region_count, and
+      # therefore drift detection, dark with it. This sampler is the one doing
+      # arithmetic on JSONB-sourced data, so it owns the risk and contains it.
+      # Unset: the flag may already be true if the raise came after the merge
+      # was set up, and pruning on a tick that published no snapshot would
+      # strip the standing baseline with nothing to replace it.
+      @banked_peer_counters = false
+      Rails.logger.warn(
+        "[ProjectMetricsCollector] throughput sampling failed for mission=#{@mission&.id}: #{e.class}: #{e.message}"
+      )
+      unavailable_sample(THROUGHPUT_METRIC, "throughput sampling failed: #{e.class}")
+    end
+
+    # EVERY peer of the mission's instances, measured or not. The unmeasured
+    # ones are what make `peer_count` a coverage denominator rather than a
+    # count of whatever happened to report.
+    def mission_peer_rows(instance_ids)
+      ::Sdwan::Peer
+        .where(account_id: @mission.account_id, node_instance_id: instance_ids)
+        .pluck(:id, :rx_bytes, :tx_bytes, :counters_sampled_at)
+    end
+
+    # The subset with a COMPLETE counter observation. All three columns are
+    # independently nullable and each carries its own meaning, so a row missing
+    # any of them is NOT MEASURED and is dropped rather than defaulted:
+    # `rx_bytes` nil is not 0 bytes, and without counters_sampled_at there is
+    # no clock to divide by. Keyed by peer id so the next tick can difference
+    # each peer against ITSELF.
+    #
+    # counters_sampled_at is stored as an epoch float. It is stamped SERVER-SIDE
+    # at heartbeat receipt (NodeApi::SdwanController#peer_observation_columns),
+    # not by the node — immune to node clock skew, but not to delivery jitter,
+    # so a reordered heartbeat can present a lower counter under a newer stamp.
+    # It is still the only usable clock: the heartbeat write is an
+    # update_columns that deliberately leaves updated_at alone.
+    def measured_peer_counters(peer_rows)
+      peer_rows.each_with_object({}) do |(id, rx, tx, at), acc|
+        next if rx.nil? || tx.nil? || at.nil?
+
+        acc[id.to_s] = { "rx" => rx, "tx" => tx, "at" => at.to_f }
+      end
+    end
+
+    # Baseline snapshot from the most recent throughput row THAT CARRIES ONE —
+    # not simply the most recent row. A tick that measured nothing writes a row
+    # with no snapshot, and keying off "most recent row" would then read an
+    # empty baseline and blind the metric for a second tick while stranding the
+    # real snapshot on an older row forever. Memoized: sample_all runs this
+    # once per collect!, and the row it finds is also the prune target.
+    def previous_peer_counters
+      return @previous_peer_counters if defined?(@previous_peer_counters)
+
+      @previous_throughput_row = ::System::ProjectMetric
+        .where(mission_id: @mission.id, metric_name: THROUGHPUT_METRIC)
+        .where("jsonb_exists(value, ?)", PEER_COUNTERS_KEY)
+        .order(sampled_at: :desc, id: :desc)
+        .first
+
+      stored = @previous_throughput_row&.value
+      @previous_peer_counters =
+        (stored.is_a?(Hash) && stored[PEER_COUNTERS_KEY].is_a?(Hash) ? stored[PEER_COUNTERS_KEY] : {})
+    end
+
+    # Bytes per second for ONE peer across ITS OWN observation interval, or nil
+    # when that interval is not measurable. Returns a Float; 0.0 is a real
+    # measurement (the peer was up and moved nothing) and must reach the caller
+    # as such.
+    #
+    # The Numeric guard is not decoration. `baseline` is decoded from JSONB
+    # written by an earlier run of this code, and the doctrine this whole
+    # change is built on forbids a bare `.to_f` on anything that can be nil:
+    # `nil.to_f` is 0.0, which here would make `elapsed` the whole Unix epoch
+    # and divide a peer's cumulative counter by fifty-five years — a fabricated
+    # near-zero rate that passes every downstream guard and reads as a critical
+    # breach.
+    #
+    # `elapsed <= 0` is the stalled-agent case: a peer whose heartbeat stopped
+    # keeps its last counters_sampled_at, so the tick sees the same observation
+    # twice. Contributing 0.0 for it would report a silent peer as a quiet one
+    # — the same nil-vs-zero error one level up. It contributes nothing, and
+    # the coverage gate then refuses to publish the partial sum at all.
+    def peer_rate(baseline, now)
+      return nil unless baseline.is_a?(Hash)
+      return nil unless baseline["at"].is_a?(Numeric) && now["at"].is_a?(Numeric)
+
+      elapsed = now["at"] - baseline["at"]
+      return nil unless elapsed.positive?
+
+      rx = ::Sdwan::Peer.counter_delta(older: baseline["rx"], newer: now["rx"])
+      tx = ::Sdwan::Peer.counter_delta(older: baseline["tx"], newer: now["tx"])
+      return nil if rx.nil? || tx.nil?
+
+      (rx + tx) / elapsed
+    end
+
+    # The peer counter map is COMPUTATION STATE, not an observation: only the
+    # newest one is ever read, as the next tick's baseline. system_project_metrics
+    # has no retention sweep and this collector writes a row per mission every
+    # 60s, so leaving the snapshot on every superseded row would grow the table
+    # by peer_count x 1440 map entries per mission per day, forever. Stripping
+    # it from the row this run superseded keeps exactly one live copy.
+    #
+    # Guarded on @banked_peer_counters: prune ONLY when this run actually wrote
+    # a replacement. A tick that measured nothing writes no snapshot, and
+    # pruning the standing one there would throw away the baseline a resumed
+    # fabric needs — the map would be gone and the row that held it would be
+    # the only place it ever existed.
+    #
+    # `observed` — the measurement itself — is never touched, so the time series
+    # stays intact and replayable. Best-effort: a metrics row that could not be
+    # tidied must not fail the collection that produced a good sample.
+    def prune_superseded_peer_counters!
+      return unless @banked_peer_counters
+
+      row = @previous_throughput_row
+      return unless row
+
+      stored = row.value
+      return unless stored.is_a?(Hash) && stored.key?(PEER_COUNTERS_KEY)
+
+      row.update_column(:value, stored.except(PEER_COUNTERS_KEY))
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[ProjectMetricsCollector] peer counter prune failed for mission=#{@mission&.id}: #{e.class}: #{e.message}"
+      )
     end
 
     # A real measurement read from a wired backend.
@@ -140,12 +408,12 @@ module System
     # rather than treating a fabricated zero as a real sample. Replaces the
     # prior zero-valued stub, which risked false SLO/availability violations
     # the moment any single real metric was wired alongside it.
-    def unavailable_sample(metric_name)
+    def unavailable_sample(metric_name, note = nil)
       {
         "observed" => nil,
         "unit" => unit_for(metric_name),
         "source" => "unavailable",
-        "note" => "no telemetry backend wired for #{metric_name} yet (TODO metrics-backend)"
+        "note" => note || "no telemetry backend wired for #{metric_name} yet (TODO metrics-backend)"
       }
     end
 
@@ -156,18 +424,35 @@ module System
     # metadata["last_outputs"]["outputs"]["node_instance_ids"] — the same seam
     # the runner uses for cross-step data flow.
     #
-    # The NESTED `outputs` level is load-bearing and was wrong here until
-    # IMP-3431f73dabe6. SkillCompositionRunner records
-    # `result_outputs(result)` = the executor's `data:` payload, whose own
-    # keys are dry_run/count/planned_actions/`outputs`/failures — so the ids
-    # sit one level below `last_outputs`. Digging them at the top level always
-    # returned nil, so this method always returned [], so replica_count and
-    # region_count always short-circuited to `unavailable` and ProjectSloSensor
-    # never saw a live sample. Every other reader of this envelope already
-    # digs the deeper path — VerificationService#verify (its per-step count
-    # check) and #removed_instance_ids, AdaptationDispatchService#
-    # produced_instance_ids, DryrunHarness#actuator_reported_orphans. This
-    # reader was the only one that disagreed.
+    # THE WRITER HAS THREE SHAPES; THIS READS ALL OF THEM (IMP-9978fcf23a27).
+    #
+    # SkillCompositionRunner#result_outputs is
+    #   result[:data] || result["data"] || result[:outputs] || result["outputs"] || result.to_h
+    # and #record_outputs stores whatever that returns VERBATIM as
+    # metadata["last_outputs"]. So the envelope decides the depth:
+    #
+    #   :data present  -> last_outputs is the payload; ids under its "outputs"
+    #   :outputs only  -> last_outputs IS the outputs hash; ids at the TOP level
+    #   neither        -> last_outputs is result.to_h; ids at the TOP level
+    #
+    # The nested level was wrong here until IMP-3431f73dabe6: digging the ids at
+    # the top always returned nil, so this returned [], so replica_count and
+    # region_count short-circuited to `unavailable` and ProjectSloSensor never
+    # saw a live sample.
+    #
+    # WHAT THE ENUMERATION FOUND, recorded because the severity claim depends on
+    # it: every executor SkillCompositionRunner.resolve_executor can reach today
+    # — 58 under System::Ai::Skills, 2 under Ai::Skills, CrudFactory subclasses
+    # included — returns BaseSkillExecutor#success, i.e. { success: true, data: }.
+    # So the narrowed dig was NOT silently broken again; the other two branches
+    # are live in the writer with no executor behind them. Reading all three is
+    # hardening against the writer's actual contract rather than repair of an
+    # active defect, and it is what stops the next executor that returns a bare
+    # envelope from re-creating IMP-3431f73dabe6 in silence.
+    #
+    # deep_stringify_keys matches the sibling readers (VerificationService
+    # #last_outputs, AdaptationDispatchService#produced_instance_ids), which all
+    # normalize before digging; this reader was the only one that did not.
     #
     # Returns [] (never raises) so a mission without a resolvable plan
     # degrades to `unavailable`, not a false zero.
@@ -180,12 +465,24 @@ module System
       return [] unless plan
 
       plan.steps.where(status: "completed").flat_map { |step|
-        meta = step.metadata.is_a?(Hash) ? step.metadata : {}
-        Array(meta.dig("last_outputs", "outputs", "node_instance_ids"))
+        step_instance_ids(step)
       }.compact.uniq
     rescue StandardError => e
       Rails.logger.warn("[ProjectMetricsCollector] instance resolution failed for mission=#{@mission&.id}: #{e.class}: #{e.message}")
       []
+    end
+
+    # Both depths, unioned. Deduping is left to the single `.uniq` in the
+    # caller, which already spans every step — a second one here would be a
+    # redundant mechanism, and two guards for one property make a mutation test
+    # unable to tell which of them is actually holding the line.
+    def step_instance_ids(step)
+      meta = step.metadata.is_a?(Hash) ? step.metadata : {}
+      outs = meta["last_outputs"] || meta[:last_outputs] || {}
+      return [] unless outs.is_a?(Hash)
+
+      outs = outs.deep_stringify_keys
+      Array(outs.dig("outputs", "node_instance_ids")) + Array(outs["node_instance_ids"])
     end
 
     def unit_for(metric_name)
@@ -194,6 +491,11 @@ module System
       when "availability_pct", "cpu_pct", "memory_pct" then "percent"
       when "replica_count", "region_count" then "count"
       when "cost_usd_mtd" then "usd"
+      # BYTES per second, not bits. WireGuard's counters are byte totals and
+      # nothing on this path multiplies by 8, so the name and the unit both
+      # say bytes; "bps" would have invited a silent 8x error at the first
+      # dashboard that read it.
+      when THROUGHPUT_METRIC then "bytes_per_s"
       end
     end
 

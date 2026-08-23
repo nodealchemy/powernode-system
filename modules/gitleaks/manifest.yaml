@@ -70,6 +70,24 @@ security:
 
 skills: []
 
+# IMP-3855ff9908f2 — post-deploy self-proof. This module's ENTIRE payload is
+# one binary, and on 2026-08-07 it published an EMPTY artifact (v4,
+# sha256:ab8a2148…) which auto-promoted and whose hot-prune then whiteout-
+# DELETED /usr/local/bin/gitleaks off a live root. Every digest matched end to
+# end; the deploy read as clean. This block is what would have caught it on
+# the next heartbeat.
+#
+# `resolves_to` — not existence. An existence check ("is there a `gitleaks` on
+# PATH?") is exactly what passes when apt or another module puts a different
+# gitleaks earlier on PATH. Every probe runs in BOTH a login and a non-login
+# shell (not configurable — see System::ModuleVerify); a mismatch in EITHER is
+# a failure, because the login/non-login divergence is the VM-9000 bug itself.
+verify:
+  probes:
+    - name: gitleaks-binary
+      command: gitleaks
+      resolves_to: /usr/local/bin/gitleaks
+
 build:
   # INCIDENT 2026-08-07 — this module published an EMPTY artifact (v4,
   # sha256:ab8a2148…, zero files) which auto-promoted, and the agent's

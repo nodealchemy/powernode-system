@@ -14,8 +14,22 @@ import type {
 // Phase O6 — read-only operator view of allocated SDWAN host bridges
 // (now with inline manage actions). Allocation happens through the
 // agent reconcile loop / AI compose skill / MCP action; the inline
-// delete button uses arm-and-confirm and force-removes the bridge
-// (short_id returns to the pool immediately).
+// delete button uses arm-and-confirm and RELEASES the bridge.
+//
+// IMP-53a5c597ec8c changed what that release does. It used to force the
+// bridge to `removed` immediately (short_id straight back to the pool).
+// It now DRAINS: the bridge moves to `draining`, the compiler keeps
+// emitting it and its short_id stays reserved until the agent reports the
+// bridge gone, so in-flight taps are not cut. The hard release is still
+// available -- sdwanApi.deleteHostBridge takes { force: true } -- but it
+// is not what this button does, so the notification says "released" and
+// the row's own state column reports where the bridge actually landed.
+//
+// The button is hidden on `draining` rows as well as `removed` ones: a
+// release against an already-draining bridge is a no-op (the allocator
+// short-circuits, and Sdwan::HostBridgeReaper owns the transition to
+// removed once the grace window elapses), so offering the control there
+// would arm-and-confirm into nothing and report success.
 //
 // Bridges are grouped visually by host — the controller sorts by
 // (node_instance_id, short_id) so consecutive rows share a host.
@@ -60,15 +74,15 @@ export const HostBridgesTab: React.FC = () => {
     try {
       const result = await sdwanApi.deleteHostBridge(bridge.id);
       if (isPendingApproval(result)) {
-        addNotification(pendingApprovalNotice(`removing bridge ${bridge.bridge_name}`, result));
+        addNotification(pendingApprovalNotice(`releasing bridge ${bridge.bridge_name}`, result));
         return;
       }
-      addNotification({ type: 'success', message: `Bridge ${bridge.bridge_name} removed` });
+      addNotification({ type: 'success', message: `Bridge ${bridge.bridge_name} released` });
       setRefreshKey((k) => k + 1);
     } catch (err) {
       addNotification({
         type: 'error',
-        message: err instanceof Error ? err.message : 'Failed to remove bridge',
+        message: err instanceof Error ? err.message : 'Failed to release bridge',
       });
     }
   }, [addNotification]);
@@ -195,7 +209,7 @@ const BridgeRow: React.FC<BridgeRowProps> = ({ bridge: b, canManage, expanded, o
         </td>
         <td className="p-3 text-theme-secondary text-sm">{b.short_id}</td>
         <td className="p-3 text-right">
-          {canManage && b.state !== 'removed' && (
+          {canManage && b.state !== 'removed' && b.state !== 'draining' && (
             <button
               type="button"
               onClick={trigger}
@@ -205,8 +219,8 @@ const BridgeRow: React.FC<BridgeRowProps> = ({ bridge: b, canManage, expanded, o
                   ? 'bg-theme-danger-bg text-theme-danger-fg px-2'
                   : 'text-theme-danger-fg hover:bg-theme-danger-bg')
               }
-              aria-label={`Remove bridge ${b.bridge_name}`}
-              title={armed ? 'Click to confirm' : 'Remove bridge'}
+              aria-label={`Release bridge ${b.bridge_name}`}
+              title={armed ? 'Click to confirm' : 'Release bridge'}
               data-testid={`delete-host-bridge-${b.id}`}
             >
               {armed ? 'Confirm?' : <Trash2 size={16} />}

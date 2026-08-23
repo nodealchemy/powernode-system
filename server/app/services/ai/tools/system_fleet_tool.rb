@@ -415,7 +415,7 @@ module Ai
             parameters: { module_id: { type: "string", required: true, description: "UUID of the NodeModule to delete (account-scoped)" } }
           },
           "system_create_module" => {
-            description: "Author a new NodeModule. Same surface as REST create. Spec fields (mask/file_spec/package_spec/dependency_spec/protected_spec) take newline-joined glob strings or already-encoded arrays. Reuse-first: run system_discover_modules before authoring — a duplicate module is the failure this action makes cheap.",
+            description: "Author a new NodeModule. Same surface as REST create. Spec fields (mask/file_spec/package_spec/dependency_spec/protected_spec) take newline-joined glob strings or already-encoded arrays. REUSE GATE (enforced, not advisory): supplying manifest_yaml for a name the build planner does not already build is authoring a NEW module, and is REFUSED unless you also pass reuse_check. Run system_discover_modules by PURPOSE first; every module you name in reuse_check.considered is verified to exist, so an invented candidate refuses the call.",
             parameters: {
               name: { type: "string", required: true, description: "Module name (unique per account)" },
               node_platform_id: { type: "string", required: true, description: "UUID of the NodePlatform this module targets" },
@@ -438,13 +438,14 @@ module Ai
               protected_spec: { type: "string", required: false, description: "Protected-path spec — newline-joined globs or encoded array" },
               consent_budget_per_day: { type: "integer", required: false, description: "Daily ceiling on autonomous decisions for this module (policy; the consumed-count ledger is not settable here)" },
               config: { type: "object", required: false, description: "Arbitrary module config hash" },
+              reuse_check: { type: "object", required: false, description: "REQUIRED when manifest_yaml authors a name the build planner does not already build. Shape: { considered: [{ module: \"<existing module name>\", rejected_because: \"<why it does not serve this purpose>\" }], justification: \"R1\"|\"R2\"|\"R3\", justification_detail: \"<how that prong is satisfied>\" }. R1 = two or more real consumers today or a hard requires: capability edge; R2 = an independent third-party payload with its own version/CVE cadence; R3 = an opt-in heavy payload a node type must be able to exclude. Every considered module is checked against the buildable catalog and every entry needs a non-blank rejected_because — the declaration is verified, not recorded. Persisted to the module's config.reuse_check. See docs/runbooks/module-authoring.md Phase 0." },
               manifest_yaml: { type: "string", required: false, description: "Raw manifest.yaml. When given it is authoritative for the spec/lifecycle fields (mask/file_spec/package_spec/dependency_spec/protected_spec/init/reboot), which are derived by the same importer the loader seed uses — pass only name/node_platform_id/category_id alongside it. This is what makes an MCP-authored module carry a manifest_yaml and therefore be buildable (visible to the module-build planner)." },
               create_version: { type: "boolean", required: false, description: "With manifest_yaml, also snapshot the imported state into a new NodeModuleVersion (default true on create)" },
               version_changelog: { type: "string", required: false, description: "Changelog recorded on the snapshotted version when create_version is set" }
             }
           },
           "system_update_module" => {
-            description: "Update an existing NodeModule's mutable attributes. Accepts the same fields as system_create_module; absent fields are left untouched. Does NOT accept the consent-budget consumed-count ledger — that is maintained by the autonomy gate.",
+            description: "Update an existing NodeModule's mutable attributes. Accepts the same fields as system_create_module; absent fields are left untouched. Does NOT accept the consent-budget consumed-count ledger — that is maintained by the autonomy gate. Carries the same reuse gate as system_create_module, but only on the authoring case: giving a manifest to a module that has none yet.",
             parameters: {
               module_id: { type: "string", required: true, description: "UUID of the NodeModule to update (account-scoped)" },
               name: { type: "string", required: false, description: "New module name" },
@@ -467,7 +468,8 @@ module Ai
               protected_spec: { type: "string", required: false, description: "Protected-path spec" },
               consent_budget_per_day: { type: "integer", required: false, description: "Daily ceiling on autonomous decisions for this module" },
               config: { type: "object", required: false, description: "Arbitrary module config hash" },
-              manifest_yaml: { type: "string", required: false, description: "Raw manifest.yaml to re-import onto this module (authoritative for spec/lifecycle fields; same importer as the loader seed / REST import_manifest). Use to update a module's manifest — e.g. a CVE version bump — over MCP." },
+              manifest_yaml: { type: "string", required: false, description: "Raw manifest.yaml to re-import onto this module (authoritative for spec/lifecycle fields; same importer as the loader seed / REST import_manifest). Use to update a module's manifest — e.g. a CVE version bump — over MCP. Re-importing onto a name the build planner ALREADY builds is not gated; giving a manifest to a module that has none yet is authoring, and requires reuse_check exactly as system_create_module does." },
+              reuse_check: { type: "object", required: false, description: "REQUIRED only when this update would give a manifest to a module the build planner does not yet build (the bare-create-then-update path — the same authoring event as system_create_module, in two calls). Same shape and same verification as system_create_module's reuse_check. Not needed for an ordinary re-import onto an already-buildable module." },
               create_version: { type: "boolean", required: false, description: "With manifest_yaml, snapshot the imported state into a new NodeModuleVersion (default false on update)" },
               version_changelog: { type: "string", required: false, description: "Changelog recorded on the snapshotted version when create_version is set" }
             }
@@ -504,10 +506,11 @@ module Ai
               instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to update (account-scoped)" },
               name: { type: "string", required: false, description: "New display name for the instance" },
               description: { type: "string", required: false, description: "New free-text description for the instance" },
-              config: { type: "object", required: false, description: "Instance config hash (replaces the stored config)" },
+              config: { type: "object", required: false, description: "Instance config hash (replaces the stored config, except the network_profile_source provenance stamp, which survives unless the new hash explicitly sets it)" },
               private_ip_address: { type: "string", required: false, description: "Private/internal IP address of the instance" },
               public_ip_address: { type: "string", required: false, description: "Public IP address of the instance" },
-              vpn_ip_address: { type: "string", required: false, description: "SDWAN/VPN overlay IP address of the instance" }
+              vpn_ip_address: { type: "string", required: false, description: "SDWAN/VPN overlay IP address of the instance" },
+              network_profile: { type: "string", required: false, description: "SDWAN host profile: 'lightweight' (WireGuard-only stack, the default) or 'heavyweight' (adds the OVS/OVN chassis stack — requires ~4GB+ RAM headroom for the daemons). An explicit value is an operator declaration: it wins over and disables the first-heartbeat auto-classification." }
             }
           },
           "system_find_node_with_gpu" => {
@@ -1921,6 +1924,11 @@ module Ai
 
       def create_module(params)
         yaml = params[:manifest_yaml].presence
+        # The reuse gate runs BEFORE the row is built: a refused authoring
+        # attempt must leave nothing behind, exactly like a rejected manifest.
+        refusal, verified_reuse = reuse_gate(name: params[:name], yaml: yaml, params: params)
+        return error_result(refusal) if refusal
+
         # With a manifest, set only the relational columns and let the importer
         # derive the spec/lifecycle fields — otherwise a manifest field and its
         # individual-param twin could disagree.
@@ -1937,6 +1945,8 @@ module Ai
           return error_result("manifest import failed: #{imported[:error]}")
         end
 
+        record_reuse_check(node_module, verified_reuse)
+
         success_result(
           node_module: serialize_module_full(node_module.reload),
           node_module_version_id: imported[:version_id],
@@ -1950,14 +1960,145 @@ module Ai
         attrs = module_attrs(params)
         return error_result("no mutable fields supplied") if attrs.empty? && yaml.nil?
 
+        # Same gate as create, because the same THING happens here whenever the
+        # row is not yet buildable: a bare-field create followed by an update
+        # carrying the manifest is the create path in two calls, and gating only
+        # create would leave that as a one-hop bypass. Re-importing onto a name
+        # the planner already builds (a CVE version bump) is not authoring and
+        # is not gated.
+        refusal, verified_reuse = reuse_gate(name: params[:name].presence || node_module.name,
+                                             yaml: yaml, params: params)
+        return error_result(refusal) if refusal
+
         node_module.update!(attrs) if attrs.any?
 
         if yaml
           imported = import_module_manifest(node_module, yaml, params, default_create_version: false)
           return error_result("manifest import failed: #{imported[:error]}") unless imported[:ok]
+          record_reuse_check(node_module, verified_reuse)
         end
 
         success_result(node_module: serialize_module_full(node_module.reload))
+      end
+
+      # IMP-a67be4fe9041 — the R1/R2/R3 reuse gate, enforced rather than advised.
+      #
+      # Manifest authoring over MCP landed 2026-08-06 (f65e72c7). The sprawl gate
+      # it was supposed to pass did not land with it: R1/R2/R3 stayed prose in
+      # docs/runbooks/module-authoring.md Phase 0 (addressed to a human) and
+      # "run system_discover_modules first" stayed prose in this tool's own
+      # action description (addressed to nobody the code can hold to it). An
+      # agent could therefore mint a duplicate module with no reuse check.
+      #
+      # NOVELTY is not defined here. It is asked of
+      # System::ModuleBuildPlannerService.buildable_module_names — the set the
+      # build planner builds from. A manifest import that would ADD a name to
+      # that set is authoring a new module; one that lands on a name already in
+      # it is a re-import (a CVE bump) and is not gated. Bare-field creates are
+      # not gated either: with no manifest the planner cannot build the row, so
+      # nothing new is being authored yet.
+      #
+      # FALSIFIABILITY is the point. The declaration is not free text the caller
+      # can fill with anything: every module it claims to have considered is
+      # looked up in that same buildable set, so an invented candidate refuses
+      # the call by name. A blank rationale, an unrecognised justification, and
+      # "I considered nothing" against a non-empty catalog each refuse too.
+      REUSE_JUSTIFICATIONS = %w[R1 R2 R3].freeze
+      REUSE_RUNBOOK = "docs/runbooks/module-authoring.md Phase 0"
+
+      # Returns [refusal_message_or_nil, verified_declaration_or_nil].
+      #
+      # The declaration comes back ONLY when the gate actually ran and passed,
+      # so nothing unverified is ever persisted: an ungated call (a re-import
+      # onto an already-buildable name) may still carry a reuse_check field, and
+      # it is ignored rather than recorded as though it had been checked.
+      def reuse_gate(name:, yaml:, params:)
+        return [ nil, nil ] if yaml.blank?
+        # A missing name is the model's own validation to report, not the
+        # gate's — refusing here would mask it with a reuse-check message.
+        return [ nil, nil ] if name.blank?
+
+        catalog = ::System::ModuleBuildPlannerService.buildable_module_names(@account)
+        return [ nil, nil ] if catalog.include?(name.to_s)
+
+        decl = normalize_hash(params[:reuse_check] || params["reuse_check"])
+        unless decl
+          return [ "authoring \"#{name}\" as a new buildable module requires a declared reuse check. Pass " \
+                   "reuse_check: { considered: [{ module:, rejected_because: }], justification: " \
+                   "\"R1\"|\"R2\"|\"R3\", justification_detail: } — run system_discover_modules by PURPOSE " \
+                   "first, then say which existing modules you rejected and why (#{REUSE_RUNBOOK}).", nil ]
+        end
+
+        justification = decl["justification"].to_s.strip
+        unless REUSE_JUSTIFICATIONS.include?(justification)
+          return [ "reuse_check.justification must be one of R1, R2, R3 (got " \
+                   "#{decl['justification'].inspect}) — R1 two or more real consumers or a hard requires: edge, " \
+                   "R2 an independent third-party payload with its own CVE cadence, R3 an opt-in heavy payload a " \
+                   "node type must be able to exclude. \"It completes a family\" is not a prong " \
+                   "(#{REUSE_RUNBOOK}).", nil ]
+        end
+
+        if decl["justification_detail"].to_s.strip.empty?
+          return [ "reuse_check.justification_detail must state HOW #{justification} is satisfied for " \
+                   "\"#{name}\" (#{REUSE_RUNBOOK}).", nil ]
+        end
+
+        raw_considered = decl["considered"]
+        raw_considered = [ raw_considered ] if raw_considered.is_a?(Hash)
+        considered = Array(raw_considered).filter_map { |entry| normalize_hash(entry) }
+
+        if considered.empty? && catalog.any?
+          return [ "reuse_check.considered is empty, but #{catalog.size} buildable module(s) already exist in " \
+                   "this account. Name the existing modules you evaluated and why each was rejected — " \
+                   "system_discover_modules ranks them by purpose (#{REUSE_RUNBOOK}).", nil ]
+        end
+
+        unreasoned = considered.select { |entry| entry["rejected_because"].to_s.strip.empty? }
+                               .map { |entry| entry["module"].to_s.presence || "(unnamed)" }
+        if unreasoned.any?
+          return [ "every reuse_check.considered entry needs a non-blank rejected_because — missing for: " \
+                   "#{unreasoned.join(', ')}.", nil ]
+        end
+
+        # The check that makes the declaration falsifiable rather than
+        # decorative: a considered module the catalog does not contain was not
+        # considered, it was invented.
+        unknown = considered.map { |entry| entry["module"].to_s }.reject { |candidate| catalog.include?(candidate) }
+        if unknown.any?
+          return [ "reuse_check.considered names module(s) that are not in this account's buildable catalog: " \
+                   "#{unknown.join(', ')}. A reuse check is only meaningful if the candidates are real — list " \
+                   "names returned by system_discover_modules / system_list_modules.", nil ]
+        end
+
+        [ nil, decl.merge("considered" => considered) ]
+      end
+
+      # Persist the VERIFIED outcome on the module so the decision stays auditable
+      # after the call that made it — the same config bag the platform already
+      # uses for honeypot/last_build metadata.
+      #
+      # update_columns, NOT update!: `config` is in NodeModule::VERSIONED_ATTRIBUTES,
+      # so a normal save here fires after_update :auto_create_version, which would
+      # mint a second, artifact-less NodeModuleVersion and re-point current_version
+      # at it — immediately after the manifest import deliberately suppressed that
+      # very callback to snapshot one clean version. The audit stamp must not move
+      # the module's current version.
+      def record_reuse_check(node_module, declaration)
+        return if declaration.blank?
+
+        config = (node_module.config || {}).deep_dup
+        config["reuse_check"] = declaration.deep_stringify_keys.merge("checked_at" => Time.current.iso8601)
+        node_module.update_columns(config: config, updated_at: Time.current)
+      end
+
+      # MCP params arrive with either symbol or string keys (and possibly as
+      # ActionController::Parameters); normalize to string-keyed plain hashes so
+      # the gate reads the same value regardless of transport.
+      def normalize_hash(value)
+        value = value.to_unsafe_h if value.respond_to?(:to_unsafe_h)
+        return nil unless value.is_a?(Hash)
+
+        value.transform_keys(&:to_s)
       end
 
       # Apply a raw manifest.yaml through the SAME importer the loader seed and
@@ -2098,10 +2239,40 @@ module Ai
         attrs = {}
         attrs[:name]               = params[:name]               if params[:name].present?
         attrs[:description]        = params[:description]        if params[:description].present?
-        attrs[:config]             = params[:config]             if params[:config].is_a?(Hash)
+        if params[:config].is_a?(Hash)
+          incoming = params[:config].deep_stringify_keys
+          # `config` replaces the stored hash, but the network_profile_source
+          # stamp is PROVENANCE, not config: erasing it re-arms first-contact
+          # auto-classification, which could then overwrite an explicit
+          # operator declaration. It survives any replace that does not
+          # explicitly supply its own value.
+          existing_stamp = instance.config&.dig("network_profile_source")
+          if existing_stamp.present? && !incoming.key?("network_profile_source")
+            incoming = incoming.merge("network_profile_source" => existing_stamp)
+          end
+          attrs[:config] = incoming
+        end
         attrs[:private_ip_address] = params[:private_ip_address] if params[:private_ip_address].present?
         attrs[:public_ip_address]  = params[:public_ip_address]  if params[:public_ip_address].present?
         attrs[:vpn_ip_address]     = params[:vpn_ip_address]     if params[:vpn_ip_address].present?
+
+        # IMP-57e9a90598ee — the operator-declared network-profile writer.
+        # Until this, the column had no production writer at all, so both OVN
+        # serving gates were closed fleet-wide. An explicit value here is a
+        # DECLARATION and wins over (and permanently disables) the
+        # first-heartbeat auto-classification — recorded via the
+        # network_profile_source stamp.
+        if params[:network_profile].present?
+          profile = params[:network_profile].to_s
+          unless ::System::NodeInstance::NETWORK_PROFILES.include?(profile)
+            return error_result(
+              "network_profile must be one of: #{::System::NodeInstance::NETWORK_PROFILES.join(', ')} (got #{profile.inspect})"
+            )
+          end
+          attrs[:network_profile] = profile
+          attrs[:config] = (attrs[:config] || instance.config || {})
+                             .merge("network_profile_source" => "operator")
+        end
 
         instance.update!(attrs)
         success_result(instance: serialize_instance(instance))

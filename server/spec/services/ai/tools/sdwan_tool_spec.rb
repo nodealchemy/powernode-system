@@ -436,8 +436,16 @@ RSpec.describe Ai::Tools::SdwanTool do
     # Guard: the refusal is scoped to the token, not to the action. Proposing a
     # peer over MCP still works — this is what keeps the fix from reading as a
     # removal of the capability.
+    #
+    # Value semantics ride the gate's :proceed branch since IMP-2795453255c3
+    # (sdwan.federation_peer_propose — the approval-path behaviour lives in
+    # sdwan_mcp_federation_gate_parity_spec.rb). Without auto_approve_policy!
+    # these would assert against a parked operation and read "the capability
+    # was removed" for what is actually an approval waiting to be granted.
     context "without a token request" do
       it "still proposes the peer when generate_token is omitted" do
+        auto_approve_policy!
+
         expect { @r = propose }.to change(::System::FederationPeer, :count).by(1)
 
         expect(@r[:success]).to be true
@@ -445,6 +453,8 @@ RSpec.describe Ai::Tools::SdwanTool do
       end
 
       it "still proposes the peer when generate_token is explicitly false" do
+        auto_approve_policy!
+
         r = propose(generate_token: false)
 
         expect(r[:success]).to be true
@@ -487,10 +497,17 @@ RSpec.describe Ai::Tools::SdwanTool do
   # peer serializer projected no metadata — so the reason it advertises as
   # "recorded on the peer" could not be read back through any MCP action
   # (revoke's own response, get, or list). IMP-8ce2d82065b9.
+  #
+  # Value semantics ride the gate's :proceed branch since IMP-2795453255c3
+  # (sdwan.federation_peer_revoke); the parked branch — where the reason must
+  # NOT be recorded until an operator approves — is
+  # sdwan_mcp_federation_gate_parity_spec.rb's.
   describe "system_sdwan_revoke_federation_peer" do
     let!(:peer) { create(:system_federation_peer, account: account, status: "accepted") }
 
     it "records the reason and surfaces it in the serialized peer" do
+      auto_approve_policy!
+
       r = call("system_sdwan_revoke_federation_peer",
                federation_peer_id: peer.id,
                reason: "remote signing key compromised")
@@ -503,9 +520,12 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "reports a nil revocation_reason for a peer revoked without one" do
+      auto_approve_policy!
+
       r = call("system_sdwan_revoke_federation_peer", federation_peer_id: peer.id)
 
       expect(r[:success]).to be true
+      expect(r[:data][:federation_peer][:status]).to eq("revoked")
       expect(r[:data][:federation_peer]).to have_key(:revocation_reason)
       expect(r[:data][:federation_peer][:revocation_reason]).to be_nil
     end
@@ -519,20 +539,138 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # IMP-9bf58a693634 — data_residency is a COMPLIANCE field: the residency
+  # enforcer (Federation::ResidencyEnforcer) reads it to decide whether a
+  # record may cross a regulatory boundary to this peer. It used to be a bare
+  # `peer.update!` on this arm and was absent from the REST permit list, so an
+  # agent could rewrite it inline while an operator could not write it at all
+  # — and no audit row named the change. It now routes through the same
+  # Ai::AutonomyGate treatment as its trust-boundary siblings (propose /
+  # accept / revoke are all seeded require_approval).
   describe "system_sdwan_set_data_residency" do
-    let!(:peer) { create(:system_federation_peer, account: account) }
+    let!(:peer) { create(:system_federation_peer, account: account, data_residency: "us-east") }
 
-    it "sets the data_residency tag and surfaces it in the serializer" do
+    it_behaves_like "an approval-gated sdwan update" do
+      let(:gate_action)  { "system_sdwan_set_data_residency" }
+      let(:gate_request) { { federation_peer_id: peer.id, data_residency: "eu-west" } }
+      let(:pristine_probe)        { -> { peer.reload.data_residency } }
+      let(:pristine_value)        { "us-east" }
+      let(:pristine_failure_hint) { "the residency tag was rewritten inline, bypassing the approval gate" }
+    end
+
+    it "applies the tag when the parked operation is approved" do
       r = call("system_sdwan_set_data_residency", federation_peer_id: peer.id, data_residency: "eu-west")
-      expect(r[:success]).to be true
-      expect(r[:data][:federation_peer][:data_residency]).to eq("eu-west")
+
+      approve_parked_update!(
+        r,
+        category: ::Sdwan::Executors::SetFederationPeerDataResidency::ACTION_CATEGORY,
+        executor: "Sdwan::Executors::SetFederationPeerDataResidency"
+      )
+
       expect(peer.reload.data_residency).to eq("eu-west")
+    end
+
+    # The direction's audit requirement. Ai::DeferredOperation is the gate's
+    # own durable row, but it is keyed by action_category — it is not on the
+    # PEER's audit trail, which is what system_sdwan_get_audit_log and the
+    # WORM shipment sealer read (federation.* FleetEvents filtered by
+    # payload->>'federation_peer_id'). The executor emits there too, so the
+    # residency change is visible where an auditor looks for it.
+    it "writes a peer-scoped audit event naming both the old and new tag" do
+      r = call("system_sdwan_set_data_residency", federation_peer_id: peer.id, data_residency: "eu-west")
+      approve_parked_update!(
+        r,
+        category: ::Sdwan::Executors::SetFederationPeerDataResidency::ACTION_CATEGORY,
+        executor: "Sdwan::Executors::SetFederationPeerDataResidency"
+      )
+
+      event = ::System::FleetEvent.where(account_id: account.id, kind: "federation.peer.data_residency_changed")
+                                 .where("payload->>'federation_peer_id' = ?", peer.id).first
+
+      expect(event).to be_present, "the residency change left no row on the peer's audit trail"
+      expect(event.payload["previous_data_residency"]).to eq("us-east")
+      expect(event.payload["data_residency"]).to eq("eu-west")
+      expect(event.payload["declared_by"]).to eq("local_decision"),
+                                             "the audit row does not distinguish a local decision from a remote peer's own declaration"
+      expect(event.payload["deferred_operation_id"]).to eq(r.dig(:data, :deferred_operation_id)),
+                                                       "the peer-trail row cannot be joined back to the approval that authorised it"
+    end
+
+    it "surfaces the audit event through system_sdwan_get_audit_log" do
+      r = call("system_sdwan_set_data_residency", federation_peer_id: peer.id, data_residency: "eu-west")
+      approve_parked_update!(
+        r,
+        category: ::Sdwan::Executors::SetFederationPeerDataResidency::ACTION_CATEGORY,
+        executor: "Sdwan::Executors::SetFederationPeerDataResidency"
+      )
+
+      log = call("system_sdwan_get_audit_log", federation_peer_id: peer.id)
+
+      expect(log[:data][:events].map { |e| e[:kind] }).to include("federation.peer.data_residency_changed")
+    end
+
+    # Same oracle as IMP-785d60f5ec3e: a value that can only ever fail must
+    # not park an approval an operator has to dispose of. The column is
+    # varchar(64), so an over-long tag used to raise ActiveRecord::
+    # StatementInvalid at execution time — i.e. AFTER the approval.
+    it "refuses an over-long tag without parking anything" do
+      expect {
+        expect {
+          @r = call("system_sdwan_set_data_residency",
+                    federation_peer_id: peer.id, data_residency: "e" * 65)
+        }.not_to change(Ai::DeferredOperation, :count)
+      }.not_to change(Ai::ApprovalRequest, :count)
+
+      expect(@r[:success]).to be false
+      expect(@r[:error]).to match(/residency/i)
+      expect(peer.reload.data_residency).to eq("us-east")
     end
 
     it "rejects a peer belonging to a different account" do
       other_peer = create(:system_federation_peer, account: create(:account))
-      r = call("system_sdwan_set_data_residency", federation_peer_id: other_peer.id, data_residency: "eu-west")
+      expect {
+        @r = call("system_sdwan_set_data_residency", federation_peer_id: other_peer.id, data_residency: "eu-west")
+      }.not_to change(Ai::DeferredOperation, :count)
+
+      expect(@r[:success]).to be false
+    end
+
+    # The compliance write and its audit event share one transaction, so an
+    # audit sink that cannot record the change takes the WRITE back with it —
+    # an unaudited residency rewrite is not an outcome worth committing. Driven
+    # through the tool rather than the executor so the whole path is exercised:
+    # gate → executor → rollback → refusal surfaced to the caller.
+    it "rolls the residency write back when its audit event cannot be recorded" do
+      auto_approve_policy!
+      allow(::System::Fleet::EventBroadcaster).to receive(:emit!).and_return(nil)
+
+      r = call("system_sdwan_set_data_residency", federation_peer_id: peer.id, data_residency: "eu-west")
+
       expect(r[:success]).to be false
+      expect(peer.reload.data_residency).to eq("us-east"),
+                                            "an unaudited compliance write was committed"
+    end
+
+    # gate_failure_message unwrapping: a RecordInvalid raised INSIDE the
+    # executor reaches Ai::AutonomyGate flattened to
+    # "Gate evaluation failed: <message>", losing the field-level wording the
+    # inline arm used to return. The other gated arms unwrap it from
+    # result.exception; this one must too. Stubbed at the MODEL so the raise
+    # happens inside the executor's own call, which is the only place that
+    # produces the flattening.
+    it "unwraps an executor validation failure into field-level wording" do
+      auto_approve_policy!
+      allow_any_instance_of(::System::FederationPeer).to receive(:update!)
+        .and_raise(ActiveRecord::RecordInvalid.new(::System::FederationPeer.new.tap { |p|
+          p.errors.add(:data_residency, "is not a recognised region tag")
+        }))
+
+      r = call("system_sdwan_set_data_residency", federation_peer_id: peer.id, data_residency: "eu-west")
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("is not a recognised region tag")
+      expect(r[:error]).not_to include("Gate evaluation failed"),
+                               "the executor's field errors were flattened by the gate instead of unwrapped"
     end
   end
 
@@ -636,6 +774,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   # ─── Phase O6 — host bridges (O1) ────────────────────────────────────
 
   describe "system_sdwan_create_host_bridge" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let(:host) { sdwan_test_node_instance(node: node) }
 
     it "allocates a HostBridge for the given host (lightweight host → linux kind)" do
@@ -672,6 +816,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   end
 
   describe "system_sdwan_list_host_bridges" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let(:host) { sdwan_test_node_instance(node: node) }
 
     it "lists bridges scoped to the current account" do
@@ -711,6 +861,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   end
 
   describe "system_sdwan_activate_host_bridge" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let(:host) { sdwan_test_node_instance(node: node) }
     let!(:bridge) { ::Sdwan::HostBridgeAllocator.allocate!(host: host, account: account) }
 
@@ -732,6 +888,7 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "reports an error instead of silently no-op'ing on a removed bridge" do
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_call_original
       bridge.mark_removed!
       r = call("system_sdwan_activate_host_bridge", id: bridge.id)
       expect(r[:success]).to be false
@@ -743,6 +900,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   # ─── Phase O6 — OVN deployment + switches + ports + plan (O3) ────────
 
   describe "system_sdwan_create_ovn_deployment" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     it "creates an OvnDeployment with required endpoints" do
       r = call(
         "system_sdwan_create_ovn_deployment",
@@ -759,7 +922,11 @@ RSpec.describe Ai::Tools::SdwanTool do
       expect(deployment[:status]).to eq("pending")
     end
 
+    # IMP-97c7b4123d8f: run against the DEFAULT tier, not the hook's
+    # auto_approve — the claim is that an impossible payload is refused
+    # before the gate, which is only meaningful where a gate would park.
     it "rejects a malformed endpoint" do
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_call_original
       r = call(
         "system_sdwan_create_ovn_deployment",
         nb_db_endpoint: "not-a-real-endpoint",
@@ -770,11 +937,10 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "is per-account unique — second create surfaces a validation error" do
-      call(
-        "system_sdwan_create_ovn_deployment",
-        nb_db_endpoint: "tcp:nb1.example:6641",
-        sb_db_endpoint: "tcp:sb1.example:6642"
-      )
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_call_original
+      create(:sdwan_ovn_deployment, account: account,
+                                    nb_db_endpoint: "tcp:nb1.example:6641",
+                                    sb_db_endpoint: "tcp:sb1.example:6642")
       r2 = call(
         "system_sdwan_create_ovn_deployment",
         nb_db_endpoint: "tcp:nb2.example:6641",
@@ -785,6 +951,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   end
 
   describe "system_sdwan_create_ovn_logical_switch" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let!(:deployment) do
       ::Sdwan::OvnDeployment.create!(
         account: account,
@@ -810,6 +982,7 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "rejects an invalid name" do
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_call_original
       r = call(
         "system_sdwan_create_ovn_logical_switch",
         deployment_id: deployment.id,
@@ -835,6 +1008,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   end
 
   describe "system_sdwan_create_ovn_logical_switch_port" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let!(:deployment) do
       ::Sdwan::OvnDeployment.create!(
         account: account,
@@ -893,6 +1072,7 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "rejects an invalid kind via model validation" do
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_call_original
       r = call(
         "system_sdwan_create_ovn_logical_switch_port",
         logical_switch_id: switch.id,
@@ -909,6 +1089,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   # switch.mark_active!/port.mark_active!, so the documented create -> compile
   # sequence silently produced an empty plan with zero errors.
   describe "the documented create -> compile sequence" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let!(:deployment) do
       ::Sdwan::OvnDeployment.create!(
         account: account,
@@ -953,6 +1139,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   end
 
   describe "system_sdwan_activate_ovn_logical_switch" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let!(:deployment) do
       ::Sdwan::OvnDeployment.create!(
         account: account,
@@ -991,6 +1183,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   end
 
   describe "system_sdwan_activate_ovn_logical_switch_port" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     let!(:deployment) do
       ::Sdwan::OvnDeployment.create!(
         account: account,
@@ -1157,6 +1355,12 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     describe "system_sdwan_delete_ovn_logical_switch_port" do
+      # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+      # semantics, not the gate, so they force the gate's :proceed branch and
+      # keep asserting exactly what they always did. The parked branch and the
+      # tier each category carries are covered by
+      # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+      before { auto_approve_policy! }
       it "prunes a single port without touching the switch" do
         r = call("system_sdwan_delete_ovn_logical_switch_port", port_id: port.id)
         expect(r[:success]).to be true
@@ -1177,6 +1381,12 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     describe "system_sdwan_delete_ovn_deployment" do
+      # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+      # semantics, not the gate, so they force the gate's :proceed branch and
+      # keep asserting exactly what they always did. The parked branch and the
+      # tier each category carries are covered by
+      # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+      before { auto_approve_policy! }
       it "destroys the deployment without raising (model has no name column)" do
         r = call("system_sdwan_delete_ovn_deployment", deployment_id: deployment.id)
         expect(r[:success]).to be true
@@ -1214,6 +1424,12 @@ RSpec.describe Ai::Tools::SdwanTool do
   # ─── Phase O6 — IPFIX collectors (O5) ────────────────────────────────
 
   describe "system_sdwan_create_ipfix_collector" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     it "creates an IPFIX collector with defaults" do
       r = call(
         "system_sdwan_create_ipfix_collector",
@@ -1255,13 +1471,20 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "rejects duplicate names within the same account" do
-      call("system_sdwan_create_ipfix_collector", name: "dup", host: "10.0.0.52")
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_call_original
+      create(:sdwan_ipfix_collector, account: account, name: "dup", host: "10.0.0.52")
       r = call("system_sdwan_create_ipfix_collector", name: "dup", host: "10.0.0.53")
       expect(r[:success]).to be false
     end
   end
 
   describe "system_sdwan_list_ipfix_collectors" do
+    # IMP-97c7b4123d8f gated this arm. These examples pin the WRITE
+    # semantics, not the gate, so they force the gate's :proceed branch and
+    # keep asserting exactly what they always did. The parked branch and the
+    # tier each category carries are covered by
+    # spec/services/ai/tools/sdwan_o6_write_gating_spec.rb.
+    before { auto_approve_policy! }
     it "lists collectors scoped to the current account" do
       call("system_sdwan_create_ipfix_collector", name: "list-1", host: "10.0.0.60")
       call("system_sdwan_create_ipfix_collector", name: "list-2", host: "10.0.0.61")
@@ -1600,6 +1823,85 @@ RSpec.describe Ai::Tools::SdwanTool do
       }.not_to change(Ai::DeferredOperation, :count)
       expect(@result[:success]).to be false
       expect(foreign.reload.revoked?).to be(false)
+    end
+  end
+
+  # IMP-343163bf37a4 — grant CREATION is the inverse of the gated revoke, and
+  # it reached the same state ungated. `find_or_initialize_by(user_id:)` means
+  # a create against an already-revoked user REUSES that row and forces it back
+  # to active with revoked_at nil — so the exact state an operator approval was
+  # required to leave could be re-entered with no gate at all, on either
+  # surface. `sdwan.access_grant_create` was already seeded and registered; it
+  # simply had no executor and no gate site.
+  #
+  # The category is chosen from the STORED row: a fresh grant is additive
+  # (sdwan.access_grant_create, seeded notify_and_proceed) while reusing a
+  # revoked row is a reinstatement (sdwan.access_grant_reactivate, seeded
+  # require_approval like the revoke it undoes). Gating both under `create`
+  # would not have gated the resurrection at all — Ai::AutonomyGate runs
+  # notify_and_proceed inline, exactly as auto_approve.
+  describe "system_sdwan_create_access_grant approval gate (IMP-343163bf37a4)" do
+    let(:network) { create(:sdwan_network, account: account) }
+    let(:member)  { create(:user, account: account) }
+
+    it "does not resurrect a revoked grant inline" do
+      grant  = create(:sdwan_access_grant, account: account, network: network, user: member)
+      device = create(:sdwan_user_device, access_grant: grant)
+      grant.revoke!(reason: "offboarded")
+
+      r = call("system_sdwan_create_access_grant", network_id: network.id, user_id: member.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:pending]).to be true
+      expect(grant.reload.revoked?).to be(true),
+                                       "MCP create_access_grant resurrected a revoked grant without a gate"
+      expect(grant.revoked_at).to be_present
+      expect(device.reload.revoked_at).to be_present
+    end
+
+    it "files the reinstatement under the reactivate category, not create" do
+      grant = create(:sdwan_access_grant, account: account, network: network, user: member)
+      grant.revoke!(reason: "offboarded")
+
+      call("system_sdwan_create_access_grant", network_id: network.id, user_id: member.id, tags: %w[contractor])
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred).to be_present, "no deferred operation was parked — the create was applied inline"
+      expect(deferred.action_category).to eq("sdwan.access_grant_reactivate")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::ReactivateAccessGrant")
+
+      deferred.execute_now!
+
+      expect(grant.reload.status).to eq("active")
+      expect(grant.revoked_at).to be_nil
+      expect(grant.tags).to eq(%w[contractor])
+    end
+
+    it "files a first-time grant under the additive create category" do
+      auto_approve_policy!
+
+      r = call("system_sdwan_create_access_grant", network_id: network.id, user_id: member.id, tags: %w[vpn])
+
+      expect(r[:success]).to be true
+      created = ::Sdwan::AccessGrant.find_by(sdwan_network_id: network.id, user_id: member.id)
+      expect(created).to be_present
+      expect(created.status).to eq("active")
+      expect(created.tags).to eq(%w[vpn])
+      expect(created.account_id).to eq(account.id)
+
+      deferred = Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred.action_category).to eq("sdwan.access_grant_create")
+      expect(deferred.executor_class).to eq("Sdwan::Executors::CreateAccessGrant")
+    end
+
+    it "refuses a user from another account" do
+      auto_approve_policy!
+      outsider = create(:user)
+
+      r = call("system_sdwan_create_access_grant", network_id: network.id, user_id: outsider.id)
+
+      expect(r[:success]).to be false
+      expect(::Sdwan::AccessGrant.where(user_id: outsider.id)).to be_empty
     end
   end
 

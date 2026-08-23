@@ -32,7 +32,14 @@ RSpec.describe "Api::V1::System::Sdwan::Networks", type: :request do
   end
 
   describe "POST /api/v1/system/sdwan/networks" do
+    # IMP-051f3811ac60 gated the create; this example is about the WRITE
+    # (allocator, defaults, response shape), so it forces the :proceed branch.
+    # The gate-routing contract itself lives in networks_create_gating_spec.
     it "creates a network with auto-allocated /64" do
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+        { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+      )
+
       post "/api/v1/system/sdwan/networks",
            params: { network: { name: "edge-overlay", description: "perimeter" } }.to_json,
            headers: headers.merge("Content-Type" => "application/json")
@@ -109,6 +116,45 @@ RSpec.describe "Api::V1::System::Sdwan::Networks", type: :request do
       patch_update(as: reader)
 
       expect(response).to have_http_status(:forbidden)
+    end
+
+    # IMP-1836bb0021b1 — two nits in the hand-inlined validate→gate→execute
+    # dance, both fixed once in Ai::GatedActions#gate_update!.
+    #
+    # (1) THE CARD NAMED THE OLD VALUE. The description interpolated
+    # @network.name AFTER the reload that discards the un-gated in-memory
+    # change, so a rename asked an approver to authorise "Update SDWAN network
+    # 'orig'" with no sign of what it would become — the one fact the approval
+    # is actually about.
+    it "labels the approval card with the INCOMING name, not the current one" do
+      payload.replace({ network: { name: "renamed" } })
+
+      patch_update
+
+      deferred = ::Ai::DeferredOperation.order(created_at: :desc).first
+      expect(deferred.description).to include("renamed"),
+                                      "the approval card named the pre-change value"
+    end
+
+    # (2) FIELD ERRORS WERE LOST ON THE PROCEED PATH. AutonomyGate#evaluate
+    # rescues StandardError and returns :blocked with "Gate evaluation failed",
+    # so a RecordInvalid raised by the executor — a race, or a DB constraint no
+    # model validation mirrors — reached the client as a generic 422 with no
+    # details.errors, where the old inline update had returned them.
+    it "returns field-level errors when the executor's write is invalid" do
+      auto_approve_policy!
+      allow(::Sdwan::Executors::UpdateNetwork).to receive(:execute) do
+        invalid = ::Sdwan::Network.new
+        invalid.errors.add(:name, "has already been taken")
+        raise ActiveRecord::RecordInvalid, invalid
+      end
+
+      patch_update
+
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(json_response["details"]).to be_present,
+                                          "the client lost the field-level errors to a generic gate 422"
+      expect(json_response.dig("details", "errors").to_s).to match(/already been taken/)
     end
 
     # The finding: this wrote the network inline behind the permission check, so

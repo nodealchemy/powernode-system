@@ -108,7 +108,7 @@ fleet_policies = {
   # dedup TTL self-throttles repeat firings → notify_and_proceed.
   "system.federation_peer_remediate" => "notify_and_proceed",
 
-  # Phase 3 (SDWAN autonomous remediation) — the 7 system.sdwan_* actions below
+  # Phase 3 (SDWAN autonomous remediation) — the 6 system.sdwan_* actions below
   # were MOVED here from system_sdwan_manager_agent.rb. Like
   # federation_peer_remediate, they fire from FleetAutonomyService::SENSORS,
   # whose tick! gates as the "Fleet Autonomy" agent — so gate_action! resolves
@@ -117,13 +117,38 @@ fleet_policies = {
   # initiated sdwan.* CRUD policies stay on SDWAN Manager (gated via
   # Ai::AutonomyGate as that agent). Autonomy levels preserved from the prior
   # SDWAN Manager seed.
+  #
+  # IMP-17bc5546009a (2026-08-21): a 7th, system.sdwan_route_policy_audit, was
+  # seeded here too but DELETED outright — no sensor emitted it, no
+  # DecisionEngine binding routed to it, and no executor carried the category,
+  # so it was a permanently no-op auto_approve row. A real compiled-policy-vs-
+  # FRR-observed drift sensor is a deliberate future build, not something to
+  # back into because this row existed; see FleetAutonomyService#dedup_key_for
+  # spec for the pinned removal.
   "system.sdwan_peer_remediate"        => "notify_and_proceed",
+  # NOTE: no signal routes here since IMP-df40782d3f4d moved
+  # system.sdwan_credential_expiring to system.sdwan_credential_refresh
+  # below. Kept seeded + registered (subset invariant allows a category
+  # without a producer) so live rows stay operator-tunable and a future
+  # true key-TTL lane inherits its recorded intent.
   "system.sdwan_key_rotate"            => "auto_approve",
   "system.sdwan_failover"              => "require_approval",
   "system.sdwan_user_device_revoke"    => "require_approval",
   "system.sdwan_bgp_session_remediate" => "notify_and_proceed",
   "system.sdwan_vip_failover"          => "require_approval",
-  "system.sdwan_route_policy_audit"    => "auto_approve",
+
+  # IMP-df40782d3f4d — system.sdwan_credential_expiring routes here now:
+  # a server-side MembershipCredential re-issue (SdwanCredentialRefreshExecutor
+  # → MembershipCredentialSigner.ensure_fresh!), NOT a key rotation — rotating
+  # the WG key revoked the active pubkey and cut the still-working tunnel of
+  # exactly the not-polling peer whose MC was aging out. notify_and_proceed:
+  # the refresh itself is benign and idempotent, but an MC can only near
+  # expiry when the agent has stopped pulling, and the operator should see
+  # that degraded control channel rather than have it silently patched over.
+  # Seeded HERE (not SDWAN Manager) for the same mechanical reason as the 7
+  # actions above — the sensor fires from FleetAutonomyService::SENSORS,
+  # which gates as THIS agent.
+  "system.sdwan_credential_refresh"    => "notify_and_proceed",
   # IMP-c7d663f24a0b — SdwanServiceHealthSensor (sdwan_service_silent +
   # sdwan_portmap_orphaned). notify_and_proceed: notify-level first, no
   # auto-remediation until the signal quality is proven in the field.
@@ -152,6 +177,83 @@ fleet_policies = {
   # still actuate elsewhere), so a new notify-only category must be added by
   # hand or it ships this failure mode.
   "system.sdwan_service_health_investigate" => "notify_and_proceed",
+
+  # IMP-57e9a90598ee — SdwanOvnDeploymentHealthSensor (ovn deployment
+  # degraded / activation stalled). Seeded HERE because the sensor fires from
+  # FleetAutonomyService::SENSORS, which gates as THIS agent (see the
+  # sdwan_service_health_investigate note above — a policy on SDWAN Manager
+  # would be invisible to this tick and every signal would die at the gate).
+  #
+  # notify_and_proceed, never auto_approve: the lane has NO applier by design
+  # — the degraded component is the operator's own OVN control plane (northd,
+  # NB/SB DBs), which the platform does not provision — so "proceed" means
+  # "notify the operator" and nothing else. Also listed in
+  # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES so the persistent
+  # fingerprint cannot manufacture false remediation_stuck escalations.
+  "system.sdwan_ovn_deployment_investigate" => "notify_and_proceed",
+
+  # IMP-2f34679b6b73 — SdwanBgpSessionHealthSensor's attribution family (a BGP
+  # report the platform could not attribute to the network it arrived under, or
+  # one the agent disclaimed). Seeded HERE for the same reason as the two
+  # categories above: the sensor fires from FleetAutonomyService::SENSORS and
+  # gates as THIS agent, so a policy anywhere else is invisible to the tick and
+  # every signal dies at the gate.
+  #
+  # notify_and_proceed, never auto_approve: the condition is an ABSENCE of a
+  # measurement, and the whole point of surfacing it is that an operator learns
+  # the host is running an agent that polls FRR without naming a VRF. There is
+  # no applier — "proceed" means "notify" — so the category is also in
+  # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
+  "system.sdwan_bgp_observation_investigate" => "notify_and_proceed",
+
+  # IMP-da1b772c2596 — SdwanApplyHealthSensor (sdwan_apply_failed +
+  # sdwan_apply_not_measured): the agent's OBSERVED per-subsystem apply
+  # outcome, which nothing on the server consumed before this. Seeded HERE for
+  # the same mechanical reason as the three categories above — the sensor
+  # fires from FleetAutonomyService::SENSORS and gates as THIS agent, so a
+  # policy on SDWAN Manager would be invisible to the tick and every signal
+  # would die at the gate.
+  #
+  # notify_and_proceed, never auto_approve: there is NO applier and can be
+  # none — a failed apply is a kernel-side refusal the agent already retries
+  # on every tick, so re-serving the same config remediates nothing. "Proceed"
+  # means "notify the operator". Also in
+  # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because a
+  # persistently failing applier holds one fingerprint indefinitely.
+  "system.sdwan_apply_investigate" => "notify_and_proceed",
+
+  # IMP-7034199a5a19 — SdwanUserDeviceConfigStalenessSensor. An issued user
+  # device's config is rendered once and never re-pulled, so a VIP, a peer
+  # lan_subnet, or a federation prefix added afterwards is missing from every
+  # config already in the field. Seeded HERE for the same mechanical reason as
+  # the categories above — the sensor fires from FleetAutonomyService::SENSORS
+  # and gates as THIS agent, so a policy on SDWAN Manager would be invisible to
+  # the tick and every signal would die at the gate.
+  #
+  # notify_and_proceed, never auto_approve: there is NO applier and can be none
+  # — the drifted artefact is a text file on a user's laptop. "Proceed" means
+  # "notify the operator", who re-issues the device. Also in
+  # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
+  # fingerprint stands until a human acts.
+  "system.sdwan_user_device_config_investigate" => "notify_and_proceed",
+
+  # IMP-3855ff9908f2 — ModuleVerifyFailedSensor (module_verify_failed +
+  # module_verify_not_measured): the agent's OBSERVED answer to "does this
+  # node actually provide what the module declares", which nothing produced
+  # before this. Seeded HERE for the same mechanical reason as the categories
+  # above — the sensor fires from FleetAutonomyService::SENSORS and gates as
+  # THIS agent, so a policy anywhere else is invisible to the tick and every
+  # signal would die at the gate.
+  #
+  # notify_and_proceed, never auto_approve: there is NO applier and can be
+  # none — a failed probe means the node's filesystem or PATH disagrees with
+  # the manifest (a wrong artifact, a shadowing package, a profile script
+  # reordering PATH), and re-serving the same module fixes none of them. In
+  # the gitleaks v4 incident the artifact the platform would re-serve was the
+  # empty one. "Proceed" means "notify the operator". Also in
+  # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
+  # fingerprint stands until a human changes an artifact or an image.
+  "system.module_verify_investigate" => "notify_and_proceed",
 
   # Read/notify
   "system.module_assign"           => "notify_and_proceed",
@@ -215,7 +317,7 @@ fleet_policies = {
   # IMP-4019664a524b — CapabilityGapSensor (in FleetAutonomyService::SENSORS,
   # so it gates as THIS agent, same reason as the three above). require_approval
   # is the disposition, not a placeholder: the gap's only remediation is
-  # AUTHORING a module, which must pass the human R1/R2/R3 reuse gate
+  # AUTHORING a module, which must pass the R1/R2/R3 reuse gate
   # (docs/runbooks/module-authoring.md Phase 0), so the operator queue IS the
   # destination. It also keeps #decide at :pending, which RemediationValidator
   # never snapshots — a gap that stands until someone ships a module would

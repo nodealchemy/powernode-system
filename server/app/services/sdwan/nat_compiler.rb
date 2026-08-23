@@ -90,13 +90,26 @@ module Sdwan
       @network.id.to_s.delete("-").first(8)
     end
 
-    # nft DNAT rule. We bracket IPv6 addresses to disambiguate the port
-    # separator, matching the same `dnat to [<addr>]:<port>` syntax nft
-    # accepts on the wire. v4 addresses don't need the brackets but
-    # accept them too, so we always bracket for consistency.
+    # nft DNAT rule. IPv6 addresses are bracketed to disambiguate the port
+    # separator, matching the `dnat to [<addr>]:<port>` syntax nft accepts on
+    # the wire; v4 addresses are emitted bare.
+    #
+    # The comment here used to claim "we always bracket for consistency",
+    # which the code has never done — it brackets conditionally, and the v4
+    # spec (`dnat to 192.0.2.50:5432`) pins the bare form. Corrected in
+    # IMP-9537a74e50fa along with routing the expression through the shared
+    # Sdwan::HostPort.
+    #
+    # Unlike the other HostPort consumers, an already-bracketed target is NOT
+    # reachable here: target_addr is PortMapping#resolved_target_address, which
+    # is either a peer's assigned_address — machine-derived by
+    # Sdwan::PrefixAllocator, never operator-settable — or a virtual IP's cidr,
+    # whose format validation (/\A[0-9a-f.:]+\/\d{1,3}\z/i) excludes brackets.
+    # The shared implementation's double-bracket guard is therefore inert on
+    # this path; sharing it is about having one expression, not about a live
+    # bug at this site.
     def build_rule(protocol, listen_port, target_addr, target_port)
-      bracketed = target_addr.include?(":") ? "[#{target_addr}]" : target_addr
-      "    #{protocol} dport #{listen_port} dnat to #{bracketed}:#{target_port}"
+      "    #{protocol} dport #{listen_port} dnat to #{::Sdwan::HostPort.join(target_addr, target_port)}"
     end
 
     # Increment 6 hardening: guard lines for one mapping, in the fixed

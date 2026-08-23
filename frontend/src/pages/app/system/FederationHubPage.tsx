@@ -202,7 +202,7 @@ const MonitorTab: React.FC<TabProps> = ({ hasPermission }) => {
         <Section
           icon={<ShieldCheck className="w-4 h-4" />}
           title="Governance"
-          subtitle="Federation governance findings (expired trust, stale peerings)."
+          subtitle="Federation governance findings: trust expiry, stale peerings, prefix overlap, cert expiry, peer health and drift, migration chains."
         >
           <FederationGovernancePanel />
         </Section>

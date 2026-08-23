@@ -16,7 +16,7 @@ type fakeBootStrategy struct {
 	err error
 }
 
-func (f *fakeBootStrategy) Name() string                                   { return "fake-boot" }
+func (f *fakeBootStrategy) Name() string                                  { return "fake-boot" }
 func (f *fakeBootStrategy) Discover(_ context.Context) (*Identity, error) { return f.id, f.err }
 
 func TestClaimStrategy_PassthroughWhenTokenAlreadyPresent(t *testing.T) {
@@ -284,7 +284,7 @@ func TestClaimStrategy_PollAfterSecondsHonored(t *testing.T) {
 		if pollCount < 2 {
 			_ = json.NewEncoder(w).Encode(claimResponseEnvelope{
 				Success: true,
-				Data: claimResponse{Status: "pending", PollAfterSeconds: 0},
+				Data:    claimResponse{Status: "pending", PollAfterSeconds: 0},
 			})
 			return
 		}

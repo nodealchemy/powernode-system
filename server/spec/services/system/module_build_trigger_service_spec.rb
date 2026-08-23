@@ -106,6 +106,25 @@ RSpec.describe System::ModuleBuildTriggerService do
       expect(batch.trigger).to eq("push")
       expect(batch.metadata["plan"]).to contain_exactly({ "module" => "mod-a", "oci_ref" => "headsha1" })
     end
+
+    # This is the ONLY automated trigger. A batch the orchestrator REFUSED at
+    # dispatch (System::CoreMirrorPreflight) that reads back as a clean
+    # dispatch is a protection that looks present and is not — the exact shape
+    # the core-provenance work exists to remove.
+    it "carries a refused dispatch out to the caller instead of reporting a clean one" do
+      stub_plan(modules: %w[powernode-hub-backend])
+      allow(::System::NativeModuleBuildOrchestrator).to receive(:dispatch!) do |batch:|
+        batch.fail!("the build would clone core from github.com/nodealchemy/powernode-platform, whose HEAD is b3bc690")
+        System::NativeModuleBuildOrchestrator::Result.new(
+          ok?: false, dispatched: 0, queued: 0, succeeded: 0, retried: 0, failed: 1
+        )
+      end
+
+      result = described_class.trigger!(base_sha: "base0000", head_sha: "headsha1234567")
+
+      expect(result.error).to include("github.com/nodealchemy/powernode-platform")
+      expect(result.batch.status).to eq("failed")
+    end
   end
 
   describe "error handling" do

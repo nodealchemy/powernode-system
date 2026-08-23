@@ -25,8 +25,8 @@ module System
   # filter them out at this layer — hiding rows from an account-wide view is the
   # same defect class as by_agent silently dropping agents. The System modal
   # skips the "other" bucket on its own side, which it can do safely only
-  # because autonomy_domain_pivot_spec.rb pins that no seeded system category
-  # ever reaches it.
+  # because autonomy_domain_pivot_spec.rb pins that no registered system./sdwan.
+  # category ever reaches it.
   module AutonomyActions
     extend ActiveSupport::Concern
 
@@ -69,26 +69,36 @@ module System
 
     # ORDER IS SIGNIFICANT. `by_domain_pivot` resolves with `find`, so the FIRST
     # matching entry wins and any prefix that EXTENDS another entry's prefix has
-    # to be declared before it. Two such pairs exist today:
+    # to be declared before it. Three such pairs exist today:
     #
     #   system.instance_pool_           ⊂ system.instance_  (node_lifecycle)
     #   system.module_critical_upgrade_ ⊂ system.module_    (node_lifecycle)
+    #   system.sdwan_federation_compose ⊂ system.sdwan_     (topology)
     #
-    # Both were mis-filed until this map was ordered specific-first: the whole
-    # `instance_pool` domain was unreachable, and the CVE Responder's
+    # The first two were mis-filed until this map was ordered specific-first:
+    # the whole `instance_pool` domain was unreachable, and the CVE Responder's
     # `system.module_critical_upgrade_ready` landed under node_lifecycle. Note
     # that category is NOT prefixed `system.cve_`, so moving "cve" ahead of
     # "node_lifecycle" does not on its own file it correctly — the specific
     # prefix has to be listed too.
     #
-    # Every category the extension's agent seeds create a policy row for must
-    # match some entry here; "other" is the catch-all for rows seeded outside
-    # this extension. spec/controllers/api/v1/system/autonomy_domain_pivot_spec.rb
-    # pins both properties (nothing seeded reaches "other"; no declared domain is
-    # left unreachable) so a new family or a reorder cannot regress silently.
+    # Every category the extension REGISTERS (lib/powernode_system/engine.rb,
+    # the same registry #update below admits) must match some entry here — not
+    # just the seeded ones: a registered-but-unseeded category reaches this
+    # pivot the moment an operator PATCHes a policy row for it. "other" is the
+    # catch-all for rows whose category this extension does not own.
+    # spec/controllers/api/v1/system/autonomy_domain_pivot_spec.rb pins both
+    # properties (no registered system./sdwan. category reaches "other"; no
+    # declared domain is left unreachable) so a new family or a reorder cannot
+    # regress silently.
     DOMAIN_PREFIXES = {
       "instance_pool"     => %w[system.instance_pool_],
       "cve"               => %w[system.cve_ system.module_critical_upgrade_],
+      # The System Topology Designer's composer trio — registered but
+      # deliberately unseeded (rows arrive only via #update). Kept together as
+      # one family; declared BEFORE "sdwan" because system.sdwan_federation_compose
+      # extends system.sdwan_ and first match wins.
+      "topology"          => %w[system.sdwan_federation_compose system.multi_tenant_isolation system.service_discovery_compose],
       "sdwan"             => %w[system.sdwan_ sdwan. system.federation_peer_],
       "container_runtime" => %w[system.runtime_],
       "disk_image"        => %w[system.disk_image_],
@@ -96,6 +106,9 @@ module System
       "packages"          => %w[system.package_module. system.package_repository.],
       "architecture"      => %w[system.architecture.],
       "storage"           => %w[system.storage_],
+      # DELIBERATE: project.* is core-owned (Ai::InterventionPolicy::STATIC_CATEGORIES). Claiming it here is a
+      # display choice for this account-wide view, not a core→extension dependency (that arrow points the
+      # permitted way) — do NOT "fix" by filtering core rows out. Ruled 2026-08-23 (IMP-fa63f411633b).
       "project"           => %w[project.],
       "node_lifecycle"    => %w[system.cert_ system.acme_cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.capability_gap_ system.observation system.task. system.template_closure_ system.node_boot_image_]
     }.freeze

@@ -274,6 +274,23 @@ SKILLS_DATA = [
     PROMPT
   },
   {
+    name: "SDWAN Credential Refresh",
+    slug: "system-sdwan-credential-refresh",
+    description: "Re-issue an SDWAN peer's expiring membership credential server-side, without touching the WireGuard keypair",
+    category: "sre_observability",
+    subdomain: "sdwan",
+    executor: "System::Ai::Skills::SdwanCredentialRefreshExecutor",
+    tags: %w[sdwan credentials membership refresh],
+    system_prompt: <<~PROMPT.strip
+      Refresh an SDWAN peer's expiring membership credential.
+      Inputs: peer_id, dry_run.
+      Re-issues the MC server-side via the constellation signer so a fresh
+      envelope is ready for the agent's next pull. Never rotates WireGuard
+      keys — key rotation is drift/compromise remediation, not credential
+      refresh.
+    PROMPT
+  },
+  {
     name: "SDWAN VIP Failover",
     slug: "system-sdwan-vip-failover",
     description: "Promote the next failover candidate of a silent-holder Sdwan::VirtualIp. Anycast VIPs return informational only.",

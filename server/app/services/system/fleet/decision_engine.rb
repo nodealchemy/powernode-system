@@ -231,6 +231,34 @@ module System
           skill: nil,
           action_category: "system.observation"
         },
+        # IMP-2f34679b6b73 — SdwanBgpSessionHealthSensor's attribution family.
+        # The writer now refuses to file a BGP session it cannot attribute to
+        # the network it was reported under (a host-wide FRR polled without a
+        # VRF answers for one routing context and was replayed under every
+        # iBGP network the host belongs to). That refusal is the honest
+        # answer, and it is also an ABSENCE, so it has to be routed somewhere
+        # an operator sees it or the fix is silent.
+        #
+        # skill: nil deliberately — SdwanBgpSessionRemediateExecutor restarts
+        # FRR, and restarting FRR does not make an unscoped poll scoped. The
+        # repair is rolling out an agent that names the VRF.
+        #
+        # NOT system.observation: that category is seeded auto_approve, which
+        # collects for dashboards without reaching an operator (see the
+        # sdwan_service_silent note above for the same trap). Its own
+        # notify_and_proceed category instead, which is therefore also listed
+        # in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES — this
+        # lane proceeds but never actuates, and without that membership the
+        # standing fingerprint would manufacture a false
+        # fleet.remediation_stuck escalation.
+        "system.sdwan_bgp_observation_unattributable" => {
+          skill: nil,
+          action_category: "system.sdwan_bgp_observation_investigate"
+        },
+        "system.sdwan_bgp_observation_not_measured" => {
+          skill: nil,
+          action_category: "system.sdwan_bgp_observation_investigate"
+        },
         # IMP-c7d663f24a0b — SdwanServiceHealthSensor. Both kinds are
         # notify-level with skill: nil, deliberately: the sensor's whole point
         # is that the overlay is HEALTHY and the workload is not, so every
@@ -256,6 +284,102 @@ module System
         "system.sdwan_portmap_orphaned" => {
           skill: nil,
           action_category: "system.sdwan_service_health_investigate"
+        },
+        # IMP-57e9a90598ee — SdwanOvnDeploymentHealthSensor. Both kinds are
+        # notify-level with skill: nil under ONE dedicated category, the
+        # SdwanServiceHealthSensor shape and for the same reason: the fleet
+        # seed maps this category to notify_and_proceed so the signal reaches
+        # an operator, while system.observation would auto_approve it into
+        # silence. No executor is bound by design — the degraded/stalled
+        # component is the operator's OVN control infrastructure (northd,
+        # NB/SB DBs), which the platform does not provision and must not
+        # blindly poke; the category is therefore also listed in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
+        "system.sdwan_ovn_deployment_degraded" => {
+          skill: nil,
+          action_category: "system.sdwan_ovn_deployment_investigate"
+        },
+        "system.sdwan_ovn_activation_stalled" => {
+          skill: nil,
+          action_category: "system.sdwan_ovn_deployment_investigate"
+        },
+        # IMP-da1b772c2596 — SdwanApplyHealthSensor. The agent's OBSERVED
+        # apply outcome, which nothing on the server read until now: a node
+        # whose nftables/vrf/bridge apply failed every tick was scored as
+        # healthy because the platform had SERVED the config successfully.
+        #
+        # skill: nil, and there is no safe applier to name. A failed apply is
+        # a kernel-side refusal the agent already retries on every tick, so
+        # re-serving the same config remediates nothing; the repair is an
+        # image or a config a person has to change. Same category for both
+        # kinds because they share one disposition (reach an operator) while
+        # keeping distinct kinds and fingerprints so a failing applier and an
+        # unmeasured fleet stay separable.
+        #
+        # DO NOT collapse to system.observation — the fleet seed maps that to
+        # auto_approve, which would file the signal for dashboards and reach
+        # NO operator. Listed in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES for the
+        # standing-fingerprint reason recorded there.
+        "system.sdwan_apply_failed" => {
+          skill: nil,
+          action_category: "system.sdwan_apply_investigate"
+        },
+        "system.sdwan_apply_not_measured" => {
+          skill: nil,
+          action_category: "system.sdwan_apply_investigate"
+        },
+        # IMP-7034199a5a19 — SdwanUserDeviceConfigStalenessSensor. A user
+        # device's WireGuard config is rendered ONCE, at download time, and the
+        # bootstrap URL is 410 immediately after; node peers re-pull the same
+        # surface every tick. So a VIP, a peer lan_subnet, or a federation
+        # prefix added afterwards is missing from every previously-issued
+        # client's AllowedIPs — silently, since AllowedIPs is a routing filter
+        # and not a label.
+        #
+        # skill: nil, and NO remediation_action is named. The drifted artefact
+        # is a text file on a user's laptop: the platform cannot reach it, and
+        # binding the nearest side-effectful sdwan_* executor would act on
+        # plumbing that is fine. The repair is a person re-issuing the device.
+        #
+        # DO NOT collapse to system.observation — the fleet seed maps that to
+        # auto_approve, which files the signal for dashboards and reaches NO
+        # operator, which is the entire point of this lane. Listed in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES for the
+        # standing-fingerprint reason recorded there.
+        "system.sdwan_user_device_config_stale" => {
+          skill: nil,
+          action_category: "system.sdwan_user_device_config_investigate"
+        },
+        # IMP-3855ff9908f2 — ModuleVerifyFailedSensor. The manifest's `verify:`
+        # block asserts a RESOLVED PATH (never mere existence) in BOTH a login
+        # and a non-login shell; the agent reports what the node actually
+        # resolved, and this lane is what carries a mismatch to a person.
+        #
+        # skill: nil, and there is no safe applier to name. A failed probe
+        # means the node's filesystem or PATH is not what the manifest says:
+        # a wrong artifact, a shadowing package, a profile script reordering
+        # PATH. Re-serving the same module changes none of those — in the
+        # gitleaks v4 incident the artifact the platform would re-serve was
+        # the EMPTY one that caused the failure. The repair is a person
+        # changing an artifact or an image.
+        #
+        # Same category for both kinds because they share one disposition
+        # (reach an operator), while keeping distinct kinds and fingerprints
+        # so a proven failure and an unverified fleet stay separable.
+        #
+        # DO NOT collapse to system.observation — the fleet seed maps that to
+        # auto_approve, which files the signal for dashboards and reaches NO
+        # operator. Listed in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES for the
+        # standing-fingerprint reason recorded there.
+        "system.module_verify_failed" => {
+          skill: nil,
+          action_category: "system.module_verify_investigate"
+        },
+        "system.module_verify_not_measured" => {
+          skill: nil,
+          action_category: "system.module_verify_investigate"
         },
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
@@ -328,13 +452,22 @@ module System
               reason: signal.dig(:payload, "reason") }
           }
         },
-        # Audit F3-07 — kinds for the previously-unregistered sensors.
-        # Expiring SDWAN membership credential → rotate the peer keypair
-        # (same executor + auto-execute shape as sdwan_peer_drift).
+        # Audit F3-07 registered this kind; IMP-df40782d3f4d rebound it.
+        # An expiring MembershipCredential means the agent is NOT pulling
+        # (TopologyCompiler's ensure_fresh! refreshes the MC on every
+        # compile), so the credential is the thing to refresh — server-side
+        # via the constellation signer, ready for the agent's next pull.
+        # The previous binding rotated the WireGuard keypair
+        # (SdwanPeerRemediateExecutor under system.sdwan_key_rotate,
+        # auto_approve): that does nothing for the MC but REVOKES the
+        # active key, so hubs drop the old pubkey on their next compile and
+        # the still-connected, not-yet-polling peer loses a WORKING tunnel.
+        # Key rotation stays bound to the drift signal
+        # (system.sdwan_peer_drift above).
         "system.sdwan_credential_expiring" => {
-          skill: ::System::Ai::Skills::SdwanPeerRemediateExecutor,
-          action_category: "system.sdwan_key_rotate",
-          side_effectful: true, # rotates the peer keypair
+          skill: ::System::Ai::Skills::SdwanCredentialRefreshExecutor,
+          action_category: "system.sdwan_credential_refresh",
+          side_effectful: true, # issues + supersedes a membership credential
           dry_run_supported: true,
           input_mapper: ->(signal) { { peer_id: signal.dig(:payload, "peer_id") } }
         },
@@ -386,7 +519,7 @@ module System
         # reached anyone.
         #
         # ROUTE, DON'T REMEDIATE. Closing a gap means AUTHORING a module,
-        # which must pass the human R1/R2/R3 reuse gate
+        # which must pass the R1/R2/R3 reuse gate
         # (docs/runbooks/module-authoring.md Phase 0) — automation that made
         # module creation cheap would make module SPRAWL cheap. So: no skill
         # (nothing to plan; the payload already names the capability, the
@@ -518,7 +651,10 @@ module System
         # re-running the same futile action is noise, not remediation. Skip
         # the (equally futile) skill re-plan, surface ONE remediation_stuck
         # event, and force the gate to require_approval so an operator
-        # decides. ApprovalRequest dedup keeps this to one open approval.
+        # decides. ApprovalRequest dedup keeps this to one open approval, and
+        # (IMP-01a025b3) that open row is what gives the lane a terminal state:
+        # while it stands, escalate_stuck_remediation! goes quiet instead of
+        # re-emitting and re-gating.
         streak = ineffective_streak(signal)
         if streak >= STUCK_STREAK_THRESHOLD
           decision = escalate_stuck_remediation!(signal, binding, streak)
@@ -750,6 +886,56 @@ module System
       # engine's fingerprint dedup) and gates with a forced require_approval —
       # the resolved policy already proved itself ineffective N times.
       def escalate_stuck_remediation!(signal, binding, streak)
+        metadata = skill_metadata_payload(signal, nil).merge("remediation_stuck_streak" => streak)
+
+        # IMP-01a025b3: the escalation has a TERMINAL STATE. Without one it had
+        # none: this lane skips both the skill and the remediation, and
+        # RemediationValidator only scores decisions that PROCEEDED, so no fresh
+        # outcome is ever recorded for the fingerprint and the streak stays
+        # pinned at the threshold forever. The trio below (HIGH event + forced
+        # require_approval + decision.pending) therefore re-fired every dedup
+        # TTL for as long as the condition stood. ApprovalRequest dedup already
+        # collapsed those to ONE open row — nothing READ that row before
+        # re-escalating.
+        #
+        # Skipping gate_action! is the load-bearing half, not the event
+        # suppression: every non-advisory gate call consumes the target
+        # module's daily consent budget (ConsentBudgetService#check_and_consume!
+        # increments atomically per call), and this binding's metadata carries
+        # the REAL module_id — so the noise drained LIVE modules' budgets and
+        # pushed their genuine remediations down the budget-exhausted branch.
+        #
+        # The read is DB-backed on purpose (see #open_operator_request? for the
+        # definition of "open" and what resolve/reject/expire do): cross-process
+        # and restart-safe, where Rails.cache — memory_store on the hub — is
+        # neither. The engine's own cache dedup stays an optimization in front
+        # of it.
+        #
+        # The terminal state is per OPERATOR OBLIGATION, not per fingerprint,
+        # because the obligation itself is: the gate's dedup key is coarser than
+        # a fingerprint for module/template-keyed actions (config_drift's
+        # fingerprint is per-assignment while its dedup key is module_id), so N
+        # stuck assignments on one module share ONE ApprovalRequest and, now,
+        # one escalation. That is a deliberate trade — the escalation announces
+        # a request the operator does not yet have, and here they already have
+        # it — but it does cost the per-node HIGH events that used to fan out.
+        # The per-assignment detail is still emitted: emit_signal! above is
+        # untouched, and each fingerprint still records its own
+        # decision.awaiting_operator carrying its own correlation_id.
+        if autonomy_service.open_operator_request?(binding[:action_category], metadata: metadata)
+          record_decision!(signal)
+          return {
+            decision: :awaiting_operator,
+            gate: "remediation_stuck",
+            reason: "operator request already open for #{signal.fingerprint} — escalation already delivered",
+            signal_kind: signal.kind,
+            fingerprint: signal.fingerprint,
+            action_category: binding[:action_category],
+            remediation_stuck: true,
+            ineffective_streak: streak
+          }
+        end
+
         ::System::Fleet::EventBroadcaster.emit!(
           account: account,
           kind: "fleet.remediation_stuck",
@@ -767,8 +953,7 @@ module System
 
         gate_result = autonomy_service.gate_action!(
           binding[:action_category],
-          metadata: skill_metadata_payload(signal, nil)
-                      .merge("remediation_stuck_streak" => streak),
+          metadata: metadata,
           reasoning: {
             summary: "Remediation stuck: #{signal.kind} (#{signal.fingerprint}) — " \
                      "#{streak} consecutive ineffective outcomes; operator decision required"
@@ -1178,10 +1363,11 @@ module System
                  .propose_from_signals(signals: [ signal ])
         unless plan
           # Not a failure of the lane. The composer declines by design whenever
-          # it cannot bind a step to its executor's contract — cost_control has
-          # no scale-in strategy until INC-4 (IMP-216a6dbc7e32), and relocate
-          # needs inputs no heuristic supplies (offer 019ff49b-a8e5). Declining
-          # beats composing a step that fails at execution.
+          # it cannot bind a step to its executor's contract — relocate needs
+          # inputs no heuristic supplies (offer 019ff49b-a8e5). Declining beats
+          # composing a step that fails at execution. (cost_control used to
+          # reach here too; IMP-e68a93c47106 wired its scale-IN composer, so it
+          # no longer does.)
           return adaptation_declined("no diff plan composed for #{signal.kind}", mission_id: mission.id)
         end
 
@@ -1243,7 +1429,12 @@ module System
         closed = TERMINAL_PLAN_STATUSES.include?(plan.reload.status.to_s)
         applied = progressing && !held_with_nothing_to_act_on && !closed
 
-        escalate_blocked_adaptation!(mission, plan, result[:detail]) if held_with_nothing_to_act_on
+        # The gate DECLARES why it minted nothing (IMP-fec9abb225c6). Reading it
+        # is the whole difference between "your fleet has no policy for this"
+        # and "you declined this ten minutes ago".
+        if held_with_nothing_to_act_on
+          escalate_blocked_adaptation!(mission, plan, result[:detail], result[:cause])
+        end
 
         {
           applied: applied,
@@ -1315,10 +1506,36 @@ module System
         # Finding 5: a SECOND, unrelated breach absorbed by this plan must not be
         # reported as though the plan addressed it. A cost breach folded into an
         # outstanding scale-out gets the scale-out's ids, so say whose plan it is.
-        result.merge(
+        #
+        # IMP-fec9abb225c6 (4) — the fold note rides its OWN key.
+        #
+        # It used to be merged over `reason`, unconditionally. But `reason` is
+        # dispatch_adaptation!'s only statement of why nothing moved, and it is
+        # emitted precisely when applied is false — so the clobber destroyed the
+        # explanation in exactly the cases that have one. A cost breach folded
+        # into a policy-BLOCKED scale-out reported applied: false with reason
+        # "folded into the in-flight proposal", which is indistinguishable from
+        # the healthy fold into a plan that IS progressing, and re-introduces the
+        # ambiguity dispatch_adaptation! documents as a past bug.
+        #
+        # Both facts are true at once and both are worth reporting: the signal
+        # WAS folded, and the plan it folded into is going nowhere.
+        folded = result.merge(
           superseded_by_change_type: plan_change_type(plan),
-          reason: "#{signal.kind} folded into the in-flight #{plan_change_type(plan)} proposal"
+          folded_signal_kind: signal.kind.to_s,
+          folded_into: fold_note(signal, plan)
         )
+
+        # When the plan IS progressing there is no reason key to protect (the
+        # hash is compacted), so the fold note becomes the reason — the original
+        # intent, kept.
+        return folded if folded[:reason].present?
+
+        folded.merge(reason: fold_note(signal, plan))
+      end
+
+      def fold_note(signal, plan)
+        "#{signal.kind} folded into the in-flight #{plan_change_type(plan)} proposal"
       end
 
       def plan_change_type(plan)
@@ -1332,6 +1549,34 @@ module System
         data = plan.plan_data.is_a?(Hash) ? plan.plan_data : {}
         data["signal_kind"].to_s != signal.kind.to_s
       end
+
+      # Causes that are NOT an operator-actionable configuration gap. An operator
+      # who has just rejected an adaptation does not need a high-severity page
+      # telling them the adaptation did not happen — they know; they are the
+      # reason. It still emits, quietly, because a lane that stays suppressed
+      # long after the cooldown should be visible somewhere.
+      #
+      # Everything else — including an ABSENT cause — stays high. Not knowing
+      # why nothing was minted is worth reporting, and this alarm exists
+      # precisely because a silent failure had its alarm switched off.
+      QUIET_BLOCK_CAUSES = [ ::System::AdaptationGate::CAUSE_REJECTION_COOLDOWN ].freeze
+
+      # One alarm per plan per window, not per tick.
+      #
+      # The comment here used to claim dedup happened "through the ordinary
+      # fleet event path". EventBroadcaster.emit! does none: it unconditionally
+      # create!s a FleetEvent and never reads correlation_id for suppression, so
+      # passing a fingerprint was a no-op. The only throttle was the engine's
+      # 600s decide cache, and since the brake is deliberately held, the same
+      # plan re-blocked every tick — ~144 high-severity rows/day for ONE mission
+      # missing ONE policy, and up to ~432 for a mission breaching on three
+      # fingerprints. (The rejection variant is lower, ~29/day, because each
+      # cycle composes a fresh plan rather than re-offering one.)
+      #
+      # Keyed per PLAN, per the operator direction. A closed-and-recomposed plan
+      # gets a new id and therefore one event per cycle — intended: that is a
+      # genuinely new proposal being blocked, not the same one shouting.
+      BLOCKED_ALARM_TTL_SECONDS = (ENV["FLEET_BLOCKED_ALARM_TTL_SECONDS"] || 6 * 60 * 60).to_i
 
       # The blocked arm has no reader, so it needs a voice.
       #
@@ -1347,16 +1592,20 @@ module System
       # the gate every tick, so adding the policy dispatches the plan that is
       # already composed. Releasing instead would recompose a fresh plan every
       # dedup TTL and re-block it — churn in place of a fix.
-      def escalate_blocked_adaptation!(mission, plan, detail)
+      def escalate_blocked_adaptation!(mission, plan, detail, cause = nil)
+        cause = cause.to_s.presence || ::System::AdaptationGate::CAUSE_UNKNOWN
+        return unless claim_blocked_alarm!(plan)
+
         ::System::Fleet::EventBroadcaster.emit!(
           account: account,
           kind: "fleet.adaptation_blocked",
-          severity: :high,
+          severity: (QUIET_BLOCK_CAUSES.include?(cause) ? :low : :high),
           payload: {
             "mission_id" => mission.id,
             "plan_id" => plan.id,
             "change_type" => plan_change_type(plan),
             "action_category" => ::System::AdaptationGate.action_category_for(plan_change_type(plan).to_s),
+            "cause" => cause,
             "detail" => detail
           }.compact,
           source: "decision_engine.adaptation_blocked",
@@ -1364,6 +1613,31 @@ module System
         )
       rescue StandardError => e
         Rails.logger.warn("[FleetDecisionEngine] blocked-adaptation escalation failed: #{e.message}")
+      end
+
+      # FAILS CLOSED, unlike #recently_decided?.
+      #
+      # That asymmetry is deliberate. recently_decided? gates whether the fleet
+      # REMEDIATES, so a broken cache there must not stop the fleet acting — it
+      # returns false and the tick proceeds. This gates whether we SHOUT, and a
+      # cache we cannot read is not a licence to shout every 60s: failing open
+      # here is what would lift the storm from 144/day to 1440/day, precisely
+      # when the platform is already unhealthy enough to have lost its cache.
+      #
+      # A store with no cache API at all (NullStore) is a different case from a
+      # BROKEN one — there is no storm mechanism to arm and no dedup to be had,
+      # so it emits rather than going silent.
+      def claim_blocked_alarm!(plan)
+        return true unless Rails.cache.respond_to?(:exist?) && Rails.cache.respond_to?(:write)
+
+        key = "fleet:adaptation_blocked:#{account.id}:#{plan.id}"
+        return false if Rails.cache.exist?(key)
+
+        Rails.cache.write(key, Time.current.to_i.to_s, expires_in: BLOCKED_ALARM_TTL_SECONDS)
+        true
+      rescue StandardError => e
+        Rails.logger.warn("[FleetDecisionEngine] blocked-alarm dedup unavailable, suppressing: #{e.message}")
+        false
       end
 
       # Composed but never handed to a runner — a re-ask of the gate is exactly
@@ -1466,6 +1740,18 @@ module System
           return { applied: false, reason: "reconcile task already in flight" }
         end
 
+        # IMP-f1c1e6d61104 (c) — break the dispatch -> fail -> redispatch loop.
+        #
+        # Once the agent reports a module whose manifest declares
+        # reboot_required (agent part (a) of this task fails the task rather
+        # than completing it), another reconcile cannot converge that module:
+        # its content cannot be materialized live at all, so re-dispatching is
+        # guaranteed to fail again. Escalate the same way
+        # #apply_template_closure_drift does rather than looping.
+        if (escalation = reboot_pending_escalation(instance, command))
+          return escalation
+        end
+
         task = ::System::Task.create!(
           account: account, operable: instance, command: command, status: "pending",
           options: {
@@ -1476,6 +1762,32 @@ module System
           }
         )
         { applied: true, task_id: task.id, command: command }
+      end
+
+      # IMP-f1c1e6d61104 (c) — nil unless this instance's LAST finished reconcile
+      # of the same command failed because a module needs a reboot.
+      #
+      # Ordered by completed_at and status-checked SEPARATELY on purpose:
+      # System::Task stamps completed_at on fail!/abort!/cancel! as well as
+      # complete!, so a timestamp alone cannot tell a failure from a success —
+      # the same trap the parent task's guard clauses were built around. Taking
+      # the most recent finished task and then asking whether it FAILED is what
+      # makes a later successful apply clear the block, rather than the block
+      # persisting for the life of the node.
+      def reboot_pending_escalation(instance, command)
+        last = ::System::Task.where(account: account, operable: instance, command: command)
+                             .where.not(completed_at: nil)
+                             .order(completed_at: :desc)
+                             .first
+        return nil unless last&.status == "failed"
+        return nil unless last.error_message.to_s.include?("reboot_pending")
+
+        {
+          applied: false, instance_id: instance.id, requires_reprovision: true,
+          reason: "last #{command} failed with reboot_pending — the module's content cannot be " \
+                  "materialized live; a reboot (or rolling reprovision) is required, so another " \
+                  "reconcile would fail identically"
+        }
       end
 
       def skill_metadata_payload(signal, skill_result)

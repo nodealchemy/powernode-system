@@ -1030,4 +1030,132 @@ RSpec.describe System::ManifestImportService, type: :service do
       expect(result.validation_errors.join).to match(/restart_after_update\[0\]\.services\[0\]/)
     end
   end
+
+  # IMP-3855ff9908f2 — the `verify:` probe block.
+  #
+  # Validated HERE, at manifest level, because this is the only place the
+  # mistake is cheap. Once a probe ships, "it passed" and "it proved
+  # something" are indistinguishable from the outside — so the two rules the
+  # settled design names are enforced as IMPORT REFUSALS, not as guidance.
+  describe "verify:" do
+    def verify_yaml(block)
+      <<~YAML
+        schema_version: 1
+        name: demo-mod
+        services: []
+        #{block}
+      YAML
+    end
+
+    def errors_for(block)
+      described_class.validate_only(yaml: verify_yaml(block), node_module: mod).validation_errors.join("\n")
+    end
+
+    it "accepts a well-formed block and mirrors it onto the module config" do
+      yaml = verify_yaml(<<~BLOCK)
+        verify:
+          probes:
+            - name: gh-binary
+              command: gh
+              resolves_to: /usr/local/bin/gh
+      BLOCK
+
+      expect(described_class.validate_only(yaml: yaml, node_module: mod).ok?).to be true
+
+      result = described_class.import!(node_module: mod, yaml: yaml)
+      expect(result.ok?).to be true
+      expect(mod.reload.config.dig("verify", "probes", 0, "resolves_to")).to eq("/usr/local/bin/gh")
+      # And it round-trips through the reader the agent's declaration mirror uses.
+      expect(System::ModuleVerify.probes(mod).map(&:command)).to eq([ "gh" ])
+    end
+
+    # THE refusal that is the whole point. An existence check is exactly what
+    # passed while the VM-9000 binary was shadowed; it is not a weaker probe.
+    it "REFUSES a command probe with no resolves_to" do
+      expect(errors_for(<<~BLOCK)).to match(/resolves_to is required.*never mere existence/m)
+        verify:
+          probes:
+            - name: gh-binary
+              command: gh
+      BLOCK
+    end
+
+    # A command naming a path resolves that path and never exercises the PATH
+    # lookup, so it is structurally incapable of seeing a shadow.
+    it "REFUSES a command that is a path rather than a bare name" do
+      expect(errors_for(<<~BLOCK)).to match(/must be a BARE command name/)
+        verify:
+          probes:
+            - name: gh-binary
+              command: /usr/local/bin/gh
+              resolves_to: /usr/local/bin/gh
+      BLOCK
+    end
+
+    # There is no `shells:` key, and a manifest that tries to introduce one
+    # must fail loudly rather than import as a probe that silently tests less.
+    it "REFUSES an attempt to configure which shells run" do
+      expect(errors_for(<<~BLOCK)).to match(/unrecognized key.*shells/m)
+        verify:
+          probes:
+            - name: gh-binary
+              command: gh
+              resolves_to: /usr/local/bin/gh
+              shells: [login]
+      BLOCK
+    end
+
+    it "REFUSES an empty probes list" do
+      expect(errors_for(<<~BLOCK)).to match(/verify\.probes must not be empty/)
+        verify:
+          probes: []
+      BLOCK
+    end
+
+    it "REFUSES a relative or non-canonical resolves_to" do
+      expect(errors_for(<<~BLOCK)).to match(/must be an absolute path/)
+        verify:
+          probes:
+            - name: a
+              command: gh
+              resolves_to: bin/gh
+      BLOCK
+
+      expect(errors_for(<<~BLOCK)).to match(/must be canonical/)
+        verify:
+          probes:
+            - name: a
+              command: gh
+              resolves_to: /usr/local/../bin/gh
+      BLOCK
+    end
+
+    it "REFUSES duplicate probe names" do
+      expect(errors_for(<<~BLOCK)).to match(/duplicates an earlier probe/)
+        verify:
+          probes:
+            - name: a
+              command: gh
+              resolves_to: /usr/local/bin/gh
+            - name: a
+              command: jq
+              resolves_to: /usr/bin/jq
+      BLOCK
+    end
+
+    it "REFUSES a top-level key other than probes" do
+      expect(errors_for(<<~BLOCK)).to match(/verify has unrecognized key/)
+        verify:
+          shells: [login]
+          probes:
+            - name: a
+              command: gh
+              resolves_to: /usr/local/bin/gh
+      BLOCK
+    end
+
+    it "leaves a manifest with no verify: block exactly as it is today" do
+      expect(errors_for("reboot_required: false")).to eq("")
+    end
+  end
 end

@@ -85,6 +85,33 @@ RSpec.describe System::Ai::Skills::SdwanIpfixCollectorComposeExecutor do
         r = exec.execute(name: "v6", host: "fd00::1", port: 4739, dry_run: true)
         expect(r[:data][:outputs][:target_endpoint]).to eq("[fd00::1]:4739")
       end
+
+      it "does not double-bracket an already-bracketed host" do
+        # `host` is a free-form skill input ("IPv4, IPv6, or hostname") that is
+        # only stripped and checked for emptiness, so "[fd00::1]" — the form an
+        # operator copies out of a collector config — reaches here intact.
+        r = exec.execute(name: "v6-bracketed", host: "[fd00::1]", port: 4739, dry_run: true)
+        expect(r[:data][:outputs][:target_endpoint]).to eq("[fd00::1]:4739")
+      end
+    end
+
+    context "dry-run/live endpoint parity (persists)" do
+      it "reports the bracketed endpoint on BOTH the plan and the persisted row" do
+        # The reason this executor carried its own copy of the expression was
+        # to make the dry-run audit line match what the live path stores. The
+        # falsifying assertion is the absolute value: before the consolidation
+        # both paths agreed on the WRONG string ("[[fd00::1]]:4739"), so an
+        # equality-only oracle would have passed with the bug present.
+        planned = exec.execute(name: "parity", host: "[fd00::1]", port: 4739, dry_run: true)
+                      .dig(:data, :outputs, :target_endpoint)
+        live = exec.execute(name: "parity", host: "[fd00::1]", port: 4739)
+                   .dig(:data, :outputs, :target_endpoint)
+
+        expect(planned).to eq("[fd00::1]:4739")
+        expect(live).to eq("[fd00::1]:4739")
+        expect(::Sdwan::IpfixCollector.for_account(account).find_by(name: "parity").target_endpoint)
+          .to eq("[fd00::1]:4739")
+      end
     end
 
     context "live execute on a fresh account" do

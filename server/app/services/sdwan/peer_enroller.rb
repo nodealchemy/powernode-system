@@ -70,6 +70,7 @@ module Sdwan
 
         ::Sdwan::KeyDistributor.ensure_key_for!(peer)
         allocate_vrf!(peer)
+        flag_multi_ibgp_host!
 
         promote_network!
         mirror_capability_to_node_instance_peer(peer)
@@ -96,6 +97,29 @@ module Sdwan
     # network already has other members) reuses the existing row.
     def allocate_vrf!(peer)
       ::Sdwan::VrfAllocator.allocate_and_activate!(host: @node_instance, network: @network)
+    end
+
+    # IMP-2f34679b6b73 — this is the seam where a host BECOMES multi-iBGP.
+    # FRR is one host-wide daemon, so a second iBGP membership puts both
+    # fabrics inside it, separated only by VRFs. The config side handles
+    # that (Bgp::ConfigCompiler renders one `router bgp <as> vrf <name>`
+    # block per host VRF); the observation side only handles it once the
+    # agent's vtysh poll names the VRF. Until a host runs such an agent its
+    # BGP reports cannot be attributed to one of its networks, so record the
+    # shape here rather than letting it be silent.
+    #
+    # The stamp is PROVENANCE, not the gate: Sdwan::BgpSessionWriter decides
+    # whether a report is attributable from LIVE row counts, so a host that
+    # was already multi-iBGP before this shipped needs no backfill. What only
+    # the stamp can say is WHEN the host entered this shape, and
+    # System::Fleet::Sensors::SdwanBgpSessionHealthSensor escalates a
+    # misattribution that has been standing for a day to critical on it.
+    #
+    # Cleared by Sdwan::Peer's after_commit(on: :destroy) — not only by
+    # Sdwan::PeerDetacher, which is not the path Sdwan::Executors::DeletePeer
+    # or the Network cascade take.
+    def flag_multi_ibgp_host!
+      ::Sdwan::MultiIbgpHostFlagger.refresh!(node_instance: @node_instance)
     end
 
     def verify_account_alignment!

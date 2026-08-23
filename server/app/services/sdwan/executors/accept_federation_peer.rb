@@ -57,6 +57,29 @@ module Sdwan
           # means, so a value supplied in the same PATCH cannot win and should
           # not look like it might.
           ride_along = attrs.except(*IGNORED_RIDE_ALONG_KEYS)
+
+          # :metadata rides in as a REPLACEMENT value from #attrs (peer_update_
+          # params/update_federation_peer both permit a free-form hash), but a
+          # form-shaped client resends the whole blob it was last shown on
+          # every PATCH — including this one. Assigning that wholesale (the
+          # previous behavior) silently wiped degraded_reason/suspension_reason
+          # and any prior audit keys the request never named, moments before
+          # accept! merged its own stamp on top of the now-empty hash
+          # (IMP-a54dd584e500). system_sdwan_accept_federation_peer (the
+          # dedicated MCP tool) carries no metadata parameter at all, but
+          # update_federation_peer and the REST PATCH both document and test
+          # sending metadata alongside status: "accepted" as a real, supported
+          # combination — so the fix is a merge, not dropping the key.
+          #
+          # deep_merge is incoming-wins-per-key at every level: a key this
+          # request doesn't name survives untouched: a key sent with a nil
+          # value is deliberately cleared rather than resurrected (nil is
+          # still "present" on the right-hand side, so it overwrites); a
+          # nested hash merges key-by-key rather than being replaced whole.
+          if ride_along.key?(:metadata)
+            ride_along = ride_along.merge(metadata: peer.metadata.deep_merge(ride_along[:metadata].to_h))
+          end
+
           peer.update!(ride_along) if ride_along.any?
 
           # accept! is the only path that verifies the Phase 11b single-use

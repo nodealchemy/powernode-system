@@ -251,6 +251,9 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
           it "reports a FAILURE rather than a clean provision when the attach fails" do
             allow(volume_adapter).to receive(:attach_volume)
               .and_return({ success: false, error: "no free device" })
+            # Reclaim runs on this path now (IMP-0d9e7ca7b166), so the adapter
+            # has to answer delete_volume — see the note on the raise example.
+            allow(volume_adapter).to receive(:delete_volume).and_return({ success: true })
 
             r = provision_one_with_storage
             d = r[:data]
@@ -260,14 +263,85 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
             # the failure mode this task exists to remove.
             expect(d[:failures].map { |f| f[:step] }).to include("attach_volume")
             expect(d[:partial]).to be true
-            # Still recorded, so the rollback path can reclaim it.
-            expect(d[:outputs][:storage_volume_ids]).to eq([ real_volume.id ])
-            expect(real_volume.reload.node_instance_id).to be_nil
+            # IMP-0d9e7ca7b166 — this used to assert the id was "still
+            # recorded, so the rollback path can reclaim it". That premise was
+            # never true: the step returns success, so rollback_step! is never
+            # dispatched and nothing ever reclaimed it. The volume is now
+            # reclaimed in-branch (covered in its own examples below), so the
+            # id is correctly absent here.
+            expect(d[:outputs][:storage_volume_ids]).to be_empty
+          end
+
+          # IMP-0d9e7ca7b166 — a failed attach left a volume whose
+          # node_instance_id is nil, and NOTHING can reach that row again:
+          # scale-in teardown (ScaleProjectExecutor#victim_volumes) and its
+          # orphan sweep both key on that FK, and the executor's own rollback —
+          # which does hold the id — is dispatched by
+          # SkillCompositionRunner#rollback_step!, reachable only from
+          # handle_failure. This step deliberately returns SUCCESS so one bad
+          # attach cannot terminate a whole provisioned fleet, so the rollback
+          # never runs. In-branch reclaim is therefore the only path, which is
+          # the same conclusion RelocateWorkloadExecutor#refuse_blue_green_cutover!
+          # reached for the same structural reason.
+          it "reclaims the volume it could not attach, instead of leaking an unreachable row" do
+            allow(volume_adapter).to receive(:attach_volume)
+              .and_return({ success: false, error: "no free device" })
+            allow(volume_adapter).to receive(:delete_volume).and_return({ success: true })
+
+            r = provision_one_with_storage
+            d = r[:data]
+
+            # Ground truth: the ROW is gone, not merely flagged.
+            expect(::System::ProviderVolume.find_by(id: real_volume.id)).to be_nil
+            # ...and it is no longer advertised as provisioned storage.
+            expect(d[:outputs][:storage_volume_ids]).to be_empty
+            # Still loud — reclaiming must not turn the failure silent.
+            expect(d[:failures].map { |f| f[:step] }).to include("attach_volume")
+            expect(d[:partial]).to be true
+            # ...and the reclaim itself is observable. A silent delete would
+            # leave the envelope showing a provisioned volume, a failed attach,
+            # and no account of what happened to it.
+            expect(d[:planned_actions].map { |a| a[:step] }).to include("reclaim_volume")
+          end
+
+          it "reclaims the volume when the attach RAISES, not only when it returns an error" do
+            allow(::System::VolumeManagementService).to receive(:attach)
+              .and_raise(::System::VolumeManagementService::VolumeError, "No available device paths")
+            allow(volume_adapter).to receive(:delete_volume).and_return({ success: true })
+
+            r = provision_one_with_storage
+
+            expect(::System::ProviderVolume.find_by(id: real_volume.id)).to be_nil
+            expect(r[:data][:outputs][:storage_volume_ids]).to be_empty
+            expect(r[:data][:failures].map { |f| f[:step] }).to include("attach_volume")
+          end
+
+          # A reclaim that itself fails must NOT be silent — that would just
+          # move the leak behind a second layer of quiet.
+          it "records the reclaim failure when the volume cannot be deleted either" do
+            allow(volume_adapter).to receive(:attach_volume)
+              .and_return({ success: false, error: "no free device" })
+            allow(volume_adapter).to receive(:delete_volume)
+              .and_return({ success: false, error: "provider refused" })
+
+            r = provision_one_with_storage
+            steps = r[:data][:failures].map { |f| f[:step] }
+
+            expect(steps).to include("attach_volume")
+            expect(steps).to include("reclaim_volume")
+            # The row survives, so it must still be advertised for a human.
+            expect(::System::ProviderVolume.find_by(id: real_volume.id)).not_to be_nil
+            expect(r[:data][:outputs][:storage_volume_ids]).to eq([ real_volume.id ])
           end
 
           it "does not let an attach raise take out the step and orphan what it created" do
             allow(::System::VolumeManagementService).to receive(:attach)
               .and_raise(::System::VolumeManagementService::VolumeError, "No available device paths")
+            # The raise path now reclaims (IMP-0d9e7ca7b166), so the adapter
+            # must answer delete_volume. Without it the strict double raises
+            # MockExpectationError, which is NOT a StandardError and so escapes
+            # the executor's rescue — a test artifact, not a production path.
+            allow(volume_adapter).to receive(:delete_volume).and_return({ success: true })
 
             r = provision_one_with_storage
             d = r[:data]
@@ -758,6 +832,71 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
       # Ordering IS the assertion: a delete attempted after the terminate
       # would have had nothing left to detach from.
       expect(volume_gone_at_terminate).to be(true)
+    end
+  end
+
+  # IMP-5eb14352370a — what #run_execute had created when an unguarded raise
+  # escaped it. BaseSkillExecutor#execute turns such a raise into
+  # `failure(e.message)` with no `:data`, so without this the ids of live,
+  # billing rows exist nowhere a caller can reach.
+  describe "#in_flight_progress" do
+    def escaping_raise!
+      allow(::System::ProvisioningService).to receive(:provision_instance) do
+        raise ActiveRecord::RecordInvalid.new(::System::Node.new), "Validation failed: Name has already been taken"
+      end
+    end
+
+    it "is empty before any run" do
+      expect(exec.in_flight_progress[:planned_actions]).to be_empty
+      expect(exec.in_flight_progress[:outputs].values.flatten).to be_empty
+    end
+
+    it "reports the rows the raising run had already created" do
+      escaping_raise!
+
+      r = exec.execute(template_id: template.id, count: 2, provider_region_id: region.id,
+                       provider_instance_type_id: instance_type.id)
+      expect(r[:success]).to be false
+      expect(r).not_to have_key(:data)
+
+      progress = exec.in_flight_progress
+      expect(progress[:outputs][:node_ids].size).to eq(1)
+      expect(progress[:planned_actions].map { |a| a[:step] }).to eq(%w[create_node])
+    end
+
+    it "does not mutate the run" do
+      escaping_raise!
+      exec.execute(template_id: template.id, count: 2, provider_region_id: region.id,
+                   provider_instance_type_id: instance_type.id)
+
+      exec.in_flight_progress[:outputs][:node_ids].clear
+      expect(exec.in_flight_progress[:outputs][:node_ids].size).to eq(1)
+    end
+
+    # The blast-radius guard: a SECOND #execute that bails before #run_execute
+    # must not still be publishing run #1's live ids. A caller lifting those
+    # into a rollback would tear down resources this call never created.
+    it "is cleared by a later execute that never reaches the provisioning loop" do
+      escaping_raise!
+      exec.execute(template_id: template.id, count: 2, provider_region_id: region.id,
+                   provider_instance_type_id: instance_type.id)
+      expect(exec.in_flight_progress[:outputs][:node_ids]).not_to be_empty
+
+      r = exec.execute(template_id: SecureRandom.uuid, count: 1, provider_region_id: region.id,
+                       provider_instance_type_id: instance_type.id)
+      expect(r[:success]).to be false
+      expect(exec.in_flight_progress[:outputs].values.flatten).to be_empty
+      expect(exec.in_flight_progress[:planned_actions]).to be_empty
+    end
+
+    it "is cleared by a dry_run, which creates nothing" do
+      escaping_raise!
+      exec.execute(template_id: template.id, count: 2, provider_region_id: region.id,
+                   provider_instance_type_id: instance_type.id)
+
+      exec.execute(template_id: template.id, count: 1, provider_region_id: region.id,
+                   provider_instance_type_id: instance_type.id, dry_run: true)
+      expect(exec.in_flight_progress[:outputs].values.flatten).to be_empty
     end
   end
 end

@@ -29,7 +29,7 @@ func TestMain(m *testing.M) {
 // fakeClient is a stand-in for transport.Client that records POSTs and
 // returns canned GET responses keyed by path.
 type fakeClient struct {
-	GetResponses  map[string]string // path → JSON envelope
+	GetResponses    map[string]string // path → JSON envelope
 	PostInvocations []postInvocation
 	PostError       error
 }

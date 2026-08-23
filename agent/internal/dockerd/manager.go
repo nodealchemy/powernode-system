@@ -23,15 +23,15 @@ const ModuleName = "docker-engine"
 // one goroutine, but the lock keeps state inspection (for tests)
 // race-free.
 type Manager struct {
-	Client       *Client       // dockerd protocol client
-	Modules      ModulesAPI    // assigned-modules query
-	Overrides    OverridesAPI  // operator daemon.json overrides (slice 10; nil = no operator overrides)
-	Applier      DaemonApplier // file IO + systemctl
-	NodeID       string        // System::NodeInstance UUID, used as CN suffix
-	OverlayAddress string      // SDWAN /128 the daemon should bind, no brackets
-	Paths        DaemonPaths   // on-disk layout — defaults to DefaultPaths
-	StatePath    string        // JSON state cache path; defaults to DefaultStatePath
-	OnError      func(stage string, err error)
+	Client         *Client       // dockerd protocol client
+	Modules        ModulesAPI    // assigned-modules query
+	Overrides      OverridesAPI  // operator daemon.json overrides (slice 10; nil = no operator overrides)
+	Applier        DaemonApplier // file IO + systemctl
+	NodeID         string        // System::NodeInstance UUID, used as CN suffix
+	OverlayAddress string        // SDWAN /128 the daemon should bind, no brackets
+	Paths          DaemonPaths   // on-disk layout — defaults to DefaultPaths
+	StatePath      string        // JSON state cache path; defaults to DefaultStatePath
+	OnError        func(stage string, err error)
 
 	// Isolation runtimes (substrate L0) to provision before the daemon
 	// starts. For each entry, Runtimes.Ensure installs the runtime binary
@@ -105,12 +105,12 @@ func NewManager(client *Client, modules ModulesAPI, applier DaemonApplier,
 // State machine (decision branches checked top-down, first matching
 // branch fires per tick — multi-step transitions take multiple ticks):
 //
-//   1. Module not assigned + daemon running → Stop daemon, report stopped
-//   2. Module not assigned + cert on disk    → Remove cert (final cleanup)
-//   3. Module assigned + cert missing        → wants_cert handshake → write
-//   4. Module assigned + cert present + daemon stopped → write config + start
-//   5. Module assigned + daemon running + not yet ack'd → ReportReady
-//   6. Otherwise (steady state)              → no-op
+//  1. Module not assigned + daemon running → Stop daemon, report stopped
+//  2. Module not assigned + cert on disk    → Remove cert (final cleanup)
+//  3. Module assigned + cert missing        → wants_cert handshake → write
+//  4. Module assigned + cert present + daemon stopped → write config + start
+//  5. Module assigned + daemon running + not yet ack'd → ReportReady
+//  6. Otherwise (steady state)              → no-op
 func (m *Manager) Reconcile(ctx context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -150,8 +150,8 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	// in the running branch (not on the start path; transitionStart
 	// fetches its own overrides directly).
 	var (
-		freshOverrides    map[string]any
-		freshContentHash  string
+		freshOverrides     map[string]any
+		freshContentHash   string
 		hasOverridesUpdate bool
 	)
 	if desired && running && hasOverlay && m.Overrides != nil {

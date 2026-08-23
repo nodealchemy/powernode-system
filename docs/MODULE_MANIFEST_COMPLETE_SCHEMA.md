@@ -69,9 +69,16 @@ sudoers:  [<sudoers grant>, ...]
 build:
   ubuntu_digest: <sha256 | null>
   apt_snapshot:  <YYYYMMDDTHHMMSSZ timestamp | "none" | null>
+
+# Post-deploy self-proof (see "Verify probes" below)
+verify:
+  probes:
+    - name:        <identifier>
+      command:     <BARE command name>
+      resolves_to: <absolute path>   # REQUIRED
 ```
 
-> **Authoritative top-level key set.** The 21 keys above are exactly
+> **Authoritative top-level key set.** The keys above are exactly
 > `System::ManifestImportService::KNOWN_TOP_KEYS`. Anything else is preserved
 > verbatim under `config.manifest_extras` (forward-compat) but is not validated.
 >
@@ -609,6 +616,69 @@ When attaching this module, the operator UI surfaces the privileged flag and req
 
 ---
 
+## Verify probes
+
+`verify:` is the module's **self-proof**: what must be true on the node for this
+module to be doing its job. Optional; a manifest without it behaves exactly as
+before. Declared probes are mirrored onto `NodeModule#config` at import, ride
+the existing `config` blob out to the agent, and are run by the agent's
+`internal/probe` package after each attach and on a refresh interval. Results
+travel on the heartbeat as `module_verify_state`, are persisted by
+`System::ModuleVerifyStateWriter`, and a mismatch reaches an operator through
+`System::Fleet::Sensors::ModuleVerifyFailedSensor`
+(`system.module_verify_failed` → `system.module_verify_investigate`).
+
+```yaml
+verify:
+  probes:
+    - name: gitleaks-binary
+      command: gitleaks
+      resolves_to: /usr/local/bin/gitleaks
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | yes | `^[a-z0-9][a-z0-9._-]{0,63}$`. Concatenated into the signal fingerprint a failed probe raises. |
+| `command` | yes | A **bare** command name — no slash, no whitespace, no shell metacharacter. Resolved through `PATH`. |
+| `resolves_to` | **yes** | The absolute, canonical path that name must resolve to. |
+
+### The two rules, and why they are rules
+
+Both come from the ratified design in the platform's
+`docs/operations/autonomous-infrastructure-readiness-2026-08-12.md` §2 (that
+file lives in the parent monorepo, not in this repo, so it is named rather
+than linked).
+
+1. **`resolves_to` is required — a resolved path, never mere existence.** An
+   existence check ("is there a `gitleaks` on `PATH`?") is exactly what passed
+   while the VM-9000 binary was *shadowed*: the name resolved, to the wrong
+   file. A probe that cannot say **which** file must answer the name is not a
+   weaker probe, it is the bug — so `System::ManifestImportService` refuses to
+   import one and the JSON schema marks it `required`. For the same reason
+   `command` must be a bare name: an absolute path resolves itself and never
+   exercises the `PATH` lookup, so it is structurally incapable of seeing a
+   shadow.
+
+2. **Every probe runs in BOTH a login and a non-login shell.** There is
+   deliberately **no `shells:` key** — the divergence between the two *is* the
+   bug class (a login shell sources `/etc/profile`, `/etc/profile.d/*` and
+   `~/.bash_profile`, which is where a `PATH` gets reordered), so it cannot be
+   a per-module choice. A probe is scored **passing only when the report
+   covers both shells and both agree**; a report naming one shell is recorded
+   as `unknown`, never `pass`, so an older or partial agent produces "not
+   measured" rather than a false green.
+
+### What a failure looks like
+
+`system.module_verify_failed` (high) carries `expected_path`, the per-shell
+`resolved` value, and a `shadowed` boolean separating "resolved to the wrong
+file" from "did not resolve at all" (the shape of the 2026-08-07 gitleaks v4
+empty-artifact whiteout). There is **no applier**: a wrong artifact, a
+shadowing package, or a `PATH`-reordering profile script are all repaired by a
+person, and re-serving the same module changes none of them.
+
+---
+
 ## Validation
 
 Manifests are validated at **two distinct moments**: at PR/CI time by a JSON Schema gate, and again at OCI ingest time by the Rails-side `System::ManifestImportService`.
@@ -657,6 +727,7 @@ When the platform ingests a new OCI artifact, `System::ManifestImportService.imp
 - `dependencies.requires` entries match the `<org>/<repo>@<constraint>` pattern
 - `security.privileged: true` requires operator confirmation (handled at attach time, not import)
 - `init` and `services` may both be present (init runs first; new modules prefer services-only)
+- `verify.probes[*]` require `name`, a **bare** `command`, and `resolves_to` (an absolute, canonical path); unknown keys inside `verify:` or a probe are rejected, so a `shells:`-shaped typo fails loudly instead of importing as a probe that silently tests less
 - `users` / `groups` / `sudoers` entries validate name/id regexes, intra-manifest uniqueness, and group/user cross-references (each `primary_group`, `supplementary_groups` entry, and sudoers `user` must be declared in the same manifest OR already allocated platform-wide via `ServiceGroup.live` / `ServiceUser.live`)
 
 For the full `services:` validation rules (name uniqueness, restart_policy enum, health endpoint format, dependency cycles), see [`federation/MODULE_MANIFEST_SCHEMA.md`](./federation/MODULE_MANIFEST_SCHEMA.md).

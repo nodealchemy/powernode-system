@@ -34,7 +34,25 @@ Hand the new token off again. If you're scripting accepts, generate the token th
 
 **What happened:** B's accept call didn't include the `acceptance_token` parameter at all, but A's peer record requires one.
 
-**Fix:** include the token in the accept call. From the UI, the "Accept Peer" form has a token field — make sure it's filled. From MCP, pass `acceptance_token: "..."` to `system_sdwan_accept_federation_peer`.
+**Fix:** include the token in the accept call.
+
+- **MCP:** pass `acceptance_token: "..."` to `system_sdwan_accept_federation_peer`.
+- **REST:** send it with the accept PATCH, either beside the peer body or inside it:
+
+  ```bash
+  curl -X PATCH .../api/v1/system/sdwan/federation_peers/<id> \
+    -H 'Content-Type: application/json' \
+    -d '{"federation_peer": {"status": "accepted"}, "acceptance_token": "<token from A>"}'
+  ```
+
+  Both surfaces verify the token BEFORE parking the approval, so a wrong or
+  expired token returns 422 immediately and does not consume the single-use
+  token. A correct one returns 202 and the peer flips to `accepted` once the
+  approval is granted.
+
+There is no "Accept Peer" UI form — this doc previously said there was. The
+federation peer surface has no frontend at all (IMP-8df377f7d255); MCP and REST
+are the two ways in.
 
 **Note:** Phase 11a drill-mode peers (no digest set) accept any caller. If you're in a sandbox and want to skip the token round-trip, omit `generate_acceptance_token!` in step 2 of [setup](./federation-setup.md) — but never do this in production.
 
@@ -173,6 +191,52 @@ puts grant.applies_to?(
 4. **Trust chain mismatch?** In the **hierarchical** mode A signed B's CSR off A's own CA, so B's cert chains to A's CA from A's perspective — no mismatch. In the **symmetric** mode each side trusts the other's advertised CA anchor (`peer.trusted_ca_pem`); if that anchor wasn't absorbed at accept, A validates B's cert against the wrong CA and the chain fails.
 
 **Fix:** revoke the peer and re-propose from scratch so the accept chain re-runs the CSR sign (hierarchical) or CA-anchor exchange (symmetric) and re-stamps `inbound_subject` / `trusted_ca_pem`.
+
+### Identify a CA by FINGERPRINT, never by its subject DN
+
+Hubs provisioned before the internal CA carried a hub-specific subject all
+generated the *same* root name — `CN=Powernode Internal CA (local-dev)` — over
+*different* keys. Two such hubs are indistinguishable by name, and the TLS
+acceptable-client-CA list a peer shows you is **by DN**, so it cannot tell you
+whether that peer trusts *your* CA or some other hub's identically-named one.
+
+Compare fingerprints instead:
+
+```bash
+# ours, from the rails console
+::System::InternalCaService.ca_fingerprint
+# every anchor currently in the Traefik client-auth bundle, in bundle order
+::Acme::TraefikConfigWriter.client_auth_bundle_fingerprints
+```
+
+Both return the `sha256:<64 lowercase hex>` form. To put a PEM you were handed
+into the same form (`openssl` prints colon-separated uppercase):
+
+```bash
+openssl x509 -in peer-ca.pem -noout -fingerprint -sha256 \
+  | sed 's/.*=//; s/://g' | tr 'A-Z' 'a-z' | sed 's/^/sha256:/'
+```
+
+The 401 body itself now names the anchor it checked against
+(`expected anchor sha256:… from peer.trusted_ca_pem`), so the refusal is
+attributable without a console.
+
+**Already-running hubs keep their legacy DN permanently.** Renaming a live root
+would invalidate every worker, agent, node and federation cert chained to it,
+so the platform never rewrites a persisted `root.crt` — new CAs get the
+hub-specific subject, existing ones do not, and both are told apart by
+fingerprint. Adopting the new name on an existing hub is a full **CA rotation**
+(new key, both roots carried in every trust bundle for an overlap window, every
+leaf re-issued, then the old anchor withdrawn) and should only be undertaken
+deliberately, never as a side effect of an upgrade.
+
+Federation between two hubs that both still hold the legacy DN does work. The
+client-auth bundle is evaluated by Traefik, whose Go TLS stack tries every
+same-subject candidate CA rather than only the first, and the backend re-binds
+each peer against that one peer's own anchor — so the shared name never decides
+the outcome. Where a shared DN *would* bite is a single trust blob carrying two
+same-named roots, which is what a rotation overlap window looks like; the
+backend verifier retries such roots individually for that reason.
 
 ---
 

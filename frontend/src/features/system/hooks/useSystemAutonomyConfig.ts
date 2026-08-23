@@ -1,5 +1,6 @@
 import { useAutonomyConfig } from '@/shared/hooks/useAutonomyConfig';
 import type { AutonomyConfigSource } from '@/shared/types/autonomy';
+import { systemPolicyBucket } from '@system/features/system/autonomyBucket';
 
 /**
  * System extension's AutonomyConfigSource — points the shared
@@ -20,6 +21,7 @@ import type { AutonomyConfigSource } from '@/shared/types/autonomy';
 export const systemAutonomyConfigSource: AutonomyConfigSource = {
   fetchEndpoint: '/system/autonomy',
   updateEndpoint: '/system/autonomy',
+  bucketForRow: systemPolicyBucket,
 };
 
 export function useSystemAutonomyConfig() {

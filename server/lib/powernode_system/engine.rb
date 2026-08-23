@@ -625,23 +625,38 @@ module PowernodeSystem
           system.package_module.create system.package_module.refresh
           system.architecture.propose system.architecture.create
           system.architecture.update system.architecture.delete
+          system.module_verify_investigate
         ])
 
         # SDWAN Manager domain
         categories.concat(%w[
           system.sdwan_peer_remediate system.sdwan_key_rotate system.sdwan_failover
           system.sdwan_user_device_revoke system.sdwan_bgp_session_remediate
-          system.sdwan_vip_failover system.sdwan_route_policy_audit
+          system.sdwan_vip_failover
+          system.sdwan_credential_refresh
           sdwan.network_create sdwan.network_update sdwan.network_delete
           sdwan.peer_create sdwan.peer_update sdwan.peer_delete
           sdwan.firewall_rule_create sdwan.firewall_rule_update sdwan.firewall_rule_delete
           sdwan.virtual_ip_create sdwan.virtual_ip_update sdwan.virtual_ip_delete
           sdwan.route_policy_create sdwan.route_policy_update sdwan.route_policy_delete
           sdwan.port_mapping_create sdwan.port_mapping_update sdwan.port_mapping_delete
-          sdwan.access_grant_create sdwan.access_grant_revoke sdwan.access_grant_delete
+          sdwan.access_grant_create sdwan.access_grant_reactivate
+          sdwan.access_grant_revoke sdwan.access_grant_delete
           sdwan.user_device_create
           sdwan.federation_peer_propose sdwan.federation_peer_accept sdwan.federation_peer_revoke
+          sdwan.federation_peer_data_residency
+          sdwan.host_bridge_create sdwan.host_bridge_update sdwan.host_bridge_delete
+          sdwan.ovn_deployment_create sdwan.ovn_deployment_delete
+          sdwan.ovn_logical_switch_create sdwan.ovn_logical_switch_update sdwan.ovn_logical_switch_delete
+          sdwan.ovn_logical_switch_port_create sdwan.ovn_logical_switch_port_update
+          sdwan.ovn_logical_switch_port_delete
+          sdwan.ovn_acl_create sdwan.ovn_acl_delete
+          sdwan.ipfix_collector_create sdwan.ipfix_collector_update sdwan.ipfix_collector_delete
           system.sdwan_service_health_investigate
+          system.sdwan_ovn_deployment_investigate
+          system.sdwan_bgp_observation_investigate
+          system.sdwan_apply_investigate
+          system.sdwan_user_device_config_investigate
         ])
 
         # Phase 3 (Federation & Multi-Site) — SDWAN-first federation actions.
@@ -696,15 +711,25 @@ module PowernodeSystem
         # db/seeds/system_runtime_manager_agent.rb) — but the registration
         # survived here for three months.
         #
-        # A class NAMED for it does exist and is not evidence to the contrary:
-        # app/services/system/executors/runtime/rotate_docker_tls.rb is a
-        # deliberate raising stub whose `perform` always raises
-        # NotYetImplementedError (IMP-967901b9d2e1 made it refuse rather than
-        # keep reporting `rotated: true` without touching TLS material). No
-        # call site names it — executors are dispatched by an explicit
-        # `executor_class:` string at the gating site, and nothing passes this
-        # one. Re-register only alongside a real implementation AND a seeded
-        # policy row.
+        # There is no executor class for it either, as of IMP-75f851ce0bf0.
+        # One used to exist — a deliberate raising stub
+        # (System::Executors::Runtime::RotateDockerTls, IMP-967901b9d2e1) that
+        # refused rather than keep reporting `rotated: true` without touching
+        # TLS material. Raising was the right fix while the category was still
+        # registered and the class therefore dispatchable; once this
+        # registration was removed nothing could reach it, and a raising stub
+        # no dispatcher can name is not a safety net — it is a name that reads
+        # as an implementation to the next person who greps for it. This
+        # comment used to have to say so explicitly, which is the clearest
+        # evidence the ambiguity was real.
+        #
+        # Re-register only alongside a real implementation AND a seeded policy
+        # row. Note the two SIBLING stubs from the same commit
+        # (Runtime::DrainK3sNode, Runtime::UpgradeK3sRuntime) are deliberately
+        # still present and still raising: their categories
+        # (system.runtime_k8s_node_drain, system.runtime_k8s_runtime_upgrade)
+        # ARE registered below, so they remain dispatchable and the raise is
+        # still doing its job there.
         #
         # Three further names are ABSENT for a different reason (IMP-eb60db901f5f)
         # — they were never capabilities, only second SPELLINGS of the three

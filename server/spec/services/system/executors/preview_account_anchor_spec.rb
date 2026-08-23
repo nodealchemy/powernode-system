@@ -213,6 +213,68 @@ RSpec.describe "approval-card preview account anchoring" do
   # fact, the foreign grant's device count, and is asserted separately: a fix
   # that anchored only the summary would leave a working oracle for "how many
   # VPN devices does that other account's grant have".
+  # IMP-343163bf37a4 — the create/reactivate pair renders the same shape the
+  # delete card below is guarded for: a grant holder's EMAIL ADDRESS. Both
+  # classes share one label ladder (ReactivateAccessGrant inherits it), so the
+  # guard is applied to each surface an operator can actually be shown.
+  describe "Sdwan::Executors::CreateAccessGrant / ReactivateAccessGrant" do
+    let!(:victim_grant_user) do
+      create(:user, account: victim, email: "victim-grantee@example.test")
+    end
+    let!(:tenant_grant_user) do
+      create(:user, account: tenant, email: "tenant-grantee@example.test")
+    end
+
+    it "renders bare ids rather than a foreign user's email or network name" do
+      preview = card_preview("Sdwan::Executors::CreateAccessGrant", "sdwan.access_grant_create",
+                             { network_id: victim_network.id, user_id: victim_grant_user.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to include(victim_network.id)
+      expect(preview[:summary]).not_to include("victim-grantee@example.test")
+      expect(preview[:summary]).not_to include("victim-core")
+    end
+
+    it "applies the same anchoring to the reactivate card" do
+      preview = card_preview("Sdwan::Executors::ReactivateAccessGrant",
+                             "sdwan.access_grant_reactivate",
+                             { network_id: victim_network.id, user_id: victim_grant_user.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).not_to include("victim-grantee@example.test")
+      expect(preview[:summary]).not_to include("victim-core")
+    end
+
+    # A foreign USER paired with an IN-ACCOUNT network: the network alone must
+    # not license naming, or the anchor is being read off the row it checks.
+    it "names neither row when the user and the network disagree on owner" do
+      preview = card_preview("Sdwan::Executors::CreateAccessGrant", "sdwan.access_grant_create",
+                             { network_id: tenant_network.id, user_id: victim_grant_user.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).not_to include("victim-grantee@example.test")
+    end
+
+    it "still names an in-account grantee and network" do # CONTROL
+      preview = card_preview("Sdwan::Executors::CreateAccessGrant", "sdwan.access_grant_create",
+                             { network_id: tenant_network.id, user_id: tenant_grant_user.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to eq("Grant SDWAN access to tenant-grantee@example.test on tenant-core")
+    end
+
+    it "still names an in-account grantee on the reactivate card" do # CONTROL
+      preview = card_preview("Sdwan::Executors::ReactivateAccessGrant",
+                             "sdwan.access_grant_reactivate",
+                             { network_id: tenant_network.id, user_id: tenant_grant_user.id })
+
+      expect(preview[:error]).to be_nil
+      expect(preview[:summary]).to eq(
+        "Reinstate SDWAN access for tenant-grantee@example.test on tenant-core"
+      )
+    end
+  end
+
   describe "Sdwan::Executors::DeleteAccessGrant" do
     let!(:victim_user) { create(:user, account: victim, email: "victim-operator@example.test") }
     let!(:victim_grant) do
@@ -618,6 +680,26 @@ RSpec.describe "approval-card preview account anchoring" do
                                                        deferred_operation: nil)
 
       expect(payload[:summary]).to include(tenant_peer.id)
+    end
+
+    # IMP-343163bf37a4. With no operation there is no supplied-free account, so
+    # the anchor can only be a row's own owner CORROBORATED by another row the
+    # same request names — CreatePeer's arm 2. Deriving it from the network
+    # alone is not an anchor: `network.account_id == anchor` cannot fail when
+    # anchor was read off that network, so any caller-supplied id would get its
+    # network named. Here the named user belongs to a DIFFERENT account than
+    # the named network, so nothing corroborates and neither row is named.
+    it "names neither row when the two ids it is given disagree on owner" do
+      grantee = create(:user, account: tenant, email: "tenant-grantee@example.test")
+
+      payload = ::Sdwan::Executors::CreateAccessGrant.preview(
+        { network_id: victim_network.id, user_id: grantee.id },
+        deferred_operation: nil
+      )
+
+      expect(payload[:summary]).to include(victim_network.id)
+      expect(payload[:summary]).not_to include("victim-core")
+      expect(payload[:summary]).not_to include("tenant-grantee@example.test")
     end
   end
 end

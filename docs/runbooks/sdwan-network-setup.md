@@ -207,7 +207,7 @@ The compiler emits FRR config to each peer's `/etc/frr/frr.conf` on next reconci
 platform.system_sdwan_list_route_policies({ network_id: "<network-id>" })
 ```
 
-The `system.sdwan_route_policy_audit` autonomy action (auto_approve policy) periodically surfaces inconsistent or shadowed statements.
+There is no automated audit for inconsistent or shadowed statements today — `system.sdwan_route_policy_audit` was a seeded autonomy action naming this, but it had no sensor, no binding, and no executor behind it, and was deleted (IMP-17bc5546009a). Review `system_sdwan_list_route_policies` output manually, or via the `Sdwan::Bgp::RoutePolicyCompiler` output for a given network.
 
 ## Phase 7 — User devices (WireGuard VPN) ✅
 
@@ -291,7 +291,16 @@ The skill is intentionally planning-only in v1 — operators run the recommended
 
 ## Phase 9 — Federation peers (slice 11 — live) ✅
 
-Cross-account peering. Account A proposes; Account B accepts. The full propose / accept / revoke flow is live as of slice 11; both endpoints route through `Sdwan::Executors::{ProposeFederationPeer, AcceptFederationPeer, RevokeFederationPeer}` (the model is `System::FederationPeer`, not `Sdwan::*`).
+Cross-account peering. Account A proposes; Account B accepts. The full propose / accept / revoke flow is live as of slice 11; every endpoint routes through `Sdwan::Executors::{ProposeFederationPeer, AcceptFederationPeer, RevokeFederationPeer}` (the model is `System::FederationPeer`, not `Sdwan::*`).
+
+**All three verbs are approval-gated** (`sdwan.federation_peer_{propose,accept,revoke}`, all seeded `require_approval`) on both halves of the SDWAN federation surface — the `system_sdwan_*` MCP actions below and their `/api/v1/system/sdwan/federation_peers` REST twins — as of IMP-2795453255c3, which routed the last two MCP arms through the gate their REST twins had used all along. Under `require_approval` each call below returns `pending: true` with a `deferred_operation_id` and nothing is written or cut until an operator approves; the snippets show the post-approval (or `notify_and_proceed`) shape.
+
+> The **platform**-peer surface is a different flow and is NOT gated today:
+> `POST /api/v1/system/platform/peers/invite` and `.../revoke`, and
+> `POST /api/v1/system/federation/children/:id/revoke`, write
+> `System::FederationPeer` directly. Use the SDWAN actions here for overlay
+> peering; see [`federation-setup.md`](./federation-setup.md) for the platform
+> flow.
 
 ```javascript
 // Account A proposes (this surface creates a sdwan_only peer_kind; for a
@@ -312,7 +321,10 @@ platform.system_sdwan_accept_federation_peer({
 // → { federation_peer: { id, status: "accepted", ... } }
 
 // Either side can revoke:
-platform.system_sdwan_revoke_federation_peer({ federation_peer_id: "<fed-peer-id>" })
+platform.system_sdwan_revoke_federation_peer({
+  federation_peer_id: "<fed-peer-id>",
+  reason:             "remote signing key rotated"   // optional, recorded on the peer
+})
 
 // List the cross-account peers:
 platform.system_sdwan_list_federation_peers({})
@@ -335,7 +347,7 @@ platform.system_sdwan_list_federation_peers({})
 | BGP session stuck `Active` | Neighbor doesn't respond to Open message | Verify the neighbor is up + has the route to this peer's `/128`; `sdwan_peer_remediate` if mTLS is the issue |
 | VIP failover doesn't promote | `sdwan_vip_failover` blocked by `require_approval` policy | Check approval queue UI; operator approves → executor runs |
 | VIP failover marks `anycast: true` | Anycast VIP — failover is informational only | This is expected; routing handles failover for anycast |
-| Firewall rule shadows another | Selector specificity — more-specific selectors match first | Use `system.sdwan_route_policy_audit` (auto_approve) to surface shadowed rules |
+| Firewall rule shadows another | Selector specificity — more-specific selectors match first | Review `system_sdwan_list_firewall_rules` output manually — there is no automated shadow-detection today |
 | User device can't connect after issue | Bootstrap URL expired (>15 min) | Re-issue via `create_access_grant` → `issue_user_device` |
 
 ## Composition skills (multi-step topology)

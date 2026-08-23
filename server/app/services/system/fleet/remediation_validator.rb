@@ -46,9 +46,73 @@ module System
       #                                            healthy, so every sdwan_*
       #                                            executor would act on
       #                                            plumbing that is fine).
+      #   system.disk_image_publication_investigate — IMP-71f7ca1ff35b. The
+      #                                            same shape, and unlike the
+      #                                            sdwan lane this one was LIVE:
+      #                                            DiskImagePublicationFailure
+      #                                            StreakSensor is registered in
+      #                                            FleetAutonomyService::SENSORS
+      #                                            and emitting. Its binding
+      #                                            ("DK3") declares the reason
+      #                                            in its own words — "a broken
+      #                                            CI pipeline needs operator
+      #                                            investigation, not an
+      #                                            automated retry" — which is
+      #                                            what earns the exemption;
+      #                                            skill:nil alone would not.
+      #   system.sdwan_ovn_deployment_investigate — IMP-57e9a90598ee. A
+      #                                            degraded or stalled OVN
+      #                                            deployment names failing
+      #                                            infrastructure the platform
+      #                                            does not provision (northd,
+      #                                            the NB/SB OVSDB servers).
+      #                                            There is no applier and can
+      #                                            be none until a
+      #                                            daemon-provisioning story
+      #                                            exists; the condition
+      #                                            clears when the operator
+      #                                            fixes their OVN control
+      #                                            plane, far beyond
+      #                                            SETTLE_WINDOW.
+      #   system.sdwan_apply_investigate         — IMP-da1b772c2596. The
+      #                                            agent's OBSERVED SDWAN
+      #                                            apply failure. There is no
+      #                                            applier and can be none:
+      #                                            the agent already retries
+      #                                            the failing apply on every
+      #                                            tick, so re-serving the
+      #                                            same config remediates
+      #                                            nothing — the repair is an
+      #                                            image or a config a person
+      #                                            changes, far beyond
+      #                                            SETTLE_WINDOW. Its sibling
+      #                                            kind (apply_not_measured)
+      #                                            clears only when a fleet
+      #                                            rollout replaces the
+      #                                            agents, which is slower
+      #                                            still.
+      #   system.sdwan_user_device_config_investigate — IMP-7034199a5a19. An
+      #                                            issued user-device
+      #                                            WireGuard config whose
+      #                                            AllowedIPs predates a VIP /
+      #                                            lan_subnet / federation
+      #                                            prefix added since. There
+      #                                            is no applier and can be
+      #                                            none: the drifted artefact
+      #                                            is a text file on a user's
+      #                                            laptop. The condition
+      #                                            clears only when a person
+      #                                            re-issues the device, far
+      #                                            beyond SETTLE_WINDOW.
       NON_REMEDIATING_ACTION_CATEGORIES = %w[
         system.observation
         system.sdwan_service_health_investigate
+        system.disk_image_publication_investigate
+        system.sdwan_ovn_deployment_investigate
+        system.sdwan_bgp_observation_investigate
+        system.sdwan_apply_investigate
+        system.sdwan_user_device_config_investigate
+        system.module_verify_investigate
       ].freeze
 
       def initialize(account:, agent: nil)
