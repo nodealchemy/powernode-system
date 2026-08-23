@@ -32,6 +32,18 @@ RSpec.describe Sdwan::WgConfigRenderer do
     described_class.render(device).lines.map(&:chomp)
   end
 
+  # Two named readers rather than one tuple: every call site wanted exactly
+  # one half, and `_preamble, sections = peer_sections(...)` forced each of
+  # them to name and discard the other (iteration-51 nit). Everything before
+  # the first [Peer] is the [Interface] preamble.
+  def preamble_of(text)
+    text.split("[Peer]").first
+  end
+
+  def peer_sections(text)
+    text.split("[Peer]").drop(1)
+  end
+
   describe "Endpoint line" do
     it "brackets an IPv6-literal hub endpoint (exact line)" do
       hub = create(:sdwan_peer, :hub, account: network.account, network: network)
@@ -58,6 +70,47 @@ RSpec.describe Sdwan::WgConfigRenderer do
     end
   end
 
+  # IMP-915b24d21f4f — BYTE-IDENTICAL PIN across the consolidation onto
+  # Sdwan::PeerEntry. These are the exact bytes an operator pastes into a real
+  # WireGuard client; the field order, the column alignment and the trailing
+  # blank line are all part of the contract, and every one of them survived
+  # the move unchanged. Written to pass BEFORE and AFTER the refactor.
+  describe "rendered [Peer] section (exact bytes)" do
+    it "renders a v6-primary hub with a v4 fallback" do
+      hub = create(:sdwan_peer, :hub, account: network.account, network: network,
+                                      endpoint_host_v4: "203.0.113.10")
+      key = add_active_key!(hub)
+
+      expect(peer_sections(described_class.render(device)).first).to eq(<<~INI)
+
+        # Hub: #{hub.node_instance.name} (v6 primary)
+        PublicKey  = #{key.public_key}
+        Endpoint   = [fd00:abcd:1::1]:51820
+        # Fallback (IPv4): 203.0.113.10:51820
+        AllowedIPs = #{network.cidr_64}
+        PersistentKeepalive = 25
+
+      INI
+    end
+
+    it "renders a v4-only hub with no fallback comment" do
+      hub = create(:sdwan_peer, account: network.account, network: network,
+                                publicly_reachable: true, endpoint_host_v6: nil,
+                                endpoint_host_v4: "203.0.113.11", endpoint_port: 51_820)
+      key = add_active_key!(hub)
+
+      expect(peer_sections(described_class.render(device)).first).to eq(<<~INI)
+
+        # Hub: #{hub.node_instance.name} (v4 primary)
+        PublicKey  = #{key.public_key}
+        Endpoint   = 203.0.113.11:51820
+        AllowedIPs = #{network.cidr_64}
+        PersistentKeepalive = 25
+
+      INI
+    end
+  end
+
   describe "key material seam" do
     it "emits the stubbed placeholder, proving the Vault read is neutralized" do
       hub = create(:sdwan_peer, :hub, account: network.account, network: network)
@@ -72,12 +125,6 @@ RSpec.describe Sdwan::WgConfigRenderer do
   # config outright. Only the hub's PUBLIC key (column-stored, non-secret)
   # may ever appear here — never the private half.
   describe "[Peer] PublicKey line" do
-    def peer_sections(text)
-      # Everything before the first [Peer] is the [Interface] preamble.
-      preamble, *sections = text.split("[Peer]")
-      [ preamble, sections ]
-    end
-
     it "emits each hub's own active public key inside its [Peer] section" do
       hub_a = create(:sdwan_peer, :hub, account: network.account, network: network)
       hub_b = create(:sdwan_peer, :hub, account: network.account, network: network,
@@ -85,7 +132,7 @@ RSpec.describe Sdwan::WgConfigRenderer do
       key_a = add_active_key!(hub_a)
       key_b = add_active_key!(hub_b)
 
-      _preamble, sections = peer_sections(described_class.render(device))
+      sections = peer_sections(described_class.render(device))
       expect(sections.length).to eq(2)
 
       section_a = sections.find { |s| s.include?("[fd00:abcd:1::1]:51820") }
@@ -98,7 +145,9 @@ RSpec.describe Sdwan::WgConfigRenderer do
       hub = create(:sdwan_peer, :hub, account: network.account, network: network)
       key = add_active_key!(hub)
 
-      preamble, sections = peer_sections(described_class.render(device))
+      text = described_class.render(device)
+      preamble = preamble_of(text)
+      sections = peer_sections(text)
 
       expect(preamble).not_to include("PublicKey")
       expect(sections.length).to eq(1)
@@ -113,7 +162,9 @@ RSpec.describe Sdwan::WgConfigRenderer do
       hub = create(:sdwan_peer, :hub, account: network.account, network: network)
       add_active_key!(hub).revoke!(reason: "test rotation")
 
-      preamble, sections = peer_sections(described_class.render(device))
+      text = described_class.render(device)
+      preamble = preamble_of(text)
+      sections = peer_sections(text)
 
       expect(sections).to be_empty
       # IMP-3b49cd166b8c: skipping a keyless hub must not be SILENT — the
@@ -135,16 +186,13 @@ RSpec.describe Sdwan::WgConfigRenderer do
   # still render a usable [Peer] section (degraded redundancy) or not (total
   # failure — nothing to connect to).
   describe "keyless-hub preamble warning" do
-    def peer_sections(text)
-      preamble, *sections = text.split("[Peer]")
-      [ preamble, sections ]
-    end
-
     it "names the hub and states total failure when every hub is keyless" do
       hub = create(:sdwan_peer, :hub, account: network.account, network: network)
       # No add_active_key! at all — genesis key never generated.
 
-      preamble, sections = peer_sections(described_class.render(device))
+      text = described_class.render(device)
+      preamble = preamble_of(text)
+      sections = peer_sections(text)
 
       expect(sections).to be_empty
       expect(preamble).to include("WARNING")
@@ -160,7 +208,9 @@ RSpec.describe Sdwan::WgConfigRenderer do
       add_active_key!(keyed_hub)
       # keyless_hub gets no key at all.
 
-      preamble, sections = peer_sections(described_class.render(device))
+      text = described_class.render(device)
+      preamble = preamble_of(text)
+      sections = peer_sections(text)
 
       # The keyed hub still renders its section — this config IS usable.
       expect(sections.length).to eq(1)
@@ -180,7 +230,9 @@ RSpec.describe Sdwan::WgConfigRenderer do
       add_active_key!(hub_a)
       add_active_key!(hub_b)
 
-      preamble, sections = peer_sections(described_class.render(device))
+      text = described_class.render(device)
+      preamble = preamble_of(text)
+      sections = peer_sections(text)
 
       expect(sections.length).to eq(2)
       expect(preamble).not_to include("WARNING")
@@ -197,7 +249,9 @@ RSpec.describe Sdwan::WgConfigRenderer do
                                         endpoint_host_v6: "fd00:abcd:1::2")
       # Neither hub gets a key.
 
-      preamble, sections = peer_sections(described_class.render(device))
+      text = described_class.render(device)
+      preamble = preamble_of(text)
+      sections = peer_sections(text)
 
       expect(sections).to be_empty
       expect(preamble).to include(hub_a.node_instance.name)
@@ -216,7 +270,9 @@ RSpec.describe Sdwan::WgConfigRenderer do
       add_active_key!(keyed_hub)
       # keyless_a and keyless_b get no key.
 
-      preamble, sections = peer_sections(described_class.render(device))
+      text = described_class.render(device)
+      preamble = preamble_of(text)
+      sections = peer_sections(text)
 
       expect(sections.length).to eq(1)
       expect(preamble).to include(keyless_a.node_instance.name)

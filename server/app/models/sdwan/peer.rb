@@ -173,12 +173,13 @@ module Sdwan
     end
 
     # Pure "host:port" formatter, bracketing the host only when it is an IPv6
-    # LITERAL. Shared by the operator-facing #endpoint_display AND the
-    # data-plane consumers routed through it (WgConfigRenderer's Endpoint
-    # line, the peer serializers' effective_endpoint) — one function, so a
-    # readability edit to the operator label can never corrupt the config
-    # text those consumers emit. (The compiled topology plans still hand-roll
-    # their endpoint strings — tracked as a separate offer.)
+    # LITERAL. Shared by the operator-facing #endpoint_display AND the peer
+    # serializers' effective_endpoint — one function, so a readability edit to
+    # the operator label can never corrupt the endpoint those surfaces emit.
+    # (The DATA-PLANE consumers no longer call this: IMP-915b24d21f4f routed
+    # the WireGuard [Peer] Endpoint line through Sdwan::PeerEntry, which calls
+    # Sdwan::HostPort.join directly rather than loading a model to format a
+    # string.)
     #
     # The bracket cannot be keyed on the tuple's :family —
     # endpoint_host_v6_must_be_v6_or_hostname explicitly accepts a hostname in
@@ -192,10 +193,9 @@ module Sdwan
     #
     # IMP-9537a74e50fa moved the body to Sdwan::HostPort — five other sites had
     # their own copies and three had drifted. This name stays published (its
-    # callers are #endpoint_display below plus peers_controller, sdwan_tool,
-    # WgConfigRenderer and both topology strategies) and delegates; the
-    # rationale above is why the shared
-    # body is shaped the way it is.
+    # callers are #endpoint_display below plus peers_controller and sdwan_tool)
+    # and delegates; the rationale above is why the shared body is shaped the
+    # way it is.
     def self.format_host_port(host, port)
       ::Sdwan::HostPort.join(host, port)
     end

@@ -19,7 +19,7 @@
 module Sdwan
   module TopologyStrategies
     class HubAndSpoke
-      DEFAULT_PERSISTENT_KEEPALIVE = 25
+      DEFAULT_PERSISTENT_KEEPALIVE = ::Sdwan::PeerEntry::DEFAULT_PERSISTENT_KEEPALIVE
 
       def initialize(network:, federation_prefixes: [])
         @network = network
@@ -62,22 +62,14 @@ module Sdwan
           allowed += Array(other.lan_subnets) if static_subnet_routing?
           # Slice 9b — VIPs held by `other` route through `other`.
           allowed += Array(@vips_by_holder[other.id]) if static_subnet_routing?
-          build_peer_entry(other, key, allowed_ips: allowed.uniq,
-                                       keepalive: other.publicly_reachable ? DEFAULT_PERSISTENT_KEEPALIVE : nil)
+          ::Sdwan::PeerEntry.build(peer: other, key: key, allowed_ips: allowed.uniq,
+                                   keepalive: other.publicly_reachable ? DEFAULT_PERSISTENT_KEEPALIVE : nil)
         end
 
-        user_device_entries = @user_devices.map do |dev|
-          {
-            peer_id: dev.id,
-            public_key: dev.public_key,
-            endpoint: nil,                          # clients connect outbound; hub doesn't dial them
-            endpoint_family: nil,
-            fallback_endpoint: nil,
-            allowed_ips: [ dev.assigned_address ],
-            persistent_keepalive: nil,              # client-side handles its own keepalive
-            kind: "user_device"                     # hint for the agent + UI
-          }
-        end
+        # Clients dial outbound, so a device entry carries no endpoint and no
+        # keepalive — the shape is Sdwan::PeerEntry.user_device's, shared with
+        # FullMesh, which had a byte-identical copy of this literal.
+        user_device_entries = @user_devices.map { |dev| ::Sdwan::PeerEntry.user_device(dev) }
 
         peer_entries + user_device_entries
       end
@@ -116,8 +108,8 @@ module Sdwan
                     # spoke's WG iface must permit the federated prefix or the
                     # packets are dropped before they reach the tunnel.
                     @federation_prefixes
-          build_peer_entry(hub, key, allowed_ips: allowed.uniq,
-                                     keepalive: DEFAULT_PERSISTENT_KEEPALIVE)
+          ::Sdwan::PeerEntry.build(peer: hub, key: key, allowed_ips: allowed.uniq,
+                                   keepalive: DEFAULT_PERSISTENT_KEEPALIVE)
         end
       end
 
@@ -167,29 +159,6 @@ module Sdwan
         return [] unless @network.respond_to?(:virtual_ips)
 
         @network.virtual_ips.where(state: %w[active pending]).pluck(:cidr).uniq
-      end
-
-      # Slice 7a: emits a single-Endpoint [Peer] entry (WireGuard's protocol
-      # accepts only one Endpoint per [Peer]) plus a fallback_endpoint hint
-      # that the agent uses when the primary's reachability fails.
-      def build_peer_entry(peer, key, allowed_ips:, keepalive:)
-        primary = peer.primary_endpoint
-        fallback = peer.fallback_endpoint
-        {
-          peer_id: peer.id,
-          public_key: key.public_key,
-          # Consumed verbatim by the agent's `wg setconf` (state.go →
-          # wg_applier.go) — Peer.format_host_port brackets IPv6 literals.
-          endpoint: primary && Peer.format_host_port(primary[:host], primary[:port]),
-          endpoint_family: primary && primary[:family].to_s,
-          fallback_endpoint: fallback && {
-            host: fallback[:host],
-            port: fallback[:port],
-            family: fallback[:family].to_s
-          },
-          allowed_ips: allowed_ips,
-          persistent_keepalive: keepalive
-        }
       end
     end
   end

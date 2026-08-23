@@ -13,7 +13,7 @@ require "stringio"
 
 module Sdwan
   class WgConfigRenderer
-    DEFAULT_PERSISTENT_KEEPALIVE = 25
+    DEFAULT_PERSISTENT_KEEPALIVE = ::Sdwan::PeerEntry::DEFAULT_PERSISTENT_KEEPALIVE
 
     def self.render(device)
       new(device).render
@@ -29,7 +29,13 @@ module Sdwan
                       .where(publicly_reachable: true)
                       .includes(:keys)
                       .to_a
-                      # NOTE: the render loop below dereferences primary_endpoint without a nil guard — it depends on this filter.
+                      # LOAD-BEARING, and not merely cosmetic. Sdwan::PeerEntry.build
+                      # is nil-safe now, so dropping this filter no longer crashes —
+                      # it renders an endpoint-less second [Peer] carrying the SAME
+                      # AllowedIPs as the real hub, and WireGuard cryptokey routing
+                      # requires AllowedIPs disjoint across peers (the kernel assigns
+                      # an overlapping prefix to whichever peer was configured last).
+                      # An undialable hub is also nothing a client could reach. Keep it.
                       .select(&:primary_endpoint)
     end
 
@@ -93,28 +99,18 @@ module Sdwan
         end
       end
 
+      # IMP-915b24d21f4f: the [Peer] field set is Sdwan::PeerEntry's, not this
+      # renderer's. It used to be hand-built here, which is the only reason
+      # IMP-651ec6336654 was possible — WireGuard requires PublicKey in every
+      # section, build_peer_entry always carried it, and this loop did not.
+      # AllowedIPs stays OURS (a user device's routable surface is not a node
+      # spoke's) and is handed to the builder as an argument.
       hub_keys.each do |hub, key|
         next unless key
 
-        primary = hub.primary_endpoint
-        fallback = hub.fallback_endpoint
-        out.puts "[Peer]"
-        out.puts "# Hub: #{hub_label(hub)} (#{primary[:family]} primary)"
-        # IMP-651ec6336654: WireGuard requires PublicKey in every [Peer]
-        # section — clients reject the config without it. This is the hub's
-        # PUBLIC key (column-stored, non-secret); the private half never
-        # leaves Vault.
-        out.puts "PublicKey  = #{key.public_key}"
-        # Slice 7a: when both v6 and v4 endpoints are configured, the v6
-        # one is the canonical Endpoint; the v4 alternative is documented
-        # in a comment so operators (or a smart WG client) can swap to
-        # it manually if v6 reachability breaks. Stock WG itself only
-        # reads one Endpoint line; the comment is operator-facing.
-        out.puts "Endpoint   = #{Peer.format_host_port(primary[:host], primary[:port])}"
-        out.puts "# Fallback (IPv4): #{fallback[:host]}:#{fallback[:port]}" if fallback
-        out.puts "AllowedIPs = #{allowed_ips.join(', ')}"
-        out.puts "PersistentKeepalive = #{DEFAULT_PERSISTENT_KEEPALIVE}"
-        out.puts ""
+        entry = ::Sdwan::PeerEntry.build(peer: hub, key: key, allowed_ips: allowed_ips,
+                                         keepalive: DEFAULT_PERSISTENT_KEEPALIVE)
+        out.print ::Sdwan::PeerEntry.to_ini(entry, hub_label: hub_label(hub))
       end
 
       out.string
