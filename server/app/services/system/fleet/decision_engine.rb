@@ -351,6 +351,36 @@ module System
           skill: nil,
           action_category: "system.sdwan_user_device_config_investigate"
         },
+        # IMP-3855ff9908f2 — ModuleVerifyFailedSensor. The manifest's `verify:`
+        # block asserts a RESOLVED PATH (never mere existence) in BOTH a login
+        # and a non-login shell; the agent reports what the node actually
+        # resolved, and this lane is what carries a mismatch to a person.
+        #
+        # skill: nil, and there is no safe applier to name. A failed probe
+        # means the node's filesystem or PATH is not what the manifest says:
+        # a wrong artifact, a shadowing package, a profile script reordering
+        # PATH. Re-serving the same module changes none of those — in the
+        # gitleaks v4 incident the artifact the platform would re-serve was
+        # the EMPTY one that caused the failure. The repair is a person
+        # changing an artifact or an image.
+        #
+        # Same category for both kinds because they share one disposition
+        # (reach an operator), while keeping distinct kinds and fingerprints
+        # so a proven failure and an unverified fleet stay separable.
+        #
+        # DO NOT collapse to system.observation — the fleet seed maps that to
+        # auto_approve, which files the signal for dashboards and reaches NO
+        # operator. Listed in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES for the
+        # standing-fingerprint reason recorded there.
+        "system.module_verify_failed" => {
+          skill: nil,
+          action_category: "system.module_verify_investigate"
+        },
+        "system.module_verify_not_measured" => {
+          skill: nil,
+          action_category: "system.module_verify_investigate"
+        },
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
           action_category: "system.sdwan_vip_failover",

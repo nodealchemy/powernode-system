@@ -112,6 +112,7 @@ module System
         system.sdwan_bgp_observation_investigate
         system.sdwan_apply_investigate
         system.sdwan_user_device_config_investigate
+        system.module_verify_investigate
       ].freeze
 
       def initialize(account:, agent: nil)

@@ -139,6 +139,25 @@ module Api
               Rails.logger.warn("[StatusController] sdwan apply state ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
             end
 
+            # IMP-3855ff9908f2 — the agent's `verify:` PROBE observation. The
+            # platform can prove it SERVED a module and the agent can prove it
+            # MOUNTED one; neither says whether the capability the module
+            # exists to provide is reachable on the node afterwards. That
+            # answer exists only on the node. Absent block => nothing written
+            # (absence stays absence; ModuleVerifyFailedSensor reads it as NOT
+            # MEASURED, never as verified). Wrapped so an ingest bug cannot
+            # bounce telemetry, exactly like the two blocks above.
+            begin
+              verify_obs = params[:module_verify_state]
+              verify_obs = verify_obs.to_unsafe_h if verify_obs.respond_to?(:to_unsafe_h)
+              ::System::ModuleVerifyStateWriter.write!(
+                instance: current_instance,
+                payload:  verify_obs
+              )
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] module verify state ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
+            end
+
             # Boot-image upgrade reconcile (campaign 019f505f inc 2): the node
             # reboots mid-task, so the agent's /complete is unreliable — the
             # authoritative success signal is this post-reboot heartbeat's

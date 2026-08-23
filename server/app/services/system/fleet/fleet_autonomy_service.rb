@@ -298,7 +298,17 @@ module System
         # already in the field. Emits system.sdwan_user_device_config_stale →
         # system.sdwan_user_device_config_investigate (notify-only; the
         # drifted file lives on a laptop the platform cannot reach).
-        ::System::Fleet::Sensors::SdwanUserDeviceConfigStalenessSensor
+        ::System::Fleet::Sensors::SdwanUserDeviceConfigStalenessSensor,
+        # IMP-3855ff9908f2 — the `verify:` probe oracle. ModuleDriftSensor
+        # scores digests and ModulePromotionSensor scores publication; neither
+        # can say whether the capability a module exists to provide is
+        # REACHABLE on the node afterwards. The agent answers that from the
+        # manifest's verify: block on every heartbeat. Emits
+        # system.module_verify_failed / system.module_verify_not_measured ->
+        # system.module_verify_investigate (notify-only; no applier exists,
+        # because re-serving the same artifact cannot change what the node
+        # resolved — the gitleaks v4 empty-artifact incident is the proof).
+        ::System::Fleet::Sensors::ModuleVerifyFailedSensor
       ].freeze
 
       def permitted_actions

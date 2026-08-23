@@ -237,6 +237,24 @@ fleet_policies = {
   # fingerprint stands until a human acts.
   "system.sdwan_user_device_config_investigate" => "notify_and_proceed",
 
+  # IMP-3855ff9908f2 — ModuleVerifyFailedSensor (module_verify_failed +
+  # module_verify_not_measured): the agent's OBSERVED answer to "does this
+  # node actually provide what the module declares", which nothing produced
+  # before this. Seeded HERE for the same mechanical reason as the categories
+  # above — the sensor fires from FleetAutonomyService::SENSORS and gates as
+  # THIS agent, so a policy anywhere else is invisible to the tick and every
+  # signal would die at the gate.
+  #
+  # notify_and_proceed, never auto_approve: there is NO applier and can be
+  # none — a failed probe means the node's filesystem or PATH disagrees with
+  # the manifest (a wrong artifact, a shadowing package, a profile script
+  # reordering PATH), and re-serving the same module fixes none of them. In
+  # the gitleaks v4 incident the artifact the platform would re-serve was the
+  # empty one. "Proceed" means "notify the operator". Also in
+  # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
+  # fingerprint stands until a human changes an artifact or an image.
+  "system.module_verify_investigate" => "notify_and_proceed",
+
   # Read/notify
   "system.module_assign"           => "notify_and_proceed",
   "system.instance_reboot"         => "notify_and_proceed",
