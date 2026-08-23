@@ -26,7 +26,9 @@ module System
   #
   #   1. A `command` probe asserts RESOLVES_TO — the resolved path — never
   #      mere existence. `resolves_to` is REQUIRED (see
-  #      ManifestImportService#validate_verify): a probe that cannot say
+  #      System::ModuleConfigValidator#validate_verify, which both the
+  #      manifest-import path and the operator API's `config:` write call):
+  #      a probe that cannot say
   #      WHICH file must answer the name is the existence check that already
   #      passed while the thing was broken, and this platform will not import
   #      one. For the same reason `command` must be a BARE NAME: a probe that
@@ -101,9 +103,11 @@ module System
     class << self
       # Parses NodeModule#config into normalized probes. Pure: no DB, no
       # writes. Anything malformed is DROPPED rather than raised — the
-      # manifest validator (ManifestImportService#validate_verify) is the
-      # gate that rejects a bad declaration, and it does so at validation
-      # time so CI catches it. A survivor here is corrupt data, and dropping
+      # shared validator (System::ModuleConfigValidator#validate_verify) is
+      # the gate that rejects a bad declaration, and BOTH writers run it: the
+      # manifest-import path at validation time so CI catches it, and
+      # node_modules#create/#update before any `config:` write reaches the
+      # column (IMP-7d4c691ffe91). A survivor here is corrupt data, and dropping
       # it fails closed: the module declares no probe, so nothing claims it
       # was verified. It never fails OPEN into "verified with no evidence".
       def probes(node_module)
