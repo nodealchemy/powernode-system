@@ -91,6 +91,19 @@ module System
       #                                            rollout replaces the
       #                                            agents, which is slower
       #                                            still.
+      #   system.sdwan_user_device_config_investigate — IMP-7034199a5a19. An
+      #                                            issued user-device
+      #                                            WireGuard config whose
+      #                                            AllowedIPs predates a VIP /
+      #                                            lan_subnet / federation
+      #                                            prefix added since. There
+      #                                            is no applier and can be
+      #                                            none: the drifted artefact
+      #                                            is a text file on a user's
+      #                                            laptop. The condition
+      #                                            clears only when a person
+      #                                            re-issues the device, far
+      #                                            beyond SETTLE_WINDOW.
       NON_REMEDIATING_ACTION_CATEGORIES = %w[
         system.observation
         system.sdwan_service_health_investigate
@@ -98,6 +111,7 @@ module System
         system.sdwan_ovn_deployment_investigate
         system.sdwan_bgp_observation_investigate
         system.sdwan_apply_investigate
+        system.sdwan_user_device_config_investigate
       ].freeze
 
       def initialize(account:, agent: nil)

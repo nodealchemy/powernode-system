@@ -329,6 +329,28 @@ module System
           skill: nil,
           action_category: "system.sdwan_apply_investigate"
         },
+        # IMP-7034199a5a19 — SdwanUserDeviceConfigStalenessSensor. A user
+        # device's WireGuard config is rendered ONCE, at download time, and the
+        # bootstrap URL is 410 immediately after; node peers re-pull the same
+        # surface every tick. So a VIP, a peer lan_subnet, or a federation
+        # prefix added afterwards is missing from every previously-issued
+        # client's AllowedIPs — silently, since AllowedIPs is a routing filter
+        # and not a label.
+        #
+        # skill: nil, and NO remediation_action is named. The drifted artefact
+        # is a text file on a user's laptop: the platform cannot reach it, and
+        # binding the nearest side-effectful sdwan_* executor would act on
+        # plumbing that is fine. The repair is a person re-issuing the device.
+        #
+        # DO NOT collapse to system.observation — the fleet seed maps that to
+        # auto_approve, which files the signal for dashboards and reaches NO
+        # operator, which is the entire point of this lane. Listed in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES for the
+        # standing-fingerprint reason recorded there.
+        "system.sdwan_user_device_config_stale" => {
+          skill: nil,
+          action_category: "system.sdwan_user_device_config_investigate"
+        },
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
           action_category: "system.sdwan_vip_failover",

@@ -222,6 +222,21 @@ fleet_policies = {
   # persistently failing applier holds one fingerprint indefinitely.
   "system.sdwan_apply_investigate" => "notify_and_proceed",
 
+  # IMP-7034199a5a19 — SdwanUserDeviceConfigStalenessSensor. An issued user
+  # device's config is rendered once and never re-pulled, so a VIP, a peer
+  # lan_subnet, or a federation prefix added afterwards is missing from every
+  # config already in the field. Seeded HERE for the same mechanical reason as
+  # the categories above — the sensor fires from FleetAutonomyService::SENSORS
+  # and gates as THIS agent, so a policy on SDWAN Manager would be invisible to
+  # the tick and every signal would die at the gate.
+  #
+  # notify_and_proceed, never auto_approve: there is NO applier and can be none
+  # — the drifted artefact is a text file on a user's laptop. "Proceed" means
+  # "notify the operator", who re-issues the device. Also in
+  # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
+  # fingerprint stands until a human acts.
+  "system.sdwan_user_device_config_investigate" => "notify_and_proceed",
+
   # Read/notify
   "system.module_assign"           => "notify_and_proceed",
   "system.instance_reboot"         => "notify_and_proceed",

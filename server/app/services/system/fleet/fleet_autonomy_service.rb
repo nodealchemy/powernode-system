@@ -290,7 +290,15 @@ module System
         # system.sdwan_apply_failed / system.sdwan_apply_not_measured →
         # system.sdwan_apply_investigate (notify-level; no applier exists,
         # because the agent already retries the apply every tick).
-        ::System::Fleet::Sensors::SdwanApplyHealthSensor
+        ::System::Fleet::Sensors::SdwanApplyHealthSensor,
+        # IMP-7034199a5a19 — the POST-ISSUE half of user-device config
+        # correctness. WgConfigRenderer gets AllowedIPs right at download
+        # time; a user device never re-pulls, so every VIP / lan_subnet /
+        # federation prefix added afterwards is absent from every config
+        # already in the field. Emits system.sdwan_user_device_config_stale →
+        # system.sdwan_user_device_config_investigate (notify-only; the
+        # drifted file lives on a laptop the platform cannot reach).
+        ::System::Fleet::Sensors::SdwanUserDeviceConfigStalenessSensor
       ].freeze
 
       def permitted_actions

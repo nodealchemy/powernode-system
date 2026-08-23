@@ -655,6 +655,7 @@ module PowernodeSystem
           system.sdwan_ovn_deployment_investigate
           system.sdwan_bgp_observation_investigate
           system.sdwan_apply_investigate
+          system.sdwan_user_device_config_investigate
         ])
 
         # Phase 3 (Federation & Multi-Site) — SDWAN-first federation actions.
