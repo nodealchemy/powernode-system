@@ -212,10 +212,26 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 ### `project_slo_sensor` — Project-scoped SLO monitoring
 
 **Source:** `project_slo_sensor.rb`
-**Watches:** Project-scoped rolling-window metrics (latency, error rate, cost guardrail).
+**Watches:** Project-scoped rolling-window metrics (latency, error rate, cost guardrail, SDWAN throughput), read from `System::ProjectMetric` rows written each tick by `System::ProjectMetricsCollector`.
 **Threshold:** Per-project SLO breach OR cost guardrail trip → typed signal (`project.slo_violation`, `project.drift`, `project.cost_breach`).
 **Signals:** `project.slo_violation`, `project.drift`, `project.cost_breach`
 **Recommended remediation:** None automated — feeds the project dashboard for operator review.
+
+**Operator-declared targets** live on the mission's `configuration["slo_targets"]`:
+
+| Key | Metric | Default |
+|---|---|---|
+| `availability_pct` | `availability_pct` | 99.5 |
+| `p99_latency_ms` | `p99_latency_ms` | 250 (or `brief.latency_targets_ms.p99`) |
+| `cost_ceiling_usd` | `cost_usd_mtd` | none — declared-only (falls back to `brief.budget_cap_usd_monthly`) |
+| `min_throughput_bytes_per_s` | `sdwan_throughput_bytes_per_s` | **none — declared-only** |
+
+`min_throughput_bytes_per_s` (IMP-25e75f960dee) is a FLOOR on the mission's aggregate SDWAN fabric activity: the sum over the peers of the mission's provisioned instances of `(rx_bytes + tx_bytes)` divided by each peer's own observation interval (`counters_sampled_at`, stamped server-side at heartbeat receipt), from the per-peer WireGuard counters the node agent reports. Both directions of every endpoint are counted, so traffic between two of the mission's own instances contributes four times — it measures fabric activity, not distinct payload bytes. Declare it against that definition.
+
+Two properties are deliberate and worth knowing before you rely on it:
+
+- **It is declared-only.** With no `min_throughput_bytes_per_s` the check never runs, so adding the metric changed no existing mission's behaviour.
+- **It goes dark rather than guess.** The counters are nullable, and NULL (never measured) is kept distinct from a measured 0 (tunnel up, idle) at every step. If any peer of the mission's instances fails to yield a measurable interval in a tick — never reported, stalled heartbeat, no baseline yet — the sample is published as `unavailable` (`observed: nil`) with `peer_count` / `rated_peer_count` recorded, rather than as a partial sum. A partial sum can only understate, and a floor fires on `observed < target`, so publishing one could only ever fabricate a breach.
 
 ### `sdwan_credential_expiry_sensor` — SDWAN material expiry watch
 

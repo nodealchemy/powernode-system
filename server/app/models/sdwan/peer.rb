@@ -294,6 +294,34 @@ module Sdwan
       }
     end
 
+    # IMP-25e75f960dee — the reset-aware differencing rule stated above, AS
+    # CODE, because this is where the second reader will come looking for it.
+    # `observed_traffic` publishes RAW CUMULATIVE counters, so every reader
+    # that wants an interval figure has to re-derive the same three rules, and
+    # a reader that gets any one of them wrong fabricates traffic:
+    #
+    #   older is nil  -> NO BASELINE. The interval is unmeasurable, so the
+    #                    answer is nil, NOT 0. A peer measured for the first
+    #                    time has not been observed to move zero bytes; it has
+    #                    not been observed over an interval at all.
+    #   newer is nil  -> NOT MEASURED this time round. Same answer: nil.
+    #   newer < older -> the WireGuard interface was recreated and the kernel
+    #                    restarted the counter at zero. The interval's traffic
+    #                    is `newer` ITSELF — everything counted since the
+    #                    reset. Clamping to 0 loses it; `newer - older` is
+    #                    negative and lies about the direction.
+    #   otherwise     -> newer - older, which is legitimately 0 for a peer
+    #                    that was up and idle.
+    #
+    # Returns Integer or nil, and the two are DIFFERENT FACTS: 0 is MEASURED
+    # AND IDLE, nil is NOT MEASURABLE. A caller that collapses them re-creates
+    # exactly the confusion the nullable columns exist to prevent.
+    def self.counter_delta(older:, newer:)
+      return nil if older.nil? || newer.nil?
+
+      newer < older ? newer : newer - older
+    end
+
     # Returns true when this peer's NodeInstance is running k3s — i.e.
     # the underlying Node has either the `k3s-server` or `k3s-agent`
     # module assigned. Used by the SDWAN routing compilers to decide

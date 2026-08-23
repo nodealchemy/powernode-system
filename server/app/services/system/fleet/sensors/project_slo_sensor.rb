@@ -8,7 +8,7 @@ module System
       # of three signal kinds when their declared SLO targets are breached:
       #
       #   - `system.project_slo_violation` — observed metric outside target
-      #     window (latency, availability, etc.)
+      #     window (latency, availability, SDWAN throughput floor)
       #   - `system.project_drift`         — runtime configuration drift
       #     against the captured Project Brief (region count, replica count)
       #   - `system.project_cost_breach`   — month-to-date cost trending
@@ -84,7 +84,14 @@ module System
                                   DEFAULT_P99_LATENCY_MS.to_f,
             "cost_ceiling_usd" => (slo["cost_ceiling_usd"] || brief["budget_cap_usd_monthly"])&.to_f,
             "expected_replica_count" => brief.dig("scale", "initial")&.to_i,
-            "expected_region_count" => Array(brief["regions"]).size
+            "expected_region_count" => Array(brief["regions"]).size,
+            # IMP-25e75f960dee — SDWAN throughput floor. NO DEFAULT, on purpose:
+            # unlike latency/availability there is no universally sane minimum
+            # rate for a tunnel, and a defaulted floor would fire on every
+            # mission the moment the metric went live. Declared-only, exactly
+            # like cost_ceiling_usd — so a mission that says nothing keeps its
+            # current behaviour byte for byte.
+            "min_throughput_bytes_per_s" => slo["min_throughput_bytes_per_s"]&.to_f
           }
         end
 
@@ -124,7 +131,15 @@ module System
             "p99_latency_ms" => by_name["p99_latency_ms"]&.to_f,
             "month_to_date_cost_usd" => by_name["cost_usd_mtd"]&.to_f,
             "actual_replica_count" => by_name["replica_count"]&.to_i,
-            "actual_region_count" => by_name["region_count"]&.to_i
+            "actual_region_count" => by_name["region_count"]&.to_i,
+            # `&.to_f`, NEVER a bare `.to_f`. nil.to_f is 0.0 in Ruby, and 0.0
+            # is a REAL, meaningful throughput reading here (tunnels up, no
+            # traffic) — so a bare conversion would turn "the collector could
+            # not measure this mission" into "this mission moved nothing",
+            # which is the exact breach the floor below fires on. The safe
+            # navigation IS the oracle; see the mutation spec in
+            # spec/services/system/fleet/sensors/project_slo_sensor_spec.rb.
+            "sdwan_throughput_bytes_per_s" => by_name["sdwan_throughput_bytes_per_s"]&.to_f
           }
         rescue StandardError => e
           Rails.logger.warn("[ProjectSloSensor] DB metrics read failed for mission=#{mission.id}: #{e.message}")
@@ -140,7 +155,11 @@ module System
             "p99_latency_ms" => obs["p99_latency_ms"]&.to_f,
             "month_to_date_cost_usd" => obs["month_to_date_cost_usd"]&.to_f,
             "actual_replica_count" => obs["actual_replica_count"]&.to_i,
-            "actual_region_count" => obs["actual_region_count"]&.to_i
+            "actual_region_count" => obs["actual_region_count"]&.to_i,
+            # Same `&.` rule as the DB arm: a mission whose synthetic
+            # observation blob omits throughput has not been measured, and
+            # must not read as a floor breach.
+            "sdwan_throughput_bytes_per_s" => obs["sdwan_throughput_bytes_per_s"]&.to_f
           }
         end
 
@@ -193,6 +212,41 @@ module System
                 correlation_id: correlation
               },
               fingerprint: "project_slo_violation:#{mission.id}:availability_pct"
+            )
+          end
+
+          # IMP-25e75f960dee — the SDWAN throughput floor, the first consumer
+          # of the per-peer WireGuard byte counters IMP-ab73cc2fca65 landed.
+          # Third in the chain because this method returns the FIRST violated
+          # metric and latency/availability remain the classic breaches.
+          #
+          # `!observed.nil?`, not `.present?`. 0.0 is a MEASURED value — a
+          # mission whose tunnels carried nothing for the interval is precisely
+          # the breach worth firing on — and nil means unmeasured. Both happen
+          # to satisfy `.present?`/`.blank?` correctly today only by accident
+          # of 0.0 being present in Ruby; spelling it nil-explicitly is what
+          # stops a later reader "tidying" it into a truthiness test that
+          # silently swallows the measured zero.
+          #
+          # The floor is only ever non-nil when the operator declared one, so
+          # this branch is unreachable for every mission that hasn't opted in.
+          floor = targets["min_throughput_bytes_per_s"]
+          throughput = obs["sdwan_throughput_bytes_per_s"]
+          if !floor.nil? && floor.positive? && !throughput.nil? && throughput < floor
+            breach_pct = pct_under(throughput, floor)
+            return build_signal(
+              kind: "system.project_slo_violation",
+              severity: severity_for(breach_pct),
+              payload: {
+                mission_id: mission.id,
+                metric: "sdwan_throughput_bytes_per_s",
+                observed: throughput,
+                target: floor,
+                breach_pct: breach_pct,
+                replica_count: obs["actual_replica_count"],
+                correlation_id: correlation
+              },
+              fingerprint: "project_slo_violation:#{mission.id}:sdwan_throughput_bytes_per_s"
             )
           end
 

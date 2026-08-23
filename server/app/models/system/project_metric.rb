@@ -28,6 +28,7 @@ module System
       replica_count
       region_count
       cost_usd_mtd
+      sdwan_throughput_bytes_per_s
     ].freeze
 
     belongs_to :mission, class_name: "::Ai::Mission"
