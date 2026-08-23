@@ -436,8 +436,16 @@ RSpec.describe Ai::Tools::SdwanTool do
     # Guard: the refusal is scoped to the token, not to the action. Proposing a
     # peer over MCP still works — this is what keeps the fix from reading as a
     # removal of the capability.
+    #
+    # Value semantics ride the gate's :proceed branch since IMP-2795453255c3
+    # (sdwan.federation_peer_propose — the approval-path behaviour lives in
+    # sdwan_mcp_federation_gate_parity_spec.rb). Without auto_approve_policy!
+    # these would assert against a parked operation and read "the capability
+    # was removed" for what is actually an approval waiting to be granted.
     context "without a token request" do
       it "still proposes the peer when generate_token is omitted" do
+        auto_approve_policy!
+
         expect { @r = propose }.to change(::System::FederationPeer, :count).by(1)
 
         expect(@r[:success]).to be true
@@ -445,6 +453,8 @@ RSpec.describe Ai::Tools::SdwanTool do
       end
 
       it "still proposes the peer when generate_token is explicitly false" do
+        auto_approve_policy!
+
         r = propose(generate_token: false)
 
         expect(r[:success]).to be true
@@ -487,10 +497,17 @@ RSpec.describe Ai::Tools::SdwanTool do
   # peer serializer projected no metadata — so the reason it advertises as
   # "recorded on the peer" could not be read back through any MCP action
   # (revoke's own response, get, or list). IMP-8ce2d82065b9.
+  #
+  # Value semantics ride the gate's :proceed branch since IMP-2795453255c3
+  # (sdwan.federation_peer_revoke); the parked branch — where the reason must
+  # NOT be recorded until an operator approves — is
+  # sdwan_mcp_federation_gate_parity_spec.rb's.
   describe "system_sdwan_revoke_federation_peer" do
     let!(:peer) { create(:system_federation_peer, account: account, status: "accepted") }
 
     it "records the reason and surfaces it in the serialized peer" do
+      auto_approve_policy!
+
       r = call("system_sdwan_revoke_federation_peer",
                federation_peer_id: peer.id,
                reason: "remote signing key compromised")
@@ -503,9 +520,12 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     it "reports a nil revocation_reason for a peer revoked without one" do
+      auto_approve_policy!
+
       r = call("system_sdwan_revoke_federation_peer", federation_peer_id: peer.id)
 
       expect(r[:success]).to be true
+      expect(r[:data][:federation_peer][:status]).to eq("revoked")
       expect(r[:data][:federation_peer]).to have_key(:revocation_reason)
       expect(r[:data][:federation_peer][:revocation_reason]).to be_nil
     end

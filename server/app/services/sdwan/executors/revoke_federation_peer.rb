@@ -17,14 +17,14 @@ module Sdwan
       # It rides through to FederationPeer#revoke!, which stores it as
       # metadata["revocation_reason"] — the value every read-back projects.
       #
-      # Two controller actions reach this executor under the same
-      # `sdwan.federation_peer_revoke` gate, and only one supplies a reason:
-      # #revoke (POST) forwards params[:reason]; #destroy (DELETE) sends only
-      # the peer id, so a DELETE-shaped revocation is reason-less by
-      # construction, not by this bug. The MCP action
-      # system_sdwan_revoke_federation_peer does NOT come through here at all —
-      # it calls FederationPeer#revoke! directly (and, unlike these two, is
-      # ungated).
+      # Four call sites reach this executor under the same
+      # `sdwan.federation_peer_revoke` gate, and one of them supplies no
+      # reason: #revoke (POST) forwards params[:reason], as do the two MCP
+      # arms (system_sdwan_revoke_federation_peer and
+      # system_sdwan_update_federation_peer's status → "revoked" leg, both
+      # routed here by IMP-2795453255c3); #destroy (DELETE) sends only the
+      # peer id, so a DELETE-shaped revocation is reason-less by construction,
+      # not by a bug.
       #
       # The former `respond_to?(:revoke!)` fallback wrote a `revoked_at` column
       # that system_federation_peers does not have, so it could only ever raise;

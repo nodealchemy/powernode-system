@@ -7,15 +7,28 @@
 # v1 transitions: propose (create) → accept → revoke (terminal). The
 # controller honors V1_TRANSITIONS on the model — attempts to flip status
 # outside the allowed set return 422. All three trust-boundary verbs are
-# approval-gated on every REST surface that reaches them: propose (#create),
-# accept (#update, status → accepted) and revoke (#destroy, #revoke, and
-# #update with status → revoked). The remaining transitions are inline.
+# approval-gated here: propose (#create), accept (#update, status → accepted)
+# and revoke (#destroy, #revoke, and #update with status → revoked). The
+# remaining transitions are inline.
 #
-# REST is not the whole surface, and this comment claims nothing about the
-# rest of it: Ai::Tools::SdwanTool#revoke_federation_peer calls
-# FederationPeer#revoke! directly with no gate (its sibling
-# accept_federation_peer does gate), so an MCP-driven agent still reaches
-# "revoked" ungated. Tracked separately as IMP-2795453255c3.
+# The SDWAN federation-peer surface is now gated on BOTH its halves:
+# IMP-2795453255c3 routed Ai::Tools::SdwanTool#propose_federation_peer and
+# #revoke_federation_peer — the last two arms calling create!/revoke! inline
+# while their twins here were gated — through the same categories and
+# executors, so an agent refused on one of those two surfaces can no longer
+# reach the other. Held by
+# spec/services/ai/tools/sdwan_mcp_federation_gate_parity_spec.rb.
+#
+# That is a claim about THIS controller and that tool, and deliberately not
+# about System::FederationPeer as a whole — the model is reached ungated from
+# three other places, all outside the SDWAN slice and tracked separately:
+# Api::V1::System::Platform::PeersController#invite (a bare save! plus a
+# plaintext generate_acceptance_token!) and #revoke, and
+# Api::V1::System::Federation::ChildrenController#revoke. The previous
+# revision of this comment universally quantified over "every surface" while
+# those three contradicted it; the whole point of IMP-2795453255c3 was that a
+# parity claim wider than its oracle is how the MCP arms stayed inline for as
+# long as they did.
 #
 # Slice 6 of the SDWAN plan.
 module Api

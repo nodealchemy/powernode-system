@@ -76,6 +76,16 @@ module Ai
       # executor, category, engine registration and seeded policy row already
       # existed; only the call did not. Held by
       # spec/services/ai/tools/sdwan_mcp_destroy_gate_parity_spec.rb.
+      #
+      # IMP-2795453255c3 closed the last two — the FEDERATION pair,
+      # propose_federation_peer and revoke_federation_peer, which crossed an
+      # INSTANCE boundary while calling create!/revoke! inline. The revoke arm
+      # was the sharper of the two: the bypass needed no second surface at all,
+      # since update_federation_peer's status → "revoked" leg had gated on the
+      # identical category since IMP-ca3440a11a9a. Held by
+      # spec/services/ai/tools/sdwan_mcp_federation_gate_parity_spec.rb. As of
+      # that change every destructive and trust-boundary arm on this tool
+      # routes through #gated_result below; a new one must too.
 
       ACTION_PERMISSIONS = {
         "system_sdwan_list_networks"   => "system.sdwan.networks.read",
@@ -372,7 +382,7 @@ module Ai
             parameters: { federation_peer_id: { type: "string", required: true, description: "UUID of the federation peer to fetch" } }
           },
           "system_sdwan_propose_federation_peer" => {
-            description: "Propose a new federation peer. Status starts at 'proposed'. Acceptance-token minting is NOT available on this surface — a tool result reaches the model provider, so the plaintext cannot be delivered here. To obtain the single-use acceptance token for the Phase 11b handshake, the operator proposes over the REST API (POST /api/v1/system/sdwan/federation_peers), which mints by default and reveals the plaintext once in the approval decision response.",
+            description: "Propose a new federation peer. Status starts at 'proposed'. Approval-gated (sdwan.federation_peer_propose) — under require_approval this returns pending: true with a deferred_operation_id and no peer row exists until an operator approves. Acceptance-token minting is NOT available on this surface — a tool result reaches the model provider, so the plaintext cannot be delivered here. To obtain the single-use acceptance token for the Phase 11b handshake, the operator proposes over the REST API (POST /api/v1/system/sdwan/federation_peers), which mints by default and reveals the plaintext once in the approval decision response.",
             parameters: {
               remote_instance_url: { type: "string", required: true, description: "Base URL of the remote Powernode instance to peer with" },
               remote_instance_id: { type: "string", required: false, description: "Optional identifier of the remote Powernode instance" },
@@ -389,7 +399,7 @@ module Ai
             }
           },
           "system_sdwan_revoke_federation_peer" => {
-            description: "Revoke a federation peer (terminal in v1)",
+            description: "Revoke a federation peer (terminal in v1) — cuts cross-instance routing, and federated traffic stops immediately. Approval-gated (sdwan.federation_peer_revoke) — under require_approval this returns pending: true with a deferred_operation_id and nothing is cut until an operator approves. Same category and executor as system_sdwan_update_federation_peer with status 'revoked', so one approval policy covers both routes to a revoked peer on this tool.",
             parameters: {
               federation_peer_id: { type: "string", required: true, description: "UUID of the federation peer to revoke" },
               reason: { type: "string", required: false, description: "Optional human-readable revocation reason (recorded on the peer)" }
@@ -1721,6 +1731,25 @@ module Ai
       # and models routinely serialize a boolean argument as the string "true".
       # `== true` would let that through silently — and silently is the one thing
       # this refusal must never be.
+      #
+      # IMP-2795453255c3 — routed through Ai::AutonomyGate as
+      # sdwan.federation_peer_propose, matching FederationPeersController#create.
+      # Proposing opens a cross-INSTANCE trust relationship, which is why the
+      # REST twin has gated it from the start; this arm called create! inline,
+      # so an agent refused at the console stood the same peer up here.
+      #
+      # The candidate is validated BEFORE the gate and never saved —
+      # Sdwan::Executors::ProposeFederationPeer stays the sole writer, so the
+      # proposal survives the approval window and is performed server-side.
+      #
+      # `generate_token: false` is passed EXPLICITLY rather than omitted. The
+      # executor mints by default (`attrs[:generate_token] != false`), so
+      # forwarding the caller's attributes untouched would start minting a
+      # token this surface has already refused to deliver — stranding the peer
+      # behind a secret nobody ever saw, which is precisely what the refusal
+      # above exists to prevent. It is a CONTROL FLAG, not a column
+      # (ProposeFederationPeer::CONTROL_FLAG_KEYS), so it rides in the replayed
+      # attributes and never reaches the candidate built here.
       def propose_federation_peer(params)
         if ::ActiveModel::Type::Boolean.new.cast(params[:generate_token])
           return error_result(
@@ -1734,22 +1763,73 @@ module Ai
           )
         end
 
-        peer = ::System::FederationPeer.create!(
-          account_id: @account.id,
-          status: "proposed",
+        attributes = {
           remote_instance_url: params[:remote_instance_url],
           remote_instance_id: params[:remote_instance_id],
           remote_account_id: params[:remote_account_id],
           remote_prefix_advertisement: params[:remote_prefix_advertisement]
-        )
+        }
 
-        success_result(federation_peer: serialize_federation_peer(peer))
+        candidate = ::System::FederationPeer.new(
+          attributes.merge(account_id: @account.id, status: "proposed")
+        )
+        return error_result(candidate.errors.full_messages.join("; ")) unless candidate.valid?
+
+        gated_result(
+          action_category: ::Sdwan::Executors::ProposeFederationPeer::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::ProposeFederationPeer",
+          executor_params: { attributes: attributes.merge(generate_token: false) },
+          # Provenance only, and inert as enforcement: the peer row does not
+          # exist yet, so there is nothing to anchor on, and
+          # GatedActions#assert_source_within_account! no-ops on an "Account"
+          # source (Account answers neither #account_id nor #account). The
+          # tenancy that counts comes from the deferred operation, whose
+          # account the executor merges. create_route_policy passes the same
+          # pair for the same reason; create_network passes none at all.
+          source_type: "Account",
+          source_id: @account.id,
+          description: "Propose federation with #{params[:remote_instance_url]}"
+        ) do |result|
+          peer = account_federation_peers.find(result.result&.dig(:data, :federation_peer_id))
+          { federation_peer: serialize_federation_peer(peer) }
+        end
       end
 
+      # IMP-2795453255c3 — routed through Ai::AutonomyGate as
+      # sdwan.federation_peer_revoke, matching FederationPeersController#revoke,
+      # #destroy and #update(status: "revoked"). This arm called
+      # FederationPeer#revoke! inline, and the bypass did not even require
+      # leaving this tool: #update_federation_peer with status "revoked" has
+      # gated on this exact category since IMP-ca3440a11a9a, so an agent
+      # refused there reached the identical terminal state one action name
+      # over, with no DeferredOperation and no gate row naming the cause.
+      #
+      # Sdwan::Executors::RevokeFederationPeer performs the revocation
+      # server-side — this method mutates nothing on either branch, so the
+      # revocation survives the :pending path. `reason` rides in the replayed
+      # params rather than being applied here: the executor is what threads it
+      # into revoke!, which stores it as metadata["revocation_reason"], and an
+      # audited cause recorded at REQUEST time would outlive a refused
+      # approval.
+      #
+      # No transition check precedes the gate, matching the REST twin: neither
+      # #revoke nor #destroy consults V1_TRANSITIONS, and the only refusable
+      # condition inducible from the request — an already-revoked peer — is
+      # idempotent (FederationPeer#revoke! is `return if status == "revoked"`),
+      # so it cannot park a doomed approval. #update_federation_peer keeps its
+      # own matrix check because PATCH gates the whole transition table.
       def revoke_federation_peer(params)
         peer = account_federation_peers.find(params[:federation_peer_id])
-        peer.revoke!(reason: params[:reason])
-        success_result(federation_peer: serialize_federation_peer(peer.reload), revoked: true)
+
+        gated_result(
+          action_category: ::Sdwan::Executors::RevokeFederationPeer::ACTION_CATEGORY,
+          executor_class: "Sdwan::Executors::RevokeFederationPeer",
+          executor_params: { federation_peer_id: peer.id, reason: params[:reason] },
+          source_type: "System::FederationPeer",
+          source_id: peer.id,
+          description: "Revoke federation peer #{peer.remote_instance_url}",
+          pending_extra: { federation_peer: serialize_federation_peer(peer) }
+        ) { { federation_peer: serialize_federation_peer(peer.reload), revoked: true } }
       end
 
       # Accepting completes the cross-instance handshake and starts mutual route
