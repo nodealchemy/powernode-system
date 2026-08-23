@@ -3027,7 +3027,11 @@ module Ai
           status: p.status,
           tags: Array(p.tags),
           public_key: p.active_key&.public_key,
-          last_handshake_at: p.last_handshake_at&.iso8601
+          last_handshake_at: p.last_handshake_at&.iso8601,
+          # IMP-ab73cc2fca65 — observed WireGuard byte counters. nil means NOT
+          # MEASURED; 0 means measured and idle. Shares the model-owned slice
+          # with the REST serializer. See Sdwan::Peer#observed_traffic.
+          **p.observed_traffic
         }
       end
 

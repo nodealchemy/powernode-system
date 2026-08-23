@@ -244,7 +244,13 @@ module Api
               tags: Array(p.tags),
               bgp_route_reflector_client: p.bgp_route_reflector_client,
               bgp_router_id_override: p.bgp_router_id_override,
-              advertised_prefix_count: p.subnet_advertisements.count(&:active?)
+              advertised_prefix_count: p.subnet_advertisements.count(&:active?),
+              # IMP-ab73cc2fca65 — observed WireGuard byte counters. nil means
+              # NOT MEASURED (no heartbeat has carried a usable pair); 0 means
+              # measured and idle. Model-owned so this surface and the MCP one
+              # cannot drift apart. Splatted LAST on both surfaces so the two
+              # also agree on which side wins a future key collision.
+              **p.observed_traffic
             }
           end
 

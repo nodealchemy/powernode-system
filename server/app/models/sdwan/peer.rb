@@ -268,6 +268,32 @@ module Sdwan
       new_status
     end
 
+    # IMP-ab73cc2fca65 — the observed-traffic slice both peer serializers
+    # emit. It lives on the model because the two surfaces that publish a peer
+    # (Api::V1::System::Sdwan::PeersController#serialize_peer and
+    # Ai::Tools::SdwanTool#serialize_peer) are hand-maintained whitelists that
+    # have already drifted once — the same failure UPDATE_ATTRIBUTES above was
+    # introduced to end. A new column added to only one of them is invisible on
+    # the other, which is precisely how a measured signal ends up dark.
+    #
+    # nil is NOT MEASURED and is published as nil. It is never coerced to 0:
+    # an idle tunnel really does report rx_bytes: 0, so a consumer that cannot
+    # separate "no sample" from "sampled, no traffic" would read every
+    # never-reported peer as an idle one. counters_sampled_at is what makes a
+    # rate computable (updated_at cannot serve: the heartbeat writes through
+    # update_columns and never bumps it) — the counters are raw cumulative
+    # kernel totals, and
+    # WireGuard restarts them at zero when the interface is recreated, so a
+    # reader differencing two samples must treat `newer < older` as a reset and
+    # take the newer value as the interval's traffic.
+    def observed_traffic
+      {
+        rx_bytes: rx_bytes,
+        tx_bytes: tx_bytes,
+        counters_sampled_at: counters_sampled_at&.iso8601
+      }
+    end
+
     # Returns true when this peer's NodeInstance is running k3s — i.e.
     # the underlying Node has either the `k3s-server` or `k3s-agent`
     # module assigned. Used by the SDWAN routing compilers to decide
