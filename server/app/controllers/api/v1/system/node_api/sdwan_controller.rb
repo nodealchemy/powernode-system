@@ -27,6 +27,18 @@ module Api
           # become a 500 on an endpoint the agent retries forever.
           ID_QUERY_BATCH = 1_000
 
+          # A byte counter arriving as a string (form-encoded heartbeat) is
+          # only a counter if it is unsigned base-10 digits. No sign, no
+          # decimal point, no whitespace.
+          COUNTER_FORMAT = /\A\d+\z/
+
+          # The widest value a bigint column can hold. The agent carries these
+          # as Go int64 so it can never exceed it, but the body is
+          # attacker-controllable and ActiveModel raises RangeError on the way
+          # to the column — which would 500 an endpoint the agent retries
+          # forever. Anything wider is not a kernel counter; it is NOT MEASURED.
+          MAX_COUNTER = (2**63) - 1
+
           # GET /api/v1/system/node_api/config/sdwan
           # Returns one compiled-peer-view per network this instance belongs to.
           # The agent applies these via wgctrl-go on each heartbeat tick.
@@ -98,9 +110,15 @@ module Api
 
           # POST /api/v1/system/node_api/status/sdwan
           # Body: { peers: [{ peer_id, last_handshake_at, rx_bytes, tx_bytes, status }, ...] }
-          # The agent reports observed handshake state per peer; we persist
-          # last_handshake_at and recompute peer.status using the active /
-          # degraded / disconnected windows defined on Sdwan::Peer.
+          # The agent reports observed tunnel state per peer; we persist
+          # last_handshake_at plus the WireGuard byte counters, and recompute
+          # peer.status using the active / degraded / disconnected windows
+          # defined on Sdwan::Peer.
+          #
+          # IMP-ab73cc2fca65 — the counters were being measured on-host and
+          # shipped in this body from the start, and dropped here. See
+          # #peer_observation_columns for the NOT-MEASURED-vs-measured-zero
+          # rule and #parse_counter for why they are stored raw and cumulative.
           #
           # A hub's compiled view also carries every active user device
           # (HubAndSpoke#hub_view emits `peer_id: <UserDevice#id>`), so the
@@ -133,9 +151,12 @@ module Api
               id = normalized_peer_id(r[:peer_id])
 
               if (peer = peers_by_id[id])
-                if r[:last_handshake_at].present?
-                  peer.update_column(:last_handshake_at, parse_time(r[:last_handshake_at]))
-                end
+                # One write per peer per heartbeat. This runs for every peer on
+                # every host in the fleet, so the handshake and the byte
+                # counters share a single UPDATE rather than stacking a second
+                # one behind the first.
+                observed = peer_observation_columns(r)
+                peer.update_columns(observed) if observed.any?
                 peer.recompute_status_from_handshake!
                 { peer_id: peer.id, status: peer.status }
               elsif (device = devices_by_id[id])
@@ -204,6 +225,89 @@ module Api
                   cache[key] ||= ::Sdwan::FederationPrefixResolver.resolve(network)
                 end
               end
+          end
+
+          # IMP-ab73cc2fca65 — the columns ONE heartbeat entry authorizes us to
+          # write for a peer.
+          #
+          # ABSENCE IS THE SIGNAL — FOR THE COUNTERS. A counter this entry did
+          # not carry, or carried in a form we cannot trust, contributes NO KEY,
+          # so the column keeps whatever it already held. NULL means NOT
+          # MEASURED and must stay reachable, because an idle tunnel
+          # legitimately reports rx_bytes: 0. "No sample" and "sampled, no
+          # traffic" are different facts and a reader has to be able to tell
+          # them apart, so nothing here ever writes a placeholder counter.
+          #
+          # The handshake half does NOT yet hold to that rule and this comment
+          # does not claim it does: parse_time below falls back to Time.current
+          # on a malformed string, which fabricates a fresh handshake and flips
+          # the peer to active. The user-device arm already has the strict
+          # reader this needs (parse_handshake_time) and the peer arm does not.
+          # Migrating it changes handshake semantics fleet-wide, so it is filed
+          # separately rather than smuggled in here — see the follow-on on
+          # #parse_time.
+          #
+          # rx and tx move together or not at all. The agent emits both on
+          # every entry (state.go PeerStatusReport, no omitempty), so a
+          # half-populated pair is not something an honest reporter produces —
+          # recording one side of it would publish a counter whose partner is
+          # from a different observation, or from none.
+          def peer_observation_columns(report)
+            columns = {}
+
+            if report[:last_handshake_at].present?
+              columns[:last_handshake_at] = parse_time(report[:last_handshake_at])
+            end
+
+            rx = parse_counter(report[:rx_bytes])
+            tx = parse_counter(report[:tx_bytes])
+            if rx && tx
+              columns[:rx_bytes] = rx
+              columns[:tx_bytes] = tx
+              # The freshness stamp readers need to turn two cumulative
+              # samples into a rate. It cannot be inferred from updated_at:
+              # update_columns deliberately leaves updated_at alone, exactly as
+              # the last_handshake_at write always has. A heartbeat is an
+              # observation, not an edit — bumping updated_at once a minute for
+              # every peer in the fleet would destroy it as a "last changed"
+              # signal and fire the model's after_save hooks every tick.
+              columns[:counters_sampled_at] = Time.current
+            end
+
+            columns
+          end
+
+          # A WireGuard byte counter, stored RAW and CUMULATIVE — never
+          # differenced here.
+          #
+          # The kernel restarts a peer's totals at zero whenever the interface
+          # is recreated or the peer is re-added, so a sample may legitimately
+          # be LOWER than its predecessor. We accept the decrease verbatim: a
+          # monotonic guard would pin the counter at its pre-reset high-water
+          # mark for the life of the peer, and storing a delta would force this
+          # endpoint to guess whether a drop was a reset or a rollback. A
+          # reader holding two (value, counters_sampled_at) pairs has what it
+          # needs — `newer < older` IS the reset signal, and on a reset the
+          # newer value is itself the interval's traffic.
+          #
+          # What we do NOT accept is a value that cannot have come from the
+          # kernel: negatives, floats, non-numeric strings, and anything wider
+          # than MAX_COUNTER are not observations, so they leave the columns
+          # untouched rather than landing as a fabricated zero. The body is
+          # attacker-controllable and the agent retries this heartbeat forever,
+          # so a bad value must be inert, never a 500 — and an over-wide
+          # integer WOULD have been a 500, because ActiveModel raises
+          # RangeError before the value ever reaches Postgres.
+          def parse_counter(raw)
+            value =
+              case raw
+              when Integer then raw
+              when String  then raw.match?(COUNTER_FORMAT) ? raw.to_i : nil
+              end
+            return nil if value.nil?
+            return nil if value.negative? || value > MAX_COUNTER
+
+            value
           end
 
           def parse_time(raw)
