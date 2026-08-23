@@ -53,6 +53,23 @@ export interface SdwanPeer {
   status: SdwanPeerStatus;
   public_key?: string | null;
   last_handshake_at?: string | null;
+  // IMP-ab73cc2fca65 — observed WireGuard byte counters, raw cumulative totals
+  // for the current interface incarnation (they restart at zero when the
+  // interface is recreated, so a later sample may be LOWER than an earlier one).
+  //
+  // null/undefined means NOT MEASURED — no heartbeat has carried a counter pair
+  // for this peer. 0 means measured and idle. Rendering an unmeasured counter
+  // as "0 B" would make a never-reported peer indistinguishable from a quiet
+  // one, so the two states must render differently.
+  //
+  // Typed `number` while the column is bigint: JSON.parse silently rounds past
+  // Number.MAX_SAFE_INTEGER (~9 PB on one interface incarnation). These values
+  // are display-only here, so the rounding is cosmetic — but anything that
+  // starts differencing them client-side needs to read the counters as strings
+  // first.
+  rx_bytes?: number | null;
+  tx_bytes?: number | null;
+  counters_sampled_at?: string | null;
   capabilities?: Record<string, unknown>;
   created_at?: string;
   // Slice 9a — routing layer.
