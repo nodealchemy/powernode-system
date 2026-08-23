@@ -130,6 +130,70 @@ operator UI and dry-run previews — it never includes private-key material.
 
 ---
 
+## IPFIX flow export — the producer side
+
+OVS's native IPFIX exporter is the **only** flow source in this
+architecture. `TopologyCompiler.ipfix_payload_for` stamps an `ipfix:`
+block on every `kind: "ovs"` bridge as soon as the account holds one
+active `Sdwan::IpfixCollector`; a Linux bridge gets none, because it has
+none to give. Behind the collector's target endpoint a sidecar must
+decode the IPFIX wire format and POST JSON batches to
+`/api/v1/system/sdwan/ipfix_collectors/:id/flow_samples`
+(`Sdwan::IpfixIngestService`). The platform never speaks IPFIX itself.
+
+That sidecar ships as a **NodeModule**, `sdwan-flow-exporter`, seeded by
+`server/db/seeds/sdwan_flow_exporter_module.rb` — the same delivery lane
+as `sdwan-overlay`, so it inherits canary / promote / rollback. It is
+attached to hosts automatically: `Sdwan::Executors::CreateIpfixCollector`
+runs `Sdwan::FlowExporterDeployer`, which resolves *where* the producer
+belongs and attaches the module there.
+
+**Placement** is resolved, never guessed (`FlowExportCoverage#placement`):
+
+| Collector target | Placement | Producer runs on |
+|---|---|---|
+| loopback (`127.0.0.1`, `::1`) | `host_local` | every OVS-capable node |
+| an address that is one of this account's `Sdwan::Peer#assigned_address` | `fleet_host` | that one node |
+| anything else | `external` | nothing we manage — operator-run |
+
+**Availability is reported, not implied.** `Sdwan::FlowExportCoverage`
+answers per host, and the states are deliberately distinct so that a host
+which *cannot* export never looks like one that *should be* exporting and
+isn't:
+
+| State | Meaning |
+|---|---|
+| `unsupported` | no compilable `ovs` bridge — `linux_bridge_only` (lightweight profile) or `no_ovs_bridge`. The capability does not exist here. Not a gap. |
+| `unconfigured` | capable, but no active collector, so nothing is stamped |
+| `external` | the collector is operator-run; the platform is not the producer |
+| `undeployed` | exporter config stamped, producer module not attached (or the assignment is disabled) |
+| `unbuilt` | producer attached but the module has no published version, so there is no artifact to deliver — the state the fleet sits in between seeding the catalog row and building/publishing it |
+| `stalled` | producer attached AND built, collector has received nothing in the window |
+| `reporting` | producer attached, collector received flows in the window |
+
+`unbuilt` exists so that `stalled` keeps its meaning. Without it, every OVS
+host would read "deployed and dead" from the moment the seed runs until an
+operator finishes the build — and the one state that is supposed to name a
+producer that died would instead be the default.
+
+In `fleet_host` placement the collector node need not be OVS-capable: it
+*receives* flow records rather than producing them. Such a node can therefore
+appear in the deployer's `deployed_node_ids` and in its
+`unsupported_exporters` at the same time, and the two keys mean different
+things — hosts the producer was attached to, versus hosts that can never
+export.
+
+`reporting` is a claim about the **collector**, not the host:
+`Sdwan::FlowSample` carries no exporter identity, so one dead exporter
+among several live ones on the same collector still reads `reporting`.
+The unavailable-vs-silent distinction does not depend on that.
+
+**Building and publishing the module is an operator action**, not
+something the platform does on collector create — publishing
+auto-promotes here. The steps are in the seed's header comment.
+
+---
+
 ## Per-stage compilers
 
 Each stage is a small, single-responsibility service. Stated as
