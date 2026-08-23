@@ -148,6 +148,43 @@ module System
           { success: errors.empty?, errors: errors }
         end
 
+        # IMP-5eb14352370a — what #run_execute had created at the moment it
+        # stopped, for a caller that received a bare `failure(message)`.
+        #
+        # #run_execute guards each LEG (a failed provision/enroll/attach pushes
+        # to `failures` and continues), but an unguarded raise anywhere else —
+        # `create_node!` hitting RecordInvalid on target 3 of 3 is the recorded
+        # shape — escapes the method entirely. BaseSkillExecutor#execute turns
+        # that into `failure(e.message)`, which carries no `:data`, so the
+        # nodes, instances, volumes and peers this run had ALREADY created
+        # become unreachable: rollback kwargs are read off the envelope, and
+        # the envelope has none of them. They are live and billing regardless.
+        #
+        # Scope is structural, not a filter: one executor instance serves one
+        # #execute call, so this can only ever hold THIS call's own creations —
+        # never a sibling step's, never a prior run's.
+        #
+        # Returns copies; a caller cannot mutate the run through it. Empty
+        # before a run and after a dry_run (which creates nothing).
+        #
+        # `public` is stated rather than inherited from position:
+        # RelocateWorkloadExecutor#provision_target! calls this cross-class, and
+        # a method inserted below the `protected` marker and later moved above
+        # it would otherwise flip this to protected silently.
+        public def in_flight_progress
+          progress = @in_flight_progress || {}
+          outputs  = progress[:outputs] || {}
+          {
+            planned_actions: Array(progress[:planned_actions]).dup,
+            outputs: {
+              node_ids: Array(outputs[:node_ids]).dup,
+              node_instance_ids: Array(outputs[:node_instance_ids]).dup,
+              sdwan_peer_ids: Array(outputs[:sdwan_peer_ids]).dup,
+              storage_volume_ids: Array(outputs[:storage_volume_ids]).dup
+            }
+          }
+        end
+
         protected
 
         # `**_extras` swallows context kwargs that PlanComposerService injects
@@ -156,6 +193,15 @@ module System
         def perform(template_id:, count:, provider_region_id:, provider_instance_type_id:,
                     network_id: nil, with_storage_gb: nil, storage_gb: nil, dry_run: false,
                     name_prefix: nil, mission_id: nil, **_extras)
+          # IMP-5eb14352370a — clear FIRST, so #in_flight_progress can never
+          # report a PRIOR run's live ids to a caller whose second #execute
+          # returns early (bad count, an unresolvable id, dry_run) and so never
+          # reaches #run_execute. Every composer today builds a fresh inner per
+          # call, but "one instance, one execute" is a caller convention, not an
+          # invariant — and the failure mode it would produce is a rollback
+          # acting on resources this call did not create.
+          @in_flight_progress = nil
+
           count = count.to_i
           return failure("count must be between 1 and #{MAX_COUNT}") unless count.between?(1, MAX_COUNT)
 
@@ -209,6 +255,20 @@ module System
           storage_volume_ids = []
           failures = []
           planned_actions = []
+
+          # IMP-5eb14352370a — publish LIVE references to the accumulators, so
+          # #in_flight_progress can report what this run had created if an
+          # unguarded raise escapes before the success envelope is built.
+          #
+          # ALIASING, deliberately: every write below is IN PLACE (`<<`, and
+          # `.delete` in #reclaim_unattachable_volume!). Never REASSIGN one of
+          # these locals — the published view would silently stop tracking the
+          # run and a caller would read a truncated id set as complete.
+          @in_flight_progress = {
+            planned_actions: planned_actions,
+            outputs: { node_ids: node_ids, node_instance_ids: node_instance_ids,
+                       sdwan_peer_ids: sdwan_peer_ids, storage_volume_ids: storage_volume_ids }
+          }
 
           count.times do |i|
             node = create_node!(template: template, index: i,

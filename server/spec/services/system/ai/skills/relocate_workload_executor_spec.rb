@@ -1367,6 +1367,170 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
           .not_to match(/storage/)
       end
     end
+
+    # IMP-5eb14352370a — a WHOLESALE inner failure: an unguarded raise mid-loop
+    # inside ProvisionFullStackExecutor#run_execute (here: target 3 of 3, after
+    # targets 1 and 2 created real rows). BaseSkillExecutor#execute turns it
+    # into `failure(e.message)` — no `:data` — so `provision_target!` used to
+    # record only `{step: "provision_target_stack", error:}` and return nil.
+    #
+    # d44b0300 (IMP-666a6e904650) lifted the inner steps on the SUCCESS path
+    # only. On this path the nodes, instances, volumes and peers already
+    # created for the earlier targets appeared in NEITHER planned_actions NOR
+    # outputs — and rollback kwargs are read off this envelope, so live,
+    # billing resources were invisible to rollback, to grading, and to the
+    # operator, in precisely the run where the record matters most.
+    context "when the inner target provisioning fails WHOLESALE mid-loop" do
+      let(:network) { ::Sdwan::Network.create!(account_id: account.id, name: "reloc-net-#{SecureRandom.hex(3)}") }
+
+      # Real rows: the reclaim resolves ids back to records, so an
+      # instance_double id would make every rollback loop skip via find_by(nil)
+      # and each reclaim assertion would pass vacuously.
+      let(:target_a) { sdwan_test_node_instance(node: sdwan_test_node(account: account)) }
+      let(:target_b) { sdwan_test_node_instance(node: sdwan_test_node(account: account)) }
+
+      let(:volume_a) do
+        create(:system_provider_volume, :attached, account: account,
+               provider_region: to_region, node_instance: target_a)
+      end
+      let(:volume_b) do
+        create(:system_provider_volume, :attached, account: account,
+               provider_region: to_region, node_instance: target_b)
+      end
+
+      let(:terminated_ids) { [] }
+      let(:detached_ids)   { [] }
+      let(:deleted_ids)    { [] }
+
+      # The raise is NOT a leg failure the inner executor guards — it escapes
+      # #run_execute entirely, which is the whole point of the shape.
+      let(:wholesale_error) { "Validation failed: Name has already been taken" }
+
+      before do
+        targets = [ target_a, target_b ]
+        allow(::System::ProvisioningService).to receive(:provision_instance) do
+          instance = targets.shift
+          # `raise <instance>, msg` calls Exception#exception(msg), which CLONES
+          # the RecordInvalid and swaps its message — it does not re-run
+          # RecordInvalid#initialize, so the record arg is not re-derived.
+          raise ActiveRecord::RecordInvalid.new(::System::Node.new), wholesale_error if instance.nil?
+
+          ::System::Runtime::Result.ok(data: { instance: instance, cloud_instance_id: "ci-#{instance.id}" })
+        end
+
+        volumes = [ volume_a, volume_b ]
+        allow(::System::VolumeManagementService).to receive(:provision) do
+          ::System::Runtime::Result.ok(data: { volume: volumes.shift })
+        end
+        allow(::System::VolumeManagementService).to receive(:attach)
+          .and_return(::System::Runtime::Result.ok(data: { device: "/dev/vdb" }))
+        allow(::System::VolumeManagementService).to receive(:detach) do |**kwargs|
+          detached_ids << kwargs[:volume].id
+          ::System::Runtime::Result.ok
+        end
+        allow(::System::VolumeManagementService).to receive(:delete) do |**kwargs|
+          deleted_ids << kwargs[:volume].id
+          ::System::Runtime::Result.ok
+        end
+
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |**kwargs|
+          terminated_ids << kwargs[:instance].id
+          ::System::Runtime::Result.ok
+        end
+      end
+
+      def run_relocate(strategy)
+        exec.execute(project_id: mission.id, from_region_id: from_region.id,
+                     to_region_id: to_region.id, cutover_strategy: strategy,
+                     template_id: template.id,
+                     provider_instance_type_id: instance_type.id, count: 3,
+                     network_id: network.id, with_storage_gb: 25,
+                     source_instance_ids: [ source_instance.id ])
+      end
+
+      def orphan_instance_ids = [ target_a.id, target_b.id ]
+      def orphan_volume_ids   = [ volume_a.id, volume_b.id ]
+
+      context "under drain" do
+        it "records the earlier targets' steps AND ids on the envelope" do
+          r = run_relocate("drain")
+
+          steps = r[:data][:planned_actions]
+          # The inner run's own detail steps, in execution order, for the two
+          # targets that DID come up before the raise.
+          expect(steps.map { |a| a[:step] }).to eq(%w[
+            relocate_workload
+            terminate_source
+            create_node provision_instance attach_sdwan_peer provision_storage attach_volume
+            create_node provision_instance attach_sdwan_peer provision_storage attach_volume
+            create_node
+            provision_target_stack_orphaned
+          ])
+          expect(steps.select { |a| a[:step] == "provision_instance" }.map { |a| a[:instance_id] })
+            .to eq(orphan_instance_ids)
+          expect(steps.last).to include(step: "provision_target_stack_orphaned",
+                                        instance_count: 2, volume_count: 2,
+                                        node_count: 3, sdwan_peer_count: 2)
+
+          out = r[:data][:outputs]
+          expect(out[:node_instance_ids]).to match_array(orphan_instance_ids)
+          expect(out[:storage_volume_ids]).to match_array(orphan_volume_ids)
+          expect(out[:sdwan_peer_ids].size).to eq(2)
+          expect(out[:node_ids].size).to eq(3)
+        end
+
+        # SEMANTICS UNCHANGED: drain has no readiness guard and has always
+        # returned success(partial: true) here. Only the trace becomes visible.
+        it "leaves the drain envelope's own semantics untouched" do
+          r = run_relocate("drain")
+
+          expect(r[:success]).to be true
+          expect(r[:data][:partial]).to be true
+          expect(r[:data][:failures]).to include(
+            hash_including(step: "provision_target_stack", error: a_string_including(wholesale_error))
+          )
+          # drain terminates the sources FIRST by design; the orphans are not
+          # reclaimed on this path — they are RECORDED so a rollback can reach them.
+          expect(terminated_ids).to eq([ source_instance.id ])
+        end
+      end
+
+      context "under blue_green" do
+        # SEMANTICS UNCHANGED: still a failure, still the SAME refusal reason
+        # ("empty" — nothing was DELIVERED; the orphans are debris, not
+        # targets), still carrying the inner wholesale error, still refusing to
+        # terminate the sources.
+        it "keeps the failure semantics exactly as they were" do
+          r = run_relocate("blue_green")
+
+          expect(r[:success]).to be false
+          expect(r[:error]).to match(/\Ablue_green cutover refused: target stack is empty; /)
+          expect(r[:error]).to include("source instances not terminated")
+          expect(r[:error]).to include(wholesale_error)
+          expect(terminated_ids).not_to include(source_instance.id)
+        end
+
+        it "records the earlier targets' steps and reclaims them" do
+          r = run_relocate("blue_green")
+
+          ev = ::Ai::ExecutionEvent.where(account_id: account.id,
+                                          event_type: "relocate_cutover_refusal")
+                                   .order(:created_at).last
+          expect(ev.metadata["reclaimed"]["node_instance"]).to match_array(orphan_instance_ids)
+          expect(ev.metadata["reclaimed"]["provider_volume"]).to match_array(orphan_volume_ids)
+          expect(ev.metadata["reclaimed"]["sdwan_peer"].size).to eq(2)
+          expect(ev.metadata["node_ids_left_for_inspection"].size).to eq(3)
+          expect(ev.metadata["provisioning_leg_failures"].to_s).to include(wholesale_error)
+
+          # The reclaim ACTED on this operation's own orphans — and on nothing
+          # else: the source instance is untouched.
+          expect(terminated_ids).to match_array(orphan_instance_ids)
+          expect(detached_ids).to match_array(orphan_volume_ids)
+          expect(deleted_ids).to match_array(orphan_volume_ids)
+          expect(r[:success]).to be false
+        end
+      end
+    end
   end
 
   describe "#rollback_relocate_workload" do

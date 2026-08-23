@@ -834,4 +834,69 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
       expect(volume_gone_at_terminate).to be(true)
     end
   end
+
+  # IMP-5eb14352370a — what #run_execute had created when an unguarded raise
+  # escaped it. BaseSkillExecutor#execute turns such a raise into
+  # `failure(e.message)` with no `:data`, so without this the ids of live,
+  # billing rows exist nowhere a caller can reach.
+  describe "#in_flight_progress" do
+    def escaping_raise!
+      allow(::System::ProvisioningService).to receive(:provision_instance) do
+        raise ActiveRecord::RecordInvalid.new(::System::Node.new), "Validation failed: Name has already been taken"
+      end
+    end
+
+    it "is empty before any run" do
+      expect(exec.in_flight_progress[:planned_actions]).to be_empty
+      expect(exec.in_flight_progress[:outputs].values.flatten).to be_empty
+    end
+
+    it "reports the rows the raising run had already created" do
+      escaping_raise!
+
+      r = exec.execute(template_id: template.id, count: 2, provider_region_id: region.id,
+                       provider_instance_type_id: instance_type.id)
+      expect(r[:success]).to be false
+      expect(r).not_to have_key(:data)
+
+      progress = exec.in_flight_progress
+      expect(progress[:outputs][:node_ids].size).to eq(1)
+      expect(progress[:planned_actions].map { |a| a[:step] }).to eq(%w[create_node])
+    end
+
+    it "does not mutate the run" do
+      escaping_raise!
+      exec.execute(template_id: template.id, count: 2, provider_region_id: region.id,
+                   provider_instance_type_id: instance_type.id)
+
+      exec.in_flight_progress[:outputs][:node_ids].clear
+      expect(exec.in_flight_progress[:outputs][:node_ids].size).to eq(1)
+    end
+
+    # The blast-radius guard: a SECOND #execute that bails before #run_execute
+    # must not still be publishing run #1's live ids. A caller lifting those
+    # into a rollback would tear down resources this call never created.
+    it "is cleared by a later execute that never reaches the provisioning loop" do
+      escaping_raise!
+      exec.execute(template_id: template.id, count: 2, provider_region_id: region.id,
+                   provider_instance_type_id: instance_type.id)
+      expect(exec.in_flight_progress[:outputs][:node_ids]).not_to be_empty
+
+      r = exec.execute(template_id: SecureRandom.uuid, count: 1, provider_region_id: region.id,
+                       provider_instance_type_id: instance_type.id)
+      expect(r[:success]).to be false
+      expect(exec.in_flight_progress[:outputs].values.flatten).to be_empty
+      expect(exec.in_flight_progress[:planned_actions]).to be_empty
+    end
+
+    it "is cleared by a dry_run, which creates nothing" do
+      escaping_raise!
+      exec.execute(template_id: template.id, count: 2, provider_region_id: region.id,
+                   provider_instance_type_id: instance_type.id)
+
+      exec.execute(template_id: template.id, count: 1, provider_region_id: region.id,
+                   provider_instance_type_id: instance_type.id, dry_run: true)
+      expect(exec.in_flight_progress[:outputs].values.flatten).to be_empty
+    end
+  end
 end

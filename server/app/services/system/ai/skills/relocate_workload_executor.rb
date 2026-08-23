@@ -261,6 +261,11 @@ module System
           terminated = []
           failures = []
           provision_data = nil
+          # IMP-5eb14352370a — out-param, same idiom as `failures` and
+          # `planned_actions` above: what the inner target provisioning had
+          # already created when it failed WHOLESALE (see #provision_target!).
+          # Empty on every other path.
+          orphaned = {}
 
           if strategy == "drain"
             terminate_step!(source_ids: source_ids, terminated: terminated,
@@ -271,14 +276,14 @@ module System
                                                provider_instance_type_id: provider_instance_type_id,
                                                network_id: network_id, with_storage_gb: with_storage_gb,
                                                failures: failures, planned_actions: planned_actions,
-                                               mission: mission)
+                                               mission: mission, orphaned: orphaned)
           else # blue_green
             provision_data = provision_target!(template_id: template_id,
                                                count: count, to_region_id: to_region_id,
                                                provider_instance_type_id: provider_instance_type_id,
                                                network_id: network_id, with_storage_gb: with_storage_gb,
                                                failures: failures, planned_actions: planned_actions,
-                                               mission: mission)
+                                               mission: mission, orphaned: orphaned)
 
             # Only tear down the source if we actually have a healthy target.
             #
@@ -331,7 +336,8 @@ module System
               return refuse_blue_green_cutover!(
                 mission: mission, network_id: network_id, count: count,
                 with_storage_gb: with_storage_gb,
-                provision_data: provision_data, step_failures: failures
+                provision_data: provision_data, step_failures: failures,
+                orphaned_outputs: orphaned
               )
             else
               terminate_step!(source_ids: source_ids, terminated: terminated,
@@ -339,7 +345,27 @@ module System
             end
           end
 
-          provision_outputs = provision_data ? (provision_data[:outputs] || {}) : empty_outputs
+          # IMP-5eb14352370a — on a wholesale inner failure `provision_data` is
+          # nil and `orphaned` holds what the inner run created before it
+          # raised. Recording those ids here is what makes them reachable at
+          # all: drain reports success(partial: true), the runner writes this
+          # envelope's outputs as the step's `last_outputs`, and that is the id
+          # set a later rollback of this step reads. They were previously
+          # dropped on the floor — live VMs, volumes and peers with no id
+          # anywhere in the graded record.
+          #
+          # Stated because it IS a behaviour change: drain's step COMPLETES, so
+          # the runner writes these as the step's last_outputs, and
+          # System::ProjectMetricsCollector#step_instance_ids reads exactly
+          # `last_outputs["outputs"]["node_instance_ids"]` for the replica_count
+          # ProjectSloSensor grades. The orphans will now count as replicas.
+          # That is the right number, not a conflation: drain terminated the
+          # sources BEFORE provisioning, so these two VMs are the mission's only
+          # live capacity — reporting zero was the false reading. blue_green
+          # keeps them out of its readiness sets for the opposite and equally
+          # correct reason: there, nothing was delivered and the sources still
+          # hold the workload.
+          provision_outputs = provision_data ? (provision_data[:outputs] || {}) : empty_outputs.merge(orphaned)
           # The inner executor reports per-leg failures in its own envelope and
           # keeps going; dropping them here left an enrollment or volume error
           # with nowhere to surface — the runner records only what we return.
@@ -400,12 +426,31 @@ module System
         # reclaimed — they stay for inspection, the same rationale as
         # ProvisionFullStackExecutor's rollback.
         def refuse_blue_green_cutover!(mission:, network_id:, count:, with_storage_gb:,
-                                       provision_data:, step_failures:)
+                                       provision_data:, step_failures:, orphaned_outputs:)
           outputs     = provision_data.is_a?(Hash) ? (provision_data[:outputs] || {}) : {}
           node_ids    = Array(outputs[:node_ids])
           target_ids  = Array(outputs[:node_instance_ids])
           volume_ids  = Array(outputs[:storage_volume_ids])
           peer_ids    = Array(outputs[:sdwan_peer_ids])
+
+          # IMP-5eb14352370a — a WHOLESALE inner failure returns no envelope at
+          # all, so the four sets above are empty even when the inner run had
+          # created real rows for the earlier targets. Those rows are this
+          # operation's own debris (#provision_target! sources them from the
+          # inner executor instance this call built), and they are exactly what
+          # this branch exists to reclaim. They are DELIBERATELY kept out of the
+          # readiness sets above: `reasons` describes what was DELIVERED, and a
+          # raise delivered nothing — so "target stack is empty" stays the
+          # refusal, unchanged, while the debris gets torn down instead of
+          # billing forever with its ids recorded nowhere.
+          orphan_node_ids   = Array(orphaned_outputs[:node_ids])
+          orphan_target_ids = Array(orphaned_outputs[:node_instance_ids])
+          orphan_volume_ids = Array(orphaned_outputs[:storage_volume_ids])
+          orphan_peer_ids   = Array(orphaned_outputs[:sdwan_peer_ids])
+
+          reclaim_target_ids = target_ids | orphan_target_ids
+          reclaim_volume_ids = volume_ids | orphan_volume_ids
+          reclaim_peer_ids   = peer_ids   | orphan_peer_ids
 
           reasons = []
           if target_ids.empty?
@@ -434,9 +479,9 @@ module System
           leg_failures = Array(step_failures) + (provision_data.is_a?(Hash) ? Array(provision_data[:failures]) : [])
 
           reclaim = rollback_relocate_workload(
-            node_instance_ids: target_ids,
-            storage_volume_ids: volume_ids,
-            sdwan_peer_ids: peer_ids
+            node_instance_ids: reclaim_target_ids,
+            storage_volume_ids: reclaim_volume_ids,
+            sdwan_peer_ids: reclaim_peer_ids
           )
           reclaim_errors = Array(reclaim[:errors])
 
@@ -449,9 +494,9 @@ module System
             "sdwan_peer"      => reclaim_errors.select { |e| e[:resource] == "sdwan_peer" }.map { |e| e[:id] }
           }
           reclaimed = {
-            "node_instance"   => target_ids - survivors["node_instance"],
-            "provider_volume" => volume_ids - survivors["provider_volume"],
-            "sdwan_peer"      => peer_ids - survivors["sdwan_peer"]
+            "node_instance"   => reclaim_target_ids - survivors["node_instance"],
+            "provider_volume" => reclaim_volume_ids - survivors["provider_volume"],
+            "sdwan_peer"      => reclaim_peer_ids - survivors["sdwan_peer"]
           }
 
           # Machine-readable diagnosis, durable on purpose: composers stamp
@@ -477,7 +522,7 @@ module System
               refusal_reasons: reasons,
               network_id: network_id,
               requested_count: count,
-              node_ids_left_for_inspection: node_ids,
+              node_ids_left_for_inspection: node_ids | orphan_node_ids,
               reclaimed: reclaimed,
               survivors: survivors,
               reclaim_errors: reclaim_errors,
@@ -652,7 +697,7 @@ module System
         # is the single derivation both sides of the rail already read.
         def provision_target!(template_id:, count:, to_region_id:,
                               provider_instance_type_id:, network_id:, with_storage_gb:,
-                              failures:, planned_actions:, mission:)
+                              failures:, planned_actions:, mission:, orphaned:)
           inner = executor(::System::Ai::Skills::ProvisionFullStackExecutor)
           result = inner.execute(
             template_id: template_id, count: count,
@@ -680,6 +725,43 @@ module System
             data
           else
             failures << { step: "provision_target_stack", error: result[:error] }
+
+            # IMP-5eb14352370a — d44b0300 (IMP-666a6e904650) lifted the inner
+            # steps on the SUCCESS path only. A WHOLESALE inner failure — an
+            # unguarded raise mid-loop, `Node.create!` RecordInvalid on target
+            # 3 of 3 being the recorded shape — is turned into a bare
+            # `failure(message)` by BaseSkillExecutor#execute and carries no
+            # `:data`, so the nodes, instances, volumes and peers already
+            # created for the EARLIER targets landed in neither
+            # planned_actions nor outputs. Rollback kwargs are read off this
+            # envelope, which made them invisible to rollback, to grading and
+            # to the operator at once — in precisely the run where the graded
+            # record matters most.
+            #
+            # ORPHANS, not delivered targets, and the distinction is
+            # load-bearing: the inner executor never returned an envelope, so
+            # nothing here attests that any of these is complete or healthy.
+            # They are recorded and reclaimed as debris, while the blue_green
+            # readiness guard downstream keeps reading `provision_data` (nil ⇒
+            # "target stack is empty"), which stays the honest description of
+            # what was DELIVERED. Counting them as provisioned targets would
+            # assert a health this path cannot observe.
+            #
+            # Scoped by construction: `inner` is this call's own executor
+            # instance, so its in-flight progress can only hold what THIS
+            # provisioning attempt created — never a sibling step's resources,
+            # never a prior relocate's.
+            progress = inner.in_flight_progress
+            planned_actions.concat(Array(progress[:planned_actions]))
+            orphaned.merge!(progress[:outputs])
+            if orphaned.any? { |_class, ids| ids.present? }
+              planned_actions << { step: "provision_target_stack_orphaned",
+                                   to_region_id: to_region_id,
+                                   node_count: Array(orphaned[:node_ids]).size,
+                                   instance_count: Array(orphaned[:node_instance_ids]).size,
+                                   sdwan_peer_count: Array(orphaned[:sdwan_peer_ids]).size,
+                                   volume_count: Array(orphaned[:storage_volume_ids]).size }
+            end
             nil
           end
         end
