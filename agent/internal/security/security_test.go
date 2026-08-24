@@ -364,3 +364,22 @@ func rulesAccept(r *mount.RecorderRunner, match string) bool {
 	}
 	return false
 }
+
+// F3 — Policy.Validate must reject a path-bearing or control-char SELinux/
+// AppArmor profile NAME. On the pivot/compose path Validate is the ONLY MAC
+// check (that path never calls the loaders), so this is load-bearing there,
+// not defense-in-depth. Pins the profileNamePattern check inside Validate.
+func TestPolicyValidate_RejectsMACProfilePaths(t *testing.T) {
+	for _, bad := range []string{"../etc/evil", "sub/prof", "./x", "a\nb", "/abs/path"} {
+		if errs := (&Policy{SELinuxProfile: bad, UserNamespace: true}).Validate(); len(errs) == 0 {
+			t.Errorf("Validate accepted selinux_profile %q (must be a bare agent-owned name)", bad)
+		}
+		if errs := (&Policy{AppArmorProfile: bad, UserNamespace: true}).Validate(); len(errs) == 0 {
+			t.Errorf("Validate accepted apparmor_profile %q (must be a bare agent-owned name)", bad)
+		}
+	}
+	// A bare name validates clean (over-rejection guard).
+	if errs := (&Policy{SELinuxProfile: "my-policy", AppArmorProfile: "app.profile", UserNamespace: true}).Validate(); len(errs) != 0 {
+		t.Errorf("Validate rejected legitimate bare MAC names: %v", errs)
+	}
+}

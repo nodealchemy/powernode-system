@@ -130,6 +130,38 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 	// applyTraefikIngressPersistence's doc comment for the race this avoids).
 	applyTraefikIngressPersistence(sysroot, TraefikIngressPersistRoot, manifests, r.cfg.OnError)
 
+	r.renderPivotUnits(ctx, sysroot, stack, manifests, bc)
+
+	// Record what THIS boot composed (best-effort — a failed breadcrumb write
+	// must not abort an otherwise-successful boot; the node just can't self-
+	// provision an LKG this cycle). The post-boot capturer reads this after an
+	// app-health confirm; the heartbeat reads FromLKG/age for observability.
+	if bc != nil {
+		if r.cfg.BreadcrumbSink != nil {
+			// Soft-recompose prepare: the breadcrumb describes a composition
+			// the CURRENT userspace is not running, and a soft-reboot keeps
+			// the kernel boot ID, so the LKG capturer's stale-breadcrumb
+			// check could not tell "prepared and executed" from "prepared
+			// and abandoned". Hand it to the caller, who commits it to disk
+			// only at the moment the soft-reboot is actually fired.
+			r.cfg.BreadcrumbSink(bc)
+		} else if err := WriteBreadcrumb(BootBreadcrumbPath, bc); err != nil {
+			r.cfg.OnError("compose:breadcrumb_write", err)
+		}
+	}
+
+	return nil
+}
+
+// renderPivotUnits renders + offline-enables each module's native units in the
+// union at sysroot and applies the pivot-path confinement (Policy.Validate,
+// the privileged-approval gate, seccomp/PrivateUsers/ambient-cap drop-ins).
+// It is split out of ComposeForPivot precisely so the WIRING — that the loop
+// actually consults the frozen allowlist — is unit-testable without the
+// mount/overlay machinery: the enforce decision is DERIVED here from bc, so a
+// test that drives this method with a frozen, non-matching allowlist fails if
+// the gate is disabled (regression guard for review finding F2).
+func (r *Reconciler) renderPivotUnits(ctx context.Context, sysroot string, stack mount.ModuleStack, manifests map[string]*manifest.Manifest, bc *BootComposedBreadcrumb) {
 	// The privileged-approval gate is enforced on EVERY compose boot — live,
 	// FromPending, and FromLKG — against the operator allowlist FROZEN alongside
 	// the composed set (bc.PrivilegedModuleIDs). Enforcing only on a live boot
@@ -222,26 +254,6 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 			}
 		}
 	}
-
-	// Record what THIS boot composed (best-effort — a failed breadcrumb write
-	// must not abort an otherwise-successful boot; the node just can't self-
-	// provision an LKG this cycle). The post-boot capturer reads this after an
-	// app-health confirm; the heartbeat reads FromLKG/age for observability.
-	if bc != nil {
-		if r.cfg.BreadcrumbSink != nil {
-			// Soft-recompose prepare: the breadcrumb describes a composition
-			// the CURRENT userspace is not running, and a soft-reboot keeps
-			// the kernel boot ID, so the LKG capturer's stale-breadcrumb
-			// check could not tell "prepared and executed" from "prepared
-			// and abandoned". Hand it to the caller, who commits it to disk
-			// only at the moment the soft-reboot is actually fired.
-			r.cfg.BreadcrumbSink(bc)
-		} else if err := WriteBreadcrumb(BootBreadcrumbPath, bc); err != nil {
-			r.cfg.OnError("compose:breadcrumb_write", err)
-		}
-	}
-
-	return nil
 }
 
 // lkgFetchAttempts / lkgFetchBackoff bound the retry-live-first behavior before
