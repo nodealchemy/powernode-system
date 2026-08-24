@@ -706,6 +706,17 @@ Rails.application.routes.draw do
             end
           end
 
+          # Account-scoped janitor seam for SystemTaskReaperJob. Deliberately
+          # NOT under `resources :tasks` — every action there is scoped through
+          # TasksController#worker_operations, which keys on node.worker_id
+          # (NULL on 157/157 nodes) and so resolves to the empty set. See
+          # JanitorController for why the reaper is re-homed rather than that
+          # scope made true.
+          scope "janitor" do
+            get  "tasks",           to: "janitor#tasks"
+            post "tasks/:id/reap",  to: "janitor#reap"
+          end
+
           resources :tasks, only: %i[index show] do
             collection do
               get :pending
