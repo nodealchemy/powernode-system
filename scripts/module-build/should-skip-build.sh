@@ -39,6 +39,8 @@ set -uo pipefail
 
 ANNOTATION_KEY="org.powernode.build-inputs-sha256"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=needs-parent-modules.sh
+. "$SCRIPT_DIR/needs-parent-modules.sh"
 
 # Modules whose build reads content OUTSIDE modules/<slug>/, so the default
 # input path is INCOMPLETE for them and a skip would compare an incomplete hash:
@@ -66,12 +68,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # allowlist means BUILD_SKIP_UNCHANGED=1 can be turned on globally and still only
 # skip modules it is actually safe for — the unsafe ones opt themselves out.
 # Keep this list in step with stage15.sh's needs_parent arm.
-NEEDS_DECLARED_INPUTS="powernode-hub-backend powernode-hub-worker powernode-hub-frontend powernode-extension-system powernode-system-base module-forge"
+# Modules whose real inputs live OUTSIDE modules/<slug>/ and are IN THIS REPO,
+# so they are declarable via BUILD_INPUT_PATHS. They refuse to skip until the
+# caller declares them. The four needs-parent modules are NO LONGER listed
+# here: their out-of-tree input is the parent repo, which is now folded into
+# the hash as --core-ref (see needs-parent-modules.sh + the CORE_REF guard
+# below). Listing them here as well would make the core-ref fold unreachable.
+NEEDS_DECLARED_INPUTS="powernode-system-base module-forge"
 
 note() { echo "[skip-check] $*" >&2; }
 build() { note "$1 -> BUILD"; exit 1; }
 
-MODULE=""; REPO="."; REF="HEAD"; APT_SNAPSHOT=""
+MODULE=""; REPO="."; REF="HEAD"; APT_SNAPSHOT=""; CORE_REF_ARG="${CORE_REF:-}"
 REGISTRY="${APT_REGISTRY:-git.powernode.org}"; OWNER="${APT_OWNER:-powernode}"; TAG="latest"
 HASH_ARGS=()
 
@@ -82,6 +90,7 @@ while [ $# -gt 0 ]; do
     --ref)          REF="${2:-}"; shift 2 ;;
     --input-path)   HASH_ARGS+=(--input-path "${2:-}"); shift 2 ;;
     --apt-snapshot) APT_SNAPSHOT="${2:-}"; shift 2 ;;
+    --core-ref)     CORE_REF_ARG="${2:-}"; shift 2 ;;
     --registry)     REGISTRY="${2:-}"; shift 2 ;;
     --owner)        OWNER="${2:-}"; shift 2 ;;
     --tag)          TAG="${2:-}"; shift 2 ;;
@@ -102,8 +111,21 @@ if [ ${#HASH_ARGS[@]} -eq 0 ]; then
 fi
 
 # 1. What would this build ship?
+# A needs-parent module packages a subtree of the core repo, so its hash is
+# only complete with the core commit folded in. Without one we cannot tell a
+# same-tree/new-core build from a same-tree/same-core one — exactly the case
+# that would re-tag an OLD-core digest — so refuse, matching the fail-safe
+# direction of every other error path here.
+if module_needs_parent "$MODULE" && [ -z "$CORE_REF_ARG" ]; then
+  build "$MODULE packages parent-repo content and no --core-ref/CORE_REF was supplied"
+fi
+
 local_args=(--module "$MODULE" --repo "$REPO" --ref "$REF" "${HASH_ARGS[@]+"${HASH_ARGS[@]}"}")
 [ -n "$APT_SNAPSHOT" ] && local_args+=(--apt-snapshot "$APT_SNAPSHOT")
+# Folded in for needs-parent modules ONLY — core_ref_hash_args returns nothing
+# for a package-origin module, whose hash must stay independent of core.
+mapfile -t _core_args < <(core_ref_hash_args "$MODULE" "$CORE_REF_ARG")
+[ ${#_core_args[@]} -gt 0 ] && local_args+=("${_core_args[@]}")
 
 local_hash=$(bash "$SCRIPT_DIR/compute-build-inputs-hash.sh" "${local_args[@]}" 2>/dev/null) \
   || build "could not compute local inputs hash for $MODULE"

@@ -232,8 +232,17 @@ echo "[push] resolved-packages sha256 for $MODULE: $PACKAGES_HASH"
 # Best-effort: an empty hash simply omits the annotation, and a missing
 # annotation reads as "cannot skip" downstream, never as "skip".
 PUSH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=needs-parent-modules.sh
+. "$PUSH_SCRIPT_DIR/needs-parent-modules.sh"
 BUILD_INPUTS_ARGS=(--module "$MODULE")
 for _p in ${BUILD_INPUT_PATHS:-}; do BUILD_INPUTS_ARGS+=(--input-path "$_p"); done
+# SYMMETRY IS THE WHOLE CONTRACT. should-skip-build.sh compares the hash it
+# computes against the one annotated here, so both sides must fold in exactly
+# the same things. A core ref folded in on ONE side only never matches, which
+# is safe (it reads as "inputs changed -> BUILD") but silently makes the skip
+# dead — the failure mode that looks like the feature simply not working.
+mapfile -t _core_args < <(core_ref_hash_args "$MODULE" "${CORE_REF:-}")
+[ ${#_core_args[@]} -gt 0 ] && BUILD_INPUTS_ARGS+=("${_core_args[@]}")
 BUILD_INPUTS_HASH=$(bash "$PUSH_SCRIPT_DIR/compute-build-inputs-hash.sh" \
   "${BUILD_INPUTS_ARGS[@]}" 2>/dev/null || true)
 echo "[push] build-inputs sha256 for $MODULE: ${BUILD_INPUTS_HASH:-<empty>}"

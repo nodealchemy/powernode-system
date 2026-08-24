@@ -34,6 +34,8 @@
 #      modules/<slug> tree)
 #   2. the --apt-snapshot id, when given — the package closure is an input the
 #      git tree cannot see
+#   3. the --core-ref commit, when given — the parent-repo subtree a needs-parent
+#      module packages is an input NO path in this repo can see
 #
 # Deliberately NOT hashed: the build sha, timestamps, the erofs UUID, and the
 # output digest — the very things that vary per build without changing content.
@@ -52,6 +54,7 @@
 # Usage:
 #   compute-build-inputs-hash.sh --module <slug> [--repo <dir>] [--ref <rev>]
 #                                [--input-path <path>]... [--apt-snapshot <id>]
+#                                [--core-ref <sha>]
 #
 # Prints the hex sha256 on stdout. Exit 0 on success, non-zero on error.
 
@@ -69,6 +72,9 @@ compute-build-inputs-hash.sh — deterministic hash of a module's build inputs.
   --input-path <path>    Repeatable. Path whose content is an input. Defaults to
                          modules/<slug> when none are given.
   --apt-snapshot <id>    Optional apt snapshot id, folded into the hash.
+  --core-ref <sha>       Optional parent (core) commit, folded into the hash.
+                         Pass it ONLY for a module whose build packages a
+                         parent-repo subtree — see needs-parent-modules.sh.
   -h | --help            This text.
 USAGE
 }
@@ -77,6 +83,7 @@ MODULE=""
 REPO="."
 REF="HEAD"
 APT_SNAPSHOT=""
+CORE_REF_ARG=""
 INPUT_PATHS=()
 
 while [ $# -gt 0 ]; do
@@ -86,6 +93,7 @@ while [ $# -gt 0 ]; do
     --ref)          [ $# -ge 2 ] || die "--ref requires an argument";          REF="$2"; shift 2 ;;
     --input-path)   [ $# -ge 2 ] || die "--input-path requires an argument";   INPUT_PATHS+=("$2"); shift 2 ;;
     --apt-snapshot) [ $# -ge 2 ] || die "--apt-snapshot requires an argument"; APT_SNAPSHOT="$2"; shift 2 ;;
+    --core-ref)     [ $# -ge 2 ] || die "--core-ref requires an argument";     CORE_REF_ARG="$2"; shift 2 ;;
     -h|--help)      usage; exit 0 ;;
     *)              usage >&2; die "unknown argument: $1" ;;
   esac
@@ -119,6 +127,22 @@ done
 
 if [ -n "$APT_SNAPSHOT" ]; then
   digest_input+="apt-snapshot:${APT_SNAPSHOT}"$'\n'
+fi
+
+# The parent (core) commit this build packages a subtree of. Folded in ONLY
+# when the caller passes it, which needs-parent-modules.sh does for exactly the
+# four modules whose stage15 arm clones the core repo. Passing it for a
+# package-origin module would be a regression: its hash would then change on
+# every core commit and it could never skip.
+#
+# This closes the gap should-skip-build.sh documented and refused to skip
+# around: stage15 fetches the batch's expected core commit via $CORE_REF, but
+# that ref was NOT an input here, so a batch pinned to a NEW core sha with an
+# unchanged module tree hashed identically, skipped, and re-tagged the
+# previously-built OLD-core digest — arriving later as an unexplained promote
+# gate `mismatch`.
+if [ -n "$CORE_REF_ARG" ]; then
+  digest_input+="core-ref:${CORE_REF_ARG}"$'\n'
 fi
 
 printf '%s' "$digest_input" | sha256sum | awk '{print $1}'

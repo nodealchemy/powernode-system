@@ -195,6 +195,10 @@ echo "[build-one-module] module=$MODULE sha=$GITHUB_SHA apt_snapshot=$snapshot"
 if [ "${BUILD_SKIP_UNCHANGED:-0}" = "1" ]; then
   skip_args=(--module "$MODULE" --apt-snapshot "$snapshot")
   for _p in ${BUILD_INPUT_PATHS:-}; do skip_args+=(--input-path "$_p"); done
+  # The batch's pinned core commit. should-skip-build.sh folds it in for
+  # needs-parent modules and REFUSES to skip them when it is absent, so an
+  # unpinned build can never re-tag an old-core artifact.
+  [ -n "${CORE_REF:-}" ] && skip_args+=(--core-ref "$CORE_REF")
   if bash "$SCRIPT_DIR/should-skip-build.sh" "${skip_args[@]}"; then
     echo "[build-one-module] SKIPPED $MODULE — declared inputs match the published artifact"
     echo "[build-one-module] (re-tag the existing digest; nothing rebuilt)"

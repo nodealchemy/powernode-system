@@ -164,6 +164,60 @@ else
 fi
 
 echo
+echo "core-ref fold (needs-parent modules)"
+
+# The gap this closes: a batch pinned to a NEW core sha with an UNCHANGED module
+# tree used to hash identically, skip, and re-tag the previously-built OLD-core
+# digest. The core ref must therefore move the hash.
+h_core_a=$(bash "$HASH_SH" --module powernode-hub-backend --repo "$REPO" \
+             --input-path server --core-ref aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
+h_core_b=$(bash "$HASH_SH" --module powernode-hub-backend --repo "$REPO" \
+             --input-path server --core-ref bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)
+assert_ne "$h_core_a" "$h_core_b" "different --core-ref, same tree -> hash changes"
+
+h_core_a2=$(bash "$HASH_SH" --module powernode-hub-backend --repo "$REPO" \
+              --input-path server --core-ref aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
+assert_eq "$h_core_a" "$h_core_a2" "same --core-ref, same tree -> hash stable"
+
+# Omitting it must not silently equal some core ref, or an unpinned build and a
+# pinned one would collide.
+h_nocore=$(bash "$HASH_SH" --module powernode-hub-backend --repo "$REPO" --input-path server)
+assert_ne "$h_nocore" "$h_core_a" "no --core-ref vs pinned -> hash differs"
+
+# THE REGRESSION GUARD. Folding the core ref in for a package-origin module
+# would change its hash on every core commit, so none of the ~17 skippable
+# modules could ever skip — strictly worse than before. core_ref_hash_args must
+# emit nothing for them.
+. "$SCRIPT_DIR/module-build/needs-parent-modules.sh"
+pkg_args=$(core_ref_hash_args redis deadbeefdeadbeefdeadbeefdeadbeefdeadbeef | tr '\n' ' ')
+assert_eq "" "${pkg_args% }" "package-origin module gets NO --core-ref"
+par_args=$(core_ref_hash_args powernode-hub-backend deadbeef | tr '\n' ' ')
+assert_eq "--core-ref deadbeef" "${par_args% }" "needs-parent module gets --core-ref"
+
+# An empty core ref must emit nothing rather than an --core-ref with no value,
+# which would make the hash script die on a missing argument.
+empty_args=$(core_ref_hash_args powernode-hub-backend "" | tr '\n' ' ')
+assert_eq "" "${empty_args% }" "empty core ref emits nothing"
+
+# Fail-safe: a needs-parent module with declared inputs but NO core ref must
+# still refuse to skip, or the pinned-core gate could be bypassed by declaring
+# input paths alone.
+#
+# ASSERT THE REASON, NOT JUST THE OUTCOME. Every error path in should-skip-build.sh
+# returns BUILD, so "it built" is true here even with the guard deleted — the
+# fixture's registry is unreachable and would refuse anyway. A plain
+# assert_builds is therefore VACUOUS for this case (verified: removing the guard
+# left it green). Matching the guard's own message is what makes it discriminating.
+skip_reason=$(bash "$SKIP_SH" --module powernode-hub-backend --repo "$REPO" \
+                --input-path server 2>&1 >/dev/null || true)
+case "$skip_reason" in
+  *"packages parent-repo content and no --core-ref"*)
+    pass "needs-parent + declared inputs but no core-ref -> BUILD (for the right reason)" ;;
+  *)
+    fail "needs-parent + declared inputs but no core-ref -> BUILD (for the right reason): got '$skip_reason'" ;;
+esac
+
+echo
 if [ "$failures" -eq 0 ]; then
   echo "ALL PASS"
 else
