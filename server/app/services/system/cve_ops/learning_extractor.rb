@@ -26,7 +26,7 @@ module System
       def record_tick!(account:, decisions:)
         return if decisions.blank?
 
-        learning_tool = ::Ai::Tools::LearningTool.new(account: account, agent: nil, user: nil) if defined?(::Ai::Tools::LearningTool)
+        learning_tool = ::Ai::Tools::LearningTool.new(account: account, agent: nil, user: nil, internal: true) if defined?(::Ai::Tools::LearningTool)
         return record_dry(account: account, decisions: decisions) unless learning_tool
 
         bucketed = decisions.group_by { |d| [ d[:signal_kind], d[:gate], d[:decision] ] }

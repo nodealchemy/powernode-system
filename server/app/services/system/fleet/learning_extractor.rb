@@ -28,7 +28,13 @@ module System
       def record_tick!(account:, decisions:)
         return if decisions.blank?
 
-        learning_tool = ::Ai::Tools::LearningTool.new(account: account, agent: nil, user: nil) if defined?(::Ai::Tools::LearningTool)
+        # `internal: true` is REQUIRED, not decorative. LearningTool gained a
+        # per-action permission gate (G4): create_learning now demands
+        # ai.analytics.manage, and this reconciler runs with no user at all. A
+        # nil user does NOT imply internal — an MCP instance principal also
+        # arrives with none — so without the explicit flag every tick would be
+        # refused and the loop would silently stop learning.
+        learning_tool = ::Ai::Tools::LearningTool.new(account: account, agent: nil, user: nil, internal: true) if defined?(::Ai::Tools::LearningTool)
         return record_dry(account: account, decisions: decisions) unless learning_tool
 
         bucketed = decisions.group_by { |d| [ d[:signal_kind], d[:gate], d[:decision] ] }
