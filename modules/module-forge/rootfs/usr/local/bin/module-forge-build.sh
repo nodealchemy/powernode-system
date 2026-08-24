@@ -410,7 +410,24 @@ bind_mount /etc/resolv.conf "$BUILDENV/etc/resolv.conf"
 # Overridable: set BUILD_SKIP_UNCHANGED=0 to force a rebuild of everything.
 # Reaches build-one-module.sh via process-environment inheritance through the
 # chroot below, the same way PARENT_PAT does.
-export BUILD_SKIP_UNCHANGED="${BUILD_SKIP_UNCHANGED:-1}"
+# DEFAULT OFF ON THE NATIVE PATH — deliberately, and not because the skip is
+# broken. The skip itself works end-to-end here (measured 2026-08-24: gh logged
+# "[skip-check] gh inputs unchanged (6a2e2df5…)"), but its SUCCESS PATH is
+# unimplemented for this orchestrator. build-one-module.sh answers a skip by
+# printing "(re-tag the existing digest; nothing rebuilt)" and exiting 0 without
+# producing /tmp/<module>.erofs — and nothing re-tags. This script then hits its
+# own `[ -s "$BUILDENV/tmp/$MODULE.erofs" ] || die` guard and the build FAILS.
+#
+# So enabling it here converts "rebuilt something it needn't have" into "failed
+# outright", which is strictly worse. The Gitea Actions path re-tags in its own
+# workflow; the native path has no equivalent arm yet.
+#
+# TO FINISH IT: on a skip, resolve the published artifact's digest and
+# fsverity root (oras manifest fetch <registry>/<owner>/<module>:latest), tag
+# that digest as $OCI_REF, and write the same erofs_ref/digest output push.sh
+# would have written, so the server-side finalize signs and publishes the
+# EXISTING artifact under the new tag. Until that exists, leave this off.
+export BUILD_SKIP_UNCHANGED="${BUILD_SKIP_UNCHANGED:-0}"
 log "content-addressed skip: BUILD_SKIP_UNCHANGED=${BUILD_SKIP_UNCHANGED}"
 
 # --- 4. run build-one-module.sh inside the chroot. HOME=/root is set
