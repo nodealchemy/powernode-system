@@ -261,6 +261,24 @@ else
   fail "login is invoked BEFORE the skip check (login@${login_line:-none} skip@${skip_line:-none})"
 fi
 
+# HASH SYMMETRY. should-skip-build.sh compares its hash against the annotation
+# push.sh wrote, so anything one side folds in the other must too. Every input
+# added on one side only is a permanent mismatch that reads as "inputs changed"
+# forever — silent, because the skip fails safe to BUILD. apt-snapshot was
+# exactly that: folded in by the checker, omitted by the publisher, so no module
+# could ever skip. Structural assertion, since running push.sh needs a registry.
+push_sh="$SCRIPT_DIR/module-build/push.sh"
+if grep -qE 'BUILD_INPUTS_ARGS\+=\(--apt-snapshot' "$push_sh"; then
+  pass "publisher folds in --apt-snapshot (symmetry with the skip check)"
+else
+  fail "publisher folds in --apt-snapshot (symmetry with the skip check)"
+fi
+if grep -q 'core_ref_hash_args' "$push_sh" && grep -q 'core_ref_hash_args' "$SCRIPT_DIR/module-build/should-skip-build.sh"; then
+  pass "both sides derive --core-ref from the same helper"
+else
+  fail "both sides derive --core-ref from the same helper"
+fi
+
 echo
 if [ "$failures" -eq 0 ]; then
   echo "ALL PASS"

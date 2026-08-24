@@ -243,6 +243,18 @@ for _p in ${BUILD_INPUT_PATHS:-}; do BUILD_INPUTS_ARGS+=(--input-path "$_p"); do
 # dead — the failure mode that looks like the feature simply not working.
 mapfile -t _core_args < <(core_ref_hash_args "$MODULE" "${CORE_REF:-}")
 [ ${#_core_args[@]} -gt 0 ] && BUILD_INPUTS_ARGS+=("${_core_args[@]}")
+# The apt snapshot, resolved EXACTLY as build-one-module.sh resolves it before
+# handing it to should-skip-build.sh. Omitting it here was the last asymmetry:
+# the checker folded `apt-snapshot:<id>` into its hash and the publisher did
+# not, so local and published could never be equal and every module read as
+# "inputs changed" even when nothing had. Measured 2026-08-24 on redis, whose
+# tree was unchanged: local=1ab663db… published=e750250f….
+#
+# Note "none" is a VALUE, not an absence — build-one-module.sh defaults to the
+# literal string, so this must default the same way or the two sides diverge
+# again for every module without a pinned snapshot.
+_push_snapshot=$(jq -r '.build.apt_snapshot // "none"' /tmp/manifest.json 2>/dev/null || echo "none")
+BUILD_INPUTS_ARGS+=(--apt-snapshot "$_push_snapshot")
 BUILD_INPUTS_HASH=$(bash "$PUSH_SCRIPT_DIR/compute-build-inputs-hash.sh" \
   "${BUILD_INPUTS_ARGS[@]}" 2>/dev/null || true)
 echo "[push] build-inputs sha256 for $MODULE: ${BUILD_INPUTS_HASH:-<empty>}"
