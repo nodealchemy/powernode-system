@@ -4,9 +4,11 @@
 
 Managed Claude Code CLI in a named, systemd-supervised tmux session on a
 fleet instance. Survives SSH disconnects; the operator reconnects with
-`tmux -L claude-tmux attach -t claude-code`. The Anthropic API key is
-Vault-injected at boot — never baked into the module image, never in an
-env file, never logged. Reusable standalone; increment 21's managed
+`tmux -L claude-tmux attach -t claude-code`. The credential — an
+Anthropic API key, **or** a Claude-subscription OAuth login (see
+[Credential kinds](#credential-kinds-api-key-or-claude-subscription-oauth-seed-once))
+— is Vault-injected at boot: never baked into the module image, never in
+an env file, never logged. Reusable standalone; increment 21's managed
 dev-cell is its first consumer.
 
 ## Hosting pattern: in-tree, not standalone
@@ -114,6 +116,94 @@ export ANTHROPIC_API_KEY="$(cat '/run/claude-tmux/api_key')"; rm -f '/run/claude
 key value itself never appears in any process's argv, and the runtime file
 is deleted immediately after the one read that needs it.
 
+## Credential kinds: API key or Claude-subscription OAuth (seed-once)
+
+A `System::ClaudeCodeCredential` is one of two kinds (`credential_kind`
+column, declared by which param the operator POSTs — exactly one):
+
+| | `api_key` (default) | `oauth` |
+|---|---|---|
+| Operator supplies | an Anthropic API key (`api_key` param) | the `claudeAiOauth` object from a logged-in machine's `~/.claude/.credentials.json` (`oauth` param; the full file shape `{"claudeAiOauth": {...}}` is also accepted) |
+| Vault type | `claude_code_api_key` | `claude_code_oauth` (distinct type ⇒ distinct Vault path; rotations are independent) |
+| Node staging | `/run/claude-tmux/api_key`, read-then-deleted into `ANTHROPIC_API_KEY` by the pane | installed as the session user's `~/.claude/.credentials.json` (0600) + an empty `/run/claude-tmux/oauth_ready` gate marker |
+| Env var | `ANTHROPIC_API_KEY` exported in the pane | **never** exported — an env key would override the OAuth login |
+| File deletion | staged file deleted after the one read | **never** deleted — Claude Code reads and rewrites it continuously |
+| Who is authoritative after first boot | the platform (every boot re-fetches) | **the node** (seed-once; see below) |
+
+The kind travels end-to-end as an explicit discriminator: the node_api
+response carries `data.credential_type` (`"api_key"`/`"oauth"`) and the
+fetch script branches on it — nothing is ever inferred from which fields
+happen to be present. The `api_key` wire shape (`data.api_key`) is
+unchanged, so fetch scripts built before OAuth keep working for api_key
+credentials.
+
+### Why seed-once (and what "stale by design" means)
+
+Claude Code's OAuth login has **no environment-variable equivalent** — the
+`~/.claude/.credentials.json` file *is* the interface, and Claude Code
+**rewrites it in place** whenever it refreshes: the access token is
+replaced, and the refresh token itself rotates with its own expiry. That
+forces an explicit authority decision, because a naive "re-fetch from
+Vault every boot" would overwrite freshly-rotated local tokens with the
+old Vault snapshot — installing a **used** refresh token and silently
+killing the session weeks after everything looked fine.
+
+The chosen model is **seed-once / node-authoritative**:
+
+- **Vault holds a bootstrap seed, nothing more.** The fetch script installs
+  it **only when no usable local credential exists** (fresh node, wiped
+  home, or a corrupt/unusable file — "usable" = parseable JSON whose
+  `.claudeAiOauth.refreshToken` is a non-empty string).
+- **After first install the node owns the credential.** Claude Code
+  refreshes it locally; the platform copy is stale from that moment **by
+  design** and is never pushed back onto the node. A usable local file is
+  never touched, ever.
+- Alternatives were rejected deliberately: *platform-authoritative*
+  refresh would require implementing Anthropic's (undocumented) refresh
+  flow server-side and would still race the node, because Claude Code
+  refreshes locally regardless; *node write-back to Vault* would grant
+  every node write access to its own credential (a compromised node could
+  poison the seed) and still has the same race.
+
+Operational consequences of seed-once:
+
+- **The platform cannot revoke a seeded node, and an outage cannot stop
+  one.** Once a usable local credential exists the fetch stages the
+  session gate from it even when the platform answers 404 (row deleted)
+  or is unreachable — a control-plane outage must not take down the one
+  session it cannot help anyway. To revoke a node's access, remove the
+  node's `~/.claude/.credentials.json` (and/or revoke the login at
+  Anthropic); deleting the platform credential row only stops FUTURE
+  seeding.
+- **A parseable-but-dead local file blocks re-seeding.** "Usable" is a
+  shape check (non-empty `refreshToken`), not a liveness probe — if the
+  local refresh token was revoked or expired, `rotate` is silently
+  ineffective (the node keeps preferring its local file). Recovery:
+  delete `~/.claude/.credentials.json` on the node, then
+  `systemctl start` the credential + claude units to install the fresh
+  seed.
+
+- **Re-provisioning (or a wiped/ephemeral home) re-installs the Vault
+  seed.** If the node's local copy had since rotated the refresh token,
+  the seed may no longer authenticate — `rotate` the credential with a
+  fresh `claudeAiOauth` blob from a logged-in machine, then
+  `systemctl start` the credential + claude units.
+- **The Vault copy going stale is not a fault.** Do not "fix" it by
+  re-pushing the seed onto a working node; that is exactly the clobber
+  this design exists to prevent.
+- The seed is validated at POST time: `accessToken`/`refreshToken`
+  required, `expiresAt` must be epoch **milliseconds** (an expired access
+  token is fine — the refresh token is the lifeline), and a
+  `refreshTokenExpiresAt` already in the past is rejected outright (a
+  dead seed can never authenticate).
+
+**Scope note:** OAuth kind is consumed by **claude-tmux only** today. The
+`dev-cell` executor reuses the same fetch script but its pipeline expects
+`ANTHROPIC_API_KEY` and its gate only accepts `/run/dev-cell/api_key` — an
+oauth-kind credential on a dev-cell instance stages the file + marker but
+the executor unit stays (correctly) skipped. Give dev-cell instances an
+api_key-kind credential (or the account-provider fallback).
+
 ## Failure taxonomy: "no credential" is a state, not a fault
 
 `claude-tmux-fetch-credential.sh` distinguishes a *deliberately* uncredentialed
@@ -182,15 +272,28 @@ systemctl start <module>-credential.service && systemctl start <module>-claude.s
 
 ```javascript
 // POST /api/v1/system/nodes/:node_id/node_instances/:id/claude_code_credential
+// API-key kind:
 { "api_key": "sk-ant-..." }
+// — OR — OAuth (Claude subscription) kind: paste the claudeAiOauth object
+// from a logged-in machine's ~/.claude/.credentials.json (the full file
+// shape {"claudeAiOauth": {...}} is accepted too). Copy it privately —
+// never through shell argv/history (e.g. paste into the request body in
+// the operator UI, or read the file directly in your HTTP client).
+{ "oauth": { "accessToken": "...", "refreshToken": "...", "expiresAt": 1234567890123, "refreshTokenExpiresAt": 1234567890123, "scopes": ["user:inference"], "subscriptionType": "max" } }
 ```
 
-Rotate:
+Rotate (same kind only — switching kinds is a deliberate `DELETE` + `POST`
+so the old kind's Vault entry is always cleaned up):
 
 ```javascript
 // POST .../claude_code_credential/rotate
-{ "api_key": "sk-ant-new-..." }
+{ "api_key": "sk-ant-new-..." }   // or { "oauth": {...} } for an oauth-kind credential
 ```
+
+For an **oauth** credential, `rotate` replaces only the *Vault seed* —
+seed-once means a node with a usable local credential ignores it until
+its local copy is gone/unusable (see
+[Why seed-once](#why-seed-once-and-what-stale-by-design-means)).
 
 Assign the module to a template (or a single instance's node — see the
 "Known platform gap" note below), then restart the module's service on the
@@ -218,4 +321,4 @@ platform fix) must also call `apply_template`. Tracked separately in this
 campaign, same as every other module this increment's sibling work depends
 on.
 
-_Last verified: 2026-07-06._
+_Last verified: 2026-07-06 (credential kinds + seed-once OAuth: 2026-08-24)._
