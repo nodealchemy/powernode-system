@@ -126,12 +126,27 @@ module Api
 
           # GET /api/v1/system/node_api/config/claude_code_credential
           #
-          # Returns the Claude Code CLI credential (Anthropic API key) for
-          # THIS mTLS-authenticated instance — consumed by the claude-tmux /
+          # Returns the Claude Code CLI credential for THIS
+          # mTLS-authenticated instance — consumed by the claude-tmux /
           # dev-cell NodeModules' boot-time fetch script. Scoped strictly to
           # current_instance (resolved by BaseController#authenticate_instance!
           # from the verified mTLS subject), so one instance can never read
           # another instance's credential.
+          #
+          # The response DECLARES its kind (data.credential_type) — the
+          # fetch script branches on it, never inferring from field shape:
+          #   "api_key" — { credential_type, api_key }. The node exports it
+          #               as ANTHROPIC_API_KEY. Pre-OAuth fetch scripts read
+          #               only data.api_key, which is preserved verbatim.
+          #   "oauth"   — { credential_type, oauth_credentials }, where
+          #               oauth_credentials is EXACTLY the
+          #               ~/.claude/.credentials.json file content
+          #               ({"claudeAiOauth" => {...}}). SEED-ONCE semantics:
+          #               the node installs it only when no usable local
+          #               credential exists — Claude Code rotates both tokens
+          #               in place, so this Vault seed goes stale by design
+          #               and must never overwrite a live local file
+          #               (see docs/CLAUDE_TMUX_MODULE.md).
           #
           # Resolution order:
           #   1. The instance's own System::ClaudeCodeCredential (Vault-backed),
@@ -151,15 +166,34 @@ module Api
             credential = ::System::ClaudeCodeCredential.find_by(node_instance: current_instance)
 
             if credential
-              # Explicit per-instance credential: resolve from Vault. A broken /
-              # empty Vault for an explicitly-configured row is a SERVICE error
-              # (503) — never silently fall back to the account key for a
-              # credential an operator deliberately set.
+              # Explicit per-instance credential: resolve from Vault under
+              # the row's own kind type. A broken / empty Vault for an
+              # explicitly-configured row is a SERVICE error (503) — never
+              # silently fall back to the account key for a credential an
+              # operator deliberately set.
               plaintext = vault_provider.get_credential(
-                credential_type: :claude_code_api_key,
+                credential_type: credential.vault_kind_type,
                 credential_id: credential.id,
                 record: credential
               )
+
+              if credential.oauth?
+                # Stored as { "oauth" => <claudeAiOauth object> }; symbol keys
+                # accepted for the same BUG-M reason as api_key below.
+                blob = plaintext.is_a?(Hash) ? (plaintext[:oauth] || plaintext["oauth"]) : nil
+                if blob.blank?
+                  return render_error("Vault has no credential for this instance", :service_unavailable)
+                end
+
+                emit_claude_code_credential_event!(source: "instance", kind: "oauth")
+                # Wrapped back into the exact on-disk file shape so the node
+                # writes data.oauth_credentials VERBATIM.
+                return render_success(
+                  credential_type: "oauth",
+                  oauth_credentials: { "claudeAiOauth" => blob }
+                )
+              end
+
               # VaultCredentialProvider#get_credential returns a SYMBOL-keyed
               # hash ({ api_key:, stored_at: }); accept the string key too for
               # safety. (BUG-M: reading only ["api_key"] returned nil for every
@@ -182,18 +216,11 @@ module Api
               source = "account_provider"
             end
 
-            if defined?(::System::Fleet::EventBroadcaster)
-              ::System::Fleet::EventBroadcaster.emit!(
-                account: current_account,
-                kind: "system.claude_code_credential_issued",
-                severity: :low,
-                payload: { "instance_id" => current_instance.id, "source" => source },
-                source: "node_api.config"
-              )
-            end
+            emit_claude_code_credential_event!(source: source, kind: "api_key")
 
-            render_success(api_key: api_key)
+            render_success(api_key: api_key, credential_type: "api_key")
           end
+
 
           # GET /api/v1/system/node_api/config/dev_cell_bootstrap
           #
@@ -422,6 +449,21 @@ module Api
           end
 
           private
+
+          # Audit event for every credential issuance over this endpoint —
+          # metadata only (ids + kind labels), NEVER any part of the secret.
+          def emit_claude_code_credential_event!(source:, kind:)
+            return unless defined?(::System::Fleet::EventBroadcaster)
+
+            ::System::Fleet::EventBroadcaster.emit!(
+              account: current_account,
+              kind: "system.claude_code_credential_issued",
+              severity: :low,
+              payload: { "instance_id" => current_instance.id, "source" => source,
+                         "credential_kind" => kind },
+              source: "node_api.config"
+            )
+          end
 
           # True when the calling node is actually provisioned with the dev-cell
           # NodeModule (per-node NodeModuleAssignment → what's really on the box,

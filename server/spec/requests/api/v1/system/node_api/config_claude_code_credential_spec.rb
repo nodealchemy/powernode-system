@@ -47,7 +47,11 @@ RSpec.describe "Api::V1::System::NodeApi::Config#claude_code_credential", type: 
     get path, headers: headers
 
     expect(response).to have_http_status(:ok)
-    expect(JSON.parse(response.body).dig("data", "api_key")).to eq("sk-ant-STUB-VALUE")
+    data = JSON.parse(response.body)["data"]
+    expect(data["api_key"]).to eq("sk-ant-STUB-VALUE")
+    # The producer DECLARES the kind — the on-node fetch script branches on
+    # this instead of inferring from which fields happen to be present.
+    expect(data["credential_type"]).to eq("api_key")
   end
 
   it "never leaks another instance's credential" do
@@ -113,6 +117,53 @@ RSpec.describe "Api::V1::System::NodeApi::Config#claude_code_credential", type: 
         .with("dev_cell_account_provider_credential_fallback").and_return(nil)
       get path, headers: headers
       expect(response).to have_http_status(:not_found)
+    end
+  end
+
+  # --- OAuth (Claude subscription) credential kind -----------------------
+  context "when the instance's credential is oauth-kind" do
+    let!(:credential) do
+      create(:system_claude_code_credential, node_instance: instance, credential_kind: "oauth")
+    end
+    let(:oauth_blob) do
+      {
+        "accessToken" => "fake-oauth-access-token-for-spec",
+        "refreshToken" => "fake-oauth-refresh-token-for-spec",
+        "expiresAt" => 4_102_444_800_000,
+        "refreshTokenExpiresAt" => 4_102_444_800_000,
+        "scopes" => ["user:inference"],
+        "subscriptionType" => "max"
+      }
+    end
+
+    it "returns the blob wrapped in the ~/.claude/.credentials.json file shape, reading Vault under the oauth type" do
+      expect(fake_vault).to receive(:get_credential).with(
+        hash_including(credential_type: :claude_code_oauth, credential_id: credential.id)
+      ).and_return(oauth: oauth_blob)
+
+      get path, headers: headers
+
+      expect(response).to have_http_status(:ok)
+      data = JSON.parse(response.body)["data"]
+      expect(data["credential_type"]).to eq("oauth")
+      # The node writes data.oauth_credentials VERBATIM as ~/.claude/.credentials.json.
+      expect(data.dig("oauth_credentials", "claudeAiOauth", "refreshToken"))
+        .to eq("fake-oauth-refresh-token-for-spec")
+      expect(data).not_to have_key("api_key")
+    end
+
+    it "returns 503 when Vault has no oauth material for the existing row" do
+      allow(fake_vault).to receive(:get_credential).and_return({})
+      get path, headers: headers
+      expect(response).to have_http_status(:service_unavailable)
+    end
+
+    it "accepts the STRING-keyed shape the Vault-less DB fallback returns (ops-hub)" do
+      allow(fake_vault).to receive(:get_credential).and_return({ "oauth" => oauth_blob })
+      get path, headers: headers
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "oauth_credentials", "claudeAiOauth", "refreshToken"))
+        .to eq("fake-oauth-refresh-token-for-spec")
     end
   end
 
