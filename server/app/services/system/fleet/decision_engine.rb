@@ -373,6 +373,15 @@ module System
         # operator. Listed in
         # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES for the
         # standing-fingerprint reason recorded there.
+        # No skill: there is no applier for "the janitor is inert" and there
+        # can be none — the causes are code and configuration. See
+        # StuckTaskBacklogSensor. Routed to an investigate category so it
+        # reaches an operator; NOT system.observation, which the seed
+        # auto_approves into a dashboard nobody is paged by.
+        "system.task_backlog_stuck" => {
+          skill: nil,
+          action_category: "system.task_backlog_investigate"
+        },
         "system.module_verify_failed" => {
           skill: nil,
           action_category: "system.module_verify_investigate"

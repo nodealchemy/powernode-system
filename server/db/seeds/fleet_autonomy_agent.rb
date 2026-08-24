@@ -255,6 +255,19 @@ fleet_policies = {
   # fingerprint stands until a human changes an artifact or an image.
   "system.module_verify_investigate" => "notify_and_proceed",
 
+  # StuckTaskBacklogSensor — "tasks are piling up behind the janitor". Seeded
+  # HERE for the same mechanical reason as the categories above: the sensor
+  # fires from FleetAutonomyService::SENSORS and gates as THIS agent, so a
+  # policy anywhere else is invisible to the tick and every signal dies at the
+  # gate.
+  #
+  # notify_and_proceed, never auto_approve: there is no applier and can be
+  # none. The causes are an empty scope, a stopped worker, a broken seam — none
+  # repairable by anything the platform can dispatch. "Proceed" means "reach an
+  # operator". Also in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES,
+  # because the fingerprint stands until a person fixes the janitor.
+  "system.task_backlog_investigate" => "notify_and_proceed",
+
   # Read/notify
   "system.module_assign"           => "notify_and_proceed",
   "system.instance_reboot"         => "notify_and_proceed",

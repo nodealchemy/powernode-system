@@ -196,6 +196,11 @@ module System
       end
 
       SENSORS = [
+        # The OUTCOME oracle for the task janitor. Reads the property the
+        # reaper maintains, never the reaper's own self-report — see the
+        # sensor for why five weeks of green "0 reaped, success" logs proved
+        # nothing.
+        ::System::Fleet::Sensors::StuckTaskBacklogSensor,
         ::System::Fleet::Sensors::InstanceStatusSensor,
         # Provider-side state drift (e.g. libvirt domstate=shut-off while
         # the model says status=running). Complementary to InstanceStatusSensor
