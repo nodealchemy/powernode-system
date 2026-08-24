@@ -175,6 +175,13 @@ Operational consequences of seed-once:
   node's `~/.claude/.credentials.json` (and/or revoke the login at
   Anthropic); deleting the platform credential row only stops FUTURE
   seeding.
+- **A kind flip takes effect on the next successful fetch, not during a
+  fault.** The continuity fallback keys on the local file (the platform's
+  declared kind is unknowable without a 200), so after an oauth→api_key
+  flip a transient fault briefly starts the session on the leftover
+  subscription login; both edges are narrow and self-heal on the next
+  successful fetch. Future hardening: gate the fallback on the last-known
+  platform kind.
 - **A parseable-but-dead local file blocks re-seeding.** "Usable" is a
   shape check (non-empty `refreshToken`), not a liveness probe — if the
   local refresh token was revoked or expired, `rotate` is silently

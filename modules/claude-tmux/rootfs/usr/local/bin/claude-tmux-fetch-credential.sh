@@ -59,9 +59,22 @@
 #       This is a DESIGNED steady state, not a fault — the
 #       dev_cell_account_provider_credential_fallback SiteSetting defaults
 #       OFF so an idle cell cannot burn API credits (inc21, 2026-07-10).
-#       Both consuming units carry RestartPreventExitStatus=78 so this
-#       fails ONCE and stays put instead of crash-looping the control
-#       plane. Re-arm with `systemctl start` after setting a credential.
+#       The credential unit maps 78 to success (SuccessExitStatus=78 —
+#       NOT RestartPreventExitStatus, which is inert for this shape and
+#       asserted ABSENT by the test harness) and the session unit's
+#       ConditionPathExists gate then skips cleanly. Re-arm with
+#       `systemctl start` after setting a credential.
+#       KNOWN EDGES of the continuity fallback (deliberate, self-healing;
+#       it keys on the LOCAL file because the platform's declared kind is
+#       unknowable without a 200): (1) after an oauth->api_key flip on
+#       the platform, a transient fault starts the session on the
+#       leftover subscription login until the next successful fetch
+#       re-stages the api_key; (2) a leftover usable local OAuth file on
+#       an api_key-kind instance makes a transient fault exit 0 staging
+#       only oauth_ready — claude-tmux's OR gate then starts on that
+#       login, while dev-cell's api_key-only gate skips its executor
+#       until the next successful fetch. Future hardening: gate the
+#       fallback on the last-known platform kind.
 #   1   every genuinely transient fault (unenrolled, unresolvable platform
 #       URL, network/mTLS error, non-200/404 HTTP, malformed response) —
 #       still retried by Restart=on-failure.
