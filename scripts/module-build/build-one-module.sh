@@ -193,6 +193,13 @@ echo "[build-one-module] module=$MODULE sha=$GITHUB_SHA apt_snapshot=$snapshot"
 # ci-compute-dirty-closure.sh and the Ruby planner — completely untouched.
 # should-skip-build.sh fails SAFE: anything unexpected returns BUILD.
 if [ "${BUILD_SKIP_UNCHANGED:-0}" = "1" ]; then
+  # Authenticate FIRST. should-skip-build.sh's `oras manifest fetch` is the
+  # only registry read in the pipeline that happens before push.sh's login, so
+  # without this it is always unauthenticated, always 401s, and always maps to
+  # "no published manifest -> BUILD" — which is why this skip never once fired.
+  # Best-effort by design: a failed login leaves the fetch unauthenticated and
+  # the check returns BUILD, exactly as it did before.
+  bash "$SCRIPT_DIR/oras-login.sh" || true
   skip_args=(--module "$MODULE" --apt-snapshot "$snapshot")
   for _p in ${BUILD_INPUT_PATHS:-}; do skip_args+=(--input-path "$_p"); done
   # The batch's pinned core commit. should-skip-build.sh folds it in for

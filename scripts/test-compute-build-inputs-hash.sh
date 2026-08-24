@@ -218,6 +218,50 @@ case "$skip_reason" in
 esac
 
 echo
+echo "oras-login.sh (fail-safe, pre-skip auth)"
+
+LOGIN_SH="$SCRIPT_DIR/module-build/oras-login.sh"
+
+# Authentication must never be able to FAIL a build. Every path exits 0.
+if ( unset ORAS_REGISTRY_USERNAME ORAS_REGISTRY_PASSWORD; bash "$LOGIN_SH" >/dev/null 2>&1 ); then
+  pass "no credentials -> exit 0 (never fails the build)"
+else
+  fail "no credentials -> exit 0 (never fails the build)"
+fi
+
+# Invoke bash by ABSOLUTE path: stripping PATH also hides `bash` itself, so
+# `PATH=/nonexistent bash ...` exits 127 (command not found) and would test the
+# harness rather than the script.
+if ( env PATH=/nonexistent /bin/bash "$LOGIN_SH" >/dev/null 2>&1 ); then
+  pass "oras missing -> exit 0"
+else
+  fail "oras missing -> exit 0"
+fi
+
+# The password must never reach argv (visible in /proc) or the log. Run with a
+# sentinel and assert it appears in NEITHER stream.
+login_out=$( env ORAS_REGISTRY_USERNAME=u ORAS_REGISTRY_PASSWORD=zzSENTINELzz \
+             PATH=/nonexistent /bin/bash "$LOGIN_SH" 2>&1 || true )
+case "$login_out" in
+  *zzSENTINELzz*) fail "password never appears in output" ;;
+  *)              pass "password never appears in output" ;;
+esac
+
+# It must be wired ahead of the skip check, not merely present: the whole defect
+# was ordering. Assert build-one-module.sh calls it before should-skip-build.sh.
+bom="$SCRIPT_DIR/module-build/build-one-module.sh"
+# Match the INVOCATIONS, not the prose. Both script names appear in comments
+# above their call sites, so a naive grep compares a comment to a call and
+# reports the wrong order — which is what this assertion exists to detect.
+login_line=$(grep -nE '^[^#]*bash "\$SCRIPT_DIR/oras-login\.sh"' "$bom" | head -1 | cut -d: -f1)
+skip_line=$(grep -nE '^[^#]*bash "\$SCRIPT_DIR/should-skip-build\.sh"' "$bom" | head -1 | cut -d: -f1)
+if [ -n "$login_line" ] && [ -n "$skip_line" ] && [ "$login_line" -lt "$skip_line" ]; then
+  pass "login is invoked BEFORE the skip check"
+else
+  fail "login is invoked BEFORE the skip check (login@${login_line:-none} skip@${skip_line:-none})"
+fi
+
+echo
 if [ "$failures" -eq 0 ]; then
   echo "ALL PASS"
 else
