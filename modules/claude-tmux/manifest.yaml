@@ -6,11 +6,12 @@ description: >
   Runs the Claude Code CLI (@anthropic-ai/claude-code) inside a named,
   systemd-supervised tmux session on the instance — survives SSH
   disconnects; the operator reconnects with `tmux attach -t claude-code`.
-  The Anthropic API key is fetched from platform-side Vault storage over
-  the mTLS-authenticated node_api at service start; it is never baked
-  into this module's image, never written to an env file, and never
-  logged. Reusable standalone — any fleet instance can carry this module
-  regardless of template.
+  The credential — an Anthropic API key, or a Claude-subscription OAuth
+  login installed seed-once as ~/.claude/.credentials.json — is fetched
+  from platform-side Vault storage over the mTLS-authenticated node_api
+  at service start; it is never baked into this module's image, never
+  written to an env file, and never logged. Reusable standalone — any
+  fleet instance can carry this module regardless of template.
 license: MIT
 category: build-dev
 
@@ -259,7 +260,15 @@ services:
       # no restart, no failed state, no audit record. Replaces the old
       # ExecStartPre=+...fetch-credential.sh, whose exit code could not
       # suppress a restart because a pre-hook is a control process.
-      ConditionPathExists=/run/claude-tmux/api_key
+      #
+      # TWO staged shapes, EITHER satisfies the gate — the "|" prefix makes
+      # these lines a triggering (OR) group while the plain /usr/bin/claude
+      # condition above stays AND'd: api_key is the staged Anthropic key the
+      # pane exports; oauth_ready marks that the fetch installed (or found,
+      # seed-once) a usable ~/.claude/.credentials.json OAuth login, which
+      # claude reads itself with no env var involved.
+      ConditionPathExists=|/run/claude-tmux/api_key
+      ConditionPathExists=|/run/claude-tmux/oauth_ready
       # Bounds a PERSISTENT tmux-side failure. Interval must exceed
       # RestartSec x Burst (5s x 5 = 25s); the stock 10s/5 cannot trip.
       StartLimitIntervalSec=180

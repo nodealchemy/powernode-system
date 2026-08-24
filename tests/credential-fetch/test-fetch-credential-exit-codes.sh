@@ -69,7 +69,7 @@ assert_contains() { # <label> <haystack> <needle>
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-mkdir -p "$WORK/pki" "$WORK/bin" "$WORK/run"
+mkdir -p "$WORK/pki" "$WORK/bin" "$WORK/run" "$WORK/home"
 : > "$WORK/pki/node.crt"
 : > "$WORK/pki/node.key"
 : > "$WORK/pki/ca-bundle.crt"
@@ -96,6 +96,11 @@ STUB
 chmod +x "$WORK/bin/curl"
 
 # run_fetch <http_code> <body> [transport_fail] -> sets RC / OUT
+# CLAUDE_TMUX_CRED_HOME redirects the OAuth install target into the
+# sandbox — same test seam as POWERNODE_PKI_DIR; systemd never sets it,
+# so production always resolves the session user's real home via getent.
+# WITHOUT it, the oauth cases below would write into the REAL
+# ~/.claude/.credentials.json of whoever runs this suite.
 run_fetch() {
   OUT="$(
     PATH="$WORK/bin:$PATH" \
@@ -103,6 +108,7 @@ run_fetch() {
     POWERNODE_PLATFORM_URL="https://platform.invalid" \
     RUNTIME_DIRECTORY="$WORK/run" \
     CLAUDE_TMUX_USER="$(id -un)" \
+    CLAUDE_TMUX_CRED_HOME="$WORK/home" \
     STUB_HTTP_CODE="$1" \
     STUB_BODY="$2" \
     STUB_TRANSPORT_FAIL="${3:-0}" \
@@ -148,6 +154,197 @@ case "$OUT" in
   *sk-ant-test-not-a-real-key*) fail "credential never appears in script output" "key leaked to stdout/stderr" ;;
   *) pass "credential never appears in script output" ;;
 esac
+
+echo "== layer 1b: oauth credential kind (seed-once / node-authoritative) =="
+
+# Obviously-fake tokens only. The response shape mirrors the node_api:
+# data.credential_type discriminates, data.oauth_credentials is VERBATIM
+# ~/.claude/.credentials.json content.
+FAKE_RT="fake-oauth-refresh-token-for-harness"
+OAUTH_BODY='{"data":{"credential_type":"oauth","oauth_credentials":{"claudeAiOauth":{"accessToken":"fake-oauth-access-token-for-harness","refreshToken":"'"$FAKE_RT"'","expiresAt":4102444800000,"refreshTokenExpiresAt":4102444800000,"scopes":["user:inference"],"subscriptionType":"max"}}}}'
+CRED_JSON="$WORK/home/.claude/.credentials.json"
+
+reset_oauth_state() { rm -rf "$WORK/home/.claude" "$WORK/run/oauth_ready" "$WORK/run/api_key"; }
+
+# Fresh node, no local credential: the Vault seed is installed.
+reset_oauth_state
+run_fetch 200 "$OAUTH_BODY"
+assert_eq "oauth: fresh node installs the seed (exit 0)" "0" "$RC"
+if [ -f "$CRED_JSON" ]; then
+  pass "oauth: installs ~/.claude/.credentials.json"
+  assert_eq "oauth: credentials file is mode 0600" "600" "$(stat -c '%a' "$CRED_JSON")"
+  assert_eq "oauth: .claude dir is mode 0700" "700" "$(stat -c '%a' "$WORK/home/.claude")"
+  if jq -e --arg rt "$FAKE_RT" '.claudeAiOauth.refreshToken == $rt' "$CRED_JSON" >/dev/null 2>&1; then
+    pass "oauth: installed file is the verbatim claudeAiOauth blob"
+  else
+    fail "oauth: installed file is the verbatim claudeAiOauth blob" "refreshToken mismatch or unparsable file"
+  fi
+else
+  fail "oauth: installs ~/.claude/.credentials.json" "no file at $CRED_JSON"
+  fail "oauth: credentials file is mode 0600" "no file to stat"
+  fail "oauth: .claude dir is mode 0700" "no dir to stat"
+  fail "oauth: installed file is the verbatim claudeAiOauth blob" "no file"
+fi
+[ -f "$WORK/run/oauth_ready" ] && pass "oauth: stages the oauth_ready marker"   || fail "oauth: stages the oauth_ready marker" "no marker at $WORK/run/oauth_ready"
+[ ! -e "$WORK/run/api_key" ] && pass "oauth: does NOT stage an api_key file"   || fail "oauth: does NOT stage an api_key file" "unexpected $WORK/run/api_key"
+case "$OUT" in
+  *"$FAKE_RT"*|*fake-oauth-access-token-for-harness*)
+    fail "oauth: tokens never appear in script output" "token leaked to stdout/stderr" ;;
+  *) pass "oauth: tokens never appear in script output" ;;
+esac
+
+# SEED-ONCE: a usable local credential is NODE-AUTHORITATIVE — a re-fetch
+# must NEVER overwrite it with the (by-design stale) Vault snapshot.
+# This is the silent-weeks-later failure mode: Claude Code rotated the
+# refresh token in place; clobbering the file with the seed kills the
+# session.
+printf '%s' '{"claudeAiOauth":{"accessToken":"fake-locally-refreshed-access","refreshToken":"fake-locally-refreshed-refresh","expiresAt":4102444800000}}' > "$CRED_JSON.want"
+cp "$CRED_JSON.want" "$CRED_JSON"
+chmod 600 "$CRED_JSON"
+rm -f "$WORK/run/oauth_ready"
+run_fetch 200 "$OAUTH_BODY"
+assert_eq "oauth seed-once: exits 0 with a usable local credential" "0" "$RC"
+if cmp -s "$CRED_JSON" "$CRED_JSON.want"; then
+  pass "oauth seed-once: local file left byte-identical (never clobbered by the stale seed)"
+else
+  fail "oauth seed-once: local file left byte-identical (never clobbered by the stale seed)"        "the fetch overwrote a locally-refreshed credential"
+fi
+[ -f "$WORK/run/oauth_ready" ] && pass "oauth seed-once: still stages the marker so the session starts"   || fail "oauth seed-once: still stages the marker so the session starts" "no marker"
+assert_contains "oauth seed-once: says it is leaving the local credential authoritative" "$OUT" "node-authoritative"
+rm -f "$CRED_JSON.want"
+
+# An UNUSABLE local file (no refreshToken) is not a credential — replace it.
+printf '%s' '{"claudeAiOauth":{"accessToken":"fake-only-access-no-refresh"}}' > "$CRED_JSON"
+rm -f "$WORK/run/oauth_ready"
+run_fetch 200 "$OAUTH_BODY"
+assert_eq "oauth: unusable local file is re-seeded (exit 0)" "0" "$RC"
+if jq -e --arg rt "$FAKE_RT" '.claudeAiOauth.refreshToken == $rt' "$CRED_JSON" >/dev/null 2>&1; then
+  pass "oauth: unusable local file was replaced by the seed"
+else
+  fail "oauth: unusable local file was replaced by the seed" "file not replaced"
+fi
+
+# A response declaring oauth but carrying no usable blob is a fault.
+reset_oauth_state
+run_fetch 200 '{"data":{"credential_type":"oauth","oauth_credentials":{"claudeAiOauth":{"accessToken":"fake-x"}}}}'
+assert_eq "oauth: response without a refreshToken stays retryable (exit 1)" "1" "$RC"
+[ ! -e "$CRED_JSON" ] && pass "oauth: no file installed from an unusable response"   || fail "oauth: no file installed from an unusable response" "unexpected $CRED_JSON"
+[ ! -e "$WORK/run/oauth_ready" ] && pass "oauth: no marker staged from an unusable response"   || fail "oauth: no marker staged from an unusable response" "unexpected marker"
+
+# NODE-AUTHORITATIVE CONTINUITY: with a usable LOCAL credential, the
+# session must be able to start even when the platform cannot bless it —
+# a control-plane outage (or a deleted platform row) must not take down
+# the one session it cannot help anyway. The fetch degrades to staging
+# the gate marker from the local file.
+seed_local() {
+  mkdir -p "$WORK/home/.claude"
+  printf '%s' '{"claudeAiOauth":{"accessToken":"fake-local-a","refreshToken":"fake-local-r","expiresAt":4102444800000}}' > "$CRED_JSON"
+  chmod 600 "$CRED_JSON"
+  cp "$CRED_JSON" "$CRED_JSON.want"
+}
+check_local_survives() { # <label>
+  assert_eq "$1: exits 0 on the local credential" "0" "$RC"
+  [ -f "$WORK/run/oauth_ready" ] && pass "$1: stages the marker from the local credential"     || fail "$1: stages the marker from the local credential" "no marker"
+  if cmp -s "$CRED_JSON" "$CRED_JSON.want"; then
+    pass "$1: local file untouched"
+  else
+    fail "$1: local file untouched" "file changed"
+  fi
+}
+
+reset_oauth_state; seed_local
+run_fetch 404 ''
+check_local_survives "oauth continuity/404 (deleted platform row does not revoke the node)"
+
+reset_oauth_state; seed_local
+run_fetch 000 '' 1
+check_local_survives "oauth continuity/transport failure"
+
+reset_oauth_state; seed_local
+run_fetch 503 ''
+check_local_survives "oauth continuity/HTTP 503"
+rm -f "$CRED_JSON.want"
+
+# And WITHOUT a local credential the taxonomy is unchanged (404 -> 78,
+# faults -> 1) — re-asserted here because the continuity fallback sits in
+# exactly those branches.
+reset_oauth_state
+run_fetch 404 ''
+assert_eq "oauth continuity: 404 with no local credential still exits 78" "78" "$RC"
+run_fetch 000 '' 1
+assert_eq "oauth continuity: transport failure with no local credential still exits 1" "1" "$RC"
+
+# Temp-file hygiene: no branch may leave the plaintext response (or a
+# half-written install temp) behind — including the parse-failure exits.
+reset_oauth_state
+run_fetch 200 'not json at all'
+[ ! -e "$WORK/run/.credential-response.json" ] && pass "hygiene: unparsable response leaves no response temp file"   || fail "hygiene: unparsable response leaves no response temp file" "found $WORK/run/.credential-response.json"
+[ ! -e "$CRED_JSON.tmp" ] && pass "hygiene: no half-written credentials temp left behind"   || fail "hygiene: no half-written credentials temp left behind" "found $CRED_JSON.tmp"
+
+# A home that does not exist must be REFUSED, never manufactured — a
+# root-owned 0700 home chain would lock the session user out of their own
+# home (prior fleet incident class).
+reset_oauth_state
+rmdir "$WORK/home" 2>/dev/null || rm -rf "$WORK/home"
+run_fetch 200 "$OAUTH_BODY"
+assert_eq "oauth: nonexistent home is refused (exit 1, retryable)" "1" "$RC"
+[ ! -d "$WORK/home" ] && pass "oauth: home directory is never manufactured"   || fail "oauth: home directory is never manufactured" "script created $WORK/home"
+mkdir -p "$WORK/home"
+
+echo "== layer 1c: start script consumes the right credential shape =="
+
+START_SCRIPT="$ROOT/modules/claude-tmux/rootfs/usr/local/bin/claude-tmux-start.sh"
+TMUX_LOG="$WORK/tmux-calls.log"
+
+# Stub tmux: has-session always says "no session"; every other call is
+# recorded argv-verbatim so the send-keys payload can be asserted.
+cat > "$WORK/bin/tmux" <<'STUB'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  [ "$arg" = "has-session" ] && exit 1
+done
+printf '%s
+' "$*" >> "${TMUX_LOG:?}"
+exit 0
+STUB
+chmod +x "$WORK/bin/tmux"
+
+run_start() { # -> RC / OUT / TMUX log
+  : > "$TMUX_LOG"
+  OUT="$(PATH="$WORK/bin:$PATH" RUNTIME_DIRECTORY="$WORK/run" TMUX_LOG="$TMUX_LOG" sh "$START_SCRIPT" 2>&1)"
+  RC=$?
+}
+
+# api_key staged: byte-for-byte the original behaviour — export + delete.
+reset_oauth_state
+printf '%s' "sk-ant-test-not-a-real-key" > "$WORK/run/api_key"
+run_start
+assert_eq "start/api_key: exits 0" "0" "$RC"
+assert_contains "start/api_key: pane exports ANTHROPIC_API_KEY" "$(cat "$TMUX_LOG")" "export ANTHROPIC_API_KEY"
+assert_contains "start/api_key: pane deletes the staged key file" "$(cat "$TMUX_LOG")" "rm -f"
+
+# oauth marker staged: claude reads ~/.claude/.credentials.json itself —
+# the pane must NOT export ANTHROPIC_API_KEY (it would OVERRIDE the OAuth
+# login) and must NOT delete anything (Claude Code rewrites the file on
+# every token refresh; deleting it kills the session).
+reset_oauth_state
+: > "$WORK/run/oauth_ready"
+run_start
+assert_eq "start/oauth: exits 0" "0" "$RC"
+assert_contains "start/oauth: pane execs claude" "$(cat "$TMUX_LOG")" "exec claude"
+case "$(cat "$TMUX_LOG")" in
+  *ANTHROPIC_API_KEY*) fail "start/oauth: never exports ANTHROPIC_API_KEY" "found in tmux argv" ;;
+  *) pass "start/oauth: never exports ANTHROPIC_API_KEY" ;;
+esac
+case "$(cat "$TMUX_LOG")" in
+  *"rm -f"*|*credentials.json*) fail "start/oauth: never deletes the credential file" "deletion found in tmux argv" ;;
+  *) pass "start/oauth: never deletes the credential file" ;;
+esac
+
+# Neither staged: refuse to start.
+reset_oauth_state
+run_start
+assert_eq "start/none: exits 1 with nothing staged" "1" "$RC"
 
 echo "== layer 2: systemd wiring that consumes the taxonomy =="
 
@@ -341,7 +538,11 @@ no_fetch_in_execstartpre "dev-cell"    "$DEV_CELL_MANIFEST"
 check_stager "claude-tmux/credential" "$CLAUDE_TMUX_MANIFEST" "credential"
 check_stager "dev-cell/credential"    "$DEV_CELL_MANIFEST"    "credential"
 
-check_gate "claude-tmux/claude" "$CLAUDE_TMUX_MANIFEST" "claude"   "/run/claude-tmux/api_key"
+# The claude unit is gated on EITHER staged shape — systemd's |-prefixed
+# ConditionPathExists lines are OR'd together (plain ones stay AND'd), so
+# both entries must carry the pipe or the unit would require BOTH files.
+check_gate "claude-tmux/claude" "$CLAUDE_TMUX_MANIFEST" "claude"   "|/run/claude-tmux/api_key"
+check_gate "claude-tmux/claude" "$CLAUDE_TMUX_MANIFEST" "claude"   "|/run/claude-tmux/oauth_ready"
 check_gate "dev-cell/executor"  "$DEV_CELL_MANIFEST"    "executor" "/run/dev-cell/api_key"
 
 check_burst_headroom "claude-tmux" "$CLAUDE_TMUX_MANIFEST" "credential" "claude"
