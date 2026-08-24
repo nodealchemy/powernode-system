@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -166,6 +167,41 @@ type Reconciler struct {
 	// self-deadlock (sync.Mutex is not reentrant).
 	convergeMu       sync.Mutex
 	convergeFailures []string
+
+	// privilegedAllow is the operator-approved privileged-module allowlist for
+	// THIS pass, copied from the fetched AssignmentMeta at the top of RunOnce.
+	// Read by attachModule (and ComposeForPivot uses its own live meta). Set
+	// and read only within a single RunOnce, which holds mu across its whole
+	// body, so no separate guard is needed. See privilegedApproved.
+	privilegedAllow []string
+}
+
+// privilegedApproved reports whether a module that REQUESTS
+// security.privileged=true has been GRANTED it by the operator-controlled
+// allowlist (AssignmentMeta.PrivilegedModuleIDs). The manifest can only ask;
+// this list — delivered by the control plane from an admin-gated setting,
+// never from the module manifest — decides. Empty allowlist = deny.
+//
+// Matching is on modID ONLY — the server-assigned NodeModule UUIDv7. The
+// server resolves any operator-supplied module NAMES to these ids before
+// sending them (NodeApi::ModulesController#privileged_module_ids), so the
+// agent never keys the gate on a mutable, author-influenced name (review
+// finding F1): two modules sharing a name can never both inherit an approval.
+//
+// This is the crux of the gate against IMP-01a02f70-20b1: it can NEVER be
+// satisfied by module-controlled input, because the only value it consults —
+// the immutable assignment id — is compared against a list the module does not
+// author. A compromised module cannot add itself.
+func privilegedApproved(modID string, allow []string) bool {
+	if modID == "" {
+		return false
+	}
+	for _, a := range allow {
+		if strings.TrimSpace(a) == modID {
+			return true
+		}
+	}
+	return false
 }
 
 // noteUnconverged records a convergence failure AND reports it through the
@@ -306,6 +342,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		r.lastError = fmt.Errorf("fetch assigned modules: %w", err)
 		return r.lastError
 	}
+	// Operator-approved privileged-module allowlist for this pass. buildPolicy
+	// parses a module's privileged REQUEST; attachModule consults this to
+	// decide whether to honour it (IMP-01a02f70-20b1).
+	r.privilegedAllow = assignmentMeta.PrivilegedModuleIDs
 
 	// Build desired ModuleStack by fetching manifests for modules with data files.
 	desired := make(mount.ModuleStack, 0, len(desiredModules))
@@ -758,7 +798,13 @@ func (r *Reconciler) stagePendingCompose(assigned []AssignedModule, manifests ma
 				RequiredConsecutive: meta.AppHealthRequiredConsecutive,
 				PollIntervalSeconds: meta.AppHealthPollIntervalSeconds,
 			},
-			Modules: mods,
+			// Freeze the privileged allowlist with the staged set so a cold
+			// FromPending boot enforces the gate against it (IMP-01a02f70-20b1,
+			// F2) — critical on self-hosted nodes whose only capture source is
+			// this staging path.
+			PrivilegedModuleIDs:       meta.PrivilegedModuleIDs,
+			PrivilegedAllowlistFrozen: true,
+			Modules:                   mods,
 		},
 		StagedAt: time.Now().UTC(),
 		Attempts: attempts,
@@ -953,6 +999,18 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	// comment; it's unioned across all attached modules once per RunOnce
 	// tick (below, alongside the etcidentity/etcsudoers union step).
 	policy := buildPolicy(mf)
+	if policy.Privileged && !privilegedApproved(mod.ID, r.privilegedAllow) {
+		// The module REQUESTS privileged (all confinement off) but the operator
+		// has not GRANTED it via privileged_module_ids. Refuse the attach
+		// outright — running it unconfined on an unapproved request is exactly
+		// the hole IMP-01a02f70-20b1 named. Fatal + loud: the attach loop marks
+		// the pass unconverged, so the platform sees a convergence failure
+		// rather than a module silently running with no confinement.
+		return fmt.Errorf(
+			"module %s requests security.privileged=true (disables all on-node confinement) "+
+				"but is not in the operator-approved privileged allowlist (privileged_module_ids); "+
+				"refusing to attach it unconfined", mod.ID)
+	}
 	if errs := policy.Validate(); len(errs) > 0 {
 		return fmt.Errorf("policy invalid: %v", errs)
 	}

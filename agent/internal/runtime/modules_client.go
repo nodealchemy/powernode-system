@@ -49,6 +49,17 @@ type AssignmentMeta struct {
 	// on every poll so a config change or DNS change takes effect on the
 	// next reconcile tick without an agent restart.
 	ProtectedEgressHosts []string
+	// PrivilegedModuleIDs is the operator-controlled allowlist of module
+	// identifiers permitted to run with security.privileged=true (which
+	// disables ALL on-node confinement). A module's manifest can only REQUEST
+	// privileged; this list, delivered by the control plane from an
+	// admin-gated account setting / SiteSetting (never from the module
+	// manifest), is the GRANT. Matched against a module's id AND name. Empty =
+	// deny: a module that requests privileged without appearing here has its
+	// attach REFUSED (IMP-01a02f70-20b1). Refetched every poll like
+	// ProtectedEgressHosts, so an operator approval takes effect on the next
+	// tick with no agent restart.
+	PrivilegedModuleIDs []string
 }
 
 // FetchAssignedModules returns the rich-shape module list the
@@ -83,6 +94,7 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 			LKGAppHealthRequiredN     int              `json:"lkg_app_health_required_consecutive,omitempty"`
 			LKGAppHealthPollSecs      int              `json:"lkg_app_health_poll_interval_seconds,omitempty"`
 			ProtectedEgressHosts      []string         `json:"protected_egress_hosts,omitempty"`
+			PrivilegedModuleIDs       []string         `json:"privileged_module_ids,omitempty"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
@@ -106,5 +118,6 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 		AppHealthRequiredConsecutive: env.Data.LKGAppHealthRequiredN,
 		AppHealthPollIntervalSeconds: env.Data.LKGAppHealthPollSecs,
 		ProtectedEgressHosts:         env.Data.ProtectedEgressHosts,
+		PrivilegedModuleIDs:          env.Data.PrivilegedModuleIDs,
 	}, nil
 }

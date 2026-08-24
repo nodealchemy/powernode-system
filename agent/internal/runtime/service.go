@@ -20,6 +20,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/k3sd"
+	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/migration"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
@@ -639,6 +640,23 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		payload.LKGPresent = true
 		payload.LKGConfirmedAt = lkg.ConfirmedAt.UTC().Format(time.RFC3339)
 		payload.LKGModuleCount = len(lkg.Modules)
+	}
+	// On a pivot (native root-mode) node the compose path grants capabilities
+	// additively and does NOT reset the bounding set (see ComposeForPivot and
+	// WriteAmbientCapabilityDropInAt). Report that omission so it is visible in
+	// reported state, not just in a code comment (IMP-01a02f70-9bfb). Seccomp
+	// and PrivateUsers ARE enforced on this path as of that fix, so they are not
+	// listed. On cloud_init nodes attachModule enforces the full set — the field
+	// stays nil/omitted.
+	if pivotAwareRootMode() == lifecycle.RootModeNative {
+		// capability_bounding_set: granted additively (ambient), never reset —
+		//   pending a per-module runtime-capability audit.
+		// mandatory_access_control: the pivot/compose path does not load
+		//   SELinux/AppArmor profiles at all (LoadSELinuxProfile/LoadAppArmorProfile
+		//   run only on the cloud_init Apply path), so a module's selinux_profile/
+		//   apparmor_profile is inert post-pivot — report it rather than let the
+		//   heartbeat overstate confinement (review finding F3).
+		payload.PivotConfinementOmitted = []string{"capability_bounding_set", "mandatory_access_control"}
 	}
 	return payload
 }

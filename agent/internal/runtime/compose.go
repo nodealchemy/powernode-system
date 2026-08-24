@@ -130,31 +130,91 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 	// applyTraefikIngressPersistence's doc comment for the race this avoids).
 	applyTraefikIngressPersistence(sysroot, TraefikIngressPersistRoot, manifests, r.cfg.OnError)
 
+	// The privileged-approval gate is enforced on EVERY compose boot — live,
+	// FromPending, and FromLKG — against the operator allowlist FROZEN alongside
+	// the composed set (bc.PrivilegedModuleIDs). Enforcing only on a live boot
+	// (the original design) left the highest-value case open: self-hosted nodes
+	// boot FromLKG as their NORMAL path, so an unapproved privileged module
+	// captured into the LKG would replay UNCONFINED there (review finding F2).
+	// A set that predates this field (PrivilegedAllowlistFrozen=false) skips the
+	// gate exactly as before, so the upgrade window cannot brick a node whose
+	// frozen set has no allowlist. The frozen list is a snapshot: a revocation
+	// takes effect once a newer set is captured, not instantly on an offline
+	// node — inherent to LKG, and still strictly better than never enforcing.
+	enforcePrivileged := bc != nil && bc.PrivilegedAllowlistFrozen
+	if bc != nil {
+		r.privilegedAllow = bc.PrivilegedModuleIDs
+	}
+
 	// Render + offline-enable native units in the union (no start — systemd in
-	// the union starts them on boot after switch_root).
+	// the union starts them on boot after switch_root), applying the SAME
+	// confinements the cloud_init attachModule path applies (IMP-01a02f70-9bfb):
+	// per-module Policy.Validate, seccomp SystemCallFilter, PrivateUsers, and
+	// the privileged-approval gate. The one deliberate difference remains the
+	// capability set: this path writes an ADDITIVE ambient grant and does NOT
+	// reset CapabilityBoundingSet (see WriteAmbientCapabilityDropInAt and the
+	// reported-state note in buildHeartbeat) — that restriction needs a
+	// per-module runtime-capability audit before it is safe post-pivot.
 	for _, mod := range stack {
 		mf := manifests[mod.ID]
 		if mf == nil {
 			continue
 		}
+		policy := buildPolicy(mf)
+
+		// Loud refusals BEFORE the unit is enabled — a module whose security
+		// block is invalid, or which requests privileged without an operator
+		// grant, must not boot its services unconfined. Skipping enablement is
+		// the pivot-path equivalent of attachModule returning an error; the
+		// module's files are in the union but its services stay disabled, and
+		// the refusal is surfaced via OnError.
+		if errs := policy.Validate(); len(errs) > 0 {
+			r.cfg.OnError("compose:policy_invalid",
+				fmt.Errorf("module %s: %v — services NOT enabled post-pivot", mod.ID, errs))
+			continue
+		}
+		if policy.Privileged && enforcePrivileged && !privilegedApproved(mod.ID, r.privilegedAllow) {
+			r.cfg.OnError("compose:privileged_unapproved",
+				fmt.Errorf("module %s requests security.privileged=true but is not in the operator-approved "+
+					"privileged allowlist (privileged_module_ids); services NOT enabled post-pivot", mod.ID))
+			continue
+		}
+
 		if _, err := lifecycle.AttachServicesNative(ctx, r.cfg.MountRunner, mod.ID, mf.Services, sysroot); err != nil {
 			r.cfg.OnError("compose:attach_native", fmt.Errorf("module %s: %w", mod.ID, err))
 		}
-		// Grant the module's declared capabilities into each unit's AMBIENT set,
-		// written INTO the union at sysroot (systemd-in-the-union reads it after
-		// switch_root — no daemon-reload needed, PID 1 starts fresh). Unlike the
-		// cloud_init attachModule path this is grant-only: it does NOT reset the
-		// bounding set (see WriteAmbientCapabilityDropInAt). Without this a
-		// non-root User= service can't use a permitted-but-not-ambient cap —
-		// e.g. traefik (User=traefik) failed "listen tcp :80: bind: permission
-		// denied" post-pivot because CapabilityBoundingSet permitted
-		// CAP_NET_BIND_SERVICE but AmbientCapabilities was empty. Privileged
-		// modules already run with full caps; skip (empty allow list is a no-op
-		// anyway). Failures are non-fatal — the unit still boots with defaults.
-		policy := buildPolicy(mf)
-		if !policy.Privileged && len(policy.Capabilities) > 0 {
-			for _, svc := range mf.Services {
-				unit := lifecycle.UnitName(mod.ID, svc.Name)
+
+		for _, svc := range mf.Services {
+			unit := lifecycle.UnitName(mod.ID, svc.Name)
+			// PrivateUsers= is orthogonal to the privileged capability/MAC
+			// opt-out (it only remaps UID/GID namespaces), so it is written for
+			// ALL modules INCLUDING privileged ones — matching attachModule
+			// (reconcile.go), whose divergence here (privileged modules ran in
+			// the host userns on a pivot node but PrivateUsers=yes on cloud_init)
+			// was review finding F4. The documented user_namespace default (true)
+			// was also silently unenforced on the pivot path before this fix.
+			if err := security.WriteUserNamespaceDropInAt(sysroot, unit, policy.UserNamespace); err != nil {
+				r.cfg.OnError("compose:userns_dropin",
+					fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
+			}
+			// Privileged modules opt out of MAC/seccomp/cap confinement by
+			// design; for everyone else, write the same seccomp + ambient-cap
+			// drop-ins attachModule writes, into the union at sysroot.
+			if policy.Privileged {
+				continue
+			}
+			// seccomp SystemCallFilter=@<set> — inert on the pivot path before
+			// this fix. buildPolicy.Validate above already refused a hostile/
+			// unresolvable profile, so a value reaching here is a resolvable set.
+			if policy.SeccompProfile != "" {
+				if err := security.WriteSeccompDropInAt(sysroot, unit, policy.SeccompProfile); err != nil {
+					r.cfg.OnError("compose:seccomp_dropin",
+						fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
+				}
+			}
+			// Ambient capability grant (additive; does NOT reset the bounding
+			// set — see the loop-header note). No-op for an empty allow list.
+			if len(policy.Capabilities) > 0 {
 				if err := security.WriteAmbientCapabilityDropInAt(sysroot, unit, policy.Capabilities); err != nil {
 					r.cfg.OnError("compose:ambient_cap_dropin",
 						fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
@@ -253,8 +313,10 @@ func (r *Reconciler) resolveComposeSet(ctx context.Context) (mount.ModuleStack, 
 				RequiredConsecutive: meta.AppHealthRequiredConsecutive,
 				PollIntervalSeconds: meta.AppHealthPollIntervalSeconds,
 			},
-			Incomplete: incomplete,
-			Modules:    bcMods,
+			Incomplete:                incomplete,
+			PrivilegedModuleIDs:       meta.PrivilegedModuleIDs,
+			PrivilegedAllowlistFrozen: true,
+			Modules:                   bcMods,
 		}
 		// Live truth supersedes any staged guess. A normal pivot node stages
 		// whenever desired != composed, then live-fetches fine on its next boot —
@@ -306,6 +368,8 @@ func (r *Reconciler) resolveComposeSet(ctx context.Context) (mount.ModuleStack, 
 				Hostname:                  pend.Set.Hostname,
 				StalenessThresholdSeconds: pend.Set.StalenessThresholdSeconds,
 				AppHealth:                 pend.Set.AppHealth,
+				PrivilegedModuleIDs:       pend.Set.PrivilegedModuleIDs,
+				PrivilegedAllowlistFrozen: pend.Set.PrivilegedAllowlistFrozen,
 				Modules:                   pend.Set.Modules,
 			}
 			return desired, manifests, bc, nil
@@ -343,6 +407,8 @@ func (r *Reconciler) resolveComposeSet(ctx context.Context) (mount.ModuleStack, 
 		Hostname:                  lkg.Hostname,
 		StalenessThresholdSeconds: lkg.StalenessThresholdSeconds,
 		AppHealth:                 lkg.AppHealth,
+		PrivilegedModuleIDs:       lkg.PrivilegedModuleIDs,
+		PrivilegedAllowlistFrozen: lkg.PrivilegedAllowlistFrozen,
 		Modules:                   lkg.Modules,
 	}
 	return desired, manifests, bc, nil

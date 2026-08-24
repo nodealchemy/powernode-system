@@ -436,6 +436,11 @@ func (c *LKGCapturer) promote(bc *BootComposedBreadcrumb) error {
 		Hostname:                  bc.Hostname,
 		StalenessThresholdSeconds: bc.StalenessThresholdSeconds,
 		AppHealth:                 bc.AppHealth,
+		// Carry the frozen privileged allowlist from breadcrumb into the LKG so a
+		// later FromLKG boot enforces the gate against the list that was in force
+		// when this composition was proven (IMP-01a02f70-20b1, F2).
+		PrivilegedModuleIDs:       bc.PrivilegedModuleIDs,
+		PrivilegedAllowlistFrozen: bc.PrivilegedAllowlistFrozen,
 		Modules:                   bc.Modules,
 	}
 	return WriteBootLKG(c.LKGPath, lkg)

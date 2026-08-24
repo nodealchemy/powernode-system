@@ -131,8 +131,25 @@ type BootComposedBreadcrumb struct {
 	// can authorise overwriting a proven LKG, a stale one could promote a set that
 	// already failed. Cheap to stamp, and it hardens the FromLKG/Incomplete reads
 	// as well.
-	BootID  string      `json:"boot_id,omitempty"`
-	Modules []LKGModule `json:"modules"`
+	BootID string `json:"boot_id,omitempty"`
+	// PrivilegedModuleIDs is the operator-approved privileged allowlist that was
+	// in force when this set was composed, frozen alongside it so the gate can
+	// be enforced on a cold FromLKG/FromPending boot too — not just when the
+	// control plane is live (IMP-01a02f70-20b1, review finding F2). Without
+	// freezing it, a FromLKG boot skipped the gate entirely, so a
+	// privileged-but-unapproved module captured into the LKG replayed
+	// unconfined — exactly the case that matters most on self-hosted nodes,
+	// which boot FromLKG as their NORMAL path.
+	PrivilegedModuleIDs []string `json:"privileged_module_ids,omitempty"`
+	// PrivilegedAllowlistFrozen distinguishes "captured an allowlist (possibly
+	// empty)" from "old-format set that predates this field". An empty allowlist
+	// and an absent one both marshal away under omitempty, so this boolean is the
+	// only reliable signal. The gate is enforced on a FromLKG/FromPending boot
+	// ONLY when this is true; a false (old-format) set skips enforcement exactly
+	// as before, so the upgrade window cannot brick a node whose frozen set
+	// predates the field.
+	PrivilegedAllowlistFrozen bool        `json:"privileged_allowlist_frozen,omitempty"`
+	Modules                   []LKGModule `json:"modules"`
 }
 
 // AppHealthCfg is the SiteSetting-delivered promotion-gate config, carried on
@@ -160,7 +177,13 @@ type BootLKG struct {
 	Hostname                  string       `json:"hostname,omitempty"`
 	StalenessThresholdSeconds int64        `json:"staleness_threshold_seconds,omitempty"`
 	AppHealth                 AppHealthCfg `json:"app_health,omitempty"`
-	Modules                   []LKGModule  `json:"modules"`
+	// See BootComposedBreadcrumb for the semantics; frozen here so a cold boot
+	// from this snapshot enforces the privileged gate against the allowlist that
+	// was approved when the snapshot was proven (IMP-01a02f70-20b1, F2). Not part
+	// of Checksum (which covers Modules only), so adding it is backward-safe.
+	PrivilegedModuleIDs       []string    `json:"privileged_module_ids,omitempty"`
+	PrivilegedAllowlistFrozen bool        `json:"privileged_allowlist_frozen,omitempty"`
+	Modules                   []LKGModule `json:"modules"`
 	// Checksum is sha256(canonical-JSON(Modules)) — detects truncation /
 	// corruption / tampering before a fallback trusts the snapshot.
 	Checksum string `json:"checksum"`
