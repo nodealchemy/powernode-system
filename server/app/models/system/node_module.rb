@@ -520,14 +520,20 @@ module System
       version_service(current_user: user).create_version(changelog: changelog)
     end
 
-    # Rollback to a specific version
-    def rollback_to!(version, changelog: nil, user: nil)
-      version_service(current_user: user).rollback_to(version, changelog: changelog)
+    # Rollback to a specific version. allow_confinement_removal: see
+    # ModuleVersionService#rollback_to — restoring a snapshot that lacks the
+    # module's current `security`/`verify` block requires the caller to state
+    # that intent explicitly.
+    def rollback_to!(version, changelog: nil, user: nil, allow_confinement_removal: false)
+      version_service(current_user: user).rollback_to(
+        version, changelog: changelog, allow_confinement_removal: allow_confinement_removal
+      )
     end
 
     # Rollback to previous version
-    def rollback_to_previous!(user: nil)
-      version_service(current_user: user).rollback_to_previous
+    def rollback_to_previous!(user: nil, allow_confinement_removal: false)
+      version_service(current_user: user)
+        .rollback_to_previous(allow_confinement_removal: allow_confinement_removal)
     end
 
     # Sanctioned single-writer for current-version promotion. Writes BOTH the

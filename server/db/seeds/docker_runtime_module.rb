@@ -141,10 +141,11 @@ end
 #   3. Agent picks up overrides on next reconcile via the
 #      runtime/docker/config endpoint and applies them to /etc/docker/daemon.json.
 #
-# Security: the resolver (System::DockerDaemonOverridesResolver) STRIPS
-# operator-supplied keys that conflict with platform-managed mTLS:
-# tls, tlsverify, tlscacert, tlscert, tlskey, hosts. The agent applies
-# the same defensive allow-list at write time.
+# Security: writes are gated by System::ModuleConfigValidator against the
+# resolver's ALLOWED_KEYS allowlist, and the resolver (System::
+# DockerDaemonOverridesResolver) strips non-allowlisted keys from pre-gate
+# rows at resolve time. The agent applies the same defensive allow-list at
+# write time.
 config_template_description = <<~DESC.strip
   Template for the Docker daemon.json override module (config variety).
   Per-instance dependant children of `docker-engine` carry their JSON
@@ -164,7 +165,6 @@ config_template_description = <<~DESC.strip
     - data-root           : custom /var/lib/docker location
     - exec-opts           : array of runtime exec options
     - default-runtime     : runtime name (runc | crun | nvidia | ...)
-    - runtimes            : object mapping runtime names to OCI binaries
     - bip                 : default bridge IP
     - default-address-pools : array of subnet pools for bridge networks
     - dns / dns-search / dns-opts : DNS resolution config
@@ -173,8 +173,13 @@ config_template_description = <<~DESC.strip
     - max-concurrent-downloads / max-concurrent-uploads : transfer limits
     - default-shm-size    : default /dev/shm size for containers
 
-  Blocked keys (platform owns these — agent enforces over operator
-  intent if you try): tls, tlsverify, tlscacert, tlscert, tlskey, hosts.
+  The list above is an enforced ALLOWLIST (System::ModuleConfigValidator
+  refuses other keys at write time; System::DockerDaemonOverridesResolver
+  drops them at resolve time for pre-gate rows). Refused with a named
+  reason: tls, tlsverify, tlscacert, tlscert, tlskey, hosts (platform-owned
+  mTLS material + listen address); runtimes (maps runtime names to arbitrary
+  host binaries dockerd executes as root); authorization-plugins (delegates
+  the daemon's authz decisions).
 
   Multiple dependant config-variety modules layered on the same
   NodeInstance are merged by `effective_priority` (higher wins on
@@ -204,21 +209,14 @@ config_template_attrs = {
 # Schema lives in `config["overrides_schema"]` so operators creating
 # dependant children can introspect supported keys via the same module
 # API the agent uses.
+# Derived from the resolver's constants — the single source of truth the
+# write-time gate (System::ModuleConfigValidator) enforces — so this
+# introspection surface can never advertise a key the platform refuses
+# (it briefly advertised `runtimes` after IMP-01a02f5a6a1f revoked it).
 config_template_attrs[:config] = {
   "overrides_schema" => {
-    "supported_keys" => %w[
-      registry-mirrors insecure-registries
-      log-driver log-opts
-      storage-driver storage-opts
-      default-ulimits debug data-root
-      exec-opts default-runtime runtimes
-      bip default-address-pools
-      dns dns-search dns-opts
-      features icc iptables ip-forward ip-masq userland-proxy
-      max-concurrent-downloads max-concurrent-uploads
-      default-shm-size
-    ],
-    "blocked_keys" => %w[tls tlsverify tlscacert tlscert tlskey hosts],
+    "supported_keys" => System::DockerDaemonOverridesResolver::ALLOWED_KEYS,
+    "blocked_keys" => System::DockerDaemonOverridesResolver::REFUSED_KEYS,
     "merge_strategy" => "deep_merge_by_effective_priority"
   }
 }

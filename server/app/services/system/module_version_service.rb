@@ -66,10 +66,20 @@ module System
     # Rollback to a specific version
     # @param version [System::NodeModuleVersion] the version to rollback to
     # @param changelog [String] optional description for the rollback
+    # @param allow_confinement_removal [Boolean] a snapshot cannot be edited
+    #   to state removal intent the way a config write can (key presence), so
+    #   restoring one that lacks the module's current `security` / `verify`
+    #   block requires this explicit acknowledgement instead — see the
+    #   REMOVAL CONTRACT in System::ModuleConfigValidator. Notably the
+    #   CI-publication paths mint versions whose config is just
+    #   { "git_tag" => ... }; rolling back to one of those would otherwise
+    #   silently strip the module's on-node confinement fleet-wide.
     # @return [System::NodeModuleVersion] new version created from rollback
-    def rollback_to(version, changelog: nil)
+    def rollback_to(version, changelog: nil, allow_confinement_removal: false)
       raise LockError, "Module is locked and cannot be modified" if node_module.locked?
       raise RollbackError, "Version does not belong to this module" unless version.node_module_id == node_module.id
+
+      validate_restored_config!(version, allow_confinement_removal: allow_confinement_removal)
 
       changelog ||= "Rollback to version #{version.version_number}"
 
@@ -102,14 +112,15 @@ module System
 
     # Rollback to the previous version
     # @return [System::NodeModuleVersion] new version created from rollback
-    def rollback_to_previous
+    def rollback_to_previous(allow_confinement_removal: false)
       current = node_module.current_version
       raise RollbackError, "No current version to rollback from" unless current
 
       previous = current.previous_version
       raise RollbackError, "No previous version available" unless previous
 
-      rollback_to(previous, changelog: "Rollback to version #{previous.version_number}")
+      rollback_to(previous, changelog: "Rollback to version #{previous.version_number}",
+                            allow_confinement_removal: allow_confinement_removal)
     end
 
     # Lock the module to prevent further changes
@@ -161,6 +172,46 @@ module System
     end
 
     private
+
+    # IMP-01a02f50ce34 — rollback is a config WRITER: it restores
+    # version.config verbatim onto the module, which is then serialized to
+    # every node carrying it. A snapshot minted before the config gate landed
+    # can carry a shape the gate now refuses (a verify probe with a
+    # shell-metacharacter command, a hostile security block), and restoring
+    # it would re-ship exactly what the write gate exists to keep off nodes —
+    # so the restored config passes through the SAME shared validator, and a
+    # snapshot that would silently drop the module's current confinement
+    # (`security` / `verify`) needs the caller's explicit acknowledgement.
+    #
+    # A snapshot whose config fails errors_for outright is unrestorable even
+    # WITH the acknowledgement — deliberately: the ack states "drop my
+    # confinement", not "ship a config the gate refuses". The supported
+    # escape hatch during an incident is promote-only recovery
+    # (NodeModule#promote_to_version! / system_rollback_module_version moves
+    # the artifact pointer without touching config), or fixing the config via
+    # a gated write first.
+    def validate_restored_config!(version, allow_confinement_removal:)
+      restored = version.config || {}
+      errors = ::System::ModuleConfigValidator.errors_for(restored)
+      if errors.any?
+        raise RollbackError,
+              "version #{version.version_number}'s snapshotted config is no longer acceptable " \
+              "(it predates the config write gate); refusing to re-ship it to nodes: #{errors.join('; ')}"
+      end
+
+      return if allow_confinement_removal
+
+      removal = ::System::ModuleConfigValidator.removal_errors_for(restored, node_module.config || {})
+      return if removal.none?
+
+      dropped = ::System::ModuleConfigValidator::PROTECTED_CONFINEMENT_KEYS.select do |key|
+        (node_module.config || {})[key].present? && !restored.key?(key)
+      end
+      raise RollbackError,
+            "rolling back to version #{version.version_number} would drop config block(s) the module " \
+            "currently carries (#{dropped.join(', ')}) — every node running the module would lose that " \
+            "confinement. Pass acknowledge_confinement_removal to state that intent explicitly."
+    end
 
     # The build artifact bundle a version carries: the erofs/OCI artifacts
     # JSONB plus the denormalized supply-chain metadata columns populated by

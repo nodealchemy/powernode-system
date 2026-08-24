@@ -110,7 +110,14 @@ module Api
             end
 
             begin
-              new_version = @module.rollback_to!(version, changelog: "Rollback initiated by worker")
+              # acknowledge_confinement_removal: same contract as the operator
+              # rollback endpoint — a snapshot lacking the module's current
+              # security/verify block (e.g. a CI-publication git_tag-only
+              # version) is refused unless the caller states the intent, so an
+              # automated rollback cannot silently strip on-node confinement.
+              ack = ActiveModel::Type::Boolean.new.cast(params[:acknowledge_confinement_removal]) == true
+              new_version = @module.rollback_to!(version, changelog: "Rollback initiated by worker",
+                                                          allow_confinement_removal: ack)
 
               render_success(
                 module: serialize_module(@module.reload),

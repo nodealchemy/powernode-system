@@ -437,7 +437,7 @@ module Ai
               dependency_spec: { type: "string", required: false, description: "Dependency spec — newline-joined entries or encoded array" },
               protected_spec: { type: "string", required: false, description: "Protected-path spec — newline-joined globs or encoded array" },
               consent_budget_per_day: { type: "integer", required: false, description: "Daily ceiling on autonomous decisions for this module (policy; the consumed-count ledger is not settable here)" },
-              config: { type: "object", required: false, description: "Arbitrary module config hash" },
+              config: { type: "object", required: false, description: "Module config hash — validated by System::ModuleConfigValidator (verify/restart_after_update/security/daemon_overrides grammar). Replaces the stored config WHOLESALE: omitting a security or verify block the module currently carries is refused; to remove one, state it explicitly (security: null or {}, verify: null)." },
               reuse_check: { type: "object", required: false, description: "REQUIRED when manifest_yaml authors a name the build planner does not already build. Shape: { considered: [{ module: \"<existing module name>\", rejected_because: \"<why it does not serve this purpose>\" }], justification: \"R1\"|\"R2\"|\"R3\", justification_detail: \"<how that prong is satisfied>\" }. R1 = two or more real consumers today or a hard requires: capability edge; R2 = an independent third-party payload with its own version/CVE cadence; R3 = an opt-in heavy payload a node type must be able to exclude. Every considered module is checked against the buildable catalog and every entry needs a non-blank rejected_because — the declaration is verified, not recorded. Persisted to the module's config.reuse_check. See docs/runbooks/module-authoring.md Phase 0." },
               manifest_yaml: { type: "string", required: false, description: "Raw manifest.yaml. When given it is authoritative for the spec/lifecycle fields (mask/file_spec/package_spec/dependency_spec/protected_spec/init/reboot), which are derived by the same importer the loader seed uses — pass only name/node_platform_id/category_id alongside it. This is what makes an MCP-authored module carry a manifest_yaml and therefore be buildable (visible to the module-build planner)." },
               create_version: { type: "boolean", required: false, description: "With manifest_yaml, also snapshot the imported state into a new NodeModuleVersion (default true on create)" },
@@ -467,7 +467,7 @@ module Ai
               dependency_spec: { type: "string", required: false, description: "Dependency spec" },
               protected_spec: { type: "string", required: false, description: "Protected-path spec" },
               consent_budget_per_day: { type: "integer", required: false, description: "Daily ceiling on autonomous decisions for this module" },
-              config: { type: "object", required: false, description: "Arbitrary module config hash" },
+              config: { type: "object", required: false, description: "Module config hash — validated by System::ModuleConfigValidator (verify/restart_after_update/security/daemon_overrides grammar). Replaces the stored config WHOLESALE: omitting a security or verify block the module currently carries is refused; to remove one, state it explicitly (security: null or {}, verify: null)." },
               manifest_yaml: { type: "string", required: false, description: "Raw manifest.yaml to re-import onto this module (authoritative for spec/lifecycle fields; same importer as the loader seed / REST import_manifest). Use to update a module's manifest — e.g. a CVE version bump — over MCP. Re-importing onto a name the build planner ALREADY builds is not gated; giving a manifest to a module that has none yet is authoring, and requires reuse_check exactly as system_create_module does." },
               reuse_check: { type: "object", required: false, description: "REQUIRED only when this update would give a manifest to a module the build planner does not yet build (the bare-create-then-update path — the same authoring event as system_create_module, in two calls). Same shape and same verification as system_create_module's reuse_check. Not needed for an ordinary re-import onto an already-buildable module." },
               create_version: { type: "boolean", required: false, description: "With manifest_yaml, snapshot the imported state into a new NodeModuleVersion (default false on update)" },
@@ -1917,6 +1917,40 @@ module Ai
         params.slice(*MODULE_WRITE_FIELDS).to_h.compact
       end
 
+      # IMP-01a02f4f3768 — this tool is the MCP twin of node_modules#create/
+      # #update, and `config` here is written to NodeModule#config, which is
+      # serialized VERBATIM to every node carrying the module and consumed
+      # on-node (probe runner, attach-time security policy). The REST twin
+      # gates that write through System::ModuleConfigValidator; an ungated
+      # MCP path is strictly worse (the caller is an agent, not a human), so
+      # both producers run the SAME shared validator.
+      #
+      # Mutates attrs: the config value is deep-stringified before validating
+      # AND before writing, so the validator sees exactly what jsonb will
+      # store — validating a stringified copy while writing symbol keys would
+      # let a symbol-keyed "security" block slip past the grammar.
+      #
+      # `existing:` (update only) arms the downgrade-by-omission gate: config
+      # is replaced wholesale, so omitting `security` / `verify` must be a
+      # stated intent (explicit key, e.g. `"security": null`), never a side
+      # effect of a partial payload. See ModuleConfigValidator's REMOVAL
+      # CONTRACT.
+      def module_config_gate_errors!(attrs, existing: nil)
+        key = [ :config, "config" ].find { |k| attrs.key?(k) }
+        return [] unless key
+
+        raw = attrs[key]
+        raw = raw.to_unsafe_h if raw.respond_to?(:to_unsafe_h)
+        raw = raw.deep_stringify_keys if raw.is_a?(Hash)
+        attrs[key] = raw
+
+        errors = ::System::ModuleConfigValidator.errors_for(raw)
+        if existing && raw.is_a?(Hash)
+          errors += ::System::ModuleConfigValidator.removal_errors_for(raw, existing.config || {})
+        end
+        errors
+      end
+
       # DB-relational columns a manifest.yaml does NOT carry — the only fields to
       # set directly when the caller supplies a manifest (which is authoritative
       # for everything else and gets applied by ManifestImportService).
@@ -1933,6 +1967,15 @@ module Ai
         # derive the spec/lifecycle fields — otherwise a manifest field and its
         # individual-param twin could disagree.
         base_attrs = yaml ? params.slice(*MODULE_RELATIONAL_FIELDS).to_h.compact : module_attrs(params)
+
+        # Bare-field create is the path that writes `config` directly (with a
+        # manifest, config is derived by the importer, which validates). Gate
+        # BEFORE the row is built: a refused config must leave nothing behind.
+        unless yaml
+          config_errors = module_config_gate_errors!(base_attrs)
+          return error_result("config failed module validation: #{config_errors.join('; ')}") if config_errors.any?
+        end
+
         node_module = account_modules.build(base_attrs)
         node_module.save!
 
@@ -1969,6 +2012,14 @@ module Ai
         refusal, verified_reuse = reuse_gate(name: params[:name].presence || node_module.name,
                                              yaml: yaml, params: params)
         return error_result(refusal) if refusal
+
+        # Same gate as create, plus the downgrade-by-omission check: update
+        # replaces `config` WHOLESALE, so a payload omitting `security` /
+        # `verify` while the module carries one must be refused rather than
+        # silently stripping on-node confinement fleet-wide. Runs BEFORE the
+        # write; the stored config must be untouched by a refused call.
+        config_errors = module_config_gate_errors!(attrs, existing: node_module)
+        return error_result("config failed module validation: #{config_errors.join('; ')}") if config_errors.any?
 
         node_module.update!(attrs) if attrs.any?
 

@@ -20,7 +20,7 @@ module System
   #   manifest-derived (ManifestImportService#apply_to_module copies verbatim):
   #     restart_after_update  → System::RestartAfterUpdate            VALIDATED
   #     verify                → System::ModuleVerify + agent probe    VALIDATED
-  #     security              → agent runtime/reconcile.go buildPolicy    (see below)
+  #     security              → agent runtime/reconcile.go buildPolicy   VALIDATED
   #     skills, build, display_name, license, manifest_extras
   #   platform-written, never operator-authored:
   #     honeypot              → System::Honeypot::CanaryModuleService
@@ -30,17 +30,82 @@ module System
   #     module_promotion_required_count / module_promotion_dwell_minutes
   #                           → System::Fleet::PromotionCriteria (documented
   #                             per-module override cascade)      TYPE-CHECKED
-  #     daemon_overrides      → System::DockerDaemonOverridesResolver
+  #     daemon_overrides      → System::DockerDaemonOverridesResolver   KEY-ALLOWLISTED
   #     resources             → node_api modules#resource
   #
   # Because that last group is deliberately operator-editable, the gate is a
   # SHAPE check on the semantic blocks, not a top-level key allowlist: an
   # allowlist would reject writes the platform documents as supported.
   #
-  # `security` is deliberately NOT validated here: the import path does not
-  # validate it either, so adding a rule here would recreate the divergence
-  # this module exists to remove (and changing the import path's behaviour is
-  # out of scope). Filed separately.
+  # ==========================================================================
+  # SECURITY-BLOCK CONTRACT (IMP-01a02f4f75f4 and siblings — the write-side
+  # seam the header above filed separately). This section is normative: the
+  # G2 agent-side containment work (seccomp path-vs-set-name, MAC profile
+  # containment, egress nft hygiene, privileged gating) binds to it.
+  #
+  # `config["security"]` is turned into a systemd confinement policy on every
+  # node carrying the module (agent/internal/runtime/reconcile.go buildPolicy),
+  # so it is validated on EVERY write path through this ONE implementation.
+  # Keys it may carry — anything else is rejected (matching the manifest JSON
+  # schema's additionalProperties: false):
+  #
+  #   capabilities     array of strings, each /\ACAP_[A-Z_]+\z/, max 64.
+  #                    PRIVILEGED: each entry is a retained Linux capability
+  #                    (CapabilityBoundingSet). Grammar is enforced here; the
+  #                    grammar is also the injection barrier for the systemd
+  #                    drop-in the agent renders. Gating high-risk caps
+  #                    (CAP_SYS_ADMIN class) behind operator approval is G2's
+  #                    apply-side decision, not a write-time rule.
+  #   privileged       strictly boolean. PRIVILEGED: true disables ALL
+  #                    confinement on-node. Deliberately still declarable at
+  #                    write time (shipped dev-cell manifest declares it); the
+  #                    operator-approval gate belongs at APPLY time and is
+  #                    bound to G2.
+  #   user_namespace   strictly boolean. Omitted defaults to TRUE on-node
+  #                    (private userns isolation); an explicit false DROPS
+  #                    that isolation and is therefore privileged-by-negation.
+  #   seccomp_profile,
+  #   apparmor_profile,
+  #   selinux_profile  nil, or a bare profile NAME matching
+  #                    /\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/ — NEVER a path
+  #                    (no "/", no "..", no whitespace/newlines: the value is
+  #                    concatenated into a root-owned systemd drop-in, see
+  #                    IMP-ce76b93d79fe). BINDING G2 DECISION: these are
+  #                    names the agent resolves against an agent-owned
+  #                    profile set/directory — never module-rootfs paths,
+  #                    never operator-supplied paths; a name that fails to
+  #                    resolve must fail CLOSED (unit does not start
+  #                    unconfined).
+  #   egress_allow     array of strings, max 64. Each entry: a hostname, a
+  #                    hostname:port (port 1-65535), or an IPAddr-parseable
+  #                    IP/CIDR ("0.0.0.0/0" and "::/0" are the documented,
+  #                    review-required wildcard escape hatches). Entries
+  #                    reach nft argv on-node, so this grammar (no spaces,
+  #                    quotes, semicolons, braces) is the server-side
+  #                    injection barrier; G2 owns the agent-side defense.
+  #                    KEY PRESENCE is semantic (an empty list means
+  #                    "restrict me to baseline", absence means "no egress
+  #                    policy declared" — see buildPolicy's EgressDeclared).
+  #
+  # REMOVAL CONTRACT (downgrade-by-omission, IMP-01a02f59f44d): a config
+  # write that OMITS `security` or `verify` while the stored config carries a
+  # meaningful value for it is REFUSED — silence is not consent to drop
+  # confinement. Removal is stated by writing the key EXPLICITLY: `"security":
+  # null` or `"security": {}` (both yield the on-node default policy), or
+  # `"verify": null`. Key presence — not any flag — is the acknowledgement,
+  # so a partial payload can never ack by accident: the only way to pass the
+  # gate is to say the key's name. Rollback restores a snapshot whose keys
+  # cannot be edited, so it acknowledges via an explicit
+  # `allow_confinement_removal:` argument instead (ModuleVersionService).
+  #
+  # `daemon_overrides` (IMP-01a02f5a6a1f) is validated as a key ALLOWLIST —
+  # the platform's documented curated subset (see
+  # System::DockerDaemonOverridesResolver::ALLOWED_KEYS, the resolver applies
+  # the same list defensively at resolve time). `runtimes` (arbitrary OCI
+  # binary paths executed as root) and `authorization-plugins` are refused
+  # even though dockerd supports them; the tls*/hosts family stays refused as
+  # platform-owned.
+  # ==========================================================================
   module ModuleConfigValidator
     module_function
 
@@ -53,6 +118,37 @@ module System
       validate_restart_after_update(config, errors)
       validate_verify(config, errors)
       validate_promotion_thresholds(config, errors)
+      validate_security(config, errors)
+      validate_daemon_overrides(config, errors)
+      errors
+    end
+
+    # === Downgrade-by-omission gate (see REMOVAL CONTRACT above) ===
+    #
+    # Keys whose silent disappearance changes what a node ENFORCES: `security`
+    # is the module's confinement policy, `verify` its post-deploy proof. A
+    # wholesale config replacement that simply does not mention them would
+    # otherwise clear them fleet-wide with a 200 and no stated intent.
+    PROTECTED_CONFINEMENT_KEYS = %w[security verify].freeze
+
+    # Errors for a candidate REPLACEMENT config given the currently-stored
+    # one. The acknowledgement is KEY PRESENCE in the candidate (any value the
+    # grammar accepts, including nil / {}): an incomplete payload cannot state
+    # a key's name by accident, so it cannot ack by accident.
+    def removal_errors_for(config, previous)
+      return [] unless config.is_a?(Hash) && previous.is_a?(Hash)
+
+      errors = []
+      PROTECTED_CONFINEMENT_KEYS.each do |key|
+        next unless previous[key].present?
+        next if config.key?(key)
+
+        errors << "config write omits #{key.inspect}, which this module currently carries — " \
+                  "dropping it would silently change what every node running the module enforces. " \
+                  "To keep it, include the current #{key.inspect} block in the payload; to remove it, " \
+                  "state that intent explicitly with \"#{key}\": null" \
+                  "#{key == 'security' ? ' (or "security": {})' : ''}"
+      end
       errors
     end
 
@@ -244,6 +340,249 @@ module System
       elsif resolves_to.split("/").include?("..")
         errors << "#{prefix}.resolves_to #{resolves_to.inspect} must be canonical (no `..` segment) — " \
                   "the node compares it verbatim against what the shell resolved"
+      end
+    end
+
+    # === security: — the confinement policy block (SECURITY-BLOCK CONTRACT
+    # in the header is the normative statement; this enforces it) ===
+
+    SECURITY_KNOWN_KEYS = %w[
+      capabilities egress_allow privileged user_namespace
+      seccomp_profile apparmor_profile selinux_profile
+    ].freeze
+    CAPABILITY_RX = /\ACAP_[A-Z_]{1,60}\z/
+    PROFILE_NAME_RX = /\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/
+    HOSTNAME_RX = /\A[a-z0-9]([a-z0-9-]{0,62})?(\.[a-z0-9]([a-z0-9-]{0,62})?)*\z/i
+    MAX_CAPABILITIES = 64
+    MAX_EGRESS_ENTRIES = 64
+    SECURITY_PROFILE_KEYS = %w[seccomp_profile apparmor_profile selinux_profile].freeze
+    SECURITY_BOOLEAN_KEYS = %w[privileged user_namespace].freeze
+
+    def validate_security(config, errors)
+      return unless config.key?("security")
+
+      sec = config["security"]
+      # Explicit nil is the stated "no security policy" (removal ack) — the
+      # agent's buildPolicy yields the default policy for it, same as absent.
+      return if sec.nil?
+
+      unless sec.is_a?(Hash)
+        errors << "security must be a hash (the on-node confinement policy block)"
+        return
+      end
+
+      unknown = sec.keys.map(&:to_s) - SECURITY_KNOWN_KEYS
+      if unknown.any?
+        errors << "security has unrecognized key(s) #{unknown.sort.inspect} " \
+                  "(allowed: #{SECURITY_KNOWN_KEYS.join(', ')})"
+      end
+
+      validate_security_capabilities(sec, errors)
+      validate_security_booleans(sec, errors)
+      validate_security_profiles(sec, errors)
+      validate_security_egress(sec, errors)
+    end
+
+    def validate_security_capabilities(sec, errors)
+      return unless sec.key?("capabilities")
+
+      caps = sec["capabilities"]
+      return if caps.nil?
+
+      unless caps.is_a?(Array)
+        errors << "security.capabilities must be an array of CAP_* strings"
+        return
+      end
+      if caps.size > MAX_CAPABILITIES
+        errors << "security.capabilities has #{caps.size} entries (max #{MAX_CAPABILITIES})"
+      end
+      caps.each_with_index do |cap, i|
+        next if cap.is_a?(String) && cap.match?(CAPABILITY_RX)
+
+        errors << "security.capabilities[#{i}] #{cap.inspect} must be a string matching " \
+                  "#{CAPABILITY_RX.source} — it is rendered into a root-owned systemd " \
+                  "CapabilityBoundingSet drop-in on the node"
+      end
+    end
+
+    def validate_security_booleans(sec, errors)
+      SECURITY_BOOLEAN_KEYS.each do |key|
+        next unless sec.key?(key)
+
+        value = sec[key]
+        next if value.nil? || value == true || value == false
+
+        # The agent's buildPolicy type-asserts .(bool) and silently IGNORES
+        # anything else — a string "false" for user_namespace would quietly
+        # leave isolation ON while the author believes it off (and vice-shapes
+        # for privileged). Loud refusal beats a silent divergence between what
+        # was written and what the node enforces.
+        errors << "security.#{key} must be strictly boolean (got #{value.class}) — the on-node " \
+                  "policy reader ignores non-boolean values, so this write would not do what it says"
+      end
+    end
+
+    def validate_security_profiles(sec, errors)
+      SECURITY_PROFILE_KEYS.each do |key|
+        next unless sec.key?(key)
+
+        value = sec[key]
+        next if value.nil?
+
+        unless value.is_a?(String)
+          errors << "security.#{key} must be a string profile NAME or null"
+          next
+        end
+        next if value.match?(PROFILE_NAME_RX)
+
+        errors << "security.#{key} #{value.inspect} must be a bare profile name matching " \
+                  "#{PROFILE_NAME_RX.source} — never a path: the agent resolves names against " \
+                  "an agent-owned profile set, and the value is concatenated into a root-owned " \
+                  "systemd drop-in (IMP-ce76b93d79fe)"
+      end
+    end
+
+    def validate_security_egress(sec, errors)
+      return unless sec.key?("egress_allow")
+
+      list = sec["egress_allow"]
+      return if list.nil?
+
+      unless list.is_a?(Array)
+        errors << "security.egress_allow must be an array of host / host:port / CIDR strings " \
+                  "(key presence with an empty array means \"baseline only\" and is meaningful)"
+        return
+      end
+      if list.size > MAX_EGRESS_ENTRIES
+        errors << "security.egress_allow has #{list.size} entries (max #{MAX_EGRESS_ENTRIES})"
+      end
+      list.each_with_index do |entry, i|
+        next if valid_egress_entry?(entry)
+
+        errors << "security.egress_allow[#{i}] #{entry.inspect} must be a hostname, hostname:port, " \
+                  "IP, or CIDR — entries reach nft argv on the node, so the grammar is strict " \
+                  "(\"0.0.0.0/0\" / \"::/0\" are the documented wildcard escape hatches)"
+      end
+    end
+
+    # hostname[:port] | IP | CIDR. The grammar doubles as the nft-argv
+    # injection barrier: no whitespace, quotes, semicolons, or braces can
+    # pass. IPv6 zone-ids (%eth0) are refused — they are interface-local and
+    # meaningless in a fleet-shipped policy — and a CIDR must use PREFIX form
+    # (/0-128), never netmask form, so the reviewed wildcard escape hatch has
+    # exactly two spellings ("0.0.0.0/0", "::/0") a grep can find.
+    CIDR_RX = %r{\A[0-9a-fA-F:.]+/\d{1,3}\z}
+
+    def valid_egress_entry?(entry)
+      return false unless entry.is_a?(String)
+      return false if entry.empty? || entry.length > 253
+      return false if entry.include?("%")
+
+      if entry.include?("/")
+        entry.match?(CIDR_RX) && parseable_ip?(entry)
+      elsif (m = entry.match(/\A(?<host>[^:]+)(:(?<port>\d{1,5}))?\z/))
+        return false if m[:port] && !(1..65_535).cover?(m[:port].to_i)
+
+        m[:host].match?(HOSTNAME_RX) || parseable_ip?(m[:host])
+      else
+        # Multiple colons: bare IPv6.
+        parseable_ip?(entry)
+      end
+    end
+
+    def parseable_ip?(value)
+      IPAddr.new(value)
+      true
+    rescue IPAddr::Error, ArgumentError
+      false
+    end
+
+    # === daemon_overrides: — dockerd daemon.json overlay (IMP-01a02f5a6a1f).
+    #
+    # A key ALLOWLIST, not a blocklist: dockerd's config surface grows, and a
+    # blocklist enumerates only the bad keys someone already thought of. The
+    # list itself lives on System::DockerDaemonOverridesResolver (the consumer
+    # that documents the operator contract and applies the same list
+    # defensively at resolve time for pre-gate rows); this validates at WRITE
+    # time so the operator hears the refusal instead of a silent drop.
+    #
+    # The key is reachable only through the config-write path (not a manifest
+    # KNOWN_TOP_KEY — a manifest carrying it lands it nested under
+    # manifest_extras where the resolver never looks), so like the promotion
+    # thresholds this rule has no import-path twin to diverge from.
+    def validate_daemon_overrides(config, errors)
+      return unless config.key?("daemon_overrides")
+
+      overrides = config["daemon_overrides"]
+      return if overrides.nil?
+
+      unless overrides.is_a?(Hash)
+        errors << "daemon_overrides must be a hash of dockerd daemon.json keys"
+        return
+      end
+
+      keys = overrides.keys.map(&:to_s)
+      refused = keys & ::System::DockerDaemonOverridesResolver::REFUSED_KEYS
+      if refused.any?
+        errors << "daemon_overrides may not carry #{refused.sort.inspect}: the tls*/hosts family is " \
+                  "platform-owned (mTLS), and runtimes / authorization-plugins would hand the daemon " \
+                  "an attacker-named binary or delegate its authz decisions"
+      end
+
+      unknown = keys - ::System::DockerDaemonOverridesResolver::ALLOWED_KEYS - refused
+      if unknown.any?
+        errors << "daemon_overrides has key(s) #{unknown.sort.inspect} outside the supported allowlist " \
+                  "(#{::System::DockerDaemonOverridesResolver::ALLOWED_KEYS.join(', ')})"
+      end
+
+      validate_daemon_override_values(overrides, errors)
+    end
+
+    # Value grammar for the allowlisted keys whose VALUE is itself a
+    # privilege lever (independent security review of this gate):
+    #   data-root      relocates dockerd's root-owned tree — pointed at /etc
+    #                  or /usr it becomes a host-integrity primitive, the same
+    #                  class of harm as the refused `runtimes` key. Must be an
+    #                  absolute, canonical path under a documented storage
+    #                  root.
+    #   storage-opts / exec-opts
+    #                  arrays of daemon option tokens (dm.directlvm_device=
+    #                  /dev/sda et al.) — constrained to a safe token grammar
+    #                  so they cannot smuggle whitespace/newlines into
+    #                  daemon.json semantics. Deeper per-option semantics are
+    #                  the consumer's (agent-side) concern.
+    DAEMON_DATA_ROOT_PREFIXES = %w[/var/lib/ /persist/ /data/ /mnt/ /srv/].freeze
+    DAEMON_PATH_RX = %r{\A/[A-Za-z0-9_/.-]+\z}
+    DAEMON_OPT_TOKEN_RX = %r{\A[A-Za-z0-9_.=:,+/@-]{1,256}\z}
+
+    def validate_daemon_override_values(overrides, errors)
+      if overrides.key?("data-root")
+        root = overrides["data-root"]
+        valid = root.is_a?(String) &&
+                root.match?(DAEMON_PATH_RX) &&
+                !root.split("/").include?("..") &&
+                DAEMON_DATA_ROOT_PREFIXES.any? { |p| root.start_with?(p) }
+        unless valid
+          errors << "daemon_overrides.data-root #{root.inspect} must be an absolute, canonical path " \
+                    "under one of #{DAEMON_DATA_ROOT_PREFIXES.join(', ')} — dockerd owns that tree as " \
+                    "root, so an arbitrary path is a host-integrity primitive"
+        end
+      end
+
+      %w[storage-opts exec-opts].each do |key|
+        next unless overrides.key?(key)
+
+        value = overrides[key]
+        unless value.is_a?(Array)
+          errors << "daemon_overrides.#{key} must be an array of option strings"
+          next
+        end
+        value.each_with_index do |opt, i|
+          next if opt.is_a?(String) && opt.match?(DAEMON_OPT_TOKEN_RX)
+
+          errors << "daemon_overrides.#{key}[#{i}] #{opt.inspect} must be a plain option token " \
+                    "matching #{DAEMON_OPT_TOKEN_RX.source}"
+        end
       end
     end
   end

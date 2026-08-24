@@ -174,6 +174,97 @@ RSpec.describe System::ManifestImportService, type: :service do
         expect(result.ok?).to be false
         expect(result.error).to include("yaml content is blank")
       end
+
+      # IMP-01a02f4f75f4 — `security:` is copied VERBATIM onto config and
+      # consumed by the agent's attach-time policy enforcer (buildPolicy), so
+      # the import path enforces the same SECURITY-BLOCK CONTRACT the config
+      # write paths do (one shared implementation — the whole point of
+      # System::ModuleConfigValidator). Every fixture manifest above carries a
+      # valid security block, so acceptance is already exercised; these are
+      # the refusals. ORACLE: config unchanged, not just result.ok? — a
+      # validator that runs after apply would report failure with the hostile
+      # block already stored.
+      context "security block" do
+        def import_with_security(replacement_yaml)
+          bad = manifest_yaml.sub(<<~OLD, replacement_yaml)
+            security:
+              capabilities:
+                - CAP_NET_BIND_SERVICE
+              egress_allow: []
+              privileged: false
+          OLD
+          described_class.import!(node_module: mod, yaml: bad)
+        end
+
+        it "rejects a non-boolean privileged flag and stores nothing" do
+          result = import_with_security(<<~YAML)
+            security:
+              privileged: "true"
+          YAML
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("security.privileged must be strictly boolean")
+          expect(mod.reload.config&.dig("security")).to be_nil
+        end
+
+        it "rejects an unrecognized security key" do
+          result = import_with_security(<<~YAML)
+            security:
+              capabilties:
+                - CAP_SYS_ADMIN
+          YAML
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("security has unrecognized key(s)")
+        end
+
+        it "rejects a capability outside the CAP_ grammar" do
+          result = import_with_security(<<~YAML)
+            security:
+              capabilities:
+                - "CAP_SYS_ADMIN\\nUser=root"
+          YAML
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("security.capabilities[0]")
+        end
+
+        it "rejects a seccomp_profile that is a path" do
+          result = import_with_security(<<~YAML)
+            security:
+              seccomp_profile: /mods/evil/deny
+          YAML
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("bare profile name")
+        end
+
+        it "rejects an egress entry that could smuggle nft syntax" do
+          result = import_with_security(<<~YAML)
+            security:
+              egress_allow:
+                - "10.0.0.1; flush ruleset"
+          YAML
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("security.egress_allow[0]")
+        end
+
+        it "accepts the shipped-manifest shape including the reviewed wildcard escape hatch" do
+          result = import_with_security(<<~YAML)
+            security:
+              capabilities:
+                - CAP_SYS_ADMIN
+              egress_allow:
+                - "0.0.0.0/0"
+                - "api.github.com:443"
+              privileged: true
+              user_namespace: false
+          YAML
+          expect(result.ok?).to be true
+          expect(mod.reload.config["security"]).to eq(
+            "capabilities" => [ "CAP_SYS_ADMIN" ],
+            "egress_allow" => [ "0.0.0.0/0", "api.github.com:443" ],
+            "privileged" => true,
+            "user_namespace" => false
+          )
+        end
+      end
     end
 
     context "dependency resolution" do

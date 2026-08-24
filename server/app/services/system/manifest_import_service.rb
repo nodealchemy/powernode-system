@@ -295,6 +295,7 @@ module System
       validate_services(manifest, errors)
       validate_restart_after_update(manifest, errors)
       validate_verify(manifest, errors)
+      validate_security(manifest, errors)
       validate_groups(manifest, errors)
       validate_users(manifest, errors)
       validate_sudoers(manifest, errors)
@@ -528,6 +529,18 @@ module System
 
     def validate_verify(manifest, errors)
       ::System::ModuleConfigValidator.validate_verify(manifest, errors)
+    end
+
+    # `security:` is the third manifest block copied VERBATIM onto
+    # NodeModule#config (apply_to_module's preserve loop) and consumed on-node
+    # — by the agent's attach-time policy enforcer (reconcile.go buildPolicy),
+    # which turns it into capabilities / userns / seccomp / MAC / egress
+    # confinement. Same shared-validator arrangement as the two above, closing
+    # the gap the validator's own header used to file separately
+    # (IMP-01a02f4f75f4); the normative key grammar is the SECURITY-BLOCK
+    # CONTRACT in System::ModuleConfigValidator.
+    def validate_security(manifest, errors)
+      ::System::ModuleConfigValidator.validate_security(manifest, errors)
     end
 
     # Validates `services:` key. Catches schema issues before any DB writes

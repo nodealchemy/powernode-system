@@ -16,9 +16,13 @@ module System
   #   2. instance-scoped dependants (config variety, node_instance_id=instance)
   #      → apply only to this instance, layer on top of node-scoped
   #
-  # Security: keys the platform owns (TLS material + listen address)
-  # are stripped from the merged result before returning. The agent
-  # applies the same allow-list defensively at write time.
+  # Security: the merged result is filtered to ALLOWED_KEYS (IMP-01a02f5a6a1f
+  # inverted the original tls*/hosts blocklist — dockerd's config surface
+  # grows, and a blocklist enumerates only the bad keys someone already
+  # thought of). System::ModuleConfigValidator enforces the same lists at
+  # WRITE time, so the operator hears a refusal there; this filter is the
+  # belt-and-braces for rows stored before that gate and for any writer the
+  # gate misses. The agent applies its own allow-list defensively too.
   #
   # Idempotent + read-only — never mutates module state. Safe to call
   # per-tick from the agent's reconcile loop.
@@ -26,10 +30,33 @@ module System
     PARENT_MODULE_NAME = "docker-engine"
     OVERRIDES_KEY = "daemon_overrides"
 
-    # Keys the platform unconditionally manages — operator overrides for
-    # any of these are silently dropped (with a warn log so operators
-    # can investigate). The agent applies the same list defensively.
-    BLOCKED_KEYS = %w[tls tlsverify tlscacert tlscert tlskey hosts].freeze
+    # The documented operator-tunable subset of dockerd's daemon.json (the
+    # docker-engine-config template description in
+    # db/seeds/docker_runtime_module.rb is the operator-facing statement of
+    # this list — keep the two in sync). Deliberately ABSENT relative to the
+    # pre-gate documentation: `runtimes` (maps runtime names to arbitrary
+    # host binaries dockerd then executes as root — a node-compromise
+    # primitive, categorically worse than default-runtime's choice among
+    # already-installed runtimes) and `authorization-plugins` (delegates the
+    # daemon's authz decisions to an operator-named plugin).
+    ALLOWED_KEYS = %w[
+      registry-mirrors insecure-registries
+      log-driver log-opts
+      storage-driver storage-opts
+      default-ulimits debug data-root exec-opts default-runtime
+      bip default-address-pools dns dns-search dns-opts
+      features icc iptables ip-forward ip-masq userland-proxy
+      max-concurrent-downloads max-concurrent-uploads default-shm-size
+    ].freeze
+
+    # Named refusals: keys whose write-time rejection deserves a specific
+    # explanation rather than the generic "outside the allowlist". tls*/hosts
+    # are platform-owned (mTLS material + listen address); runtimes /
+    # authorization-plugins are the two documented-then-revoked keys above.
+    REFUSED_KEYS = %w[
+      tls tlsverify tlscacert tlscert tlskey hosts
+      runtimes authorization-plugins
+    ].freeze
 
     # Returns the merged JSON-ready hash (NOT JSON-encoded) for the
     # given NodeInstance. Empty hash if no overrides apply or the
@@ -106,13 +133,18 @@ module System
       end
     end
 
+    # Allowlist filter (see ALLOWED_KEYS): anything else — the platform-owned
+    # tls*/hosts family, runtimes/authorization-plugins, and any key dockerd
+    # grows that nobody has reviewed — is dropped with a warn log. Write-time
+    # rejection (ModuleConfigValidator#validate_daemon_overrides) is the loud
+    # path; this catches rows stored before that gate existed.
     def strip_blocked_keys!(merged)
-      stripped = merged.keys & BLOCKED_KEYS
+      stripped = merged.keys.reject { |k| ALLOWED_KEYS.include?(k.to_s) }
       return if stripped.empty?
 
       Rails.logger.warn(
         "[DockerDaemonOverridesResolver] dropped operator-supplied keys " \
-        "(platform-managed): #{stripped.join(', ')} for node_instance=#{@node_instance.id}"
+        "outside the supported allowlist: #{stripped.join(', ')} for node_instance=#{@node_instance.id}"
       )
       stripped.each { |k| merged.delete(k) }
     end

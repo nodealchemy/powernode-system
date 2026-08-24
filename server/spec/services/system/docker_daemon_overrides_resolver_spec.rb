@@ -130,7 +130,14 @@ RSpec.describe System::DockerDaemonOverridesResolver, type: :service do
       end
     end
 
-    context "with operator attempts to override platform-managed keys" do
+    # IMP-01a02f5a6a1f inverted the tls*/hosts blocklist into an allowlist:
+    # a blocklist enumerates only the bad keys someone already thought of,
+    # and dockerd's config surface grows. These rows are created at MODEL
+    # level deliberately — they stand in for configs stored BEFORE the
+    # write-time gate (ModuleConfigValidator#validate_daemon_overrides, spec'd
+    # with the REST/MCP writers), which is exactly the population this
+    # resolve-time filter exists to defuse.
+    context "with operator attempts to override non-allowlisted keys" do
       before do
         System::NodeModule.create!(
           account: account,
@@ -145,23 +152,34 @@ RSpec.describe System::DockerDaemonOverridesResolver, type: :service do
               "tlsverify" => false,
               "tlscacert" => "/tmp/attacker-ca.pem",
               "hosts" => [ "tcp://0.0.0.0:2375" ],
-              # legitimate key — must still apply
-              "log-driver" => "syslog"
+              # pre-gate stored attack keys the old blocklist let through:
+              "runtimes" => { "evil" => { "path" => "/persist/evil" } },
+              "authorization-plugins" => [ "attacker-plugin" ],
+              "some-future-dockerd-key" => true,
+              # legitimate keys — must still apply
+              "log-driver" => "syslog",
+              "insecure-registries" => [ "registry.lan:5000" ]
             }
           }
         )
       end
 
-      it "strips blocked keys (tls/tlsverify/tlscacert/tlskey/hosts)" do
+      it "strips every named refusal (tls family, runtimes, authorization-plugins)" do
         result = described_class.resolve(node_instance: node_instance)
-        described_class::BLOCKED_KEYS.each do |key|
-          expect(result).not_to have_key(key), "blocked key #{key} not stripped"
+        described_class::REFUSED_KEYS.each do |key|
+          expect(result).not_to have_key(key), "refused key #{key} not stripped"
         end
       end
 
-      it "keeps non-blocked operator keys" do
+      it "strips keys outside the allowlist even when nothing names them (allowlist, not blocklist)" do
+        result = described_class.resolve(node_instance: node_instance)
+        expect(result).not_to have_key("some-future-dockerd-key")
+      end
+
+      it "keeps documented operator-tunable keys" do
         result = described_class.resolve(node_instance: node_instance)
         expect(result["log-driver"]).to eq("syslog")
+        expect(result["insecure-registries"]).to eq([ "registry.lan:5000" ])
       end
 
       it "logs the stripped keys" do
