@@ -45,11 +45,31 @@ RSpec.describe System::Fleet::FleetAutonomyService do
   end
 
   describe "#gate_action!" do
+    # IMP-5a450411d873 split this arm in two. "No policy row" means different
+    # things depending on whether the platform ROUTES signals to the category:
+    # for a routed lane it is a deploy defect (the code declares a lane the
+    # database has no policy for, so every signal is silently blocked); for
+    # anything else it is an ordinary refusal.
     context "with an action not in the agent's policies" do
-      it "blocks with reason :not_permitted" do
-        result = service.gate_action!("system.cert_rotate")
+      it "blocks an UNROUTED action with reason :not_permitted" do
+        result = service.gate_action!("system.definitely_not_a_routed_category")
+
         expect(result[:decision]).to eq(:blocked)
         expect(result[:reason]).to eq("not_permitted")
+        expect(result[:gate]).to be_nil
+      end
+
+      # system.cert_rotate IS routed by DecisionEngine, so an absent row here is
+      # a misconfiguration, not a policy decision — it still blocks (fail-safe),
+      # but it now says so distinguishably instead of looking like a refusal.
+      it "blocks a ROUTED action as a misconfiguration" do
+        allow(Rails.logger).to receive(:error)
+
+        result = service.gate_action!("system.cert_rotate")
+
+        expect(result[:decision]).to eq(:blocked)
+        expect(result[:gate]).to eq(described_class::GATE_POLICY_MISSING)
+        expect(Rails.logger).to have_received(:error).with(/MISCONFIGURED LANE/)
       end
     end
 

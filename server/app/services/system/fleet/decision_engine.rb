@@ -579,6 +579,22 @@ module System
         }
       }.freeze
 
+      # Every action_category the platform ROUTES a signal to.
+      #
+      # This is the set that MUST have an Ai::InterventionPolicy row on the
+      # agent running the sense pass. Without a row, FleetAutonomyService
+      # #gate_action! takes its `not_permitted` arm and blocks the signal —
+      # and `permitted_actions` is literally the policy-row set, so "not
+      # permitted" and "nobody ever seeded this" are the same state.
+      #
+      # Exposed so the gate can tell a MISCONFIGURED lane (routed by code,
+      # unseeded in this database) from an arbitrary unknown category, and so
+      # a spec can assert every routed lane is actually seeded.
+      def self.routed_action_categories
+        SIGNAL_BINDINGS.values.filter_map { |b| b[:action_category] }.uniq.freeze
+      end
+
+
       # TTL on cross-tick fingerprint dedup. Same fingerprint within this
       # window is skipped at the engine level (no skill invocation, no
       # ApprovalRequest) — meaningfully reduces approval-queue churn for
