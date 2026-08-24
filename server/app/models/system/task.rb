@@ -7,41 +7,46 @@ module System
 
     # === Constants ===
     STATUSES = %w[pending scheduled running complete failed aborted cancelled].freeze
-    # WARNING: this list is NOT a validation. `command` is validated for
-    # presence only, so a Task can be created carrying any string here or not.
-    # Treat it as documentation of intent, not a gate.
+    # Every command the platform can actually execute, and now a VALIDATION
+    # rather than documentation.
     #
-    # It is also WIDER than what the platform can execute. Most entries below
-    # (volumes, snapshots, networks, backup/restore, the provider verbs) have no
-    # dispatcher and no producer: ExecutionDispatcher::COMMAND_REGISTRY was
-    # trimmed to the four commands with a live production record after the
-    # dispatch-spine decision retired thirteen zero-caller verbs, and this list
-    # was deliberately left alone in that change rather than quietly narrowed
-    # alongside it. Narrowing it is its own decision about what the model should
-    # advertise, and it needs its own evidence.
+    # It is exactly ExecutionDispatcher::COMMAND_REGISTRY.keys (server-dispatched)
+    # UNION ExecutionDispatcher::AGENT_DELEGATED_COMMANDS (node-executed). That
+    # equality is asserted by spec rather than derived in code — deriving it here
+    # would make a model load a service at class-body evaluation time, and the
+    # spec catches drift just as well without the load-order coupling.
     #
-    # ci.module_build (campaign 019f5885 inc7) is executed BY THE AGENT on a
-    # leased module-forge builder — see
-    # ExecutionDispatcher::AGENT_DELEGATED_COMMANDS and the agent's
-    # tasks/handlers/module_build.go. The legacy build_module/commit_module
-    # pair it is often confused with was the server-side Gitea-Actions-dispatch
-    # path; both were retired in that same step, having never run.
+    # It used to be neither. It carried volumes, snapshots, networks,
+    # backup/restore and `custom` — none of which had a dispatcher or a producer
+    # — while OMITTING every storage.* command and ci.package_build, which are
+    # real agent-delegated verbs in daily use. So it simultaneously advertised
+    # work the platform cannot do and failed to list work it does. Nothing
+    # noticed, because nothing consulted it.
+    #
+    # VALIDATED ON CHANGE, not on every save — the same guard shape, and for the
+    # same reason, as operable_type below. `command` has been effectively free
+    # text for the table's lifetime, so an unconditional inclusion check would
+    # make any pre-existing row carrying an unlisted command unsaveable and brick
+    # its progress ticks, fail! and every other status transition. Guarding on
+    # the change keeps the security property whole: every write that SETS or
+    # CHANGES the command is checked (on create the attribute goes nil -> value,
+    # which reads as changed), and a legacy row can never be re-pointed at an
+    # unlisted command.
+    #
+    # Verified safe before the guard was added: 476 System::Task rows have ever
+    # existed on the live control plane, across six distinct commands, every one
+    # of them in this list.
     COMMANDS = %w[
       start stop restart terminate reboot
-      provision deprovision
-      associate_public_ip disassociate_public_ip
-      create_volume delete_volume attach_volume detach_volume
-      create_snapshot delete_snapshot restore_snapshot
-      create_network delete_network
-      sync sync_modules apply_config
-      build_module commit_module
-      ci.module_build
-      probe.module_smoke
+      sync_modules apply_config
       ssh_command
-      backup restore
-      a2a_call
       upgrade_boot_image
-      custom
+      a2a_call
+      storage.mount storage.unmount storage.exports.apply storage.smb_user.apply
+      storage.gateway.provision storage.gateway.deprovision storage.chown
+      ci.module_build
+      ci.package_build
+      probe.module_smoke
     ].freeze
 
     # Records that may legitimately carry a task.
@@ -93,6 +98,8 @@ module System
     # holds whatever the existing data turns out to be.
     validates :operable_type, inclusion: { in: OPERABLE_TYPES }, allow_blank: true,
                               if: :operable_type_changed?
+    validates :command, inclusion: { in: COMMANDS }, allow_blank: true,
+                        if: :command_changed?
     validates :status, presence: true, inclusion: { in: STATUSES }
     validates :progress, numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
 

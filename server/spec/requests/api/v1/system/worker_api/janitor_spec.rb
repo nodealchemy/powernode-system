@@ -23,7 +23,7 @@ RSpec.describe "Api::V1::System::WorkerApi::Janitor", type: :request do
   # nodes measured on live ops-hub carry NULL here).
   let(:node) { create(:system_node, account: account) }
 
-  def stuck_task(status: "pending", command: "sync", age: 2.hours, started_ago: nil)
+  def stuck_task(status: "pending", command: "sync_modules", age: 2.hours, started_ago: nil)
     task = create(:system_task, account: account, operable: node, command: command, status: status)
     task.update_columns(
       created_at: age.ago,

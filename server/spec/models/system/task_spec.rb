@@ -11,14 +11,70 @@ RSpec.describe System::Task, type: :model do
       expect(described_class::STATUSES).to eq(%w[pending scheduled running complete failed aborted cancelled])
     end
 
-    it 'defines valid commands' do
+    # COMMANDS is now a VALIDATION and is exactly the set the platform can
+    # execute. Asserting equality with the two dispatcher sets — rather than
+    # listing strings here — is what stops it drifting back into fiction: it
+    # previously advertised volumes, snapshots, networks, backup/restore and
+    # `custom` (no dispatcher, no producer) while OMITTING every storage.*
+    # command and ci.package_build, which are real verbs in daily use.
+    it 'is exactly what the dispatcher can route, server-side or to the agent' do
+      derived = (System::ExecutionDispatcher::COMMAND_REGISTRY.keys +
+                 System::ExecutionDispatcher::AGENT_DELEGATED_COMMANDS).uniq
+
+      expect(described_class::COMMANDS).to match_array(derived)
+    end
+
+    it 'lists the agent-delegated storage verbs it used to omit' do
       expect(described_class::COMMANDS).to include(
-        'start', 'stop', 'restart', 'terminate', 'reboot',
-        'provision', 'deprovision',
-        'create_volume', 'delete_volume', 'attach_volume', 'detach_volume',
-        'sync_modules', 'apply_config',
-        'backup', 'restore', 'custom'
+        'storage.mount', 'storage.unmount', 'storage.chown', 'ci.package_build'
       )
+    end
+
+    it 'no longer advertises work the platform cannot do' do
+      expect(described_class::COMMANDS).not_to include(
+        'provision', 'deprovision', 'create_volume', 'create_snapshot',
+        'create_network', 'backup', 'restore', 'custom', 'sync'
+      )
+    end
+
+    describe 'the validation' do
+      let(:account) { create(:account) }
+      let(:node)    { create(:system_node, account: account) }
+
+      it 'rejects a command the platform cannot execute' do
+        task = build(:system_task, account: account, operable: node, command: 'not_a_real_command')
+
+        expect(task).not_to be_valid
+        expect(task.errors[:command]).to be_present
+      end
+
+      it 'accepts every listed command' do
+        described_class::COMMANDS.each do |cmd|
+          task = build(:system_task, account: account, operable: node, command: cmd)
+          expect(task).to be_valid, "#{cmd} is listed but rejected"
+        end
+      end
+
+      # Guarded on the CHANGE: a row written before the list narrowed must stay
+      # transitionable, or its progress ticks and fail!/complete! would brick.
+      it 'lets a legacy row carrying an unlisted command still transition' do
+        task = create(:system_task, account: account, operable: node, command: 'sync_modules')
+        task.update_column(:command, 'retired_verb_from_before_the_narrowing')
+
+        expect(task.reload).to be_valid
+        expect { task.start! }.not_to raise_error
+        expect(task.reload.status).to eq('running')
+      end
+
+      # ...but it can never be RE-POINTED at an unlisted command.
+      it 'refuses to change a legacy row onto another unlisted command' do
+        task = create(:system_task, account: account, operable: node, command: 'sync_modules')
+        task.update_column(:command, 'retired_verb_from_before_the_narrowing')
+
+        task.command = 'another_unlisted_verb'
+
+        expect(task).not_to be_valid
+      end
     end
   end
 

@@ -10,12 +10,19 @@ RSpec.describe System::ExecutionDispatcher do
   describe '.run' do
     context 'when the command is unsupported' do
       let(:operation) do
-        # Build with a known-good command, then mutate the in-memory record so
-        # the dispatcher resolution path sees an unknown command without
-        # tripping ActiveRecord validations.
-        op = create(:system_task, account: account, operable: node, command: 'sync')
-        op.send(:write_attribute, :command, 'definitely_not_a_real_command')
-        op
+        # Create with a known-good command, then write the unknown one straight
+        # to the column and reload. update_column bypasses validation AND leaves
+        # the attribute clean, which is exactly the production shape this arm
+        # exists for: a row persisted before COMMANDS was narrowed, carrying a
+        # command the dispatcher can no longer route.
+        #
+        # It has to be done this way now. `write_attribute` marks command DIRTY,
+        # and System::Task validates command on CHANGE — so the dispatcher's own
+        # failure path could not save the row, and the example failed for a
+        # reason that cannot occur in production.
+        op = create(:system_task, account: account, operable: node, command: 'sync_modules')
+        op.update_column(:command, 'definitely_not_a_real_command')
+        op.reload
       end
 
       it 'fails the operation and returns an unprocessable_entity outcome' do
@@ -49,7 +56,7 @@ RSpec.describe System::ExecutionDispatcher do
 
       it 'treats every agent handler command (storage.*, a2a_call) the same' do
         %w[a2a_call storage.chown storage.mount].each do |cmd|
-          op = create(:system_task, account: account, operable: instance, command: 'sync')
+          op = create(:system_task, account: account, operable: instance, command: 'sync_modules')
           op.send(:write_attribute, :command, cmd)
           outcome = described_class.run(op)
           expect(outcome.status_code).to eq(:accepted), "expected #{cmd} to be agent-delegated"
@@ -161,12 +168,21 @@ RSpec.describe System::ExecutionDispatcher do
     # exact shape that produced the dispatch-spine investigation. Re-adding one
     # must fail here and be argued for.
     RETIRED_VERBS = %w[
-      provision deprovision start stop reboot terminate
+      provision deprovision
       associate_public_ip disassociate_public_ip
       attach_volume detach_volume
       build_module commit_module
       sync
     ].freeze
+
+    # start/stop/reboot/terminate were in the list above and were RESTORED.
+    # A lifetime row count of zero proves a verb is UNUSED; deleting it needs
+    # UNREACHABLE, and those are different claims. NodeInstanceGating
+    # #control_or_error passes the command as a VARIABLE
+    # (create_instance_operation(event.to_s)), so no literal grep could see the
+    # producer, and for a cloud provider the registry IS the execution path.
+    # Pinned so the mistake cannot be repeated by a future tidy-up.
+    HAS_LIVE_PRODUCER = %w[start stop reboot terminate].freeze
 
     it 'no longer registers any of the retired zero-caller provider verbs' do
       expect(described_class::COMMAND_REGISTRY.keys & RETIRED_VERBS).to be_empty
@@ -180,11 +196,20 @@ RSpec.describe System::ExecutionDispatcher do
       end
     end
 
-    # What survives is exactly the set with a live production record, plus
-    # restart (kept for step 2, whose unit-vs-VM split is a behaviour change).
-    it 'registers only commands that are actually dispatched server-side' do
-      expect(described_class::COMMAND_REGISTRY.keys)
-        .to contain_exactly('restart', 'sync_modules', 'apply_config', 'ssh_command')
+    it 'keeps every verb that still has a live producer' do
+      HAS_LIVE_PRODUCER.each do |verb|
+        expect(described_class::COMMAND_REGISTRY[verb]).to be_present,
+          "#{verb} is created by NodeInstanceGating#control_or_error and, on a " \
+          "cloud provider, dispatched through this registry — unregistering it " \
+          "breaks instance control for every non-local provider"
+      end
+    end
+
+    it 'registers exactly the commands the server dispatches' do
+      expect(described_class::COMMAND_REGISTRY.keys).to contain_exactly(
+        'start', 'stop', 'reboot', 'terminate', 'restart',
+        'sync_modules', 'apply_config', 'ssh_command'
+      )
     end
   end
 

@@ -2533,7 +2533,7 @@ end
 
     it "errors when the task is not abortable (state-machine guard)" do
       pending_task = System::Task.create!(
-        account: account, command: "sync", status: "pending",
+        account: account, command: "sync_modules", status: "pending",
         operable_type: "System::Node", operable_id: node.id
       )
       r = call("system_abort_task", id: pending_task.id)

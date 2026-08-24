@@ -395,7 +395,10 @@ FactoryBot.define do
   factory :system_task, class: "System::Task" do
     association :account
     association :operable, factory: :system_node
-    command { "sync" }
+    # "sync" was retired with the zero-caller dispatch verbs, and System::Task
+    # now VALIDATES command against COMMANDS, so the default must be a command
+    # the platform can actually execute.
+    command { "sync_modules" }
     status { "pending" }
     progress { 0 }
     events { [] }

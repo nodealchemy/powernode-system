@@ -29,8 +29,8 @@ RSpec.describe "Api::V1::Internal::System::Tasks", type: :request do
   let(:node)       { create(:system_node, account: account) }
   let(:other_node) { create(:system_node, account: other_account) }
 
-  let!(:own_task)   { create(:system_task, account: account, operable: node, command: "sync") }
-  let!(:other_task) { create(:system_task, account: other_account, operable: other_node, command: "sync") }
+  let!(:own_task)   { create(:system_task, account: account, operable: node, command: "sync_modules") }
+  let!(:other_task) { create(:system_task, account: other_account, operable: other_node, command: "sync_modules") }
 
   around do |example|
     with_routing do |set|

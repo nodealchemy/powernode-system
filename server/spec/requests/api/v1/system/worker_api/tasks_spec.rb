@@ -17,7 +17,7 @@ RSpec.describe "Api::V1::System::WorkerApi::Tasks", type: :request do
   end
 
   def task_with(status:)
-    create(:system_task, account: account, operable: node, command: "sync", status: status)
+    create(:system_task, account: account, operable: node, command: "sync_modules", status: status)
   end
 
   # F5-02 case 1 — completing an already-terminal task must be a structured

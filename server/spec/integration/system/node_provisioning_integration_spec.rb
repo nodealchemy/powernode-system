@@ -166,7 +166,7 @@ RSpec.describe 'Node Provisioning Integration', type: :integration do
       operation = create(:system_task,
                          account: account,
                          operable: instance,
-                         command: 'sync',
+                         command: 'sync_modules',
                          status: 'pending')
 
       expect(operation.pending?).to be true
@@ -195,7 +195,7 @@ RSpec.describe 'Node Provisioning Integration', type: :integration do
 
     it 'associates operations with both node and instance' do
       node_operation = create(:system_task, account: account, operable: node, command: 'configure')
-      instance_operation = create(:system_task, account: account, operable: instance, command: 'sync')
+      instance_operation = create(:system_task, account: account, operable: instance, command: 'sync_modules')
 
       expect(node.tasks).to include(node_operation)
       expect(instance.tasks).to include(instance_operation)

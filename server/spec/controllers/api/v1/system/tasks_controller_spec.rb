@@ -19,7 +19,7 @@ RSpec.describe "Api::V1::System::Tasks", type: :request do
   let(:no_perms)     { user_with_permissions(account: account) }
 
   let(:node) { create(:system_node, account: account) }
-  let!(:task) { create(:system_task, account: account, operable: node, command: "sync", status: "pending") }
+  let!(:task) { create(:system_task, account: account, operable: node, command: "sync_modules", status: "pending") }
 
   describe "GET /api/v1/system/tasks" do
     it "returns 401 without auth" do
@@ -34,7 +34,7 @@ RSpec.describe "Api::V1::System::Tasks", type: :request do
 
     it "scopes to the caller's account" do
       foreign_node = create(:system_node, account: other_account)
-      foreign = create(:system_task, account: other_account, operable: foreign_node, command: "sync")
+      foreign = create(:system_task, account: other_account, operable: foreign_node, command: "sync_modules")
       get "/api/v1/system/tasks", headers: auth_headers_for(read_user)
       ids = json_response_data["tasks"].map { |t| t["id"] }
       expect(ids).to include(task.id)
@@ -51,7 +51,7 @@ RSpec.describe "Api::V1::System::Tasks", type: :request do
 
     it "returns 404 for another account's task" do
       foreign_node = create(:system_node, account: other_account)
-      foreign = create(:system_task, account: other_account, operable: foreign_node, command: "sync")
+      foreign = create(:system_task, account: other_account, operable: foreign_node, command: "sync_modules")
       get "/api/v1/system/tasks/#{foreign.id}", headers: auth_headers_for(read_user)
       expect(response).to have_http_status(:not_found)
     end
@@ -59,7 +59,7 @@ RSpec.describe "Api::V1::System::Tasks", type: :request do
 
   describe "POST /api/v1/system/tasks (create — gated through Ai::AutonomyGate)" do
     let(:create_params) do
-      { task: { command: "sync", operable_type: "System::Node", operable_id: node.id } }
+      { task: { command: "sync_modules", operable_type: "System::Node", operable_id: node.id } }
     end
 
     it "returns 403 without create perm" do
@@ -86,7 +86,7 @@ RSpec.describe "Api::V1::System::Tasks", type: :request do
 
       def post_operable(type:, id:)
         post "/api/v1/system/tasks",
-             params: { task: { command: "sync", operable_type: type, operable_id: id } }.to_json,
+             params: { task: { command: "sync_modules", operable_type: type, operable_id: id } }.to_json,
              headers: auth_headers_for(create_user).merge("Content-Type" => "application/json")
       end
 
@@ -164,9 +164,9 @@ RSpec.describe "Api::V1::System::Tasks", type: :request do
 
     it "honors idempotency_key — duplicate POST returns the existing task" do
       key = "spec-idem-#{SecureRandom.hex(3)}"
-      existing = create(:system_task, account: account, operable: node, command: "sync", idempotency_key: key)
+      existing = create(:system_task, account: account, operable: node, command: "sync_modules", idempotency_key: key)
       post "/api/v1/system/tasks",
-           params: { task: { command: "sync", operable_type: "System::Node",
+           params: { task: { command: "sync_modules", operable_type: "System::Node",
                               operable_id: node.id, idempotency_key: key } }.to_json,
            headers: auth_headers_for(create_user).merge("Content-Type" => "application/json")
       expect(response).to have_http_status(:ok)
@@ -189,7 +189,7 @@ RSpec.describe "Api::V1::System::Tasks", type: :request do
     end
 
     it "returns 422 when the task is not cancellable (state-machine guard)" do
-      running = create(:system_task, account: account, operable: node, command: "sync", status: "complete")
+      running = create(:system_task, account: account, operable: node, command: "sync_modules", status: "complete")
       post "/api/v1/system/tasks/#{running.id}/cancel",
            headers: auth_headers_for(control_user).merge("Content-Type" => "application/json")
       expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)

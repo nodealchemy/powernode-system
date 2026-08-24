@@ -32,7 +32,7 @@ RSpec.describe System::Runtime::ControlInstance do
       end
     end
 
-    %w[start stop restart reboot terminate deprovision].each do |command|
+    %w[start stop restart reboot terminate].each do |command|
       context "when command is '#{command}'" do
         let(:operation) do
           create(:system_task,
@@ -50,8 +50,7 @@ RSpec.describe System::Runtime::ControlInstance do
             'stop' => 'stop',
             'restart' => 'reboot',
             'reboot' => 'reboot',
-            'terminate' => 'terminate',
-            'deprovision' => 'terminate'
+            'terminate' => 'terminate'
           }.fetch(command)
         end
 

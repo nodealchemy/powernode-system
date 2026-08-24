@@ -47,7 +47,7 @@ RSpec.describe System::Executors::ExecuteTask do
 
   describe "an operable the operation's account owns" do
     it "creates the task and attaches the resolved record" do
-      result = execute(command: "sync", operable_type: "System::Node", operable_id: node.id)
+      result = execute(command: "sync_modules", operable_type: "System::Node", operable_id: node.id)
 
       task = ::System::Task.find(result[:data][:task_id])
       expect(task.operable).to eq(node)
@@ -55,7 +55,7 @@ RSpec.describe System::Executors::ExecuteTask do
     end
 
     it "still creates a task that names no operable at all" do
-      result = execute(command: "sync")
+      result = execute(command: "sync_modules")
 
       expect(::System::Task.find(result[:data][:task_id]).operable).to be_nil
     end
@@ -66,7 +66,7 @@ RSpec.describe System::Executors::ExecuteTask do
     # the planted row it exists to prevent — it aborts on "nothing was raised"
     # while the foreign record sits attached.
     it "plants no task against the foreign record" do
-      error = refusal_from(command: "sync", operable_type: "System::Node", operable_id: foreign_node.id)
+      error = refusal_from(command: "sync_modules", operable_type: "System::Node", operable_id: foreign_node.id)
 
       planted = ::System::Task.where(operable_type: "System::Node", operable_id: foreign_node.id)
       expect(planted.count).to eq(0),
@@ -79,7 +79,7 @@ RSpec.describe System::Executors::ExecuteTask do
     # the controller renders straight to the caller — so naming the owner turns
     # a cross-tenant probe into a working ownership oracle.
     it "refuses without naming the owning account" do
-      error = refusal_from(command: "sync", operable_type: "System::Node", operable_id: foreign_node.id)
+      error = refusal_from(command: "sync_modules", operable_type: "System::Node", operable_id: foreign_node.id)
 
       expect(error).to be_a(::Ai::DeferredOperation::CrossAccountError)
       expect(error.message).not_to include(foreign_account.id),
@@ -92,7 +92,7 @@ RSpec.describe System::Executors::ExecuteTask do
     # resolve_scoped would pass it straight through: the allowlist is the only
     # thing that can refuse this.
     it "refuses a type outside System::Task::OPERABLE_TYPES" do
-      error = refusal_from(command: "sync", operable_type: "Account", operable_id: account.id)
+      error = refusal_from(command: "sync_modules", operable_type: "Account", operable_id: account.id)
 
       planted = ::System::Task.where(operable_type: "Account")
       expect(planted.count).to eq(0),
@@ -101,7 +101,7 @@ RSpec.describe System::Executors::ExecuteTask do
     end
 
     it "names only the rejected type, never a constantized class" do
-      error = refusal_from(command: "sync", operable_type: "Kernel", operable_id: account.id)
+      error = refusal_from(command: "sync_modules", operable_type: "Kernel", operable_id: account.id)
 
       expect(error).to be_a(::System::Task::BadOperableType)
       expect(::System::Task.where(operable_type: "Kernel").count).to eq(0)
@@ -111,7 +111,7 @@ RSpec.describe System::Executors::ExecuteTask do
     # stops a malformed request from firing a tenancy alert. Subclassing is what
     # lets existing rescues and log greps keep working regardless.
     it "stays rescuable as a CrossAccountError for existing handlers" do
-      error = refusal_from(command: "sync", operable_type: "Account", operable_id: account.id)
+      error = refusal_from(command: "sync_modules", operable_type: "Account", operable_id: account.id)
 
       expect(error).to be_a(::Ai::DeferredOperation::CrossAccountError)
     end
@@ -125,8 +125,8 @@ RSpec.describe System::Executors::ExecuteTask do
     # themselves supplied.
     it "refuses an id that exists nowhere exactly as it refuses a foreign one" do
       missing_id = SecureRandom.uuid
-      missing = refusal_from(command: "sync", operable_type: "System::Node", operable_id: missing_id)
-      foreign = refusal_from(command: "sync", operable_type: "System::Node", operable_id: foreign_node.id)
+      missing = refusal_from(command: "sync_modules", operable_type: "System::Node", operable_id: missing_id)
+      foreign = refusal_from(command: "sync_modules", operable_type: "System::Node", operable_id: foreign_node.id)
 
       expect(missing).to be_a(::Ai::DeferredOperation::CrossAccountError)
       expect(missing.class).to eq(foreign.class),
@@ -137,7 +137,7 @@ RSpec.describe System::Executors::ExecuteTask do
     end
 
     it "does not report a cross-account refusal as a bad-type refusal" do
-      error = refusal_from(command: "sync", operable_type: "System::Node", operable_id: foreign_node.id)
+      error = refusal_from(command: "sync_modules", operable_type: "System::Node", operable_id: foreign_node.id)
 
       expect(error).not_to be_a(::System::Task::BadOperableType)
     end
@@ -181,7 +181,7 @@ RSpec.describe System::Executors::ExecuteTask do
 
     it "names the command on the summary line" do
       node.update!(name: "edge-lon-01")
-      card = gated_card(command: "sync", operable_type: "System::Node",
+      card = gated_card(command: "sync_modules", operable_type: "System::Node",
                         operable_id: node.id, initiated_by_id: user.id)
 
       expect(card[:summary]).to eq("Execute system task: sync")
@@ -189,7 +189,7 @@ RSpec.describe System::Executors::ExecuteTask do
 
     it "names the command and the operable's name on the impact line" do
       node.update!(name: "edge-lon-01")
-      card = gated_card(command: "sync", operable_type: "System::Node",
+      card = gated_card(command: "sync_modules", operable_type: "System::Node",
                         operable_id: node.id, initiated_by_id: user.id)
 
       expect(card[:impact]).to eq("sync on System::Node edge-lon-01")
@@ -207,7 +207,7 @@ RSpec.describe System::Executors::ExecuteTask do
     end
 
     it "reads 'on system' when no operable is named, but still names the command" do
-      card = gated_card(command: "sync", initiated_by_id: user.id)
+      card = gated_card(command: "sync_modules", initiated_by_id: user.id)
 
       expect(card[:summary]).to eq("Execute system task: sync")
       expect(card[:impact]).to eq("sync on system")
@@ -217,7 +217,7 @@ RSpec.describe System::Executors::ExecuteTask do
     # to a name either. A type outside OPERABLE_TYPES degrades to the caller's
     # own bare pair (perform refuses the same pair later, at execution).
     it "degrades an unallowlisted operable type to the caller's bare pair" do
-      card = gated_card(command: "sync", operable_type: "Kernel", operable_id: account.id)
+      card = gated_card(command: "sync_modules", operable_type: "Kernel", operable_id: account.id)
 
       expect(card[:impact]).to eq("sync on Kernel##{account.id}")
       expect(card[:error]).to be_nil
@@ -225,7 +225,7 @@ RSpec.describe System::Executors::ExecuteTask do
 
     it "falls back to the bare pair when the operable row is gone" do
       missing = SecureRandom.uuid
-      card = gated_card(command: "sync", operable_type: "System::Node", operable_id: missing)
+      card = gated_card(command: "sync_modules", operable_type: "System::Node", operable_id: missing)
 
       expect(card[:impact]).to eq("sync on System::Node##{missing}")
     end
@@ -236,7 +236,7 @@ RSpec.describe System::Executors::ExecuteTask do
     it "still names the command and operable for a flat direct-caller params shape" do
       node.update!(name: "edge-lon-01")
       card = described_class.preview(
-        { command: "sync", operable_type: "System::Node", operable_id: node.id,
+        { command: "sync_modules", operable_type: "System::Node", operable_id: node.id,
           initiated_by_id: user.id }
       )
 
@@ -257,7 +257,7 @@ RSpec.describe System::Executors::ExecuteTask do
     context "when the caller names a record it does not own as the operable" do
       it "does not disclose the foreign record's name on the card" do
         foreign_node.update!(name: "victim-payroll-node")
-        card = gated_card(command: "sync", operable_type: "System::Node",
+        card = gated_card(command: "sync_modules", operable_type: "System::Node",
                           operable_id: foreign_node.id, initiated_by_id: user.id)
 
         expect(card[:impact]).not_to include("victim-payroll-node"),
@@ -271,9 +271,9 @@ RSpec.describe System::Executors::ExecuteTask do
       # to the id the caller themselves supplied.
       it "renders a foreign id exactly as it renders a missing id" do
         missing_id = SecureRandom.uuid
-        foreign = gated_card(command: "sync", operable_type: "System::Node",
+        foreign = gated_card(command: "sync_modules", operable_type: "System::Node",
                              operable_id: foreign_node.id, initiated_by_id: user.id)
-        missing = gated_card(command: "sync", operable_type: "System::Node",
+        missing = gated_card(command: "sync_modules", operable_type: "System::Node",
                              operable_id: missing_id, initiated_by_id: user.id)
 
         expect(foreign[:impact].sub(foreign_node.id, "<id>"))
@@ -288,7 +288,7 @@ RSpec.describe System::Executors::ExecuteTask do
       it "falls back to the bare pair for a flat shape with no initiator" do
         node.update!(name: "edge-lon-01")
         card = described_class.preview(
-          { command: "sync", operable_type: "System::Node", operable_id: node.id }
+          { command: "sync_modules", operable_type: "System::Node", operable_id: node.id }
         )
 
         expect(card[:impact]).to eq("sync on System::Node##{node.id}")

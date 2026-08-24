@@ -16,18 +16,33 @@ module System
     # The registry is the single source of truth for "what does each command do."
     # Adding a new command requires adding the runtime class AND registering it here.
     # WHAT WAS REMOVED, AND WHY (dispatch-spine decision step 3, knowledge
-    # 01a031f2). This registry carried thirteen verbs that had NEVER executed
-    # once: provision, deprovision, start, stop, reboot, terminate,
-    # associate_public_ip, disassociate_public_ip, attach_volume,
-    # detach_volume, build_module, commit_module, sync.
+    # 01a031f2). NINE verbs are gone: provision, deprovision,
+    # associate_public_ip, disassociate_public_ip, attach_volume, detach_volume,
+    # build_module, commit_module, sync.
     #
-    # Measured against the whole task table, not a recent window: 476 System::Task
-    # rows have ever existed, across exactly SIX distinct commands —
-    # apply_config 263, sync_modules 100, ci.module_build 65,
-    # upgrade_boot_image 26, restart 18, ssh_command 4. Every deleted verb has a
-    # lifetime count of ZERO, and no code path anywhere creates one (the sole
-    # grep hit, instance_control_service.rb's `command: "reboot"`, is an SSH
-    # command STRING passed to SshExecutionService, not a Task command).
+    # Two independent properties had to hold for each, and the second is the one
+    # that actually licenses a deletion:
+    #
+    #   UNUSED — measured against the whole task table, not a recent window: 476
+    #   System::Task rows have ever existed, across exactly SIX distinct commands
+    #   (apply_config 263, sync_modules 100, ci.module_build 65,
+    #   upgrade_boot_image 26, restart 18, ssh_command 4). Every deleted verb has
+    #   a lifetime count of ZERO.
+    #
+    #   UNREACHABLE — no code path constructs one. This is the harder half and
+    #   the first pass got it wrong: a producer can pass the command as a
+    #   VARIABLE, which no literal `command: "..."` grep will ever surface.
+    #   start/stop/reboot/terminate were retired on the strength of the row count
+    #   alone and had to be restored (see below). The nine above were re-checked
+    #   for variable producers too — the only ones that exist are
+    #   NodeInstanceGating (start/stop/reboot/terminate), ModuleBuildBatch
+    #   #member_task_command (ci.module_build / ci.package_build), DecisionEngine
+    #   (sync_modules / apply_config) and the storage managers (storage.*).
+    #   None of them can emit any of the nine.
+    #
+    # The provider plane the nine nominally owned is really performed by
+    # MCP tool -> ProvisioningService / InstanceControlService against the
+    # provider adapters with no Task involved, so nothing is lost.
     #
     # The provider plane these verbs nominally owned is really performed by
     # MCP tool -> System::ProvisioningService / InstanceControlService, calling
@@ -37,12 +52,33 @@ module System
     # unreachable branch that looks reachable is what produced the whole
     # dispatch-spine investigation in the first place.
     #
-    # `restart` is deliberately KEPT despite its server-side arm also never
-    # having fired (all 18 restart rows carry options["unit"] and route to the
-    # agent). Its unit-vs-VM split is step 2 of that decision — the fix there is
-    # to make the choice DECLARED rather than inferred from an absent key, which
-    # is a behaviour change, not a deletion.
+    # RESTORED, same day, after they were wrongly retired:
+    # start/stop/reboot/terminate. Api::V1::System::NodeInstanceGating
+    # #control_or_error calls create_instance_operation(event.to_s), so the
+    # command is a VARIABLE — invisible to a literal grep, which is how the
+    # first pass concluded they had no producer.
+    #
+    # For a CLOUD provider this registry IS their execution path: that concern
+    # fires the provider call in-thread only for local_qemu and explicitly
+    # leaves everything else to the worker queue. Retiring them broke instance
+    # control for every non-local provider — invisible on this fleet, which is
+    # all local_qemu, and precisely the kind of latent break that only surfaces
+    # on someone else's deployment.
+    #
+    # (Known, pre-existing, filed separately: on local_qemu the task is created
+    # `pending` AND the provider call fires in-thread, so dispatch double-acts.
+    # That is a defect in the PRODUCER, not a reason to unregister the verbs.)
+    #
+    # `restart` is likewise KEPT despite its server-side arm never having fired
+    # (all 18 restart rows carry options["unit"] and route to the agent). Its
+    # unit-vs-VM split is step 2 of that decision — making the choice DECLARED
+    # rather than inferred from an absent key is a behaviour change, not a
+    # deletion.
     COMMAND_REGISTRY = {
+      "start"          => System::Runtime::ControlInstance,
+      "stop"           => System::Runtime::ControlInstance,
+      "reboot"         => System::Runtime::ControlInstance,
+      "terminate"      => System::Runtime::ControlInstance,
       "restart"        => System::Runtime::ControlInstance,
       "sync_modules"   => System::Runtime::SyncModules,
       "apply_config"   => System::Runtime::ApplyConfig,

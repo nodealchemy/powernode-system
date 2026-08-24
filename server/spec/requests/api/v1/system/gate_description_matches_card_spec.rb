@@ -47,7 +47,7 @@ RSpec.describe "gate description matches the approval card", type: :request do
 
   it "agrees on the tasks#create surface" do
     post "/api/v1/system/tasks",
-         params: { task: { command: "sync", operable_type: "System::NodeInstance",
+         params: { task: { command: "sync_modules", operable_type: "System::NodeInstance",
                            operable_id: instance.id } }.to_json,
          headers: auth_headers_for(user).merge("Content-Type" => "application/json")
 

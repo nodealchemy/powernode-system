@@ -10,13 +10,17 @@ module System
     #
     # Operation.operable must be a System::NodeInstance.
     class ControlInstance
+      # `deprovision` was mapped here as an alias for terminate and is gone: it
+      # was retired from ExecutionDispatcher::COMMAND_REGISTRY (no producer,
+      # literal or variable, and zero rows in the table's lifetime), and
+      # System::Task now VALIDATES command against COMMANDS — so no task can
+      # carry it and this arm was unreachable.
       ACTION_FOR_COMMAND = {
         "start" => "start",
         "stop" => "stop",
         "restart" => "reboot",
         "reboot" => "reboot",
-        "terminate" => "terminate",
-        "deprovision" => "terminate"
+        "terminate" => "terminate"
       }.freeze
 
       def self.call(operation:)
