@@ -101,20 +101,20 @@ func TestPolicyValidateRejectsInjectionProfile(t *testing.T) {
 // a real manifest plausibly uses must still be accepted, and must still
 // produce exactly the directive it produced before.
 func TestSeccompFilterNameAcceptsLegitimateProfiles(t *testing.T) {
+	// Post-contract (IMP-01a02f7d-fecd): security.seccomp_profile is a bare
+	// systemd predefined syscall-set NAME resolving against the agent-owned
+	// KnownSeccompSets. A '@' alias and a path prefix that reduces to a known
+	// set name are still accepted (the '@'/path reduction can never turn an
+	// invalid value valid); a profile FILE base name no longer is — see
+	// TestSeccompFilterName_FailsClosedOnUnresolvableNames.
 	cases := map[string]string{
-		// systemd predefined syscall sets (systemd.exec(5))
-		"system-service":  "system-service",
-		"@system-service": "system-service",
-		"basic-io":        "basic-io",
-		"@network-io":     "network-io",
-		// profile files shipped inside the module
-		"deny.json":                            "deny.json",
-		"profiles/deny.json":                   "deny.json",
-		"./profiles/deny.json":                 "deny.json",
-		"/mnt/modules/abc123/seccomp/app.json": "app.json",
-		"default_deny":                         "default_deny",
-		"p":                                    "p",
-		"v2.1":                                 "v2.1",
+		"system-service":               "system-service",
+		"@system-service":              "system-service",
+		"basic-io":                     "basic-io",
+		"@network-io":                  "network-io",
+		"/mnt/modules/abc123/basic-io": "basic-io",
+		"default":                      "default",
+		"sandbox":                      "sandbox",
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {
@@ -147,7 +147,7 @@ func TestWriteSeccompDropInAcceptsLegitimateProfile(t *testing.T) {
 // A policy carrying a legitimate profile must still validate clean —
 // Validate is on the attach path, so a false positive here bricks the module.
 func TestPolicyValidateAcceptsLegitimateProfile(t *testing.T) {
-	p := &Policy{SeccompProfile: "profiles/deny.json", UserNamespace: true}
+	p := &Policy{SeccompProfile: "profiles/system-service", UserNamespace: true}
 	if errs := p.Validate(); len(errs) != 0 {
 		t.Fatalf("legitimate policy rejected: %v", errs)
 	}

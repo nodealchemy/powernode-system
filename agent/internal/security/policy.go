@@ -48,8 +48,15 @@ type Policy struct {
 	// enforcement.
 	EgressDeclared bool
 
-	// Privileged opt-in. Defaults to false. Privileged modules MUST be
-	// approved out-of-band by an operator before attach.
+	// Privileged opt-in. Defaults to false. When true, ALL on-node confinement
+	// (MAC/seccomp/capabilities) is skipped for the module. The manifest can
+	// only REQUEST this; the reconciler's apply-side gate (buildPolicy +
+	// privilegedApproved, reconcile.go) honours it ONLY when the module is on
+	// the operator-controlled allowlist delivered out-of-band in
+	// AssignmentMeta.PrivilegedModuleIDs — an admin-gated setting the module
+	// cannot author. An unapproved privileged request is REFUSED at attach
+	// (and services are not enabled on the pivot path), never run unconfined
+	// (IMP-01a02f70-20b1).
 	Privileged bool
 
 	// UserNamespace: map module processes into a user namespace where
@@ -86,9 +93,12 @@ func (p *Policy) Apply(ctx context.Context, runner mount.Runner) error {
 
 	if p.Privileged {
 		// Privileged modules skip MAC profiles + capability drops by design.
-		// The module's manifest must have been operator-approved before
-		// reaching this code. Egress (if declared) still flows through the
-		// node-wide UnionEgressPolicy step like any other module.
+		// Reaching here means the reconciler's privileged-approval gate already
+		// confirmed this module is on the operator-controlled allowlist
+		// (privilegedApproved, reconcile.go / compose.go) — Apply is not itself
+		// the gate, but an unapproved privileged module never reaches it. Egress
+		// (if declared) still flows through the node-wide UnionEgressPolicy step
+		// like any other module.
 		return nil
 	}
 
@@ -189,6 +199,21 @@ func (p *Policy) Validate() []error {
 	if p.SeccompProfile != "" {
 		if _, err := SeccompFilterName(p.SeccompProfile); err != nil {
 			errs = append(errs, err)
+		}
+	}
+	// SELinux/AppArmor profile NAMES are bare agent-owned names resolved by
+	// LoadSELinuxProfile/LoadAppArmorProfile. Validate the grammar HERE too, so
+	// the refusal is loud on BOTH enforcement paths: the cloud_init path reaches
+	// the loaders via Policy.Apply (which re-checks), but the pivot/compose path
+	// calls Validate WITHOUT Apply (it does not load MAC profiles at all — see
+	// buildHeartbeat's PivotConfinementOmitted), so without this a hostile MAC
+	// name would pass Validate unexamined on that path (review finding F3). A
+	// path-bearing or control-char name (the containment concern) is refused
+	// here regardless of whether the host has the LSM.
+	for label, name := range map[string]string{"selinux_profile": p.SELinuxProfile, "apparmor_profile": p.AppArmorProfile} {
+		if name != "" && !profileNamePattern.MatchString(name) {
+			errs = append(errs, fmt.Errorf(
+				"%s %q is not a bare agent-owned profile name (no path, no '..', no whitespace/control)", label, name))
 		}
 	}
 	if p.Privileged && (len(p.Capabilities) > 0 || p.SELinuxProfile != "" || p.AppArmorProfile != "" || p.SeccompProfile != "") {

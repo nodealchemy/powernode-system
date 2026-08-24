@@ -36,6 +36,51 @@ import (
 // and it bounds the directive.
 var seccompProfileNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
+// KnownSeccompSets is the AGENT-OWNED set of seccomp filter names a module
+// may reference. Under the SECURITY-BLOCK CONTRACT
+// (server/app/services/system/module_config_validator.rb) security.seccomp_profile
+// is a bare NAME that resolves against an agent-owned set and fails CLOSED —
+// it is NOT a path, and NOT free text. The only names that yield a
+// SystemCallFilter=@<name> directive systemd actually honours are systemd's
+// own predefined syscall sets, so those ARE the agent-owned set. This mirrors
+// KnownCapabilities (capabilities.go): a name outside the set is refused at
+// validation time, not silently emitted as an inert directive.
+//
+// Sourced from systemd.exec(5) "System Call Filter Groups". Names are stored
+// WITHOUT the leading '@' (the writer emits exactly one).
+var KnownSeccompSets = map[string]struct{}{
+	"aio":            {},
+	"basic-io":       {},
+	"chown":          {},
+	"clock":          {},
+	"cpu-emulation":  {},
+	"debug":          {},
+	"default":        {},
+	"file-system":    {},
+	"io-event":       {},
+	"ipc":            {},
+	"keyring":        {},
+	"known":          {},
+	"memlock":        {},
+	"module":         {},
+	"mount":          {},
+	"network-io":     {},
+	"obsolete":       {},
+	"pkey":           {},
+	"privileged":     {},
+	"process":        {},
+	"raw-io":         {},
+	"reboot":         {},
+	"resources":      {},
+	"sandbox":        {},
+	"setuid":         {},
+	"signal":         {},
+	"swap":           {},
+	"sync":           {},
+	"system-service": {},
+	"timer":          {},
+}
+
 // SeccompFilterName derives the SystemCallFilter set name from a manifest's
 // raw `security.seccomp_profile` value and REFUSES anything that cannot
 // safely appear in a root-owned systemd unit.
@@ -83,6 +128,18 @@ func SeccompFilterName(profile string) (string, error) {
 		return "", fmt.Errorf(
 			"seccomp_profile %q: resolved filter-set name %q is not of the form %s",
 			profile, name, seccompProfileNamePattern)
+	}
+	// Fail CLOSED against the agent-owned set. A grammar-valid name that is not
+	// one of systemd's predefined syscall sets (a profile FILE base name like
+	// "deny.json", or any other free text) would render an inert
+	// SystemCallFilter=@<name> directive systemd does not understand — the
+	// module would run with NO seccomp confinement while appearing configured.
+	// Refusing here makes the field mean exactly one thing: a resolvable set name.
+	if _, ok := KnownSeccompSets[name]; !ok {
+		return "", fmt.Errorf(
+			"seccomp_profile %q: %q does not resolve against the agent-owned seccomp set "+
+				"(security.seccomp_profile is a systemd predefined syscall-set NAME, not a path or file)",
+			profile, name)
 	}
 	return name, nil
 }

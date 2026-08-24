@@ -2,6 +2,8 @@ package security
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"strings"
 	"testing"
 
@@ -186,13 +188,24 @@ func TestApplyEgressAllowlist_AllowsLoopbackAndDNS(t *testing.T) {
 }
 
 func TestApplyEgressAllowlist_PerEntryRules(t *testing.T) {
+	// nft consumes IP literals, not hostnames, so a hostname entry is resolved
+	// in Go first. Inject a deterministic resolver so the test never touches DNS.
+	orig := egressResolveHost
+	egressResolveHost = func(h string) ([]net.IP, error) {
+		if h == "api.example.com" {
+			return []net.IP{net.ParseIP("203.0.113.7")}, nil
+		}
+		return nil, fmt.Errorf("unexpected host %q", h)
+	}
+	t.Cleanup(func() { egressResolveHost = orig })
+
 	rec := &mount.RecorderRunner{}
 	allow := []string{"api.example.com:443", "1.2.3.4"}
 	if err := ApplyEgressAllowlist(context.Background(), rec, allow); err != nil {
 		t.Fatalf("ApplyEgressAllowlist: %v", err)
 	}
-	if !rulesAccept(rec, "api.example.com") {
-		t.Error("expected api.example.com rule")
+	if !rulesAccept(rec, "203.0.113.7") {
+		t.Error("expected resolved api.example.com (203.0.113.7) rule")
 	}
 	if !rulesAccept(rec, "443") {
 		t.Error("expected port 443 rule")
@@ -252,39 +265,45 @@ func TestResolveProtectedHost_IPLiteralPassesThrough(t *testing.T) {
 	}
 }
 
-func TestParseEgressEntry(t *testing.T) {
-	cases := []struct {
-		in       string
-		wantHost string
-		wantPort int
+// parseEgressGrammar is the DNS-free grammar parse (replaces classifyEgressEntry
+// + parseEgressEntry). IP/CIDR entries come back as literals with host=="";
+// hostnames come back as host!="" for the caller to resolve. The load-bearing
+// change is that an out-of-range/non-numeric port, a netmask CIDR, or a zone-id
+// is an ERROR, never folded back into the host operand.
+func TestParseEgressGrammar(t *testing.T) {
+	litCases := []struct {
+		in     string
+		family string
+		addr   string
+		port   int
 	}{
-		{"api.example.com:443", "api.example.com", 443},
-		{"1.2.3.4", "1.2.3.4", 0},
-		{"host.example.com", "host.example.com", 0},
-		{"badport:99999", "badport:99999", 0}, // out-of-range port → treat whole as host
+		{"1.2.3.4", "ip", "1.2.3.4", 0},
+		{"1.2.3.4:443", "ip", "1.2.3.4", 443}, // NOTE: port applies but literal is bare IP
+		{"0.0.0.0/0", "ip", "0.0.0.0/0", 0},
+		{"::/0", "ip6", "::/0", 0},
+		{"2001:db8::1", "ip6", "2001:db8::1", 0},
 	}
-	for _, c := range cases {
-		host, port := parseEgressEntry(c.in)
-		if host != c.wantHost || port != c.wantPort {
-			t.Errorf("parseEgressEntry(%q) = (%q, %d); want (%q, %d)",
-				c.in, host, port, c.wantHost, c.wantPort)
+	for _, c := range litCases {
+		host, port, literals, err := parseEgressGrammar(c.in)
+		if err != nil {
+			t.Errorf("parseEgressGrammar(%q) errored: %v", c.in, err)
+			continue
+		}
+		if host != "" {
+			t.Errorf("parseEgressGrammar(%q) returned host=%q; want a literal", c.in, host)
+			continue
+		}
+		if len(literals) != 1 || literals[0].family != c.family || literals[0].addr != c.addr || port != c.port {
+			t.Errorf("parseEgressGrammar(%q) = %+v port=%d; want {%s %s} port=%d", c.in, literals, port, c.family, c.addr, c.port)
 		}
 	}
-}
-
-func TestResolveProfileInModule(t *testing.T) {
-	cases := []struct {
-		mod, rel, want string
-	}{
-		{"/run/powernode/modules/abc", "policy.te", "/run/powernode/modules/abc/policy.te"},
-		{"/mod", "./profile.json", "/mod/profile.json"},
-		{"/mod", "/abs/profile", "/abs/profile"},
-		{"/mod", "", ""},
+	// A hostname parses (no DNS here) and comes back for the caller to resolve.
+	if host, port, lits, err := parseEgressGrammar("api.example.com:443"); err != nil || host != "api.example.com" || port != 443 || lits != nil {
+		t.Errorf(`parseEgressGrammar("api.example.com:443") = (%q,%d,%v,%v); want ("api.example.com",443,nil,nil)`, host, port, lits, err)
 	}
-	for _, c := range cases {
-		got := ResolveProfileInModule(c.mod, c.rel)
-		if got != c.want {
-			t.Errorf("ResolveProfileInModule(%q, %q) = %q; want %q", c.mod, c.rel, got, c.want)
+	for _, bad := range []string{"badport:99999", "host.example.com:abc", "10.0.0.0/255.0.0.0", "fe80::1%eth0"} {
+		if _, _, _, err := parseEgressGrammar(bad); err == nil {
+			t.Errorf("parseEgressGrammar(%q) accepted a contract-invalid entry", bad)
 		}
 	}
 }

@@ -39,6 +39,21 @@ import (
 //
 // Caller must invoke systemctl daemon-reload after writing drop-ins.
 func WriteUserNamespaceDropIn(unit string, enabled bool) error {
+	return writeUserNamespaceDropInAt(systemdDropInRoot, unit, enabled)
+}
+
+// WriteUserNamespaceDropInAt is the explicit-root form for the pivot/compose
+// path — the PrivateUsers= drop-in lands in the union at `root` (= sysroot),
+// read by systemd-in-the-union after switch_root. Mirrors
+// WriteAmbientCapabilityDropInAt / WriteSeccompDropInAt. Without this the
+// documented user_namespace default (true) was silently unenforced on the
+// pivot boot path (IMP-01a02f70-9bfb).
+func WriteUserNamespaceDropInAt(root, unit string, enabled bool) error {
+	base := filepath.Join(root, "etc", "systemd", "system")
+	return writeUserNamespaceDropInAt(base, unit, enabled)
+}
+
+func writeUserNamespaceDropInAt(base, unit string, enabled bool) error {
 	if unit == "" {
 		return errors.New("WriteUserNamespaceDropIn: empty unit")
 	}
@@ -54,7 +69,7 @@ func WriteUserNamespaceDropIn(unit string, enabled bool) error {
 		value = "yes"
 	}
 
-	dropInDir := filepath.Join(systemdDropInRoot, unit+".d")
+	dropInDir := filepath.Join(base, unit+".d")
 	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
 		return fmt.Errorf("WriteUserNamespaceDropIn: mkdir %s: %w", dropInDir, err)
 	}

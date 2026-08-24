@@ -84,19 +84,19 @@ func TestWriteSeccompDropInRejectsUnusableProfilePaths(t *testing.T) {
 func TestWriteSeccompDropInOverwrites(t *testing.T) {
 	withTempSystemdRoot(t)
 
-	if err := WriteSeccompDropIn("sshd.service", "/etc/seccomp/old-profile.json"); err != nil {
+	if err := WriteSeccompDropIn("sshd.service", "/etc/seccomp/basic-io"); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
-	if err := WriteSeccompDropIn("sshd.service", "/etc/seccomp/new-profile.json"); err != nil {
+	if err := WriteSeccompDropIn("sshd.service", "/etc/seccomp/system-service"); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 
 	dropIn := filepath.Join(systemdDropInRoot, "sshd.service.d", "seccomp.conf")
 	got, _ := os.ReadFile(dropIn)
-	if !strings.Contains(string(got), "@new-profile.json") {
+	if !strings.Contains(string(got), "@system-service") {
 		t.Errorf("overwrite failed: %q", got)
 	}
-	if strings.Contains(string(got), "@old-profile.json") {
+	if strings.Contains(string(got), "@basic-io") {
 		t.Errorf("old content remained: %q", got)
 	}
 }
@@ -110,7 +110,7 @@ func TestWriteSeccompDropInCreatesParentDir(t *testing.T) {
 		t.Fatalf("parent dir already exists: %v", err)
 	}
 
-	if err := WriteSeccompDropIn("fresh.service", "/path/p.json"); err != nil {
+	if err := WriteSeccompDropIn("fresh.service", "/path/network-io"); err != nil {
 		t.Fatalf("WriteSeccompDropIn: %v", err)
 	}
 	if _, err := os.Stat(expectedDir); err != nil {
