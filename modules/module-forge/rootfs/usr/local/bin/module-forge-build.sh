@@ -410,24 +410,20 @@ bind_mount /etc/resolv.conf "$BUILDENV/etc/resolv.conf"
 # Overridable: set BUILD_SKIP_UNCHANGED=0 to force a rebuild of everything.
 # Reaches build-one-module.sh via process-environment inheritance through the
 # chroot below, the same way PARENT_PAT does.
-# DEFAULT OFF ON THE NATIVE PATH — deliberately, and not because the skip is
-# broken. The skip itself works end-to-end here (measured 2026-08-24: gh logged
-# "[skip-check] gh inputs unchanged (6a2e2df5…)"), but its SUCCESS PATH is
-# unimplemented for this orchestrator. build-one-module.sh answers a skip by
-# printing "(re-tag the existing digest; nothing rebuilt)" and exiting 0 without
-# producing /tmp/<module>.erofs — and nothing re-tags. This script then hits its
-# own `[ -s "$BUILDENV/tmp/$MODULE.erofs" ] || die` guard and the build FAILS.
+# DEFAULT ON. The skip's success path now exists on this path too: a skip
+# writes /tmp/<module>.skipped, and the re-tag arm below publishes the ALREADY
+# PUBLISHED artifact under this build's tag instead of rebuilding it. Enabling
+# it before that arm existed turned a correct skip into a failed build, which is
+# why it shipped off for one commit.
 #
-# So enabling it here converts "rebuilt something it needn't have" into "failed
-# outright", which is strictly worse. The Gitea Actions path re-tags in its own
-# workflow; the native path has no equivalent arm yet.
+# Safe to default ON because the unsafe modules opt THEMSELVES out: anything
+# reading content outside modules/<slug>/ refuses to skip unless its real inputs
+# are declared (see should-skip-build.sh's NEEDS_DECLARED_INPUTS), and the four
+# parent-packaging modules fold the core ref into their hash so a new core sha
+# rebuilds them.
 #
-# TO FINISH IT: on a skip, resolve the published artifact's digest and
-# fsverity root (oras manifest fetch <registry>/<owner>/<module>:latest), tag
-# that digest as $OCI_REF, and write the same erofs_ref/digest output push.sh
-# would have written, so the server-side finalize signs and publishes the
-# EXISTING artifact under the new tag. Until that exists, leave this off.
-export BUILD_SKIP_UNCHANGED="${BUILD_SKIP_UNCHANGED:-0}"
+# Set BUILD_SKIP_UNCHANGED=0 to force a full rebuild of everything.
+export BUILD_SKIP_UNCHANGED="${BUILD_SKIP_UNCHANGED:-1}"
 log "content-addressed skip: BUILD_SKIP_UNCHANGED=${BUILD_SKIP_UNCHANGED}"
 
 # --- 4. run build-one-module.sh inside the chroot. HOME=/root is set
@@ -477,7 +473,33 @@ fi
 # b269a441). It is cleared once, after the push, where it always was.
 unset ORAS_REGISTRY_USERNAME APT_REGISTRY
 
-[ -s "$BUILDENV/tmp/$MODULE.erofs" ] || die "build-one-module.sh reported success but /tmp/$MODULE.erofs is missing/empty inside the chroot"
+# --- 4b. skip arm: the build decided this module's inputs are unchanged. -----
+# build-one-module.sh writes /tmp/<module>.skipped and exits 0 WITHOUT an erofs.
+# Everything below (push, digest resolve, .erofs.meta read) assumes a freshly
+# built artifact, so without this arm the guard immediately after fires and a
+# correct skip FAILS the build — which is why the skip had to ship default-off.
+#
+# The answer is to publish the artifact that is ALREADY there under this build's
+# tag: byte-identical content, so the fleet converges on exactly what a rebuild
+# would have produced. Every value the RESULT JSON needs is read back from that
+# published artifact rather than recomputed, because there is nothing local to
+# recompute it from.
+module_needs_parent_slug() {
+  case "${1:-}" in
+    powernode-hub-backend|powernode-hub-worker|powernode-hub-frontend|powernode-extension-system) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+SKIP_RETAG=0
+if [ -f "$BUILDENV/tmp/$MODULE.skipped" ]; then
+  SKIP_RETAG=1
+  log "skip: ${MODULE} inputs unchanged — re-tagging the published artifact as ${OCI_REF}"
+fi
+
+if [ "$SKIP_RETAG" = "0" ]; then
+  [ -s "$BUILDENV/tmp/$MODULE.erofs" ] || die "build-one-module.sh reported success but /tmp/$MODULE.erofs is missing/empty inside the chroot"
+fi
 
 # --- 5. push (UNSIGNED — no cosign; signing moves server-side in inc8) +
 # resolve the pushed digest, in the SAME chroot invocation (oras's login
@@ -486,6 +508,60 @@ unset ORAS_REGISTRY_USERNAME APT_REGISTRY
 # name (this contract's ORAS_REGISTRY_USER is translated here) — both stay
 # out of the command line, inherited via process environment exactly like
 # PARENT_PAT above. ---------------------------------------------------------
+if [ "$SKIP_RETAG" = "1" ]; then
+  # Re-tag arm. Alias the published digest under this build's tag and read every
+  # RESULT-JSON value back off that artifact. Nothing is uploaded: `oras tag`
+  # aliases, so this costs one manifest write instead of a full rebuild.
+  #
+  # The meta layer is fetched by BLOB, never `oras pull` — pull would also drag
+  # down the erofs, which is the very work the skip exists to avoid and can be
+  # hundreds of MB.
+  RETAG_OUT="$BUILDENV/tmp/module-forge-retag-output.env"
+  rm -f "$RETAG_OUT"
+  export ORAS_REGISTRY_USERNAME="$ORAS_REGISTRY_USER"
+  export ORAS_REGISTRY_PASSWORD
+  if ! chroot "$BUILDENV" /bin/bash -c "
+    export HOME=/root
+    set -e
+    bash /opt/module-build/oras-login.sh '$ORAS_REGISTRY' >&2
+    src='$ORAS_REGISTRY/powernode/$MODULE:latest'
+    oras tag \"\$src\" '$OCI_REF' >&2
+    newref='$ORAS_REGISTRY/powernode/$MODULE:$OCI_REF'
+    man=\$(oras manifest fetch \"\$newref\")
+    dig=\$(oras manifest fetch --descriptor \"\$newref\" | jq -r '.digest')
+    metadig=\$(printf '%s' \"\$man\" | jq -r '.layers[] | select(.mediaType==\"application/vnd.powernode.module.meta\") | .digest' | head -n1)
+    [ -n \"\$metadig\" ] && [ \"\$metadig\" != null ] || { echo 'no module.meta layer on published artifact' >&2; exit 1; }
+    meta=\$(oras blob fetch --output - \"$ORAS_REGISTRY/powernode/$MODULE@\$metadig\")
+    {
+      echo \"erofs_ref=\$newref\"
+      echo \"oci_digest=\$dig\"
+      printf '%s\\n' \"\$meta\" | sed -n 's/^fsverity_root=/fsverity_root=/p'
+      printf '%s\\n' \"\$meta\" | sed -n 's/^size=/size=/p'
+      printf '%s' \"\$man\" | jq -r '.annotations.\"org.powernode.core_source_sha\" // empty | \"core_source_sha=\" + .'
+      printf '%s' \"\$man\" | jq -r '.annotations.\"org.powernode.core_source_remote\" // empty | \"core_source_remote=\" + .'
+    } > /tmp/module-forge-retag-output.env
+  " >&2; then
+    unset ORAS_REGISTRY_USERNAME ORAS_REGISTRY_PASSWORD
+    die "re-tag failed for ${MODULE}@${BUILD_SHA} (skip path)"
+  fi
+  unset ORAS_REGISTRY_USERNAME ORAS_REGISTRY_PASSWORD
+
+  [ -s "$RETAG_OUT" ] || die "re-tag reported success but wrote no output at $RETAG_OUT"
+  EROFS_REF=$(sed -n 's/^erofs_ref=//p'      "$RETAG_OUT" | head -n1)
+  OCI_DIGEST=$(sed -n 's/^oci_digest=//p'    "$RETAG_OUT" | head -n1)
+  FSVERITY_ROOT=$(sed -n 's/^fsverity_root=//p' "$RETAG_OUT" | head -n1)
+  SIZE=$(sed -n 's/^size=//p'                "$RETAG_OUT" | head -n1)
+  RETAG_CORE_SHA=$(sed -n 's/^core_source_sha=//p'    "$RETAG_OUT" | head -n1)
+  RETAG_CORE_REMOTE=$(sed -n 's/^core_source_remote=//p' "$RETAG_OUT" | head -n1)
+  # Fail loudly on any missing field. A skip that publishes a version with a
+  # null digest or fsverity root is worse than a rebuild: the agent cannot mount
+  # it, and the failure surfaces on the fleet rather than here.
+  [ -n "$EROFS_REF" ]     || die "re-tag output has no erofs_ref"
+  [ -n "$OCI_DIGEST" ]    || die "re-tag output has no oci_digest"
+  [ -n "$FSVERITY_ROOT" ] || die "re-tag output has no fsverity_root (published artifact's meta layer is incomplete)"
+  [ -n "$SIZE" ]          || die "re-tag output has no size"
+  log "skip: re-tagged ${OCI_DIGEST} as ${OCI_REF} (nothing rebuilt)"
+else
 log "pushing ${MODULE}:${OCI_REF} to ${ORAS_REGISTRY} (unsigned)…"
 export ORAS_REGISTRY_USERNAME="$ORAS_REGISTRY_USER"
 export ORAS_REGISTRY_PASSWORD
@@ -529,6 +605,7 @@ FSVERITY_ROOT=$(sed -n 's/^fsverity_root=//p' "$META_FILE" | head -n1)
 SIZE=$(sed -n 's/^size=//p' "$META_FILE" | head -n1)
 [ -n "$FSVERITY_ROOT" ] || die "$META_FILE has no fsverity_root= line"
 [ -n "$SIZE" ] || die "$META_FILE has no size= line"
+fi
 
 # --- BEGIN core-source provenance read ---
 # Core-tree provenance (IMP-b2aebb9f4b17). Read stage15.sh's capture off the
@@ -562,7 +639,24 @@ SIZE=$(sed -n 's/^size=//p' "$META_FILE" | head -n1)
 PARENT_PROV_FILE="$BUILDENV/tmp/parent-provenance.env"
 CORE_SOURCE_SHA="not_applicable"
 CORE_SOURCE_REMOTE="not_applicable"
-if [ -s "$PARENT_PROV_FILE" ]; then
+if [ "$SKIP_RETAG" = "1" ]; then
+  # A skip clones no parent, so PARENT_PROV_FILE is absent and the file-absent
+  # branch would report `not_applicable` — for a Class-B module that is a FALSE
+  # record, and precisely the self-contradictory state the comment above warns
+  # must stay unreachable. The re-tagged artifact IS the previous build, so its
+  # provenance is the correct answer: carry the annotations forward verbatim.
+  #
+  # `unknown` when the published artifact carries no such annotation: it was
+  # built before core provenance existed, which is unattributable, not
+  # not-applicable. Only a module that genuinely clones no parent reaches
+  # not_applicable, and it reaches it the same way it always did — via the
+  # annotation simply being empty for a non-Class-B module, which the retag
+  # arm records as empty and we map below.
+  if module_needs_parent_slug "$MODULE"; then
+    CORE_SOURCE_SHA="${RETAG_CORE_SHA:-unknown}"
+    CORE_SOURCE_REMOTE="${RETAG_CORE_REMOTE:-unknown}"
+  fi
+elif [ -s "$PARENT_PROV_FILE" ]; then
   CORE_SOURCE_SHA=$(sed -n 's/^core_source_sha=//p' "$PARENT_PROV_FILE" | head -n1)
   CORE_SOURCE_REMOTE=$(sed -n 's/^core_source_remote=//p' "$PARENT_PROV_FILE" | head -n1)
   [ -n "$CORE_SOURCE_SHA" ]    || CORE_SOURCE_SHA="unknown"

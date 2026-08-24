@@ -280,6 +280,49 @@ else
 fi
 
 echo
+echo "native skip re-tag arm"
+
+MFB="$SCRIPT_DIR/../modules/module-forge/rootfs/usr/local/bin/module-forge-build.sh"
+BOM2="$SCRIPT_DIR/module-build/build-one-module.sh"
+
+# The skip must be DECIDED, not inferred from a missing artifact: a build that
+# failed while exiting 0 also leaves no erofs, and re-tagging then republishes a
+# stale artifact as if it were this commit's.
+if grep -q 'MODULE.skipped' "$BOM2"; then
+  pass "skip writes an explicit marker"
+else
+  fail "skip writes an explicit marker"
+fi
+
+# The erofs guard must not fire on a skip — that is exactly what made a correct
+# skip fail the build.
+if grep -qE 'if \[ "\$SKIP_RETAG" = "0" \]; then' "$MFB"; then
+  pass "erofs guard is conditional on not-skipping"
+else
+  fail "erofs guard is conditional on not-skipping"
+fi
+
+# Every RESULT-JSON field must be re-derived on the skip path; a null digest or
+# fsverity root publishes a version the agent cannot mount.
+missing=""
+for f in erofs_ref oci_digest fsverity_root size; do
+  grep -q "re-tag output has no $f" "$MFB" || missing="$missing $f"
+done
+if [ -z "$missing" ]; then
+  pass "re-tag arm fails loudly on any missing RESULT field"
+else
+  fail "re-tag arm fails loudly on any missing RESULT field (unchecked:$missing)"
+fi
+
+# A Class-B module that skips must NOT report not_applicable core provenance —
+# that is the self-contradictory record module-forge-build.sh warns about.
+if grep -q 'module_needs_parent_slug' "$MFB"; then
+  pass "skip carries core provenance forward for parent-packaging modules"
+else
+  fail "skip carries core provenance forward for parent-packaging modules"
+fi
+
+echo
 if [ "$failures" -eq 0 ]; then
   echo "ALL PASS"
 else

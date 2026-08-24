@@ -209,6 +209,13 @@ if [ "${BUILD_SKIP_UNCHANGED:-0}" = "1" ]; then
   if bash "$SCRIPT_DIR/should-skip-build.sh" "${skip_args[@]}"; then
     echo "[build-one-module] SKIPPED $MODULE — declared inputs match the published artifact"
     echo "[build-one-module] (re-tag the existing digest; nothing rebuilt)"
+    # EXPLICIT marker rather than leaving the caller to infer a skip from a
+    # missing /tmp/<module>.erofs. Those two states are not the same thing: a
+    # missing artifact is also what a build that failed while still exiting 0
+    # would leave behind, and treating that as "skip, re-tag the old digest"
+    # would republish a stale artifact as if it were this commit's. The marker
+    # says the skip was DECIDED, not merely that no artifact appeared.
+    : > "/tmp/$MODULE.skipped"
     exit 0
   fi
 fi
