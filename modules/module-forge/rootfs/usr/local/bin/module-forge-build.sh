@@ -449,10 +449,16 @@ if ! chroot "$BUILDENV" /bin/bash -c "
     --module '$MODULE' --sha '$BUILD_SHA' --workspace /mnt/workspace \
     --arch '$ARCH' --parent-host '$PARENT_HOST' --parent-path '$PARENT_PATH'
 " >&2; then
-  unset ORAS_REGISTRY_USERNAME ORAS_REGISTRY_PASSWORD APT_REGISTRY
+  unset ORAS_REGISTRY_USERNAME APT_REGISTRY
   die "build-one-module.sh failed inside chroot for ${MODULE}@${BUILD_SHA}"
 fi
-unset ORAS_REGISTRY_USERNAME ORAS_REGISTRY_PASSWORD APT_REGISTRY
+# NOT ORAS_REGISTRY_PASSWORD: the push block below re-exports it with a BARE
+# `export ORAS_REGISTRY_PASSWORD`, which re-exports the SHELL VARIABLE this
+# script received. `unset` destroys that variable, not just its export flag, so
+# clearing it here left push.sh with an empty password and every build died at
+# `oras login` with "Password: Error: password required" (measured: gh @
+# b269a441). It is cleared once, after the push, where it always was.
+unset ORAS_REGISTRY_USERNAME APT_REGISTRY
 
 [ -s "$BUILDENV/tmp/$MODULE.erofs" ] || die "build-one-module.sh reported success but /tmp/$MODULE.erofs is missing/empty inside the chroot"
 
