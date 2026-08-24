@@ -15,6 +15,22 @@ module Api
         class BaseController < ApplicationController
           include Paginatable
 
+          # Raised by #authorize_worker_permission! so a denial UNWINDS the
+          # action instead of merely rendering into it. See that method for the
+          # measured bypass this exists to close.
+          class WorkerPermissionDenied < StandardError
+            attr_reader :permission
+
+            def initialize(permission)
+              @permission = permission
+              super("Permission denied: #{permission}")
+            end
+          end
+
+          rescue_from WorkerPermissionDenied do |e|
+            render_forbidden(e.message)
+          end
+
           skip_before_action :authenticate_request
           before_action :authenticate_worker!
 
@@ -35,11 +51,34 @@ module Api
             @current_worker.touch(:last_seen_at)
           end
 
-          # Check worker has specific permission
+          # Check worker has specific permission.
+          #
+          # RAISES rather than renders, and that is the whole point.
+          #
+          # This previously called `render_forbidden` and returned. Every one of
+          # the 62 call sites invokes it from inside an ACTION BODY, not as a
+          # before_action — and `render` in an action body does NOT halt the
+          # method. So a denied worker got a 403 response while the rest of the
+          # action RAN TO COMPLETION: the write landed, and the second `render`
+          # raised DoubleRenderError only after the damage was done, too late to
+          # affect the already-committed 403.
+          #
+          # Measured, not theorised (2026-08-24): a Worker stubbed to hold NO
+          # permissions POSTed worker_api/tasks/:id/fail and got
+          #   STATUS=403  TASK_STATUS=failed  ERR="unauthorized write"
+          # — the task was transitioned and an attacker-supplied error_message
+          # persisted, while the response claimed the request was forbidden. The
+          # 403 made the seam look guarded in every log and every spec that
+          # asserted only on status.
+          #
+          # Raising fixes all 62 sites at once with no signature change, because
+          # no caller reads the return value (verified by grep) — they all call
+          # it for effect and then proceed on the assumption that a denial
+          # stopped them. That assumption is now true.
           def authorize_worker_permission!(permission_name)
-            unless current_worker.has_permission?(permission_name)
-              render_forbidden("Permission denied: #{permission_name}")
-            end
+            return if current_worker.has_permission?(permission_name)
+
+            raise WorkerPermissionDenied, permission_name
           end
 
           # Get account from worker or params
