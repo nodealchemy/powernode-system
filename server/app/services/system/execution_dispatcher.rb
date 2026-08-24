@@ -15,24 +15,38 @@ module System
     # Frozen registry of command → runtime service class.
     # The registry is the single source of truth for "what does each command do."
     # Adding a new command requires adding the runtime class AND registering it here.
+    # WHAT WAS REMOVED, AND WHY (dispatch-spine decision step 3, knowledge
+    # 01a031f2). This registry carried thirteen verbs that had NEVER executed
+    # once: provision, deprovision, start, stop, reboot, terminate,
+    # associate_public_ip, disassociate_public_ip, attach_volume,
+    # detach_volume, build_module, commit_module, sync.
+    #
+    # Measured against the whole task table, not a recent window: 476 System::Task
+    # rows have ever existed, across exactly SIX distinct commands —
+    # apply_config 263, sync_modules 100, ci.module_build 65,
+    # upgrade_boot_image 26, restart 18, ssh_command 4. Every deleted verb has a
+    # lifetime count of ZERO, and no code path anywhere creates one (the sole
+    # grep hit, instance_control_service.rb's `command: "reboot"`, is an SSH
+    # command STRING passed to SshExecutionService, not a Task command).
+    #
+    # The provider plane these verbs nominally owned is really performed by
+    # MCP tool -> System::ProvisioningService / InstanceControlService, calling
+    # the provider adapters directly, with no Task involved. Deleting them
+    # removes no capability; it removes a second, unreachable way to do what
+    # already works. They are DELETED rather than left inert because an
+    # unreachable branch that looks reachable is what produced the whole
+    # dispatch-spine investigation in the first place.
+    #
+    # `restart` is deliberately KEPT despite its server-side arm also never
+    # having fired (all 18 restart rows carry options["unit"] and route to the
+    # agent). Its unit-vs-VM split is step 2 of that decision — the fix there is
+    # to make the choice DECLARED rather than inferred from an absent key, which
+    # is a behaviour change, not a deletion.
     COMMAND_REGISTRY = {
-      "provision"      => System::Runtime::ProvisionInstance,
-      "deprovision"    => System::Runtime::ControlInstance, # alias for terminate
-      "start"          => System::Runtime::ControlInstance,
-      "stop"           => System::Runtime::ControlInstance,
       "restart"        => System::Runtime::ControlInstance,
-      "reboot"         => System::Runtime::ControlInstance,
-      "terminate"      => System::Runtime::ControlInstance,
-      "associate_public_ip"    => System::Runtime::ManagePublicIp,
-      "disassociate_public_ip" => System::Runtime::ManagePublicIp,
       "sync_modules"   => System::Runtime::SyncModules,
       "apply_config"   => System::Runtime::ApplyConfig,
-      "build_module"   => System::Runtime::BuildModule,
-      "commit_module"  => System::Runtime::CommitModule,
-      "attach_volume"  => System::Runtime::AttachVolume,
-      "detach_volume"  => System::Runtime::DetachVolume,
-      "ssh_command"    => System::Runtime::ExecuteSshCommand,
-      "sync"           => System::Runtime::SyncCloudState
+      "ssh_command"    => System::Runtime::ExecuteSshCommand
     }.freeze
 
     # Commands executed ON THE NODE by the powernode-agent, which polls

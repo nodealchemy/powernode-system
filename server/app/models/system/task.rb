@@ -7,13 +7,25 @@ module System
 
     # === Constants ===
     STATUSES = %w[pending scheduled running complete failed aborted cancelled].freeze
-    # ci.module_build (campaign 019f5885 inc7) is DISTINCT from the legacy
-    # build_module/commit_module pair above: those are the server-side
-    # Gitea-Actions-dispatch path (System::Runtime::BuildModule /
-    # ::CommitModule in COMMAND_REGISTRY). ci.module_build is executed BY
-    # THE AGENT on a leased module-forge builder — see
+    # WARNING: this list is NOT a validation. `command` is validated for
+    # presence only, so a Task can be created carrying any string here or not.
+    # Treat it as documentation of intent, not a gate.
+    #
+    # It is also WIDER than what the platform can execute. Most entries below
+    # (volumes, snapshots, networks, backup/restore, the provider verbs) have no
+    # dispatcher and no producer: ExecutionDispatcher::COMMAND_REGISTRY was
+    # trimmed to the four commands with a live production record after the
+    # dispatch-spine decision retired thirteen zero-caller verbs, and this list
+    # was deliberately left alone in that change rather than quietly narrowed
+    # alongside it. Narrowing it is its own decision about what the model should
+    # advertise, and it needs its own evidence.
+    #
+    # ci.module_build (campaign 019f5885 inc7) is executed BY THE AGENT on a
+    # leased module-forge builder — see
     # ExecutionDispatcher::AGENT_DELEGATED_COMMANDS and the agent's
-    # tasks/handlers/module_build.go.
+    # tasks/handlers/module_build.go. The legacy build_module/commit_module
+    # pair it is often confused with was the server-side Gitea-Actions-dispatch
+    # path; both were retired in that same step, having never run.
     COMMANDS = %w[
       start stop restart terminate reboot
       provision deprovision
@@ -41,9 +53,10 @@ module System
     #
     # The enumeration is the UNION of two sources, and neither alone is
     # complete: the models declaring the inverse `has_many :tasks, as: :operable`,
-    # plus the types the runtime dispatchers actually accept —
-    # System::Runtime::SyncCloudState:28 handles a ProviderRegion, which declares
-    # no inverse at all. Adding a type here without the corresponding dispatch
+    # plus the types the runtime dispatchers historically accepted —
+    # the retired System::Runtime::SyncCloudState handled a ProviderRegion,
+    # which declares no inverse at all, and that is why the type is listed here
+    # with no corresponding association. Adding a type here without a dispatch
     # arm buys nothing; adding a dispatch arm without listing it here fails
     # closed at validation.
     OPERABLE_TYPES = %w[

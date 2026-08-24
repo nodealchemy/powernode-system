@@ -60,7 +60,7 @@ RSpec.describe System::ExecutionDispatcher do
 
     context 'when the operation cannot be claimed (already running)' do
       let(:operation) do
-        op = create(:system_task, :running, account: account, operable: instance, command: 'start')
+        op = create(:system_task, :running, account: account, operable: instance, command: 'sync_modules')
         # Force into a state Operation#start! cannot transition out of.
         op.update!(status: 'complete')
         op
@@ -77,10 +77,10 @@ RSpec.describe System::ExecutionDispatcher do
     end
 
     context 'when the runtime service raises' do
-      let(:operation) { create(:system_task, account: account, operable: instance, command: 'start') }
+      let(:operation) { create(:system_task, account: account, operable: instance, command: 'sync_modules') }
 
       before do
-        allow(System::Runtime::ControlInstance).to receive(:call).and_raise(StandardError, 'boom')
+        allow(System::Runtime::SyncModules).to receive(:call).and_raise(StandardError, 'boom')
       end
 
       it 'fails the operation and returns 500' do
@@ -95,10 +95,10 @@ RSpec.describe System::ExecutionDispatcher do
     end
 
     context 'when the runtime service returns success' do
-      let(:operation) { create(:system_task, account: account, operable: instance, command: 'start') }
+      let(:operation) { create(:system_task, account: account, operable: instance, command: 'sync_modules') }
 
       before do
-        allow(System::Runtime::ControlInstance).to receive(:call) do
+        allow(System::Runtime::SyncModules).to receive(:call) do
           System::Runtime::Result.ok(data: { status: 'running' })
         end
       end
@@ -115,10 +115,10 @@ RSpec.describe System::ExecutionDispatcher do
     end
 
     context 'when the runtime service returns error' do
-      let(:operation) { create(:system_task, account: account, operable: instance, command: 'start') }
+      let(:operation) { create(:system_task, account: account, operable: instance, command: 'sync_modules') }
 
       before do
-        allow(System::Runtime::ControlInstance).to receive(:call) do
+        allow(System::Runtime::SyncModules).to receive(:call) do
           System::Runtime::Result.err(error: 'cloud refused')
         end
       end
@@ -149,9 +149,42 @@ RSpec.describe System::ExecutionDispatcher do
       expect(registered - operation_commands).to be_empty
     end
 
-    it 'maps the IP management commands to ManagePublicIp runtime' do
-      expect(described_class::COMMAND_REGISTRY['associate_public_ip']).to eq(System::Runtime::ManagePublicIp)
-      expect(described_class::COMMAND_REGISTRY['disassociate_public_ip']).to eq(System::Runtime::ManagePublicIp)
+    # Dispatch-spine decision step 3 (knowledge 01a031f2). These thirteen verbs
+    # had never executed once in the platform's history: 476 System::Task rows
+    # have ever existed, across exactly six commands, and none of them is here.
+    # The provider plane they nominally owned runs through
+    # MCP -> ProvisioningService / InstanceControlService with no Task at all.
+    #
+    # Pinned as ABSENT rather than simply deleted, because "we removed it" is
+    # not a property any test holds — someone restoring a verb "for symmetry"
+    # would reintroduce an unreachable branch that LOOKS reachable, which is the
+    # exact shape that produced the dispatch-spine investigation. Re-adding one
+    # must fail here and be argued for.
+    RETIRED_VERBS = %w[
+      provision deprovision start stop reboot terminate
+      associate_public_ip disassociate_public_ip
+      attach_volume detach_volume
+      build_module commit_module
+      sync
+    ].freeze
+
+    it 'no longer registers any of the retired zero-caller provider verbs' do
+      expect(described_class::COMMAND_REGISTRY.keys & RETIRED_VERBS).to be_empty
+    end
+
+    it 'rejects a retired verb at dispatch rather than silently accepting it' do
+      RETIRED_VERBS.each do |verb|
+        expect(described_class::COMMAND_REGISTRY[verb]).to be_nil
+        expect(described_class.agent_delegated?(verb, {})).to be(false),
+          "#{verb} is neither dispatchable nor agent-delegated, so it must be unroutable"
+      end
+    end
+
+    # What survives is exactly the set with a live production record, plus
+    # restart (kept for step 2, whose unit-vs-VM split is a behaviour change).
+    it 'registers only commands that are actually dispatched server-side' do
+      expect(described_class::COMMAND_REGISTRY.keys)
+        .to contain_exactly('restart', 'sync_modules', 'apply_config', 'ssh_command')
     end
   end
 
