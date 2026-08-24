@@ -424,6 +424,24 @@ log "content-addressed skip: BUILD_SKIP_UNCHANGED=${BUILD_SKIP_UNCHANGED}"
 # see the file header: this script's real stdout is reserved for the final
 # RESULT JSON alone. --------------------------------------------------------
 log "building ${MODULE}@${BUILD_SHA} inside ${BUILDENV} chroot…"
+# Registry credentials are needed by the BUILD chroot too, not only the push
+# one below. build-one-module.sh's content-addressed skip reads the published
+# artifact's annotation with `oras manifest fetch` BEFORE any build work, and
+# that read is against the same private registry the push authenticates to.
+# Without these the fetch 401s and should-skip-build.sh maps it to its
+# catch-all "no published manifest -> BUILD" — which is why the skip never
+# fired for any module (measured 2026-08-24). Same names, same
+# process-environment channel, same bounded window as the push chroot: exported
+# immediately before, unset immediately after, never on a command line.
+#
+# APT_REGISTRY is the host should-skip-build.sh resolves; pinning it to
+# $ORAS_REGISTRY keeps the host it QUERIES identical to the host we
+# authenticate against and the host push.sh writes to. Left to its default it
+# could query a different registry than the artifact was published to and read
+# "no published manifest" for a module that has one.
+export ORAS_REGISTRY_USERNAME="$ORAS_REGISTRY_USER"
+export ORAS_REGISTRY_PASSWORD
+export APT_REGISTRY="$ORAS_REGISTRY"
 if ! chroot "$BUILDENV" /bin/bash -c "
   export HOME=/root
   cd /mnt/workspace
@@ -431,8 +449,10 @@ if ! chroot "$BUILDENV" /bin/bash -c "
     --module '$MODULE' --sha '$BUILD_SHA' --workspace /mnt/workspace \
     --arch '$ARCH' --parent-host '$PARENT_HOST' --parent-path '$PARENT_PATH'
 " >&2; then
+  unset ORAS_REGISTRY_USERNAME ORAS_REGISTRY_PASSWORD APT_REGISTRY
   die "build-one-module.sh failed inside chroot for ${MODULE}@${BUILD_SHA}"
 fi
+unset ORAS_REGISTRY_USERNAME ORAS_REGISTRY_PASSWORD APT_REGISTRY
 
 [ -s "$BUILDENV/tmp/$MODULE.erofs" ] || die "build-one-module.sh reported success but /tmp/$MODULE.erofs is missing/empty inside the chroot"
 
