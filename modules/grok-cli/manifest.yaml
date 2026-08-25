@@ -1,0 +1,239 @@
+schema_version: 1
+
+name: grok-cli
+display_name: "Grok Build CLI (xAI)"
+description: >
+  Ships xAI's official Grok Build coding agent (@xai-official/grok) as the
+  `grok` command at /usr/bin/grok, plus a root oneshot that stages the
+  instance's xAI API key from the platform's Vault-backed node_api over mTLS
+  at boot. The CLI is an npm package with no apt equivalent, so it is
+  npm-installed into this module's rootfs at CI build time from a manifest-
+  pinned version (see the grok-cli case in scripts/module-build/stage15.sh
+  Stage 1.5) — the same cross-install pattern as claude-tmux's Claude Code
+  CLI. The credential is never baked into this image, never written to an env
+  file, and never logged.
+
+  Deliberately NOT a managed session: unlike claude-tmux (which supervises a
+  long-running `claude` inside tmux) this module ships the tool and the key
+  and stops there. An operator or an external_cli dev-loop executor invokes
+  `grok -p "..."` on demand. That is the whole reason there is no session
+  unit here — a supervised always-on agent is what burned two credit
+  autorefills on idle dev-cells (inc21, 2026-07-10), and the fix was to make
+  the expensive half opt-in. Reusable standalone — any fleet instance can
+  carry this module regardless of template.
+
+  NOTE ON LICENSING: `license:` below is THIS MODULE's license (its manifest
+  and scripts, MIT, like every module in this repo). The npm payload it
+  installs is xAI proprietary software under x.ai's own terms — the module
+  ships it the same way claude-tmux ships Anthropic's proprietary CLI.
+license: MIT
+category: build-dev
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+
+# The Grok CLI is written directly into /tmp/fat by the Stage 1.5 grok-cli
+# case (npm install -g --prefix) — it is NOT apt-derivable, so
+# --mode deb-payload structurally can't verify these entries (they never
+# appear in the apt-resolved candidate set the tool diffs against — the same
+# "Fidelity blind spots" situation claude-tmux/gitleaks/gh document).
+# Declared here so stage2-carve.sh's real fat-root carve keeps them.
+#
+# The @xai-official/** glob is a GLOB and not two named entries on purpose:
+# npm materializes the actual executable through a platform-specific
+# optionalDependency (@xai-official/grok-linux-x64) that sits BESIDE the
+# wrapper package, and /usr/bin/grok is a relative symlink into the wrapper.
+# Claiming only the wrapper would carve a symlink chain whose target was
+# dropped — a `grok` that exists and cannot run, which is precisely the
+# shape the verify probe below exists to catch. The set is also data, not an
+# interface: pinning member names here would silently drop the binary on any
+# upstream repackaging.
+file_spec:
+  - "/usr/bin/grok"
+  - "/usr/lib/node_modules/@xai-official/**"
+  - "/usr/local/bin/grok-cli-fetch-credential.sh"
+  - "/etc/profile.d/grok-cli.sh"
+  # jq's real apt-ownership closure. These ARE apt-derivable and MUST be
+  # declared: Stage 2's rsync filter drops every file no file_spec entry
+  # claims, so a package_spec entry with no matching file_spec is installed
+  # into the fat root and then carved straight back out — the module would
+  # ship a fetch script whose only JSON parser had been deleted. (That exact
+  # class shipped once already: claude-tmux declared tmux and carved away
+  # the terminfo database tmux cannot start without.)
+  #
+  # Entries taken from claude-tmux's manifest, which derived them from a
+  # real `derive-file-spec.sh --mode deb-payload` run over [tmux, jq,
+  # ca-certificates] against this same pinned apt_snapshot — jq resolved to
+  # exactly these three, and ca-certificates to ZERO owned files because
+  # base-os-ubuntu-noble already package_spec's it. CI's carve-conformance
+  # job is the check that keeps this honest on any snapshot bump.
+  - "/usr/bin/jq"
+  - "/usr/lib/x86_64-linux-gnu/libjq.so*"
+  - "/usr/lib/x86_64-linux-gnu/libonig.so*"
+
+# Owned (jq/ca-certificates' real closure) but masked out by
+# /usr/share/doc/** + /usr/share/man/** above — waived so conformance
+# doesn't WARN on the deliberate exclusion.
+carve_waivers:
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+
+# grok-cli ships only its own CLI, script, and profile shim — no other
+# module's paths.
+protected_spec: []
+
+# jq and ca-certificates come from apt (mmdebstrap). jq is declared even
+# though dev-cell's claude-tmux already pulls it in: a module that silently
+# relies on a neighbour to supply its own hard dependency breaks on the
+# first LEAN node that composes it without that neighbour — exactly how
+# claude-tmux shipped a tmux with no terminfo and could not start at all on
+# ops-cell (2026-07-29). Same discipline here.
+#
+# The Grok CLI itself is NOT listed: it is an npm package with no apt
+# equivalent, installed in Stage 1.5 regardless of package_spec. Node is
+# not listed either — see the capability:runtime.node edge below.
+package_spec:
+  - jq
+  - ca-certificates
+
+dependencies:
+  requires:
+    # The base layer. Canonical slug is powernode-system-base (NOT
+    # "system-base" — no module carries that name).
+    - powernode/powernode-system-base@^1.0
+    # The staged grok executable is a PREBUILT NATIVE binary (the
+    # grok-linux-x64 optionalDependency), so unlike gh/gitleaks — which are
+    # fully-static Go binaries and deliberately carry no such edge — it
+    # dynamically links base-os's glibc and needs the closure guarantee.
+    - capability:os.userland
+    # bin/grok is a JS wrapper; upstream declares engines.node >= 20. Noble's
+    # apt nodejs is v18 and cannot run it (the same finding runtime-node's
+    # manifest records). runtime-node provides Node 24.13.0 at
+    # /usr/local/bin/node. Declared as a HARD requires: edge — not left to
+    # template co-assignment — so DependencyResolutionService pulls
+    # runtime-node into ANY composition carrying this module, matching the
+    # precedent claude-tmux set for exactly this dependency.
+    - capability:runtime.node
+  provides:
+    - dev.grok-cli
+
+reboot_required: false
+
+# unit_body passthrough: Type=oneshot plus SuccessExitStatus= and the
+# [Unit]-section start limiter can't be expressed via the generated-unit
+# Service fields, so this rides the services: lifecycle with the unit file's
+# body verbatim.
+#
+# NOTE the generated unit name: the agent emits
+# powernode-<module-uuid>-credential.service (agent/internal/lifecycle/
+# service.go). DISCOVER it, never guess — `systemctl restart` on a
+# nonexistent unit fails silently inside a `||` chain and looks like success.
+services:
+  - name: credential
+    unit_body: |
+      [Unit]
+      Description=Grok CLI: stage the xAI API key (root, mTLS)
+      Documentation=https://github.com/nodealchemy/powernode-system
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=/usr/bin/grok
+      # Bounds genuinely transient faults (network/mTLS, 5xx). MUST live in
+      # [Unit] — systemd SILENTLY IGNORES both of these in [Service].
+      #
+      # Retries are 30s apart, so 20 starts take 600s, inside the 1800s
+      # window. As always the interval must exceed RestartSec x Burst or the
+      # limit could never trip at all.
+      StartLimitIntervalSec=1800
+      StartLimitBurst=20
+
+      [Service]
+      Type=oneshot
+      # Runs as root: only root can read the agent's mTLS private key at
+      # /persist/var/lib/powernode/pki/node.key (0600). The staged key is
+      # chowned to the session user by the script.
+      RuntimeDirectory=grok-cli
+      RuntimeDirectoryMode=0700
+      # Preserve past this oneshot's own exit — /etc/profile.d/grok-cli.sh
+      # reads the staged file on every login, and an auto-removed
+      # RuntimeDirectory would take the credential with it the moment this
+      # unit went inactive.
+      RuntimeDirectoryPreserve=yes
+      Environment=GROK_CLI_USER=pnadmin
+      ExecStart=/usr/local/bin/grok-cli-fetch-credential.sh
+      # 78 (EX_CONFIG) = this instance has NO xAI credential configured.
+      # That is a supported, DELIBERATE steady state (the account-provider
+      # fallback SiteSetting defaults OFF so an idle cell cannot burn API
+      # credits), NOT a fault — so the unit completes successfully having
+      # staged nothing. Every other failure keeps exit 1 and is retried.
+      #
+      # SuccessExitStatus, NOT RestartPreventExitStatus: this is a oneshot
+      # whose script IS the main process, so its exit code governs directly.
+      # (RestartPreventExitStatus is what is inert for an ExecStartPre —
+      # measured on live systemd 2026-08-17: exit 78 from a pre-hook with
+      # RestartPreventExitStatus=78 still gave NRestarts=5.)
+      SuccessExitStatus=78
+      Restart=on-failure
+      RestartSec=30s
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+
+security:
+  capabilities: []
+  # The module ships an API client and must therefore permit the one host
+  # that client exists to talk to. An empty list here is NOT "no policy" —
+  # the agent unions every desired module's egress_allow into one node-wide
+  # nftables DEFAULT-DENY chain, so shipping the CLI with [] would guarantee
+  # it could never work. Observed as this exact class of bug on ops-cell
+  # 2026-07-29: "ECONNREFUSED api.anthropic.com" while git.powernode.org
+  # stayed reachable, which reads like a network fault and is actually the
+  # manifest.
+  #
+  # CAVEAT worth knowing before trusting this: entries are resolved to
+  # A/AAAA records at install time and re-resolved only on cert-rotate
+  # (~67 days). api.x.ai sits behind a CDN whose addresses rotate, so the
+  # pinned IPs can go stale between resolutions and the symptom returns
+  # looking identical. If that recurs the fix is not another host here — it
+  # is DNS-aware egress (see ApplyEgressAllowlist's sidecar note); a
+  # reconcile or cert-rotate is the interim unstick.
+  #
+  # Only the API host is allowed. Interactive browser sign-in (which would
+  # reach x.ai itself) is deliberately NOT provisioned for: this module
+  # authenticates from XAI_API_KEY, staged above.
+  egress_allow:
+    - api.x.ai
+  privileged: false
+  user_namespace: true
+
+skills: []
+
+# Post-deploy self-proof. This module's payload is one CLI at one path, so
+# "the module is installed" and "the binary at that path answers the name"
+# are exactly the claim worth proving.
+#
+# `resolves_to` — NOT existence. An existence check is what passed while
+# VM-9000 was broken: something answered the name, and it was the wrong
+# something. Every probe runs in BOTH a login and a non-login shell (not
+# configurable — see System::ModuleVerify); a mismatch in EITHER is a
+# failure, because the login/non-login divergence IS that bug. That matters
+# more than usual here: this module ships /etc/profile.d/grok-cli.sh, which
+# only login shells source.
+verify:
+  probes:
+    - name: grok-binary
+      command: grok
+      resolves_to: /usr/bin/grok
+
+build:
+  apt_snapshot: "20260415T000000Z"
+  # Grok CLI version npm-installed in Stage 1.5 (see the grok-cli case in
+  # scripts/module-build/stage15.sh). Unlike a release-binary fetch there is
+  # no single sha256 to verify; the exact npm version plus npm's own
+  # integrity metadata IS the reproducibility unit — same situation, and
+  # same discipline, as claude_code_version. Bump deliberately.
+  grok_version: "1.0.5"

@@ -1307,6 +1307,57 @@ case "$MODULE" in
     ls -la /tmp/fat/usr/bin/claude* 2>/dev/null || true
     ls -d /tmp/fat/usr/lib/node_modules/@anthropic-ai/claude-code 2>/dev/null || true
     ;;
+  grok-cli)
+    # xAI's Grok Build CLI (@xai-official/grok) is an npm package with no
+    # apt equivalent — same situation, and the same cross-install
+    # technique, as the claude-tmux case above: npm-install it into
+    # /tmp/fat via --prefix using the RUNNER's own node/npm. The package
+    # is a small JS wrapper plus a PREBUILT NATIVE binary delivered as a
+    # platform-specific optionalDependency (@xai-official/grok-linux-x64),
+    # targeting the same linux/x64 as the runner — no chroot needed.
+    if ! command -v npm >/dev/null 2>&1; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y --no-install-recommends nodejs npm
+    fi
+    # Pin from the manifest (build.grok_version) rather than floating to
+    # npm's implicit @latest — reproducible builds and controlled bumps,
+    # same manifest-driven idiom as claude-tmux/act_runner. npm has no
+    # single release-binary sha to `sha256sum -c`; the exact version plus
+    # npm's own integrity metadata is the pin.
+    GROK_VERSION=$(jq -r '.build.grok_version // "1.0.5"' /tmp/manifest.json)
+    mkdir -p /tmp/fat/usr
+    npm install -g --prefix /tmp/fat/usr --no-audit --no-fund \
+      "@xai-official/grok@${GROK_VERSION}"
+    # Guard what actually SHIPS: the CLI is this module's entire payload —
+    # a failed/partial npm install must not silently carve an empty module
+    # (gitleaks v4, 2026-08-07: an empty artifact auto-promoted and the
+    # agent's hot-prune then whiteout-DELETED the binary off a live root,
+    # with every digest matching end to end).
+    if [ ! -e /tmp/fat/usr/bin/grok ] && [ ! -e /tmp/fat/usr/lib/node_modules/@xai-official/grok ]; then
+      echo "[stage-1.5] FATAL: @xai-official/grok did not install into /tmp/fat/usr"; exit 1
+    fi
+    # Assert the pinned version actually landed — catch an npm resolution
+    # that silently deviated from the manifest pin before it ships.
+    GROK_INSTALLED_VERSION=$(jq -r '.version' \
+      /tmp/fat/usr/lib/node_modules/@xai-official/grok/package.json 2>/dev/null || echo "")
+    if [ "$GROK_INSTALLED_VERSION" != "$GROK_VERSION" ]; then
+      echo "[stage-1.5] FATAL: expected @xai-official/grok ${GROK_VERSION}, got: ${GROK_INSTALLED_VERSION:-<none>}"; exit 1
+    fi
+    # THIRD guard, specific to this package's shape and NOT present in the
+    # claude-tmux case: the executable lives in a platform-specific
+    # OPTIONAL dependency, and npm treats a failed optionalDependency as a
+    # SUCCESS. Without this check a registry hiccup or an os/cpu mismatch
+    # ships a wrapper with nothing behind it — a `grok` that exists on PATH
+    # and cannot run, which is exactly the shape the manifest's verify
+    # probe would then report as broken on a live node instead of here.
+    if ! ls -d /tmp/fat/usr/lib/node_modules/@xai-official/grok-linux-* >/dev/null 2>&1; then
+      echo "[stage-1.5] FATAL: no @xai-official/grok-linux-* platform package staged — the optionalDependency carrying the real binary did not install"; exit 1
+    fi
+    echo "=== grok-cli: npm install result (pinned ${GROK_VERSION}) ==="
+    ls -la /tmp/fat/usr/bin/grok* 2>/dev/null || true
+    ls -d /tmp/fat/usr/lib/node_modules/@xai-official/* 2>/dev/null || true
+    ;;
   gitea-act-runner)
     # act_runner has no apt package — fetch the pinned upstream
     # release binary and verify its sha256, same hermetic pattern
