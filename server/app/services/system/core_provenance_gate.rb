@@ -52,10 +52,18 @@ module System
   # recorded expectation is what arms this gate. A batch that recorded none
   # (dispatched before this existed, or a core tip that would not resolve) leaves
   # it inert — we never fabricate an expectation, and never stall in-flight work
-  # over an answer we did not have. Once an expectation IS recorded, every
+  # over an answer we did not have. Once a USABLE expectation is recorded, every
   # reading other than "matches" refuses, including the absence of the
   # annotation: a Class-B artifact that arrives unstamped means the stamping did
   # not run, which is precisely the blind spot being closed.
+  #
+  # "Usable" is load-bearing, and is the same bar System::CoreMirrorPreflight
+  # applies: a recorded expectation too short to be a commit identity (see
+  # MIN_ABBREV_LENGTH) is not evidence about the artifact and is NOT refused on.
+  # Refusing it made this gate reject four consecutive good builds while
+  # reporting two identical seven-character shas as a "mismatch". The remedy for
+  # the resulting blind spot belongs at the producer — a batch should record a
+  # full sha — not in a refusal this gate cannot justify.
   class CoreProvenanceGate
     # Modules whose Stage-1.5 arm actually clones the PARENT platform repo.
     # MUST stay in sync with scripts/module-build/stage15.sh's `needs_parent`
@@ -152,6 +160,19 @@ module System
                       expected: expected, actual: actual, remote: remote)
         end
 
+        # An expectation that is not a commit identity AT ALL (a branch name, a
+        # tag, junk) says nothing this gate can weigh against a sha. Same
+        # posture as System::CoreMirrorPreflight's STATE_UNUSABLE_EXPECTATION:
+        # not measured, so not refused on.
+        #
+        # A short-but-sha-like expectation is NOT handled here — it is still
+        # conclusive when its prefix DISAGREES with the artifact, so it is
+        # decided at the comparison below.
+        unless sha_like?(expected)
+          return unusable(module_name, expected, actual, remote,
+                          "#{expected.inspect} is not a commit identity")
+        end
+
         unless enabled?
           return pass("disabled", "#{ENABLED_SETTING} is disabled",
                       expected: expected, actual: actual, remote: remote)
@@ -180,9 +201,24 @@ module System
         end
 
         unless same_commit?(actual, expected)
+          # Prefix AGREEMENT that is merely too short to be an identity is not
+          # evidence of a different commit — it is an inconclusive comparison,
+          # and refusing on it rejected four consecutive good builds on
+          # 2026-08-24/25 (a core-SOURCED batch expects its own head_sha, and
+          # this platform dispatches the short tag form). Prefix DISAGREEMENT is
+          # conclusive at any length, so the stale-mirror artifact this gate
+          # exists to stop — which carries an unrelated sha — still refuses.
+          if prefix_agrees?(actual, expected)
+            return unusable(module_name, expected, actual, remote,
+                            "the expected core ref #{expected.inspect} agrees with the artifact as far " \
+                            "as it goes, but is too short (needs #{MIN_ABBREV_LENGTH}+ hex chars) to " \
+                            "identify a commit")
+          end
+
+          shown_actual, shown_expected = contrast(actual, expected)
           return refuse("mismatch",
-                        "built from core #{short(actual)}#{remote_suffix(remote)}, but this batch " \
-                        "expected core #{short(expected)}",
+                        "built from core #{shown_actual}#{remote_suffix(remote)}, but this batch " \
+                        "expected core #{shown_expected}",
                         expected: expected, actual: actual, remote: remote)
         end
 
@@ -264,11 +300,71 @@ module System
         sha.to_s[0, 7].presence || "(none)"
       end
 
+      # Is this value usable as a commit IDENTITY — something a comparison can
+      # return a meaningful answer about? Public and defined HERE because
+      # System::CoreMirrorPreflight asks the same question of the same values;
+      # a rule defined twice is a rule that drifts, and these two protections
+      # disagreeing about what counts as an expectation is precisely how the
+      # promote gate came to refuse builds the preflight had waved through.
+      def usable_expectation?(value)
+        sha_like?(value) && value.to_s.length >= MIN_ABBREV_LENGTH
+      end
+
+      # Do the two agree as far as the shorter one goes? Distinct from
+      # #same_commit?, which additionally demands that the shorter side be long
+      # enough to constitute an identity. This answers only "is there any
+      # disagreement here", which is what separates an inconclusive comparison
+      # from a conclusive refusal.
+      def prefix_agrees?(actual, expected)
+        a = actual.to_s.downcase
+        b = expected.to_s.downcase
+        return false if a.empty? || b.empty?
+
+        long, short = a.length >= b.length ? [ a, b ] : [ b, a ]
+        long.start_with?(short)
+      end
+
+      # Render two shas so a reader can SEE the difference between them.
+      #
+      # #short truncates to 7, so a refusal comparing a 9-char expectation
+      # against the full 40-char annotation printed "built from core b01d7c4
+      # ... but this batch expected core b01d7c4" — the same string twice. The
+      # message destroyed the one distinction it existed to convey, and four
+      # deploys were hand-repointed around this gate rather than diagnosed.
+      #
+      # Show whichever is longer: the first differing character plus context,
+      # or — when one is a prefix of the other, where there IS no differing
+      # character — both in full, since the LENGTH is then the whole story.
+      def contrast(a, b)
+        a = a.to_s
+        b = b.to_s
+        idx = (0...[ a.length, b.length ].min).find { |i| a[i] != b[i] }
+        return [ a, b ] if idx.nil?
+
+        width = [ idx + 4, 7 ].max
+        [ a[0, width], b[0, width] ]
+      end
+
       private
 
       def pass(state, reason, expected:, actual:, remote:)
         Verdict.new(promotable: true, state: state, reason: reason,
                     expected_sha: expected.presence, actual_sha: actual.presence, actual_remote: remote)
+      end
+
+      # Not a pass in the sense of "this artifact was checked and is fine" — a
+      # pass in the sense of "this gate had nothing to weigh, and an unarmed
+      # gate must not masquerade as a refusal". Logged at warn precisely because
+      # the promotion proceeds: silence here would be the "protection that looks
+      # present and is not" this class was written to avoid.
+      def unusable(module_name, expected, actual, remote, detail)
+        Rails.logger.warn(
+          "[CoreProvenanceGate] #{module_name}: #{detail} — core provenance was NOT CHECKED for this " \
+          "artifact. Nothing was measured; this is not a clean bill of health."
+        )
+        pass("unusable_expectation",
+             "#{detail} — core provenance was NOT CHECKED",
+             expected: expected, actual: actual, remote: remote)
       end
 
       def refuse(state, reason, expected:, actual:, remote:)

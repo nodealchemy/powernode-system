@@ -199,13 +199,84 @@ RSpec.describe System::CoreProvenanceGate do
 
     # 7 hex characters is 268M possibilities; a prefix that short is a
     # coincidence waiting to happen, and this gate's whole job is to tell two
-    # plausible-looking shas apart.
-    it "REFUSES a prefix too short to be trusted as an identity" do
+    # plausible-looking shas apart. So it is not accepted as a MATCH —
+    # but an expectation too short to be an identity is not evidence of a
+    # mismatch either, and this used to refuse on it. See the block below.
+    it "does not treat a prefix too short to be an identity as a match" do
       v = verdict_for(module_name: "powernode-hub-backend", expected_sha: expected[0, 7],
+                      annotations: annotations(sha: expected))
+
+      expect(v.state).not_to eq("match")
+    end
+  end
+
+  # Regression: 2026-08-24/25. Four consecutive batches of
+  # powernode-extension-system and powernode-hub-backend built sound, signed,
+  # correctly-provenanced artifacts that never reached the fleet. A
+  # core-SOURCED batch records its own head_sha as the expectation, and this
+  # platform dispatches with the short tag form, so `expected` arrived as 9
+  # characters against a 40-character annotation. #same_commit? answers false
+  # for any prefix under MIN_ABBREV_LENGTH and the gate read that false as
+  # "mismatch" — refusing every core-sourced build, correct ones included.
+  describe "an expectation too short to be a commit identity" do
+    let(:expected) { "b01d7c47c9f1e2a3b4c5d6e7f8091a2b3c4d5e6f" }
+    let(:short)    { expected[0, 9] }
+
+    def verdict
+      verdict_for(module_name: "powernode-extension-system", expected_sha: short,
+                  annotations: annotations(sha: expected, remote: "github.com/nodealchemy/powernode-platform"))
+    end
+
+    it "does not refuse promotion on it" do
+      expect(verdict).to be_promotable
+    end
+
+    it "reports that nothing was checked rather than claiming a mismatch" do
+      expect(verdict.state).to eq("unusable_expectation")
+      expect(verdict.reason).to include("NOT CHECKED")
+    end
+
+    it "agrees with System::CoreMirrorPreflight, which never refused this input" do
+      expect(described_class.usable_expectation?(short)).to be false
+      expect(described_class.usable_expectation?(expected)).to be true
+    end
+
+    # A DIFFERING prefix is conclusive at any length — the stale-mirror threat
+    # this gate exists for produces an unrelated sha, so it is still refused.
+    it "still refuses when a short expectation DISAGREES with the artifact" do
+      v = verdict_for(module_name: "powernode-extension-system", expected_sha: "deadbeef1",
                       annotations: annotations(sha: expected))
 
       expect(v).not_to be_promotable
       expect(v.state).to eq("mismatch")
+    end
+  end
+
+  # The reason this went undiagnosed across four deploys: the refusal printed
+  # the same seven characters on both sides of "but this batch expected".
+  describe "a refusal a human can act on" do
+    it "never renders the two shas identically" do
+      a = "b01d7c47c9f1e2a3b4c5d6e7f8091a2b3c4d5e6f"
+      b = "b01d7c47cAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".downcase
+      shown_a, shown_b = described_class.contrast(a, b)
+
+      expect(shown_a).not_to eq(shown_b)
+    end
+
+    it "shows the full values when one is a prefix of the other" do
+      a = "b01d7c47c9f1e2a3b4c5d6e7f8091a2b3c4d5e6f"
+      expect(described_class.contrast(a, a[0, 9])).to eq([ a, a[0, 9] ])
+    end
+
+    it "puts distinguishable shas in the mismatch reason itself" do
+      expected = "b01d7c47c9f1e2a3b4c5d6e7f8091a2b3c4d5e6f"
+      actual   = "b01d7c47c0000000000000000000000000000000"
+      v = verdict_for(module_name: "powernode-hub-backend", expected_sha: expected,
+                      annotations: annotations(sha: actual))
+
+      expect(v.state).to eq("mismatch")
+      built, batch_expected = v.reason.scan(/core ([0-9a-f]+)/).flatten
+      expect(built).not_to eq(batch_expected)
     end
   end
 

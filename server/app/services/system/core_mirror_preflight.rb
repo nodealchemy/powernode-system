@@ -321,9 +321,12 @@ module System
       # A commit identity this can actually compare: hex, and long enough that
       # a prefix match is an identity rather than a coincidence. Both rules are
       # CoreProvenanceGate's, so the two protections cannot disagree.
+      # Delegated, not restated. The promote gate asks the same question of the
+      # same values and now has its own arm for the answer; the two protections
+      # disagreeing about what counts as an expectation is exactly how the
+      # promote gate came to refuse builds this preflight had waved through.
       def usable_expectation?(value)
-        ::System::CoreProvenanceGate.sha_like?(value) &&
-          value.to_s.length >= ::System::CoreProvenanceGate::MIN_ABBREV_LENGTH
+        ::System::CoreProvenanceGate.usable_expectation?(value)
       end
 
       def parse_head_sha(body)
