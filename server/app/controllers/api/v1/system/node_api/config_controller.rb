@@ -163,64 +163,40 @@ module Api
           # returned ONLY in this response body — never logged, never cached,
           # never persisted anywhere else on the platform side.
           def claude_code_credential
-            credential = ::System::ClaudeCodeCredential.find_by(node_instance: current_instance)
-
-            if credential
-              # Explicit per-instance credential: resolve from Vault under
-              # the row's own kind type. A broken / empty Vault for an
-              # explicitly-configured row is a SERVICE error (503) — never
-              # silently fall back to the account key for a credential an
-              # operator deliberately set.
-              plaintext = vault_provider.get_credential(
-                credential_type: credential.vault_kind_type,
-                credential_id: credential.id,
-                record: credential
-              )
-
-              if credential.oauth?
-                # Stored as { "oauth" => <claudeAiOauth object> }; symbol keys
-                # accepted for the same BUG-M reason as api_key below.
-                blob = plaintext.is_a?(Hash) ? (plaintext[:oauth] || plaintext["oauth"]) : nil
-                if blob.blank?
-                  return render_error("Vault has no credential for this instance", :service_unavailable)
-                end
-
-                emit_claude_code_credential_event!(source: "instance", kind: "oauth")
-                # Wrapped back into the exact on-disk file shape so the node
-                # writes data.oauth_credentials VERBATIM.
-                return render_success(
-                  credential_type: "oauth",
-                  oauth_credentials: { "claudeAiOauth" => blob }
-                )
-              end
-
-              # VaultCredentialProvider#get_credential returns a SYMBOL-keyed
-              # hash ({ api_key:, stored_at: }); accept the string key too for
-              # safety. (BUG-M: reading only ["api_key"] returned nil for every
-              # correctly-stored per-instance credential → a spurious 503.)
-              api_key = plaintext.is_a?(Hash) ? (plaintext[:api_key] || plaintext["api_key"]) : nil
-              return render_error("Vault has no credential for this instance", :service_unavailable) if api_key.blank?
-
-              source = "instance"
-            else
-              # No per-instance credential: fall back to the account's active
-              # Anthropic AI provider key so a dev-cell inherits it with zero
-              # per-instance setup.
-              api_key = account_anthropic_provider_api_key
-              if api_key.blank?
-                return render_not_found(
-                  "Claude Code credential (no per-instance credential and no active Anthropic AI provider on the account)"
-                )
-              end
-
-              source = "account_provider"
-            end
-
-            emit_claude_code_credential_event!(source: source, kind: "api_key")
-
-            render_success(api_key: api_key, credential_type: "api_key")
+            resolve_cli_credential(provider_type: "anthropic")
           end
 
+          # GET /api/v1/system/node_api/config/ai_cli_credential?provider_type=<t>
+          #
+          # The provider-general form of the action above, added for the
+          # grok-cli NodeModule. Same mTLS scoping, same Vault-then-account
+          # resolution order, same 404/503 taxonomy — the ONLY difference is
+          # which provider's credential is asked for.
+          #
+          # claude_code_credential is NOT redirected here and NOT removed:
+          # every already-deployed claude-tmux node has that path baked into
+          # its fetch script, and a module image is not something the platform
+          # can update in lockstep with itself. It stays as the anthropic
+          # caller, forever if need be.
+          #
+          # provider_type is ALLOW-LISTED against
+          # System::ClaudeCodeCredential::PROVIDER_TYPES rather than passed
+          # through. It reaches a Vault path segment and an Ai::Provider
+          # lookup; an unbounded value from an enrolled node is how an
+          # instance would go fishing for credentials no module of its ever
+          # needed.
+          def ai_cli_credential
+            provider_type = params[:provider_type].to_s
+            unless ::System::ClaudeCodeCredential::PROVIDER_TYPES.include?(provider_type)
+              return render_error(
+                "Unsupported provider_type (supported: " \
+                "#{::System::ClaudeCodeCredential::PROVIDER_TYPES.join(', ')})",
+                :bad_request
+              )
+            end
+
+            resolve_cli_credential(provider_type: provider_type)
+          end
 
           # GET /api/v1/system/node_api/config/dev_cell_bootstrap
           #
@@ -450,9 +426,83 @@ module Api
 
           private
 
+          # Shared body of #claude_code_credential and #ai_cli_credential.
+          # See the comment block above #claude_code_credential for the
+          # resolution order and the CryptoMaterialSafety constraints — both
+          # apply verbatim here, per provider.
+          def resolve_cli_credential(provider_type:)
+            credential = ::System::ClaudeCodeCredential.find_by(
+              node_instance: current_instance, provider_type: provider_type
+            )
+
+            if credential
+              # Explicit per-instance credential: resolve from Vault under
+              # the row's own kind type. A broken / empty Vault for an
+              # explicitly-configured row is a SERVICE error (503) — never
+              # silently fall back to the account key for a credential an
+              # operator deliberately set.
+              plaintext = vault_provider.get_credential(
+                credential_type: credential.vault_kind_type,
+                credential_id: credential.id,
+                record: credential
+              )
+
+              if credential.oauth?
+                # Stored as { "oauth" => <claudeAiOauth object> }; symbol keys
+                # accepted for the same BUG-M reason as api_key below.
+                blob = plaintext.is_a?(Hash) ? (plaintext[:oauth] || plaintext["oauth"]) : nil
+                if blob.blank?
+                  return render_error("Vault has no credential for this instance", :service_unavailable)
+                end
+
+                emit_claude_code_credential_event!(
+                  source: "instance", kind: "oauth", provider_type: provider_type
+                )
+                # Wrapped back into the exact on-disk file shape so the node
+                # writes data.oauth_credentials VERBATIM.
+                return render_success(
+                  credential_type: "oauth",
+                  oauth_credentials: { "claudeAiOauth" => blob }
+                )
+              end
+
+              # VaultCredentialProvider#get_credential returns a SYMBOL-keyed
+              # hash ({ api_key:, stored_at: }); accept the string key too for
+              # safety. (BUG-M: reading only ["api_key"] returned nil for every
+              # correctly-stored per-instance credential → a spurious 503.)
+              api_key = plaintext.is_a?(Hash) ? (plaintext[:api_key] || plaintext["api_key"]) : nil
+              return render_error("Vault has no credential for this instance", :service_unavailable) if api_key.blank?
+
+              source = "instance"
+            else
+              # No per-instance credential: fall back to the account's active
+              # AI provider key for this provider, so a dev-cell inherits it
+              # with zero per-instance setup.
+              api_key = account_provider_api_key(provider_type)
+              if api_key.blank?
+                return render_not_found(
+                  "#{provider_type} CLI credential (no per-instance credential and " \
+                  "no active #{provider_type} AI provider on the account)"
+                )
+              end
+
+              source = "account_provider"
+            end
+
+            emit_claude_code_credential_event!(
+              source: source, kind: "api_key", provider_type: provider_type
+            )
+
+            render_success(api_key: api_key, credential_type: "api_key")
+          end
+
           # Audit event for every credential issuance over this endpoint —
-          # metadata only (ids + kind labels), NEVER any part of the secret.
-          def emit_claude_code_credential_event!(source:, kind:)
+          # metadata only (ids + labels), NEVER any part of the secret.
+          #
+          # provider_type defaults to "anthropic" so the event's meaning is
+          # unchanged for every record emitted before this endpoint served a
+          # second provider — the field was absent then, not different.
+          def emit_claude_code_credential_event!(source:, kind:, provider_type: "anthropic")
             return unless defined?(::System::Fleet::EventBroadcaster)
 
             ::System::Fleet::EventBroadcaster.emit!(
@@ -460,7 +510,7 @@ module Api
               kind: "system.claude_code_credential_issued",
               severity: :low,
               payload: { "instance_id" => current_instance.id, "source" => source,
-                         "credential_kind" => kind },
+                         "credential_kind" => kind, "provider_type" => provider_type },
               source: "node_api.config"
             )
           end
@@ -690,28 +740,41 @@ module Api
             @vault_provider ||= ::Security::VaultCredentialProvider.new(account_id: current_account.id)
           end
 
-          # Active Anthropic AI-provider API key for the account, decrypted
-          # server-side — the fallback source for #claude_code_credential when
-          # the instance has no per-instance credential. Mirrors the resolution
-          # shape of Ai::AudioTranscriptionService#resolve_credential
+          # The SiteSetting that gates the account-provider fallback, per
+          # provider. Each provider gets its OWN flag rather than sharing one:
+          # the flag is a spend authorization, and "let dev-cells spend the
+          # account's Anthropic budget" is not the same decision as "let them
+          # spend the xAI budget". A provider with no entry here has no
+          # fallback at all and requires an explicit per-instance credential.
+          ACCOUNT_PROVIDER_FALLBACK_SETTINGS = {
+            "anthropic" => "dev_cell_account_provider_credential_fallback",
+            "grok" => "grok_cli_account_provider_credential_fallback"
+          }.freeze
+
+          # Active AI-provider API key of the given type for the account,
+          # decrypted server-side — the fallback source for
+          # #resolve_cli_credential when the instance has no per-instance
+          # credential. Mirrors the resolution shape of
+          # Ai::AudioTranscriptionService#resolve_credential
           # (account.ai_provider_credentials.active + a provider check) and reads
           # the value via Ai::ProviderCredential#decrypted_api_key. Defensive:
           # any resolution failure → nil, so the caller falls through to 404.
-          def account_anthropic_provider_api_key
-            # Opt-in, default OFF: a dev-cell inherits the account's Anthropic
-            # provider key ONLY when the operator has explicitly enabled the
+          def account_provider_api_key(provider_type)
+            # Opt-in, default OFF: an instance inherits the account's provider
+            # key ONLY when the operator has explicitly enabled that provider's
             # fallback. Otherwise every provisioned dev-cell would auto-consume
-            # the account's API credits via its executor's real `claude` runs
-            # (observed: burned two credit autorefills). Flip SiteSetting
-            # "dev_cell_account_provider_credential_fallback"=true to enable;
-            # otherwise an explicit per-instance ClaudeCodeCredential is required.
-            return nil unless ::SiteSetting.get("dev_cell_account_provider_credential_fallback").to_s == "true"
+            # the account's API credits via its executor's real CLI runs
+            # (observed on the Anthropic side: burned two credit autorefills).
+            # Without the flag, an explicit per-instance credential is required.
+            setting = ACCOUNT_PROVIDER_FALLBACK_SETTINGS[provider_type]
+            return nil if setting.blank?
+            return nil unless ::SiteSetting.get(setting).to_s == "true"
             return nil unless current_account.respond_to?(:ai_provider_credentials)
 
             cred = current_account.ai_provider_credentials
                                   .active
                                   .includes(:provider)
-                                  .detect { |c| c.provider&.is_active? && c.provider.provider_type == "anthropic" }
+                                  .detect { |c| c.provider&.is_active? && c.provider.provider_type == provider_type }
             cred&.decrypted_api_key.presence
           rescue StandardError
             nil

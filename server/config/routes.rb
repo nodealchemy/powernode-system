@@ -880,8 +880,14 @@ Rails.application.routes.draw do
           get "config/host_keys", to: "config#host_keys"
           get "config/network", to: "config#network"
           # claude-tmux NodeModule — Vault-backed Claude Code CLI credential,
-          # scoped strictly to the mTLS-authenticated instance.
+          # scoped strictly to the mTLS-authenticated instance. KEPT as its own
+          # path: already-deployed module images have it baked into their fetch
+          # scripts and cannot be updated in lockstep with the platform.
           get "config/claude_code_credential", to: "config#claude_code_credential"
+          # Provider-general form of the above (grok-cli and any later AI-CLI
+          # NodeModule). ?provider_type= is allow-listed server-side against
+          # System::ClaudeCodeCredential::PROVIDER_TYPES. Same mTLS scoping.
+          get "config/ai_cli_credential", to: "config#ai_cli_credential"
           # Dev-cell bootstrap — MCP client_credentials + scoped Gitea PAT for a
           # pooled NodeInstance acting as an autonomous campaign executor.
           # Scoped strictly to the mTLS-authenticated instance.

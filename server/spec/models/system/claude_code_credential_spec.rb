@@ -67,6 +67,65 @@ RSpec.describe System::ClaudeCodeCredential, type: :model do
     end
   end
 
+  describe "provider_type" do
+    it "defaults to anthropic so every pre-existing row keeps its meaning" do
+      expect(build(:system_claude_code_credential).provider_type).to eq("anthropic")
+    end
+
+    it "rejects a provider no NodeModule fetches over the node_api" do
+      credential = build(:system_claude_code_credential, provider_type: "openai")
+      expect(credential).not_to be_valid
+      expect(credential.errors[:provider_type]).to be_present
+    end
+
+    it "allows one credential per instance PER PROVIDER" do
+      instance = create(:system_node_instance)
+      create(:system_claude_code_credential, node_instance: instance, provider_type: "anthropic")
+      grok = build(:system_claude_code_credential, node_instance: instance, provider_type: "grok")
+
+      expect(grok).to be_valid
+    end
+
+    it "still refuses a second credential for the SAME instance and provider" do
+      instance = create(:system_node_instance)
+      create(:system_claude_code_credential, node_instance: instance, provider_type: "grok")
+      duplicate = build(:system_claude_code_credential, node_instance: instance, provider_type: "grok")
+
+      expect(duplicate).not_to be_valid
+      expect(duplicate.errors[:node_instance_id]).to be_present
+    end
+
+    it "keeps anthropic on its ORIGINAL vault path segments so live credentials stay resolvable" do
+      expect(build(:system_claude_code_credential, provider_type: "anthropic",
+                                                   credential_kind: "api_key").vault_kind_type)
+        .to eq(:claude_code_api_key)
+      expect(build(:system_claude_code_credential, provider_type: "anthropic",
+                                                   credential_kind: "oauth").vault_kind_type)
+        .to eq(:claude_code_oauth)
+    end
+
+    it "gives every other provider its own vault path segment" do
+      expect(build(:system_claude_code_credential, provider_type: "grok").vault_kind_type)
+        .to eq(:grok_api_key)
+    end
+
+    # The list is a hand-picked SUBSET of the provider catalog, so it cannot
+    # be derived from core — but every member must still be a real provider
+    # type, or the account-fallback lookup silently matches nothing and the
+    # Vault path segment names a vendor that does not exist.
+    it "names only real Ai::Provider provider types" do
+      expect(described_class::PROVIDER_TYPES - ::Ai::Constants::ProviderTypes::ALL).to be_empty
+      expect(described_class::OAUTH_CAPABLE_PROVIDER_TYPES - described_class::PROVIDER_TYPES).to be_empty
+    end
+
+    it "refuses the oauth kind for a provider that has no oauth shape" do
+      credential = build(:system_claude_code_credential, provider_type: "grok", credential_kind: "oauth")
+
+      expect(credential).not_to be_valid
+      expect(credential.errors[:credential_kind].join).to include("oauth is not supported")
+    end
+  end
+
   describe ".normalize_oauth_payload!" do
     # Obviously-fake values only — never real token material in specs.
     let(:future_ms) { (Time.current.to_f * 1000).to_i + (90 * 24 * 3600 * 1000) }

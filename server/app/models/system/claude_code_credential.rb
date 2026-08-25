@@ -1,18 +1,29 @@
 # frozen_string_literal: true
 
 module System
-  # One Claude Code CLI credential per NodeInstance, consumed by the
-  # claude-tmux NodeModule's boot-time fetch script over the
-  # mTLS-authenticated node_api. Prefers Vault; falls back to an
+  # One on-node AI CLI credential per NodeInstance PER PROVIDER, consumed by
+  # an AI-CLI NodeModule's boot-time fetch script over the
+  # mTLS-authenticated node_api: claude-tmux reads the "anthropic" row,
+  # grok-cli the "grok" row (see PROVIDER_TYPES).
+  #
+  # The class and table are still named for their first and only consumer.
+  # Renaming both — and the operator REST surface at
+  # /nodes/:id/node_instances/:id/claude_code_credential — is deliberately
+  # deferred: it is a pure rename across a live deployment and belongs in
+  # its own change, not bundled with adding a provider.
+  #
+  # Prefers Vault; falls back to an
   # encrypted_credentials column (Security::CredentialEncryptionService,
   # via the VaultCredential concern's default DB-fallback path) on
   # Vault-less deployments (e.g. ops-hub, POWERNODE_CA_MODE=local) — same
   # shape as System::AcmeDnsCredential.
   #
   # Two credential kinds (credential_kind column, producer-declared):
-  #   "api_key" — an Anthropic API key; the node exports it as
-  #               ANTHROPIC_API_KEY for the session. The original kind
-  #               and the column default.
+  #   "api_key" — a provider API key; the node exports it under that
+  #               provider's own env var (ANTHROPIC_API_KEY for the
+  #               claude-tmux session, XAI_API_KEY for grok-cli). The
+  #               original kind, the column default, and the ONLY kind
+  #               any provider other than anthropic supports.
   #   "oauth"   — a Claude subscription login: the claudeAiOauth object
   #               from ~/.claude/.credentials.json. The node installs it
   #               as that file, SEED-ONCE: after first install the NODE
@@ -29,6 +40,23 @@ module System
 
     KINDS = %w[api_key oauth].freeze
 
+    # The AI providers an on-node CLI credential may belong to. A row is
+    # scoped to one provider so a single instance can carry an Anthropic key
+    # for claude-tmux AND an xAI key for grok-cli without either table or
+    # Vault path colliding. Values are Ai::Constants::ProviderTypes members — the
+    # same vocabulary Ai::Provider#provider_type validates against — but the
+    # list is deliberately NOT the full catalog: a provider belongs here only
+    # once a NodeModule actually fetches its key over the node_api, because
+    # every entry widens what an enrolled instance can ask the platform to
+    # decrypt and hand back.
+    PROVIDER_TYPES = %w[anthropic grok].freeze
+
+    # OAuth is a Claude-subscription shape (the ~/.claude/.credentials.json
+    # blob). No other provider here has one, and accepting `oauth` for them
+    # would let an operator store a payload that normalize_oauth_payload!
+    # validates as a Claude credential and no node could ever use.
+    OAUTH_CAPABLE_PROVIDER_TYPES = %w[anthropic].freeze
+
     # Raised by .normalize_oauth_payload! — message names the offending
     # FIELD only; it must never echo a token value (CryptoMaterialSafety).
     class InvalidOauthPayload < ArgumentError; end
@@ -39,6 +67,8 @@ module System
     EPOCH_MS_FLOOR = 10**12
 
     validates :credential_kind, inclusion: { in: KINDS }
+    validates :provider_type, inclusion: { in: PROVIDER_TYPES }
+    validate :oauth_kind_only_for_oauth_capable_provider
 
     # The VaultCredential concern assumes a generic `vault_path` column;
     # this table names it `vault_path_credentials` (same alias pattern as
@@ -48,21 +78,37 @@ module System
     belongs_to :node_instance, class_name: "System::NodeInstance"
     delegate :account, :account_id, to: :node_instance
 
-    validates :node_instance_id, uniqueness: true
+    # Scoped to the provider (see the migration): one credential per
+    # instance PER PROVIDER, so an instance can carry both an Anthropic key
+    # for claude-tmux and an xAI key for grok-cli. Backed by the composite
+    # unique index — the validation is the friendly error, the index is the
+    # guarantee.
+    validates :node_instance_id, uniqueness: { scope: :provider_type }
 
     def oauth?
       credential_kind == "oauth"
     end
 
-    # The Vault credential type for THIS row's kind — distinct types so
-    # the two kinds never share a Vault path and rotate independently.
-    # :claude_code_oauth is deliberately NOT registered in core's
-    # VaultCredentialProvider::CREDENTIAL_TYPES — the provider's documented
-    # fallback (`CREDENTIAL_TYPES[type] || credential_type.to_s`) yields the
-    # stable path segment "claude_code_oauth", keeping this kind fully
-    # extension-contained (core never needs to learn the new type).
+    # The Vault credential type for THIS row's provider AND kind — distinct
+    # types so no two of them share a Vault path or rotate together.
+    # :claude_code_oauth and every non-anthropic type are deliberately NOT
+    # registered in core's VaultCredentialProvider::CREDENTIAL_TYPES — the
+    # provider's documented fallback
+    # (`CREDENTIAL_TYPES[type] || credential_type.to_s`) yields the stable
+    # path segment verbatim, keeping these fully extension-contained (core
+    # never needs to learn a new type).
+    #
+    # anthropic keeps its ORIGINAL segments (claude_code_api_key /
+    # claude_code_oauth) rather than being folded into the generic scheme
+    # below: those paths hold live credentials on deployed fleets, and a
+    # renamed segment reads as "Vault has no credential for this instance"
+    # (a 503 on the node_api read path) with no migration to point at.
     def vault_kind_type
-      oauth? ? :claude_code_oauth : :claude_code_api_key
+      if provider_type == "anthropic"
+        oauth? ? :claude_code_oauth : :claude_code_api_key
+      else
+        :"#{provider_type}_api_key"
+      end
     end
 
     # Validates + normalizes an operator-supplied OAuth blob into the inner
@@ -124,6 +170,22 @@ module System
       end
 
       payload
+    end
+
+    private
+
+    # An `oauth` row for a provider with no OAuth shape is unusable by
+    # construction: normalize_oauth_payload! validates the Claude
+    # subscription blob specifically, and no non-Anthropic module reads
+    # that file. Rejected at the model rather than at the node_api read
+    # path, where it would surface as a 503 on a live instance.
+    def oauth_kind_only_for_oauth_capable_provider
+      return unless oauth?
+      return if OAUTH_CAPABLE_PROVIDER_TYPES.include?(provider_type)
+
+      errors.add(:credential_kind,
+                 "oauth is not supported for provider_type #{provider_type} " \
+                 "(supported: #{OAUTH_CAPABLE_PROVIDER_TYPES.join(', ')})")
     end
   end
 end
