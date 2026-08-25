@@ -61,7 +61,25 @@ module System
       # Credential passed as a SPACE-separated flag value rather than key=value
       # — the shape of the login commands a module build actually runs
       # (`oras login -u ci -p …`, `docker login --password …`, `curl -u user:token`).
-      /(?<prefix>--?(?:p|u|password|passwd|pass|user|username|token|secret|key)\s+)\S+/,
+      #
+      # LONG FORM ONLY in the general pattern. A bare `-p`/`-u` is `mkdir -p`,
+      # `sort -u` or `cp -p` far more often than it is a credential, and this
+      # redactor's output is raised verbatim in operator-facing errors
+      # ("oras login failed: …") and now served over MCP — so redacting those
+      # paths would gut the very build diagnostics it exists to make readable.
+      # The two short-flag shapes that ARE reliably credentials get their own
+      # anchored patterns below.
+      /(?<prefix>--(?:password|passwd|token|secret|api[_-]?key|access[_-]?key)[=\s]+)\S+/i,
+
+      # `-p SECRET` on a login invocation — the one place a bare short flag is
+      # reliably a credential (`oras login -u ci -p …`, `docker login -p …`).
+      # Anchored on `login` so it can never reach `mkdir -p`.
+      /(?<prefix>\blogin\b[^\n]{0,120}?\s-p\s+)\S+/i,
+
+      # `curl -u user:token`. The COLON is the discriminator that separates a
+      # userinfo pair from `sort -u file`; the username is kept so the line
+      # stays diagnosable.
+      /(?<prefix>\s-u\s+[^\s:]+:)\S+/,
 
       # UPPER_SNAKE env names whose NAME says secret but whose keyword is not
       # adjacent to the `=` — SECRET_KEY_BASE is the one that matters most

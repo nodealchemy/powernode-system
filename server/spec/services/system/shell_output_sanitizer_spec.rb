@@ -157,4 +157,44 @@ RSpec.describe System::ShellOutputSanitizer do
       expect(described_class.redact_payload(true)).to be true
     end
   end
+  # Over-redaction is a real failure mode here, not a cosmetic one: this
+  # redactor's output is raised verbatim in operator-facing errors ("oras
+  # login failed: ...") and, since IMP-b8af3c3309fe, served over MCP as a
+  # task's stored error_message. A pattern that eats ordinary build output
+  # destroys the diagnostic the operator came for, and teaches them to
+  # distrust the redactor — which is worse than the narrow leak it closed.
+  #
+  # These are the shapes a generic `--?(p|u|...)\s+\S+` flag pattern
+  # swallowed: `mkdir -p <path>` alone appears throughout stage15.sh, the
+  # build script whose failure output motivated surfacing error_message at all.
+  describe "does not redact ordinary build diagnostics" do
+    {
+      "mkdir -p" => "mkdir -p /tmp/fat/usr/lib",
+      "sort -u" => "sort -u /tmp/modules.txt",
+      "cp -p" => "cp -p src dst",
+      "tar -u" => "tar -u archive.tar file",
+      "npm --prefix" => "npm install -g --prefix /tmp/fat/usr",
+      "a password-auth prose diagnostic" => "password authentication failed for user pnbot",
+      "a stage-1.5 build failure" => "[stage-1.5] FATAL: no @xai-official/grok-linux-* platform package staged"
+    }.each do |label, line|
+      it "leaves #{label} intact" do
+        expect(described_class.redact_text(line)).to eq(line)
+      end
+    end
+  end
+
+  # The two short-flag shapes that ARE reliably credentials must still be
+  # caught — the fix above narrows the pattern, and this is the half that
+  # proves it did not simply delete the coverage.
+  describe "still redacts short-flag credentials" do
+    {
+      "-p on a login invocation" => [ "oras login registry.invalid -u ci -p FAKEshortsecret123", "FAKEshortsecret123" ],
+      "curl -u user:token" => [ "curl -u user:FAKEcurltoken123 https://x", "FAKEcurltoken123" ],
+      "a URL userinfo credential" => [ "https://gituser:FAKEurltoken123@git.invalid/x.git", "FAKEurltoken123" ]
+    }.each do |label, (line, secret)|
+      it "redacts #{label}" do
+        expect(described_class.redact_text(line)).not_to include(secret)
+      end
+    end
+  end
 end
