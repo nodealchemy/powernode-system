@@ -371,6 +371,39 @@ RSpec.describe System::ModulePublicationProcessor do
       expect(event.payload["reason"]).to include("github.com/nodealchemy/powernode-platform")
     end
 
+    # The assertions above are satisfied by a reason that prints the SAME
+    # characters for both shas, which is exactly what happened: short() clipped
+    # both operands to 7 and the refusal read "built from core b01d7c4 ... but
+    # this batch expected core b01d7c4". Four deploys were hand-repointed around
+    # this gate because its message destroyed the distinction it existed to
+    # convey. An `include` oracle cannot see that; assert the CONTRAST.
+    it "renders the two shas distinguishably in the reason" do
+      stub_native_manifest(core_sha: stale_core)
+
+      publish_native(class_b_module, tag: "stale-core")
+
+      reason = System::FleetEvent.where(kind: "system.module_promotion_withheld").last.payload["reason"]
+      built, expected = reason.scan(/core ([0-9a-f]+)/).flatten
+      expect(built).to be_present
+      expect(built).not_to eq(expected)
+    end
+
+    # The reason is prose for a human and abbreviates. An operator diagnosing a
+    # refusal needs the values that were actually compared, unabbreviated.
+    it "carries the raw operands on the event, not just the prose" do
+      stub_native_manifest(core_sha: stale_core)
+
+      publish_native(class_b_module, tag: "stale-core")
+
+      provenance = System::FleetEvent.where(kind: "system.module_promotion_withheld")
+                                     .last.payload["core_provenance"]
+      expect(provenance).to include(
+        "state"        => "mismatch",
+        "expected_sha" => expected_core,
+        "actual_sha"   => stale_core
+      )
+    end
+
     it "reports promoted: false on the module_published event for a refused build" do
       stub_native_manifest(core_sha: stale_core)
 

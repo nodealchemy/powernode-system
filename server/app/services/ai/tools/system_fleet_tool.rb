@@ -1329,7 +1329,7 @@ module Ai
           },
 
           "system_rollback_module_version" => {
-            description: "Repoint a module's current_version back to an earlier version after a bad publish — the undo for auto-promotion. Publishing auto-promotes, so a bad build reaches the fleet with no gate; this is how you get the fleet back onto a known-good version. With version_id, rolls back to that specific version; without it, auto-selects the most recent version that is actually USABLE. That distinction is load-bearing: the version immediately preceding a bad build often carries oci_digest null (it was never published), so a naive roll-back-one would point the fleet at something the agent cannot mount — this walks back until it finds a version with a real artifact that also clears the non-empty floor. Refuses when no usable target exists, when the named version has no usable artifact, or when it belongs to another module. Note this changes which version the fleet RUNS; it does not delete or unpublish the bad version, and nodes converge on their next reconcile.",
+            description: "Repoint a module's current_version back to an earlier version after a bad publish — the undo for auto-promotion, and the forward-repoint when a good build was withheld. Publishing auto-promotes by DEFAULT, but not unconditionally: promotion is withheld when the module sets auto_promote false, when the artifact is below the non-empty floor, or when System::CoreProvenanceGate refuses its core provenance — each emits a high-severity system.module_promotion_withheld event naming the reason. So a build that completed while current_version_number did not move is not necessarily a promote bug: read that event FIRST. Passing an explicit version_id newer than the current one is the supported way to advance the fleet onto a version that was published but withheld. With version_id, rolls back to that specific version; without it, auto-selects the most recent version that is actually USABLE. That distinction is load-bearing: the version immediately preceding a bad build often carries oci_digest null (it was never published), so a naive roll-back-one would point the fleet at something the agent cannot mount — this walks back until it finds a version with a real artifact that also clears the non-empty floor. Refuses when no usable target exists, when the named version has no usable artifact, or when it belongs to another module. Note this changes which version the fleet RUNS; it does not delete or unpublish the bad version, and nodes converge on their next reconcile.",
             parameters: {
               module_id:  { type: "string", required: true,  description: "System::NodeModule id to roll back" },
               version_id: { type: "string", required: false, description: "Explicit System::NodeModuleVersion to roll back to. Omit to auto-select the most recent usable version." },
@@ -5020,9 +5020,12 @@ module Ai
         error_result(e.message)
       end
 
-      # The undo for auto-promotion. Publishing writes current_version_id with
-      # no gate, so a bad build reaches the fleet immediately; before this there
-      # was no supported way to put it back.
+      # The undo for auto-promotion, and the forward-repoint when a good build
+      # was withheld. Publishing auto-promotes by default, but ModulePublication
+      # Processor withholds it on three conditions (auto_promote disabled, the
+      # non-empty artifact floor, core-provenance refusal) — each of which emits
+      # system.module_promotion_withheld. Nothing here is limited to moving
+      # BACKWARDS: promote_to_version! is the single writer either way.
       def rollback_module_version(params)
         module_id = params[:module_id].to_s
         return error_result("module_id is required") if module_id.blank?
