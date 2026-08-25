@@ -648,9 +648,60 @@ module System
     # batch (extension push, manual, CVE) carries a head_sha from a DIFFERENT
     # repo, so the expectation has to come from core's own tip.
     def expected_core_sha
-      return @batch.head_sha if core_sourced_batch?
+      return expand_core_sha(@batch.head_sha) if core_sourced_batch?
 
       resolve_core_tip
+    end
+
+    # head_sha is operator/webhook input validated for PRESENCE only, and this
+    # platform's dispatch convention is the SHORT form (`b01d7c47c`). Recorded
+    # as-is that expectation arms nothing downstream: System::CoreProvenanceGate
+    # needs MIN_ABBREV_LENGTH hex characters before a comparison against the
+    # artifact's 40-char `org.powernode.core_source_sha` annotation means
+    # anything, and System::CoreMirrorPreflight skips a short ref for the same
+    # reason. Four consecutive builds of powernode-extension-system and
+    # powernode-hub-backend published sound artifacts that never promoted
+    # because of this (2026-08-24/25).
+    #
+    # Expand it HERE, once, at the producer — the value is written to batch
+    # metadata and then read by three independent consumers, and a fix in any
+    # one of them leaves the other two comparing a prefix.
+    #
+    # NEVER fabricates: an unresolvable prefix returns the ORIGINAL value rather
+    # than nil. It is still a usable `git fetch` ref for stage15.sh's CORE_REF
+    # pin — dropping it would trade an unarmed gate for an unpinned clone, which
+    # is the worse half of the same problem — and the gate reports it as
+    # `unusable_expectation` rather than pretending it checked.
+    def expand_core_sha(sha)
+      raw = sha.to_s.strip
+      return raw if raw.blank? || ::System::CoreProvenanceGate.usable_expectation?(raw)
+
+      owner, repo = core_source_repo.split("/", 2)
+      return raw if owner.blank? || repo.blank?
+
+      credential = ::System::CiRunnerRegistrationResolver.new(account: @batch.account).credential
+      return raw unless credential
+
+      full = ::Devops::Git::ApiClient.for(credential)
+                                    .get_commit(owner, repo, raw).to_h[:sha].to_s.strip
+      # Confirm the resolution is an EXPANSION of what was asked for. get_commit
+      # resolves refs as well as shas, so a branch or tag that happens to look
+      # sha-like would otherwise silently redirect the expectation at a
+      # different commit — recording a confident full sha for a build that was
+      # never dispatched against it.
+      return raw unless full.downcase.start_with?(raw.downcase)
+
+      Rails.logger.info(
+        "[NativeModuleBuildOrchestrator] batch #{@batch.id} expanded core expectation #{raw} -> #{full}"
+      )
+      full
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[NativeModuleBuildOrchestrator] could not expand core expectation #{sha.inspect} against " \
+        "#{core_source_repo} for batch #{@batch.id} (#{e.class}: #{e.message}) — recording it as given; " \
+        "the core-drift promote gate will report `unusable_expectation` if it is too short to compare"
+      )
+      sha.to_s.strip
     end
 
     # Structurally identical to #resolve_module_source_tip above, pointed at the

@@ -622,10 +622,19 @@ module Api
           # System::CoreProvenanceGate will quietly backstop this. For a blank
           # or unreachable expectation the gate is INERT (its `no_expectation`
           # arm passes). For an ABBREVIATED expectation it is the opposite:
-          # same_commit? rejects any prefix under MIN_ABBREV_LENGTH, so the gate
-          # REFUSES every Class-B promote in that batch as `mismatch`. Both are
-          # fail-safe, but they are different outcomes and an operator reading
-          # this line must not be told the wrong one.
+          # the gate reports `unusable_expectation` and does NOT refuse — it
+          # says out loud that nothing was measured. It used to refuse every
+          # Class-B promote in such a batch as `mismatch`, which is what this
+          # comment described and what actually happened four times running on
+          # 2026-08-24/25 before it was fixed. Both outcomes are fail-safe in
+          # their own way, but they are DIFFERENT outcomes and an operator
+          # reading this line must not be told the wrong one.
+          #
+          # In practice this arm should now be unreachable for a core-sourced
+          # batch: NativeModuleBuildOrchestrator#expand_core_sha resolves a
+          # short head_sha to the full sha at dispatch, which arms this pin and
+          # the promote gate together. It stays because expansion is
+          # best-effort — a Gitea outage still lands here.
           def unpinned!(module_slug, reason)
             Rails.logger.warn(
               "[ci_build_context] #{module_slug} will build with NO core pin: #{reason}. The parent " \

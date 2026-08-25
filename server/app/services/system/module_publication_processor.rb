@@ -387,16 +387,25 @@ module System
     # got two nodes into an outage on 2026-08-15.
     def withhold_promotion_for_core_drift!(node_module, version, tag, verdict)
       reason = "core-source provenance #{verdict.state}: #{verdict.reason}"
+      # Carry the raw operands, not just the prose. The reason string is
+      # rendered for a human and abbreviates; an operator diagnosing a refusal
+      # needs the values that were actually compared.
+      provenance = {
+        state:        verdict.state,
+        expected_sha: verdict.expected_sha,
+        actual_sha:   verdict.actual_sha,
+        actual_remote: verdict.actual_remote
+      }.compact
 
       Rails.logger.error(
         "[ModulePublicationProcessor] REFUSING to promote #{node_module.name}@#{tag}: #{reason}. " \
         "Version #{version.id} is published but NOT current; the fleet keeps the previous version. " \
         "Set #{::System::CoreProvenanceGate::ENABLED_SETTING}=false to override."
       )
-      emit_promotion_withheld_event(node_module, version, tag, reason)
+      emit_promotion_withheld_event(node_module, version, tag, reason, provenance: provenance)
     end
 
-    def emit_promotion_withheld_event(node_module, version, tag, reason)
+    def emit_promotion_withheld_event(node_module, version, tag, reason, provenance: nil)
       return unless defined?(::System::Fleet::EventBroadcaster)
 
       ::System::Fleet::EventBroadcaster.emit!(
@@ -415,7 +424,7 @@ module System
           version_number: version.version_number,
           git_tag:        tag,
           reason:         reason
-        }
+        }.merge(provenance.present? ? { core_provenance: provenance } : {})
       )
     rescue StandardError => e
       Rails.logger.warn("[ModulePublicationProcessor] promotion-withheld event failed: #{e.message}")

@@ -282,6 +282,70 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
         .to eq("409c706ecd758a04f2237fdb8f2a1092106b903d")
     end
 
+    # Regression 2026-08-24/25: this platform dispatches core-sourced batches
+    # with the SHORT tag form, and the expectation was recorded verbatim. A
+    # 9-character prefix is below CoreProvenanceGate::MIN_ABBREV_LENGTH, so it
+    # could never match the artifact's 40-character annotation — the promote
+    # gate refused four consecutive good builds. Expand it at the producer,
+    # because the recorded value is read by three independent consumers.
+    context "when a core-sourced batch's head_sha is a short prefix" do
+      let(:full) { "409c706ecd758a04f2237fdb8f2a1092106b903d" }
+
+      it "expands it to the full sha so the promote gate can actually compare" do
+        seed_pool_member
+        fake = stub_git_api(tip: "e8f31a9d1111111111111111111111111111aaaa")
+        allow(fake).to receive(:get_commit).and_return({ sha: full })
+        batch = core_batch(head_sha: full[0, 9])
+
+        described_class.dispatch!(batch: batch)
+
+        recorded = batch.reload.metadata["expected_core_sha"]
+        expect(recorded).to eq(full)
+        expect(System::CoreProvenanceGate.usable_expectation?(recorded)).to be true
+      end
+
+      # get_commit resolves REFS as well as shas. A tag or branch that happens
+      # to look sha-like would otherwise silently redirect the expectation at a
+      # commit the batch was never dispatched against — recording a confident
+      # full sha for the wrong thing.
+      it "refuses a resolution that is not an expansion of what was asked for" do
+        seed_pool_member
+        fake = stub_git_api(tip: "e8f31a9d1111111111111111111111111111aaaa")
+        allow(fake).to receive(:get_commit)
+          .and_return({ sha: "ffffffffffffffffffffffffffffffffffffffff" })
+        batch = core_batch(head_sha: full[0, 9])
+
+        described_class.dispatch!(batch: batch)
+
+        expect(batch.reload.metadata["expected_core_sha"]).to eq(full[0, 9])
+      end
+
+      # Never fabricate, and never LOSE the value: it is still a usable
+      # `git fetch` ref for stage15.sh's CORE_REF pin. Dropping it would trade
+      # an unarmed gate for an unpinned clone.
+      it "records the prefix as given when it cannot be expanded" do
+        seed_pool_member
+        fake = stub_git_api(tip: "e8f31a9d1111111111111111111111111111aaaa")
+        allow(fake).to receive(:get_commit).and_raise(StandardError, "gitea down")
+        batch = core_batch(head_sha: full[0, 9])
+
+        described_class.dispatch!(batch: batch)
+
+        expect(batch.reload.metadata["expected_core_sha"]).to eq(full[0, 9])
+      end
+
+      it "leaves an already-full head_sha untouched, with no extra API call" do
+        seed_pool_member
+        fake = stub_git_api(tip: "e8f31a9d1111111111111111111111111111aaaa")
+        expect(fake).not_to receive(:get_commit)
+        batch = core_batch(head_sha: full)
+
+        described_class.dispatch!(batch: batch)
+
+        expect(batch.reload.metadata["expected_core_sha"]).to eq(full)
+      end
+    end
+
     # An extension-triggered / manual / CVE batch's head_sha is NOT a core sha,
     # so the expectation has to come from the core repo's own tip — resolved
     # from the AUTHORITATIVE remote, which is what a lagging GitHub mirror will
