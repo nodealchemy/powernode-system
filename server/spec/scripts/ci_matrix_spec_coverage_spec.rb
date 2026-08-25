@@ -17,6 +17,16 @@ require "yaml"
 # explicitly (or it is a spec-less helper directory). If someone adds a new
 # name to the sweep's exclusion list without adding it to a suite, this spec
 # goes red — the silent-uncovered failure mode cannot come back unnoticed.
+#
+# IMP-31a5ea65480d — the suite list originally lived in a GH-Actions
+# `strategy.matrix.suite` array. Commits 5aeec038/26752f8e later collapsed
+# the four suites into ONE job that iterates `for suite in ...; do` in a
+# shell loop (every matrix entry bound 0.0.0.0:5432, and neither a shared
+# concurrency group nor max-parallel staggered them). That refactor deleted
+# the `strategy:` key `rspec_matrix_suites` was reading, so "has a misc
+# sweep suite in the matrix" went red not because the sweep vanished — it's
+# still there, `case "$suite" in ... misc)` — but because the detector never
+# looked at the shell loop. Recognize both shapes.
 RSpec.describe "ci.yaml rspec matrix spec coverage" do
   let(:extension_root) { File.expand_path("../../..", __dir__) }
   let(:workflow_path)  { File.join(extension_root, ".gitea", "workflows", "ci.yaml") }
@@ -32,7 +42,14 @@ RSpec.describe "ci.yaml rspec matrix spec coverage" do
     jobs = workflow_yaml.fetch("jobs")
     rspec_job = jobs.values.find { |j| j.to_s.include?("matrix") && j.to_s.include?("suite") }
     expect(rspec_job).not_to be_nil, "no matrix-suite job found in ci.yaml"
-    rspec_job.dig("strategy", "matrix", "suite")
+
+    from_strategy = rspec_job.dig("strategy", "matrix", "suite")
+    return from_strategy if from_strategy
+
+    # Sequential-job shape: `for suite in controllers services ...; do`
+    # inside a `run:` step, rather than a `strategy.matrix.suite` array.
+    m = workflow_text.match(/for suite in ([^;]+); do/)
+    m && m[1].split
   end
 
   # Every server/spec/<dir> the case block names via an explicit
