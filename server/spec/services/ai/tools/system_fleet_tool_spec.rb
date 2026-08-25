@@ -4607,9 +4607,30 @@ end
 
     # A module already in the buildable set, so `considered:` has something real
     # to name and the "you considered nothing" prong has something to fire on.
+    #
+    # It is INDEXED, because an indexed catalog is the state every R1/R2/R3
+    # example below means to exercise: from IMP-45bda04c6123 the gate refuses
+    # outright when nothing in the buildable catalog carries an embedding, so
+    # leaving the incumbent unembedded would make every example here pass or
+    # fail on the coverage prong instead of the one it names.
     let!(:incumbent) do
       create(:system_node_module, account: account, node_platform: platform_record,
                                   name: "traefik", manifest_yaml: "schema_version: 1\nname: traefik\n")
+        .tap { |m| index_module!(m) }
+    end
+
+    # Writes a vector directly: the point is only that the row HOLDS a current
+    # one, and going through the real embedding path would put the worker HTTP
+    # call on the critical path of a gate spec. `generated_at` is what makes it
+    # FRESH rather than merely present — update_columns leaves updated_at alone.
+    def index_module!(mod, generated_at: Time.current)
+      mod.update_columns(embedding: Array.new(::Ai::Memory::EmbeddingService::EMBEDDING_DIMENSION, 0.1),
+                         embedding_generated_at: generated_at)
+    end
+
+    def unindex_catalog!
+      ::System::NodeModule.where(account: account)
+                          .update_all(embedding: nil, embedding_generated_at: nil)
     end
 
     # Calls execute directly rather than through `call` so a string-keyed
@@ -4748,6 +4769,190 @@ end
       mod = ::System::NodeModule.find(r[:data][:node_module][:id])
       expect(mod.versions.count).to eq(1)
       expect(mod.current_version_id).to eq(r[:data][:node_module_version_id])
+    end
+
+    # IMP-45bda04c6123 — the gate's own precondition.
+    #
+    # Everything above verifies the SHAPE of the declaration. None of it can
+    # tell whether the survey the declaration summarizes could have found
+    # anything: `considered` is checked against the buildable catalog, which is
+    # a plain name set, while the ranking that would actually surface an
+    # overlapping module runs over embeddings. On 2026-08-25 the live catalog
+    # reported coverage {total: 42, embedded: 0} — so every reuse check since
+    # the catalog emptied cleared a search that could not have returned a
+    # candidate, and emitted a positive "no existing module covers this" signal
+    # carrying no information.
+    #
+    # SEARCHABLE, not "has a vector". The three ways a buildable module can be
+    # invisible to system_discover_modules each get an example, because each one
+    # produces a catalog that a naive `embedding IS NOT NULL` count calls
+    # healthy: never embedded, embedded-then-edited (stale), and disabled.
+    describe "the embedding-coverage precondition (IMP-45bda04c6123)" do
+      it "refuses an otherwise-valid reuse check when NOT ONE buildable module is indexed" do
+        unindex_catalog!
+        before = ::System::NodeModule.where(account: account).count
+
+        r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                    considered: [ { module: "traefik", rejected_because: "different purpose" } ] })
+
+        expect(r[:success]).to be(false)
+        # LOUD: names the condition, the counts, and the operator remedy.
+        expect(r[:error]).to match(/searchable/i)
+        expect(r[:error]).to include("none of the 1 buildable")
+        expect(r[:error]).to include("backfill_embeddings")
+        # and it refuses BEFORE the row exists, exactly like the other prongs.
+        expect(::System::NodeModule.where(account: account).count).to eq(before)
+      end
+
+      it "refuses a catalog whose every vector is STALE — 100% embedded, 0% searchable" do
+        # The trap the coverage rake task calls "the second half of that lesson":
+        # the row holds a vector, so an `embedding IS NOT NULL` count reads 1 of
+        # 1, but the vector describes the module as it was before its last edit.
+        index_module!(incumbent, generated_at: 1.day.ago)
+        incumbent.update_columns(updated_at: Time.current)
+
+        r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                    considered: [ { module: "traefik", rejected_because: "different purpose" } ] })
+
+        expect(r[:success]).to be(false)
+        expect(r[:error]).to match(/searchable/i)
+        # The message must not claim nothing is embedded — one thing is.
+        expect(r[:error]).to include("1 carry an embedding")
+      end
+
+      it "refuses a catalog whose only indexed module is DISABLED — discovery never ranks it" do
+        # CatalogDiscoveryService applies `.enabled` before ranking, so a
+        # disabled module is not a candidate no matter how fresh its vector is.
+        incumbent.update_columns(enabled: false)
+
+        r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                    considered: [ { module: "traefik", rejected_because: "different purpose" } ] })
+
+        expect(r[:success]).to be(false)
+        expect(r[:error]).to match(/searchable/i)
+      end
+
+      it "accepts a declaration once the catalog is searchable, and records what it was surveying" do
+        r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                    considered: [ { module: "traefik", rejected_because: "different purpose" } ] })
+        expect(r[:success]).to be(true)
+
+        mod = ::System::NodeModule.find(r[:data][:node_module][:id])
+        # The stamp is what lets a later auditor tell "surveyed 1 of 1 searchable
+        # modules and found no overlap" from "surveyed nothing". Without it the
+        # two persist identically.
+        expect(mod.config["reuse_check"]["catalog_coverage"])
+          .to eq("total" => 1, "embedded" => 1, "searchable" => 1)
+        # Full coverage ⇒ nothing to disclose.
+        expect(r[:data][:reuse_survey]).to be_nil
+        # and it reads BACK over MCP, rather than being a write-only audit field.
+        expect(r[:data][:node_module][:reuse_check][:catalog_coverage])
+          .to eq("total" => 1, "embedded" => 1, "searchable" => 1)
+      end
+
+      it "DISCLOSES partial coverage on a successful authoring instead of reporting a clean survey" do
+        create(:system_node_module, account: account, node_platform: platform_record,
+                                    name: "unindexed-peer", manifest_yaml: "schema_version: 1\nname: unindexed-peer\n")
+
+        r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                    considered: [ { module: "traefik", rejected_because: "different purpose" } ] })
+        expect(r[:success]).to be(true)
+
+        survey = r[:data][:reuse_survey]
+        expect(survey[:total]).to eq(2)
+        expect(survey[:searchable]).to eq(1)
+        expect(survey[:unsearchable]).to eq(1)
+        expect(survey[:warning]).to match(/1 of 2 buildable module\(s\) were NOT searchable/)
+        expect(survey[:acknowledged_unindexed]).to be(false)
+      end
+
+      it "does not fire on an EMPTY catalog — a fresh install has nothing to index, not a stale index" do
+        incumbent.destroy!
+        expect(::System::ModuleBuildPlannerService.buildable_module_names(account)).to be_empty
+
+        r = authored(reuse_check: { justification: "R2", justification_detail: "first module in the account",
+                                    considered: [] })
+        expect(r[:success]).to be(true)
+        expect(r[:data][:reuse_survey]).to be_nil
+      end
+
+      it "lets a caller author against an unsearchable catalog only by SAYING SO, and records it as unverified" do
+        unindex_catalog!
+
+        r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                    considered: [ { module: "traefik", rejected_because: "different purpose" } ],
+                                    unindexed_catalog_ack: "embedding provider unreachable; authoring under operator direction" })
+        expect(r[:success]).to be(true)
+
+        recorded = ::System::NodeModule.find(r[:data][:node_module][:id]).config["reuse_check"]
+        expect(recorded["unindexed_catalog_ack"]).to match(/provider unreachable/)
+        # The persisted coverage contradicts the survey on its face — this
+        # record must NOT read like the searchable one above.
+        expect(recorded["catalog_coverage"]).to eq("total" => 1, "embedded" => 0, "searchable" => 0)
+        # and the response says so too, rather than reading as a clean survey.
+        expect(r[:data][:reuse_survey][:acknowledged_unindexed]).to be(true)
+        expect(r[:data][:reuse_survey][:searchable]).to eq(0)
+      end
+
+      it "does not accept a BLANK acknowledgement as an acknowledgement" do
+        unindex_catalog!
+
+        r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                    considered: [ { module: "traefik", rejected_because: "different purpose" } ],
+                                    unindexed_catalog_ack: "   " })
+        expect(r[:success]).to be(false)
+        expect(r[:error]).to match(/searchable/i)
+      end
+
+      # `false.to_s.present?` is TRUE, so a truthiness test on the stringified
+      # value would let a caller clear the gate with a field whose plain reading
+      # is "no, I do not acknowledge" — and then persist that as the reason.
+      [ false, 0, [], {}, true ].each do |bad|
+        it "refuses a non-String acknowledgement (#{bad.inspect}) rather than reading it as consent" do
+          unindex_catalog!
+
+          r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                      considered: [ { module: "traefik", rejected_because: "different purpose" } ],
+                                      unindexed_catalog_ack: bad })
+          expect(r[:success]).to be(false)
+          expect(r[:error]).to match(/must be a non-blank STRING/)
+        end
+      end
+
+      it "gates the authoring UPDATE path on coverage too — the same authoring event in two calls" do
+        unindex_catalog!
+        bare = create(:system_node_module, account: account, node_platform: platform_record, name: "viaupdate")
+
+        r = call("system_update_module", module_id: bare.id,
+                                         reuse_check: { justification: "R1",
+                                                        justification_detail: "two node types consume it today",
+                                                        considered: [ { module: "traefik", rejected_because: "proxy, not a scraper" } ] },
+                                         manifest_yaml: "schema_version: 1\nname: viaupdate\nfile_spec:\n  - \"/usr/local/bin/viaupdate\"\nreboot_required: false\n")
+        expect(r[:success]).to be(false)
+        expect(r[:error]).to match(/searchable/i)
+        expect(bare.reload.manifest_yaml).to be_blank
+      end
+
+      it "does not gate an UNGATED re-import — coverage only guards the authoring case" do
+        unindex_catalog!
+        r = call("system_update_module", module_id: incumbent.id,
+                                         manifest_yaml: "schema_version: 1\nname: traefik\nfile_spec:\n  - \"/usr/local/bin/traefik\"\nreboot_required: false\n")
+        expect(r[:success]).to be(true)
+        # and the re-import actually LANDED — a silent no-op would also be
+        # "success" here, which would make this example prove nothing. (file_spec
+        # is stored base64-encoded, so the manifest is the readable oracle.)
+        expect(incumbent.reload.manifest_yaml).to include("/usr/local/bin/traefik")
+        expect(incumbent.file_spec).to eq([ Base64.strict_encode64("/usr/local/bin/traefik") ])
+      end
+
+      it "refuses the coverage prong LAST, so a garbage declaration is not first told about the bypass" do
+        unindex_catalog!
+        r = authored(reuse_check: { justification: "R9", justification_detail: "",
+                                    considered: [] })
+        expect(r[:success]).to be(false)
+        expect(r[:error]).to match(/R1, R2, R3/)
+        expect(r[:error]).not_to match(/unindexed_catalog_ack/)
+      end
     end
 
     it "asks the novelty question through the planner's own seam" do

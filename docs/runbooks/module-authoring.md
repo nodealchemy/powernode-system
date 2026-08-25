@@ -67,6 +67,33 @@ invented candidate refuses the call by name. The accepted declaration is persist
 manifest) and a re-import onto an already-buildable module (a CVE version bump) are not
 gated — neither is authoring.
 
+**The gate has a precondition of its own (IMP-45bda04c6123, 2026-08-25).** A `reuse_check`
+summarises a survey, and a survey is only worth anything if it could have found something.
+`system_discover_modules` ranks over embeddings, so a buildable module is **searchable**
+only when it is enabled AND carries an embedding AND that embedding is not stale (the row
+has not been edited since the vector was generated). The gate measures that directly:
+
+- **Zero searchable modules ⇒ REFUSED.** The survey could not have returned a candidate for
+  any intent, so "no existing module covers this" is the absence of a finding, not a
+  finding. The refusal names `rake system:catalog:backfill_embeddings`. This is the state
+  the live catalog was actually in on 2026-08-25: 42 buildable modules, 0 embeddings, and
+  every reuse check since had cleared vacuously.
+- **Partial coverage ⇒ ALLOWED, but disclosed.** The response carries a `reuse_survey`
+  block naming how many buildable modules the survey could not see. It is not refused:
+  nothing embeds a module on save today, so every module authored lands unsearchable, and
+  refusing on any gap would demand a backfill between any two authorings.
+- **An empty catalog is not an unsearchable one** — the first module in an account is
+  authorable with `considered: []`, exactly as before.
+- **Escape hatch.** If the embedding provider is unreachable and the module must be
+  authored anyway, pass `reuse_check.unindexed_catalog_ack: "<why>"` — a non-blank
+  **string**, not a flag. The module is then recorded as carrying an explicitly UNVERIFIED
+  reuse check.
+
+The accepted declaration is persisted with a `catalog_coverage` stamp
+(`{total, embedded, searchable}`) alongside `checked_at`, and both are read back on
+`system_get_module` under `reuse_check` — so an auditor can later tell a real survey from a
+blind one, which is precisely what the un-stamped record could not express.
+
 The gate covers the **MCP authoring surface only**. The REST `import_manifest` endpoint,
 the CI publish path, and `rails db:seed` call `System::ManifestImportService` directly and
 are deliberately ungated: those are the human/committed paths, and Phase 0 above is the

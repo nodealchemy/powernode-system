@@ -212,6 +212,15 @@ module System
             "OR system_node_modules.embedding_generated_at IS NULL " \
             "OR system_node_modules.embedding_generated_at < system_node_modules.updated_at")
     }
+    # The exact negation, kept adjacent so the two cannot drift apart: rows a
+    # semantic search can rank AND whose vector still describes the current row.
+    # "Has an embedding" is the weaker, misleading test — see the reuse gate in
+    # Ai::Tools::SystemFleetTool, which measures searchability with this.
+    scope :embedding_fresh, -> {
+      where("system_node_modules.embedding IS NOT NULL " \
+            "AND system_node_modules.embedding_generated_at IS NOT NULL " \
+            "AND system_node_modules.embedding_generated_at >= system_node_modules.updated_at")
+    }
 
     # Finds modules whose upstream package provides a given capability —
     # either as the package's own name (e.g. "python3") or via the

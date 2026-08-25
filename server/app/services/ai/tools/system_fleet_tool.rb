@@ -415,7 +415,7 @@ module Ai
             parameters: { module_id: { type: "string", required: true, description: "UUID of the NodeModule to delete (account-scoped)" } }
           },
           "system_create_module" => {
-            description: "Author a new NodeModule. Same surface as REST create. Spec fields (mask/file_spec/package_spec/dependency_spec/protected_spec) take newline-joined glob strings or already-encoded arrays. REUSE GATE (enforced, not advisory): supplying manifest_yaml for a name the build planner does not already build is authoring a NEW module, and is REFUSED unless you also pass reuse_check. Run system_discover_modules by PURPOSE first; every module you name in reuse_check.considered is verified to exist, so an invented candidate refuses the call.",
+            description: "Author a new NodeModule. Same surface as REST create. Spec fields (mask/file_spec/package_spec/dependency_spec/protected_spec) take newline-joined glob strings or already-encoded arrays. REUSE GATE (enforced, not advisory): supplying manifest_yaml for a name the build planner does not already build is authoring a NEW module, and is REFUSED unless you also pass reuse_check. Run system_discover_modules by PURPOSE first; every module you name in reuse_check.considered is verified to exist, so an invented candidate refuses the call. The gate also refuses when the buildable catalog holds ZERO embeddings, because the survey it asks for could not have returned anything.",
             parameters: {
               name: { type: "string", required: true, description: "Module name (unique per account)" },
               node_platform_id: { type: "string", required: true, description: "UUID of the NodePlatform this module targets" },
@@ -438,7 +438,7 @@ module Ai
               protected_spec: { type: "string", required: false, description: "Protected-path spec — newline-joined globs or encoded array" },
               consent_budget_per_day: { type: "integer", required: false, description: "Daily ceiling on autonomous decisions for this module (policy; the consumed-count ledger is not settable here)" },
               config: { type: "object", required: false, description: "Module config hash — validated by System::ModuleConfigValidator (verify/restart_after_update/security/daemon_overrides grammar). Replaces the stored config WHOLESALE: omitting a security or verify block the module currently carries is refused; to remove one, state it explicitly (security: null or {}, verify: null)." },
-              reuse_check: { type: "object", required: false, description: "REQUIRED when manifest_yaml authors a name the build planner does not already build. Shape: { considered: [{ module: \"<existing module name>\", rejected_because: \"<why it does not serve this purpose>\" }], justification: \"R1\"|\"R2\"|\"R3\", justification_detail: \"<how that prong is satisfied>\" }. R1 = two or more real consumers today or a hard requires: capability edge; R2 = an independent third-party payload with its own version/CVE cadence; R3 = an opt-in heavy payload a node type must be able to exclude. Every considered module is checked against the buildable catalog and every entry needs a non-blank rejected_because — the declaration is verified, not recorded. Persisted to the module's config.reuse_check. See docs/runbooks/module-authoring.md Phase 0." },
+              reuse_check: { type: "object", required: false, description: "REQUIRED when manifest_yaml authors a name the build planner does not already build. Shape: { considered: [{ module: \"<existing module name>\", rejected_because: \"<why it does not serve this purpose>\" }], justification: \"R1\"|\"R2\"|\"R3\", justification_detail: \"<how that prong is satisfied>\" }. R1 = two or more real consumers today or a hard requires: capability edge; R2 = an independent third-party payload with its own version/CVE cadence; R3 = an opt-in heavy payload a node type must be able to exclude. Every considered module is checked against the buildable catalog and every entry needs a non-blank rejected_because — the declaration is verified, not recorded. Persisted to the module's config.reuse_check, together with the catalog_coverage the survey ran against. COVERAGE PRECONDITION: if NOT ONE buildable module in the account carries a search embedding, system_discover_modules returns [] for every intent and the survey could not have found an overlap — the call is REFUSED and names `rake system:catalog:backfill_embeddings`. To author anyway (e.g. the embedding provider is unreachable), add unindexed_catalog_ack: \"<why>\", which records the reuse check as explicitly unverified. An empty catalog does not trigger this. See docs/runbooks/module-authoring.md Phase 0." },
               manifest_yaml: { type: "string", required: false, description: "Raw manifest.yaml. When given it is authoritative for the spec/lifecycle fields (mask/file_spec/package_spec/dependency_spec/protected_spec/init/reboot), which are derived by the same importer the loader seed uses — pass only name/node_platform_id/category_id alongside it. This is what makes an MCP-authored module carry a manifest_yaml and therefore be buildable (visible to the module-build planner)." },
               create_version: { type: "boolean", required: false, description: "With manifest_yaml, also snapshot the imported state into a new NodeModuleVersion (default true on create)" },
               version_changelog: { type: "string", required: false, description: "Changelog recorded on the snapshotted version when create_version is set" }
@@ -1990,11 +1990,14 @@ module Ai
 
         record_reuse_check(node_module, verified_reuse)
 
-        success_result(
+        payload = {
           node_module: serialize_module_full(node_module.reload),
           node_module_version_id: imported[:version_id],
           resolved_dependencies: imported[:resolved_dependencies]
-        )
+        }
+        disclosure = reuse_survey_disclosure(verified_reuse)
+        payload[:reuse_survey] = disclosure if disclosure
+        success_result(payload)
       end
 
       def update_module(params)
@@ -2029,7 +2032,10 @@ module Ai
           record_reuse_check(node_module, verified_reuse)
         end
 
-        success_result(node_module: serialize_module_full(node_module.reload))
+        payload = { node_module: serialize_module_full(node_module.reload) }
+        disclosure = reuse_survey_disclosure(verified_reuse)
+        payload[:reuse_survey] = disclosure if disclosure
+        success_result(payload)
       end
 
       # IMP-a67be4fe9041 — the R1/R2/R3 reuse gate, enforced rather than advised.
@@ -2056,6 +2062,33 @@ module Ai
       # "I considered nothing" against a non-empty catalog each refuse too.
       REUSE_JUSTIFICATIONS = %w[R1 R2 R3].freeze
       REUSE_RUNBOOK = "docs/runbooks/module-authoring.md Phase 0"
+
+      # IMP-45bda04c6123 — the gate's own precondition, and the escape hatch.
+      #
+      # Everything the gate checked before this verified the SHAPE of the
+      # declaration. Nothing verified that the survey it summarizes COULD have
+      # found anything. `considered` is validated against the buildable name
+      # set, but the ranking that actually surfaces an overlapping module runs
+      # over embeddings, and on 2026-08-25 the live catalog held 42 buildable
+      # modules and 0 embeddings. In that state system_discover_modules returns
+      # [] for every intent, so the caller reports "no existing module covers
+      # this" having searched an index that contains nothing — a positive signal
+      # carrying no information, which is worse than no gate. Refusing is the
+      # only outcome that keeps "found no overlap" distinguishable from "could
+      # not have found one".
+      #
+      # REFUSE, not warn: the caller here is an agent, and a warning on a
+      # successful call is a field nothing is obliged to read — the platform has
+      # already been bitten by producer-set fields no consumer consults. The
+      # refusal is the only form that cannot be ignored.
+      #
+      # But refusal alone would strand a deployment whose embedding provider is
+      # unreachable (egress-restricted control planes make this ordinary, not
+      # hypothetical) with no way to author a module at all. So the caller may
+      # proceed by SAYING SO in the declaration, and that statement is persisted
+      # with the coverage counts beside it — the record then reads as an
+      # explicitly unverified reuse check rather than a clean bill of health.
+      REUSE_UNINDEXED_ACK = "unindexed_catalog_ack"
 
       # Returns [refusal_message_or_nil, verified_declaration_or_nil].
       #
@@ -2121,8 +2154,127 @@ module Ai
                    "names returned by system_discover_modules / system_list_modules.", nil ]
         end
 
-        [ nil, decl.merge("considered" => considered) ]
+        # The coverage precondition runs LAST, after the declaration is
+        # otherwise verified. Order matters for one reason: the refusal names
+        # the `unindexed_catalog_ack` escape hatch, and running it earlier would
+        # mean a caller whose declaration is pure garbage learns about the
+        # bypass before it is told its justification is missing.
+        coverage = reuse_catalog_coverage
+        if (refusal = unsearchable_catalog_refusal(name: name, decl: decl, coverage: coverage))
+          return [ refusal, nil ]
+        end
+
+        # The coverage stamp travels with the verified declaration so the
+        # persisted record says what the catalog looked like when the survey
+        # ran. Without it a survey of a searchable catalog and a survey of an
+        # unsearchable one persist identically, and the whole finding is that
+        # those two are indistinguishable after the fact.
+        [ nil, decl.merge("considered" => considered, "catalog_coverage" => coverage) ]
       end
+
+      # What the reuse survey could actually have seen.
+      #
+      # `total` is the buildable set — deliberately the same scope
+      # ModuleBuildPlannerService.buildable_module_names uses, so this figure
+      # always equals the `considered` universe the other prongs enforce.
+      #
+      # `searchable` is the subset system_discover_modules could actually rank,
+      # and it is narrower than "has an embedding" in two ways that both matter:
+      #
+      #   * DISABLED modules are excluded, because CatalogDiscoveryService
+      #     applies `.enabled` before ranking. A catalog of 42 embedded rows,
+      #     40 of them disabled, reads as fully indexed while the survey ranked
+      #     two — coverage measured as "has a vector" would call that healthy.
+      #   * STALE rows are excluded (`embedding_stale`: never embedded, or
+      #     edited after the vector was generated). The platform already learned
+      #     that a catalog can read 100% embedded while every vector describes
+      #     an older row — the backfill's own candidate scope is this same
+      #     scope, and the coverage rake task reports `stale` as a first-class
+      #     column for exactly this reason. A vector describing a module's
+      #     previous purpose is not searchable for its current one.
+      def reuse_catalog_coverage
+        buildable  = ::System::NodeModule.where(account: @account).where.not(manifest_yaml: [ nil, "" ])
+        total      = buildable.count
+        return { "total" => 0, "embedded" => 0, "searchable" => 0 } if total.zero?
+
+        {
+          "total"      => total,
+          "embedded"   => buildable.with_embedding.count,
+          "searchable" => buildable.enabled.embedding_fresh.count
+        }
+      end
+
+      # Returns a refusal message, or nil when the survey could have been real.
+      #
+      # REFUSE AT ZERO, DISCLOSE ABOVE IT. Zero searchable modules is the state
+      # in which the survey carries no information at all: system_discover_modules
+      # returns [] for every intent, so "no existing module covers this" is not a
+      # finding, it is the absence of one. Partial coverage is different in kind
+      # — the survey did rank real candidates and the answer is informative, just
+      # incomplete — so it is reported to the caller (see reuse_survey_disclosure)
+      # and stamped on the module rather than refused. Refusing on any
+      # unsearchable row would be untenable in practice anyway: nothing embeds a
+      # NodeModule on save today, so every module authored through this gate
+      # lands unsearchable, and a strict predicate would demand a backfill
+      # between any two authorings and turn the escape hatch into the normal
+      # path, destroying the signal it exists to carry.
+      def unsearchable_catalog_refusal(name:, decl:, coverage:)
+        # An EMPTY catalog is not an unsearchable one. A fresh account with no
+        # buildable modules has nothing to survey and nothing to embed, and the
+        # `considered.empty?` prong already lets that case through — refusing
+        # here would make the first module in an account unauthorable.
+        return nil unless coverage["total"].to_i.positive?
+        return nil unless coverage["searchable"].to_i.zero?
+
+        ack = decl[REUSE_UNINDEXED_ACK]
+        # A String, specifically. `false`, `0` and `[]` are all `.present?`
+        # once stringified, so a truthiness test would let a caller clear the
+        # gate with a field whose plain reading is "no, I do not acknowledge"
+        # — and would then persist that as the audit record's stated reason.
+        return nil if ack.is_a?(String) && ack.strip.present?
+
+        detail = if ack.nil?
+                   ""
+        else
+                   " (reuse_check.#{REUSE_UNINDEXED_ACK} must be a non-blank STRING saying why; " \
+                     "got #{ack.inspect})"
+        end
+
+        "authoring \"#{name}\" cannot clear the reuse gate: none of the #{coverage['total']} buildable " \
+          "module(s) in this account are searchable (#{coverage['embedded']} carry an embedding, 0 of those " \
+          "are both enabled and current), so system_discover_modules could not have surfaced an overlapping " \
+          "module for ANY intent — an empty survey against this catalog means NOT INDEXED, not \"nothing " \
+          "exists\". Run `rake system:catalog:backfill_embeddings` and re-check the `coverage` field on " \
+          "system_discover_modules before authoring. If the embedding provider is unreachable and the module " \
+          "must be authored anyway, pass reuse_check.#{REUSE_UNINDEXED_ACK}: \"<why>\" — the module is then " \
+          "recorded as carrying an explicitly UNVERIFIED reuse check#{detail} (#{REUSE_RUNBOOK})."
+      end
+
+      # The partial-coverage half. A successful authoring says, in the response
+      # the caller actually reads, how much of the catalog its survey could see
+      # — so "found no overlap" is never reported without the denominator that
+      # qualifies it. Nil when the survey saw everything (nothing to disclose)
+      # or when no gate ran.
+      def reuse_survey_disclosure(declaration)
+        coverage = declaration.is_a?(Hash) ? declaration["catalog_coverage"] : nil
+        return nil unless coverage.is_a?(Hash)
+
+        total      = coverage["total"].to_i
+        searchable = coverage["searchable"].to_i
+        return nil if total.zero? || searchable >= total
+
+        {
+          searchable: searchable,
+          total:      total,
+          unsearchable: total - searchable,
+          warning: "#{total - searchable} of #{total} buildable module(s) were NOT searchable when this " \
+                   "reuse check ran (missing, stale, or disabled embeddings), so the survey behind it could " \
+                   "not have surfaced an overlap in those. Run `rake system:catalog:backfill_embeddings` to " \
+                   "close the gap.",
+          acknowledged_unindexed: declaration[REUSE_UNINDEXED_ACK].is_a?(String) ? true : false
+        }
+      end
+
 
       # Persist the VERIFIED outcome on the module so the decision stays auditable
       # after the call that made it — the same config bag the platform already
@@ -4264,8 +4416,25 @@ module Ai
           dependant: m.respond_to?(:dependant?) ? m.dependant? : false,
           parent_module_id: m.try(:parent_module_id),
           assignment_count: m.node_module_assignments.count,
-          template_count: m.template_modules.count
+          template_count: m.template_modules.count,
+          reuse_check: serialize_reuse_check(m)
         )
+      end
+
+      # IMP-45bda04c6123 — the recorded reuse check, read back. `config` is not
+      # serialized on this surface, so without this the coverage stamp would be
+      # write-only over MCP and no agent could ever tell a survey of a searchable
+      # catalog from one that saw nothing.
+      def serialize_reuse_check(m)
+        recorded = (m.config || {})["reuse_check"]
+        return nil unless recorded.is_a?(Hash)
+
+        {
+          justification:    recorded["justification"],
+          checked_at:       recorded["checked_at"],
+          catalog_coverage: recorded["catalog_coverage"],
+          unindexed_catalog_ack: recorded[REUSE_UNINDEXED_ACK]
+        }
       end
 
       def serialize_version(v)
