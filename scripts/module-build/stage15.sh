@@ -1351,9 +1351,34 @@ case "$MODULE" in
     # ships a wrapper with nothing behind it — a `grok` that exists on PATH
     # and cannot run, which is exactly the shape the manifest's verify
     # probe would then report as broken on a live node instead of here.
-    if ! ls -d /tmp/fat/usr/lib/node_modules/@xai-official/grok-linux-* >/dev/null 2>&1; then
-      echo "[stage-1.5] FATAL: no @xai-official/grok-linux-* platform package staged — the optionalDependency carrying the real binary did not install"; exit 1
+    #
+    # Assert the PAYLOAD, not a directory, and FIND it rather than naming a
+    # path. Two reasons, both learned the hard way on build 01a03945 (which
+    # this guard failed closed on — correctly in spirit, wrongly in detail):
+    #
+    #   1. npm nests the platform package UNDER the wrapper for a
+    #      `-g --prefix` install:
+    #        .../@xai-official/grok/node_modules/@xai-official/grok-linux-x64
+    #      not at the top level of node_modules/. The first version of this
+    #      guard globbed the top level, found nothing, and killed a build
+    #      whose install was in fact complete. Depth-searching from
+    #      @xai-official survives that layout AND a future npm that hoists.
+    #   2. A directory can exist and be empty. What must actually ship is
+    #      bin/grok.br — the ~45 MB brotli-compressed executable the wrapper
+    #      expands on first run. The size floor catches a truncated or
+    #      placeholder file, which an existence test would wave through.
+    GROK_PAYLOAD=$(find /tmp/fat/usr/lib/node_modules/@xai-official \
+      -type f -path '*/grok-linux-*/bin/grok.br' -print -quit 2>/dev/null || true)
+    if [ -z "$GROK_PAYLOAD" ]; then
+      echo "[stage-1.5] FATAL: no @xai-official/grok-linux-*/bin/grok.br staged — the optionalDependency carrying the real binary did not install"
+      echo "[stage-1.5] what IS under @xai-official:"; find /tmp/fat/usr/lib/node_modules/@xai-official -maxdepth 4 2>/dev/null | head -40
+      exit 1
     fi
+    GROK_PAYLOAD_BYTES=$(stat -c %s "$GROK_PAYLOAD" 2>/dev/null || echo 0)
+    if [ "$GROK_PAYLOAD_BYTES" -lt 1000000 ]; then
+      echo "[stage-1.5] FATAL: staged grok payload $GROK_PAYLOAD is only ${GROK_PAYLOAD_BYTES} bytes — expected tens of MB; treating as a truncated/placeholder download"; exit 1
+    fi
+    echo "[stage-1.5] grok payload staged: $GROK_PAYLOAD (${GROK_PAYLOAD_BYTES} bytes)"
     echo "=== grok-cli: npm install result (pinned ${GROK_VERSION}) ==="
     ls -la /tmp/fat/usr/bin/grok* 2>/dev/null || true
     ls -d /tmp/fat/usr/lib/node_modules/@xai-official/* 2>/dev/null || true

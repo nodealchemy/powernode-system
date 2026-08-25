@@ -42,15 +42,29 @@ mask:
 # "Fidelity blind spots" situation claude-tmux/gitleaks/gh document).
 # Declared here so stage2-carve.sh's real fat-root carve keeps them.
 #
-# The @xai-official/** glob is a GLOB and not two named entries on purpose:
-# npm materializes the actual executable through a platform-specific
-# optionalDependency (@xai-official/grok-linux-x64) that sits BESIDE the
-# wrapper package, and /usr/bin/grok is a relative symlink into the wrapper.
-# Claiming only the wrapper would carve a symlink chain whose target was
-# dropped — a `grok` that exists and cannot run, which is precisely the
-# shape the verify probe below exists to catch. The set is also data, not an
-# interface: pinning member names here would silently drop the binary on any
+# The @xai-official/** glob is a GLOB, and RECURSIVE, on purpose. npm
+# materializes the actual executable through a platform-specific
+# optionalDependency (@xai-official/grok-linux-x64) which — verified against
+# a real `npm install -g --prefix` of 1.0.5 — is NESTED UNDER the wrapper,
+# not beside it:
+#
+#   /usr/lib/node_modules/@xai-official/grok/                     (wrapper)
+#     node_modules/@xai-official/grok-linux-x64/bin/grok.br       (~45 MB)
+#
+# and /usr/bin/grok is a relative symlink into the wrapper's bin/grok.
+# Claiming only the wrapper would carve a symlink chain whose payload was
+# dropped — a `grok` that exists and cannot run, precisely the shape the
+# verify probe below exists to catch. The single recursive glob covers both
+# levels and survives a future npm that hoists instead. The set is data, not
+# an interface: pinning member names would silently drop the binary on any
 # upstream repackaging.
+#
+# RUNTIME NOTE: bin/grok.br is brotli-COMPRESSED. On first invocation the
+# wrapper expands it to $HOME/.grok/bin/grok-<version> and writes a small
+# $HOME/.grok/config.toml. So the payload lands in the user's home at
+# runtime, NOT under /usr — which is what makes this module safe on a
+# read-only overlay, and why the session user needs a writable home. First
+# run pays the decompression; later runs reuse the cached binary.
 file_spec:
   - "/usr/bin/grok"
   - "/usr/lib/node_modules/@xai-official/**"

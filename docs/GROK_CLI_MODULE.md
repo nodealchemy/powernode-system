@@ -173,6 +173,29 @@ executable arrives via a platform-specific **optionalDependency**, and npm treat
 optional dependency as a *success*. Without that guard a registry hiccup ships a wrapper with
 nothing behind it — a `grok` that resolves on PATH and cannot run.
 
+That guard's first version was itself wrong, and the correction is worth keeping. It globbed the
+top level of `node_modules/`, but npm **nests** the platform package under the wrapper:
+
+```
+/usr/lib/node_modules/@xai-official/grok/                    (wrapper)
+  node_modules/@xai-official/grok-linux-x64/bin/grok.br      (~45 MB, brotli)
+```
+
+So it killed build `01a03945` whose install was in fact complete. It now depth-searches from
+`@xai-official` for `*/grok-linux-*/bin/grok.br` and asserts a size floor — the payload, not a
+directory, since a directory can exist and be empty. Note the failure direction: the wrong guard
+refused to ship rather than shipping something broken, which is the side to err on.
+
+### Runtime: where the binary actually lives
+
+`bin/grok.br` is brotli-compressed. On first invocation the wrapper expands it to
+`$HOME/.grok/bin/grok-<version>` and writes a small `$HOME/.grok/config.toml`. Two consequences:
+
+* The expanded binary lands in the **user's home at runtime, not under `/usr`** — which is what
+  makes this module safe on a read-only overlay, and why the session user needs a writable home.
+* The **first** `grok` invocation on a fresh node pays a ~45 MB decompression. Later runs reuse
+  the cache. A first run that looks hung is usually this.
+
 Bump the pin deliberately. Unlike a release-binary fetch there is no single sha256 to verify; the
 exact npm version plus npm's own integrity metadata is the reproducibility unit.
 
