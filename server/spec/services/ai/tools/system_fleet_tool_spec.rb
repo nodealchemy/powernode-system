@@ -2501,7 +2501,7 @@ end
 
     it "system_list_tasks scopes to account" do
       task = System::Task.create!(
-        account: account, command: "test_cmd", status: "pending",
+        account: account, command: "sync_modules", status: "pending",
         operable_type: "System::Node", operable_id: node.id
       )
       r = call("system_list_tasks", node_id: node.id)
@@ -2556,7 +2556,7 @@ end
     let(:node) { create(:system_node, account: account, node_template: template, name: "gettask") }
     let!(:task) do
       System::Task.create!(
-        account: account, command: "provision_node", status: "running", progress: 42,
+        account: account, command: "apply_config", status: "running", progress: 42,
         operable_type: "System::Node", operable_id: node.id
       )
     end
@@ -2565,7 +2565,7 @@ end
       r = call("system_get_task", id: task.id)
       expect(r[:success]).to be true
       expect(r[:data][:task][:id]).to eq(task.id)
-      expect(r[:data][:task][:command]).to eq("provision_node")
+      expect(r[:data][:task][:command]).to eq("apply_config")
       expect(r[:data][:task][:status]).to eq("running")
       expect(r[:data][:task][:progress]).to eq(42)
     end
@@ -2577,7 +2577,7 @@ end
 
     it "does not leak tasks from another account" do
       other_task = System::Task.create!(
-        account: create(:account), command: "other_cmd", status: "pending",
+        account: create(:account), command: "sync_modules", status: "pending",
         operable_type: "System::Node", operable_id: node.id
       )
       r = call("system_get_task", id: other_task.id)

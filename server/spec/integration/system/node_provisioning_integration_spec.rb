@@ -194,7 +194,7 @@ RSpec.describe 'Node Provisioning Integration', type: :integration do
     end
 
     it 'associates operations with both node and instance' do
-      node_operation = create(:system_task, account: account, operable: node, command: 'configure')
+      node_operation = create(:system_task, account: account, operable: node, command: 'apply_config')
       instance_operation = create(:system_task, account: account, operable: instance, command: 'sync_modules')
 
       expect(node.tasks).to include(node_operation)
