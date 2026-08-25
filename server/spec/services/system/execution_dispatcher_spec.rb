@@ -213,38 +213,92 @@ RSpec.describe System::ExecutionDispatcher do
     end
   end
 
-  # A `restart` task means two entirely different things depending on whether
-  # it names a unit:
+  # A `restart` task means two entirely different things, and which one it
+  # means is now DECLARED by the producer rather than inferred here:
   #
-  #   options["unit"] absent  -> instance-scoped. COMMAND_REGISTRY routes it to
-  #     Runtime::ControlInstance, whose ACTION_FOR_COMMAND maps "restart" to
-  #     the "reboot" action — it reboots the WHOLE VM via the provider adapter.
-  #   options["unit"] present -> unit-scoped. Only the agent can do this
-  #     (tasks/handlers/lifecycle.go LifecycleHandler -> systemctl restart).
+  #   scope "instance" -> COMMAND_REGISTRY routes it to Runtime::ControlInstance,
+  #     whose ACTION_FOR_COMMAND maps "restart" to the "reboot" action — it
+  #     reboots the WHOLE VM via the provider adapter.
+  #   scope "unit"     -> only the agent can do this (tasks/handlers/lifecycle.go
+  #     LifecycleHandler -> systemctl restart options["unit"]).
   #
   # System::Task's after_commit enqueues server-side execution on create, so
   # without this split a unit restart would ALSO reboot the VM.
-  describe '.unit_scoped_restart?' do
-    it 'treats a restart carrying options["unit"] as agent-delegated' do
-      expect(described_class.agent_delegated?('restart', { 'unit' => 'powernode-abc-rails.service' })).to be true
+  describe '.restart_scope' do
+    it 'reads the declared scope' do
+      expect(described_class.restart_scope({ 'scope' => 'unit', 'unit' => 'x.service' })).to eq('unit')
+      expect(described_class.restart_scope({ 'scope' => 'instance' })).to eq('instance')
     end
 
-    it 'leaves a bare restart on the provider path (instance reboot)' do
+    # System::Task refuses to CREATE either of these now, so the fallback is
+    # dated by that validation rather than by a survey of the table. It exists
+    # for rows minted before the declaration did, which are still in flight.
+    context 'a legacy row that cannot declare a scope' do
+      it 'infers unit-scoped from a named unit, exactly as the old routing did' do
+        expect(described_class.restart_scope({ 'unit' => 'powernode-abc-rails.service' })).to eq('unit')
+      end
+
+      it 'infers instance-scoped from a bare restart, exactly as the old routing did' do
+        expect(described_class.restart_scope({})).to eq('instance')
+        expect(described_class.restart_scope(nil)).to eq('instance')
+      end
+    end
+
+    # THE discriminating case. Every other assertion in this block passes just
+    # as well on the OLD inference, because a declaration and the options["unit"]
+    # it replaced normally agree — so none of them can tell whether this method
+    # reads the declaration at all. System::Task refuses to CREATE either row
+    # below (they contradict themselves), but the contract of this method is
+    # that the declaration WINS, and only a disagreement can prove it.
+    it 'lets the declaration win over the incidental key it replaced' do
+      expect(described_class.restart_scope({ 'scope' => 'instance', 'unit' => 'x.service' })).to eq('instance')
+      expect(described_class.restart_scope({ 'scope' => 'unit' })).to eq('unit')
+    end
+
+    it 'ignores a scope outside the enumeration rather than trusting it' do
+      # Falls through to the legacy inference; it does not become its own arm.
+      expect(described_class.restart_scope({ 'scope' => 'service', 'unit' => 'x.service' })).to eq('unit')
+      expect(described_class.restart_scope({ 'scope' => 'service' })).to eq('instance')
+    end
+  end
+
+  describe '.unit_scoped_restart?' do
+    it 'delegates a restart DECLARED unit-scoped to the agent' do
+      expect(described_class.agent_delegated?(
+               'restart', { 'scope' => 'unit', 'unit' => 'powernode-abc-rails.service' }
+             )).to be true
+    end
+
+    it 'leaves a restart DECLARED instance-scoped on the provider path' do
+      expect(described_class.agent_delegated?('restart', { 'scope' => 'instance' })).to be false
+    end
+
+    # The routing decision itself, on the one input where the declaration and
+    # the old inference disagree. Without this the whole block is satisfied by
+    # the inference it replaced.
+    it 'routes on the declaration, not on the key it replaced' do
+      expect(described_class.agent_delegated?('restart', { 'scope' => 'instance', 'unit' => 'x.service' })).to be false
+      expect(described_class.agent_delegated?('restart', { 'scope' => 'unit' })).to be true
+    end
+
+    it 'routes a legacy undeclared restart the way it has always been routed' do
+      expect(described_class.agent_delegated?('restart', { 'unit' => 'powernode-abc-rails.service' })).to be true
       expect(described_class.agent_delegated?('restart', {})).to be false
       expect(described_class.agent_delegated?('restart', nil)).to be false
       expect(described_class.agent_delegated?('restart')).to be false
     end
 
     it 'does not extend the split to other lifecycle verbs' do
-      expect(described_class.agent_delegated?('reboot', { 'unit' => 'x.service' })).to be false
-      expect(described_class.agent_delegated?('terminate', { 'unit' => 'x.service' })).to be false
+      expect(described_class.agent_delegated?('reboot', { 'scope' => 'unit', 'unit' => 'x.service' })).to be false
+      expect(described_class.agent_delegated?('terminate', { 'scope' => 'unit', 'unit' => 'x.service' })).to be false
     end
   end
 
   describe '.run with a unit-scoped restart' do
     let(:operation) do
       create(:system_task, account: account, operable: instance, command: 'restart',
-                           options: { 'unit' => "powernode-#{SecureRandom.uuid}-rails.service" })
+                           options: { 'scope' => 'unit',
+                                      'unit' => "powernode-#{SecureRandom.uuid}-rails.service" })
     end
 
     it 'leaves the task pending for the agent instead of rebooting the instance' do

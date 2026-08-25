@@ -184,7 +184,7 @@ RSpec.describe System::Executors::ExecuteTask do
       card = gated_card(command: "sync_modules", operable_type: "System::Node",
                         operable_id: node.id, initiated_by_id: user.id)
 
-      expect(card[:summary]).to eq("Execute system task: sync")
+      expect(card[:summary]).to eq("Execute system task: sync_modules")
     end
 
     it "names the command and the operable's name on the impact line" do
@@ -192,7 +192,7 @@ RSpec.describe System::Executors::ExecuteTask do
       card = gated_card(command: "sync_modules", operable_type: "System::Node",
                         operable_id: node.id, initiated_by_id: user.id)
 
-      expect(card[:impact]).to eq("sync on System::Node edge-lon-01")
+      expect(card[:impact]).to eq("sync_modules on System::Node edge-lon-01")
     end
 
     # The lifecycle dispatch shape — an operable with no account_id column of
@@ -209,8 +209,8 @@ RSpec.describe System::Executors::ExecuteTask do
     it "reads 'on system' when no operable is named, but still names the command" do
       card = gated_card(command: "sync_modules", initiated_by_id: user.id)
 
-      expect(card[:summary]).to eq("Execute system task: sync")
-      expect(card[:impact]).to eq("sync on system")
+      expect(card[:summary]).to eq("Execute system task: sync_modules")
+      expect(card[:impact]).to eq("sync_modules on system")
     end
 
     # A preview must render, never refuse — but it must not constantize its way
@@ -219,7 +219,7 @@ RSpec.describe System::Executors::ExecuteTask do
     it "degrades an unallowlisted operable type to the caller's bare pair" do
       card = gated_card(command: "sync_modules", operable_type: "Kernel", operable_id: account.id)
 
-      expect(card[:impact]).to eq("sync on Kernel##{account.id}")
+      expect(card[:impact]).to eq("sync_modules on Kernel##{account.id}")
       expect(card[:error]).to be_nil
     end
 
@@ -227,7 +227,7 @@ RSpec.describe System::Executors::ExecuteTask do
       missing = SecureRandom.uuid
       card = gated_card(command: "sync_modules", operable_type: "System::Node", operable_id: missing)
 
-      expect(card[:impact]).to eq("sync on System::Node##{missing}")
+      expect(card[:impact]).to eq("sync_modules on System::Node##{missing}")
     end
 
     # Positive twin for the fallback rung: a flat direct-caller shape keeps a
@@ -240,8 +240,8 @@ RSpec.describe System::Executors::ExecuteTask do
           initiated_by_id: user.id }
       )
 
-      expect(card[:summary]).to eq("Execute system task: sync")
-      expect(card[:impact]).to eq("sync on System::Node edge-lon-01")
+      expect(card[:summary]).to eq("Execute system task: sync_modules")
+      expect(card[:impact]).to eq("sync_modules on System::Node edge-lon-01")
     end
 
     # What the card may DISCLOSE. These previews carry no operation (the
@@ -262,7 +262,7 @@ RSpec.describe System::Executors::ExecuteTask do
 
         expect(card[:impact]).not_to include("victim-payroll-node"),
                                      "the approval card leaked another account's record name: #{card[:impact].inspect}"
-        expect(card[:impact]).to eq("sync on System::Node##{foreign_node.id}")
+        expect(card[:impact]).to eq("sync_modules on System::Node##{foreign_node.id}")
       end
 
       # The negation twin of the disclosure check: naming OWN records while
@@ -291,7 +291,7 @@ RSpec.describe System::Executors::ExecuteTask do
           { command: "sync_modules", operable_type: "System::Node", operable_id: node.id }
         )
 
-        expect(card[:impact]).to eq("sync on System::Node##{node.id}")
+        expect(card[:impact]).to eq("sync_modules on System::Node##{node.id}")
       end
     end
   end

@@ -49,6 +49,31 @@ module System
       probe.module_smoke
     ].freeze
 
+    # `restart` is the one command whose NAME does not say what it does, and its
+    # two readings sit at opposite ends of the blast-radius scale:
+    #
+    #   unit     — restart ONE systemd unit on the node. Only the agent can do
+    #              this (tasks/handlers/lifecycle.go LifecycleHandler shells out
+    #              to `systemctl restart options["unit"]`).
+    #   instance — REBOOT THE WHOLE VM. ExecutionDispatcher::COMMAND_REGISTRY
+    #              routes it to Runtime::ControlInstance, whose
+    #              ACTION_FOR_COMMAND maps "restart" to the "reboot" action and
+    #              calls the provider adapter.
+    #
+    # On a self-hosted control plane that second reading takes down the platform
+    # issuing the command.
+    #
+    # The scope used to be INFERRED, downstream, from whether options["unit"]
+    # happened to be set — which made the destructive reading the DEFAULT for
+    # anyone who did not know the convention. `POST /api/v1/system/tasks` with
+    # `{command: "restart"}`, the obvious way to ask for a service bounce,
+    # rebooted the machine, and nothing in the request said so. The producer now
+    # DECLARES its scope and an undeclared restart is refused at the model, which
+    # is the only chokepoint every producer passes through (the HTTP create path,
+    # the worker API, the MCP tools and ~15 in-process callers all reach save).
+    RESTART_SCOPE_KEY = "scope"
+    RESTART_SCOPES = %w[unit instance].freeze
+
     # Records that may legitimately carry a task.
     #
     # operable_type is free text on an open polymorphic belongs_to, and
@@ -100,6 +125,10 @@ module System
                               if: :operable_type_changed?
     validates :command, inclusion: { in: COMMANDS }, allow_blank: true,
                         if: :command_changed?
+    # Same CHANGE-guarded shape as operable_type, for the same reason: restart
+    # rows minted before the declaration existed cannot carry one, and some are
+    # in flight. See #restart_scope_declared.
+    validate :restart_scope_declared, if: :restart_scope_validatable?
     validates :status, presence: true, inclusion: { in: STATUSES }
     validates :progress, numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
 
@@ -256,6 +285,48 @@ module System
     end
 
     private
+
+    # Only when the command or the options are being SET or CHANGED. A restart
+    # row written before RESTART_SCOPE_KEY existed cannot declare one, and
+    # validating unconditionally would make it unsaveable — bricking the
+    # progress ticks and the fail!/complete!/abort! transitions of restarts a
+    # node is already mid-flight on. (RestartAfterUpdate settles its own rows
+    # with update_columns, which bypasses validation entirely, but the AASM
+    # transitions go through a normal save.) The property still holds for every
+    # new row: on create the command goes nil -> value, which reads as changed.
+    def restart_scope_validatable?
+      command == "restart" && (will_save_change_to_command? || will_save_change_to_options?)
+    end
+
+    # Refuses a restart that does not say which actuator it means. The two
+    # readings are documented on RESTART_SCOPES above; the point of the
+    # validation is that neither one is a DEFAULT.
+    def restart_scope_declared
+      opts = options.is_a?(Hash) ? options : {}
+      declared = opts[RESTART_SCOPE_KEY].to_s
+      unit = opts["unit"]
+
+      unless RESTART_SCOPES.include?(declared)
+        errors.add(
+          :options,
+          %(must declare ["#{RESTART_SCOPE_KEY}"] on a "restart" task: ) +
+          %("unit" restarts ONE systemd unit on the node (also set ["unit"]), ) +
+          %("instance" REBOOTS THE WHOLE VM. Got #{declared.presence.inspect}. ) +
+          %(If you mean a VM reboot, prefer the unambiguous "reboot" command.)
+        )
+        return
+      end
+
+      if declared == "unit" && unit.blank?
+        errors.add(:options, %(must name the systemd unit in ["unit"] when ["#{RESTART_SCOPE_KEY}"] is "unit"))
+      elsif declared == "instance" && unit.present?
+        errors.add(
+          :options,
+          %(must not also name ["unit"] (#{unit.inspect}) when ["#{RESTART_SCOPE_KEY}"] is ) +
+          %("instance" — the VM reboots and that unit is never restarted)
+        )
+      end
+    end
 
     # Append an audit event to `events` in memory. Does NOT save — caller
     # is responsible for persisting via the surrounding save (AASM's

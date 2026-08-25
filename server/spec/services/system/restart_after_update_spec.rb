@@ -102,6 +102,10 @@ RSpec.describe System::RestartAfterUpdate do
 
       task = instance.tasks.where(command: "restart").last
       expect(task.options["unit"]).to eq("powernode-#{backend.id}-rails.service")
+      # DECLARED, not inferred: without this the dispatcher would be left
+      # choosing between one systemd unit and a whole-VM reboot.
+      expect(task.options["scope"]).to eq("unit")
+      expect(::System::ExecutionDispatcher.agent_delegated?(task.command, task.options)).to be true
       expect(task.status).to eq("pending")
     end
 
@@ -275,7 +279,7 @@ RSpec.describe System::RestartAfterUpdate do
     def in_flight_restart!(started_at:)
       System::Task.create!(
         account: account, operable: instance, command: "restart", status: "pending",
-        options: { "unit" => "powernode-#{backend.id}-rails.service",
+        options: { "scope" => "unit", "unit" => "powernode-#{backend.id}-rails.service",
                    "restart_after_update" => { "triggers" => [] } }
       ).tap { |t| t.update_columns(status: "running", started_at: started_at) }
     end
@@ -328,7 +332,7 @@ RSpec.describe System::RestartAfterUpdate do
     it "withholds an in-flight unit restart from the agent's task list" do
       task = System::Task.create!(
         account: account, operable: instance, command: "restart", status: "pending",
-        options: { "unit" => "powernode-#{backend.id}-rails.service",
+        options: { "scope" => "unit", "unit" => "powernode-#{backend.id}-rails.service",
                    "restart_after_update" => { "triggers" => [] } }
       )
       task.update_columns(status: "running")
@@ -339,7 +343,7 @@ RSpec.describe System::RestartAfterUpdate do
     it "still offers a restart that has not been picked up yet" do
       task = System::Task.create!(
         account: account, operable: instance, command: "restart", status: "pending",
-        options: { "unit" => "powernode-#{backend.id}-rails.service",
+        options: { "scope" => "unit", "unit" => "powernode-#{backend.id}-rails.service",
                    "restart_after_update" => { "triggers" => [] } }
       )
 
@@ -362,7 +366,7 @@ RSpec.describe System::RestartAfterUpdate do
     it "still offers an in-flight unit restart it does not own" do
       task = System::Task.create!(
         account: account, operable: instance, command: "restart", status: "pending",
-        options: { "unit" => "powernode-#{backend.id}-rails.service" }
+        options: { "scope" => "unit", "unit" => "powernode-#{backend.id}-rails.service" }
       )
       task.update_columns(status: "running")
 

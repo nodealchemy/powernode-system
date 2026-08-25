@@ -70,10 +70,10 @@ module System
     # That is a defect in the PRODUCER, not a reason to unregister the verbs.)
     #
     # `restart` is likewise KEPT despite its server-side arm never having fired
-    # (all 18 restart rows carry options["unit"] and route to the agent). Its
-    # unit-vs-VM split is step 2 of that decision — making the choice DECLARED
-    # rather than inferred from an absent key is a behaviour change, not a
-    # deletion.
+    # (all 18 restart rows carry options["unit"] and route to the agent). Step 2
+    # of that decision has since landed: the unit-vs-VM choice is now DECLARED
+    # by the producer (System::Task::RESTART_SCOPES) instead of inferred from an
+    # absent key, so the server-side arm is reachable only on purpose.
     COMMAND_REGISTRY = {
       "start"          => System::Runtime::ControlInstance,
       "stop"           => System::Runtime::ControlInstance,
@@ -130,17 +130,16 @@ module System
       AGENT_DELEGATED_COMMANDS.include?(command) || unit_scoped_restart?(command, options)
     end
 
-    # A `restart` task means two entirely different things depending on
-    # whether it names a systemd unit, and the two terminal functions are on
-    # opposite sides of the fleet:
+    # A `restart` task means two entirely different things, and the two
+    # terminal functions are on opposite sides of the fleet:
     #
-    #   options["unit"] ABSENT  — instance-scoped. COMMAND_REGISTRY routes it
-    #     to Runtime::ControlInstance, whose ACTION_FOR_COMMAND maps "restart"
-    #     to the "reboot" action: InstanceControlService reboots the WHOLE VM
-    #     through the provider adapter.
-    #   options["unit"] PRESENT — unit-scoped. Only the agent can do this
-    #     (tasks/handlers/lifecycle.go LifecycleHandler reads options["unit"]
-    #     and shells out to `systemctl restart`).
+    #   scope "unit"     — only the agent can do this (tasks/handlers/
+    #     lifecycle.go LifecycleHandler reads options["unit"] and shells out to
+    #     `systemctl restart`).
+    #   scope "instance" — COMMAND_REGISTRY routes it to Runtime::ControlInstance,
+    #     whose ACTION_FOR_COMMAND maps "restart" to the "reboot" action:
+    #     InstanceControlService reboots the WHOLE VM through the provider
+    #     adapter.
     #
     # The agent dispatches on the LITERAL command string (tasks.Registry
     # #Lookup), so "restart" is the only command that reaches the systemd
@@ -149,12 +148,31 @@ module System
     # enqueues server-side execution on create, without this split a
     # unit-scoped restart would reboot the VM *and* restart the unit.
     #
-    # Fails closed: no pre-existing caller sets options["unit"] on a restart,
-    # so every task that exists today keeps its current routing exactly.
     # Deliberately NOT extended to reboot/terminate — those have no
     # unit-scoped meaning, and RebootHandler ignores options entirely.
     def self.unit_scoped_restart?(command, options)
-      command == "restart" && options.is_a?(Hash) && options["unit"].present?
+      command == "restart" && restart_scope(options) == "unit"
+    end
+
+    # The DECLARED scope, with an explicit and dated legacy fallback.
+    #
+    # System::Task now REFUSES to create a restart that does not declare
+    # System::Task::RESTART_SCOPE_KEY, so every row minted from here on names
+    # the actuator it means rather than leaving this dispatcher to guess from
+    # an incidental key. Rows created BEFORE that validation cannot declare
+    # one and some are still in flight, so their scope is inferred exactly the
+    # way the whole routing decision used to be made: a named unit means the
+    # agent, and nothing else can be assumed about them.
+    #
+    # That fallback is unreachable for new rows by construction — it is dated
+    # by the model validation, not by a point-in-time survey of the table —
+    # and it preserves the routing of every row that exists today unchanged.
+    def self.restart_scope(options)
+      opts = options.is_a?(Hash) ? options : {}
+      declared = opts[::System::Task::RESTART_SCOPE_KEY].to_s
+      return declared if ::System::Task::RESTART_SCOPES.include?(declared)
+
+      opts["unit"].present? ? "unit" : "instance"
     end
 
     Outcome = Struct.new(:claimed, :result, :status_code, keyword_init: true)

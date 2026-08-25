@@ -439,7 +439,7 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
       JSON.parse(response.body).dig("data", "tasks").map { |t| t["id"] }
     end
 
-    let(:provenance) { { "unit" => unit, "restart_after_update" => { "triggers" => [] } } }
+    let(:provenance) { { "scope" => "unit", "unit" => unit, "restart_after_update" => { "triggers" => [] } } }
 
     it "offers a unit restart that has not been picked up yet" do
       task = System::Task.create!(account: account, operable: instance, command: "restart",
@@ -460,7 +460,7 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
     # it, so withholding it would strand the task `running` forever.
     it "still offers an in-flight unit restart it does not own" do
       task = System::Task.create!(account: account, operable: instance, command: "restart",
-                                  status: "pending", options: { "unit" => unit })
+                                  status: "pending", options: { "scope" => "unit", "unit" => unit })
       task.update_columns(status: "running")
 
       expect(offered_ids).to include(task.id)

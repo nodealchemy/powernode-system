@@ -50,8 +50,11 @@ RSpec.describe System::Task, type: :model do
 
       it 'accepts every listed command' do
         described_class::COMMANDS.each do |cmd|
-          task = build(:system_task, account: account, operable: node, command: cmd)
-          expect(task).to be_valid, "#{cmd} is listed but rejected"
+          # `restart` is the one command that must also declare its blast
+          # radius — see the RESTART_SCOPES block below.
+          options = cmd == 'restart' ? { 'scope' => 'instance' } : {}
+          task = build(:system_task, account: account, operable: node, command: cmd, options: options)
+          expect(task).to be_valid, "#{cmd} is listed but rejected: #{task.errors.full_messages.join('; ')}"
         end
       end
 
@@ -74,6 +77,97 @@ RSpec.describe System::Task, type: :model do
         task.command = 'another_unlisted_verb'
 
         expect(task).not_to be_valid
+      end
+    end
+  end
+
+  # A `restart` names two actuators with wildly different blast radii, and
+  # until now the choice between them was INFERRED downstream from whether
+  # options["unit"] happened to be set — so the destructive reading (reboot the
+  # whole VM through the provider) was what an undeclared restart got. This is
+  # the chokepoint every producer passes through: the gated HTTP create, the
+  # worker API, the MCP tools and the in-process callers all reach save.
+  describe 'restart scope declaration' do
+    let(:account) { create(:account) }
+    let(:node)    { create(:system_node, account: account) }
+
+    def restart(options)
+      build(:system_task, account: account, operable: node, command: 'restart', options: options)
+    end
+
+    it 'exposes the two scopes it accepts' do
+      expect(described_class::RESTART_SCOPE_KEY).to eq('scope')
+      expect(described_class::RESTART_SCOPES).to eq(%w[unit instance])
+    end
+
+    it 'refuses a restart that declares no scope' do
+      task = restart({})
+
+      expect(task).not_to be_valid
+      expect(task.errors[:options].join).to include('scope')
+    end
+
+    # The exact shape of the old hazard: the obvious POST body for "bounce the
+    # service" used to reboot the machine.
+    it 'refuses a restart whose options are absent entirely' do
+      task = build(:system_task, account: account, operable: node, command: 'restart', options: nil)
+
+      expect(task).not_to be_valid
+    end
+
+    it 'refuses a scope outside the enumeration' do
+      expect(restart({ 'scope' => 'service' })).not_to be_valid
+      expect(restart({ 'scope' => '' })).not_to be_valid
+    end
+
+    it 'accepts a unit-scoped restart that names its unit' do
+      expect(restart({ 'scope' => 'unit', 'unit' => 'powernode-abc-rails.service' })).to be_valid
+    end
+
+    it 'refuses a unit-scoped restart that names no unit' do
+      task = restart({ 'scope' => 'unit' })
+
+      expect(task).not_to be_valid
+      expect(task.errors[:options].join).to include('unit')
+    end
+
+    it 'accepts an instance-scoped restart' do
+      expect(restart({ 'scope' => 'instance' })).to be_valid
+    end
+
+    # Contradiction, not a harmless extra key: the VM reboots and the named
+    # unit is never restarted, so the caller's stated intent is not what runs.
+    it 'refuses an instance-scoped restart that also names a unit' do
+      task = restart({ 'scope' => 'instance', 'unit' => 'powernode-abc-rails.service' })
+
+      expect(task).not_to be_valid
+      expect(task.errors[:options].join).to include('unit')
+    end
+
+    # Guarded on the CHANGE, same as command and operable_type: restart rows
+    # minted before the declaration existed are still in flight, and making
+    # them unsaveable would brick their progress ticks and status transitions.
+    context 'a persisted restart row that predates the declaration' do
+      let(:legacy) do
+        task = create(:system_task, account: account, operable: node, command: 'sync_modules',
+                                    status: 'running', progress: 10)
+        task.update_columns(command: 'restart', options: { 'unit' => 'powernode-legacy-rails.service' })
+        task.reload
+      end
+
+      it 'can still be updated on unrelated attributes' do
+        expect { legacy.update!(progress: 60) }.not_to raise_error
+        expect(legacy.reload.progress).to eq(60)
+      end
+
+      it 'can still complete' do
+        expect { legacy.complete! }.not_to raise_error
+        expect(legacy.reload.status).to eq('complete')
+      end
+
+      it 'still cannot have its options rewritten into an undeclared shape' do
+        expect(legacy.update(options: { 'unit' => 'other.service' })).to be(false)
+        expect(legacy.errors[:options]).to be_present
       end
     end
   end

@@ -39,6 +39,10 @@ RSpec.describe System::Runtime::ControlInstance do
             account: account,
             operable: instance,
             command: command,
+            # This class IS the instance-scoped actuator, so a `restart` that
+            # reaches it declares the whole-VM scope. See
+            # System::Task::RESTART_SCOPES.
+            options: command == 'restart' ? { 'scope' => 'instance' } : {},
             status: 'running',
             progress: 0
           )

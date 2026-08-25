@@ -57,10 +57,10 @@ module System
   # action and reboots the WHOLE VM through the provider adapter. Since
   # System::Task's after_commit enqueues server-side execution on create, a
   # naive restart task would reboot the VM *and* restart the unit. The
-  # discriminator is options["unit"]: present means unit-scoped (agent),
-  # absent means instance-scoped (provider). See ExecutionDispatcher
-  # .unit_scoped_restart?. No pre-existing caller sets it, so the split is
-  # fail-closed.
+  # discriminator is DECLARED: options["scope"] is "unit" (agent) or
+  # "instance" (provider), System::Task refuses a restart that declares
+  # neither, and ExecutionDispatcher.restart_scope reads the declaration.
+  # This producer is unit-scoped and says so.
   class RestartAfterUpdate
     # Manifest key, mirrored onto NodeModule#config by ManifestImportService.
     DECLARATION_KEY = "restart_after_update"
@@ -324,9 +324,12 @@ module System
         description:     "restart_after_update: #{entry[:target].name}/#{entry[:service]} " \
                          "after #{triggers.size} module update(s)",
         options: {
-          # options["unit"] is load-bearing twice over: it is what the agent's
-          # LifecycleHandler reads, and it is what keeps ExecutionDispatcher
-          # from routing this to ControlInstance and rebooting the whole VM.
+          # DECLARED, never inferred. "unit" scopes this to one systemd unit on
+          # the node; without the declaration ExecutionDispatcher would be left
+          # guessing between that and rebooting the whole VM through the
+          # provider. options["unit"] is what the agent's LifecycleHandler
+          # actually reads.
+          ::System::Task::RESTART_SCOPE_KEY => "unit",
           "unit" => unit,
           DECLARATION_KEY => {
             "target_module_id" => entry[:target].id,
