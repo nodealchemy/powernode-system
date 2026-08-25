@@ -780,14 +780,14 @@ module Ai
 
           # === Tasks ===
           "system_list_tasks" => {
-            description: "List recent tasks (filterable by node_id or instance_id)",
+            description: "List recent tasks (filterable by node_id or instance_id). Each task carries error_message — the stored failure reason, REDACTED of credential-shaped tokens and truncated to 300 chars on this surface; call system_get_task for the full redacted text.",
             parameters: {
               node_id: { type: "string", required: false, description: "Optional node UUID to list only tasks operating on that node" },
               instance_id: { type: "string", required: false, description: "Optional instance UUID to list only tasks operating on that instance" }
             }
           },
           "system_get_task" => {
-            description: "Fetch a single System::Task by id (account-scoped). Returns the task's command, status, progress, operable handle, and timestamps. Not-found errors when the id is unknown or belongs to another account.",
+            description: "Fetch a single System::Task by id (account-scoped). Returns the task's command, status, progress, operable handle, timestamps, and error_message — the full stored failure reason (16 KB cap, vs 300 chars on system_list_tasks), REDACTED of credential-shaped tokens since it carries raw build/shell output. Not-found errors when the id is unknown or belongs to another account.",
             parameters: { id: { type: "string", required: true, description: "UUID of the System::Task to fetch (account-scoped)" } }
           },
           "system_cancel_task" => {
@@ -3137,7 +3137,7 @@ module Ai
       # in #call, which renders the standard error_result.
       def get_task(params)
         task = ::System::Task.where(account: @account).find(params[:id])
-        success_result(task: serialize_task(task))
+        success_result(task: serialize_task(task, full_error: true))
       end
 
       # === Module diff ===
@@ -4281,7 +4281,21 @@ module Ai
         }
       end
 
-      def serialize_task(t)
+      # Max characters of error_message returned by the LIST surface, and by
+      # the single-task read. SIZE controls only — redaction runs first and
+      # unconditionally, so truncation is never what keeps a secret out of the
+      # payload. The single-task cap exists because the column is unbounded
+      # `text` written straight from an agent-supplied param
+      # (Api::V1::Internal::System::TasksController#fail), so "return the full
+      # text" without a ceiling hands a multi-megabyte blob to the MCP
+      # transport on the word of the node that failed.
+      LIST_ERROR_MESSAGE_LIMIT = 300
+      GET_ERROR_MESSAGE_LIMIT  = 16_384
+
+      # `full_error: true` returns the whole (redacted) error_message — the
+      # single-task read, where the operator came specifically for the reason.
+      # The list surface gets the same redacted text, capped.
+      def serialize_task(t, full_error: false)
         {
           id: t.id,
           command: t.command,
@@ -4289,9 +4303,41 @@ module Ai
           progress: t.progress,
           operable_type: t.operable_type,
           operable_id: t.operable_id,
+          error_message: task_error_message(t.error_message, full: full_error),
           created_at: t.created_at.iso8601,
           completed_at: t.completed_at&.iso8601
         }
+      end
+
+      # IMP-b8af3c3309fe — error_message is populated on every failure
+      # transition but was never serialized, so a failed task read as
+      # `status: "failed"` with no reason, and diagnosing one required a
+      # read-only Postgres breakglass on the control plane.
+      #
+      # It holds BUILD AND SHELL OUTPUT, which can quote command lines, env
+      # and argv, so it is redacted through the extension's own shell-output
+      # sanitizer before it leaves the process (CLAUDE.md: never transmit key
+      # material in any form). .redact_text rather than .redact because the
+      # sanitizer's own log cap must not silently become this surface's size
+      # policy — REDACT FIRST, then apply the per-surface limit, so a secret
+      # sitting past the cap is gone from BOTH the truncated and the full copy.
+      def task_error_message(raw, full:)
+        return nil if raw.blank?
+
+        limit = full ? GET_ERROR_MESSAGE_LIMIT : LIST_ERROR_MESSAGE_LIMIT
+        # .scrub — the redaction regexes raise ArgumentError on invalid UTF-8,
+        # and this is captured node output, not text the platform authored.
+        text = raw.to_s.scrub("")
+
+        # Bounding the redaction INPUT (rather than only its output) keeps a
+        # list call from running every pattern over 100 unbounded blobs. Safe
+        # because everything past `limit` is discarded anyway: a secret cut by
+        # this 4x slice lies far outside the returned window, since redaction
+        # can only grow a matched run by a small constant factor.
+        redacted = ::System::ShellOutputSanitizer.redact_text(text[0, limit * 4])
+        return redacted if redacted.length <= limit
+
+        "#{redacted[0, limit]}...[truncated]"
       end
 
       # Mirrors NodeModuleAssignmentsController#serialize_assignment.
