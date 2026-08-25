@@ -11,7 +11,10 @@ module System
     belongs_to :account
     belongs_to :volume, class_name: "System::ProviderVolume", optional: true
 
-    has_many :tasks, class_name: "System::Task", as: :operable, dependent: :destroy
+    # Task association + removal policy: see System::PreservesTaskHistory.
+    # Tasks are TRANSITIONED on removal, never deleted — a deleted task is
+    # indistinguishable from one that never ran.
+    include System::PreservesTaskHistory
 
     # === Validations ===
     validates :name, presence: true, uniqueness: { scope: :account_id, case_sensitive: false }

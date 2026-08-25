@@ -16,7 +16,10 @@ module System
     belongs_to :node_instance, class_name: "System::NodeInstance", optional: true
 
     has_many :snapshots, class_name: "System::ProviderVolumeSnapshot", foreign_key: :volume_id, dependent: :restrict_with_error
-    has_many :tasks, class_name: "System::Task", as: :operable, dependent: :destroy
+    # Task association + removal policy: see System::PreservesTaskHistory.
+    # Tasks are TRANSITIONED on removal, never deleted — a deleted task is
+    # indistinguishable from one that never ran.
+    include System::PreservesTaskHistory
 
     # RAID members
     has_many :volume_members, class_name: "System::ProviderVolumeMember", dependent: :destroy

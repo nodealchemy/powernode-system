@@ -23,7 +23,10 @@ module System
     has_many :provider_networks, class_name: "System::ProviderNetwork", dependent: :destroy
 
     # Task associations (Release 4)
-    has_many :tasks, class_name: "System::Task", as: :operable, dependent: :destroy
+    # Task association + removal policy: see System::PreservesTaskHistory.
+    # Tasks are TRANSITIONED on removal, never deleted — a deleted task is
+    # indistinguishable from one that never ran.
+    include System::PreservesTaskHistory
 
     # Validations
     validates :name, presence: true, uniqueness: { scope: :account_id }

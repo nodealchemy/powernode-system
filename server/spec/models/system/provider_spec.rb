@@ -18,7 +18,14 @@ RSpec.describe System::Provider, type: :model do
     it { is_expected.to have_many(:provider_instance_types).class_name('System::ProviderInstanceType').dependent(:destroy) }
     it { is_expected.to have_many(:provider_volume_types).class_name('System::ProviderVolumeType').dependent(:destroy) }
     it { is_expected.to have_many(:provider_networks).class_name('System::ProviderNetwork').dependent(:destroy) }
-    it { is_expected.to have_many(:tasks).class_name('System::Task').dependent(:destroy) }
+    # dependent: :nullify, NOT :destroy. Destroying the operable used to destroy
+    # its task history — running tasks vanished mid-flight with no terminal
+    # transition (offer 01a03064-cc38). System::PreservesTaskHistory now stamps
+    # the operable onto each task and transitions it before the pointer is
+    # nulled; the BEHAVIOUR is pinned in
+    # spec/models/system/preserves_task_history_spec.rb, which is what would
+    # catch a regression this structural matcher cannot see.
+    it { is_expected.to have_many(:tasks).class_name('System::Task').dependent(:nullify) }
   end
 
   describe 'validations' do
