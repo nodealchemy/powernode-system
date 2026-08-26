@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "openssl"
+
 module System
   module Providers
     module LocalQemu
@@ -19,6 +21,11 @@ module System
         Result = Struct.new(:bootstrap_token_id, :fw_cfg_entries, :image_base, keyword_init: true)
 
         class EnrollmentSeedError < StandardError; end
+
+        # Raised when no real platform CA can be resolved. Deliberately fatal:
+        # a VM seeded with placeholder trust material boots, fails to verify
+        # the platform, and reports the fault far from its cause.
+        class CloudSeedError < StandardError; end
 
         def self.build(instance:, options: {})
           new.build(instance: instance, options: options)
@@ -147,11 +154,37 @@ module System
           if defined?(::System::InternalCaService) && ::System::InternalCaService.respond_to?(:ca_chain_pem)
             ::System::InternalCaService.ca_chain_pem
           else
-            ENV["POWERNODE_CA_PEM"] || "-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----"
+            require_operator_ca_pem!(
+              "System::InternalCaService is not loaded (running outside the Rails autoload tree)"
+            )
           end
         rescue StandardError => e
-          Rails.logger.warn("[CloudSeed] resolve_ca_pem fell back to fixture: #{e.message}")
-          ENV["POWERNODE_CA_PEM"] || "-----BEGIN CERTIFICATE-----\nFIXTURE-fallback\n-----END CERTIFICATE-----"
+          # NEVER substitute a placeholder. This used to fall back to a literal
+          # "FIXTURE"/"FIXTURE-fallback" string, which is PEM-shaped and
+          # cryptographically meaningless: the VM provisioned fine, could not
+          # verify the platform, and surfaced the fault much later as an
+          # unexplained x509 error during enrollment. A CA outage must not be
+          # laundered into silently-wrong trust material on a new node.
+          raise CloudSeedError,
+                "refusing to seed a VM without a real platform CA: #{e.class}: #{e.message}. " \
+                "Fix the CA (see System::InternalCaService) or set POWERNODE_CA_PEM to the " \
+                "operator-supplied anchor for this deployment."
+        end
+
+        # Operator escape hatch, validated. An override that is not a parseable
+        # certificate is the same failure as no CA at all, so check it here
+        # rather than discovering it on the node.
+        def require_operator_ca_pem!(reason)
+          pem = ENV["POWERNODE_CA_PEM"].to_s
+          raise CloudSeedError, "no platform CA available to seed: #{reason}" if pem.strip.empty?
+
+          begin
+            ::OpenSSL::X509::Certificate.new(pem)
+          rescue ::OpenSSL::X509::CertificateError => e
+            raise CloudSeedError,
+                  "POWERNODE_CA_PEM is set but is not a parseable certificate: #{e.message}"
+          end
+          pem
         end
 
         def resolve_image_base(options)
