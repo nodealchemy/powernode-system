@@ -4953,6 +4953,42 @@ end
         expect(r[:error]).to match(/R1, R2, R3/)
         expect(r[:error]).not_to match(/unindexed_catalog_ack/)
       end
+
+      # IMP-c20c51f8b127. reuse_catalog_coverage's denominator is the BUILDABLE
+      # catalog (manifest_yaml present), but CatalogDiscoveryService.discover_modules
+      # applies no manifest_yaml predicate — it ranks every ENABLED module. A
+      # non-buildable module that is enabled and freshly embedded IS a real
+      # discovery candidate even when every buildable module is unsearchable, so
+      # the refusal must not claim discovery "could not have surfaced anything
+      # for ANY intent", and must print both denominators so the operator can
+      # reconcile this refusal with the wider `coverage` field
+      # system_discover_modules reports.
+      it "does not overclaim when a searchable NON-buildable module exists alongside zero searchable buildable ones" do
+        unindex_catalog!
+        non_buildable = create(:system_node_module, account: account, node_platform: platform_record,
+                                                     name: "searchable-non-buildable")
+        expect(non_buildable.manifest_yaml).to be_blank
+        index_module!(non_buildable)
+
+        r = authored(reuse_check: { justification: "R2", justification_detail: "own CVE cadence",
+                                    considered: [ { module: "traefik", rejected_because: "different purpose" } ] })
+
+        # Discovery's scope (every enabled module) is strictly WIDER than the
+        # buildable scope here — account bootstrap seeds several non-buildable
+        # modules alongside the one buildable `incumbent` — which is exactly
+        # the disagreement this finding is about.
+        enabled_total = ::System::NodeModule.where(account: account).enabled.count
+        expect(enabled_total).to be > 1
+
+        expect(r[:success]).to be(false)
+        expect(r[:error]).to match(/searchable/i)
+        expect(r[:error]).not_to match(/for ANY intent/)
+        # The buildable-only denominator (traefik alone) ...
+        expect(r[:error]).to include("1 buildable")
+        # ... and discovery's own wider denominator must both be printed,
+        # disagreeing with the buildable figure on their face.
+        expect(r[:error]).to include("#{enabled_total} enabled")
+      end
     end
 
     it "asks the novelty question through the planner's own seam" do

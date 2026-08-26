@@ -2204,6 +2204,21 @@ module Ai
         }
       end
 
+      # What CatalogDiscoveryService.discover_modules itself scopes over: every
+      # ENABLED module, buildable or not — System::CatalogDiscoveryService
+      # applies no manifest_yaml predicate. This is a DIFFERENT, wider
+      # denominator than reuse_catalog_coverage's buildable-only figure, and
+      # its own `coverage_for` reports this exact scope back to the caller as
+      # the `coverage` field on system_discover_modules. Computed separately
+      # (not folded into reuse_catalog_coverage) so the persisted
+      # catalog_coverage audit stamp keeps its existing shape — this is only
+      # ever surfaced in the refusal text, to let an operator reconcile the
+      # two numbers instead of finding they simply disagree.
+      def discovery_catalog_coverage
+        scope = ::System::NodeModule.where(account: @account).enabled
+        { "total" => scope.count, "embedded" => scope.with_embedding.count }
+      end
+
       # Returns a refusal message, or nil when the survey could have been real.
       #
       # REFUSE AT ZERO, DISCLOSE ABOVE IT. Zero searchable modules is the state
@@ -2240,11 +2255,18 @@ module Ai
                      "got #{ack.inspect})"
         end
 
+        discovery = discovery_catalog_coverage
+
         "authoring \"#{name}\" cannot clear the reuse gate: none of the #{coverage['total']} buildable " \
           "module(s) in this account are searchable (#{coverage['embedded']} carry an embedding, 0 of those " \
-          "are both enabled and current), so system_discover_modules could not have surfaced an overlapping " \
-          "module for ANY intent — an empty survey against this catalog means NOT INDEXED, not \"nothing " \
-          "exists\". Run `rake system:catalog:backfill_embeddings` and re-check the `coverage` field on " \
+          "are both enabled and current), so a survey scoped to the buildable catalog could not have " \
+          "surfaced an overlapping BUILDABLE module — an empty survey against this catalog means NOT " \
+          "INDEXED, not \"nothing buildable exists\". This does NOT mean system_discover_modules found " \
+          "nothing at all: it ranks every enabled module regardless of buildability, #{discovery['total']} " \
+          "enabled module(s) here (#{discovery['embedded']} carrying an embedding) — its own `coverage` " \
+          "field reports THAT wider figure, not the buildable count above, so the two numbers will not " \
+          "match; they answer different questions and neither one is wrong. Run " \
+          "`rake system:catalog:backfill_embeddings` and re-check the `coverage` field on " \
           "system_discover_modules before authoring. If the embedding provider is unreachable and the module " \
           "must be authored anyway, pass reuse_check.#{REUSE_UNINDEXED_ACK}: \"<why>\" — the module is then " \
           "recorded as carrying an explicitly UNVERIFIED reuse check#{detail} (#{REUSE_RUNBOOK})."
