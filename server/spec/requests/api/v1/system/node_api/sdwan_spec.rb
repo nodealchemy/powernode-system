@@ -108,9 +108,20 @@ RSpec.describe "Api::V1::System::NodeApi::Sdwan", type: :request do
 
   describe "POST /api/v1/system/node_api/status/bgp" do
     it "upserts BGP sessions for the caller's network and skips networks it does not own" do
+      # Sdwan::BgpSessionWriter only accepts a session whose neighbor_address
+      # falls inside the REPORTING network's own cidr_64 prefix (see
+      # #attributable_to?); a fixed literal address only happened to satisfy
+      # that when this was the first :sdwan_network built in the process
+      # (factory sequence n=1 => cidr_64 "fd00:abcd:0001::/64"). With other
+      # examples in this file also creating networks first, the sequence has
+      # moved on and the literal falls outside the real prefix, so the writer
+      # correctly (and silently) treats it as unattributable and skips the
+      # write. Derive the address from each network's actual prefix instead.
       payload = { networks: [
-        { network_id: network_a.id, sessions: [ { neighbor_address: "fd00:abcd:1::99", state: "established" } ] },
-        { network_id: network_b.id, sessions: [ { neighbor_address: "fd00:abcd:2::99", state: "established" } ] } # not A's
+        { network_id: network_a.id,
+          sessions: [ { neighbor_address: "#{network_a.cidr_64.split('/').first}99", state: "established" } ] },
+        { network_id: network_b.id,
+          sessions: [ { neighbor_address: "#{network_b.cidr_64.split('/').first}99", state: "established" } ] } # not A's
       ] }
 
       expect {
