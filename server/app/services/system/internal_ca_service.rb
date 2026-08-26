@@ -98,13 +98,38 @@ module System
         adapter.ca_chain_pem
       end
 
-      # SHA-256 fingerprint of our root — the value an operator should compare
-      # when asking "is this the same CA?", and the one federation
-      # diagnostics quote. A subject DN cannot answer that question: hubs
-      # provisioned before hub-specific subjects all present the identical
+      # SHA-256 fingerprint of the ISSUING CA — "who signs here". The value an
+      # operator should compare when asking "is this the same CA?", and the one
+      # federation diagnostics quote. A subject DN cannot answer that question:
+      # hubs provisioned before hub-specific subjects all present the identical
       # "CN=Powernode Internal CA (local-dev)" over different keys.
+      #
+      # On a flat (anchor-only) deployment this EQUALS #anchor_fingerprint.
+      # Under a hierarchy they diverge, and the distinction matters: this one
+      # answers "who signed this leaf", the other "which tree is this".
       def ca_fingerprint
         adapter.ca_fingerprint
+      end
+
+      # SHA-256 fingerprint of the TERMINAL self-signed cert in our chain —
+      # "which tree". This is the value two hubs compare to decide whether they
+      # belong to the same tree; #ca_fingerprint cannot answer that once
+      # intermediates exist, because siblings have different issuing CAs and the
+      # SAME anchor.
+      def anchor_fingerprint
+        adapter.anchor_fingerprint
+      end
+
+      # Parsed certs, for callers that need the object rather than the PEM.
+      # These replace the deleted #root_cert, which took the FIRST cert of
+      # ca_chain_pem — an assumption that silently changes referent the moment
+      # the chain has more than one element.
+      def issuing_cert
+        adapter.issuing_cert
+      end
+
+      def anchor_cert
+        adapter.anchor_cert
       end
 
       # Audit plan P1.4 — surface adapter#revoke through the service. LocalCaAdapter
@@ -121,17 +146,6 @@ module System
           ttl_seconds: nil
         )
         result
-      end
-
-      # Audit plan P1.4 — parsed OpenSSL::X509::Certificate of the root CA.
-      # Distinct from `ca_chain_pem` which returns the PEM string. Callers
-      # that need to verify cert chains in Ruby (e.g., NodeCertificate
-      # validation) want the parsed form.
-      def root_cert
-        pem = ca_chain_pem
-        OpenSSL::X509::Certificate.new(pem.to_s.lines.take_while { |l| !l.start_with?("-----END") }.join + "-----END CERTIFICATE-----\n")
-      rescue OpenSSL::X509::CertificateError => e
-        raise CaError, "Could not parse CA root certificate from ca_chain_pem: #{e.message}"
       end
 
       private
@@ -220,7 +234,7 @@ module System
     # Local CA adapter (on-disk persisted; test/dev + Vault-less production)
     # ----------------------------------------------------------------------
     class LocalCaAdapter
-      attr_reader :ca_cert, :ca_key
+      attr_reader :ca_cert, :ca_key, :ca_chain
 
       # On-disk persistence path. Without persistence, each rails-runner /
       # rails-server / rake-task process generates its own CA — so a cert
@@ -238,38 +252,93 @@ module System
       CA_SUBJECT_ORG       = "Powernode"
       CA_SUBJECT_CN_PREFIX = "Powernode Internal CA"
 
+      # v2 on-disk layout (§3). A CA generation is an IMMUTABLE version dir;
+      # `live` is a symlink naming the current one. Readers resolve the symlink
+      # ONCE and open every file through the resolved dir, so a reader can never
+      # straddle a flip and see one generation's key beside another's cert.
+      #
+      #   <persist_dir>/
+      #     live -> versions/<id>      symlink, flipped atomically
+      #     versions/<id>/ca.key       0600  this CA's private key
+      #     versions/<id>/ca.crt       0644  this CA's certificate
+      #     versions/<id>/chain.crt    0644  ca.crt + ancestors, anchor last
+      #     .lock                      flock target; writers only
+      #
+      # The v1 layout (root.key/root.crt at the top level) is still READ — see
+      # #load_legacy_pair. It is deleted in the final increment, after the §11
+      # cutover, not here: refusing it now would de-authenticate every existing
+      # deployment on the increment advertised as additive (§15.1).
+      LIVE_LINK    = "live"
+      VERSIONS_DIR = "versions"
+      LOCK_FILE    = ".lock"
+
       def initialize
         @persist_dir = ENV.fetch("POWERNODE_CA_LOCAL_DIR", DEFAULT_PERSIST_DIR)
-        load_or_create_root
+        load_or_create_ca
       end
 
-      # An EXISTING persisted root is loaded verbatim and never rewritten —
-      # not its subject, not its extensions, not one byte. Every worker,
-      # agent, node and federation cert on a running hub chains to it, so
-      # re-minting it (e.g. to adopt the hub-specific subject below) would
-      # de-authenticate the whole fleet on every /api/v1/internal route.
-      # Adopting a new subject on an already-provisioned hub is a deliberate
-      # CA ROTATION — new key, trust-bundle overlap window, re-issue of every
-      # leaf — and is explicitly NOT what this method does.
+      # Loads the live CA, or generates an anchor when the store is genuinely
+      # empty. Never rewrites existing material — every worker, agent, node and
+      # federation cert on a running hub chains to it, so re-minting would
+      # de-authenticate the fleet. Adopting a new subject or key on a
+      # provisioned hub is a deliberate CA ROTATION (§10), not this method.
       #
-      # A HALF-PRESENT pair fails closed. The generate branch below writes
-      # BOTH files unconditionally, so reaching it with one of the two still
-      # on disk would overwrite the survivor — destroying the live root (or
-      # its key) exactly as a subject rewrite would. A directory holding one
-      # half of a CA is a damaged restore, never a "please mint a fresh root"
-      # signal, so refuse and make an operator look at it.
-      def load_or_create_root
+      # Retry-once (F-6): a reader that resolves `live` while a writer flips it
+      # can read a stale target that vanishes mid-read. That is transient, so
+      # re-resolve once before concluding the store is damaged. A SECOND
+      # failure is real and fails closed.
+      def load_or_create_ca
+        attempts = 0
+        begin
+          attempts += 1
+          return if load_live
+          return if load_legacy_pair
+
+          generate_anchor!
+        rescue Errno::ENOENT, Errno::ESTALE => e
+          retry if attempts < 2
+          raise CaError, "internal CA store unreadable at #{@persist_dir}: #{e.class}: #{e.message}"
+        end
+      end
+
+      private
+
+      # Resolves `live` ONCE (§3.1 F-6) and reads the generation through the
+      # resolved path, so every file comes from the same version dir even if a
+      # flip lands mid-load. Returns false when there is no live generation.
+      def load_live
+        link = File.join(@persist_dir, LIVE_LINK)
+        return false unless File.symlink?(link)
+
+        version_dir = File.expand_path(File.readlink(link), @persist_dir)
+        key_pem  = File.read(File.join(version_dir, "ca.key"))
+        cert_pem = File.read(File.join(version_dir, "ca.crt"))
+        chain_path = File.join(version_dir, "chain.crt")
+        chain_pem  = File.exist?(chain_path) ? File.read(chain_path) : cert_pem
+
+        adopt!(key_pem: key_pem, cert_pem: cert_pem, chain_pem: chain_pem, source: version_dir)
+        true
+      end
+
+      # v1 compatibility read, retained for this increment only (see the layout
+      # comment above). A v1 store is by construction depth-1: its chain is the
+      # single self-signed root, so issuing and anchor coincide.
+      def load_legacy_pair
         key_path  = File.join(@persist_dir, "root.key")
         cert_path = File.join(@persist_dir, "root.crt")
         key_present  = File.exist?(key_path)
         cert_present = File.exist?(cert_path)
 
         if key_present && cert_present
-          @ca_key  = OpenSSL::PKey.read(File.read(key_path))
-          @ca_cert = OpenSSL::X509::Certificate.new(File.read(cert_path))
-          return
+          cert_pem = File.read(cert_path)
+          adopt!(key_pem: File.read(key_path), cert_pem: cert_pem,
+                 chain_pem: cert_pem, source: @persist_dir)
+          return true
         end
 
+        # A HALF-PRESENT pair is a damaged restore, never a "mint a fresh root"
+        # signal: generating would overwrite the survivor and de-authenticate
+        # everything chained to it. DAMAGED — refuse and make an operator look.
         if key_present || cert_present
           present, missing = key_present ? [ key_path, cert_path ] : [ cert_path, key_path ]
           raise CaError,
@@ -279,20 +348,142 @@ module System
                 "directory aside deliberately if a NEW CA is genuinely intended."
         end
 
-        @ca_key  = OpenSSL::PKey.generate_key("ED25519")
-        @ca_cert = build_self_signed_root(@ca_key)
-        begin
-          FileUtils.mkdir_p(@persist_dir, mode: 0o700)
-          File.write(key_path,  @ca_key.private_to_pem, mode: "w", perm: 0o600)
-          File.write(cert_path, @ca_cert.to_pem,         mode: "w", perm: 0o644)
-        rescue StandardError => e
-          # Persistence is best-effort — if /var/lib/powernode isn't
-          # writable (e.g. unprivileged test env), keep the in-memory CA
-          # so the process still works. Cross-process verification will
-          # break until persistence is fixed.
-          Rails.logger.warn("[LocalCaAdapter] CA persistence failed: #{e.class}: #{e.message}") if defined?(Rails)
+        false
+      end
+
+      # Installs a loaded generation after asserting the key and cert are a
+      # PAIR (§3.1). A mismatch means the store is DAMAGED: signing with a key
+      # whose certificate advertises a different public key produces
+      # certificates that verify nowhere, so refuse service instead. This is
+      # reachable from an interrupted hand-restore or a partially-copied dir.
+      def adopt!(key_pem:, cert_pem:, chain_pem:, source:)
+        key  = OpenSSL::PKey.read(key_pem)
+        cert = OpenSSL::X509::Certificate.new(cert_pem)
+
+        unless cert.check_private_key(key)
+          raise CaError,
+                "internal CA store at #{source} is DAMAGED: ca.key does not match ca.crt " \
+                "(the certificate advertises a different public key). Certificates signed " \
+                "with this pair would verify nowhere. Restore a consistent generation."
+        end
+
+        @ca_key   = key
+        @ca_cert  = cert
+        @ca_chain = parse_chain(chain_pem, fallback: cert)
+      end
+
+      # Chain order is issuing-first, anchor-last (§4.1). An unparseable or
+      # empty chain file degrades to the issuing cert alone rather than failing
+      # the load: the pair itself already verified, and a depth-1 chain is the
+      # correct degenerate answer for an anchor.
+      def parse_chain(chain_pem, fallback:)
+        certs = chain_pem.to_s.scan(/-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----/m)
+                         .filter_map do |block|
+          begin
+            OpenSSL::X509::Certificate.new(block)
+          rescue OpenSSL::X509::CertificateError
+            nil
+          end
+        end
+        certs.empty? ? [ fallback ] : certs
+      end
+
+      # Generates this deployment's own anchor. Serialized under flock and
+      # RE-CHECKED after acquiring it (§3.1) — without the re-check, two
+      # processes that both observed an empty store would each mint a root and
+      # the loser's issued certs would verify nowhere.
+      #
+      # Persistence is NO LONGER best-effort. The previous code logged a warning
+      # and kept an in-memory CA, which on an unwritable dir gave every process
+      # its own silently-ephemeral root — certs that verify nowhere and a fleet
+      # that fails in a way nothing reports. Losing issuance loudly is the
+      # correct failure (§15.1 row 1).
+      def generate_anchor!
+        with_lock do
+          return if load_live
+          return if load_legacy_pair
+
+          key   = OpenSSL::PKey.generate_key("ED25519")
+          cert  = build_self_signed_root(key)
+          write_generation!(key: key, cert: cert, chain: [ cert ])
+          adopt!(key_pem: key.private_to_pem, cert_pem: cert.to_pem,
+                 chain_pem: cert.to_pem, source: @persist_dir)
         end
       end
+
+      # Assembles an immutable version dir and flips `live` onto it atomically.
+      # Every file is fsynced, then the version dir, then — after the rename —
+      # the PARENT dir (F6: rename durability across power loss is otherwise
+      # not guaranteed). A crash at any point leaves either the old live intact
+      # or the new one complete; no partial generation is ever live.
+      def write_generation!(key:, cert:, chain:)
+        versions = File.join(@persist_dir, VERSIONS_DIR)
+        FileUtils.mkdir_p(versions, mode: 0o700)
+        version_dir = File.join(versions, SecureRandom.uuid)
+        FileUtils.mkdir_p(version_dir, mode: 0o700)
+
+        write_synced(File.join(version_dir, "ca.key"),    key.private_to_pem,      0o600)
+        write_synced(File.join(version_dir, "ca.crt"),    cert.to_pem,             0o644)
+        write_synced(File.join(version_dir, "chain.crt"), chain.map(&:to_pem).join, 0o644)
+        fsync_dir(version_dir)
+
+        # Atomic flip: rename(2) over an existing symlink replaces it in one step.
+        tmp_link = File.join(@persist_dir, ".#{LIVE_LINK}.#{SecureRandom.hex(8)}")
+        File.symlink(File.join(VERSIONS_DIR, File.basename(version_dir)), tmp_link)
+        File.rename(tmp_link, File.join(@persist_dir, LIVE_LINK))
+        fsync_dir(@persist_dir)
+      rescue SystemCallError => e
+        raise CaError,
+              "could not persist the internal CA to #{@persist_dir}: #{e.class}: #{e.message}. " \
+              "Refusing to continue with an in-memory CA — it would be unique per process and " \
+              "every certificate it signed would verify nowhere. Fix the path or set " \
+              "POWERNODE_CA_LOCAL_DIR to a writable, DURABLE location (§17)."
+      end
+
+      def write_synced(path, contents, perm)
+        File.open(path, File::WRONLY | File::CREAT | File::TRUNC, perm) do |f|
+          f.write(contents)
+          f.flush
+          f.fsync
+        end
+      end
+
+      # fsync(2) on the DIRECTORY, which is what makes a rename durable across
+      # power loss (F6) — syncing the files alone does not.
+      #
+      # Dir#fsync only exists on Ruby >= 3.3, so open the directory as a file
+      # descriptor and fsync that: fsync(2) on a directory fd is exactly what
+      # Dir#fsync does, and it works on every POSIX filesystem we run on.
+      def fsync_dir(path)
+        # RDONLY only: File::DIRECTORY (O_DIRECTORY) is not exposed by this
+        # Ruby, and opening a directory read-only is sufficient — fsync(2) on
+        # the resulting fd is what Dir#fsync does on 3.3+.
+        fd = IO.sysopen(path, File::RDONLY)
+        io = IO.for_fd(fd)
+        begin
+          io.fsync
+        ensure
+          io.close
+        end
+      rescue NotImplementedError, SystemCallError, NoMethodError
+        # Some filesystems refuse a directory fsync. The file writes already
+        # synced, so only rename durability across power loss degrades — §17
+        # names durable storage as a precondition rather than something this
+        # can repair.
+        nil
+      end
+
+      # Single-writer discipline (§3.1). Writers only: readers are lockless
+      # because version dirs are immutable and `live` resolves in one readlink.
+      def with_lock
+        FileUtils.mkdir_p(@persist_dir, mode: 0o700)
+        File.open(File.join(@persist_dir, LOCK_FILE), File::RDWR | File::CREAT, 0o600) do |lock|
+          lock.flock(File::LOCK_EX)
+          yield
+        end
+      end
+
+      public
 
       def issue_certificate(csr_pem:, ttl_seconds:, common_name: nil, sans: [])
         csr = begin
@@ -334,16 +525,36 @@ module System
         }
       end
 
+      # Issuing-first, anchor-last (§4.1). One cert for an anchor deployment,
+      # which is byte-identical to what v1 returned — the degenerate case, not
+      # a special case.
       def ca_chain_pem
-        ca_cert.to_pem
+        ca_chain.map(&:to_pem).join
+      end
+
+      # The cert this CA signs with.
+      def issuing_cert
+        ca_cert
+      end
+
+      # The terminal self-signed cert — the tree's root of trust. Equals
+      # #issuing_cert on a flat deployment.
+      def anchor_cert
+        ca_chain.last || ca_cert
       end
 
       # THE identity of this CA. The subject is a label the CA names itself;
-      # only the fingerprint distinguishes two roots (and every hub
-      # provisioned before hub-specific subjects landed still shares one DN
-      # with every other such hub).
+      # only the fingerprint distinguishes two CAs (and every hub provisioned
+      # before hub-specific subjects landed still shares one DN with every
+      # other such hub).
       def ca_fingerprint
-        ::Security::CaFingerprint.of(ca_cert)
+        ::Security::CaFingerprint.of(issuing_cert)
+      end
+
+      # "Which tree" — the value two hubs compare to decide whether they share
+      # a root of trust. Diverges from #ca_fingerprint only under a hierarchy.
+      def anchor_fingerprint
+        ::Security::CaFingerprint.of(anchor_cert)
       end
 
       def preflight_check
@@ -524,7 +735,44 @@ module System
       # Parity with LocalCaAdapter#ca_fingerprint so callers never have to ask
       # which adapter is live before they can identify the CA.
       def ca_fingerprint
-        ::Security::CaFingerprint.of_pem(ca_chain_pem)
+        ::Security::CaFingerprint.of(issuing_cert)
+      end
+
+      # Parity surface for the §4.1 contract. HONEST LIMITATION: this adapter's
+      # #ca_chain_pem calls Vault's `/ca/pem`, which returns the mount's OWN
+      # certificate — one cert, not a chain (the client's comment overclaims it;
+      # the endpoint does not). So on a Vault-backed SUBORDINATE these three
+      # currently describe the intermediate, and #anchor_fingerprint would
+      # answer "which tree" with the intermediate's fingerprint — wrong.
+      #
+      # That is correct-and-equal at depth 1, which is every Vault deployment
+      # today, and it is why §1.1 lists a chain-aware fetch
+      # (`/cert/ca_chain`) as required work. Deliberately NOT faked here:
+      # returning the mount cert while claiming it is the anchor is the failure
+      # this comment exists to prevent. The Vault arm lands with the new
+      # VaultPkiClient verbs and is labelled offline-UNPROVEN until then (§15).
+      def issuing_cert
+        chain_certs.first || raise(CaError, "Vault PKI returned no parseable CA certificate")
+      end
+
+      def anchor_cert
+        chain_certs.last || issuing_cert
+      end
+
+      def anchor_fingerprint
+        ::Security::CaFingerprint.of(anchor_cert)
+      end
+
+      # Parses whatever #ca_chain_pem returned into certs, order preserved.
+      def chain_certs
+        ca_chain_pem.to_s.scan(/-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----/m)
+                    .filter_map do |block|
+          begin
+            ::OpenSSL::X509::Certificate.new(block)
+          rescue ::OpenSSL::X509::CertificateError
+            nil
+          end
+        end
       end
 
       # Audit plan P1.4 — revoke a previously-issued cert by serial.

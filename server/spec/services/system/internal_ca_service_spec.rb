@@ -2,6 +2,8 @@
 
 require "rails_helper"
 require "openssl"
+require "fileutils"
+require "tmpdir"
 
 # Golden Eclipse M0.N — InternalCaService (LocalCaAdapter test path).
 # VaultCaAdapter is exercised against a real Vault deployment in integration
@@ -151,21 +153,103 @@ RSpec.describe System::InternalCaService do
   end
 
   describe "LocalCaAdapter on-disk persistence" do
-    it "generates + persists a root (key 0600) on first use, then reloads the SAME root" do
+    it "generates + persists an anchor into a version dir (key 0600) on first use, then reloads the SAME anchor" do
       Dir.mktmpdir do |dir|
         stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => dir))
         first = described_class::LocalCaAdapter.new
 
-        key_path  = File.join(dir, "root.key")
-        cert_path = File.join(dir, "root.crt")
+        live = File.join(dir, "live")
+        expect(File.symlink?(live)).to be(true)
+
+        version_dir = File.expand_path(File.readlink(live), dir)
+        key_path    = File.join(version_dir, "ca.key")
         expect(File.exist?(key_path)).to be(true)
-        expect(File.exist?(cert_path)).to be(true)
+        expect(File.exist?(File.join(version_dir, "ca.crt"))).to be(true)
+        expect(File.exist?(File.join(version_dir, "chain.crt"))).to be(true)
         expect(format("%o", File.stat(key_path).mode & 0o777)).to eq("600")
 
-        # A second adapter over the same dir loads the persisted root rather
+        # A second adapter over the same dir loads the persisted anchor rather
         # than generating a new one — cross-process stability.
         second = described_class::LocalCaAdapter.new
         expect(second.ca_cert.to_pem).to eq(first.ca_cert.to_pem)
+      end
+    end
+
+    # §4.1 — one cert for an anchor deployment. This is the degenerate case of
+    # the chain contract, not a special case, and it is what keeps every
+    # existing consumer byte-identical at depth 1.
+    it "returns a single-cert chain for an anchor, with issuing == anchor" do
+      Dir.mktmpdir do |dir|
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => dir))
+        adapter = described_class::LocalCaAdapter.new
+
+        certs = adapter.ca_chain_pem.scan(/-----BEGIN CERTIFICATE-----/).size
+        expect(certs).to eq(1)
+        expect(adapter.ca_chain_pem).to eq(adapter.ca_cert.to_pem)
+        expect(adapter.issuing_cert.to_pem).to eq(adapter.anchor_cert.to_pem)
+        expect(adapter.ca_fingerprint).to eq(adapter.anchor_fingerprint)
+      end
+    end
+
+    # The S2 guard: every deployment in existence holds the v1 layout, and this
+    # increment is advertised as additive. A v1 store must load unchanged — the
+    # refusal lands only after the §11 cutover.
+    it "still loads a legacy root.key/root.crt pair unchanged (the additive guard)" do
+      Dir.mktmpdir do |legacy_dir|
+        # Build a v1 store by generating in one dir and copying the material
+        # out under the old names.
+        Dir.mktmpdir do |seed_dir|
+          stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => seed_dir))
+          seed = described_class::LocalCaAdapter.new
+          version_dir = File.expand_path(File.readlink(File.join(seed_dir, "live")), seed_dir)
+          FileUtils.cp(File.join(version_dir, "ca.key"), File.join(legacy_dir, "root.key"))
+          FileUtils.cp(File.join(version_dir, "ca.crt"), File.join(legacy_dir, "root.crt"))
+        end
+
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => legacy_dir))
+        adapter = described_class::LocalCaAdapter.new
+
+        expected = File.read(File.join(legacy_dir, "root.crt"))
+        expect(adapter.ca_cert.to_pem).to eq(expected)
+        # v1 is depth-1 by construction, so the chain is the root alone.
+        expect(adapter.ca_chain_pem).to eq(expected)
+        expect(adapter.ca_fingerprint).to eq(adapter.anchor_fingerprint)
+        # And it is NOT rewritten into the v2 layout behind the operator's back.
+        expect(File.symlink?(File.join(legacy_dir, "live"))).to be(false)
+      end
+    end
+
+    # §3.1 — a key that does not match its certificate is DAMAGED. Signing with
+    # it would mint certificates that verify nowhere, which is strictly worse
+    # than refusing to start.
+    it "refuses a store whose key and cert are not a pair" do
+      Dir.mktmpdir do |dir|
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => dir))
+        described_class::LocalCaAdapter.new
+        version_dir = File.expand_path(File.readlink(File.join(dir, "live")), dir)
+
+        # Swap in an unrelated key of the same type.
+        File.write(File.join(version_dir, "ca.key"),
+                   OpenSSL::PKey.generate_key("ED25519").private_to_pem)
+
+        expect { described_class::LocalCaAdapter.new }
+          .to raise_error(described_class::CaError, /DAMAGED.*does not match/m)
+      end
+    end
+
+    # The in-memory fallback is gone. A CA that cannot be persisted is unique
+    # per process, so everything it signs verifies nowhere — and the old code
+    # reported that with a log warning. Losing issuance loudly is correct.
+    it "refuses rather than falling back to an in-memory CA when the store is unwritable" do
+      Dir.mktmpdir do |dir|
+        unwritable = File.join(dir, "nope")
+        FileUtils.mkdir_p(unwritable)
+        FileUtils.chmod(0o500, unwritable)
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => File.join(unwritable, "ca")))
+
+        expect { described_class::LocalCaAdapter.new }.to raise_error(StandardError)
+      ensure
+        FileUtils.chmod(0o700, unwritable) if File.exist?(unwritable)
       end
     end
 
