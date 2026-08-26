@@ -168,4 +168,35 @@ RSpec.describe System::SpawnPlatformService, type: :service do
       end
     end
   end
+
+  describe "DEFAULT_TOKEN_TTL documentation" do
+    # The constant is a single-use bearer credential's exposure window.
+    # Security reasoning that reads the comment above it (a reviewer, a
+    # design doc, an agent) takes the comment's claim as ground truth —
+    # so the comment must not contradict the constant it documents.
+    let(:source_path) { Object.const_source_location("System::SpawnPlatformService").first }
+    let(:source) { File.read(source_path) }
+    let(:comment_block) { source[/(?:^ {4}#.*\n)+ {4}DEFAULT_TOKEN_TTL/, 0].to_s }
+
+    it "finds the comment immediately above the constant" do
+      expect(comment_block).to be_present
+    end
+
+    it "does not claim a minutes-to-hours window for the actual multi-day default" do
+      expect(comment_block).not_to match(/minutes-to-hours/i)
+    end
+
+    it "states what actually bounds the credential's exposure: single-use + the recorded digest" do
+      expect(comment_block).to match(/single-use/i)
+      expect(comment_block).to match(/digest/i)
+    end
+
+    it "documents the token_ttl_seconds override for sensitive spawns" do
+      expect(comment_block).to match(/token_ttl_seconds/)
+    end
+
+    it "matches the real constant value" do
+      expect(System::SpawnPlatformService::DEFAULT_TOKEN_TTL).to eq(7.days.to_i)
+    end
+  end
 end

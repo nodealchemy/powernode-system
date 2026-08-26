@@ -35,8 +35,24 @@ module System
 
     SPAWN_MODES = %w[managed_child autonomous_peer cluster_member].freeze
 
-    # Default acceptance-token TTL — short window because spawn-and-accept
-    # is typically minutes-to-hours, not days. Operator can override.
+    # Default acceptance-token TTL — 7 days. This is NOT the credential's
+    # real exposure window: the token is single-use (accept! nulls
+    # acceptance_token_digest + acceptance_token_expires_at on the peer
+    # row the instant it's redeemed, and the status leaves "proposed" so
+    # a replay can't re-transition), so what actually bounds exposure is
+    # "until first use," with the TTL only capping an unused token that's
+    # never redeemed. The long default exists because spawn-and-accept
+    # can legitimately take days when the accepting operator isn't
+    # immediately available (e.g. a physically-provisioned device
+    # awaiting manual boot).
+    #
+    # Callers spawning a CA-capable child (one that will hold delegated
+    # CA issuance authority once accepted) should still pass a shortened
+    # token_ttl_seconds via the existing operator override — that's the
+    # case where a long-lived *unredeemed* token matters most, since a
+    # captured-but-unused token for that spawn is the highest-value
+    # target. See children_controller.rb and
+    # platform_deployment_orchestrator.rb for the override call sites.
     DEFAULT_TOKEN_TTL = 7.days.to_i
 
     class << self
