@@ -626,6 +626,7 @@ module PowernodeSystem
           system.architecture.propose system.architecture.create
           system.architecture.update system.architecture.delete
           system.module_verify_investigate
+          system.task_backlog_investigate
         ])
 
         # SDWAN Manager domain
