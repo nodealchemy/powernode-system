@@ -35,10 +35,15 @@ module System
     # grant.id can never derive the same value as some closure_id / module_id.
     TOKEN_HMAC_DOMAIN = "federation-grant"
 
-    # Grace flag for legacy raw-PK `fg-<id>` tokens. Default TRUE so this
-    # change LANDS SAFELY — peers holding pre-envelope tokens keep working.
-    # The operator re-issues each peer's grant token (now minted as an `fgs.`
-    # envelope), then sets this false to reject legacy tokens entirely.
+    # Grace flag for legacy raw-PK `fg-<id>` tokens. Default FALSE — the raw
+    # primary key carries no signature, so possessing a grant UUID (which
+    # surfaces in API responses, logs, audit rows, task metadata) would BE the
+    # credential for as long as this stayed on. The staged-rollout grace this
+    # flag names is only needed by an operator upgrading a population that
+    # already holds pre-envelope tokens; a fresh/empty population has none to
+    # protect, so it opts in explicitly (set this true) only for that
+    # migration window, then unsets it once every peer's grant is re-issued
+    # as an `fgs.` envelope.
     LEGACY_TOKEN_ENV = "POWERNODE_FEDERATION_LEGACY_TOKEN"
 
     self.table_name = "system_federation_grants"
@@ -191,11 +196,12 @@ module System
     # Returns nil when the server secret is unavailable (production, env unset)
     # — fail-closed: a caller cannot mint an unsigned token.
     #
-    # Staged rollout: new grants immediately mint this `fgs.` envelope; pre-
-    # envelope peers hold raw-PK `fg-<id>` tokens that the verifier still
-    # accepts while POWERNODE_FEDERATION_LEGACY_TOKEN is on (the default), so
-    # this lands without breaking federation. The operator flips it off after
-    # re-issuing every peer's token.
+    # Staged rollout: new grants immediately mint this `fgs.` envelope. A
+    # pre-envelope peer's raw-PK `fg-<id>` token is rejected unless the
+    # operator explicitly opts into the migration grace by setting
+    # POWERNODE_FEDERATION_LEGACY_TOKEN=true (default off) — meant only for
+    # upgrading a population that already holds legacy tokens, then unset
+    # once every peer's grant is re-issued as an `fgs.` envelope.
     def bearer_token
       sig = self.class.token_signature(id)
       return nil if sig.blank?
@@ -218,8 +224,9 @@ module System
       # Resolve a presented bearer token to its FederationGrant.
       #   - `fgs.` envelope: recompute the HMAC and CONSTANT-TIME compare; only
       #     a valid signature reaches the DB lookup. Secret unset → nil.
-      #   - `fg-` legacy: accepted only while the grace flag is on; logs a
-      #     one-line deprecation warning (NEVER the token value).
+      #   - `fg-` legacy: accepted only when the grace flag is explicitly
+      #     turned on (default off); logs a one-line deprecation warning
+      #     (NEVER the token value).
       #   - anything else / a malformed / forged token → nil, never a 500.
       def find_by_bearer_token(token)
         return nil unless token.is_a?(String)
@@ -271,7 +278,7 @@ module System
       end
 
       def legacy_tokens_accepted?
-        ActiveModel::Type::Boolean.new.cast(ENV.fetch(LEGACY_TOKEN_ENV, true))
+        ActiveModel::Type::Boolean.new.cast(ENV.fetch(LEGACY_TOKEN_ENV, false))
       end
     end
 

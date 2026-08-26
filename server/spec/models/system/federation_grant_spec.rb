@@ -210,11 +210,24 @@ RSpec.describe System::FederationGrant, type: :model do
     end
 
     describe "legacy raw-PK `fg-<id>` grace" do
-      it "accepts a legacy token while POWERNODE_FEDERATION_LEGACY_TOKEN is on (default)" do
-        expect(described_class.find_by_bearer_token("fg-#{grant.id}")).to eq(grant)
+      it "rejects a legacy token by default (POWERNODE_FEDERATION_LEGACY_TOKEN unset)" do
+        prev = ENV.delete("POWERNODE_FEDERATION_LEGACY_TOKEN")
+        expect(described_class.find_by_bearer_token("fg-#{grant.id}")).to be_nil
+        # the signed envelope still resolves with the legacy grace unset
+        expect(described_class.find_by_bearer_token(grant.bearer_token)).to eq(grant)
+      ensure
+        ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"] = prev
       end
 
-      it "rejects a legacy token when POWERNODE_FEDERATION_LEGACY_TOKEN is off" do
+      it "accepts a legacy token only when the operator explicitly opts back in" do
+        prev = ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"]
+        ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"] = "true"
+        expect(described_class.find_by_bearer_token("fg-#{grant.id}")).to eq(grant)
+      ensure
+        ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"] = prev
+      end
+
+      it "rejects a legacy token when POWERNODE_FEDERATION_LEGACY_TOKEN is explicitly off" do
         prev = ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"]
         ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"] = "false"
         expect(described_class.find_by_bearer_token("fg-#{grant.id}")).to be_nil
