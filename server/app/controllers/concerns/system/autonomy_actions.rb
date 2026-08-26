@@ -110,7 +110,7 @@ module System
       # display choice for this account-wide view, not a core→extension dependency (that arrow points the
       # permitted way) — do NOT "fix" by filtering core rows out. Ruled 2026-08-23 (IMP-fa63f411633b).
       "project"           => %w[project.],
-      "node_lifecycle"    => %w[system.cert_ system.acme_cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.capability_gap_ system.observation system.task. system.template_closure_ system.node_boot_image_]
+      "node_lifecycle"    => %w[system.cert_ system.acme_cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.capability_gap_ system.observation system.task. system.task_ system.template_closure_ system.node_boot_image_]
     }.freeze
 
     # GET /api/v1/system/autonomy
