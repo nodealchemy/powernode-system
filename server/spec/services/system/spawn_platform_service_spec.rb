@@ -170,33 +170,28 @@ RSpec.describe System::SpawnPlatformService, type: :service do
   end
 
   describe "DEFAULT_TOKEN_TTL documentation" do
-    # The constant is a single-use bearer credential's exposure window.
-    # Security reasoning that reads the comment above it (a reviewer, a
-    # design doc, an agent) takes the comment's claim as ground truth —
-    # so the comment must not contradict the constant it documents.
-    let(:source_path) { Object.const_source_location("System::SpawnPlatformService").first }
-    let(:source) { File.read(source_path) }
-    let(:comment_block) { source[/(?:^ {4}#.*\n)+ {4}DEFAULT_TOKEN_TTL/, 0].to_s }
+    # This constant is a single-use bearer credential's expiry. Security
+    # reasoning that reads the comment above it — a reviewer, a design doc, an
+    # agent — takes that comment as ground truth, and one already did: a
+    # hierarchical-PKI review used its "minutes-to-hours" claim as a premise
+    # while the constant was 7 days.
+    #
+    # The invariant worth pinning is the RELATIONSHIP, not the prose: the
+    # comment must state the magnitude the constant actually has. Asserting on
+    # particular phrases instead would false-fail on any honest rewording while
+    # still passing if someone changed the constant and left the comment stale
+    # — which is the defect itself.
+    let(:source_path)   { Object.const_source_location("System::SpawnPlatformService").first }
+    let(:comment_block) { File.read(source_path)[/(?:^ {4}#.*\n)+ {4}DEFAULT_TOKEN_TTL/, 0].to_s }
 
-    it "finds the comment immediately above the constant" do
-      expect(comment_block).to be_present
-    end
+    it "documents the window the constant actually grants" do
+      expect(comment_block).to be_present, "no comment found immediately above DEFAULT_TOKEN_TTL"
 
-    it "does not claim a minutes-to-hours window for the actual multi-day default" do
-      expect(comment_block).not_to match(/minutes-to-hours/i)
-    end
-
-    it "states what actually bounds the credential's exposure: single-use + the recorded digest" do
-      expect(comment_block).to match(/single-use/i)
-      expect(comment_block).to match(/digest/i)
-    end
-
-    it "documents the token_ttl_seconds override for sensitive spawns" do
-      expect(comment_block).to match(/token_ttl_seconds/)
-    end
-
-    it "matches the real constant value" do
-      expect(System::SpawnPlatformService::DEFAULT_TOKEN_TTL).to eq(7.days.to_i)
+      days = described_class::DEFAULT_TOKEN_TTL / 86_400
+      expect(days).to be_positive, "TTL is now sub-day; restate this expectation in the new unit"
+      expect(comment_block).to match(/\b#{days}\s*days?\b/i),
+        "the comment above DEFAULT_TOKEN_TTL must state its real window (#{days} days). " \
+        "If you changed the constant, update the comment in the same commit."
     end
   end
 end
