@@ -62,8 +62,18 @@ export const PeerLivenessMonitor: React.FC<PeerLivenessMonitorProps> = ({ refres
   // contract (System::FederationPeer#broadcast_peer_state!) stamps the peer id
   // as payload.federation_peer_id — this component is a declared reader of
   // that contract (see the comment at the emit site in federation_peer.rb).
-  // Legacy/other emitters carry payload.platform_peer_id / payload.peer_id or
-  // the (federation-specific) payload.remote_instance_url, kept as fallbacks.
+  // payload.remote_instance_url is a live alternate match path, not a fallback:
+  // current emitters stamp it alongside federation_peer_id (e.g.
+  // Sdwan::FederationGovernance#build_finding).
+  //
+  // The former payload.platform_peer_id / payload.peer_id fallbacks are GONE.
+  // Both emitters that stamped peer_id were fixed to the canonical key
+  // (5bfdb206, 80a8ec08), and a census of system_fleet_events (29,382,053 rows,
+  // 2026-08-26) found 0 rows carrying platform_peer_id and 497 carrying
+  // peer_id — every one of them an Sdwan::Peer id under kind
+  // sdwan.credential_issued / system.sdwan_credential_expiring, i.e. a
+  // DIFFERENT MODEL that the kind filter below already excludes. Reading them
+  // here could only ever have matched by UUID collision.
   // We bump last_heartbeat_at on any matching event and flag the row "live".
   useEffect(() => {
     if (!isConnected || !accountId) return;
@@ -89,10 +99,7 @@ export const PeerLivenessMonitor: React.FC<PeerLivenessMonitorProps> = ({ refres
         }
         const payload = (evt.payload ?? {}) as Record<string, unknown>;
         const peerId =
-          (typeof payload.federation_peer_id === 'string' && payload.federation_peer_id) ||
-          (typeof payload.platform_peer_id === 'string' && payload.platform_peer_id) ||
-          (typeof payload.peer_id === 'string' && payload.peer_id) ||
-          null;
+          (typeof payload.federation_peer_id === 'string' && payload.federation_peer_id) || null;
         const remoteUrl =
           typeof payload.remote_instance_url === 'string' ? payload.remote_instance_url : null;
         const emittedAt = typeof evt.emitted_at === 'string' ? evt.emitted_at : new Date().toISOString();

@@ -678,7 +678,7 @@ describe('PeerLivenessMonitor', () => {
       act(() => {
         capturedOnMessage?.({
           kind: 'system.node.heartbeat',
-          payload: { platform_peer_id: 'peer-active-1' },
+          payload: { federation_peer_id: 'peer-active-1' },
           emitted_at: new Date().toISOString(),
         });
       });
@@ -687,7 +687,7 @@ describe('PeerLivenessMonitor', () => {
       expect(screen.queryByTitle('Live event received this session')).not.toBeInTheDocument();
     });
 
-    it('bumps last_heartbeat_at and marks row live on a federation event matched by peer_id', async () => {
+    it('bumps last_heartbeat_at and marks row live on a federation event matched by federation_peer_id', async () => {
       const now = new Date().toISOString();
       mockGet.mockResolvedValue(peersListEnvelope([PEER_ACTIVE]));
 
@@ -700,7 +700,7 @@ describe('PeerLivenessMonitor', () => {
       act(() => {
         capturedOnMessage?.({
           kind: 'system.federation.heartbeat',
-          payload: { platform_peer_id: 'peer-active-1' },
+          payload: { federation_peer_id: 'peer-active-1' },
           emitted_at: now,
         });
       });
@@ -711,30 +711,7 @@ describe('PeerLivenessMonitor', () => {
       });
     });
 
-    it('bumps last_heartbeat_at on a federation event matched by peer_id (alternate field)', async () => {
-      const now = new Date().toISOString();
-      mockGet.mockResolvedValue(peersListEnvelope([PEER_ACTIVE]));
-
-      renderMonitor();
-
-      await waitFor(() =>
-        expect(screen.getByTestId('liveness-row-peer-active-1')).toBeInTheDocument(),
-      );
-
-      act(() => {
-        capturedOnMessage?.({
-          kind: 'system.platform_peer.status_change',
-          payload: { peer_id: 'peer-active-1' },
-          emitted_at: now,
-        });
-      });
-
-      await waitFor(() => {
-        expect(screen.getByTitle('Live event received this session')).toBeInTheDocument();
-      });
-    });
-
-    it('matches federation event by remote_instance_url when no peer_id is present', async () => {
+    it('matches federation event by remote_instance_url when no federation_peer_id is present', async () => {
       const now = new Date().toISOString();
       mockGet.mockResolvedValue(peersListEnvelope([PEER_ACTIVE]));
 
@@ -772,7 +749,7 @@ describe('PeerLivenessMonitor', () => {
       act(() => {
         capturedOnMessage?.({
           kind: 'system.federation.status_change',
-          payload: { platform_peer_id: 'peer-active-1', status: 'degraded' },
+          payload: { federation_peer_id: 'peer-active-1', status: 'degraded' },
           emitted_at: new Date().toISOString(),
         });
       });
@@ -800,7 +777,7 @@ describe('PeerLivenessMonitor', () => {
       act(() => {
         capturedOnMessage?.({
           kind: 'system.federation.heartbeat',
-          payload: { platform_peer_id: 'peer-unknown-999' },
+          payload: { federation_peer_id: 'peer-unknown-999' },
           emitted_at: new Date().toISOString(),
         });
       });
@@ -821,7 +798,7 @@ describe('PeerLivenessMonitor', () => {
       act(() => {
         capturedOnMessage?.({
           kind: 'decision.federation.approved',
-          payload: { platform_peer_id: 'peer-active-1' },
+          payload: { federation_peer_id: 'peer-active-1' },
           emitted_at: new Date().toISOString(),
         });
       });
@@ -933,7 +910,7 @@ describe('PeerLivenessMonitor', () => {
       act(() => {
         capturedOnMessage?.({
           kind: 'system.peer.check',
-          payload: { peer_id: 'peer-active-1' },
+          payload: { federation_peer_id: 'peer-active-1' },
           emitted_at: new Date().toISOString(),
         });
       });
