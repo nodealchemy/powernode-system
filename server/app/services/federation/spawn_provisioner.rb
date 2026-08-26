@@ -210,9 +210,11 @@ module Federation
       # configured connections, and the spawn died downstream in
       # registry.for_node with "No provider connection available for
       # region X". Pre-filter on connectable providers so the orchestrator
-      # never picks a dead-on-arrival region. Falls back to the legacy
-      # "first provider, first region" so existing tests + explicit-target
-      # paths stay unchanged.
+      # never picks a dead-on-arrival region. Falls back to the UNFILTERED
+      # "first provider, first region" below, which is a live path — not a
+      # legacy remnant: explicit-target flows and existing tests reach it
+      # whenever no connectable provider/region pair exists. Deleting it
+      # changes behavior.
       preferred_provider = node.respond_to?(:provider) ? node.provider : nil
       region = first_region_for_connectable_provider(preferred_provider)
       return region if region
@@ -227,8 +229,8 @@ module Federation
     # one enabled + connected ProviderConnection visible to this account.
     # When preferred_provider is set, restricts to that provider (so we
     # respect the node's pinned provider when possible). Returns nil if
-    # no such provider/region pair exists — the caller falls through to
-    # the legacy default.
+    # no such provider/region pair exists — the caller falls through to the
+    # unfiltered "first provider, first region" default, which is live.
     def first_region_for_connectable_provider(preferred_provider)
       scope = ::System::ProviderConnection
                 .enabled
