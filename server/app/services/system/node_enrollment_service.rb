@@ -67,7 +67,7 @@ module System
         subject: issued[:subject] || "CN=#{common_name}",
         not_before: issued[:not_before] || Time.current,
         not_after:  issued[:not_after]  || (Time.current + ttl_seconds),
-        issuer_subject: parse_issuer(issued[:ca_chain_pem])
+        issuer_subject: issuer_subject_of(issued[:cert_pem])
       )
 
       if agent_version.present?
@@ -109,7 +109,7 @@ module System
         subject: issued[:subject] || "CN=#{common_name}",
         not_before: issued[:not_before] || Time.current,
         not_after:  issued[:not_after]  || (Time.current + ttl_seconds),
-        issuer_subject: parse_issuer(issued[:ca_chain_pem])
+        issuer_subject: issuer_subject_of(issued[:cert_pem])
       )
 
       ::ActiveRecord::Base.transaction do
@@ -167,10 +167,23 @@ module System
       token.node.node_instances.where(status: %w[pending provisioning starting running]).first
     end
 
-    def parse_issuer(ca_chain_pem)
-      return nil if ca_chain_pem.blank?
+    # The DN of the CA that signed THIS leaf, read off the leaf itself.
+    #
+    # This used to parse ca_chain_pem — `OpenSSL::X509::Certificate.new(pem)`,
+    # which returns the FIRST cert of the bundle. That was correct only while a
+    # chain was guaranteed to be one self-signed root; under the chain contract
+    # (§4.1, issuing-first/anchor-last) the same expression silently changes
+    # referent from "the anchor" to "the issuing CA" — on a PERSISTED column.
+    #
+    # Reading `.issuer` off the leaf sidesteps the question: it is what the
+    # field name already promises, it is byte-identical for every existing row
+    # (at depth 1 the issuing CA IS the anchor), it stays correct at any depth,
+    # and no chain-ordering mistake can move it. The column is diagnostic;
+    # Security::CaFingerprint remains the identity of record.
+    def issuer_subject_of(cert_pem)
+      return nil if cert_pem.blank?
 
-      OpenSSL::X509::Certificate.new(ca_chain_pem).subject.to_s
+      OpenSSL::X509::Certificate.new(cert_pem).issuer.to_s
     rescue OpenSSL::X509::CertificateError
       nil
     end
