@@ -54,7 +54,11 @@ module Api
           #   module_digests (hash of module_id → oci_digest), mount_state,
           #   load_average, memory_free_kb, booted_image_git_sha,
           #   sdwan_state (per-network applier outcomes — see
-          #   Sdwan::AgentApplyStateWriter), sdwan_ovn_state
+          #   Sdwan::AgentApplyStateWriter), sdwan_ovn_state,
+          #   module_verify_state (see System::ModuleVerifyStateWriter),
+          #   booted_from_lkg / lkg_age_seconds / lkg_present /
+          #   lkg_confirmed_at / lkg_module_count / boot_incomplete /
+          #   pivot_confinement_omitted (see System::BootLkgStateWriter)
           #
           # Persists into the NodeInstance's M0.M runtime telemetry columns
           # (last_heartbeat_at, agent_version, boot_id, running_module_digests,
@@ -156,6 +160,31 @@ module Api
               )
             rescue StandardError => e
               Rails.logger.warn("[StatusController] module verify state ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
+            end
+
+            # IMP-b8d5cfa33b79 — the agent's BOOT / LKG telemetry. Seven
+            # top-level keys the agent has shipped on every heartbeat since #39
+            # (lkg_present / lkg_confirmed_at / lkg_module_count — the ARM
+            # telemetry an operator needs before #14 pulls a node's control
+            # plane — plus booted_from_lkg, lkg_age_seconds, boot_incomplete and
+            # pivot_confinement_omitted), and NOTHING on the server read any of
+            # them: a node surviving on a frozen composition, or one not armed
+            # with an LKG at all, was indistinguishable from a healthy one.
+            #
+            # Every field is Go `omitempty`, so a missing key is ingested as
+            # UNREPORTED, never as a measured false — see
+            # System::BootLkgStateWriter. None of the seven present ⇒ nothing
+            # written (absence stays absence). Wrapped so an ingest bug cannot
+            # bounce telemetry, exactly like the three blocks above.
+            begin
+              boot_obs = params.slice(*::System::BootLkgStateWriter::WIRE_KEYS)
+              boot_obs = boot_obs.to_unsafe_h if boot_obs.respond_to?(:to_unsafe_h)
+              ::System::BootLkgStateWriter.write!(
+                instance: current_instance,
+                payload:  boot_obs
+              )
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] boot LKG state ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
             end
 
             # Boot-image upgrade reconcile (campaign 019f505f inc 2): the node

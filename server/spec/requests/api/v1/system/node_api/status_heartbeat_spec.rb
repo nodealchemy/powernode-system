@@ -474,4 +474,183 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
       expect(offered_ids).to include(task.id)
     end
   end
+
+  # IMP-b8d5cfa33b79 — boot-LKG / ARM telemetry ingest.
+  #
+  # The agent has emitted seven boot/LKG fields on EVERY heartbeat since #39
+  # (runtime/heartbeat.go: booted_from_lkg, lkg_age_seconds, lkg_present,
+  # lkg_confirmed_at, lkg_module_count, boot_incomplete,
+  # pivot_confinement_omitted) and ZERO server code read any of them — the
+  # same half-lane shape the sdwan_state and module_verify_state ingests
+  # closed, invisible to unit specs on either side because both pass while
+  # the wire between them is cut.
+  #
+  # THE ORACLE THIS BLOCK EXISTS FOR: every one of those fields is Go
+  # `omitempty`, so a false / zero value is NOT TRANSMITTED AT ALL. The
+  # producer says as much — "Absence of lkg_present=true means 'not armed'".
+  # Ingesting a missing key as a measured `false` would convert a
+  # decommission BLOCKER into a decommission green light, which is strictly
+  # worse than today, where the operator at least knows the answer is
+  # missing.
+  describe "boot-LKG telemetry ingest" do
+    def post_heartbeat(extra = {})
+      post "/api/v1/system/node_api/status/heartbeat",
+           params: body.merge(extra), headers: headers, as: :json
+    end
+
+    def recorded
+      instance.reload.config["boot_lkg"]
+    end
+
+    it "lands the document under the writer's CONFIG_KEY" do
+      post_heartbeat(lkg_present: true)
+
+      expect(instance.reload.config[::System::BootLkgStateWriter::CONFIG_KEY])
+        .to eq(recorded)
+      expect(recorded).to be_present
+    end
+
+    # Absence stays absence, exactly as the two sibling telemetry lanes do: a
+    # pre-#39 agent sends none of the seven keys and must leave no document
+    # behind at all, so a reader can tell "never reported" from any reported
+    # state whatsoever.
+    it "stamps NOTHING when the heartbeat carries none of the seven fields" do
+      post_heartbeat
+
+      expect(response).to have_http_status(:ok)
+      expect(recorded).to be_nil
+    end
+
+    # THE STALENESS ORACLE. Absence-stays-absence, copied wholesale from the
+    # two sibling lanes, is WRONG here: a CURRENT agent whose on-disk LKG was
+    # deleted, corrupted or wiped by a re-provision emits NONE of the seven
+    # (service.go's LoadBootLKG error path, plus `omitempty` on every remaining
+    # false/zero). If that heartbeat left the previous document alone, a node
+    # that WAS armed would answer "armed" forever after it stopped being armed
+    # — the same decommission green light, reached through time rather than
+    # through one payload.
+    it "flips a previously-armed node to unreported when its LKG stops being reported" do
+      post_heartbeat(lkg_present: true, lkg_module_count: 7)
+      expect(recorded["arm_state"]).to eq("armed")
+      armed_observed_at = recorded["observed_at"]
+
+      post_heartbeat # the LKG is gone: the agent emits none of the seven
+
+      expect(recorded["arm_state"]).to eq("unreported")
+      expect(recorded["lkg_present"]).to be_nil
+      expect(recorded["lkg_module_count"]).to be_nil
+      expect(recorded["observed_at"]).to be >= armed_observed_at
+    end
+
+    it "records an armed node from lkg_present=true" do
+      post_heartbeat(lkg_present: true, lkg_confirmed_at: "2026-08-20T04:05:06Z",
+                     lkg_module_count: 7)
+
+      expect(response).to have_http_status(:ok)
+      expect(recorded["arm_state"]).to eq("armed")
+      expect(recorded["lkg_present"]).to be(true)
+      expect(recorded["lkg_confirmed_at"]).to eq("2026-08-20T04:05:06Z")
+      expect(recorded["lkg_module_count"]).to eq(7)
+    end
+
+    # THE CENTRAL ORACLE. A heartbeat that carries part of the block but omits
+    # lkg_present must NOT read as armed — and must NOT record a measured
+    # `false` either, because on the wire `false` and `absent` are the same
+    # bytes and `false` would assert a fact the node never stated.
+    it "never reads an absent lkg_present as armed, and never as a measured false" do
+      post_heartbeat(booted_from_lkg: true, lkg_age_seconds: 900)
+
+      expect(response).to have_http_status(:ok)
+      expect(recorded["arm_state"]).not_to eq("armed")
+      expect(recorded["arm_state"]).to eq("unreported")
+      expect(recorded["lkg_present"]).to be_nil
+      expect(recorded["lkg_present"]).not_to be(false)
+    end
+
+    # The same trap from the other side: an explicit `false` on the wire is
+    # indistinguishable from the omission that produced it, so it is ingested
+    # as unreported, never as a measured negative.
+    it "treats an explicit lkg_present=false as unreported, not as a measured false" do
+      post_heartbeat(lkg_present: false, booted_from_lkg: true)
+
+      expect(recorded["arm_state"]).to eq("unreported")
+      expect(recorded["lkg_present"]).to be_nil
+    end
+
+    it "records this boot's LKG fallback and the age of the frozen composition" do
+      post_heartbeat(booted_from_lkg: true, lkg_age_seconds: 86_400, lkg_present: true)
+
+      expect(recorded["booted_from_lkg"]).to be(true)
+      expect(recorded["lkg_age_seconds"]).to eq(86_400)
+    end
+
+    # A normal boot omits booted_from_lkg. That absence must not be recorded
+    # as a measured "did not fall back": an agent too old to emit the field at
+    # all produces the identical bytes.
+    it "records an absent booted_from_lkg as unreported, never as false" do
+      post_heartbeat(lkg_present: true)
+
+      expect(recorded["booted_from_lkg"]).to be_nil
+      expect(recorded["lkg_age_seconds"]).to be_nil
+    end
+
+    it "records boot_incomplete without defaulting its absence to false" do
+      post_heartbeat(lkg_present: true)
+      expect(recorded["boot_incomplete"]).to be_nil
+
+      post_heartbeat(boot_incomplete: true)
+      expect(recorded["boot_incomplete"]).to be(true)
+    end
+
+    it "records the pivot confinement omissions a pivot node reports" do
+      post_heartbeat(pivot_confinement_omitted: %w[capability_bounding_set mandatory_access_control])
+
+      expect(recorded["pivot_confinement_omitted"]).to eq(%w[capability_bounding_set mandatory_access_control])
+    end
+
+    # The producer declares its own absence as "full set enforced (or not a
+    # pivot node)", but that reading only binds agents that HAVE the field. An
+    # older agent emits the identical absence, so storing `[]` — "nothing
+    # omitted, fully confined" — would be the array-shaped version of the
+    # fabricated `false` this lane refuses to store for the booleans.
+    it "records an unreported pivot confinement list as nil, never as an empty list" do
+      post_heartbeat(lkg_present: true)
+
+      expect(recorded["pivot_confinement_omitted"]).to be_nil
+      expect(recorded["pivot_confinement_omitted"]).not_to eq([])
+    end
+
+    # `lkg_confirmed_at` is the AGENT's clock for the on-disk LKG. The
+    # document's own observed_at is only when the report reached us — an agent
+    # whose LKG froze keeps re-shipping the same confirmed_at while the server
+    # would otherwise re-stamp it as fresh every tick.
+    it "stamps the server-side observation time separately from the agent's" do
+      post_heartbeat(lkg_present: true, lkg_confirmed_at: "2020-01-01T00:00:00Z")
+
+      expect(Time.parse(recorded["observed_at"])).to be_within(30.seconds).of(Time.current)
+      expect(recorded["lkg_confirmed_at"]).to eq("2020-01-01T00:00:00Z")
+    end
+
+    # The write touches ONE top-level config key, so it cannot erase what
+    # another writer in the same request cycle put there.
+    it "leaves the rest of config intact" do
+      instance.update!(cloud_instance_id: "vm-600")
+
+      post_heartbeat(lkg_present: true)
+
+      expect(instance.reload.cloud_instance_id).to eq("vm-600")
+      expect(recorded["arm_state"]).to eq("armed")
+    end
+
+    # An ingest bug must never bounce telemetry — the same containment the
+    # OVN / sdwan-apply / module-verify blocks already have.
+    it "acknowledges the heartbeat even when the ingest raises" do
+      allow(::System::BootLkgStateWriter).to receive(:write!).and_raise(StandardError, "boom")
+
+      post_heartbeat(lkg_present: true)
+
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "acknowledged")).to be(true)
+    end
+  end
 end
