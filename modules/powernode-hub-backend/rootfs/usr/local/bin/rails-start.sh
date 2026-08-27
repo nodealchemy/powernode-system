@@ -45,6 +45,22 @@ fi
 mkdir -p "$STATE_DIR" /etc/powernode
 chmod 700 "$STATE_DIR"
 
+# --- Internal CA store on the durable state dir ---
+# System::InternalCaService defaults POWERNODE_CA_LOCAL_DIR to
+# /var/lib/powernode/internal-ca. On a pivot-composed cell that path is the
+# VOLATILE overlay upper, so the anchor CA -- and every cert issued from it --
+# would be regenerated on each boot, breaking mTLS trust fleet-wide. Point it
+# at STATE_DIR, which already resolves to /persist when that is a mountpoint
+# and to the historical location otherwise, so non-pivot hosts are unaffected.
+# Exported (not written to SECRETS_FILE): that file is authored on FIRST BOOT
+# ONLY, so a node carrying a secrets file from an older image would never pick
+# this up. An export runs every boot and reaches puma through the exec below.
+#
+# POWERNODE_CA_MODE is deliberately NOT pinned here: resolve_default_mode
+# already falls back to "local" whenever Vault is not usable, so pinning it
+# would keep this node on the on-disk CA even after Vault is unsealed.
+export POWERNODE_CA_LOCAL_DIR="$STATE_DIR/internal-ca"
+
 SECRETS_FILE=$STATE_DIR/backend-default.conf
 ADMIN_CREDS=$STATE_DIR/admin-credentials.json
 
