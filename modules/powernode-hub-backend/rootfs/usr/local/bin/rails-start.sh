@@ -61,9 +61,14 @@ chmod 700 "$STATE_DIR"
 # ONLY, so a node carrying a secrets file from an older image would never pick
 # this up. An export runs every boot and reaches puma through the exec below.
 #
-# POWERNODE_CA_MODE is deliberately NOT pinned here: resolve_default_mode
-# already falls back to "local" whenever Vault is not usable, so pinning it
-# would keep this node on the on-disk CA even after Vault is unsealed.
+# POWERNODE_CA_MODE is NOT exported here, but it IS pinned to "local" -- in the
+# manifest (systemd env) and, for out-of-band rails processes, in the block that
+# rewrites SECRETS_FILE below. An earlier revision of this comment argued the
+# opposite and was wrong: resolve_default_mode probes Vault LIVE, so leaving the
+# mode unset means the first restart after Vault becomes reachable silently
+# switches this hub to a Vault-issued chain. That is a CA rotation -- every
+# certificate the local anchor issued stops verifying -- and it belongs to a
+# deliberate operator decision, not to a health probe.
 export POWERNODE_CA_LOCAL_DIR="$STATE_DIR/internal-ca"
 
 SECRETS_FILE=$STATE_DIR/backend-default.conf
