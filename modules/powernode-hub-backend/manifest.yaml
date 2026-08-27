@@ -84,6 +84,18 @@ services:
       # so async is the safe table-free ActiveJob fallback for stray enqueues.
       CACHE_STORE: "memory_store"
       QUEUE_ADAPTER: "async"
+      # Pin the internal CA adapter. Unset, System::InternalCaService#
+      # resolve_default_mode probes Vault LIVE and prefers it in production, so
+      # the first restart after Vault becomes reachable would silently switch
+      # this hub from its on-disk anchor to a Vault-issued chain -- a CA
+      # ROTATION, which the service's own docs classify as a deliberate,
+      # planned operation and not something a health probe should trigger.
+      # Every certificate issued by the local anchor would stop verifying.
+      # Pinning "local" makes adopting Vault an explicit operator change.
+      # (POWERNODE_CA_LOCAL_DIR is NOT set here: its value depends on whether
+      # /persist is a mountpoint, which a static manifest value cannot express,
+      # so rails-start.sh exports it.)
+      POWERNODE_CA_MODE: "local"
     exposed_ports:
       - { port: 3000, protocol: tcp, name: http }
     capabilities: []

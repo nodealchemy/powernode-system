@@ -571,4 +571,139 @@ RSpec.describe System::InternalCaService do
       expect(result[:cert_pem]).to include("BEGIN CERTIFICATE")
     end
   end
+
+  # Path-change adoption (D1). Moving POWERNODE_CA_LOCAL_DIR does not move the
+  # store; without adoption the first adapter at the new path mints a NEW anchor
+  # and silently de-authenticates every cert chained to the old one.
+  describe "legacy-store adoption on a path change" do
+    # Seeds a v2 store at `dir` and returns its CA cert PEM.
+    def seed_store_at(dir)
+      stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => dir))
+      described_class::LocalCaAdapter.new.ca_cert.to_pem
+    end
+
+    it "adopts a v2 store from the old default path instead of minting a new anchor" do
+      Dir.mktmpdir do |legacy_dir|
+        original = seed_store_at(legacy_dir)
+
+        Dir.mktmpdir do |new_dir|
+          stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => new_dir))
+          stub_const("#{described_class}::LocalCaAdapter::DEFAULT_PERSIST_DIR", legacy_dir)
+          adapter = described_class::LocalCaAdapter.new
+
+          # The SAME CA, not a fresh mint — this is the whole point.
+          expect(adapter.ca_cert.to_pem).to eq(original)
+          # Re-persisted at the new path through the normal atomic writer.
+          expect(File.symlink?(File.join(new_dir, "live"))).to be(true)
+          # Source left in place: an import that deletes what it read turns any
+          # latent bug here into unrecoverable key loss.
+          expect(File.symlink?(File.join(legacy_dir, "live"))).to be(true)
+        end
+      end
+    end
+
+    it "adopts a v1 root.key/root.crt pair from the old default path" do
+      Dir.mktmpdir do |legacy_dir|
+        Dir.mktmpdir do |seed_dir|
+          seed_store_at(seed_dir)
+          version_dir = File.expand_path(File.readlink(File.join(seed_dir, "live")), seed_dir)
+          FileUtils.cp(File.join(version_dir, "ca.key"), File.join(legacy_dir, "root.key"))
+          FileUtils.cp(File.join(version_dir, "ca.crt"), File.join(legacy_dir, "root.crt"))
+        end
+        expected = File.read(File.join(legacy_dir, "root.crt"))
+
+        Dir.mktmpdir do |new_dir|
+          stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => new_dir))
+          stub_const("#{described_class}::LocalCaAdapter::DEFAULT_PERSIST_DIR", legacy_dir)
+          adapter = described_class::LocalCaAdapter.new
+
+          expect(adapter.ca_cert.to_pem).to eq(expected)
+          expect(File.symlink?(File.join(new_dir, "live"))).to be(true)
+        end
+      end
+    end
+
+    # Fails CLOSED. A shell `mv` would have copied the damaged pair faithfully;
+    # routing adoption through adopt! makes a half-restore refuse instead.
+    it "refuses to mint when the old path holds a HALF pair" do
+      Dir.mktmpdir do |legacy_dir|
+        Dir.mktmpdir do |seed_dir|
+          seed_store_at(seed_dir)
+          version_dir = File.expand_path(File.readlink(File.join(seed_dir, "live")), seed_dir)
+          # Cert only — the key is missing, so the store is a damaged restore.
+          FileUtils.cp(File.join(version_dir, "ca.crt"), File.join(legacy_dir, "root.crt"))
+        end
+
+        Dir.mktmpdir do |new_dir|
+          stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => new_dir))
+          stub_const("#{described_class}::LocalCaAdapter::DEFAULT_PERSIST_DIR", legacy_dir)
+
+          expect { described_class::LocalCaAdapter.new }
+            .to raise_error(described_class::CaError, /root.crt exists but/)
+          # And it did NOT quietly mint a replacement at the new path.
+          expect(File.symlink?(File.join(new_dir, "live"))).to be(false)
+        end
+      end
+    end
+
+    it "leaves an already-populated new path alone (new wins, old untouched)" do
+      Dir.mktmpdir do |legacy_dir|
+        legacy_pem = seed_store_at(legacy_dir)
+
+        Dir.mktmpdir do |new_dir|
+          new_pem = seed_store_at(new_dir)
+          expect(new_pem).not_to eq(legacy_pem)
+
+          stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => new_dir))
+          stub_const("#{described_class}::LocalCaAdapter::DEFAULT_PERSIST_DIR", legacy_dir)
+          legacy_link = File.join(legacy_dir, "live")
+          legacy_before = File.read(File.join(
+            File.expand_path(File.readlink(legacy_link), legacy_dir), "ca.crt"
+          ))
+
+          adapter = described_class::LocalCaAdapter.new
+
+          expect(adapter.ca_cert.to_pem).to eq(new_pem)
+          # "old untouched" is in the title, so assert it rather than imply it.
+          expect(File.symlink?(legacy_link)).to be(true)
+          expect(File.read(File.join(
+            File.expand_path(File.readlink(legacy_link), legacy_dir), "ca.crt"
+          ))).to eq(legacy_before)
+        end
+      end
+    end
+
+    it "mints normally when the configured dir IS the default" do
+      Dir.mktmpdir do |dir|
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => dir))
+        stub_const("#{described_class}::LocalCaAdapter::DEFAULT_PERSIST_DIR", dir)
+
+        adapter = described_class::LocalCaAdapter.new
+
+        # A real oracle: the mint actually happened and was persisted.
+        expect(File.symlink?(File.join(dir, "live"))).to be(true)
+        expect(adapter.ca_cert.to_pem).to include("BEGIN CERTIFICATE")
+      end
+    end
+
+    # S2: the error must name the directory the operator has to go repair.
+    it "names the LEGACY dir when the legacy store is unreadable, and does not mint" do
+      Dir.mktmpdir do |legacy_dir|
+        # A `live` symlink pointing at a version dir that does not exist.
+        File.symlink(File.join("versions", "missing-generation"),
+                     File.join(legacy_dir, "live"))
+
+        Dir.mktmpdir do |new_dir|
+          stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => new_dir))
+          stub_const("#{described_class}::LocalCaAdapter::DEFAULT_PERSIST_DIR", legacy_dir)
+
+          expect { described_class::LocalCaAdapter.new }
+            .to raise_error(described_class::CaError, /#{Regexp.escape(legacy_dir)}/)
+          # Fail closed: no anchor minted over evidence that a CA existed.
+          expect(File.symlink?(File.join(new_dir, "live"))).to be(false)
+        end
+      end
+    end
+  end
+
 end

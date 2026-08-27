@@ -51,7 +51,12 @@ chmod 700 "$STATE_DIR"
 # VOLATILE overlay upper, so the anchor CA -- and every cert issued from it --
 # would be regenerated on each boot, breaking mTLS trust fleet-wide. Point it
 # at STATE_DIR, which already resolves to /persist when that is a mountpoint
-# and to the historical location otherwise, so non-pivot hosts are unaffected.
+# and to /var/lib/powernode-rails otherwise. NOTE: on a non-pivot host that is
+# a DIFFERENT path from the service default (/var/lib/powernode/internal-ca) --
+# an earlier revision of this comment wrongly claimed such hosts were
+# unaffected. Any store already at the old default is adopted by
+# System::InternalCaService#adopt_legacy_store!, which imports it under the
+# store lock and re-persists it here rather than minting a new anchor.
 # Exported (not written to SECRETS_FILE): that file is authored on FIRST BOOT
 # ONLY, so a node carrying a secrets file from an older image would never pick
 # this up. An export runs every boot and reaches puma through the exec below.
@@ -143,6 +148,41 @@ EOF
   echo "[rails-start] Wrote $SECRETS_FILE"
 fi
 
+# --- Publish the resolved CA store settings for OUT-OF-BAND rails processes ---
+# The export near the top reaches only puma's process tree. An operator
+# `rails runner` or console resolves InternalCaService's DEFAULT_PERSIST_DIR
+# instead and -- because LocalCaAdapter mints eagerly in #initialize, even for
+# a read-shaped call like ca_fingerprint -- would create a SECOND, different CA.
+# Publishing into SECRETS_FILE, which those invocations source, keeps every
+# process on one store and one adapter mode.
+#
+# PLACEMENT IS LOAD-BEARING: this must run BEFORE the `set -a` sourcing below.
+# A host whose /persist mount status just changed still has the PREVIOUS path in
+# this file; sourced first, it would clobber the correct export from the top for
+# exactly the boot where it matters -- minting an anchor on the now-volatile old
+# path, then a second one next boot. Rewrite first, then source.
+#
+# REPLACE-or-append, every boot, never append-once.
+#
+# The rc check and the SECRET_KEY_BASE assertion are NOT belt-and-braces: a
+# redirection that fails mid-stream (ENOSPC on /persist, which PGDATA shares)
+# leaves a PARTIAL tmp file, and a same-filesystem rename needs no free space --
+# so masking the error would atomically install a truncated secrets file.
+# SECRET_KEY_BASE and the AR encryption keys are random, exist nowhere else, and
+# already encrypt rows in the database: losing them is unrecoverable ciphertext.
+# Any unforeseen partial-write mode must end as "original file kept".
+if [ -f "$SECRETS_FILE" ]; then
+  ( umask 077
+    grep -v -E '^(POWERNODE_CA_LOCAL_DIR|POWERNODE_CA_MODE)=' "$SECRETS_FILE" > "$SECRETS_FILE.tmp"; rc=$?
+    # grep: 0 = lines kept, 1 = none kept (benign), 2+ = read/write failure.
+    [ "$rc" -le 1 ] || exit "$rc"
+    printf 'POWERNODE_CA_LOCAL_DIR=%s\n' "$STATE_DIR/internal-ca" >> "$SECRETS_FILE.tmp"
+    printf 'POWERNODE_CA_MODE=%s\n' "local" >> "$SECRETS_FILE.tmp"
+    grep -q '^SECRET_KEY_BASE=' "$SECRETS_FILE.tmp" || exit 1
+    mv "$SECRETS_FILE.tmp" "$SECRETS_FILE" ) || \
+    echo "[rails-start] WARNING: could not publish CA settings to $SECRETS_FILE (original kept)" >&2
+fi
+
 set -a
 . "$SECRETS_FILE"
 set +a
@@ -170,6 +210,10 @@ if ! grep -q '^CREDENTIAL_ENCRYPTION_KEY_DEFAULT=' "$SECRETS_FILE"; then
   . "$SECRETS_FILE"
   set +a
 fi
+
+# Re-assert after the last sourcing: puma's path is decided by THIS script's
+# mountpoint check, never by whatever the secrets file happened to carry.
+export POWERNODE_CA_LOCAL_DIR="$STATE_DIR/internal-ca"
 
 cd "$RAILS_DIR"
 

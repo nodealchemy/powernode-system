@@ -306,11 +306,11 @@ module System
       # Resolves `live` ONCE (§3.1 F-6) and reads the generation through the
       # resolved path, so every file comes from the same version dir even if a
       # flip lands mid-load. Returns false when there is no live generation.
-      def load_live
-        link = File.join(@persist_dir, LIVE_LINK)
+      def load_live(dir: @persist_dir)
+        link = File.join(dir, LIVE_LINK)
         return false unless File.symlink?(link)
 
-        version_dir = File.expand_path(File.readlink(link), @persist_dir)
+        version_dir = File.expand_path(File.readlink(link), dir)
         key_pem  = File.read(File.join(version_dir, "ca.key"))
         cert_pem = File.read(File.join(version_dir, "ca.crt"))
         chain_path = File.join(version_dir, "chain.crt")
@@ -323,16 +323,16 @@ module System
       # v1 compatibility read, retained for this increment only (see the layout
       # comment above). A v1 store is by construction depth-1: its chain is the
       # single self-signed root, so issuing and anchor coincide.
-      def load_legacy_pair
-        key_path  = File.join(@persist_dir, "root.key")
-        cert_path = File.join(@persist_dir, "root.crt")
+      def load_legacy_pair(dir: @persist_dir)
+        key_path  = File.join(dir, "root.key")
+        cert_path = File.join(dir, "root.crt")
         key_present  = File.exist?(key_path)
         cert_present = File.exist?(cert_path)
 
         if key_present && cert_present
           cert_pem = File.read(cert_path)
           adopt!(key_pem: File.read(key_path), cert_pem: cert_pem,
-                 chain_pem: cert_pem, source: @persist_dir)
+                 chain_pem: cert_pem, source: dir)
           return true
         end
 
@@ -402,6 +402,7 @@ module System
         with_lock do
           return if load_live
           return if load_legacy_pair
+          return if adopt_legacy_store!
 
           key   = OpenSSL::PKey.generate_key("ED25519")
           cert  = build_self_signed_root(key)
@@ -409,6 +410,72 @@ module System
           adopt!(key_pem: key.private_to_pem, cert_pem: cert.to_pem,
                  chain_pem: cert.to_pem, source: @persist_dir)
         end
+      end
+
+      # One-time adoption of a CA store left behind at DEFAULT_PERSIST_DIR by a
+      # revision that ran before POWERNODE_CA_LOCAL_DIR pointed elsewhere.
+      #
+      # WHY THIS EXISTS. Moving the store's path does not move the store. Without
+      # adoption, the first adapter built after the path changes finds an empty
+      # dir and mints a NEW anchor -- silently de-authenticating every cert
+      # chained to the old one, which is the precise outcome generate_anchor!'s
+      # half-pair guard exists to prevent. That guard cannot help here: it
+      # inspects the CURRENT dir, and the old store is somewhere else entirely.
+      #
+      # WHY IN THE SERVICE AND NOT IN rails-start.sh. A shell `mv` was the
+      # obvious fix and is the wrong one. Across filesystems (/var/lib -> /persist)
+      # mv is copy+unlink in readdir order, so it can copy versions/ and die
+      # before `live` -- leaving a store that load_live rejects, load_legacy_pair
+      # cannot see (it only knows the v1 root.key/root.crt names), and
+      # generate_anchor! therefore mints straight over. Doing it here inherits
+      # three properties bash would have to reimplement badly:
+      #   - atomicity: write_generation! fsyncs then flips `live` by rename(2),
+      #     so the destination is never partially valid;
+      #   - single-writer discipline: we are already inside with_lock, the same
+      #     flock every writer takes, so a concurrent out-of-band process cannot
+      #     observe a half-migrated store;
+      #   - validation: the material goes through adopt!'s check_private_key, so
+      #     a damaged old store fails CLOSED instead of being copied faithfully.
+      # It also covers EVERY consumer -- a `rails runner` that resolves the
+      # default path benefits too, not just puma's process tree.
+      #
+      # The source is deliberately LEFT IN PLACE. An import that deletes what it
+      # read turns any latent bug in this method into unrecoverable key loss;
+      # reclaiming the old directory is a separate, later decision.
+      #
+      # Returns true when a legacy store was adopted and re-persisted here.
+      def adopt_legacy_store!
+        return false if @persist_dir == DEFAULT_PERSIST_DIR
+        # Reading the old store ADOPTS it into memory (both readers call adopt!),
+        # so a successful read leaves @ca_key/@ca_cert/@ca_chain populated and a
+        # half-pair over there raises rather than returning false.
+        return false unless load_live(dir: DEFAULT_PERSIST_DIR) ||
+                            load_legacy_pair(dir: DEFAULT_PERSIST_DIR)
+
+        Rails.logger.warn(
+          "[InternalCaService] adopting the internal CA found at #{DEFAULT_PERSIST_DIR} " \
+          "into #{@persist_dir}; the source is left in place"
+        ) if defined?(Rails)
+
+        write_generation!(key: @ca_key, cert: @ca_cert, chain: @ca_chain)
+        true
+      rescue Errno::ENOENT, Errno::ESTALE => e
+        # Without this, the error escapes to load_or_create_ca's handler, which
+        # names @persist_dir -- pointing the operator at the NEW directory while
+        # the damage is at the legacy one. Its retry-once is also useless here:
+        # it exists for a live-flip race at the ACTIVE store, not a persistently
+        # broken directory we are importing from.
+        #
+        # Fail CLOSED, deliberately: a legacy store we cannot read is EVIDENCE a
+        # CA existed, so minting over it would de-authenticate whatever it
+        # signed. This is a new way for issuance to stop (previously the old dir
+        # was simply ignored) and that is the correct trade -- but the message
+        # must name the directory an operator has to go look at.
+        raise CaError,
+              "internal CA store at #{DEFAULT_PERSIST_DIR} is unreadable (#{e.class}: #{e.message}), " \
+              "so it cannot be adopted into #{@persist_dir}. Refusing to mint a new anchor over an " \
+              "existing CA: certificates chained to it would stop verifying. Repair that directory, " \
+              "or move it aside deliberately if a NEW CA is genuinely intended."
       end
 
       # Assembles an immutable version dir and flips `live` onto it atomically.
