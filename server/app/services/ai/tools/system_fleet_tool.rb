@@ -303,6 +303,73 @@ module Ai
         "system_create_provider_instance_type" => "system.providers.create"
       }.freeze
 
+      # GOVERNANCE DECLARATION (IMP-d410a587d6bf) — the MCP half of instance
+      # lifecycle was outside the approval regime entirely. This tool held ZERO
+      # Ai::AutonomyGate references while its REST twin
+      # (System::NodeInstanceGating#gate_or_execute) gated every lifecycle arm
+      # on `system.task.<event>`, so the same operation an operator could not
+      # perform from the console without an approval was one MCP call away:
+      # #terminate_instance went straight to System::ProvisioningService and
+      # destroyed the VM. Neither the service below it
+      # (ProvisioningService/InstanceControlService) nor the dispatch above it
+      # gated anything.
+      #
+      # Declared, not hand-placed: Ai::Tools::BaseTool#execute evaluates this.
+      # See the registry comment on BaseTool.declare_action for why the gate
+      # lives at the chokepoint rather than in the arm.
+      #
+      # SAME category as the REST twin — "system.task.terminate", seeded
+      # require_approval in System::Governance::PolicyDeclarations::
+      # MANUAL_OPERATION_POLICIES at scope "global", which is agent-BINDING
+      # (Ai::InterventionPolicyService#resolve), so one operator-tuned row
+      # governs terminate whether an operator or an agent asks for it.
+      #
+      # DIFFERENT executor, deliberately. The gate replays `executor_class`
+      # after approval, so the executor — not this arm — is the actor on both
+      # branches, and it therefore has to do exactly what this arm used to do.
+      # ExecuteTask (what REST uses) does NOT: its System::Task lane reaches the
+      # instance through InstanceControlService, which carries no
+      # SelfManagementFence and no finalize_termination!, dropping INV-1, the
+      # SDWAN peer detach, the deploy-key revocation, the terminate meter event
+      # and F4-02 idempotency. System::Executors::TerminateInstance calls
+      # ProvisioningService.terminate_instance — the identical call this arm
+      # made — so gating costs the operation none of its safety controls. See
+      # that class for the full rationale.
+      #
+      # Behaviour therefore changes in exactly one way: the policy is now
+      # consulted. On :proceed the response is what it always was
+      # (`terminated: true` + the instance); on require_approval it parks.
+      #
+      # SCOPE, stated so this is not read as more than it is. ONE verb is gated.
+      # The same ProvisioningService.terminate_instance call is still reachable
+      # UNGATED from sibling verbs on this tool — system_recycle_pool,
+      # system_drain_instance_pool and system_return_pooled_instance (all via
+      # System::InstancePoolService#terminate_member) and system_reap_agent_fleet
+      # (System::AgentFleetMissionService) — plus several skill executors that
+      # call the service below this chokepoint entirely. system_recycle_pool is
+      # mapped to system.instances.control, the SAME permission this action
+      # checks, so a caller holding exactly that credential can still destroy
+      # instances with no policy evaluation by naming a different verb. That is
+      # the next increment, not a claim this one already covers.
+      #
+      # system_destroy_instance is NOT declared here. It is a registry-row
+      # cascade delete, not a provider terminate: no seeded action_category
+      # names it and no executor can replay it (see #destroy_instance). Gating
+      # it needs an executor contract this task does not own (IMP-439d31353f9b).
+      # Note the interaction: terminate is gated, the row-delete is not, so a
+      # caller can still destroy the ROW a parked terminate is waiting on — the
+      # approval then fails resolve_scoped rather than terminating anything.
+      declare_action "system_terminate_instance",
+                     mutating: true,
+                     # Literal, not the executor's ACTION_CATEGORY constant:
+                     # this runs at class-body evaluation and must not force an
+                     # executor autoload just to read a string. Kept in step by
+                     # the gating spec, which asserts the two agree.
+                     action_category: "system.task.terminate",
+                     executor_class: "System::Executors::TerminateInstance",
+                     gate_context: :terminate_instance_gate_context,
+                     on_proceed: :terminate_instance_terminated_result
+
       def self.definition
         {
           name: "system_fleet",
@@ -620,7 +687,11 @@ module Ai
             }
           },
           "system_terminate_instance" => {
-            description: "Terminate an instance (cleanly destroys cloud resource + transitions to :terminated). Use system_destroy_instance to fully remove a registry row that has no live cloud resource.",
+            description: "Terminate an instance (cleanly destroys cloud resource + transitions to :terminated). " \
+                         "APPROVAL-GATED (system.task.terminate): when policy requires approval this returns " \
+                         "{pending: true} with an approval_request_id and the instance is NOT terminated until " \
+                         "an operator approves — do not report a completed termination on that response. " \
+                         "Use system_destroy_instance to fully remove a registry row that has no live cloud resource.",
             parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to terminate (destroys the cloud resource)" } }
           },
           # F4-08 — lifecycle control. Cloud + physical (SSH/IPMI) paths via
@@ -1565,7 +1636,9 @@ module Ai
         when "system_mint_peer_capability_token" then mint_peer_capability_token(params)
         when "system_list_isolation_tiers"     then list_isolation_tiers(params)
         when "system_provision_instance"       then provision_instance(params)
-        when "system_terminate_instance"       then terminate_instance(params)
+        # Gate-routed (IMP-d410a587d6bf) — see declare_action at the top of the
+        # class. This arm exists only so a direct #call fails loudly.
+        when "system_terminate_instance"       then gate_routed_only("system_terminate_instance")
         when "system_start_instance"           then control_instance(params, "start")
         when "system_stop_instance"            then control_instance(params, "stop")
         when "system_reboot_instance"          then control_instance(params, "reboot")
@@ -2788,12 +2861,65 @@ module Ai
         )
       end
 
-      def terminate_instance(params)
-        instance = account_instances.find(params[:instance_id])
-        result = ::System::ProvisioningService.terminate_instance(instance: instance)
-        return error_result(result.error || "termination failed") unless result.success?
+      # === Approval-gated terminate (IMP-d410a587d6bf) ===
+      #
+      # The inline #terminate_instance that called
+      # System::ProvisioningService.terminate_instance is GONE, not wrapped:
+      # leaving an ungated writer reachable behind a declaration is how a gate
+      # becomes decorative. Ai::Tools::BaseTool#execute routes this action
+      # through Ai::AutonomyGate on the strength of the declare_action above,
+      # and System::Executors::ExecuteTask is the only actor on either branch.
 
+      # Gate context — resolves the target under the ACCOUNT scope first, so a
+      # cross-account id is refused BEFORE any operation is created rather than
+      # producing an approval card that names another tenant's instance. The
+      # executor re-resolves at approval time (resolve_scoped): the row can be
+      # re-parented between parking and approval, and the executor is the half
+      # that runs then.
+      def terminate_instance_gate_context(params)
+        instance = account_instances.find(params[:instance_id])
+
+        {
+          executor_params: { instance_id: instance.id },
+          description: "Terminate instance '#{instance.name}'",
+          source_type: instance.class.name,
+          source_id: instance.id
+        }
+      end
+
+      # :proceed serialization. The gate has already run the executor
+      # (Ai::AutonomyGate calls DeferredOperation#execute_now! itself on this
+      # branch), so this READS the outcome — it must never repeat the
+      # termination. Shape is unchanged from the pre-gate arm.
+      def terminate_instance_terminated_result(params, _gate)
+        instance = account_instances.find(params[:instance_id])
         success_result(terminated: true, instance: serialize_instance(instance.reload))
+      end
+
+      # Tripwire, not a reachable MCP path. #execute gates this action before
+      # #call is consulted, so reaching here means something invoked #call
+      # directly and would otherwise have terminated a VM with no policy
+      # evaluation. Fail loudly instead.
+      def gate_routed_only(action)
+        error_result(
+          "#{action} is approval-gated and must be invoked via " \
+          "Ai::Tools::BaseTool#execute, not #call"
+        )
+      end
+
+      # Hoists this tool's per-action permission check so a gated action — which
+      # never reaches #call — is authorized identically to an ungated one.
+      def authorization_error(params)
+        # routed_action_name, not params[:action]: the registry lookup is
+        # key-shape indifferent, and a symbol-only read here would let a
+        # string-keyed caller be GATED while its permission check fell back to
+        # required_perm_for(nil) — the REQUIRED_PERMISSION floor rather than
+        # system.instances.control. The two halves of one call must not
+        # disagree about key type, least of all in the permissive direction.
+        action = routed_action_name(params)
+        return nil if action_permitted?(action)
+
+        error_result(permission_denied_message(action))
       end
 
       # F4-08 — start/stop/reboot via InstanceControlService: the
