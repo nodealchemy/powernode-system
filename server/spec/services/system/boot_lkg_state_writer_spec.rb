@@ -34,20 +34,27 @@ RSpec.describe System::BootLkgStateWriter do
       expect(stored).to be_nil
     end
 
-    # The one place this lane deliberately departs from its two siblings.
-    it "REWRITES an existing document even when the heartbeat carries nothing" do
+    # The one place this lane deliberately departs from its two siblings —
+    # and the ONLY examples that discriminate against an in-memory
+    # `instance.config.key?(CONFIG_KEY)` guard, which is what an earlier cut of
+    # this class used.
+    #
+    # DO NOT add an intermediate assertion to either example. `stored` calls
+    # `instance.reload`, which refreshes `instance.config` in memory; an
+    # in-memory guard PASSES once that has happened, so a single `expect` in
+    # the middle silently deletes the oracle. The refresh decision is made in
+    # the UPDATE precisely so it cannot depend on how fresh the caller's object
+    # is — the writes below run against an object whose `config` is still `{}`.
+    it "REWRITES an existing document without ever reading instance.config" do
       write("lkg_present" => true)
-      expect(stored["arm_state"]).to eq("armed")
-
       write({})
 
       expect(stored["arm_state"]).to eq("unreported")
       expect(stored["lkg_present"]).to be_nil
     end
 
-    it "rewrites an existing document on a nil payload too" do
+    it "rewrites on a nil payload too, also without reading instance.config" do
       write("lkg_present" => true)
-
       write(nil)
 
       expect(stored["arm_state"]).to eq("unreported")
@@ -112,6 +119,14 @@ RSpec.describe System::BootLkgStateWriter do
       expect(stored["lkg_age_seconds"]).to be_nil
     end
 
+    it "keeps the digit boundary at MAX_INTEGER_DIGITS" do
+      write("lkg_present" => true, "lkg_age_seconds" => "9" * described_class::MAX_INTEGER_DIGITS)
+      expect(stored["lkg_age_seconds"]).to eq(("9" * described_class::MAX_INTEGER_DIGITS).to_i)
+
+      write("lkg_present" => true, "lkg_age_seconds" => "9" * (described_class::MAX_INTEGER_DIGITS + 1))
+      expect(stored["lkg_age_seconds"]).to be_nil
+    end
+
     it "rejects a non-numeric count" do
       write("lkg_present" => true, "lkg_module_count" => "seven")
 
@@ -135,8 +150,12 @@ RSpec.describe System::BootLkgStateWriter do
       expect(stored["lkg_confirmed_at"]).to be_nil
     end
 
-    it "drops an over-long timestamp" do
-      write("lkg_present" => true, "lkg_confirmed_at" => "2026-08-20T04:05:06Z" + ("0" * 200))
+    # The fixture has to be a string Time.iso8601 ACCEPTS, or the length cap is
+    # not what rejects it and the example passes with the cap deleted.
+    # `Time.iso8601` takes unbounded fractional-second digits: this 221-char
+    # value parses and normalizes to "2026-08-20T04:05:06Z".
+    it "drops an over-long timestamp the parser would otherwise accept" do
+      write("lkg_present" => true, "lkg_confirmed_at" => "2026-08-20T04:05:06." + ("1" * 200) + "Z")
 
       expect(stored["lkg_confirmed_at"]).to be_nil
     end
