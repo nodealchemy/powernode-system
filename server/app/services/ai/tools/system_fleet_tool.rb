@@ -4327,7 +4327,24 @@ module Ai
           boot_id: i.boot_id,
           running_module_digests: i.running_module_digests,
           provider_region_id: i.provider_region_id,
-          provider_instance_type_id: i.provider_instance_type_id
+          provider_instance_type_id: i.provider_instance_type_id,
+          # IMP-b8d5cfa33b79 — the agent's boot/LKG telemetry. This is the
+          # surface on which "is this node armed with a valid last-known-good,
+          # so its control plane can be decommissioned?" is actually asked, so
+          # ingesting the heartbeat without exposing it here would just move
+          # the dead end one step later.
+          #
+          # nil means NO document: the instance has not heartbeated since this
+          # ingest existed, or its agent predates #39. nil is therefore NOT
+          # "armed" and a decommission gate must treat it as blocking, exactly
+          # as it must treat `arm_state: "unreported"` inside the document.
+          # Once a document exists the agent refreshes it every tick, so a
+          # present document is never older than the last heartbeat (see
+          # System::BootLkgStateWriter).
+          #
+          # Reads the ONE key rather than handing the caller the whole `config`
+          # jsonb, which also holds operator- and provider-written material.
+          boot_lkg: i.config&.dig(::System::BootLkgStateWriter::CONFIG_KEY)
         )
       end
 
