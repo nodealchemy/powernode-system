@@ -69,7 +69,8 @@ chmod 700 "$STATE_DIR"
 # switches this hub to a Vault-issued chain. That is a CA rotation -- every
 # certificate the local anchor issued stops verifying -- and it belongs to a
 # deliberate operator decision, not to a health probe.
-export POWERNODE_CA_LOCAL_DIR="$STATE_DIR/internal-ca"
+: "${POWERNODE_CA_LOCAL_DIR:=$STATE_DIR/internal-ca}"
+export POWERNODE_CA_LOCAL_DIR
 
 SECRETS_FILE=$STATE_DIR/backend-default.conf
 ADMIN_CREDS=$STATE_DIR/admin-credentials.json
@@ -178,10 +179,15 @@ fi
 # Any unforeseen partial-write mode must end as "original file kept".
 if [ -f "$SECRETS_FILE" ]; then
   ( umask 077
-    grep -v -E '^(POWERNODE_CA_LOCAL_DIR|POWERNODE_CA_MODE)=' "$SECRETS_FILE" > "$SECRETS_FILE.tmp"; rc=$?
+    # Only POWERNODE_CA_MODE is rewritten. POWERNODE_CA_LOCAL_DIR is added ONLY
+    # when absent: an existing value is a deployment's deliberate choice of
+    # store, and rewriting it every boot would walk a live CA out from under
+    # itself (see the default-not-override note further down).
+    grep -v -E '^POWERNODE_CA_MODE=' "$SECRETS_FILE" > "$SECRETS_FILE.tmp"; rc=$?
     # grep: 0 = lines kept, 1 = none kept (benign), 2+ = read/write failure.
     [ "$rc" -le 1 ] || exit "$rc"
-    printf 'POWERNODE_CA_LOCAL_DIR=%s\n' "$STATE_DIR/internal-ca" >> "$SECRETS_FILE.tmp"
+    grep -q '^POWERNODE_CA_LOCAL_DIR=' "$SECRETS_FILE.tmp" || \
+      printf 'POWERNODE_CA_LOCAL_DIR=%s\n' "$POWERNODE_CA_LOCAL_DIR" >> "$SECRETS_FILE.tmp"
     printf 'POWERNODE_CA_MODE=%s\n' "local" >> "$SECRETS_FILE.tmp"
     grep -q '^SECRET_KEY_BASE=' "$SECRETS_FILE.tmp" || exit 1
     mv "$SECRETS_FILE.tmp" "$SECRETS_FILE" ) || \
@@ -216,9 +222,16 @@ if ! grep -q '^CREDENTIAL_ENCRYPTION_KEY_DEFAULT=' "$SECRETS_FILE"; then
   set +a
 fi
 
-# Re-assert after the last sourcing: puma's path is decided by THIS script's
-# mountpoint check, never by whatever the secrets file happened to carry.
-export POWERNODE_CA_LOCAL_DIR="$STATE_DIR/internal-ca"
+# DEFAULT after the last sourcing -- never an override. An earlier revision
+# assigned unconditionally here, which silently DEFEATED an operator-configured
+# POWERNODE_CA_LOCAL_DIR carried in SECRETS_FILE: on ops-hub that pointed at a
+# real CA store (/persist/powernode-internal-ca, holding the anchor AND the
+# cosign module-signing material), and repointing puma at an empty directory
+# would have made the next CA touch mint a fresh anchor and orphan it. This
+# script's job is to SUPPLY a durable default where none is configured, not to
+# overrule a deployment that has already chosen one.
+: "${POWERNODE_CA_LOCAL_DIR:=$STATE_DIR/internal-ca}"
+export POWERNODE_CA_LOCAL_DIR
 
 cd "$RAILS_DIR"
 
