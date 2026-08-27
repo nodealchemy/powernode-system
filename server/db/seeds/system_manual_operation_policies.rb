@@ -37,36 +37,11 @@ def upsert_manual_policies!(account, policies)
   changed
 end
 
-manual_policies = {
-  # System::Task commands (operator clicks Start/Stop/Terminate on a node)
-  "system.task.start"                       => "auto_approve",
-  "system.task.stop"                        => "auto_approve",
-  "system.task.restart"                     => "auto_approve",
-  "system.task.reboot"                      => "auto_approve",
-  "system.task.terminate"                   => "require_approval",   # destroys instance
-  "system.task.provision"                   => "notify_and_proceed", # creates infra
-  "system.task.deprovision"                 => "require_approval",   # destroys infra
-  "system.task.associate_public_ip"         => "auto_approve",
-  "system.task.disassociate_public_ip"      => "auto_approve",
-  "system.task.create_volume"               => "notify_and_proceed",
-  "system.task.delete_volume"               => "require_approval",
-  "system.task.attach_volume"               => "auto_approve",
-  "system.task.detach_volume"               => "notify_and_proceed",
-  "system.task.create_snapshot"             => "auto_approve",
-  "system.task.delete_snapshot"             => "require_approval",
-  "system.task.restore_snapshot"            => "require_approval",   # rolls back state
-  "system.task.create_network"              => "notify_and_proceed",
-  "system.task.delete_network"              => "require_approval",
-  "system.task.sync"                        => "auto_approve",
-  "system.task.sync_modules"                => "auto_approve",
-  "system.task.apply_config"                => "notify_and_proceed",
-  "system.task.build_module"                => "notify_and_proceed",
-  "system.task.commit_module"               => "notify_and_proceed",
-  "system.task.ssh_command"                 => "require_approval",   # arbitrary code execution
-  "system.task.backup"                      => "auto_approve",
-  "system.task.restore"                     => "require_approval",   # overwrites state
-  "system.task.custom"                      => "require_approval"   # unknown semantics → conservative
-}
+# Declared set now lives in System::Governance::PolicyDeclarations so the
+# reconciler can read it WITHOUT executing this seed. That matters: this file
+# overwrites tuned verbs and destroy_all's unlisted rows below, which is safe
+# only on first boot. See System::Governance::PolicyReconciler.
+manual_policies = System::Governance::PolicyDeclarations::MANUAL_OPERATION_POLICIES
 
 count = upsert_manual_policies!(admin_account, manual_policies)
 puts "  ✅ Manual operation policies: #{count} created/updated (#{manual_policies.size} total)"
