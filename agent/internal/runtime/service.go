@@ -615,6 +615,17 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		payload.SdwanState = sdwanMgr.HeartbeatStatuses()
 		payload.SdwanOvnState = sdwanMgr.OvnNbStatus()
 	}
+	// IMP-6151ae14f4e5: both left nil/omitted (never a fabricated reading)
+	// when /proc is unreadable or unparseable. See readMemAvailableKB /
+	// readLoadAverage for why MemAvailable (not MemFree) and why
+	// load_average is still populated even though cpu_pct isn't derived
+	// from it.
+	if kb, ok := readMemAvailableKB("/proc/meminfo"); ok {
+		payload.MemoryFreeKB = &kb
+	}
+	if la, ok := readLoadAverage("/proc/loadavg"); ok {
+		payload.LoadAverage = la
+	}
 	// Pure snapshot read — the probes themselves run in PostSend. nil stays
 	// nil (omitempty): "no module here declares a probe" is an absence the
 	// platform records as NOT MEASURED, and must never be sent as an empty

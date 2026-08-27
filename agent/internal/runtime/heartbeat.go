@@ -22,15 +22,20 @@ import (
 // HeartbeatPayload is the body the agent POSTs to /status/heartbeat.
 // Mirrors the platform's M0.M NodeInstance#record_heartbeat! parameters.
 type HeartbeatPayload struct {
-	BootID        string                  `json:"boot_id"`
-	AgentVersion  string                  `json:"agent_version"`
-	Architecture  string                  `json:"architecture,omitempty"`
-	UptimeSeconds int64                   `json:"uptime_seconds"`
-	ModuleDigests map[string]string       `json:"module_digests"` // node_module_id → oci_digest
-	MountState    string                  `json:"mount_state"`    // "mounted" | "unmounted" | "transitioning"
-	LoadAverage   string                  `json:"load_average,omitempty"`
-	MemoryFreeKB  int64                   `json:"memory_free_kb,omitempty"`
-	SdwanState    []sdwan.HeartbeatStatus `json:"sdwan_state,omitempty"`
+	BootID        string            `json:"boot_id"`
+	AgentVersion  string            `json:"agent_version"`
+	Architecture  string            `json:"architecture,omitempty"`
+	UptimeSeconds int64             `json:"uptime_seconds"`
+	ModuleDigests map[string]string `json:"module_digests"` // node_module_id → oci_digest
+	MountState    string            `json:"mount_state"`    // "mounted" | "unmounted" | "transitioning"
+	LoadAverage   string            `json:"load_average,omitempty"`
+	// MemoryFreeKB is *int64, not omitempty: a nil pointer (not measured —
+	// /proc/meminfo missing or unparseable) marshals to `null`/absent-shaped
+	// distinct from an explicit 0, which is the most alarming reading a node
+	// can report (memory exhausted) and must never be indistinguishable from
+	// "not measured". See buildHeartbeat / readMemAvailableKB.
+	MemoryFreeKB *int64                  `json:"memory_free_kb"`
+	SdwanState   []sdwan.HeartbeatStatus `json:"sdwan_state,omitempty"`
 	// SdwanOvnState is the most recent OVN NB plan replay observation
 	// (IMP-57e9a90598ee). Top-level rather than nested in SdwanState
 	// because the NB replay is host-scoped, not per-network. nil — and
