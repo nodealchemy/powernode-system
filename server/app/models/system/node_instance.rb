@@ -658,7 +658,7 @@ module System
             instance_id: id,
             suggested: suggestion,
             architecture: architecture,
-            memory_mb: send(:available_memory_mb)
+            memory_mb: available_memory_mb
           },
           source: "node_instance#classify_network_profile!",
           node_instance_id: id
@@ -814,15 +814,19 @@ module System
       PIVOT_BOOT_MODES.include?(boot_mode.to_s)
     end
 
-    private
-
-    # Best-effort memory lookup used by #suggest_network_profile. Reads
-    # from provider_instance_type when the instance has one (cloud
-    # variety / templated physical), then falls back to a
-    # `config["memory_mb"]` hint that the agent can report at heartbeat
-    # time. Returns nil when nothing is known — callers MUST treat nil
-    # as "unknown, assume too small" so the suggester defaults to the
-    # safe `lightweight` profile.
+    # Best-effort memory lookup. PUBLIC, like the gpu_* capacity readers above.
+    # Read by #suggest_network_profile AND, since IMP-938ee27f4921, by
+    # System::ProjectMetricsCollector, which turns the heartbeat's
+    # memory_free_kb into memory_pct.
+    #
+    # Reads from provider_instance_type when the instance has one (cloud
+    # variety / templated physical), then falls back to a `config["memory_mb"]`
+    # hint. Returns nil when nothing is known.
+    #
+    # THE NIL CONTRACT IS UNCHANGED and both callers honour it: nil means
+    # "unknown", never zero. The suggester treats it as "assume too small" and
+    # defaults to the safe lightweight profile; the collector EXCLUDES the
+    # instance from the mean rather than contributing a fabricated reading.
     def available_memory_mb
       type_mb = provider_instance_type&.memory_mb
       return type_mb if type_mb
@@ -833,6 +837,8 @@ module System
     rescue ArgumentError, TypeError
       nil
     end
+
+    private
 
     # Best-effort hardware-model lookup, normalised to a lowercase
     # snake_case token. Reads from `config["hardware_model"]` —

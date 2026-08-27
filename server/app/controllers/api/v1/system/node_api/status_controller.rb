@@ -187,6 +187,24 @@ module Api
               Rails.logger.warn("[StatusController] boot LKG state ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
             end
 
+            # Runtime metrics (IMP-938ee27f4921): mount_state / load_average /
+            # memory_free_kb / uptime_seconds have always been sent and never
+            # read, while ProjectMetricsCollector named this exact source for
+            # memory_pct and reported `unavailable` forever. None of the four
+            # present => nothing written, so a pre-feature agent stays
+            # distinguishable from a reporting one. Wrapped like the blocks
+            # above so an ingest bug cannot bounce telemetry.
+            begin
+              runtime_obs = params.slice(*::System::RuntimeMetricsWriter::WIRE_KEYS)
+              runtime_obs = runtime_obs.to_unsafe_h if runtime_obs.respond_to?(:to_unsafe_h)
+              ::System::RuntimeMetricsWriter.write!(
+                instance: current_instance,
+                payload:  runtime_obs
+              )
+            rescue StandardError => e
+              Rails.logger.warn("[StatusController] runtime metrics ingest failed for #{current_instance.id}: #{e.class}: #{e.message}")
+            end
+
             # Boot-image upgrade reconcile (campaign 019f505f inc 2): the node
             # reboots mid-task, so the agent's /complete is unreliable — the
             # authoritative success signal is this post-reboot heartbeat's

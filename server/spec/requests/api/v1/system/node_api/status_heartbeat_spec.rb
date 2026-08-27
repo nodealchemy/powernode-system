@@ -653,4 +653,109 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
       expect(JSON.parse(response.body).dig("data", "acknowledged")).to be(true)
     end
   end
+
+  # IMP-938ee27f4921 — the four scalar heartbeat fields status_heartbeat's own
+  # doc comment already lists as accepted (mount_state, load_average,
+  # memory_free_kb, uptime_seconds) but that nothing on the server actually
+  # read: System::ProjectMetricsCollector names this exact source for
+  # cpu_pct/memory_pct ("node agent heartbeat") and got neither.
+  describe "runtime metrics ingest" do
+    def post_heartbeat(extra = {})
+      post "/api/v1/system/node_api/status/heartbeat",
+           params: body.merge(extra), headers: headers, as: :json
+    end
+
+    # Posts `body` with the named keys stripped out first, so a test can
+    # simulate an agent that omits a field entirely (JSON `omitempty`),
+    # rather than one that sends an explicit falsy/zero value.
+    def post_heartbeat_sans(*removed_keys, **extra)
+      post "/api/v1/system/node_api/status/heartbeat",
+           params: body.except(*removed_keys).merge(extra), headers: headers, as: :json
+    end
+
+    def recorded
+      instance.reload.config[::System::RuntimeMetricsWriter::CONFIG_KEY]
+    end
+
+    it "lands mount_state, load_average, memory_free_kb and uptime_seconds under the writer's CONFIG_KEY" do
+      post_heartbeat(load_average: "0.15 0.20 0.10", memory_free_kb: 512_000, uptime_seconds: 3_600,
+                     mount_state: "mounted")
+
+      expect(response).to have_http_status(:ok)
+      expect(recorded["mount_state"]).to eq("mounted")
+      expect(recorded["load_average"]).to eq("0.15 0.20 0.10")
+      expect(recorded["memory_free_kb"]).to eq(512_000)
+      expect(recorded["uptime_seconds"]).to eq(3_600)
+      expect(recorded["observed_at"]).to be_present
+    end
+
+    # `body` already carries mount_state + uptime_seconds — the two fields the
+    # producer sends unconditionally (no `omitempty`). A pre-feature agent
+    # sends NEITHER of the four, and that absence must leave no document at
+    # all, distinguishable from every reported state.
+    it "stamps NOTHING when the heartbeat carries none of the four fields" do
+      post_heartbeat_sans(:mount_state, :uptime_seconds)
+
+      expect(response).to have_http_status(:ok)
+      expect(recorded).to be_nil
+    end
+
+    # The central absence oracle: an agent that reports uptime_seconds but
+    # (for whatever reason) omits mount_state must not have that omission
+    # read as a measured state — never fabricated as "unmounted" or any
+    # other string.
+    it "never records mount_state as a measured value when the field is absent" do
+      post_heartbeat_sans(:mount_state)
+
+      expect(response).to have_http_status(:ok)
+      expect(recorded["mount_state"]).to be_nil
+      expect(recorded["uptime_seconds"]).to eq(42)
+    end
+
+    it "rejects an unrecognized mount_state, storing nil rather than fabricating a match" do
+      post_heartbeat(mount_state: "bogus")
+
+      expect(recorded["mount_state"]).to be_nil
+    end
+
+    it "tolerates stringly-typed numeric fields" do
+      post_heartbeat(memory_free_kb: "512000", uptime_seconds: "3600")
+
+      expect(recorded["memory_free_kb"]).to eq(512_000)
+      expect(recorded["uptime_seconds"]).to eq(3_600)
+    end
+
+    # Each qualifying tick writes a FRESH snapshot rather than merging onto the
+    # previous one — a field that stops being reported must disappear from the
+    # document on the very next heartbeat, not linger as a stale positive.
+    it "overwrites a previously-reported field with absence on the next tick" do
+      post_heartbeat(load_average: "0.10 0.10 0.10")
+      expect(recorded["load_average"]).to eq("0.10 0.10 0.10")
+
+      post_heartbeat # no load_average this time; mount_state/uptime_seconds still trigger a write
+      expect(recorded["load_average"]).to be_nil
+    end
+
+    # The write touches ONE top-level config key, so it cannot erase what
+    # another writer in the same request cycle put there.
+    it "leaves the rest of config intact" do
+      instance.update!(cloud_instance_id: "vm-600")
+
+      post_heartbeat(load_average: "0.15 0.20 0.10")
+
+      expect(instance.reload.cloud_instance_id).to eq("vm-600")
+      expect(recorded["load_average"]).to eq("0.15 0.20 0.10")
+    end
+
+    # An ingest bug must never bounce telemetry — the same containment the
+    # OVN / sdwan-apply / module-verify / boot-LKG blocks already have.
+    it "acknowledges the heartbeat even when the ingest raises" do
+      allow(::System::RuntimeMetricsWriter).to receive(:write!).and_raise(StandardError, "boom")
+
+      post_heartbeat
+
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "acknowledged")).to be(true)
+    end
+  end
 end

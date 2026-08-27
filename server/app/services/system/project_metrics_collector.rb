@@ -21,6 +21,20 @@ module System
   class ProjectMetricsCollector
     # Mapping of metric_name → metric_type. Keeps the vocabulary in one
     # place; the sensor/collector contract relies on these being stable.
+    # A heartbeat lands every ~30s, so 10 minutes tolerates 20 consecutive
+    # misses before an instance stops contributing to the mean. Past that the
+    # reading describes a node we have not heard from, which is not evidence
+    # of its current utilization.
+    MEMORY_SAMPLE_FRESHNESS = 10.minutes
+    # Deliberately does NOT say "the instances are not reporting". The agent
+    # DECLARES memory_free_kb (heartbeat.go:32) but assigns it nowhere, so a
+    # heartbeat carries mount_state + uptime_seconds and no memory reading at
+    # all — a fresh runtime_metrics document exists on every tick and still
+    # yields no sample. Blaming heartbeat delivery would send an operator to
+    # debug a subsystem that is working. See the agent-side gap filed alongside.
+    MEMORY_UNREPORTED_NOTE = "no memory_free_kb in any fresh runtime_metrics observation " \
+                             "(the node agent does not yet populate this field)"
+
     METRIC_TYPE_MAP = {
       "p99_latency_ms"   => "latency",
       "availability_pct" => "latency",   # availability is co-evaluated w/ latency
@@ -106,7 +120,14 @@ module System
     # Intended sources for the still-unwired metrics:
     #   - p99_latency_ms / availability_pct: SDWAN edge probes (the
     #     Slo::TelemetryAdapter `metric.latency_ms` FleetEvent transport)
-    #   - cpu_pct / memory_pct: node agent heartbeat (FleetEvent payload)
+    #   - cpu_pct: deliberately NOT derived. The agent ships load_average as a
+    #     /proc/loadavg-style STRING, not a percentage; converting needs a
+    #     per-instance core count (absent on physical/pivot nodes with no
+    #     provider_instance_type), and load average folds in I/O-wait run-queue
+    #     length, so it is not percent-busy even where a core count exists. A
+    #     wrong number here is worse than none (IMP-938ee27f4921).
+    #   - memory_pct: WIRED, from the heartbeat's memory_free_kb — see
+    #     #sample_memory_pct and System::RuntimeMetricsWriter.
     #   - cost_usd_mtd: billing engine MTD aggregation
     def sample_all
       instance_ids = resolvable_instance_ids
@@ -124,6 +145,7 @@ module System
       when "replica_count" then sample_replica_count(instance_ids)
       when "region_count"  then sample_region_count(instance_ids)
       when THROUGHPUT_METRIC then sample_sdwan_throughput(instance_ids)
+      when "memory_pct"      then sample_memory_pct(instance_ids)
       else unavailable_sample(metric_name)
       end
     end
@@ -399,6 +421,81 @@ module System
     end
 
     # A real measurement read from a wired backend.
+    # memory_pct = mean percent-USED across the mission instances that have a
+    # FRESH runtime_metrics observation (System::RuntimeMetricsWriter, written
+    # from the heartbeat's memory_free_kb).
+    #
+    # `unavailable` — never a fabricated 0.0 — whenever we genuinely cannot
+    # tell: no resolvable instances, none reporting, or every observation
+    # stale. That distinction is the whole point of this collector: an
+    # operator reading a fleet where nothing has reported must see "we don't
+    # know", not "utilization: 0%", which reads as healthy.
+    #
+    # An instance with a stale observation is EXCLUDED from the mean rather
+    # than counted at its last value — a node that stopped reporting is not
+    # evidence of its old utilization. `measured_instance_count` vs
+    # `instance_count` exposes that gap so a reader can see the sample covers
+    # only part of the fleet instead of inferring full coverage.
+    def sample_memory_pct(instance_ids)
+      return unavailable_sample("memory_pct") if instance_ids.empty?
+
+      # .live_replicas for the SAME reason sample_region_count shares it: a
+      # memory_pct that averaged in an errored row while replica_count did not
+      # would describe two different fleets in the same breath — and an
+      # out-of-memory node's last reading is exactly the one that would skew it.
+      # .includes to keep available_memory_mb's provider_instance_type lookup
+      # off the 60s tick's N+1 path.
+      instances = ::System::NodeInstance
+                  .where(id: instance_ids)
+                  .live_replicas
+                  .includes(:provider_instance_type)
+                  .to_a
+      cutoff = MEMORY_SAMPLE_FRESHNESS.ago
+
+      percents = instances.filter_map { |instance| memory_used_percent(instance, cutoff) }
+      return unavailable_sample("memory_pct", MEMORY_UNREPORTED_NOTE) if percents.empty?
+
+      live_sample("memory_pct", (percents.sum / percents.size).round(2)).merge(
+        "measured_instance_count" => percents.size,
+        "instance_count" => instances.size
+      )
+    end
+
+    # nil (not 0.0) whenever this instance cannot contribute a real reading:
+    # no document, unparseable/stale timestamp, no memory_free_kb, or no known
+    # provisioned total to divide by. Each of those is "unknown", and coercing
+    # any of them to a number would put a fabricated value into the mean.
+    def memory_used_percent(instance, cutoff)
+      doc = instance.config&.dig(::System::RuntimeMetricsWriter::CONFIG_KEY)
+      return nil unless doc.is_a?(Hash)
+
+      observed_at = begin
+        Time.iso8601(doc["observed_at"].to_s)
+      rescue ArgumentError, TypeError
+        nil
+      end
+      return nil if observed_at.nil? || observed_at < cutoff
+
+      free_kb = doc["memory_free_kb"]
+      return nil unless free_kb.is_a?(Integer) && free_kb >= 0
+
+      total_mb = instance.available_memory_mb
+      return nil if total_mb.nil? || total_mb.to_i <= 0
+
+      total_kb = total_mb.to_i * 1024
+
+      # free > total is not a 0% reading, it is two numbers that do not agree —
+      # a placeholder provider_instance_type or an understated config["memory_mb"]
+      # hint against real metal. Clamping it to 0.0 would publish "0% memory
+      # used" (maximum headroom) as a LIVE sample, indistinguishable from an
+      # instance genuinely reporting all memory free. An impossible reading is
+      # UNKNOWN; route it to the same exclusion path as a missing one.
+      return nil if free_kb > total_kb
+
+      used = ((total_kb - free_kb).to_f / total_kb) * 100
+      used.clamp(0.0, 100.0) # float-rounding guard only; the real range is enforced above
+    end
+
     def live_sample(metric_name, observed)
       { "observed" => observed, "unit" => unit_for(metric_name), "source" => "live" }
     end

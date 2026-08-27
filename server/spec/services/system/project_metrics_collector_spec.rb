@@ -782,5 +782,138 @@ RSpec.describe System::ProjectMetricsCollector do
         expect(carriers.size).to eq(1), "a gap tick must not orphan a snapshot"
       end
     end
+
+    # IMP-938ee27f4921 — the collector's own docstring named this exact
+    # source ("cpu_pct / memory_pct: node agent heartbeat") for the two
+    # metrics that used to fall through to the generic unavailable branch.
+    # memory_pct now reads System::RuntimeMetricsWriter's ingested
+    # memory_free_kb against NodeInstance#available_memory_mb.
+    describe "memory_pct" do
+      def stamp_runtime_metrics(instance, memory_free_kb:, observed_at: Time.current)
+        instance.update_columns(
+          config: instance.config.merge(
+            "runtime_metrics" => { "observed_at" => observed_at.utc.iso8601, "memory_free_kb" => memory_free_kb }
+          )
+        )
+      end
+
+      it "reports unavailable (observed nil) when the mission has no resolvable instances" do
+        mission = build_active_infrastructure_mission
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "memory_pct").first
+        expect(row.value).to include("observed" => nil, "source" => "unavailable")
+      end
+
+      it "reports unavailable when none of the mission's instances has a runtime_metrics observation" do
+        node = create(:system_node, account: account)
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        mission, = seed_provisioned_mission([ inst.id ])
+
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "memory_pct").first
+        expect(row.value).to include("observed" => nil, "source" => "unavailable")
+      end
+
+      it "computes a real percentage from memory_free_kb against the instance's provisioned memory" do
+        node = create(:system_node, account: account)
+        # default provider_instance_type memory_mb is 1024 -> 1_048_576 KB total
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        stamp_runtime_metrics(inst, memory_free_kb: 524_288) # half free -> 50% used
+
+        mission, = seed_provisioned_mission([ inst.id ])
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "memory_pct").first
+        expect(row.value["observed"]).to eq(50.0)
+        expect(row.value["source"]).to eq("live")
+        expect(row.value["unit"]).to eq("percent")
+      end
+
+      it "averages across measured instances and reports coverage" do
+        node   = create(:system_node, account: account)
+        region = create(:system_provider_region)
+        inst_a = create(:system_node_instance, :running, node: node, provider_region: region)
+        inst_b = create(:system_node_instance, :running, node: node, provider_region: region)
+        stamp_runtime_metrics(inst_a, memory_free_kb: 1_048_576) # 0% used
+        stamp_runtime_metrics(inst_b, memory_free_kb: 0)         # 100% used
+
+        mission, = seed_provisioned_mission([ inst_a.id, inst_b.id ])
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "memory_pct").first
+        expect(row.value["observed"]).to eq(50.0)
+        expect(row.value["measured_instance_count"]).to eq(2)
+        expect(row.value["instance_count"]).to eq(2)
+      end
+
+      it "excludes a measured instance from the average but reports live when at least one is fresh" do
+        node   = create(:system_node, account: account)
+        region = create(:system_provider_region)
+        fresh  = create(:system_node_instance, :running, node: node, provider_region: region)
+        stale  = create(:system_node_instance, :running, node: node, provider_region: region)
+        stamp_runtime_metrics(fresh, memory_free_kb: 262_144) # 75% used
+        stamp_runtime_metrics(stale, memory_free_kb: 0, observed_at: 2.hours.ago)
+
+        mission, = seed_provisioned_mission([ fresh.id, stale.id ])
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "memory_pct").first
+        expect(row.value["observed"]).to eq(75.0)
+        expect(row.value["measured_instance_count"]).to eq(1)
+        expect(row.value["instance_count"]).to eq(2)
+      end
+
+      it "reports unavailable when the only instance's runtime_metrics observation is stale" do
+        node = create(:system_node, account: account)
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        stamp_runtime_metrics(inst, memory_free_kb: 0, observed_at: 2.hours.ago)
+
+        mission, = seed_provisioned_mission([ inst.id ])
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "memory_pct").first
+        expect(row.value).to include("observed" => nil, "source" => "unavailable")
+      end
+
+      # THE MUTATION-CHECK TARGET. If the sampler ever coerced "no sample" to
+      # 0.0, an operator reading a fleet where nothing has reported would see
+      # "utilization: 0%" — read as healthy — instead of "we don't know",
+      # which is worse than the current honest unavailable.
+      it "never returns a fabricated 0.0 for memory_pct when nothing has reported" do
+        mission = build_active_infrastructure_mission
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "memory_pct").first
+        expect(row.value["observed"]).to be_nil
+        expect(row.value["observed"]).not_to eq(0.0)
+      end
+    end
+
+    # cpu_pct stays deliberately unavailable: the producer ships load_average
+    # as a free-text /proc/loadavg-style STRING, not a percentage, and turning
+    # it into one needs a reliable per-instance core count (unavailable for
+    # physical/pivot nodes with no provider_instance_type) — and even where a
+    # core count exists, load average folds in I/O-wait run-queue length, so
+    # it is not the same measurement as CPU percent-busy. A wrong number is
+    # worse than none, so this metric is not derived from load_average here.
+    describe "cpu_pct" do
+      it "always reports unavailable (observed nil), never derived from load_average" do
+        node = create(:system_node, account: account)
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst.update_columns(
+          config: inst.config.merge(
+            "runtime_metrics" => { "observed_at" => Time.current.utc.iso8601, "load_average" => "0.15 0.20 0.10" }
+          )
+        )
+
+        mission, = seed_provisioned_mission([ inst.id ])
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "cpu_pct").first
+        expect(row.value).to include("observed" => nil, "source" => "unavailable")
+      end
+    end
   end
 end
