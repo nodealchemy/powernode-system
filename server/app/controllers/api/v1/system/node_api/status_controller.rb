@@ -410,7 +410,38 @@ module Api
               name: current_instance.name,
               status: current_instance.status,
               variety: current_instance.variety,
-              last_heartbeat: current_instance.config&.dig("last_heartbeat"),
+              # From the COLUMN, which #record_heartbeat! actually writes. This
+              # used to read a config key named "last_heartbeat" that nothing in
+              # either tree ever wrote — the read was its only reference — so a
+              # node heartbeating every 30s reported null here. That is inverted
+              # evidence delivered exactly when this endpoint is most trusted:
+              # an operator or runbook triaging a healthy node concluded its
+              # heartbeats were not landing.
+              last_heartbeat: current_instance.last_heartbeat_at&.iso8601,
+              # BOTH ARE WRITTEN ONLY BY #report — POST /api/v1/system/node_api/status
+              # (routes.rb: `post :status, to: "status#report"`; there is no
+              # /status/report path, and the doc comment on #report that says
+              # otherwise is wrong). That action sits behind
+              # authenticate_instance!, so it needs a node client certificate:
+              # it is a legacy/alternate AGENT report path, not an operator one.
+              # The production agent never calls it — it posts to
+              # /status/heartbeat, /status/sdwan, /status/bgp and the task
+              # endpoints — so both fields are null on every agent-managed node
+              # (measured on live ops-hub: 0 of 136 instances carry a
+              # "last_report" key).
+              #
+              # `metrics` is the SAME defect as last_heartbeat above, still
+              # live: the real per-heartbeat metrics are written to
+              # config["runtime_metrics"] by System::RuntimeMetricsWriter,
+              # ingested by THIS controller's #heartbeat, so this serves null
+              # while a fresh document sits one key away. Re-pointing it is a
+              # response-contract change and is filed as its own task rather
+              # than smuggled into this one.
+              #
+              # Kept rather than deleted because they remain the contract for
+              # the #report path — but documented, because an undocumented
+              # always-null field is exactly what let last_heartbeat above look
+              # plausible for so long.
               last_report: current_instance.config&.dig("last_report"),
               metrics: current_instance.config&.dig("metrics")
             }
