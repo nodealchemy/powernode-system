@@ -757,9 +757,22 @@ module System
     #
     # Resolved like #available_memory_mb: prefer the bound
     # provider_instance_type (cloud / templated physical declares its SKU),
-    # then fall back to a `config["gpu"]` hint the on-node agent reports from
-    # nvidia-smi (`{ "count" => 1, "type" => "H100", "memory_mb" => 81920 }`).
+    # then fall back to a `config["gpu"]` hint
+    # (`{ "count" => 1, "type" => "H100", "memory_mb" => 81920 }`).
     # Public — read by GPU discovery (system_find_node_with_gpu) + scheduling.
+    #
+    # The hint's producer is the on-node agent (IMP-657e05418572): it detects
+    # the inventory once per boot via nvidia-smi, falling back to lspci, and
+    # ships it inside the node_capabilities heartbeat block, which
+    # #record_capabilities! maps into config through
+    # #apply_agent_hardware_hints!. Two consequences worth knowing:
+    #   - "count" may be absent (agent could run NEITHER detector — unknown)
+    #     or 0 (a detector ran and found none). Those are different facts and
+    #     the ingest keeps them apart; #gpu_count collapses both to 0 because
+    #     an unknown accelerator is not a schedulable one.
+    #   - "memory_mb" is absent on the lspci fallback path, which cannot see
+    #     VRAM. A GPU node can therefore report a count and type with no VRAM.
+    # An operator-set hint is never overwritten by detection.
     def gpu_count
       type_count = provider_instance_type&.gpu_count.to_i
       return type_count if type_count.positive?
@@ -821,7 +834,26 @@ module System
     #
     # Reads from provider_instance_type when the instance has one (cloud
     # variety / templated physical), then falls back to a `config["memory_mb"]`
-    # hint. Returns nil when nothing is known.
+    # hint — operator-asserted, or written by the on-node agent from
+    # /proc/meminfo MemTotal (IMP-657e05418572; see
+    # #apply_agent_hardware_hints!). Returns nil when nothing is known.
+    #
+    # MemTotal is INSTALLED capacity minus what the kernel reserved before
+    # reporting it, so an agent-written value reads a little under nameplate
+    # (a "4GB" board reports ~3.8GB) — that rounding biases toward the safe
+    # lightweight profile.
+    #
+    # But do not read that as "this change cannot promote anything". BEFORE
+    # the agent produced this hint, a bare-metal instance with no bound SKU
+    # had NO memory fact at all, so #suggest_network_profile always took its
+    # "cannot prove headroom" branch. Producing a value at all is what
+    # changes the outcome: an amd64 host with >= HEAVYWEIGHT_MIN_MEMORY_MB
+    # now classifies as heavyweight on its FIRST heartbeat, and a Pi 5 does
+    # so at any RAM. classify_network_profile!'s guards still confine that to
+    # first contact and never demote, so there is no wave over the existing
+    # fleet — but every newly-enrolled bare-metal node is affected, and
+    # heavyweight is what gates the OVS+OVN lane
+    # (Sdwan::Ovn::DeploymentReconciler, HostBridgeAllocator).
     #
     # THE NIL CONTRACT IS UNCHANGED and both callers honour it: nil means
     # "unknown", never zero. The suggester treats it as "assume too small" and
@@ -842,8 +874,17 @@ module System
 
     # Best-effort hardware-model lookup, normalised to a lowercase
     # snake_case token. Reads from `config["hardware_model"]` —
-    # operator-asserted at row creation or filled in by the on-node agent's
-    # DMI scrape. Returns nil when nothing is known — the suggester then
+    # operator-asserted at row creation, or written by the on-node agent
+    # (IMP-657e05418572) from /sys/class/dmi/id/product_name, falling back to
+    # /proc/device-tree/model on boards with no DMI (Raspberry Pi and other
+    # device-tree SBCs). The agent reports the firmware string VERBATIM, and
+    # .canonical_hardware_model — which runs ON THE INGEST PATH ONLY, not
+    # here — maps the Pi variants onto the tokens HEAVYWEIGHT_PI_MODELS /
+    # PI4_HARDWARE_MODELS actually match, since those are exact-equality
+    # lists and a raw "Raspberry Pi 5 Model B Rev 1.0" normalises to
+    # something none of them contain. An operator who hand-sets that same
+    # raw string therefore still gets no match; they must write the token.
+    # Returns nil when nothing is known — the suggester then
     # falls through to lightweight via the safe default. The
     # `discovered_dmi_uuid` column is intentionally skipped here (DMI UUID is
     # opaque and not a model discriminator).
@@ -903,10 +944,153 @@ module System
     # Replace the capabilities hash with a fresh agent report. Merges
     # the detected_at timestamp so we can detect stale caps in
     # heartbeat-cadence reviews.
+    #
+    # Also derives the hardware config hints from the SAME report
+    # (IMP-657e05418572) — the agent carries GPU/RAM/chassis inventory
+    # inside this block rather than on a channel of its own, so this is
+    # the one ingest point for both.
     def record_capabilities!(caps)
       return if caps.blank?
-      merged = caps.stringify_keys.merge("detected_at" => Time.current.iso8601)
-      update_columns(capabilities: merged)
+      normalized = caps.stringify_keys
+      update_columns(capabilities: normalized.merge("detected_at" => Time.current.iso8601))
+      # Wrapped like the heartbeat controller's other derived writers
+      # (classify_network_profile!, the OVN reconciler): a bug in a
+      # convenience mapping must never bounce a node's telemetry, which is
+      # the signal an operator needs most when something is wrong.
+      begin
+        apply_agent_hardware_hints!(normalized)
+      rescue StandardError => e
+        Rails.logger.warn("[NodeInstance] hardware hint ingest failed for #{id}: #{e.class}: #{e.message}")
+      end
+    end
+
+    # === Agent hardware inventory → config hints (IMP-657e05418572) ===
+    #
+    # #gpu_count / #gpu_type / #gpu_memory_mb / #available_memory_mb /
+    # #hardware_model_hint all document a fallback to a `config` hint the
+    # on-node agent reports. This is the producer that makes that true.
+    # Nothing here changes those readers' signatures or precedence — a
+    # bound provider_instance_type still wins.
+
+    # Provenance stamp: a hash of the hint VALUES the agent last wrote,
+    # e.g. {"memory_mb" => 257000, "hardware_model" => "PowerEdge R740"}.
+    #
+    # Values, not a list of key names, and that distinction is the whole
+    # guard. A key-name list says "the agent owns this key" forever, and
+    # the stamp round-trips through the ordinary operator edit path —
+    # NodeInstancesController#update permits `config: {}` wholesale and
+    # the serializer hands the operator the entire config, stamp included
+    # — so an operator correcting a hint would hand the ownership claim
+    # right back and get silently overwritten on the next heartbeat.
+    #
+    # Comparing values instead makes the guard self-invalidating under
+    # ANY writer, including ones that have never heard of this stamp: the
+    # agent may refresh a hint only while the stored value is still
+    # exactly what it last wrote. The moment anything else changes it,
+    # the agent leaves it alone. (An operator who edits the hint AND
+    # forges the matching stamp entry re-arms it; that is a deliberate
+    # act, not an accident.)
+    AGENT_HARDWARE_HINT_SOURCE_KEY = "agent_hardware_hints"
+
+    # Model strings the network-profile suggester recognises, keyed by the
+    # firmware string that identifies them. The agent reports the model
+    # VERBATIM ("Raspberry Pi 5 Model B Rev 1.0"); the platform's
+    # vocabulary lives here, next to HEAVYWEIGHT_PI_MODELS which defines
+    # it, so the agent needs no knowledge of it. Anything unmatched passes
+    # through unchanged and #hardware_model_hint normalises it as before.
+    CANONICAL_HARDWARE_MODELS = {
+      /\braspberry\s*pi\s*5\b/i => "raspberry_pi_5",
+      /\braspberry\s*pi\s*4\b/i => "raspberry_pi_4"
+    }.freeze
+
+    # Pure mapping: agent capability report → config hints. Returns ONLY
+    # the keys detection actually produced. An absent key means the agent
+    # could not measure that fact, which is a different fact from a
+    # measured zero — so an absent gpu_count yields no "gpu" hint at all,
+    # while gpu_count=0 yields {"count" => 0}.
+    def self.hardware_hints_from_capabilities(caps)
+      return {} if caps.blank?
+      caps = caps.stringify_keys
+      hints = {}
+
+      gpu = gpu_hint_from_capabilities(caps)
+      hints["gpu"] = gpu if gpu
+
+      mb = integer_or_nil(caps["memory_total_mb"])
+      hints["memory_mb"] = mb if mb
+
+      model = caps["hardware_model"]
+      if model.is_a?(String) && model.strip.present?
+        hints["hardware_model"] = canonical_hardware_model(model.strip)
+      end
+
+      hints
+    end
+
+    def self.gpu_hint_from_capabilities(caps)
+      count = integer_or_nil(caps["gpu_count"])
+      return nil if count.nil?
+
+      gpu = { "count" => count }
+      type = caps["gpu_type"]
+      gpu["type"] = type.strip if type.is_a?(String) && type.strip.present?
+      mem = integer_or_nil(caps["gpu_memory_mb"])
+      gpu["memory_mb"] = mem if mem
+      gpu
+    end
+    private_class_method :gpu_hint_from_capabilities
+
+    # Strict: a non-numeric value is treated as NOT MEASURED rather than
+    # coerced to 0, which is the reading the readers must never invent.
+    def self.integer_or_nil(raw)
+      return nil if raw.nil?
+      return raw if raw.is_a?(Integer)
+      return nil unless raw.is_a?(Numeric) || (raw.is_a?(String) && raw.match?(/\A-?\d+\z/))
+      Integer(raw)
+    rescue ArgumentError, TypeError
+      nil
+    end
+    private_class_method :integer_or_nil
+
+    def self.canonical_hardware_model(raw)
+      CANONICAL_HARDWARE_MODELS.each { |pattern, token| return token if raw.match?(pattern) }
+      raw
+    end
+    private_class_method :canonical_hardware_model
+
+    # Merge the detected hints into config WITHOUT ever clobbering a value
+    # the agent did not itself write.
+    #
+    # Two rules, both load-bearing:
+    #   1. only keys detection produced are considered — an unmeasured
+    #      fact can never blank an existing value, so it does not matter
+    #      whether live rows already carry hand-set hints;
+    #   2. a key already present in config is written only when its stored
+    #      value is still byte-identical to what the agent last wrote (see
+    #      AGENT_HARDWARE_HINT_SOURCE_KEY). Any other writer's value wins
+    #      and keeps winning.
+    #
+    # update_columns (like record_capabilities! above) — this runs on every
+    # heartbeat and must not fire callbacks or touch updated_at. The
+    # no-change early return keeps the steady state write-free.
+    def apply_agent_hardware_hints!(caps)
+      hints = self.class.hardware_hints_from_capabilities(caps)
+      return if hints.empty?
+
+      cfg  = config || {}
+      last = cfg[AGENT_HARDWARE_HINT_SOURCE_KEY]
+      last = {} unless last.is_a?(Hash)
+
+      writable = hints.select do |key, _|
+        !cfg.key?(key) || cfg[key].nil? || (last.key?(key) && cfg[key] == last[key])
+      end
+      return if writable.empty?
+
+      new_cfg = cfg.merge(writable)
+                   .merge(AGENT_HARDWARE_HINT_SOURCE_KEY => last.merge(writable))
+      return if new_cfg == cfg
+
+      update_columns(config: new_cfg)
     end
 
     # === Cascade-destroy helpers ===

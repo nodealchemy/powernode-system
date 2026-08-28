@@ -1,0 +1,1 @@
+{"kernel_version":"6.8.0-136-generic","erofs_available":true,"overlayfs_available":true,"fsverity_available":true,"gpu_count":2,"gpu_type":"NVIDIA H100 PCIe","gpu_memory_mb":81559,"memory_total_mb":257000,"hardware_model":"PowerEdge R740"}

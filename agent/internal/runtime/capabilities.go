@@ -21,6 +21,40 @@ type NodeCapabilities struct {
 	ErofsAvailable     bool   `json:"erofs_available"`
 	OverlayfsAvailable bool   `json:"overlayfs_available"`
 	FsverityAvailable  bool   `json:"fsverity_available"`
+
+	// === Hardware inventory (IMP-657e05418572) ===
+	//
+	// Carried inside THIS block rather than a new heartbeat channel: the
+	// server already ingests node_capabilities on every heartbeat
+	// (record_capabilities!), and it maps these into the config hints
+	// NodeInstance#gpu_count / #available_memory_mb / #hardware_model_hint
+	// fall back to. See internal/runtime/hardware.go for detection.
+	//
+	// Every numeric field is a POINTER with omitempty, so nil is omitted
+	// from the wire entirely: absent means NOT MEASURED, and an explicit
+	// 0 means measured-as-zero. A bare int would collapse "we could not
+	// look" into "there is none" — and the server would then be unable to
+	// tell an operator-unknown node from a genuinely GPU-less one.
+
+	// GPUCount is the number of schedulable accelerators. nil when
+	// neither nvidia-smi nor lspci could be run; 0 when a detector ran
+	// and found none.
+	GPUCount *int `json:"gpu_count,omitempty"`
+	// GPUType is the first device's name ("NVIDIA H100 PCIe"). Empty when
+	// unknown or when there is no GPU.
+	GPUType string `json:"gpu_type,omitempty"`
+	// GPUMemoryMB is the first device's VRAM in MiB. nil whenever it
+	// could not be measured — notably on the lspci fallback path, which
+	// establishes a count but cannot see VRAM at all.
+	GPUMemoryMB *int64 `json:"gpu_memory_mb,omitempty"`
+	// MemoryTotalMB is INSTALLED RAM (MemTotal), not the free-memory
+	// runtime metric the heartbeat's memory_free_kb carries. nil when
+	// /proc/meminfo could not be read.
+	MemoryTotalMB *int64 `json:"memory_total_mb,omitempty"`
+	// HardwareModel is the firmware-reported chassis/board model,
+	// verbatim ("Raspberry Pi 5 Model B Rev 1.0", "PowerEdge R740").
+	// Empty when neither DMI nor device-tree names the machine.
+	HardwareModel string `json:"hardware_model,omitempty"`
 }
 
 // DetectCapabilities scans /proc/filesystems + /proc/sys/kernel/osrelease
@@ -29,13 +63,30 @@ type NodeCapabilities struct {
 // returns a struct with conservative defaults rather than an error,
 // because every kernel that runs systemd has the basics enabled.
 func DetectCapabilities() *NodeCapabilities {
+	return detectCapabilities(defaultKernelProbe(), defaultHardwareProbe())
+}
+
+// kernelProbe is the filesystem seam for the kernel-feature half of
+// detection, so tests can exercise the REAL detector against a fixture
+// tree instead of the running host's /proc and /lib/modules.
+type kernelProbe struct {
+	procRoot    string // "/proc"
+	modulesRoot string // "/lib/modules"
+}
+
+func defaultKernelProbe() kernelProbe {
+	return kernelProbe{procRoot: "/proc", modulesRoot: "/lib/modules"}
+}
+
+// detectCapabilities is DetectCapabilities with its probes injected.
+func detectCapabilities(k kernelProbe, hw hardwareProbe) *NodeCapabilities {
 	caps := &NodeCapabilities{}
 
 	// Kernel version. /proc/sys/kernel/osrelease is the canonical
 	// uname -r value and avoids the syscall.Utsname int8/uint8
 	// portability split between linux/amd64 (int8) and linux/arm64
 	// (uint8). Falls back to empty string on read failure.
-	if b, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
+	if b, err := os.ReadFile(k.procRoot + "/sys/kernel/osrelease"); err == nil {
 		caps.KernelVersion = strings.TrimSpace(string(b))
 	}
 
@@ -45,9 +96,9 @@ func DetectCapabilities() *NodeCapabilities {
 	// a loadable module at /lib/modules/<release>/kernel/fs/erofs/;
 	// it won't appear in /proc/filesystems until something mounts it
 	// for the first time. So we also probe the module file on disk.
-	fs := readProcFilesystems()
-	caps.ErofsAvailable = fs["erofs"] || hasKernelModule(caps.KernelVersion, "fs/erofs")
-	caps.OverlayfsAvailable = fs["overlay"] || hasKernelModule(caps.KernelVersion, "fs/overlayfs")
+	fs := readProcFilesystems(k.procRoot + "/filesystems")
+	caps.ErofsAvailable = fs["erofs"] || hasKernelModule(k.modulesRoot, caps.KernelVersion, "fs/erofs")
+	caps.OverlayfsAvailable = fs["overlay"] || hasKernelModule(k.modulesRoot, caps.KernelVersion, "fs/overlayfs")
 
 	// fs-verity is a per-superblock feature, not a "filesystem" in
 	// /proc/filesystems. The reliable check is "does the running
@@ -57,14 +108,18 @@ func DetectCapabilities() *NodeCapabilities {
 	// stock distro configs). Conservative: false if uname failed.
 	caps.FsverityAvailable = kernelAtLeast(caps.KernelVersion, 5, 4)
 
+	// Hardware inventory (IMP-657e05418572) — GPU, installed RAM and
+	// chassis model, carried in this same block. See hardware.go.
+	detectHardware(hw, caps)
+
 	return caps
 }
 
 // readProcFilesystems returns a name → present? map for the kernel's
 // registered filesystems. Returns empty map on read failure (caller
 // treats missing keys as "unavailable").
-func readProcFilesystems() map[string]bool {
-	f, err := os.Open("/proc/filesystems")
+func readProcFilesystems(path string) map[string]bool {
+	f, err := os.Open(path)
 	if err != nil {
 		return map[string]bool{}
 	}
@@ -150,11 +205,11 @@ func stripNonDigits(s string) string {
 // isn't currently loaded into /proc/filesystems. Combined with the
 // /proc/filesystems probe, the agent flags the FS available whether
 // it's already loaded or merely loadable.
-func hasKernelModule(kernelVersion, subpath string) bool {
-	if kernelVersion == "" || subpath == "" {
+func hasKernelModule(modulesRoot, kernelVersion, subpath string) bool {
+	if modulesRoot == "" || kernelVersion == "" || subpath == "" {
 		return false
 	}
-	dir := "/lib/modules/" + kernelVersion + "/kernel/" + subpath
+	dir := modulesRoot + "/" + kernelVersion + "/kernel/" + subpath
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false

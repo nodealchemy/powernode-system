@@ -21,6 +21,18 @@ import (
 // exhausted) is the one reading that must never be confused with "not
 // measured".
 func readMemAvailableKB(path string) (int64, bool) {
+	return readMeminfoFieldKB(path, "MemAvailable:")
+}
+
+// readMeminfoFieldKB reads one colon-terminated /proc/meminfo field
+// (pass the colon: "MemTotal:") and returns its kB value. Shared by
+// readMemAvailableKB (per-tick free memory) and the boot-time installed-
+// capacity probe in hardware.go, which needs MemTotal.
+//
+// Returns (0, false) on every failure path — unreadable file, missing
+// field, unparseable value — so callers can leave the reported field
+// UNSET rather than publish a fabricated 0.
+func readMeminfoFieldKB(path, field string) (int64, bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, false
@@ -30,10 +42,10 @@ func readMemAvailableKB(path string) (int64, bool) {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "MemAvailable:") {
+		if !strings.HasPrefix(line, field) {
 			continue
 		}
-		// "MemAvailable:", "<value>", "kB"
+		// "<field>", "<value>", "kB"
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			return 0, false

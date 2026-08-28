@@ -65,10 +65,18 @@ description = <<~DESC.strip
   so the node's GPU is usable by native processes AND OCI containers (the
   supported, host-driver-shared model — NO vGPU/passthrough reconfiguration).
 
-  After assignment, the on-node agent registers the "nvidia" container runtime
-  with dockerd and reports the node's GPU inventory into
+  GPU INVENTORY is NOT gated on this module. The on-node agent detects it on
+  every boot (nvidia-smi, falling back to lspci) and reports it in the
+  node_capabilities heartbeat block; the platform maps it into
   `NodeInstance.config["gpu"]` (`{count, type, memory_mb}`), which
-  `system_find_node_with_gpu` and the inference scheduler consume.
+  `system_find_node_with_gpu` and the inference scheduler consume. A node with
+  a GPU is therefore discoverable whether or not this module is assigned —
+  though without the driver the card is present, not usable.
+
+  NOT YET IMPLEMENTED: registering an "nvidia" container runtime with dockerd.
+  No agent code does this, and there is no `modules/gpu-nvidia-runtime/`
+  artifact behind this row; assigning it today installs the package set and
+  nothing more. Do not read the sharing model below as a working capability.
 
   Persistence: driver/toolkit install is system-level; CUDA caches under
   `/usr/local/cuda`. Sensitive runtime config under `/etc/nvidia*` is claimed via
@@ -105,9 +113,13 @@ attrs[:config] = {
   "gpu_runtime" => {
     "vendor"             => "nvidia",
     "driver_package"     => "nvidia-driver-server", # operator-overridable per node
-    "container_runtime"  => "nvidia",               # registers a dockerd "nvidia" runtime
+    "container_runtime"  => "nvidia",               # DECLARED ONLY — nothing registers a dockerd runtime yet
     "capabilities"       => %w[compute utility],
-    "reports_gpu_inventory" => true                 # agent fills NodeInstance.config["gpu"] from nvidia-smi
+    # DECLARATIVE, not a switch. The agent detects and reports GPU inventory
+    # on every node regardless of this flag or this module (IMP-657e05418572);
+    # no code reads this key. It records the intent that a node carrying this
+    # module is expected to have an inventory to report.
+    "reports_gpu_inventory" => true
   }
 }
 

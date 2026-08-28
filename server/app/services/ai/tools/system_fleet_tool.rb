@@ -2583,6 +2583,21 @@ module Ai
       # GPU discovery (audit P6). GPU is resolved per-instance from the
       # provider_instance_type SKU OR the agent's config["gpu"] hint, so the
       # type/count/vram predicate is applied in Ruby after eager-loading.
+      #
+      # The hint is produced by the on-node agent's boot-time inventory
+      # (IMP-657e05418572, nvidia-smi → lspci, ingested by
+      # NodeInstance#record_capabilities!). Bare-metal GPU nodes therefore
+      # match an UNTYPED query (min_gpu_count alone) without a bound SKU.
+      #
+      # TWO KNOWN GAPS for agent-reported nodes, both in the predicate below:
+      #   - gpu_type is compared with casecmp? — EXACT equality. The SKU
+      #     vocabulary is short ("H100"); the agent reports the firmware's
+      #     own string ("NVIDIA H100 PCIe", or "NVIDIA Corporation GA100" on
+      #     the lspci path). So a gpu_type: filter still matches only
+      #     SKU-bound nodes. Closing this needs either an agreed
+      #     canonicalisation on ingest or token matching here — not yet done.
+      #   - the lspci fallback cannot read VRAM at all, so such a node
+      #     reports no gpu memory_mb and any min_gpu_memory_mb excludes it.
       # Scoped to non-terminated instances — you schedule GPU work on live
       # compute. A SQL/GIN pre-filter is a follow-up if fleet size ever makes
       # this scan material.
