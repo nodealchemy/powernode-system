@@ -332,6 +332,17 @@ fi
 echo "[rails-start] schema-drift backstop check…"
 /usr/local/bin/bundle exec rails runner /usr/local/bin/schema-drift-check.rb || true
 
+# --- Governance policy reconcile (advisory, NEVER fatal) --------------------
+# db:seed is FIRST BOOT ONLY, so a governance row added to a seed afterwards
+# never reaches an established install (measured on ops-hub 2026-08-24: nine
+# such rows had never landed). PolicyReconciler creates ONLY what is absent —
+# it never updates a verb and never deletes, so an operator's tuned row is
+# untouched. Runs in both branches above, after db:migrate. Always prints a
+# summary line; `|| true` + the script's own guards keep a reconciler bug from
+# failing the boot.
+echo "[rails-start] governance policy reconcile…"
+/usr/local/bin/bundle exec rails runner /usr/local/bin/governance-reconcile.rb || true
+
 # --- Ensure the host's own HTTPS login ingress for the bundled reverse proxy ---
 # Root cause this closes (imp 019f6c3d): the reverse-proxy-traefik service runs
 # `traefik` directly and never generates a dynamic config, and in extension mode
