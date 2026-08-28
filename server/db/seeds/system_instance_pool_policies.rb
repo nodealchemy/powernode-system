@@ -38,14 +38,9 @@ def upsert_pool_policies_for_scope!(account, policies, scope:, agent: nil)
   changed
 end
 
-pool_policies = {
-  "system.instance_pool_create"     => "require_approval",   # capacity commitment
-  "system.instance_pool_update"     => "notify_and_proceed", # changes pool size targets
-  "system.instance_pool_delete"     => "require_approval",   # removes pool + ready instances
-  "system.instance_pool_replenish"  => "auto_approve",       # tops up to target — routine
-  "system.instance_pool_drain"      => "require_approval",   # halts replenishment
-  "system.instance_pool_acquire"    => "auto_approve"        # claim a ready member — fast path
-}
+# Declared set now lives in System::Governance::PolicyDeclarations so the reconciler can
+# assert it against a RUNNING database without executing this seed.
+pool_policies = System::Governance::PolicyDeclarations::INSTANCE_POOL_POLICIES
 
 # Manual scope (operators clicking Settings buttons in the UI)
 count = upsert_pool_policies_for_scope!(admin_account, pool_policies, scope: "global")

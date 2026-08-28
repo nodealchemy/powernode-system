@@ -115,20 +115,9 @@ puts "  ✅ Runtime Manager agent: #{runtime_agent.previously_new_record? ? 'cre
 # re-running the daemon provisioner; a dedicated TLS-rotate executor
 # would be added when the lifecycle requires it.
 
-runtime_policies = {
-  # Docker daemon lifecycle
-  "system.runtime_docker_provision"        => "notify_and_proceed",
-  "system.runtime_docker_decommission"     => "require_approval",
-
-  # Kubernetes cluster lifecycle (K3s today, kubeadm in Phase 3 —
-  # same action vocabulary regardless of flavor; flavor enum on
-  # Devops::KubernetesCluster gates which provisioner the agent uses).
-  "system.runtime_k8s_cluster_bootstrap"   => "notify_and_proceed",
-  "system.runtime_k8s_cluster_decommission" => "require_approval",
-  "system.runtime_k8s_node_join"           => "notify_and_proceed",
-  "system.runtime_k8s_node_drain"          => "require_approval",
-  "system.runtime_k8s_runtime_upgrade"     => "require_approval"
-}
+# Declared set now lives in System::Governance::PolicyDeclarations so the reconciler can
+# assert it against a RUNNING database without executing this seed.
+runtime_policies = System::Governance::PolicyDeclarations::RUNTIME_MANAGER_POLICIES
 
 count = System::Seeds::AgentSetupHelpers.upsert_policies!(
   account: admin_account, agent: runtime_agent,
@@ -170,11 +159,7 @@ puts "  ✅ Runtime Manager policies: #{count} changed (#{runtime_policies.size}
 # stay agent-scoped-only until a surface exists to gate; each is tracked as its
 # own improvement offer. `system_runtime_operator_policies_spec.rb` pins both
 # halves: the three that must resolve, and the four that must NOT.
-gated_runtime_policies = runtime_policies.slice(
-  "system.runtime_docker_provision",
-  "system.runtime_docker_decommission",
-  "system.runtime_k8s_cluster_decommission"
-)
+gated_runtime_policies = System::Governance::PolicyDeclarations::RUNTIME_OPERATOR_POLICIES
 
 operator_count = System::Seeds::AgentSetupHelpers.upsert_operator_policies!(
   account: admin_account,

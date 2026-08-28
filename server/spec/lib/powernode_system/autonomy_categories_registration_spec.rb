@@ -52,11 +52,29 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
 
   let(:seed_dir) { File.expand_path("../../../db/seeds", __dir__) }
 
-  let(:seeded_categories) do
+  # Categories the code DECLARES. This is the authoritative half: the agent and
+  # operator policy sets moved out of the seed files into
+  # System::Governance::PolicyDeclarations so the reconciler could assert them
+  # against a running database, which by construction put them beyond the reach
+  # of a literal scan. Reading the constants is strictly better than the regex
+  # that used to find them — it cannot miss a reformatted hash.
+  let(:declared_categories) do
+    d = System::Governance::PolicyDeclarations
+    ([ d::MANUAL_OPERATION_POLICIES ] + d::POLICY_SETS.map { |set| set[:policies] })
+      .flat_map(&:keys)
+  end
+
+  # Residual scan, deliberately KEPT: seed files that still carry their own
+  # literal hashes (and any added later) are covered by nothing else. The
+  # vacuous-pass guard below now watches the union, so neither half can quietly
+  # go to zero.
+  let(:scanned_categories) do
     Dir[File.join(seed_dir, "*.rb")].sort
       .flat_map { |f| File.read(f).scan(seed_entry_pattern).flatten }
-      .uniq
-      .sort
+  end
+
+  let(:seeded_categories) do
+    (declared_categories + scanned_categories).uniq.sort
   end
 
   let(:bound_categories) do
@@ -97,6 +115,10 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
   it "has real inputs and a populated registry (guards both invariants from passing vacuously)" do
     expect(bound_categories).not_to be_empty
     expect(seeded_categories.size).to be > 50
+    # Each half separately: the union staying above 50 would otherwise hide one
+    # of them collapsing to nothing — which is exactly what moving the hashes
+    # into constants did to the scan.
+    expect(declared_categories.size).to be > 50
     expect(seeded_categories).to include("system.instance_reboot")
     expect(Ai::InterventionPolicy.registered_categories)
       .to include("system.instance_reprovision", "sdwan.network_create")

@@ -124,11 +124,9 @@ puts "  ✅ GitOps Reconciler agent: #{gitops_agent.previously_new_record? ? 'cr
 # vocabulary + approval posture is declared on the owning agent so the GitOps
 # queue is independently pause-able. (The AUTONOMOUS drift remediation policy
 # lives on Fleet Autonomy — see header.)
-gitops_policies = {
-  "system.gitops_apply_proposal"      => "require_approval",  # applies a diff to live fleet state
-  "system.gitops_register_repository" => "require_approval",  # adds a new declarative source of truth
-  "system.gitops_sync_repository"     => "auto_approve"       # read-side: refresh the diff, no mutation
-}
+# Declared set now lives in System::Governance::PolicyDeclarations so the reconciler can
+# assert it against a RUNNING database without executing this seed.
+gitops_policies = System::Governance::PolicyDeclarations::GITOPS_RECONCILER_POLICIES
 
 count = System::Seeds::AgentSetupHelpers.upsert_policies!(
   account: admin_account, agent: gitops_agent,

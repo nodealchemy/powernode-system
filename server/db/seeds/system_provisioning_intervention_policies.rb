@@ -41,14 +41,9 @@ end
 #   project.relocate           — cross-region move; require_approval
 #   project.schema_change      — storage/schema mutation; require_approval
 #   project.security_change    — SDWAN / firewall change; require_approval
-PROVISIONING_POLICIES = {
-  "project.adapt" => "notify_and_proceed",
-  "project.cost_control" => "notify_and_proceed",
-  "project.scale_horizontal" => "auto_approve",
-  "project.relocate" => "require_approval",
-  "project.schema_change" => "require_approval",
-  "project.security_change" => "require_approval"
-}.freeze
+# Declared set now lives in System::Governance::PolicyDeclarations so the reconciler can
+# assert it against a RUNNING database without executing this seed.
+PROVISIONING_POLICIES = System::Governance::PolicyDeclarations::PROVISIONING_POLICIES
 
 scope = fleet_agent ? "agent" : "global"
 ai_agent_id = fleet_agent&.id
@@ -62,18 +57,12 @@ PROVISIONING_POLICIES.each do |action_category, policy_type|
     ai_agent_id: ai_agent_id
   )
 
-  conditions = case action_category
-  when "project.scale_horizontal"
-    # auto_approve gated by the mission's watch_policies budget. The
-    # AdaptationProposerService.auto_apply? guard re-checks at decision
-    # time. The condition here is informational + machine-readable.
-    {
-      "trust_tier_minimum" => "monitored",
-      "auto_apply_window" => "watch_policies.auto_scale_max_replicas"
-    }
-  else
-    { "trust_tier_minimum" => "monitored" }
-  end
+  # Per-category conditions are DECLARED, not branched here: a set-level
+  # condition cannot express scale_horizontal's extra auto_apply_window, and a
+  # reconciler that rebuilt these rows from the set default alone would flatten
+  # it silently.
+  conditions = System::Governance::PolicyDeclarations::PROVISIONING_CONDITION_OVERRIDES
+               .fetch(action_category, System::Governance::PolicyDeclarations::DEFAULT_TRUST_CONDITIONS)
 
   policy.assign_attributes(
     policy: policy_type,

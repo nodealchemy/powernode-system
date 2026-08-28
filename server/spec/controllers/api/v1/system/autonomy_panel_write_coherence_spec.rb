@@ -203,27 +203,22 @@ RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request
   describe "the 6 autonomous system.sdwan_* categories" do
     # The finding's actual subject, and the one thing the two examples below
     # CANNOT see: they assert against rows this file's own `before` block
-    # created, so they would stay green if the seeds relocated these categories
-    # tomorrow. This reads the seed sources instead.
+    # created, so they would stay green if the declarations relocated these
+    # categories tomorrow. This reads the DECLARED sets instead.
     #
-    # Same derivation as autonomy_domain_pivot_spec.rb: a seed entry is a
-    # `"category" => "policy"` pair anchored on the real POLICIES constant, so
-    # it matches definitions and NOT the prose in either file's NOTE comment —
-    # both of which name all seven.
-    it "are seeded on Fleet Autonomy and absent from the SDWAN Manager seed" do
-      seed_dir = File.expand_path("../../../../../db/seeds", __dir__)
-      entry_pattern = /"([a-z][a-z0-9_.]*)"\s*=>\s*"(?:#{Ai::InterventionPolicy::POLICIES.join('|')})"/
+    # These used to be scanned out of the seed files as `"category" => "policy"`
+    # literals. They now live in System::Governance::PolicyDeclarations (so the
+    # boot reconciler can assert them against a running database), and reading
+    # the constants is strictly stronger than the regex was: it cannot be
+    # defeated by reformatting, and it still matches definitions rather than the
+    # prose in either file's NOTE comment, both of which name all seven.
+    it "are declared on Fleet Autonomy and absent from the SDWAN Manager set" do
+      fleet = System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES.keys
+      manager = System::Governance::PolicyDeclarations::SDWAN_MANAGER_POLICIES.keys
 
-      categories_in = lambda do |file|
-        File.read(File.join(seed_dir, file)).scan(entry_pattern).flatten
-      end
-
-      fleet = categories_in.call("fleet_autonomy_agent.rb")
-      manager = categories_in.call("system_sdwan_manager_agent.rb")
-
-      # Positive control: the same scan finds the operator CRUD verbs the SDWAN
-      # Manager seed really does own. Without it, a pattern that matched nothing
-      # anywhere would satisfy the exclusion below for the wrong reason.
+      # Positive control: the SDWAN Manager set really does own the operator
+      # CRUD verbs. Without it, an empty set would satisfy the exclusion below
+      # for the wrong reason.
       expect(manager).to include("sdwan.peer_delete", "sdwan.network_create")
 
       expect(fleet).to include(*autonomous_sdwan_categories)

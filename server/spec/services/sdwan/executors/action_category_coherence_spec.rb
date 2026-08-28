@@ -78,10 +78,25 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
     /"([a-z][a-z0-9_.]*)"\s*=>\s*"(?:#{Ai::InterventionPolicy::POLICIES.join('|')})"/
   end
 
-  let(:seeded_categories) do
+  # Categories the code DECLARES. The agent and operator policy sets moved out
+  # of the seed files into System::Governance::PolicyDeclarations so the boot
+  # reconciler could assert them against a running database — which put them
+  # beyond the reach of the literal scan below. Reading the constants cannot be
+  # defeated by reformatting; the scan is KEPT for the seed files that still
+  # carry their own literals.
+  let(:declared_policy_categories) do
+    d = System::Governance::PolicyDeclarations
+    ([ d::MANUAL_OPERATION_POLICIES ] + d::POLICY_SETS.map { |set| set[:policies] })
+      .flat_map(&:keys)
+  end
+
+  let(:scanned_seed_categories) do
     Dir[seed_dir.join("*.rb").to_s].sort
        .flat_map { |f| File.read(f).scan(seed_entry_pattern).flatten }
-       .uniq
+  end
+
+  let(:seeded_categories) do
+    (declared_policy_categories + scanned_seed_categories).uniq
   end
 
   # Every `action_category:` argument in the gating surfaces, paired with the
@@ -372,6 +387,10 @@ RSpec.describe "SDWAN executor action categories", type: :lib do
     expect(executor_classes.size).to be >= 43
     expect(declared.size).to eq(executor_classes.size)
     expect(seeded_categories.size).to be > 50
+    # The declared half separately: the union staying above the floor would
+    # otherwise hide it collapsing to nothing, which is exactly what moving the
+    # hashes into constants did to the scan.
+    expect(declared_policy_categories.size).to be > 50
     expect(all_gate_sites.size).to be >= 61
     expect(all_gate_sites.map { |s| s[:file] }.uniq.size).to be >= 9
     expect(Ai::InterventionPolicy.registered_categories).to include("sdwan.network_create")
