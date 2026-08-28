@@ -316,9 +316,17 @@ module System
         ::System::Fleet::Sensors::ModuleVerifyFailedSensor
       ].freeze
 
+      # Scoped to THIS account. The fleet agents are seeded global (account_id
+      # nil, one shared row), so every account's policy rows hang off the same
+      # ai_agent_id — without the account filter this pre-gate answered from
+      # every tenant's rows at once. That is not merely an over-broad list: the
+      # pre-gate is the block/no-block discriminator, so a foreign row turned
+      # this account's GATE_POLICY_MISSING refusal into a live approval
+      # request. `.all_fleet_actions` below has always filtered by account;
+      # this is the same scope.
       def permitted_actions
         @permitted_actions ||= ::Ai::InterventionPolicy
-          .where(ai_agent_id: agent.id, scope: "agent", is_active: true)
+          .where(account: account, ai_agent_id: agent.id, scope: "agent", is_active: true)
           .pluck(:action_category)
       end
 

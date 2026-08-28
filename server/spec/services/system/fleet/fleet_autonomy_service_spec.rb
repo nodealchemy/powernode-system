@@ -30,6 +30,32 @@ RSpec.describe System::Fleet::FleetAutonomyService do
         "system.instance_reprovision"
       )
     end
+
+    # The fleet agents are seeded GLOBAL (account_id nil, one shared row), so
+    # every account's policies hang off the same ai_agent_id. Without an
+    # account filter this pre-gate is the one place where another tenant's row
+    # decides whether THIS tenant's lane is reachable.
+    it "ignores another account's row for the same agent" do
+      other = create(:account)
+      Ai::InterventionPolicy.create!(account: other, ai_agent_id: agent.id, scope: "agent",
+                                     action_category: "system.cert_rotate",
+                                     policy: "auto_approve", is_active: true)
+
+      expect(service.permitted_actions).to be_empty
+    end
+
+    it "still blocks a routed lane that only another account has a row for" do
+      allow(Rails.logger).to receive(:error)
+      other = create(:account)
+      Ai::InterventionPolicy.create!(account: other, ai_agent_id: agent.id, scope: "agent",
+                                     action_category: "system.cert_rotate",
+                                     policy: "auto_approve", is_active: true)
+
+      result = service.gate_action!("system.cert_rotate")
+
+      expect(result[:decision]).to eq(:blocked)
+      expect(result[:gate]).to eq(described_class::GATE_POLICY_MISSING)
+    end
   end
 
   describe ".all_fleet_actions" do
