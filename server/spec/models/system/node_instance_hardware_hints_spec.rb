@@ -10,26 +10,34 @@ require 'rails_helper'
 # agent now carries the inventory inside the EXISTING node_capabilities
 # heartbeat block; this is the mapping that turns it into those hints.
 #
-# THE PAYLOAD BELOW IS NOT HAND-BUILT. `agent_wire_payload` is the exact JSON
-# asserted by the Go test that drives the real detector:
+# THE PAYLOAD BELOW IS NOT HAND-BUILT, AND NOT A COPY. It is READ from the
+# artifact the Go detector itself writes:
 #
-#   agent/internal/runtime/hardware_test.go :: TestDetectCapabilitiesWirePayload
+#   agent/internal/runtime/testdata/node_capabilities_golden.json
+#   written + asserted by hardware_test.go :: TestDetectCapabilitiesWirePayload
 #
-# Both sides are pinned to the same literal on purpose. A cross-language lane
-# where each end invents its own fixture goes green against an input no node
-# ever emits; if the agent's wire shape changes, that Go test fails first and
-# this one must be updated with it.
+# One artifact, two consumers. A cross-language lane where each end keeps its
+# own copy of the fixture goes green against an input no node ever emits — and
+# two hand-kept literals would have tripped only the Go side. Reading the file
+# means an agent wire-shape change lands in THIS spec's input directly.
 RSpec.describe System::NodeInstance, 'agent hardware hint ingest', type: :model do
   let(:node) { create(:system_node) }
 
-  # Verbatim from the Go detector's marshalled NodeCapabilities. A `let`, not
-  # a constant: a constant assigned inside a describe block lands on Object,
-  # where a same-named one in another spec file silently clobbers it.
-  let(:agent_wire_payload) do
-    '{"kernel_version":"6.8.0-136-generic","erofs_available":true,' \
-      '"overlayfs_available":true,"fsverity_available":true,' \
-      '"gpu_count":2,"gpu_type":"NVIDIA H100 PCIe","gpu_memory_mb":81559,' \
-      '"memory_total_mb":257000,"hardware_model":"PowerEdge R740"}'
+  # A `let`, not a constant: a constant assigned inside a describe block lands
+  # on Object, where a same-named one in another spec file silently clobbers it.
+  let(:golden_path) do
+    File.expand_path(
+      '../../../../agent/internal/runtime/testdata/node_capabilities_golden.json',
+      __dir__
+    )
+  end
+  let(:agent_wire_payload) { File.read(golden_path).strip }
+
+  it 'reads the payload the Go detector actually wrote' do
+    expect(File).to exist(golden_path),
+                    "missing #{golden_path} — regenerate with " \
+                    "UPDATE_GOLDEN=1 go test ./internal/runtime/ -run TestDetectCapabilitiesWirePayload"
+    expect(JSON.parse(agent_wire_payload)).to include('gpu_count', 'memory_total_mb', 'hardware_model')
   end
 
   # No provider_instance_type: the SKU wins over the config hint in every
@@ -178,15 +186,58 @@ RSpec.describe System::NodeInstance, 'agent hardware hint ingest', type: :model 
       expect(instance.config['memory_mb']).to eq(8192)
     end
 
-    it 'does not rewrite config when a repeat report changes nothing' do
+    it 'does not re-issue a config write when a repeat report changes nothing' do
       instance = bare_metal
       instance.record_capabilities!(JSON.parse(agent_wire_payload))
       instance.reload
       before = instance.config
 
+      # Asserting the VALUE is unchanged cannot fail — an identical rewrite
+      # looks the same. Assert the write does not happen: this runs on every
+      # 30s heartbeat for every node in the fleet.
+      expect(instance).not_to receive(:update_columns).with(hash_including(:config))
+      allow(instance).to receive(:update_columns).and_call_original
+      instance.record_capabilities!(JSON.parse(agent_wire_payload))
+
+      expect(instance.reload.config).to eq(before)
+    end
+
+    # The hole a key-name provenance stamp leaves open: the stamp itself
+    # round-trips through the ordinary operator edit path (the serializer
+    # returns the whole config; NodeInstancesController#update permits
+    # `config: {}` wholesale), so "the agent owns this key" would be handed
+    # straight back and the correction silently overwritten next heartbeat.
+    it 'stops refreshing a hint once anything else has changed it' do
+      instance = bare_metal
+      instance.record_capabilities!(caps('memory_total_mb' => 4096))
+      instance.reload
+      expect(instance.config['memory_mb']).to eq(4096)
+
+      # Operator corrects the value and PATCHes the whole config back,
+      # provenance stamp included — exactly what the UI round-trip produces.
+      round_tripped = instance.config.merge('memory_mb' => 65_536)
+      instance.update!(config: round_tripped)
+
+      instance.record_capabilities!(caps('memory_total_mb' => 4096))
+      instance.reload
+      expect(instance.config['memory_mb']).to eq(65_536)
+
+      # ...and it stays corrected on every subsequent heartbeat.
+      instance.record_capabilities!(caps('memory_total_mb' => 8192))
+      expect(instance.reload.config['memory_mb']).to eq(65_536)
+    end
+
+    it 'leaves the untouched hints refreshable after one of them is corrected' do
+      instance = bare_metal
       instance.record_capabilities!(JSON.parse(agent_wire_payload))
       instance.reload
-      expect(instance.config).to eq(before)
+
+      instance.update!(config: instance.config.merge('memory_mb' => 65_536))
+      instance.record_capabilities!(caps('hardware_model' => 'PowerEdge R760'))
+      instance.reload
+
+      expect(instance.config['memory_mb']).to eq(65_536)
+      expect(instance.config['hardware_model']).to eq('PowerEdge R760')
     end
   end
 
@@ -201,6 +252,26 @@ RSpec.describe System::NodeInstance, 'agent hardware hint ingest', type: :model 
       expect(instance.config['hardware_model']).to eq('raspberry_pi_5')
       instance.update_columns(architecture: 'arm64')
       expect(instance.reload.suggest_network_profile).to eq('heavyweight')
+    end
+
+    # The fleet-visible consequence of producing a memory fact at all: before
+    # this, a bare-metal instance with no bound SKU had no memory fact and
+    # suggest_network_profile always took its "cannot prove headroom" branch.
+    # Pinned so the promotion is a declared behaviour, not a surprise.
+    it 'lets an amd64 bare-metal host classify heavyweight on first contact' do
+      instance = bare_metal
+      instance.update_columns(architecture: 'amd64')
+      expect(instance.suggest_network_profile).to eq('lightweight')
+
+      instance.record_capabilities!(caps('memory_total_mb' => 15_800))
+      expect(instance.reload.suggest_network_profile).to eq('heavyweight')
+    end
+
+    it 'still classifies lightweight when the detected memory is under the floor' do
+      instance = bare_metal
+      instance.update_columns(architecture: 'amd64')
+      instance.record_capabilities!(caps('memory_total_mb' => 2048))
+      expect(instance.reload.suggest_network_profile).to eq('lightweight')
     end
 
     it 'maps a Pi 4 the same way' do
