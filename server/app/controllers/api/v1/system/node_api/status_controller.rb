@@ -21,7 +21,12 @@ module Api
           # Report instance status update
           def report
             status = params[:status]
-            metrics = params[:metrics] || {}
+            # to_unsafe_h: this is agent-reported telemetry stored verbatim as a
+            # jsonb document, not attribute assignment — and it must be a plain
+            # Hash for #to_json below, since Parameters does not serialize to
+            # the object shape the column expects.
+            raw_metrics = params[:metrics]
+            metrics = raw_metrics.respond_to?(:to_unsafe_h) ? raw_metrics.to_unsafe_h : (raw_metrics || {})
 
             # Validate status
             unless ::System::NodeInstance::STATUSES.include?(status)
@@ -29,13 +34,28 @@ module Api
             end
 
             # Update instance status
-            current_instance.update!(
-              status: status,
-              config: current_instance.config.merge(
-                "last_report" => Time.current.iso8601,
-                "metrics" => metrics
-              )
-            )
+            current_instance.update!(status: status)
+
+            # Config is a SHARED document. It is written from several
+            # independent request cycles — the operator API, this endpoint, and
+            # the per-heartbeat telemetry writers (System::BootLkgStateWriter,
+            # System::ModuleVerifyStateWriter, Sdwan::AgentApplyStateWriter) —
+            # so a read-modify-write of the whole jsonb from here silently
+            # erases whatever another writer stored between the moment this
+            # request loaded the row and the moment it saved. All three of
+            # those writers already defend themselves with a jsonb UPDATE that
+            # never reads the rest of the document; BootLkgStateWriter's
+            # #merge_config_key! comment names THIS endpoint as a writer it is
+            # guarding against. It is the last one still clobbering.
+            #
+            # `||` is a shallow merge performed by Postgres against the CURRENT
+            # row, so only these two keys are touched and no concurrent
+            # telemetry write is lost. Both keys are replaced wholesale, which
+            # is the intended semantics for each.
+            ::System::NodeInstance.where(id: current_instance.id).update_all([
+              "config = COALESCE(config, '{}'::jsonb) || ?::jsonb",
+              { "last_report" => Time.current.iso8601, "metrics" => metrics }.to_json
+            ])
 
             # Check for pending operations
             pending = pending_tasks
