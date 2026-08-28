@@ -66,7 +66,16 @@ module System
       end
 
       DriftReport = Struct.new(:missing, :present, :skipped_sets, keyword_init: true) do
-        def drifted? = missing.any?
+        # A SKIPPED set is drift, not a neutral outcome. An install that enables
+        # this extension AFTER its first boot never seeds the agents (db:seed is
+        # first-boot only — the whole argument this class exists for), so every
+        # agent set skips and ~168 of 195 declared rows are absent. Counting
+        # only `missing` reported that install as CLEAN: the skipped set
+        # contributes no missing rows precisely because it was never examined.
+        #
+        # That is the flagship scenario the reconciler was built for, and it was
+        # the one it stayed silent about.
+        def drifted? = missing.any? || skipped_sets.any?
       end
 
       # One declared row that the database lacks. `to_s` is what the rake task
@@ -212,17 +221,35 @@ module System
         end
       end
 
-      # Keyed on SOURCE_KEY, which survives an operator renaming the agent;
-      # falls back to the seeded (name, agent_type) for a row predating the
-      # source_key backfill. Memoized — the same agent backs several sets.
+      # Resolve EXACTLY as the runtime does, or the rows land on an agent the
+      # gate never reads.
+      #
+      # `Ai::Agent.resolve_for` is override-aware: an account's own clone of a
+      # seeded agent WINS over the global row (`account_override_first`). Every
+      # gate site resolves that way — FleetAutonomyService.tick!, the CVE
+      # responder, and the tools. A bare `find_by(source_key:)` here has no
+      # account filter and no override precedence, so on any account holding an
+      # override it wrote rows against the GLOBAL agent id while the gate asked
+      # the OVERRIDE id: rows nothing reads, and a drift report that says
+      # "present" forever. That is the same defect class as reimplementing a
+      # resolution rule in ad-hoc SQL — the copy drifts from the original.
+      #
+      # source_key stays as a FALLBACK only, for an agent an operator renamed.
+      # It rescues less than it appears to: the runtime resolves by NAME, so a
+      # renamed agent has already killed its own tick ("agent not seeded") and
+      # these rows are staged for whenever the name is restored. Resolving the
+      # RUNTIME by source_key is the real fix and is not this class's to make.
+      #
+      # Memoized per (account, key) — the same agent backs several sets.
       def resolve_agent(agent_key)
         @agents ||= {}
         return @agents[agent_key] if @agents.key?(agent_key)
 
         identity = PolicyDeclarations::AGENT_IDENTITIES[agent_key]
         @agents[agent_key] =
-          ::Ai::Agent.find_by(source_key: agent_key) ||
-          (identity && ::Ai::Agent.find_by(name: identity[:name], agent_type: identity[:agent_type]))
+          (identity && ::Ai::Agent.resolve_for(@account.id, name: identity[:name],
+                                                            agent_type: identity[:agent_type])) ||
+          ::Ai::Agent.find_by(source_key: agent_key)
       end
 
       def existing_categories(set, agent)

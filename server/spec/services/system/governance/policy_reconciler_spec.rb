@@ -44,6 +44,22 @@ RSpec.describe System::Governance::PolicyReconciler do
     # Deactivate, don't delete, is the durable off switch: a row an operator
     # turned OFF must not be silently recreated on the next boot. Pinned
     # because the query's lack of an is_active filter is easy to "tidy up".
+    # A skipped set contributes no MISSING rows precisely because it was never
+    # examined, so counting only `missing` reported the extension-enabled-after-
+    # first-boot install — ~168 of 195 rows absent — as perfectly clean.
+    it "reports DRIFT when a set is skipped, even with nothing missing" do
+      # Reconcile FIRST so every agent-less set is satisfied. What remains is
+      # only the skipped agent sets — the state this example exists to catch.
+      # Without this the fixture still has missing rows and the assertion
+      # passes on `missing.any?` alone, i.e. it could not fail.
+      reconciler.reconcile!
+      report = reconciler.drift
+
+      expect(report.missing).to be_empty
+      expect(report.skipped_sets).not_to be_empty
+      expect(report).to be_drifted
+    end
+
     it "counts a DEACTIVATED row as present, not missing" do
       reconciler.reconcile!
       row = row_for("system.task.terminate")
@@ -151,9 +167,12 @@ RSpec.describe System::Governance::PolicyReconciler do
         expect(row.conditions).to eq("trust_tier_minimum" => "monitored")
       end
 
-      # source_key is the seed-managed identity; a rename must not strand a
-      # whole policy set.
-      it "resolves the agent by source_key even after an operator renames it" do
+      # source_key is a FALLBACK, and it rescues less than it looks like it
+      # does: the RUNTIME resolves agents by name (FleetAutonomyService.tick!),
+      # so a renamed agent has already killed its own tick and these rows are
+      # merely staged for whenever the name is restored. Pinned so the fallback
+      # keeps working, NOT as evidence that a rename is survivable.
+      it "still resolves a renamed agent through the source_key fallback" do
         fleet.update!(name: "Renamed By Operator")
 
         result = reconciler.reconcile!
@@ -189,6 +208,28 @@ RSpec.describe System::Governance::PolicyReconciler do
         result = reconciler.reconcile!
 
         expect(result.shadowed).to include("fleet-autonomy/system.cert_rotate")
+      end
+
+      # THE ROWS MUST LAND WHERE THE GATE LOOKS. Ai::Agent.resolve_for is
+      # override-aware — an account's own clone of a seeded agent beats the
+      # global row — and every gate site resolves that way. Resolving by bare
+      # source_key wrote against the GLOBAL id while the gate asked the
+      # OVERRIDE id: rows nothing reads, reported present forever.
+      it "prefers the account's OVERRIDE agent over the global one" do
+        # `fleet` (the enclosing let!) is the ACCOUNT's agent — the override.
+        # Build the global twin via update_columns: the factory cannot make an
+        # account-less agent (its creator needs one), and the name collides.
+        global = create(:ai_agent, account: account, name: "Global Fleet Autonomy",
+                                   agent_type: "monitor", source_key: "fleet-autonomy")
+        global.update_columns(account_id: nil, name: "Fleet Autonomy")
+        override = fleet
+
+        reconciler.reconcile!
+
+        row = Ai::InterventionPolicy.find_by(account: account, scope: "agent",
+                                             action_category: "system.cert_rotate")
+        expect(row.ai_agent_id).to eq(override.id)
+        expect(row.ai_agent_id).not_to eq(global.id)
       end
 
       it "still never overwrites a tuned agent verb" do

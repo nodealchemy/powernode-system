@@ -61,6 +61,32 @@ begin
       warn "[governance-reconcile]   account #{account_id} SKIPPED: #{sets.join(', ')}"
     end
 
+    # A skipped set is an UNRECONCILED set, and the usual cause is that the
+    # agents were never seeded — an install that enabled this extension after
+    # its first boot. That state is permanent until someone acts, and a journal
+    # line nobody alerts on is not a report. Emit the same way a failure does.
+    if skipped_by_account.any?
+      begin
+        account = Account.first
+        if account && defined?(::System::FleetEvent)
+          ::System::FleetEvent.create!(
+            account_id: account.id,
+            kind: "governance_reconcile_skipped",
+            severity: "medium",
+            source: "governance_policy_reconciler",
+            payload: {
+              skipped: skipped_by_account,
+              accounts_scanned: accounts,
+              detected_at: Time.current.utc.iso8601
+            }
+          )
+          warn "[governance-reconcile] emitted System::FleetEvent(kind=governance_reconcile_skipped, severity=medium)"
+        end
+      rescue StandardError => e
+        warn "[governance-reconcile] skip-event emission failed (non-fatal): #{e.class}: #{e.message}"
+      end
+    end
+
     # Creating an agent-scoped row where a global row already exists changes
     # what an agent caller resolves, without this run touching the global row
     # (agent out-ranks global on specificity at any priority). Not an error —
