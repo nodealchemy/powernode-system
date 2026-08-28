@@ -55,7 +55,9 @@ RSpec.describe "SDWAN operator-path intervention policies" do
       "sdwan.route_policy_delete"     => "require_approval",
       "sdwan.port_mapping_create"     => "notify_and_proceed",
       "sdwan.port_mapping_update"     => "notify_and_proceed",
-      "sdwan.port_mapping_delete"     => "notify_and_proceed",
+      # Tightened 2026-08-28: it was the only destructive verb of 14 that
+      # proceeded unattended, and deleting a mapping is an ingress outage.
+      "sdwan.port_mapping_delete"     => "require_approval",
       # IMP-97c7b4123d8f — the Phase O6 write family, which shipped with no
       # category at all. Deletes require approval like every sibling; the two
       # sharpest are ovn_deployment_delete (removes the account's whole OVN
