@@ -1,0 +1,55 @@
+#!/bin/sh
+# Run a Rails command against the LIVE backend with the service's own
+# environment. Read-only by default in intent; what it runs is up to you.
+#
+# WHY THIS EXISTS. The rails unit has no systemd EnvironmentFile — rails-start.sh
+# sources its secrets inline (`set -a; . $STATE_DIR/backend-default.conf`) and
+# then execs puma. So `sudo -u root bundle exec rails runner ...` on the node
+# dies at boot with:
+#
+#     ActiveRecord encryption primary_key not configured (RuntimeError)
+#
+# On 2026-08-28 that dead end is what pushed an operator into hand-writing a SQL
+# approximation of a governance drift check. The query matched a scope-"agent"
+# row against an "action_type" declaration, reported a 43-row set as present
+# while it was entirely absent, and a production reconcile then created 65 rows
+# that had been announced as zero. The tool existed and could not be run; the
+# substitute was wrong in a way nothing checked.
+#
+# Usage:
+#   powernode-runner /usr/local/bin/governance-drift.rb
+#   powernode-runner -e 'puts Account.count'
+#   powernode-runner rake system:governance:drift     # once rake registration works
+#
+# STATE_DIR selection mirrors rails-start.sh exactly — prefer /persist when it
+# is a mountpoint, else the historical location. Keep the two in step.
+set -eu
+
+if mountpoint -q /persist 2>/dev/null; then
+  STATE_DIR=/persist/powernode-rails
+else
+  STATE_DIR=/var/lib/powernode-rails
+fi
+
+SECRETS_FILE="$STATE_DIR/backend-default.conf"
+if [ ! -r "$SECRETS_FILE" ]; then
+  echo "powernode-runner: cannot read $SECRETS_FILE (run as root)" >&2
+  exit 1
+fi
+
+# Same load as rails-start.sh. Never echo this file: it holds SECRET_KEY_BASE,
+# the ActiveRecord encryption keys and the credential encryption key.
+set -a
+# shellcheck disable=SC1090
+. "$SECRETS_FILE"
+set +a
+
+: "${RAILS_ENV:=production}"
+export RAILS_ENV
+
+cd /opt/powernode/server || exit 1
+
+case "${1:-}" in
+  rake) shift; exec /usr/local/bin/bundle exec rake "$@" ;;
+  *)    exec /usr/local/bin/bundle exec rails runner "$@" ;;
+esac
