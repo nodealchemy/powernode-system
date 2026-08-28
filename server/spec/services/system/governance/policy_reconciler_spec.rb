@@ -103,4 +103,47 @@ RSpec.describe System::Governance::PolicyReconciler do
       ).to eq(0)
     end
   end
+
+  # Pins the figures PolicyReconciler's header quotes. This exists as an
+  # assertion rather than prose because the claim it replaced — "it cannot
+  # widen autonomy that was previously closed" — was itself a comment, and a
+  # comment cannot fail when the declarations move out from under it.
+  #
+  # If one of these fails, the declared verb mix changed: update the header's
+  # numbers in the same commit.
+  describe "the declared verb mix (pins the reconciler's header)" do
+    # A `let`, not a constant: a constant assigned inside a describe block
+    # lands on Object, where a same-named one in another spec file silently
+    # clobbers it.
+    let(:proceeds_unattended) { %w[auto_approve notify_and_proceed silent] }
+
+    # The load-bearing premise. Everything below is only a widening BECAUSE
+    # absence resolves to require_approval — asserted against the service
+    # rather than restated, so a change to the default breaks this first.
+    it "resolves an undeclared category to require_approval" do
+      resolved = Ai::InterventionPolicyService
+                 .new(account: account)
+                 .resolve(action_category: "system.task.never_declared_anywhere")
+
+      expect(resolved[:policy]).to eq("require_approval")
+      expect(resolved[:record]).to be_nil
+    end
+
+    it "declares 27 rows in an 11/7/9 split" do
+      expect(declared.size).to eq(27)
+      expect(declared.values.tally).to eq(
+        "auto_approve" => 11,
+        "notify_and_proceed" => 7,
+        "require_approval" => 9
+      )
+    end
+
+    it "widens 18 of them relative to the absence they replace" do
+      widening, no_op = declared.partition { |_, verb| proceeds_unattended.include?(verb) }
+
+      expect(widening.size).to eq(18)
+      expect(no_op.size).to eq(9)
+      expect(no_op.map(&:last).uniq).to eq(%w[require_approval])
+    end
+  end
 end
