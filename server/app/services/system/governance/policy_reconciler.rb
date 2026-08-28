@@ -37,10 +37,28 @@ module System
     # is operator intent until an operator says otherwise, and this class has no
     # way to distinguish "operator tuned it" from "an older seed wrote it".
     #
-    # Safe because the defaults are conservative: Ai::InterventionPolicyService
-    # returns require_approval when it finds nothing, so a row this class
-    # creates can only ever be equal to or stricter than the absence it
-    # replaces — it cannot widen autonomy that was previously closed.
+    # WHAT RECONCILING COSTS: IT CAN WIDEN AUTONOMY -----------------------
+    # Ai::InterventionPolicyService#default_policy returns require_approval
+    # when it finds no row, so absence is the STRICTEST resolution short of
+    # "block". Creating a declared row therefore does not merely fill a hole —
+    # for any declared verb looser than require_approval it REPLACES a parked
+    # write with one that proceeds.
+    #
+    # As declared today that is most of the set: of the 27 rows in
+    # PolicyDeclarations::MANUAL_OPERATION_POLICIES, 11 are auto_approve and 7
+    # notify_and_proceed — 18 that proceed without an approval where absence
+    # would have parked. Only the 9 require_approval rows are no-ops on
+    # resolution.
+    #
+    # This is defensible, and is the intended behaviour: it converges an
+    # established install onto what its own first boot would have written, and
+    # the declared verbs are the operator defaults. But it is a WIDENING, so
+    # reconciling an install for the first time is an operator-visible change
+    # in what proceeds unattended, not a silent repair. Capture the before
+    # state and state the count.
+    #
+    # What it still cannot do is override intent: absence-only means an
+    # operator's tuned row is never touched, and nothing here deletes.
     class PolicyReconciler
       Result = Struct.new(:created, :already_present, :created_categories, keyword_init: true) do
         def changed? = created.positive?
