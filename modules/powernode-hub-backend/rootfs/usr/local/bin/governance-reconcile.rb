@@ -25,6 +25,8 @@ begin
     created_total = 0
     present_total = 0
     created_by_account = {}
+    skipped_by_account = {}
+    shadowed_by_account = {}
     failed = []
 
     Account.find_each do |account|
@@ -34,6 +36,8 @@ begin
         created_total += result.created
         present_total += result.already_present
         created_by_account[account.id] = result.created_categories if result.changed?
+        skipped_by_account[account.id] = result.skipped_sets if result.skipped_sets.any?
+        shadowed_by_account[account.id] = result.shadowed if result.shadowed.any?
       rescue StandardError => e
         # One bad account must not stop the rest.
         failed << { account_id: account.id, error: "#{e.class}: #{e.message}" }
@@ -43,10 +47,26 @@ begin
 
     # ALWAYS printed, including the created=0 steady state.
     warn "[governance-reconcile] accounts=#{accounts} created=#{created_total} " \
-         "already_present=#{present_total} failed=#{failed.size}"
+         "already_present=#{present_total} skipped_sets=#{skipped_by_account.values.sum(&:size)} " \
+         "shadowed=#{shadowed_by_account.values.sum(&:size)} failed=#{failed.size}"
 
     created_by_account.each do |account_id, categories|
       warn "[governance-reconcile]   account #{account_id} created: #{categories.join(', ')}"
+    end
+
+    # A skipped set is a whole policy group NOT reconciled — most likely its
+    # agent row is absent. Named per set, because a set that skips forever is
+    # indistinguishable from one that is in sync unless it says so.
+    skipped_by_account.each do |account_id, sets|
+      warn "[governance-reconcile]   account #{account_id} SKIPPED: #{sets.join(', ')}"
+    end
+
+    # Creating an agent-scoped row where a global row already exists changes
+    # what an agent caller resolves, without this run touching the global row
+    # (agent out-ranks global on specificity at any priority). Not an error —
+    # but it is the one mutation here that nobody can see from the row we wrote.
+    shadowed_by_account.each do |account_id, categories|
+      warn "[governance-reconcile]   account #{account_id} now shadowing a global row: #{categories.join(', ')}"
     end
 
     if failed.any?

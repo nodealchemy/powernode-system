@@ -60,12 +60,22 @@ module System
     # What it still cannot do is override intent: absence-only means an
     # operator's tuned row is never touched, and nothing here deletes.
     class PolicyReconciler
-      Result = Struct.new(:created, :already_present, :created_categories, keyword_init: true) do
+      Result = Struct.new(:created, :already_present, :created_categories,
+                          :skipped_sets, :shadowed, keyword_init: true) do
         def changed? = created.positive?
       end
 
-      DriftReport = Struct.new(:missing, :present, keyword_init: true) do
+      DriftReport = Struct.new(:missing, :present, :skipped_sets, keyword_init: true) do
         def drifted? = missing.any?
+      end
+
+      # One declared row that the database lacks. `to_s` is what the rake task
+      # and the boot summary print, so it names the SET as well as the category
+      # — the same category is declared by more than one set (instance-pool
+      # declares six at both the operator and agent shapes) and "which one is
+      # missing" is the whole question.
+      MissingRow = Struct.new(:set_key, :action_category, :policy, keyword_init: true) do
+        def to_s = "#{set_key}/#{action_category}"
       end
 
       def initialize(account:, logger: Rails.logger)
@@ -76,50 +86,161 @@ module System
       # Creates every declared row the account is missing. Returns a Result.
       # Idempotent: a second call on an unchanged database creates nothing.
       def reconcile!
-        missing = drift.missing
-        return Result.new(created: 0, already_present: declared.size, created_categories: []) if missing.empty?
-
         created = []
-        missing.each do |action_category|
-          ::Ai::InterventionPolicy.create!(
-            PolicyDeclarations::MANUAL_OPERATION_SCOPE.merge(
-              PolicyDeclarations::MANUAL_OPERATION_ATTRIBUTES
-            ).merge(
+        shadowed = []
+        present = 0
+        skipped = []
+
+        each_set do |set, agent, skip_reason|
+          if skip_reason
+            skipped << "#{set[:key]}(#{skip_reason})"
+            next
+          end
+
+          existing = existing_categories(set, agent)
+          set[:policies].each do |action_category, verb|
+            if existing.include?(action_category)
+              present += 1
+              next
+            end
+
+            ::Ai::InterventionPolicy.create!(
               account: @account,
               action_category: action_category,
-              policy: declared.fetch(action_category)
+              scope: set[:scope],
+              ai_agent_id: agent&.id,
+              user_id: nil,
+              policy: verb,
+              priority: set[:priority],
+              is_active: true,
+              conditions: conditions_for(set, action_category),
+              preferred_channels: %w[notification]
             )
-          )
-          created << action_category
+            created << "#{set[:key]}/#{action_category}"
+
+            # An agent-scoped row OUT-RANKS a global one at any priority
+            # (Ai::InterventionPolicy#specificity_key is lexicographic), so
+            # creating this row can change what an agent caller resolves even
+            # though we touched no existing row. Absence-only cannot tell
+            # "never seeded" from "operator deleted the agent row to fall back
+            # to their tuned global floor", and deleting a policy IS an
+            # expressible operator action — so surface it rather than let the
+            # change happen unremarked.
+            shadowed << "#{set[:key]}/#{action_category}" if set[:scope] == "agent" && global_row?(action_category)
+          end
         end
 
-        @logger.info(
-          "[GovernanceReconciler] created #{created.size} missing policy row(s) " \
-          "for account #{@account.id}: #{created.join(', ')}"
-        )
+        unless created.empty?
+          @logger.info(
+            "[GovernanceReconciler] created #{created.size} missing policy row(s) " \
+            "for account #{@account.id}: #{created.join(', ')}"
+          )
+        end
+
         Result.new(
           created: created.size,
-          already_present: declared.size - created.size,
-          created_categories: created
+          already_present: present,
+          created_categories: created,
+          skipped_sets: skipped,
+          shadowed: shadowed
         )
       end
 
       # Read-only: what the code declares that the database lacks. Safe to call
       # from a health check or a CI assertion — mutates nothing.
+      #
+      # NOTE it does NOT filter on is_active. A deactivated row is PRESENT: an
+      # operator turning a control off must not have it silently recreated on
+      # the next boot, so deactivate — not delete — is the durable off switch.
+      # (On the FleetAutonomyService pre-gate, whose permitted_actions DOES
+      # filter is_active, "off" means the lane hard-blocks. Off is off there,
+      # not a fall-through to some looser row.)
       def drift
-        existing = ::Ai::InterventionPolicy
-                   .where(PolicyDeclarations::MANUAL_OPERATION_SCOPE.merge(account: @account))
-                   .where(action_category: declared.keys)
-                   .pluck(:action_category)
-                   .to_set
+        missing = []
+        present = []
+        skipped = []
 
-        missing = declared.keys.reject { |c| existing.include?(c) }
-        DriftReport.new(missing: missing, present: existing.to_a.sort)
+        each_set do |set, agent, skip_reason|
+          if skip_reason
+            skipped << "#{set[:key]}(#{skip_reason})"
+            next
+          end
+
+          existing = existing_categories(set, agent)
+          set[:policies].each do |action_category, verb|
+            if existing.include?(action_category)
+              present << "#{set[:key]}/#{action_category}"
+            else
+              missing << MissingRow.new(set_key: set[:key], action_category: action_category, policy: verb)
+            end
+          end
+        end
+
+        DriftReport.new(missing: missing, present: present.sort, skipped_sets: skipped)
       end
 
       private
 
-      def declared = PolicyDeclarations::MANUAL_OPERATION_POLICIES
+      # The manual operator set, expressed in the same record shape as the
+      # declared agent sets so there is ONE iteration and no special case.
+      def manual_set
+        {
+          key: "manual-operations",
+          agent_key: nil,
+          scope: PolicyDeclarations::MANUAL_OPERATION_SCOPE[:scope],
+          priority: PolicyDeclarations::MANUAL_OPERATION_ATTRIBUTES[:priority],
+          conditions: PolicyDeclarations::MANUAL_OPERATION_ATTRIBUTES[:conditions],
+          policies: PolicyDeclarations::MANUAL_OPERATION_POLICIES
+        }
+      end
+
+      def declared_sets = [ manual_set ] + PolicyDeclarations::POLICY_SETS
+
+      # Yields (set, agent, skip_reason). skip_reason is non-nil when the set
+      # cannot be reconciled — today only "agent absent". A set is SKIPPED, never
+      # written at a different shape: declaring "whatever shape the database
+      # happens to have" would make drift unfalsifiable.
+      def each_set
+        declared_sets.each do |set|
+          if set[:agent_key].nil?
+            yield set, nil, nil
+            next
+          end
+
+          agent = resolve_agent(set[:agent_key])
+          yield set, agent, (agent ? nil : "agent absent")
+        end
+      end
+
+      # Keyed on SOURCE_KEY, which survives an operator renaming the agent;
+      # falls back to the seeded (name, agent_type) for a row predating the
+      # source_key backfill. Memoized — the same agent backs several sets.
+      def resolve_agent(agent_key)
+        @agents ||= {}
+        return @agents[agent_key] if @agents.key?(agent_key)
+
+        identity = PolicyDeclarations::AGENT_IDENTITIES[agent_key]
+        @agents[agent_key] =
+          ::Ai::Agent.find_by(source_key: agent_key) ||
+          (identity && ::Ai::Agent.find_by(name: identity[:name], agent_type: identity[:agent_type]))
+      end
+
+      def existing_categories(set, agent)
+        ::Ai::InterventionPolicy
+          .where(account: @account, scope: set[:scope], ai_agent_id: agent&.id, user_id: nil)
+          .where(action_category: set[:policies].keys)
+          .pluck(:action_category)
+          .to_set
+      end
+
+      def global_row?(action_category)
+        ::Ai::InterventionPolicy
+          .exists?(account: @account, scope: "global", ai_agent_id: nil, action_category: action_category)
+      end
+
+      def conditions_for(set, action_category)
+        (set[:condition_overrides] || {}).fetch(action_category, set[:conditions])
+      end
     end
   end
 end

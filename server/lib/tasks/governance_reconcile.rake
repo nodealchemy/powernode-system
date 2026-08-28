@@ -21,6 +21,12 @@ namespace :system do
       accounts.find_each do |account|
         result = ::System::Governance::PolicyReconciler.new(account: account).reconcile!
         total += result.created
+        if result.skipped_sets.any?
+          puts "  [#{account.id}] skipped #{result.skipped_sets.size}: #{result.skipped_sets.join(', ')}"
+        end
+        if result.shadowed.any?
+          puts "  [#{account.id}] now shadowing a global row: #{result.shadowed.join(', ')}"
+        end
         next unless result.changed?
 
         puts "  [#{account.id}] created #{result.created}: #{result.created_categories.join(', ')}"
@@ -35,6 +41,13 @@ namespace :system do
 
       ::Account.find_each do |account|
         report = ::System::Governance::PolicyReconciler.new(account: account).drift
+
+        # Reported INDEPENDENTLY of drift: a set whose agent is absent
+        # contributes no missing rows, so gating this on `drifted?` would make a
+        # permanently-skipped set look exactly like a set in sync.
+        if report.skipped_sets.any?
+          warn "  [#{account.id}] SKIPPED #{report.skipped_sets.size}: #{report.skipped_sets.join(', ')}"
+        end
         next unless report.drifted?
 
         drifted = true

@@ -13,15 +13,43 @@ RSpec.describe System::Governance::PolicyReconciler do
     Ai::InterventionPolicy.find_by(scope.merge(account: account, action_category: category))
   end
 
+  # Declared rows are keyed by SET as well as category — the same category is
+  # declared by more than one set — so scope the manual-set assertions to it.
+  def missing_in(report, set_key)
+    report.missing.select { |m| m.set_key == set_key }.map(&:action_category)
+  end
+
+  def created_in(result, set_key)
+    result.created_categories.select { |c| c.start_with?("#{set_key}/") }
+  end
+
   describe "#drift" do
-    it "reports every declared category as missing on an install that never seeded them" do
+    it "reports every declared manual category as missing on an install that never seeded them" do
       report = reconciler.drift
       expect(report).to be_drifted
-      expect(report.missing).to match_array(declared.keys)
+      expect(missing_in(report, "manual-operations")).to match_array(declared.keys)
     end
 
     it "mutates nothing" do
       expect { reconciler.drift }.not_to change(Ai::InterventionPolicy, :count)
+    end
+
+    it "SKIPS an agent set whose agent row is absent, naming the set" do
+      report = reconciler.drift
+
+      expect(report.skipped_sets).to include(a_string_matching(/fleet-autonomy\(agent absent\)/))
+      expect(missing_in(report, "fleet-autonomy")).to be_empty
+    end
+
+    # Deactivate, don't delete, is the durable off switch: a row an operator
+    # turned OFF must not be silently recreated on the next boot. Pinned
+    # because the query's lack of an is_active filter is easy to "tidy up".
+    it "counts a DEACTIVATED row as present, not missing" do
+      reconciler.reconcile!
+      row = row_for("system.task.terminate")
+      row.update!(is_active: false)
+
+      expect(missing_in(reconciler.drift, "manual-operations")).not_to include("system.task.terminate")
     end
   end
 
@@ -29,7 +57,7 @@ RSpec.describe System::Governance::PolicyReconciler do
     it "creates the declared rows that are absent, with the declared verbs" do
       result = reconciler.reconcile!
 
-      expect(result.created).to eq(declared.size)
+      expect(created_in(result, "manual-operations").size).to eq(declared.size)
       expect(row_for("system.task.terminate").policy).to eq("require_approval")
       expect(row_for("system.task.start").policy).to eq("auto_approve")
     end
@@ -89,8 +117,8 @@ RSpec.describe System::Governance::PolicyReconciler do
 
       result = reconciler.reconcile!
 
-      expect(result.created).to eq(declared.size - 1)
-      expect(result.created_categories).not_to include("system.task.start")
+      expect(created_in(result, "manual-operations").size).to eq(declared.size - 1)
+      expect(result.created_categories).not_to include("manual-operations/system.task.start")
       expect(row_for("system.task.start").policy).to eq("block")
     end
 
@@ -101,6 +129,77 @@ RSpec.describe System::Governance::PolicyReconciler do
       expect(
         Ai::InterventionPolicy.where(scope.merge(account: other)).count
       ).to eq(0)
+    end
+
+    context "with the declared agents present" do
+      let!(:fleet) do
+        create(:ai_agent, account: account, name: "Fleet Autonomy",
+                          agent_type: "monitor", source_key: "fleet-autonomy")
+      end
+
+      def agent_row(category)
+        Ai::InterventionPolicy.find_by(account: account, scope: "agent",
+                                       ai_agent_id: fleet.id, action_category: category)
+      end
+
+      it "creates the agent-scoped set at its declared shape" do
+        reconciler.reconcile!
+        row = agent_row("system.cert_rotate")
+
+        expect(row.policy).to eq("require_approval")
+        expect(row.priority).to eq(10)
+        expect(row.conditions).to eq("trust_tier_minimum" => "monitored")
+      end
+
+      # source_key is the seed-managed identity; a rename must not strand a
+      # whole policy set.
+      it "resolves the agent by source_key even after an operator renames it" do
+        fleet.update!(name: "Renamed By Operator")
+
+        result = reconciler.reconcile!
+
+        # Only the fleet agent exists here, so the other five sets skip by
+        # design; what matters is that THIS set did not skip on the rename.
+        expect(result.skipped_sets).not_to include(a_string_matching(/fleet-autonomy/))
+        expect(agent_row("system.cert_rotate")).to be_present
+      end
+
+      # A set-level condition cannot express this one; without a per-category
+      # override slot it flattens to the default and the window disappears.
+      it "applies the per-category conditions override" do
+        reconciler.reconcile!
+        row = agent_row("project.scale_horizontal")
+
+        expect(row.conditions).to eq(
+          "trust_tier_minimum" => "monitored",
+          "auto_apply_window" => "watch_policies.auto_scale_max_replicas"
+        )
+      end
+
+      # Creating an agent row where a global one exists changes what an agent
+      # caller resolves (agent out-ranks global at any priority) without this
+      # run touching the global row. Report it; do not silently do it.
+      it "reports an agent row that now shadows an existing global row" do
+        Ai::InterventionPolicy.create!(
+          account: account, scope: "global", ai_agent_id: nil, user_id: nil,
+          action_category: "system.cert_rotate", policy: "block", priority: 5,
+          is_active: true, conditions: {}, preferred_channels: %w[notification]
+        )
+
+        result = reconciler.reconcile!
+
+        expect(result.shadowed).to include("fleet-autonomy/system.cert_rotate")
+      end
+
+      it "still never overwrites a tuned agent verb" do
+        reconciler.reconcile!
+        row = agent_row("system.cert_rotate")
+        row.update!(policy: "block")
+
+        reconciler.reconcile!
+
+        expect(row.reload.policy).to eq("block")
+      end
     end
   end
 
