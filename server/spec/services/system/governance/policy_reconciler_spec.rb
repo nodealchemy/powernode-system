@@ -210,6 +210,30 @@ RSpec.describe System::Governance::PolicyReconciler do
   #
   # If one of these fails, the declared verb mix changed: update the header's
   # numbers in the same commit.
+  # sdwan.port_mapping_delete was the ONE destructive verb of 14 declared at
+  # notify_and_proceed, so it proceeded unattended while every sibling delete
+  # parked for approval. That is the kind of single-entry drift a hand-kept
+  # table loses, so state the RULE rather than the one value.
+  describe "destructive SDWAN verbs" do
+    let(:sdwan) { System::Governance::PolicyDeclarations::SDWAN_MANAGER_POLICIES }
+
+    # Tearing something down is never a proceed-unattended action, whatever the
+    # resource. `revoke` counts: it withdraws access someone is relying on.
+    it "require approval for every delete and revoke" do
+      destructive = sdwan.select { |cat, _| cat.match?(/_(delete|revoke)\z/) }
+      proceeding = destructive.reject { |_, verb| verb == "require_approval" }
+
+      expect(proceeding).to be_empty,
+                            "#{proceeding.size} destructive SDWAN verb(s) proceed without approval: " \
+                            "#{proceeding.map { |c, v| "#{c}=#{v}" }.join(', ')}"
+    end
+
+    # Guards the above from passing vacuously on a renamed/emptied set.
+    it "has destructive verbs to check" do
+      expect(sdwan.keys.count { |c| c.match?(/_(delete|revoke)\z/) }).to be >= 14
+    end
+  end
+
   describe "the declared verb mix (pins the reconciler's header)" do
     # A `let`, not a constant: a constant assigned inside a describe block
     # lands on Object, where a same-named one in another spec file silently

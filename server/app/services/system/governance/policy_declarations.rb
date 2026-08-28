@@ -422,10 +422,16 @@ module System
         "sdwan.route_policy_update"         => "notify_and_proceed",
         "sdwan.route_policy_delete"         => "require_approval",
 
-        # Port mappings — DNAT, generally low-risk
+        # Port mappings — DNAT. Creating and updating are low-risk; DELETING is
+        # not. It tears down the ingress path of a published service, which is
+        # no less destructive than the network/peer/VIP deletes right next to
+        # it. It was the ONLY destructive verb in this set that proceeded
+        # unattended — 1 of 14 — which reads as an oversight rather than a
+        # decision. Pinned by the "every destructive verb requires approval"
+        # spec so the set cannot drift back.
         "sdwan.port_mapping_create"         => "notify_and_proceed",
         "sdwan.port_mapping_update"         => "notify_and_proceed",
-        "sdwan.port_mapping_delete"         => "notify_and_proceed",
+        "sdwan.port_mapping_delete"         => "require_approval",
 
         # Access grants — granting FRESH access notifies, revoking requires approval.
         # Deleting is strictly more destructive than revoking: dependent: :destroy
