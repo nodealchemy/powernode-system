@@ -608,57 +608,26 @@ module PowernodeSystem
     initializer "powernode_system.autonomy_categories", after: :load_config_initializers do
       config.to_prepare do
         next unless defined?(::Ai::InterventionPolicy)
+        next unless defined?(::System::Governance::PolicyDeclarations)
 
-        categories = []
+        # DERIVED from System::Governance::PolicyDeclarations — the same
+        # constants the seeds and PolicyReconciler read. Until now this was a
+        # THIRD hand-maintained copy of the same vocabulary: a category could be
+        # seeded and reconciled but never registered, which is invisible until
+        # an operator tries to save it in the Autonomy modal and the bulk PATCH
+        # refuses. Deriving it means a declared category cannot be unregistered.
+        #
+        # The declaration is the authority for the NAME. It is deliberately NOT
+        # the authority for whether a name should exist at all — the prose below
+        # records names that must stay absent, and the registration spec pins
+        # both directions.
+        declarations = ::System::Governance::PolicyDeclarations
+        categories = ([ declarations::MANUAL_OPERATION_POLICIES ] +
+                      declarations::POLICY_SETS.map { |set| set[:policies] })
+                     .flat_map(&:keys)
 
         # Fleet Autonomy domain (existing)
-        categories.concat(%w[
-          system.cert_rotate system.cert_revoke system.acme_cert_rotate
-          system.module_assign system.module_promote_to_live
-          system.instance_reboot system.instance_reprovision system.instance_terminate
-          system.fleet_rolling_upgrade system.region_expansion system.capacity_resize
-          system.observation
-          system.capability_gap_review
-          system.gitops_drift_remediate system.storage_assignment_reconcile
-          system.template_closure_apply
-          system.node_boot_image_drift system.package_repository.sync
-          system.package_module.create system.package_module.refresh
-          system.architecture.propose system.architecture.create
-          system.architecture.update system.architecture.delete
-          system.module_verify_investigate
-          system.task_backlog_investigate
-        ])
 
-        # SDWAN Manager domain
-        categories.concat(%w[
-          system.sdwan_peer_remediate system.sdwan_key_rotate system.sdwan_failover
-          system.sdwan_user_device_revoke system.sdwan_bgp_session_remediate
-          system.sdwan_vip_failover
-          system.sdwan_credential_refresh
-          sdwan.network_create sdwan.network_update sdwan.network_delete
-          sdwan.peer_create sdwan.peer_update sdwan.peer_delete
-          sdwan.firewall_rule_create sdwan.firewall_rule_update sdwan.firewall_rule_delete
-          sdwan.virtual_ip_create sdwan.virtual_ip_update sdwan.virtual_ip_delete
-          sdwan.route_policy_create sdwan.route_policy_update sdwan.route_policy_delete
-          sdwan.port_mapping_create sdwan.port_mapping_update sdwan.port_mapping_delete
-          sdwan.access_grant_create sdwan.access_grant_reactivate
-          sdwan.access_grant_revoke sdwan.access_grant_delete
-          sdwan.user_device_create
-          sdwan.federation_peer_propose sdwan.federation_peer_accept sdwan.federation_peer_revoke
-          sdwan.federation_peer_data_residency
-          sdwan.host_bridge_create sdwan.host_bridge_update sdwan.host_bridge_delete
-          sdwan.ovn_deployment_create sdwan.ovn_deployment_delete
-          sdwan.ovn_logical_switch_create sdwan.ovn_logical_switch_update sdwan.ovn_logical_switch_delete
-          sdwan.ovn_logical_switch_port_create sdwan.ovn_logical_switch_port_update
-          sdwan.ovn_logical_switch_port_delete
-          sdwan.ovn_acl_create sdwan.ovn_acl_delete
-          sdwan.ipfix_collector_create sdwan.ipfix_collector_update sdwan.ipfix_collector_delete
-          system.sdwan_service_health_investigate
-          system.sdwan_ovn_deployment_investigate
-          system.sdwan_bgp_observation_investigate
-          system.sdwan_apply_investigate
-          system.sdwan_user_device_config_investigate
-        ])
 
         # Phase 3 (Federation & Multi-Site) — SDWAN-first federation actions.
         # `system.federation_peer_remediate` is the autonomy action the
@@ -672,8 +641,13 @@ module PowernodeSystem
         # to the System Topology Designer assistant, not autonomy reconcilers);
         # they're registered so any operator-authored intervention policy for
         # them validates uniformly.
+        #
+        # Only the three COMPOSE categories are listed here now:
+        # system.federation_peer_remediate is declared on Fleet Autonomy and so
+        # arrives through the derivation above. These three are not declared as
+        # policy rows by any seed — they are approval-gated composer skills — so
+        # they have no declaration to derive from and must be named explicitly.
         categories.concat(%w[
-          system.federation_peer_remediate
           system.sdwan_federation_compose
           system.multi_tenant_isolation
           system.service_discovery_compose
@@ -683,25 +657,10 @@ module PowernodeSystem
         # by db/seeds/system_gitops_reconciler_agent.rb. (The AUTONOMOUS
         # system.gitops_drift_remediate lives on Fleet Autonomy above, because
         # GitopsDriftSensor runs in FleetAutonomyService::SENSORS.)
-        categories.concat(%w[
-          system.gitops_apply_proposal system.gitops_register_repository
-          system.gitops_sync_repository
-        ])
 
         # CVE Responder domain
-        categories.concat(%w[
-          system.cve_remediate system.cve_sbom_ingest
-          system.cve_exposure_scan system.cve_auto_remediate
-          system.module_critical_upgrade_ready
-        ])
 
         # Disk Image Manager domain
-        categories.concat(%w[
-          system.disk_image_publication_promote system.disk_image_publication_rollback
-          system.disk_image_retention_update system.disk_image_webhook_trigger
-          system.disk_image_webhook_revoke system.disk_image_webhook_rotate_secret
-          system.disk_image_publication_investigate
-        ])
 
         # Runtime Manager domain.
         #
@@ -772,28 +731,13 @@ module PowernodeSystem
         # spec/lib/powernode_system/autonomy_categories_registration_spec.rb and,
         # through the endpoint itself, by
         # spec/controllers/api/v1/system/autonomy_controller_spec.rb.
-        categories.concat(%w[
-          system.runtime_docker_provision system.runtime_docker_decommission
-          system.runtime_k8s_cluster_bootstrap system.runtime_k8s_cluster_decommission
-          system.runtime_k8s_node_join system.runtime_k8s_node_drain
-          system.runtime_k8s_runtime_upgrade
-        ])
 
         # Instance pools (slice 7)
-        categories.concat(%w[
-          system.instance_pool_create system.instance_pool_update system.instance_pool_delete
-          system.instance_pool_replenish system.instance_pool_drain system.instance_pool_acquire
-        ])
 
-        # System::Task commands (manual operator scope)
-        %w[start stop restart terminate reboot provision deprovision
-           associate_public_ip disassociate_public_ip
-           create_volume delete_volume attach_volume detach_volume
-           create_snapshot delete_snapshot restore_snapshot
-           create_network delete_network sync sync_modules apply_config
-           build_module commit_module ssh_command backup restore custom].each do |cmd|
-          categories << "system.task.#{cmd}"
-        end
+        # System::Task commands (manual operator scope) arrive through
+        # MANUAL_OPERATION_POLICIES in the derivation above — that constant is
+        # what the reconciler and the seed both read, so a task command added
+        # there is registered here without a second edit.
 
         ::Ai::InterventionPolicy.register_categories!(categories)
       rescue StandardError => e

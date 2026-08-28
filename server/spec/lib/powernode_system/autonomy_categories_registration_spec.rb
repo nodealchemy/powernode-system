@@ -93,6 +93,22 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
                        "to them: #{missing.join(', ')}"
   end
 
+  # Since the engine now DERIVES its registration list from these same
+  # constants, this holds by construction — which is the point: it pins the
+  # construction. It fails if the derivation is removed, if the to_prepare block
+  # skips (its `defined?` guards), or if a future set is added to POLICY_SETS by
+  # a path the engine does not read. Before the derivation this was a genuine
+  # drift class: a category could be seeded and reconciled but never registered,
+  # invisible until an operator's Autonomy-modal save was refused.
+  it "registers every DECLARED policy category" do
+    missing = declared_categories.uniq.reject { |cat| Ai::InterventionPolicy.category_registered?(cat) }
+
+    expect(missing).to be_empty,
+                       "#{missing.size} DECLARED category(ies) are absent from the registry, so the " \
+                       "reconciler creates their policy rows but PATCH /api/v1/system/autonomy rejects " \
+                       "every operator edit to them: #{missing.join(', ')}"
+  end
+
   it "registers every action_category DecisionEngine::SIGNAL_BINDINGS can gate" do
     missing = bound_categories.reject { |cat| Ai::InterventionPolicy.category_registered?(cat) }
 
