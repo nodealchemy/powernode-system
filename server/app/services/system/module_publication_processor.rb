@@ -329,6 +329,47 @@ module System
       node_module.auto_promote != false
     end
 
+    # BATCH-ATOMIC PROMOTION. Returns the in-flight multi-module batch this
+    # module belongs to, or nil.
+    #
+    # Publishing auto-promotes per module the moment each build finishes, and
+    # build durations inside one batch differ by an order of magnitude
+    # (measured 2026-08-28: extension ~2 min, hub-backend ~20 min). A batch
+    # spanning core and extension therefore has a GUARANTEED skew window — the
+    # window in which ops-hub ran the new extension against the old core, could
+    # not boot, and crash-looped for ~25 minutes. Holding each member's
+    # promotion until the whole batch lands is the one change that closes it.
+    #
+    # INFERRED server-side rather than carried on the publish request. The
+    # correlation already exists — a member task holds options["batch_id"] and
+    # the batch holds module_slugs — and inference works with the builders
+    # ALREADY ON THE FLEET. A new wire field would need the very deploy this
+    # exists to make safe.
+    #
+    # Single-module batches and publishes outside any batch are deliberately
+    # untouched: there is no sibling to skew against, and the common case
+    # should not change.
+    #
+    # Class-level for the same reason as auto_promote? — both publish paths
+    # must apply the identical policy, and a policy defined twice drifts.
+    def self.deferring_batch_for(node_module)
+      return nil unless node_module.respond_to?(:account_id)
+      return nil unless defined?(::System::ModuleBuildBatch)
+
+      ::System::ModuleBuildBatch
+        .where(account_id: node_module.account_id)
+        .where(status: %w[planning dispatched awaiting_signature publishing])
+        .where("planned_count > 1")
+        .where("module_slugs @> ?", [ node_module.name ].to_json)
+        .order(created_at: :desc)
+        .first
+    rescue StandardError => e
+      # Never let the holdback lookup break a publish: failing OPEN here means
+      # today's behaviour (promote), which is the pre-existing state.
+      Rails.logger.warn("[ModulePublicationProcessor] deferring_batch_for failed (non-fatal): #{e.class}: #{e.message}")
+      nil
+    end
+
     def auto_promote?(node_module)
       self.class.auto_promote?(node_module)
     end

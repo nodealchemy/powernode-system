@@ -993,11 +993,82 @@ module System
 
       if states.all? { |s| s == "succeeded" }
         @batch.complete! if @batch.may_complete?
+        release_deferred_promotions!
       elsif states.any? { |s| s == "succeeded" }
         @batch.complete_partially! if @batch.may_complete_partially?
+        hold_deferred_promotions!("batch completed partially")
       else
         @batch.fail!("all #{states.size} module build(s) failed") if @batch.may_fail?
+        hold_deferred_promotions!("all module builds failed")
       end
+    end
+
+    # BATCH-ATOMIC PROMOTION — the release side. Members published during the
+    # batch were held (module_publications_controller), so promote them
+    # together now that every one has landed. This is what makes a core+
+    # extension pair go live as a unit instead of ~19 minutes apart.
+    #
+    # Ordering within the set is not specified and does not need to be: the
+    # agent applies whatever is current at its next sync, and these writes are
+    # one transaction's worth of row updates, not staggered builds.
+    def release_deferred_promotions!
+      deferred_versions.each do |version|
+        node_module = version.node_module
+        next unless node_module
+
+        node_module.promote_to_version!(version)
+        version.update_columns(deferred_promotion_batch_id: nil)
+        Rails.logger.info(
+          "[NativeModuleBuildOrchestrator] batch #{@batch.id}: promoted deferred " \
+          "#{node_module.name} version #{version.version_number}"
+        )
+      end
+    rescue StandardError => e
+      # Never let promotion bookkeeping raise out of status advancement — the
+      # batch's own status is already correct, and a stuck deferral is
+      # recoverable by hand whereas a raise here loses the status write.
+      Rails.logger.error("[NativeModuleBuildOrchestrator] deferred promotion release failed: #{e.class}: #{e.message}")
+    end
+
+    # HOLD ALL, PROMOTE NOTHING. Promoting the successful members of a partial
+    # batch would recreate precisely the skew this mechanism exists to prevent
+    # — that is the shape of the 2026-08-28 outage, where one module of two
+    # went live alone. The versions stay published and NOT current; an operator
+    # advances them deliberately once the failure is understood.
+    def hold_deferred_promotions!(reason)
+      held = deferred_versions.to_a
+      return if held.empty?
+
+      names = held.filter_map { |v| v.node_module&.name }.sort
+      Rails.logger.warn(
+        "[NativeModuleBuildOrchestrator] batch #{@batch.id}: HOLDING #{held.size} deferred promotion(s) " \
+        "(#{reason}) — #{names.join(', ')} published but NOT current. Promoting the survivors alone would " \
+        "reintroduce the version skew this holdback exists to prevent."
+      )
+      emit_promotions_held_event(held, names, reason)
+    end
+
+    def deferred_versions
+      ::System::NodeModuleVersion.where(deferred_promotion_batch_id: @batch.id)
+    end
+
+    def emit_promotions_held_event(held, names, reason)
+      return unless defined?(::System::Fleet::EventBroadcaster)
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account:  @batch.account,
+        kind:     "system.module_promotions_held",
+        severity: :high,
+        source:   "native_module_build_orchestrator",
+        payload: {
+          batch_id: @batch.id,
+          reason: reason,
+          held_count: held.size,
+          modules: names
+        }
+      )
+    rescue StandardError => e
+      Rails.logger.warn("[NativeModuleBuildOrchestrator] held-promotions event failed: #{e.class}: #{e.message}")
     end
 
     # === Helpers ===
