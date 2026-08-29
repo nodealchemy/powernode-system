@@ -62,6 +62,57 @@ RSpec.describe System::CveOps::CveResponderService do
     end
   end
 
+  # Mirrors FleetAutonomyService's own #permitted_actions examples. The two
+  # gates are declared interchangeable, and the account filter — like the
+  # misconfigured-lane arm — was added to the fleet twin and missed here.
+  #
+  # NOT THE COVERAGE OF RECORD. Every example in this file is skipped unless
+  # Ai::ApprovalChain is defined (see the before block at the top), so on a
+  # core-mode run these two silently no-op — even though neither needs a chain.
+  # The unconditional home for this property is
+  # spec/services/system/autonomy/routed_lane_guard_spec.rb, which asserts the
+  # identical account-filter behaviour for EVERY discovered gate twin with no
+  # skip guard. These are the locality copy; do not delete the seam-spec ones.
+  describe "#permitted_actions" do
+    let(:service) { described_class.new(account: account, agent: agent) }
+
+    # CVE Responder is seeded as a GLOBAL agent (account_id nil, one shared
+    # row — see AgentSetupHelpers#find_or_initialize_global_agent) while its
+    # POLICY rows are per-account, so every tenant's rows hang off this same
+    # ai_agent_id.
+    it "ignores another account's row for the same agent" do
+      other = create(:account)
+      Ai::InterventionPolicy.create!(
+        account: other, ai_agent_id: agent.id, scope: "agent",
+        action_category: "system.cve_exposure_scan",
+        policy: "auto_approve", is_active: true
+      )
+
+      expect(service.permitted_actions).not_to include("system.cve_exposure_scan")
+    end
+
+    # The pre-gate is the block/no-block discriminator, so this is not an
+    # over-broad list — a foreign row turns THIS account's GATE_POLICY_MISSING
+    # refusal into a live approval request on a lane it never seeded.
+    it "still blocks a routed lane that only another account has a row for" do
+      allow(Rails.logger).to receive(:error)
+      other = create(:account)
+      Ai::InterventionPolicy.where(ai_agent_id: agent.id,
+                                   action_category: "system.cve_remediate").destroy_all
+      Ai::InterventionPolicy.create!(
+        account: other, ai_agent_id: agent.id, scope: "agent",
+        action_category: "system.cve_remediate",
+        policy: "require_approval", is_active: true
+      )
+
+      result = service.gate_action!("system.cve_remediate", metadata: { "cve_id" => "CVE-2026-99042" })
+
+      expect(result[:decision]).to eq(:blocked)
+      expect(result[:gate]).to eq(System::Autonomy::RoutedLaneGuard::GATE_POLICY_MISSING)
+      expect(result[:decision_record]).to be_nil
+    end
+  end
+
   describe "#gate_action!" do
     let(:service) { described_class.new(account: account, agent: agent) }
 

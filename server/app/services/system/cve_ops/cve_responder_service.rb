@@ -27,6 +27,9 @@ module System
       # must stop CVE remediation too, not just the AI execution jobs.
       include ::System::Autonomy::KillSwitchGuard
       include ::System::Autonomy::ControlPlaneGuard
+      # Supplies the shared unpermitted-action refusal (and GATE_POLICY_MISSING)
+      # that tells a routed-but-unseeded lane from an ordinary refusal.
+      include ::System::Autonomy::RoutedLaneGuard
 
       attr_reader :account, :agent, :role
 
@@ -109,9 +112,25 @@ module System
         signals
       end
 
+      # Scoped to THIS account. CVE Responder is seeded as a GLOBAL agent
+      # (account_id nil, one shared row — AgentSetupHelpers
+      # #find_or_initialize_global_agent) while its POLICY rows are per-account,
+      # so every tenant's rows hang off the same ai_agent_id. Without the
+      # account filter this pre-gate answered from every tenant at once.
+      #
+      # That is not merely an over-broad list: the pre-gate is the
+      # block/no-block discriminator, so a foreign row turned this account's
+      # GATE_POLICY_MISSING refusal into a live approval request on a CVE lane
+      # it never seeded — and skipped the RoutedLaneGuard alarm entirely, since
+      # the seam only runs on the unpermitted arm. An alarm another tenant's row
+      # can silence reads as coverage while providing none.
+      #
+      # IMP-b400ec1a2df8: the SAME twin-drift this service's gate_action! was
+      # just repaired for. FleetAutonomyService#permitted_actions gained this
+      # filter; the interchangeable CVE twin was missed both times.
       def permitted_actions
         @permitted_actions ||= ::Ai::InterventionPolicy
-          .where(ai_agent_id: agent.id, scope: "agent", is_active: true)
+          .where(account: account, ai_agent_id: agent.id, scope: "agent", is_active: true)
           .pluck(:action_category)
       end
 
@@ -130,9 +149,14 @@ module System
       # consent budget nor any advisory binding.
       def gate_action!(action_category, metadata: {}, reasoning: {}, temporal_context: {},
                        force_policy: nil, advisory: false)
+        # IMP-b400ec1a2df8: this arm used to be a private copy that only ever
+        # emitted a silent `not_permitted`, so the routed/unseeded split
+        # IMP-5a450411d873 added reached the fleet gate and missed this one —
+        # leaving critical-CVE remediation dead-and-quiet on any install whose
+        # system_cve_responder_agent seed rows never landed. It now takes the
+        # SAME arm as every other gate (System::Autonomy::RoutedLaneGuard).
         unless permitted_actions.include?(action_category)
-          Rails.logger.warn("[CveResponder] Action '#{action_category}' not in agent policies — blocked")
-          return { decision: :blocked, reason: "not_permitted" }
+          return refuse_unpermitted_action(action_category)
         end
 
         result = if force_policy

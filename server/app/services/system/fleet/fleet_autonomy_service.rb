@@ -16,6 +16,9 @@ module System
       # must stop the fleet reconcile loop, not just the AI execution jobs.
       include ::System::Autonomy::KillSwitchGuard
       include ::System::Autonomy::ControlPlaneGuard
+      # Supplies the shared unpermitted-action refusal (and GATE_POLICY_MISSING)
+      # that tells a routed-but-unseeded lane from an ordinary refusal.
+      include ::System::Autonomy::RoutedLaneGuard
 
       attr_reader :account, :agent, :role
 
@@ -398,50 +401,17 @@ module System
       SUPPRESSION_SETTLED_ADVISORY   = "settled_advisory"
       SUPPRESSION_NO_REQUEST_STORE   = "no_chain_or_request_store"
 
-      # Gate value for a lane the code routes to but the database has no policy
-      # row for. Distinct from "block"/"silent" (an operator's decision) and from
-      # "unknown_policy" (a row carrying an unrecognised value) — this one means
-      # the configuration is MISSING, which is a deploy defect, not a policy.
-      GATE_POLICY_MISSING = "policy_missing"
-
       def gate_action!(action_category, metadata: {}, reasoning: {}, temporal_context: {},
                        force_policy: nil, advisory: false)
         @suppression = nil
 
+        # The whole unpermitted arm lives in System::Autonomy::RoutedLaneGuard —
+        # it distinguishes a routed-but-unseeded lane (a deploy defect, blocked
+        # LOUDLY as GATE_POLICY_MISSING) from an ordinary refusal, and it is
+        # shared with every other gate_action! so the distinction cannot reach
+        # one gate and miss another (IMP-b400ec1a2df8: it did exactly that).
         unless permitted_actions.include?(action_category)
-          # TWO DIFFERENT FAILURES WEAR THIS ONE ARM, and conflating them cost
-          # five weeks of a shipped feature being silently dead.
-          #
-          # `permitted_actions` IS the Ai::InterventionPolicy row set for this
-          # agent, so "not permitted" and "nobody ever seeded this" are the same
-          # state. When the category is one the platform's own DecisionEngine
-          # ROUTES signals to, the second reading is the true one: the code
-          # declares a lane, the database has no policy for it, and every signal
-          # on that lane is blocked while the sensor happily keeps emitting.
-          #
-          # Measured on live ops-hub 2026-08-24: db:seed runs only on FIRST BOOT
-          # (rails-start.sh, marker-guarded), so nine policies added to seeds
-          # afterwards had never reached production — including
-          # system.module_verify_investigate, whose sensors had been firing into
-          # this arm since the day it shipped. The only thing distinguishing it
-          # from a deliberate block was a null `gate`, which nothing read, and a
-          # WARN nobody greps.
-          #
-          # Still BLOCKS — fail-safe is right, the defect was the SILENCE. But it
-          # now says so, at error level, with a distinct gate an operator can
-          # query for.
-          if ::System::Fleet::DecisionEngine.routed_action_categories.include?(action_category)
-            Rails.logger.error(
-              "[FleetAutonomy] MISCONFIGURED LANE: '#{action_category}' is routed by " \
-              "DecisionEngine but has NO intervention policy row on agent '#{agent.name}'. " \
-              "Every signal on this lane is being blocked and no operator is reached. " \
-              "Re-run that agent's seed against this database."
-            )
-            return { decision: :blocked, gate: GATE_POLICY_MISSING, reason: GATE_POLICY_MISSING }
-          end
-
-          Rails.logger.warn("[FleetAutonomy] Action '#{action_category}' not in agent '#{agent.name}' policies — blocked")
-          return { decision: :blocked, reason: "not_permitted" }
+          return refuse_unpermitted_action(action_category)
         end
 
         # Per-module consent budget check — applied before policy resolution.
