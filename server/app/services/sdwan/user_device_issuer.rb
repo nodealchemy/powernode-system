@@ -24,7 +24,22 @@ module Sdwan
     # Returns { device: UserDevice, bootstrap_token: String, expires_at: ISO8601 }.
     # The bootstrap_token is what the operator hands to the user, embedded
     # in the URL. The device is persisted with public_key and assigned_address.
-    def self.issue!(grant:, label:)
+    #
+    # mint_bootstrap_token: false issues the device and mints NO token —
+    # { device:, bootstrap_token: nil, expires_at: nil }. Everything that makes
+    # the device usable happens BEFORE the mint (the row, the Vault private
+    # half, the allocated overlay address), so the false mode is the identical
+    # issuance minus its last act. It exists for callers that must not receive
+    # a bootstrap URL: that URL is the SOLE auth for an anonymous endpoint
+    # serving a WireGuard private key, so a caller whose return value is
+    # forwarded or persisted elsewhere (an MCP tool result reaches the model
+    # provider and the conversation record) cannot be handed one. Such a caller
+    # is responsible for an alternative delivery path — an issued device with
+    # no token and no other route to its config is STRANDED.
+    #
+    # DEFAULT IS true. Minting is the existing behaviour of every caller and
+    # stays that way; opting out is explicit.
+    def self.issue!(grant:, label:, mint_bootstrap_token: true)
       raise GrantError, "grant is not active" unless grant.active?
 
       keypair = ::Sdwan::KeyDistributor.generate_keypair
@@ -44,6 +59,12 @@ module Sdwan
         )
         device.reload
       end
+
+      # The mint is the separable last act — the device above is complete and
+      # usable whether or not this runs. expires_at describes the TOKEN's
+      # lifetime, so it is nil alongside a nil token rather than advertising an
+      # expiry for a credential that was never issued.
+      return { device: device, bootstrap_token: nil, expires_at: nil } unless mint_bootstrap_token
 
       token = bootstrap_token_for(device)
       {
