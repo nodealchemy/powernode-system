@@ -2697,6 +2697,12 @@ module Ai
         patterns = Array(params[:tool_patterns]).map(&:to_s).reject(&:blank?)
         return error_result("tool_patterns is required") if patterns.empty?
 
+        refusal = grant_widening_refusal(peer: peer, incoming: patterns,
+                                         current: peer.granted_mcp_tools,
+                                         action: "system_grant_instance_mcp_tools",
+                                         subject: "MCP tool")
+        return refusal if refusal
+
         granted = peer.grant_mcp_tools!(patterns, mode: (params[:mode].to_s == "add" ? :add : :replace))
         success_result(instance_id: instance.id, granted_mcp_tools: granted)
       end
@@ -2713,8 +2719,183 @@ module Ai
         patterns = Array(params[:skill_patterns]).map(&:to_s).reject(&:blank?)
         return error_result("skill_patterns is required") if patterns.empty?
 
+        refusal = grant_widening_refusal(peer: peer, incoming: patterns,
+                                         current: peer.granted_peer_skills,
+                                         action: "system_grant_instance_peer_skills",
+                                         subject: "peer skill")
+        return refusal if refusal
+
         granted = peer.grant_peer_skills!(patterns, mode: (params[:mode].to_s == "add" ? :add : :replace))
         success_result(instance_id: instance.id, granted_peer_skills: granted)
+      end
+
+      # SECURITY (IMP-2110c94ad735) — a restricted principal may NARROW a grant,
+      # never WIDEN one.
+      #
+      # For an instance principal the grant glob is documented as the only
+      # remaining authorization control (core Mcp::Principal::
+      # DESTRUCTIVE_TOOL_PATTERNS: "one over-broad pattern ... is an
+      # unattributed, unapproved, unaudited destroy"). The two verbs that
+      # REWRITE that grant are, however, ordinary tool names, and every fence
+      # above them waves an instance through:
+      #
+      #   * destructive_tool?("...grant_instance_mcp_tools") is FALSE — the
+      #     overlay has *revoke* for removal and nothing at all for widening;
+      #   * McpPlatformToolRegistrar#enforce_permission! returns early for an
+      #     instance, and #action_permitted? above does the same, so this
+      #     action's ACTION_PERMISSIONS entry (system.node_instances.manage) is
+      #     never consulted for one;
+      #   * enforce_action_scope! pins the executed action to the INVOKED tool
+      #     name — and here the invoked name IS the grant-rewriting one, so the
+      #     pin holds and grants nothing back.
+      #
+      # The control was therefore self-mutable: an instance holding
+      # `platform.system_*` could grant itself `platform.*` in one call and
+      # unlock the whole non-destroy surface. This is the missing rung.
+      #
+      # DIRECTIONAL, not a blanket refusal of self-writes. Narrowing and
+      # de-escalation stay open, so an agent that wants to SHED authority still
+      # can (down to one pattern — the pre-existing "tool_patterns is required"
+      # validation above still rejects an empty list, so this verb cannot express
+      # a total self-revoke); only the widening direction is refused. That is
+      # also why this cannot strand a RUNNING instance: no stored grant is read
+      # differently, nothing is rewritten, and Mcp::Principal#may_invoke? is
+      # untouched — the only behaviour that changes is that one class of WRITE
+      # is refused.
+      #
+      # The operator lane is unaffected: a user principal holding
+      # system.node_instances.manage, and an explicit in-process `internal:`
+      # caller, both widen exactly as before. An operator working through an
+      # INSTANCE-principal MCP session must now widen from a user principal.
+      #
+      # SCOPE, stated narrowly so nobody reads more coverage into it than it has:
+      #
+      #   * FIRST HOP ONLY, by design. This rung keys on instance_authorized?,
+      #     which BaseTool#mark_instance_provenance carries across a skill-executor
+      #     hop but which no OTHER construction sets. It is not the every-depth
+      #     re-arm that enforce_instance_deny_overlay! is for the destroy overlay.
+      #     An agent-invoked call runs as its CREATOR (a user principal) and is
+      #     bounded by that user's permissions, not by this.
+      #   * The dev-cell bootstrap floor is a DELIBERATE exception and stays open:
+      #     System::DevCellBootstrapService#build_mcp calls the model directly with
+      #     a fixed server-defined constant, so a cell re-bootstrapping itself is
+      #     re-widened back to that baseline. Bounded (the list is not
+      #     caller-supplied), and re-asserting a floor is not escalation past it.
+      #
+      # Extension-local by construction — core must never learn an extension's
+      # models or param names, so the tool that owns the verb owns the rung.
+      #
+      # @return [Hash, nil] an error_result to refuse, nil to allow.
+      def grant_widening_refusal(peer:, incoming:, current:, action:, subject:)
+        return nil unless instance_authorized?
+
+        # instance_authorized? is set for every RESTRICTED principal
+        # (streamable_http_controller: `current_mcp_principal&.restricted?`),
+        # which includes a federation partner — and federation carries no
+        # node_instance. A restricted call with no provenance can prove no
+        # ownership, so it fails closed rather than reaching the check below
+        # with a nil to compare against.
+        own = node_instance
+        if own.nil?
+          return grant_refusal(action, subject, peer,
+                               "a restricted principal with no node identity may not rewrite a #{subject} grant")
+        end
+
+        unless peer.node_instance_id == own.id
+          return grant_refusal(action, subject, peer,
+                               "an instance principal may only rewrite its OWN #{subject} grant")
+        end
+
+        widened = Array(incoming).reject { |p| grant_pattern_covered?(current, p) }
+        return nil if widened.empty?
+
+        grant_refusal(action, subject, peer,
+                      "an instance principal may narrow its own #{subject} grant but not widen it; " \
+                      "#{widened.join(', ')} #{widened.one? ? 'is' : 'are'} not already authorized by it " \
+                      "(express a narrowing as literal names, or as a tighter prefix under a held prefix glob)")
+      end
+
+      # LOUD, never raise. A refused escalation attempt is exactly the event an
+      # operator needs to be able to QUERY afterwards — the deny overlay this
+      # rung backstops is documented as the thing standing between an instance
+      # and an "unattributed, unapproved, UNAUDITED" action, and a refusal that
+      # exists only in stdout is unattributable in the same way. Same
+      # "can't-block-but-can't-hide" shape as InstancePoolService#
+      # reset_granted_mcp_tools!. EventBroadcaster.emit! is best-effort by
+      # contract (it rescues StandardError and returns nil), so emitting here
+      # cannot turn a clean refusal into a 500.
+      def grant_refusal(action, subject, peer, reason)
+        Rails.logger.warn(
+          "[SystemFleetTool] Refused #{subject} grant widening for restricted principal: " \
+          "action=#{action} caller_instance=#{node_instance&.id.inspect} " \
+          "target_instance=#{peer&.node_instance_id.inspect} reason=#{reason}"
+        )
+
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: @account,
+          kind: "system.mcp_grant_widening_refused",
+          severity: :high,
+          source: "system_fleet_tool",
+          node_instance_id: node_instance&.id,
+          payload: {
+            "action" => action, "subject" => subject, "reason" => reason,
+            "caller_instance_id" => node_instance&.id,
+            "target_instance_id" => peer&.node_instance_id
+          }
+        )
+
+        error_result("#{action} denied: #{reason}")
+      end
+
+      # Everything File.fnmatch(..., FNM_EXTGLOB) gives meaning to beyond plain
+      # text. The backslash is in here for the ESCAPE it introduces, not for a
+      # wildcard: a held pattern like "platform.\*" matches only the literal
+      # name "platform.*", so treating "platform.\" as a covering prefix would
+      # certify strings it does not actually match. Counting the escape as a
+      # metacharacter keeps the prefix rule (case 2 below) honest.
+      GRANT_GLOB_META = /[*?\[\]{}\\]/
+
+      # Is `incoming` guaranteed to authorize NOTHING that `current` does not
+      # already authorize? Deliberately conservative — it answers "definitely
+      # not wider", never "probably not wider", so a pattern it cannot prove
+      # safe is refused rather than allowed. Three sound cases:
+      #
+      #   1. exact re-statement of a pattern already held;
+      #   2. a held glob-free PREFIX glob ("platform.system_*") covers anything
+      #      whose text starts with that prefix — including narrower globs
+      #      ("platform.system_get_*"), since every name the narrower one
+      #      matches necessarily starts with the wider prefix too;
+      #   3. a LITERAL incoming name (no metacharacters, so it matches exactly
+      #      itself) that a held pattern already matches.
+      #
+      # Case 2 is what keeps the "collapse a broad glob into a tighter one"
+      # de-escalation working; without it, narrowing would only be expressible
+      # as a list of literal tool names.
+      #
+      # Case 2 carries ONE correction. fnmatch is not passed FNM_DOTMATCH (not
+      # here, not in Mcp::Principal#may_invoke?, not in NodeInstancePeer#
+      # may_invoke_peer_skill?), so a wildcard does NOT match a leading period:
+      # `fnmatch("*", ".x")` is false while `fnmatch(".x", ".x")` is true. A
+      # held `*` would therefore be certified as covering `.x` — a name `*`
+      # cannot actually authorize, which is a widening however small. Only the
+      # FIRST character is special without FNM_PATHNAME, so requiring the held
+      # prefix to lead with the same period closes it exactly.
+      def grant_pattern_covered?(current, incoming)
+        incoming = incoming.to_s
+        incoming_literal = !incoming.match?(GRANT_GLOB_META)
+
+        Array(current).any? do |held|
+          held = held.to_s
+          next true if held == incoming
+
+          if held.end_with?("*")
+            prefix = held[0..-2]
+            dot_safe = !incoming.start_with?(".") || prefix.start_with?(".")
+            next true if dot_safe && !prefix.match?(GRANT_GLOB_META) && incoming.start_with?(prefix)
+          end
+
+          incoming_literal && ::File.fnmatch(held, incoming, ::File::FNM_EXTGLOB)
+        end
       end
 
       # A2A: discover online, operator-enabled peers + the skills they offer.
