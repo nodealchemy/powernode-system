@@ -758,4 +758,81 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
       expect(JSON.parse(response.body).dig("data", "acknowledged")).to be(true)
     end
   end
+
+  # IMP-3bc311f9bc5c — the heartbeat's wire contract is the JSON BODY the
+  # agent POSTs (runtime.HeartbeatPayload). `params` is not that hash: Rails
+  # merges the query string over the parsed body, so
+  # `?lkg_present=true` was ingested exactly as if the agent had put
+  # lkg_present in its payload — a second, undocumented wire surface for every
+  # telemetry lane on this action.
+  #
+  # This is NOT an authorization boundary: the caller is the same mTLS node
+  # principal either way and can already put anything in the body. It is a
+  # wire-contract one — the accepted surface must be the documented surface,
+  # so that the payload a node sends is the payload the platform stores.
+  #
+  # The oracle is the STORED ROW, never the response status: every lane here
+  # acknowledges the heartbeat regardless.
+  describe "telemetry ingest reads the request BODY, not the query string" do
+    def post_heartbeat(query: nil, without: [], **extra)
+      path = "/api/v1/system/node_api/status/heartbeat"
+      path = "#{path}?#{query}" if query
+      post path, params: body.except(*without).merge(extra), headers: headers, as: :json
+    end
+
+    # The boot-LKG lane is the sharpest case: `arm_state` is a decommission
+    # gate. A node whose on-disk LKG vanished emits NONE of the seven fields,
+    # and the writer must flip its existing document to "unreported" on that
+    # very tick. A query string asserting lkg_present=true would hold the gate
+    # open with a value the node never reported in its payload.
+    it "reads boot-LKG arm telemetry from the body, never from the query string" do
+      post_heartbeat(lkg_present: true)
+      expect(instance.reload.config.dig("boot_lkg", "arm_state")).to eq("armed")
+
+      post_heartbeat(query: "lkg_present=true")
+
+      expect(instance.reload.config.dig("boot_lkg", "arm_state")).to eq("unreported")
+      expect(instance.reload.config.dig("boot_lkg", "lkg_present")).to be_nil
+    end
+
+    it "reads the sdwan apply block from the body, never from the query string" do
+      post_heartbeat(query: "sdwan_state[network_id]=net-from-query")
+
+      expect(response).to have_http_status(:ok)
+      expect(instance.reload.config[::Sdwan::AgentApplyStateWriter::CONFIG_KEY]).to be_nil
+    end
+
+    it "reads the module verify block from the body, never from the query string" do
+      post_heartbeat(query: "module_verify_state[module_id]=mod-from-query")
+
+      expect(response).to have_http_status(:ok)
+      expect(instance.reload.config[::System::ModuleVerifyStateWriter::CONFIG_KEY]).to be_nil
+    end
+
+    it "reads node capabilities from the body, never from the query string" do
+      post_heartbeat(query: "node_capabilities[composefs]=true")
+
+      expect(response).to have_http_status(:ok)
+      expect(instance.reload.capabilities.to_h).not_to include("composefs")
+    end
+
+    # Same `params.slice` shape as the boot-LKG lane, so it carries the same
+    # defect and the same fix.
+    it "reads runtime metrics from the body, never from the query string" do
+      post_heartbeat(without: [ :mount_state, :uptime_seconds ], query: "mount_state=mounted")
+
+      expect(response).to have_http_status(:ok)
+      expect(instance.reload.config[::System::RuntimeMetricsWriter::CONFIG_KEY]).to be_nil
+    end
+
+    # The scalars record_heartbeat! persists into dedicated columns are body
+    # fields too; they must not be settable from the query string either.
+    it "reads the record_heartbeat! scalars from the body, never from the query string" do
+      post_heartbeat(query: "agent_version=from-query&boot_id=boot-from-query")
+
+      instance.reload
+      expect(instance.agent_version).to eq("1.0.0-test")
+      expect(instance.boot_id).to eq("boot-test-1")
+    end
+  end
 end

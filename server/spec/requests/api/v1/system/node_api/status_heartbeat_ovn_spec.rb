@@ -113,4 +113,22 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat — OVN NB observatio
 
     expect(deployment.reload.status).to eq("bootstrapping")
   end
+
+  # IMP-3bc311f9bc5c — the OVN observation is a BODY field. Rails merges the
+  # query string over the parsed body, so before the fix a query-string block
+  # reached the reconciler as if the agent had reported it. This lane is the
+  # one that drives an AASM lifecycle (degrade / readopt), so a fabricated
+  # observation here moves a real deployment's state. The oracle is the
+  # deployment ROW, not the response status.
+  it "reads the OVN block from the body, never from the query string" do
+    post "/api/v1/system/node_api/status/heartbeat" \
+         "?sdwan_ovn_state[deployment_id]=#{deployment.id}" \
+         "&sdwan_ovn_state[plan_commands]=5" \
+         "&sdwan_ovn_state[applied_commands]=2" \
+         "&sdwan_ovn_state[last_error]=fabricated",
+         params: base_body, headers: headers, as: :json
+
+    expect(response).to have_http_status(:ok)
+    expect(deployment.reload.status).to eq("active")
+  end
 end

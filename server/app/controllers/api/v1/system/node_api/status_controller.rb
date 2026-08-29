@@ -85,18 +85,18 @@ module Api
           # architecture, booted_image_git_sha) via the model's record_heartbeat!
           # method.
           def heartbeat
-            digests = params[:module_digests]
-            digests = digests.to_unsafe_h if digests.respond_to?(:to_unsafe_h)
+            hb = heartbeat_payload
+            digests = hb["module_digests"]
             # Captured BEFORE record_heartbeat! stamps last_heartbeat_at: "has
             # this instance ever heartbeated" is the discriminator that keeps
             # network-profile auto-classification (below) off the legacy fleet.
             first_contact = current_instance.last_heartbeat_at.nil?
             current_instance.record_heartbeat!(
-              agent_version:        params[:agent_version].presence || "unknown",
-              boot_id:              params[:boot_id].presence       || "unknown",
+              agent_version:        hb["agent_version"].presence || "unknown",
+              boot_id:              hb["boot_id"].presence       || "unknown",
               module_digests:       digests || {},
-              architecture:         params[:architecture],
-              booted_image_git_sha: params[:booted_image_git_sha]
+              architecture:         hb["architecture"],
+              booted_image_git_sha: hb["booted_image_git_sha"]
             )
 
             # Record kernel-capability detection from the agent — used by
@@ -104,8 +104,7 @@ module Api
             # (composefs vs squashfs) to surface in the manifest
             # response. Empty / absent payload is fine; the helper
             # short-circuits and the existing capabilities row stays.
-            caps = params[:node_capabilities]
-            caps = caps.to_unsafe_h if caps.respond_to?(:to_unsafe_h)
+            caps = hb["node_capabilities"]
             current_instance.record_capabilities!(caps) if caps.present?
 
             # IMP-57e9a90598ee — first-heartbeat network-profile
@@ -132,8 +131,7 @@ module Api
             # observation-only: no block + nothing probeable = no change.
             # Wrapped so an OVN reconcile bug cannot bounce telemetry.
             begin
-              ovn_obs = params[:sdwan_ovn_state]
-              ovn_obs = ovn_obs.to_unsafe_h if ovn_obs.respond_to?(:to_unsafe_h)
+              ovn_obs = hb["sdwan_ovn_state"]
               ::Sdwan::Ovn::DeploymentReconciler.reconcile!(
                 instance: current_instance,
                 nb_observation: ovn_obs.presence
@@ -153,8 +151,7 @@ module Api
             # as NOT MEASURED, never as healthy). Wrapped so an ingest bug
             # cannot bounce telemetry, exactly like the OVN block above.
             begin
-              apply_obs = params[:sdwan_state]
-              apply_obs = apply_obs.to_unsafe_h if apply_obs.respond_to?(:to_unsafe_h)
+              apply_obs = hb["sdwan_state"]
               ::Sdwan::AgentApplyStateWriter.write!(
                 instance: current_instance,
                 payload:  apply_obs
@@ -172,8 +169,7 @@ module Api
             # MEASURED, never as verified). Wrapped so an ingest bug cannot
             # bounce telemetry, exactly like the two blocks above.
             begin
-              verify_obs = params[:module_verify_state]
-              verify_obs = verify_obs.to_unsafe_h if verify_obs.respond_to?(:to_unsafe_h)
+              verify_obs = hb["module_verify_state"]
               ::System::ModuleVerifyStateWriter.write!(
                 instance: current_instance,
                 payload:  verify_obs
@@ -197,8 +193,7 @@ module Api
             # written (absence stays absence). Wrapped so an ingest bug cannot
             # bounce telemetry, exactly like the three blocks above.
             begin
-              boot_obs = params.slice(*::System::BootLkgStateWriter::WIRE_KEYS)
-              boot_obs = boot_obs.to_unsafe_h if boot_obs.respond_to?(:to_unsafe_h)
+              boot_obs = hb.slice(*::System::BootLkgStateWriter::WIRE_KEYS)
               ::System::BootLkgStateWriter.write!(
                 instance: current_instance,
                 payload:  boot_obs
@@ -215,8 +210,7 @@ module Api
             # distinguishable from a reporting one. Wrapped like the blocks
             # above so an ingest bug cannot bounce telemetry.
             begin
-              runtime_obs = params.slice(*::System::RuntimeMetricsWriter::WIRE_KEYS)
-              runtime_obs = runtime_obs.to_unsafe_h if runtime_obs.respond_to?(:to_unsafe_h)
+              runtime_obs = hb.slice(*::System::RuntimeMetricsWriter::WIRE_KEYS)
               ::System::RuntimeMetricsWriter.write!(
                 instance: current_instance,
                 payload:  runtime_obs
@@ -403,6 +397,41 @@ module Api
           end
 
           private
+
+          # The heartbeat's wire contract is the JSON BODY the agent POSTs
+          # (runtime.HeartbeatPayload). `params` is NOT that document: Rails
+          # builds it by merging the query string and the route's path
+          # segments over the parsed body, and on a name collision the query
+          # string WINS (ActionDispatch::Http::Parameters#parameters merges
+          # query_parameters OVER request_parameters; verified empirically on
+          # actionpack 8.1.3). Every ingest lane in #heartbeat therefore used
+          # to accept `?lkg_present=true` exactly as if the agent had put the
+          # field in its payload — a second wire surface that no producer
+          # emits, no doc comment describes, and no writer's absence rule was
+          # written against.
+          #
+          # This is not an authorization boundary: the caller is the same
+          # mTLS-authenticated node principal either way and can already put
+          # anything it likes in the body. It is a wire-contract one — the
+          # accepted surface should be the documented surface, so that what a
+          # node reports is what the platform stores, and so that "the agent
+          # omitted this field" stays a statement about the payload.
+          #
+          # Returns the parsed body as a HashWithIndifferentAccess — a Hash,
+          # never an ActionController::Parameters, which is why the ingest
+          # lanes no longer need `to_unsafe_h`. Every writer's `fetch` helper
+          # tries both key forms, so indifferent access changes nothing for
+          # them. The route carries no dynamic segments, so no path parameter
+          # is lost by not reading `params`.
+          #
+          # `deep_dup` keeps the copy semantics the dropped `to_unsafe_h`
+          # calls used to provide: request_parameters hands back the object
+          # memoized on the Rack env, and six services now hold it, so a
+          # future in-place edit in any of them would otherwise corrupt the
+          # request for later middleware and for log filtering.
+          def heartbeat_payload
+            @heartbeat_payload ||= request.request_parameters.deep_dup
+          end
 
           def serialize_instance_status
             {
