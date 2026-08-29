@@ -53,6 +53,9 @@ const ServiceDeliveryPage = lazyPage(() => import('./pages/app/system/ServiceDel
 // ACME — DNS provider credentials + Let's Encrypt cert lifecycle.
 // Plan reference: Decentralized Federation §J + P2.5.8.
 const AcmePage = lazyPage(() => import('./pages/app/system/AcmePage'));
+// My VPN — the RECIPIENT's self-service surface for SDWAN user devices.
+// Deliberately NOT lazy-gated on a permission (see the route below).
+const MyVpnDevicesPage = lazyPage(() => import('./pages/app/system/MyVpnDevicesPage'));
 // Ingress — derived Traefik routes + approval-gated Expose Service wizard.
 // Plan reference: Phase 2c (Ingress).
 const IngressPage = lazyPage(() => import('./pages/app/system/IngressPage'));
@@ -132,6 +135,14 @@ export function register(): void {
     // (approval-gated Concierge wizard). `/*` wildcard so path-based
     // sub-tabs render. Plan reference: Phase 2c (Ingress).
     { path: '/system/ingress/*', component: IngressPage, permission: 'system.ingress.read' },
+
+    // My VPN — one user's OWN SDWAN devices + config download. UNGATED, and
+    // that is the design, not an oversight: the backend authorizes by
+    // OWNERSHIP (the caller's own access grants), every authenticated user
+    // may see their own devices, and there is no corresponding permission
+    // string. Adding one would degrade to admin-only on this platform and
+    // lock out exactly the ordinary users the page exists to serve.
+    { path: '/system/my-vpn', component: MyVpnDevicesPage },
   ]);
 
   // Top-level "System" nav section. Phase B.5 collapses the previous
@@ -165,6 +176,10 @@ export function register(): void {
         { label: 'Service Delivery', path: '/app/system/service-delivery', icon: 'Workflow',        order: 10 },
         { label: 'ACME',             path: '/app/system/acme',             icon: 'KeyRound',        order: 11 },
         { label: 'Ingress',          path: '/app/system/ingress',          icon: 'Globe',           order: 12, permission: 'system.ingress.read' },
+        // My VPN is the one entry here aimed at a NON-operator: it is a
+        // recipient's own devices, so it carries no permission (see the
+        // route registration above).
+        { label: 'My VPN',           path: '/app/system/my-vpn',           icon: 'Smartphone',      order: 13 },
       ],
     },
   ]);

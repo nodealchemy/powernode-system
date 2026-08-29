@@ -1,8 +1,8 @@
 // Unit tests for register.ts
 //
 // register() is a pure side-effect entry point. It calls:
-//   1. featureRegistry.registerRoutes('system', [...])   — 29 routes
-//   2. featureRegistry.registerNavSections('system', [...]) — 1 section, 12 items
+//   1. featureRegistry.registerRoutes('system', [...])   — 30 routes
+//   2. featureRegistry.registerNavSections('system', [...]) — 1 section, 13 items
 //   3. registerSystemEntities()                          — cross-reference wiring
 //
 // Strategy: mock the two dependencies so we can assert on exact payloads
@@ -86,8 +86,8 @@ describe('registered routes', () => {
     routes = mockRegisterRoutes.mock.calls[0][1] as typeof routes;
   });
 
-  it('registers 29 routes in total', () => {
-    expect(routes).toHaveLength(29);
+  it('registers 30 routes in total', () => {
+    expect(routes).toHaveLength(30);
   });
 
   // Primary pages
@@ -113,6 +113,20 @@ describe('registered routes', () => {
 
   it('registers /system/instance-pools (InstancePoolsPage)', () => {
     const r = routes.find((x) => x.path === '/system/instance-pools');
+    expect(r).toBeDefined();
+    expect(r!.component).toBeDefined();
+    expect(r!.permission).toBeUndefined();
+  });
+
+  // My VPN — the recipient's own SDWAN devices. The UNGATED assertion is the
+  // point of this test, not incidental: authorization is ownership, enforced
+  // server-side, and there is no `system.sdwan.my_devices.*` permission. A
+  // permission name that is not code-defined degrades to admin-only on this
+  // platform, so adding a gate here would lock out exactly the ordinary users
+  // the page serves. If this assertion ever fails, the fix is to delete the
+  // permission, not to update the expectation.
+  it('registers /system/my-vpn (MyVpnDevicesPage) with NO permission gate', () => {
+    const r = routes.find((x) => x.path === '/system/my-vpn');
     expect(r).toBeDefined();
     expect(r!.component).toBeDefined();
     expect(r!.permission).toBeUndefined();
@@ -276,8 +290,8 @@ describe('registered nav sections', () => {
     expect(systemSection.permissions).toEqual([]);
   });
 
-  it('registers 12 nav items', () => {
-    expect(items).toHaveLength(12);
+  it('registers 13 nav items', () => {
+    expect(items).toHaveLength(13);
   });
 
   // Verify every item individually
@@ -300,6 +314,7 @@ describe('registered nav sections', () => {
     { label: 'Service Delivery',  path: '/app/system/service-delivery', icon: 'Workflow',      order: 10 },
     { label: 'ACME',              path: '/app/system/acme',           icon: 'KeyRound',        order: 11 },
     { label: 'Ingress',           path: '/app/system/ingress',        icon: 'Globe',           order: 12, permission: 'system.ingress.read' },
+    { label: 'My VPN',            path: '/app/system/my-vpn',         icon: 'Smartphone',      order: 13 },
   ];
 
   it.each(expectedItems)(
