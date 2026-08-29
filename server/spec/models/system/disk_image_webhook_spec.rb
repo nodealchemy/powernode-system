@@ -64,6 +64,42 @@ RSpec.describe System::DiskImageWebhook, type: :model do
       expect(webhook.verify_signature("", good_sig)).to be false
     end
 
+    # IMP-649bb8534eb7 — the mismatch diagnostic wrote `secret_preview` (the
+    # first 8 chars of the HMAC secret, "pndis_" + 2 chars of entropy) into a
+    # Rails warn log. A mismatched signature is CALLER-CONTROLLED: any
+    # unauthenticated party that can reach the receiver can drive an unbounded
+    # number of these writes into a durable sink. The operator-facing preview
+    # already lives on the row and in the REST serializer; the log copy buys
+    # no diagnosis that provided=/expected= do not already give.
+    #
+    # Split into two examples deliberately. Folding "the line was emitted" and
+    # "the line is clean" into one example lets an absence assertion pass
+    # vacuously when the emit path never runs.
+    context "diagnostic log on mismatch" do
+      let(:emitted) { [] }
+
+      before do
+        allow(::Rails.logger).to receive(:warn) { |msg| emitted << msg.to_s }
+        webhook.verify_signature(body, "sha256=#{'0' * 64}")
+      end
+
+      it "emits the drift diagnostic with both signature prefixes (non-vacuity control)" do
+        line = emitted.find { |m| m.include?("[DiskImageWebhook] signature mismatch") }
+        expect(line).not_to be_nil, "no signature-mismatch warn line was emitted at all"
+        expect(line).to include("provided=", "expected=", "body_bytes=")
+      end
+
+      it "does not write any slice of the secret into the log" do
+        line = emitted.find { |m| m.include?("[DiskImageWebhook] signature mismatch") }
+        expect(line).not_to be_nil, "no signature-mismatch warn line was emitted at all"
+        preview = webhook.secret_preview
+        expect(line).not_to include("secret_preview"),
+          "the mismatch log line still names secret_preview"
+        expect(line.include?(preview)).to be(false),
+          "the mismatch log line still contains the stored secret preview (value not echoed here)"
+      end
+    end
+
     it "uses constant-time comparison (does not raise on garbage input)" do
       # ActiveSupport::SecurityUtils.secure_compare needs strings the same
       # length — with a sha256 header that's the wrong length we expect

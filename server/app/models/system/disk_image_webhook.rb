@@ -86,10 +86,20 @@ module System
       unless match
         # Diagnostic log on mismatch — helps debug CI/platform secret drift.
         # Only logs prefixes of both signatures so the full HMAC isn't echoed.
+        #
+        # NO `secret_preview` (IMP-649bb8534eb7). It is the first 8 chars of the
+        # HMAC secret, and this branch is reached on ANY signature mismatch —
+        # i.e. it is driven by an unauthenticated caller, who can therefore
+        # write an unbounded number of copies of a slice of the secret into a
+        # durable sink at will. Nothing was diagnosed by it that the two
+        # signature prefixes below do not already settle: a drifted secret
+        # shows up as provided != expected, and identifying WHICH secret the
+        # row holds is what the operator UI's own `secret_preview` column (and
+        # the REST serializer) is for, behind authentication.
         ::Rails.logger.warn(
           "[DiskImageWebhook] signature mismatch webhook=#{id} label=#{label} " \
           "provided=#{provided[0, 12]} expected=#{expected[0, 12]} " \
-          "body_bytes=#{raw_body.bytesize} secret_preview=#{secret_preview}"
+          "body_bytes=#{raw_body.bytesize}"
         )
       end
       match
