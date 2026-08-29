@@ -88,6 +88,34 @@ RSpec.describe "render-and-return halt idiom (authorization bypass guard)" do
   # after it), so the idiom inside one is harmless and must not be flagged.
   def rescue_from_regex = /^\s*rescue_from\b.*\bwith:\s*:([a-zA-Z_][a-zA-Z0-9_]*[?!]?)/
 
+  # IMP-841071bc80e7 — `before_action -> { authorize_team_manage! }, only: [...]`
+  # registers a callback exactly like the symbol form (Rails halts on a render
+  # inside a lambda/block callback the same way it halts on one inside a
+  # symbol-named method), but the harvest above only ever looked for `:name`
+  # tokens, so it never saw inside the `{ }`. Api::V1::Ai::TeamTemplatesReviewsController's
+  # `authorize_team_manage!` passed this guard by luck — its only textual
+  # occurrence sat inside the `before_action ->` line itself, which happens
+  # not to match a bare call-site.
+  #
+  # Kept deliberately narrow: only a lambda/block body that is (one or more
+  # semicolon-separated) BARE, ARGUMENT-LESS method calls counts — the same
+  # restraint the call-site discriminator below applies to `authorize!(:x)`.
+  # `-> { authorize_action!("x") }` and `-> { render_forbidden(...) unless x }`
+  # are deliberately NOT recognized: widening to argument-bearing or
+  # conditional lambda bodies would let a lambda wrapping something other than
+  # a clean bare halt whitelist an unrelated name. A lambda whose body spans
+  # multiple lines (`-> {\n  authorize! \n}`) is still a blind spot, same as
+  # every other per-line harvest in this file — none exist in this checkout
+  # today, so it is named here rather than solved speculatively.
+  def lambda_filter_regex = /->\s*(?:\([^)]*\))?\s*(?:\{(.*?)\}|do\b(.*?)\bend\b)/m
+  def bare_lambda_statement_regex = /\A[a-zA-Z_][a-zA-Z0-9_]*[?!]?(?:\(\))?\z/
+
+  def lambda_filter_names(segment)
+    segment.scan(lambda_filter_regex).flatten.compact.flat_map { |body|
+      body.split(";").map(&:strip).select { |stmt| stmt.match?(bare_lambda_statement_regex) }
+    }.map { |stmt| stmt.sub(/\(\)\z/, "") }
+  end
+
   # Method names registered as callbacks in this file. Only the LEADING symbol
   # arguments name callbacks; `only: %i[show update]` lists actions, so
   # harvesting it would whitelist every action in the file.
@@ -114,8 +142,20 @@ RSpec.describe "render-and-return halt idiom (authorization bypass guard)" do
         end
       next if segment.nil?
 
+      # IMP-841071bc80e7 — strip a trailing inline comment before scanning.
+      # filter_regex captures the rest of the PHYSICAL line, comment included,
+      # and an option-less registration (no only:/except:/if:/unless:/raise:)
+      # never reaches a split that would otherwise cut it off. A comment that
+      # happens to look like filter syntax — `before_action -> { real_check }
+      # # was -> { legacy_check }` — must not leak "legacy_check" into the
+      # whitelist. This is a plain heuristic: a `#` inside a string-literal
+      # filter argument would truncate too, but no registration in this
+      # checkout uses one.
+      segment = segment.sub(/#.*/m, "") if segment.include?("#")
+
       before_opts = segment.split(filter_opts_regex).first.to_s
       before_opts.scan(/:([a-zA-Z_][a-zA-Z0-9_]*[?!]?)/) { |(name)| acc << name }
+      lambda_filter_names(before_opts).each { |name| acc << name }
       # Only a bare trailing comma continues the harvest; once an option
       # keyword appears, any continuation lines are option values (action
       # names), never callback names.
@@ -274,6 +314,30 @@ RSpec.describe "render-and-return halt idiom (authorization bypass guard)" do
       offenders = offenders_for(<<~RB)
         class ZzGuardFixtureController < ApplicationController
           before_action :set_provider, only: %i[create test]
+
+          def create
+            head :ok
+          end
+
+          private
+
+          def set_provider
+            if params[:provider_id].blank?
+              render_error("provider_id is required", status: :bad_request) and return
+            end
+            @provider = Provider.find(params[:provider_id])
+          end
+        end
+      RB
+
+      expect(offenders).to be_empty
+    end
+
+    # IMP-841071bc80e7 — same discriminator, lambda spelling of the callback.
+    it "does not flag the idiom in a method registered as a before_action via a lambda" do
+      offenders = offenders_for(<<~RB)
+        class ZzGuardFixtureController < ApplicationController
+          before_action -> { set_provider }, only: %i[create test]
 
           def create
             head :ok
@@ -659,6 +723,97 @@ RSpec.describe "render-and-return halt idiom (authorization bypass guard)" do
       RB
 
       expect(offenders).to be_empty
+    end
+
+    # IMP-841071bc80e7 — the concrete shape from
+    # Api::V1::Ai::TeamTemplatesReviewsController#authorize_team_manage!:
+    # `before_action -> { authorize_team_manage! }, only: [...]` really does
+    # halt (Rails treats a lambda callback exactly like a symbol one), but the
+    # symbol-only harvest in filter_methods never looks inside the `{ }`.
+    it "does not flag a bare-render helper registered as a before_action via a lambda" do
+      offenders = bare_offenders_for(<<~RB)
+        class ZzGuardFixtureController < ApplicationController
+          before_action -> { authorize_team_manage! }, only: [:perform_clone]
+
+          def perform_clone
+            authorize_team_manage!
+            Thing.create!(name: "cloned")
+          end
+
+          private
+
+          def authorize_team_manage!
+            return if current_user.has_permission?("ai.teams.manage")
+            render_forbidden
+          end
+        end
+      RB
+
+      expect(offenders).to be_empty
+    end
+
+    # The discriminator must stay narrow: an ARGUMENT-BEARING lambda call is a
+    # documented blind spot on the call-site side already (`authorize!(:x)` is
+    # invisible there), and widening filter recognition must not quietly paper
+    # over it by treating any name appearing inside a `before_action -> { }` as
+    # registered. `authorize_thing!` here is called with an argument in the
+    # lambda and BARE (unguarded) in the action — it must still be reported,
+    # proving the widened regex does not admit argument-bearing spellings.
+    it "does not treat an argument-bearing lambda call as filter registration" do
+      offenders = bare_offenders_for(<<~RB)
+        class ZzGuardFixtureController < ApplicationController
+          before_action -> { authorize_thing!("x") }
+
+          def create
+            authorize_thing!
+            Thing.create!(name: "written anyway")
+          end
+
+          private
+
+          def authorize_thing!(scope = nil)
+            return if current_user.has_permission?("x")
+            render_error("Forbidden", status: :forbidden)
+          end
+        end
+      RB
+
+      expect(offenders.map { |h| h[:method] }).to include("authorize_thing!")
+    end
+
+    # A trailing INLINE COMMENT on an option-less before_action line must not
+    # leak into the filter whitelist just because it happens to look like
+    # lambda syntax. filter_regex captures the rest of the physical line
+    # (including any comment), and an option-less registration never reaches
+    # the filter_opts_regex split that would otherwise cut it off — so without
+    # stripping the comment first, "legacy_check" here would read as a
+    # registered filter and a genuinely unguarded helper of that name would
+    # stop being reported.
+    it "does not leak a trailing comment's lambda-shaped text into the filter whitelist" do
+      offenders = bare_offenders_for(<<~RB)
+        class ZzGuardFixtureController < ApplicationController
+          before_action -> { real_check }  # was -> { legacy_check }
+
+          def create
+            legacy_check
+            Thing.create!(name: "written anyway")
+          end
+
+          private
+
+          def real_check
+            return if current_user.has_permission?("x")
+            render_error("Forbidden", status: :forbidden)
+          end
+
+          def legacy_check
+            return if current_user.has_permission?("y")
+            render_error("Forbidden", status: :forbidden)
+          end
+        end
+      RB
+
+      expect(offenders.map { |h| h[:method] }).to include("legacy_check")
     end
 
     it "does not flag a call site paired with `return if performed?`" do
