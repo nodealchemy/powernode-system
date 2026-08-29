@@ -128,25 +128,33 @@ platform.bootstrap_disk_image_ci({
   create_platform_read_token: true                 // mints a read-scoped JWT for the runner to call back
 })
 // → {
-//     ok: true,
-//     webhook_url: "https://platform.example.org/api/v1/system/webhooks/disk_image/built/<webhook_id>",
-//     webhook_secret: "<one-time-displayed-secret>",   // HMAC key for the runner
-//     ci_worker_token: "<token>",                       // runner registration token
-//     gitea_secrets_set: ["POWERNODE_WEBHOOK_SECRET", "POWERNODE_WEBHOOK_URL", ...]
+//     success: true,
+//     webhook:   { id, label, action, url: "https://platform.example.org/api/v1/system/webhooks/disk_image/built/<webhook_id>" },
+//     ci_worker: { id, name, action },
+//     gitea_secrets_set: { "POWERNODE_DISK_IMAGE_WEBHOOK_SECRET": "ok", "POWERNODE_CI_WORKER_TOKEN": "ok", ... },
+//     note: "..."
 //   }
 ```
+
+**No secret is returned** (IMP-fa6cf8ee1eb6 / IMP-27cc7dceb97b). An MCP tool result is
+truncated into `ai_messages.processing_metadata` and forwarded in full to the model
+provider, so it is not a private channel the way an HTTP response is. The webhook secret,
+the CI worker token and the optional platform read token are delivered **out of band**,
+straight into the repo's Gitea Actions secret store — `gitea_secrets_set` is the delivery
+receipt. That is the whole point of this action: the CI workflow reads them from
+`${{ secrets.* }}` and no plaintext ever rides the chat transcript.
 
 This action is **idempotent on `label`** (re-running rotates secrets + token without creating duplicates) and is a **one-shot setup**, not a build trigger. It creates:
 
 - A `System::DiskImageWebhook` row (per-pipeline; the URL above embeds its UUID)
-- A `Worker` row with role `ci_worker` (NOT a `System::Task`, and NOT a NodeInstance — the operator installs and registers a Gitea Actions runner against the returned token themselves)
+- A `Worker` row with role `ci_worker` (NOT a `System::Task`, and NOT a NodeInstance — the operator installs and registers a Gitea Actions runner themselves; the worker token is written into the repo secret `POWERNODE_CI_WORKER_TOKEN`, not returned)
 - Gitea repo Actions secrets (webhook secret + URL + optional read token + OCI registry creds if configured)
 
 Triggering an actual build is a separate action (`dispatch_gitea_workflow` — see "Triggering a build" below). `bootstrap_disk_image_ci` does not have `account_id`, `force`, or `ref`/`arches` parameters; those framings in earlier doc revisions were aspirational.
 
 ### Step 2: Provision the build webhook
 
-When `bootstrap_disk_image_ci` provisions the webhook for you, you do not need this action — it returned the URL + secret already. To provision a webhook standalone (e.g., to attach a second build pipeline to the same account):
+When `bootstrap_disk_image_ci` provisions the webhook for you, you do not need this action — it already set the URL + secret in the repo's Actions secrets. To provision a webhook standalone (e.g., to attach a second build pipeline to the same account):
 
 ```javascript
 platform.provision_disk_image_webhook({
@@ -154,13 +162,32 @@ platform.provision_disk_image_webhook({
   // platform_api_base optional; defaults to POWERNODE_PUBLIC_URL
 })
 // → {
+//     success: true,
 //     webhook_id: "<uuid>",
+//     label: "ubuntu-2404-arm64-builder",
 //     webhook_url: "https://platform.example.org/api/v1/system/webhooks/disk_image/built/<webhook_id>",
-//     webhook_secret: "<one-time-displayed-secret>"
+//     secret_delivery: "not disclosed here — ...",
+//     note: "..."
 //   }
 ```
 
-Webhooks are **per-pipeline** (the URL embeds the webhook UUID), not per-NodePlatform. The action does **not** accept `node_platform_id`, `webhook_url`, or `shared_secret` — the URL is built server-side from `POWERNODE_PUBLIC_URL` + the issued webhook id; the secret is mint-once and returned.
+Webhooks are **per-pipeline** (the URL embeds the webhook UUID), not per-NodePlatform. The action does **not** accept `node_platform_id`, `webhook_url`, or `shared_secret` — the URL is built server-side from `POWERNODE_PUBLIC_URL` + the issued webhook id.
+
+**The secret is not returned on the MCP surface** (IMP-fa6cf8ee1eb6): a tool result is
+persisted with the conversation and forwarded to the model provider. The webhook this
+action creates is therefore **inert until you fetch a secret** for it:
+
+```bash
+curl -X POST -H "Authorization: Bearer $OPERATOR_JWT" \
+  https://platform.example.org/api/v1/system/disk_image_webhooks/<webhook_id>/rotate_secret
+```
+
+That endpoint needs `system.disk_image_webhooks.rotate_secret` (which the tool's own
+permission does not imply) and is approval-gated — if it answers `pending`, the plaintext
+is revealed once in the HTTP approval-decision response, so approve over the operator
+UI/API, **not** via `approve_deferred_operation`, which deliberately drops the reveal.
+Prefer `bootstrap_disk_image_ci`, which writes the secret straight into the repo's Gitea
+Actions secrets and needs no reveal at all.
 
 Operator configures the webhook URL + secret in the build repo's CI workflow YAML so the runner can call back after a successful build.
 

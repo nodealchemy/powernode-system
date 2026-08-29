@@ -100,24 +100,30 @@ platform.bootstrap_disk_image_ci({
   create_platform_read_token: true       // mints a read-scoped JWT for the runner
 })
 // → {
-//     ok: true,
-//     webhook_url: "https://platform.example.org/api/v1/system/webhooks/disk_image/built/<webhook_id>",
-//     webhook_secret: "<one-time-displayed-secret>",
-//     ci_worker_token: "<token>",
-//     gitea_secrets_set: ["POWERNODE_WEBHOOK_SECRET", "POWERNODE_WEBHOOK_URL", ...]
+//     success: true,
+//     webhook:   { id, label, action, url: "https://platform.example.org/api/v1/system/webhooks/disk_image/built/<webhook_id>" },
+//     ci_worker: { id, name, action },
+//     gitea_secrets_set: { "POWERNODE_DISK_IMAGE_WEBHOOK_SECRET": "ok", "POWERNODE_CI_WORKER_TOKEN": "ok", ... },
+//     note: "..."
 //   }
 ```
 
+**No plaintext comes back.** An MCP tool result is truncated into
+`ai_messages.processing_metadata` and forwarded in full to the model provider, so it is
+not a private channel (IMP-fa6cf8ee1eb6 / IMP-27cc7dceb97b). The webhook secret and the CI
+worker token are delivered **out of band** into the repo's Gitea Actions secret store —
+`gitea_secrets_set` is the receipt — and the workflow reads them from `${{ secrets.* }}`.
+
 **Expected outcome:** the action is **synchronous + idempotent on `label`** (re-running rotates secrets without creating duplicates). It creates a `System::DiskImageWebhook` row, a `Worker` row with role `ci_worker`, and sets repo Actions secrets. It does **not** create a `System::Task` and does **not** provision a NodeInstance — the runner is operator-installed on a host of their choosing.
 
-**Install + register the Gitea Actions runner** on a Docker-capable Linux host using the returned `ci_worker_token`:
+**Install + register the Gitea Actions runner** on a Docker-capable Linux host. `act_runner register --token` takes Gitea's own *runner registration* token (Gitea → Settings → Actions → Runners), not the platform CI worker token; the platform's worker token is already in the repo secret `POWERNODE_CI_WORKER_TOKEN` for the workflow to use when calling back:
 
 ```bash
 mkdir -p /opt/gitea-runner && cd /opt/gitea-runner
 curl -LO https://gitea.com/gitea/act_runner/.../act_runner   # or use your distro's package
 ./act_runner register \
   --instance https://gitea.example.org \
-  --token "<ci_worker_token>" \
+  --token "<gitea-runner-registration-token>" \
   --labels "disk-image-builder,amd64"
 systemctl --user enable --now act_runner.service             # or run ./act_runner daemon
 ```
@@ -129,7 +135,7 @@ platform.system_list_ci_workers()
 // → { workers: [{ id, name, role: "ci_worker", status: "online", ... }] }
 ```
 
-The `webhook_secret` is shown only once — copy it now (it is also already set in the repo's Actions secrets as `POWERNODE_WEBHOOK_SECRET`).
+You do not need to copy the webhook secret anywhere: bootstrap already set it in the repo's Actions secrets as `POWERNODE_DISK_IMAGE_WEBHOOK_SECRET`, and it is deliberately never returned on the MCP surface.
 
 If you need a separate webhook for another build pipeline, use Step 2's standalone `provision_disk_image_webhook` action. Otherwise this single bootstrap call covered both.
 
@@ -143,13 +149,20 @@ platform.provision_disk_image_webhook({
   // platform_api_base optional; defaults to POWERNODE_PUBLIC_URL
 })
 // → {
+//     success: true,
 //     webhook_id: "<uuid>",
 //     webhook_url: "https://platform.example.org/api/v1/system/webhooks/disk_image/built/<webhook_id>",
-//     webhook_secret: "<HMAC-secret-shown-once>"
+//     secret_delivery: "not disclosed here — ...",
+//     note: "..."
 //   }
 ```
 
-Webhooks are **per-pipeline** (the URL embeds the webhook UUID), not per-NodePlatform. The action does not accept `node_platform_id`. Copy the secret immediately — it's shown once.
+Webhooks are **per-pipeline** (the URL embeds the webhook UUID), not per-NodePlatform. The
+action does not accept `node_platform_id`. **The secret is not returned** — this webhook is
+inert until you fetch one over the operator API
+(`POST /api/v1/system/disk_image_webhooks/<id>/rotate_secret`, separate permission,
+approval-gated). If you want the secret delivered without a reveal at all, use
+`bootstrap_disk_image_ci` instead, which writes it straight into the repo's Actions secrets.
 
 ## Step 3 — Author the build repo
 
