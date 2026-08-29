@@ -67,7 +67,7 @@ module System
     # `name` are concatenated into the sensor's SIGNAL FINGERPRINT, which
     # becomes a RemediationOutcome key. An uncapped identifier there is
     # unbounded growth in a second table.
-    MAX_IDENTIFIER_CHARS = 128
+    MAX_IDENTIFIER_CHARS = ::System::IdentifierCaps::MAX_IDENTIFIER_CHARS
     MAX_PATH_CHARS       = 255
 
     PASS    = "pass"

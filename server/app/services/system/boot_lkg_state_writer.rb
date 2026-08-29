@@ -86,7 +86,8 @@ module System
     # agent can make it as large as it likes — and lands in a jsonb column read
     # on every fleet read.
     MAX_CONFINEMENTS     = 32
-    MAX_IDENTIFIER_CHARS = 128
+    # Stated once in System::IdentifierCaps — same bound, different write surface.
+    MAX_IDENTIFIER_CHARS = ::System::IdentifierCaps::MAX_IDENTIFIER_CHARS
     # Digits, not value: the two numeric fields are an int64 and an int on the
     # producer, and an unbounded integer literal is ~130KB per field per tick of
     # jsonb growth that the controller's rescue would swallow silently.

@@ -687,6 +687,24 @@ module System
 
     HEARTBEAT_STALE_AFTER = 3.minutes
 
+    # Cap for the node-supplied identifier strings ingested by
+    # #record_heartbeat! below (agent_version, boot_id, booted_image_git_sha).
+    # The heartbeat is written by an mTLS-authenticated node principal, but
+    # the value itself is arbitrary node input with no DB-level bound (plain
+    # `t.string` columns, unbounded on Postgres) — and it is later echoed
+    # verbatim to an MCP read surface (system_get_instance /
+    # system_list_instances), so an oversized value is a context-window /
+    # storage cost concern (IMP-dab7cb6a117a), not a validation concern:
+    # truncate here, never reject, so a malformed field can't fail an
+    # otherwise-good heartbeat.
+    #
+    # The bound itself lives in System::IdentifierCaps, stated once. The three
+    # state writers bound strings inside the `config` jsonb sub-documents they
+    # own via raw update_all SQL; this bounds real model columns assigned
+    # through the ordinary AR attribute path. Different helpers, same number —
+    # and a second literal kept in step by a comment is the drift this fixes.
+    MAX_IDENTIFIER_CHARS = ::System::IdentifierCaps::MAX_IDENTIFIER_CHARS
+
     has_many :node_certificates, class_name: "System::NodeCertificate", dependent: :destroy
     belongs_to :enrollment_token, class_name: "System::BootstrapToken", optional: true
 
@@ -701,7 +719,14 @@ module System
     # :booted_image_git_sha is the git_sha baked into the disk image the node
     # actually booted from (read from the UKI kernel cmdline); absent on nodes
     # running older agents or images built before campaign 019f505f.
+    #
+    # agent_version / boot_id / booted_image_git_sha are truncated to
+    # MAX_IDENTIFIER_CHARS before persisting — see the constant's comment.
     def record_heartbeat!(agent_version:, boot_id:, module_digests: {}, architecture: nil, booted_image_git_sha: nil)
+      boot_id = cap_identifier_length(boot_id)
+      agent_version = cap_identifier_length(agent_version)
+      booted_image_git_sha = cap_identifier_length(booted_image_git_sha)
+
       attrs = {
         last_heartbeat_at: Time.current,
         agent_version: agent_version,
@@ -881,6 +906,18 @@ module System
     end
 
     private
+
+    # Truncates (never rejects) a node-supplied identifier string to
+    # MAX_IDENTIFIER_CHARS before it is persisted — see that constant's
+    # comment for why this bounds rather than validates. Non-string / blank
+    # input passes through unchanged so the existing `.present?` branches in
+    # #record_heartbeat! keep their nil-vs-blank-vs-absent semantics.
+    def cap_identifier_length(value)
+      return value unless value.is_a?(String)
+      return value if value.length <= MAX_IDENTIFIER_CHARS
+
+      value[0, MAX_IDENTIFIER_CHARS]
+    end
 
     # Best-effort hardware-model lookup, normalised to a lowercase
     # snake_case token. Reads from `config["hardware_model"]` —

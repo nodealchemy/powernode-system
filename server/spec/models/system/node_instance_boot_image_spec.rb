@@ -95,6 +95,62 @@ RSpec.describe System::NodeInstance, type: :model do
       end
     end
 
+    describe "record_heartbeat! bounds node-supplied identifier strings (IMP-dab7cb6a117a)" do
+      let(:oversized) { "x" * 500 }
+
+      it "truncates an oversized boot_id to the cap and still records the heartbeat" do
+        before_time = Time.current
+
+        instance.record_heartbeat!(
+          agent_version: "1.0.0",
+          boot_id: oversized
+        )
+        instance.reload
+
+        expect(instance.boot_id.length).to eq(System::NodeInstance::MAX_IDENTIFIER_CHARS)
+        expect(instance.boot_id).to eq(oversized[0, System::NodeInstance::MAX_IDENTIFIER_CHARS])
+        expect(instance.last_heartbeat_at).to be >= before_time
+      end
+
+      it "truncates an oversized agent_version to the cap and still records the heartbeat" do
+        instance.record_heartbeat!(
+          agent_version: oversized,
+          boot_id: "boot-123"
+        )
+        instance.reload
+
+        expect(instance.agent_version.length).to eq(System::NodeInstance::MAX_IDENTIFIER_CHARS)
+        expect(instance.agent_version).to eq(oversized[0, System::NodeInstance::MAX_IDENTIFIER_CHARS])
+        expect(instance.last_heartbeat_at).to be_present
+      end
+
+      it "truncates an oversized booted_image_git_sha to the cap and still records the heartbeat" do
+        instance.record_heartbeat!(
+          agent_version: "1.0.0",
+          boot_id: "boot-123",
+          booted_image_git_sha: oversized
+        )
+        instance.reload
+
+        expect(instance.booted_image_git_sha.length).to eq(System::NodeInstance::MAX_IDENTIFIER_CHARS)
+        expect(instance.booted_image_git_sha).to eq(oversized[0, System::NodeInstance::MAX_IDENTIFIER_CHARS])
+        expect(instance.last_heartbeat_at).to be_present
+      end
+
+      it "leaves in-bound values untouched" do
+        instance.record_heartbeat!(
+          agent_version: "1.0.0",
+          boot_id: "boot-123",
+          booted_image_git_sha: "short-sha"
+        )
+        instance.reload
+
+        expect(instance.boot_id).to eq("boot-123")
+        expect(instance.agent_version).to eq("1.0.0")
+        expect(instance.booted_image_git_sha).to eq("short-sha")
+      end
+    end
+
     describe "#promoted_image_git_sha" do
       it "returns the platform's disk_image_git_sha" do
         platform.update!(disk_image_git_sha: "promoted-abc123")

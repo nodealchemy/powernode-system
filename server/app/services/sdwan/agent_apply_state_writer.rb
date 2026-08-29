@@ -60,7 +60,7 @@ module Sdwan
     # SIGNAL FINGERPRINT — which becomes a RemediationOutcome key. An
     # uncapped identifier there is unbounded growth in a second table, not
     # just in this column.
-    MAX_IDENTIFIER_CHARS       = 128
+    MAX_IDENTIFIER_CHARS       = ::System::IdentifierCaps::MAX_IDENTIFIER_CHARS
 
     OK      = "ok"
     ERROR   = "error"
