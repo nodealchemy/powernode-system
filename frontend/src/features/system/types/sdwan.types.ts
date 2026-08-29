@@ -193,6 +193,42 @@ export interface SdwanIssueUserDeviceResponse {
   bootstrap: SdwanBootstrapEnvelope;
 }
 
+// ──── Self-service device retrieval (my_devices) ───────────────────
+//
+// A DIFFERENT projection of the same Sdwan::UserDevice row than
+// `SdwanUserDevice` above. That one is the OPERATOR's view, served from
+// the network/access-grant-nested controller; this one is the RECIPIENT's
+// view, served from `MyDevicesController#index` under ownership
+// authorization with no permission string. The two shapes deliberately
+// do not share a type: the recipient projection carries no
+// `public_key` / `assigned_address` (it never touches key material at
+// all — see the controller's `serialize_device`), and it carries two
+// fields the operator projection does not.
+//
+// `status` is DERIVED server-side from the revoked_at / last_downloaded_at
+// timestamps (UserDevice has no status column) — see
+// `MyDevicesController#device_status`.
+export type SdwanMyDeviceStatus = 'revoked' | 'downloaded' | 'pending_download';
+
+export interface SdwanMyDevice {
+  id: string;
+  label: string;
+  status: SdwanMyDeviceStatus;
+  // THE AUTHORITATIVE DOWNLOAD PREDICATE — `UserDevice#owner_retrievable?`
+  // (`!revoked? && access_grant.active?`), surfaced as its own boolean by
+  // increment 3a precisely so the UI does not have to re-derive it.
+  //
+  // DO NOT infer retrievability from `status`. The two disagree on a real
+  // row: a device that has never been downloaded and is not revoked reads
+  // `status: "pending_download"` while its access grant is suspended, and
+  // `retrievable` is then false. A control gated on `status` offers that
+  // user a download the server answers 410 to. Gate on THIS field.
+  retrievable: boolean;
+  network_id: string;
+  created_at: string;
+  last_downloaded_at: string | null;
+}
+
 // ──── Slice 6: Federation ──────────────────────────────────────────
 
 export type SdwanFederationStatus = 'proposed' | 'accepted' | 'active' | 'suspended' | 'revoked';
