@@ -674,7 +674,11 @@ RSpec.describe Ai::Tools::SystemFleetTool do
   end
 
   describe "A2A capability token (L2.5)" do
-    let(:user) { create(:user, account: account, permissions: %w[system.node_instances.manage]) }
+    # ACTION_PERMISSIONS prices these separately and `manage` does not imply
+    # `read`: system_mint_peer_capability_token takes
+    # system.node_instances.manage, system_authorize_peer_call takes
+    # system.node_instances.read.
+    let(:user) { create(:user, account: account, permissions: %w[system.node_instances.manage system.node_instances.read]) }
     let(:cap_tool) { described_class.new(account: account, user: user) }
 
     def cap_peer(handle:, declared_skills: [], granted: [])
@@ -687,25 +691,42 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       inst
     end
 
-    it "system_mint_peer_capability_token mints a signed token when authorized" do
+    # IMP-27cc7dceb97b — this arm no longer mints. An MCP tool result is
+    # persisted into ai_messages.processing_metadata and forwarded to the model
+    # provider, so the envelope+signature pair cannot ride it; there is no
+    # endpoint that re-delivers a minted capability token, so a retrieval path
+    # would be a fiction. It refuses BEFORE touching the signing key and names
+    # the two real paths. The disclosure oracle is in
+    # system_fleet_secret_surface_spec.rb.
+    it "system_mint_peer_capability_token refuses on this surface without minting" do
       caller_inst = cap_peer(handle: "caller", granted: %w[embed-*])
       target_inst = cap_peer(handle: "target", declared_skills: [ { "name" => "embed-text" } ])
-      r = cap_tool.execute(params: { action: "system_mint_peer_capability_token",
-                                     caller_instance_id: caller_inst.id, target_instance_id: target_inst.id, skill: "embed-text" })
-      expect(r[:success]).to be true
-      expect(r[:data][:token][:sub]).to eq(caller_inst.id)
-      expect(r[:data][:token][:aud]).to eq(target_inst.id)
-      expect(r[:data][:token][:signature]).to be_present
-      expect(r[:data][:token][:public_key]).to be_present
-    end
+      expect(::System::PeerCapabilityTokenSigner).not_to receive(:mint!)
 
-    it "denies minting when the caller is not granted the skill" do
-      caller_inst = cap_peer(handle: "caller") # no grant
-      target_inst = cap_peer(handle: "target", declared_skills: [ { "name" => "embed-text" } ])
       r = cap_tool.execute(params: { action: "system_mint_peer_capability_token",
                                      caller_instance_id: caller_inst.id, target_instance_id: target_inst.id, skill: "embed-text" })
       expect(r[:success]).to be false
-      expect(r[:error]).to match(/not authorized/)
+      expect(r[:error]).to match(/system_authorize_peer_call/)
+      expect(r[:error]).to match(%r{node_instance_peers})
+    end
+
+    it "system_authorize_peer_call still answers the policy question with no secret" do
+      caller_inst = cap_peer(handle: "caller", granted: %w[embed-*])
+      target_inst = cap_peer(handle: "target", declared_skills: [ { "name" => "embed-text" } ])
+      r = cap_tool.execute(params: { action: "system_authorize_peer_call",
+                                     caller_instance_id: caller_inst.id, target_instance_id: target_inst.id, skill: "embed-text" })
+      expect(r[:success]).to be true
+      expect(r[:data][:authorized]).to be true
+    end
+
+    it "system_authorize_peer_call denies when the caller is not granted the skill" do
+      caller_inst = cap_peer(handle: "caller") # no grant
+      target_inst = cap_peer(handle: "target", declared_skills: [ { "name" => "embed-text" } ])
+      r = cap_tool.execute(params: { action: "system_authorize_peer_call",
+                                     caller_instance_id: caller_inst.id, target_instance_id: target_inst.id, skill: "embed-text" })
+      expect(r[:success]).to be true
+      expect(r[:data][:authorized]).to be false
+      expect(r[:data][:reason]).to be_present
     end
   end
 

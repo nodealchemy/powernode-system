@@ -273,10 +273,19 @@ func certPoolFromFile(path string) (*x509.CertPool, error) {
 }
 
 // loadCapabilityToken reads a platform-minted capability token file. It accepts
-// either the bare wire shape {envelope, signature} or the richer mint payload
-// (same two fields plus advisory handle/sub/aud/skill metadata) — only
+// either the bare wire shape {envelope, signature} or the richer payload (same
+// two fields plus advisory handle/sub/aud/skill metadata) — only
 // envelope+signature travel over the wire; the callee verifies offline against
 // the advertised signing key.
+//
+// WHERE THE FILE COMES FROM (IMP-27cc7dceb97b): not from an MCP call. The
+// platform's system_mint_peer_capability_token action refuses — a tool result
+// is persisted with the conversation and forwarded to the model provider, so it
+// cannot carry signing material. Real dispatch never needs this flag: the
+// platform mints server-side and delivers the token in the a2a_call task's
+// options ("capability_token"), which the agent's task loop reads directly.
+// This flag is a diagnostic, and its input is obtained by an operator from the
+// dispatched task payload (or minted out of band on the platform host).
 func loadCapabilityToken(path string) (*a2a.Token, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {

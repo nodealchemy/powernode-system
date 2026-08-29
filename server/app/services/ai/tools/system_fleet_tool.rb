@@ -661,13 +661,11 @@ module Ai
             }
           },
           "system_mint_peer_capability_token" => {
-            description: "A2A: mint an Ed25519-signed capability token proving caller_instance may invoke `skill` on target_instance via agent-to-agent MCP. GATED on the 4-gate A2A policy (PeerCapabilityService.authorize) — only issued if the call is authorized. The on-node A2A MCP server verifies the token's signature OFFLINE against the advertised public key (no per-call platform round-trip). Short-lived (default 5 min). Returns { envelope, signature, handle, public_key, expires_at, sub, aud, skill, jti }.",
-            parameters: {
-              caller_instance_id: { type: "string", required: true, description: "UUID of the instance the token authorizes to make the call (token subject)" },
-              target_instance_id: { type: "string", required: true, description: "UUID of the instance the token authorizes the call against (token audience)" },
-              skill: { type: "string", required: true, description: "Name of the peer skill the minted token authorizes" },
-              ttl_seconds: { type: "integer", required: false, description: "Default 300; clamped to 1..3600 (MAX_TTL_SECONDS) — revocation propagates via the agents' capability_keys pull, so token lifetime is hard-capped" }
-            }
+            description: "A2A capability token minting — NOT AVAILABLE on this surface and always refuses, whatever arguments you send (IMP-27cc7dceb97b). A tool result is persisted with the conversation and forwarded to the model provider, so the token's envelope+signature pair (Ed25519 signing material) cannot be delivered here; nothing is minted and no argument changes that. To CHECK whether a call is permitted use system_authorize_peer_call, which runs the same PeerCapabilityService.authorize gates and returns no secret. To PERFORM a CROSS-instance call use system_launch_agent_fleet, which mints the caller->target token server-side inside the delegation descriptor. For a peer to run its OWN offered skill use POST /api/v1/system/node_instance_peers/<peer_id>/execute (needs system.peers.execute).",
+            # Deliberately empty: the action refuses unconditionally, so
+            # advertising required arguments would only have every model
+            # assemble a call before learning it cannot work.
+            parameters: {}
           },
           "system_list_isolation_tiers" => {
             description: "L0: list the isolation tiers an agent deployment can request (native | gvisor | kata | firecracker | vm) with their Docker runtime / K8s RuntimeClass mapping, isolation strength, overhead, and host requirements. Pass isolation_tier inside a fleet_spec (system_launch_agent_fleet) to select one (default native).",
@@ -1385,7 +1383,7 @@ module Ai
             }
           },
           "system_list_disk_image_webhooks" => {
-            description: "List DiskImageWebhook rows for the current account (the inbound webhook receivers that ingest publications from Gitea Actions).",
+            description: "List DiskImageWebhook rows for the current account (the inbound webhook receivers that ingest publications from Gitea Actions). Returns id, label, status and receive counters — no slice of the HMAC secret (IMP-27cc7dceb97b); the operator UI's secret_preview comes from the REST endpoint GET /api/v1/system/disk_image_webhooks instead.",
             parameters: {}
           },
           "system_dispatch_module_build_batch" => {
@@ -3004,33 +3002,59 @@ module Ai
       end
 
       # A2A: mint an Ed25519 capability token (caller may invoke skill on target).
-      # Gated on PeerCapabilityService.authorize via the signer.
-      def mint_peer_capability_token(params)
-        caller_inst = account_instances.find_by(id: params[:caller_instance_id])
-        target_inst = account_instances.find_by(id: params[:target_instance_id])
-        return error_result("caller or target instance not found") unless caller_inst && target_inst
-
-        # F2-04 — clamp to MAX_TTL here as well as in the signer: the MCP
-        # surface must never accept an effectively-permanent token request.
-        ttl = params[:ttl_seconds].present? ? params[:ttl_seconds].to_i : ::System::PeerCapabilityTokenSigner::DEFAULT_TTL_SECONDS
-        ttl = ttl.clamp(1, ::System::PeerCapabilityTokenSigner::MAX_TTL_SECONDS)
-        token = ::System::PeerCapabilityTokenSigner.mint!(
-          caller_instance: caller_inst, target_instance: target_inst, skill: params[:skill].to_s, ttl_seconds: ttl
+      #
+      # SECRET DISCLOSURE (IMP-27cc7dceb97b). This arm used to return the
+      # token's `envelope` AND `signature` — together a complete bearer
+      # credential, and an Ed25519 signature produced from Vault-held signing
+      # material that PeerCapabilityTokenSigner is explicitly built never to
+      # log. An MCP tool result is not a private channel:
+      # Ai::AgentToolBridgeService truncates it into `tool_calls_log`, which
+      # Api::V1::Ai::ConversationsController persists into
+      # ai_messages.processing_metadata (durable jsonb, never re-filtered on
+      # read), and forwards the FULL json to the model provider as a
+      # role:"tool" message.
+      #
+      # SUBSTITUTE CHOSEN: a REFUSAL, and deliberately NOT the retrieval path
+      # used for the CI-worker token or the out-of-band delivery used for the
+      # Gitea PAT.
+      #
+      #   * There is no retrieval path to name. No endpoint anywhere
+      #     re-delivers a minted capability token to a caller. The two places
+      #     that mint server-side both keep it: 
+      #     Api::V1::System::NodeInstancePeersController#execute mints a
+      #     SELF-EDGE token (caller == target — the peer executes its own
+      #     offered skill) and hands it to the peer inside a System::Task's
+      #     options; System::AgentFleetMissionService#mint_delegation_token
+      #     mints the CROSS-instance edge this action was asked for and packages
+      #     it into the delegation descriptor. Neither returns it to the HTTP
+      #     caller. Advertising a recovery path that does not exist would be its
+      #     own defect.
+      #   * Returning the envelope while withholding the signature would be
+      #     worse than refusing: an artifact that looks like a token, cannot be
+      #     used as one, and still consumed the signing key.
+      #
+      # So this refuses BEFORE minting — nothing is signed, so nothing has to
+      # be withheld, and no Vault key is touched on a call that cannot deliver.
+      # Nobody is stranded, and the refusal names both real paths in-band. This
+      # is the shape Ai::Tools::SdwanTool#propose_federation_peer already holds
+      # for its acceptance token.
+      #
+      # The short DEFAULT_TTL (300s) is not a defense here: the persisted
+      # ai_messages row and the provider-side transcript outlive the token, and
+      # the disclosure is live for the whole window.
+      def mint_peer_capability_token(_params)
+        error_result(
+          "capability-token minting is not available over the MCP tool surface: a tool result is persisted with " \
+          "the conversation and forwarded to the model provider, so the envelope+signature pair cannot be " \
+          "delivered here without disclosing signing material. Nothing was minted. To CHECK whether a call is " \
+          "permitted, use system_authorize_peer_call — it runs the same PeerCapabilityService.authorize gates " \
+          "with the same arguments and returns no secret. To PERFORM a CROSS-instance call, use " \
+          "system_launch_agent_fleet: System::AgentFleetMissionService mints the caller->target token server-side " \
+          "and packages it into the delegation descriptor. To have a peer run its OWN offered skill (a self-edge, " \
+          "caller == target), use POST /api/v1/system/node_instance_peers/<peer_id>/execute (needs " \
+          "system.peers.execute, which this action's system.node_instances.manage does not imply); it mints " \
+          "internally and delivers the token to the peer inside the dispatched task."
         )
-        success_result(
-          token: {
-            envelope: token.envelope_json,
-            signature: token.signature_b64,
-            handle: token.handle,
-            public_key: token.public_key_b64,
-            expires_at: Time.at(token.claims["exp"]).utc.iso8601,
-            sub: token.claims["sub"], aud: token.claims["aud"], skill: token.claims["skill"], jti: token.claims["jti"]
-          }
-        )
-      rescue ::System::PeerCapabilityTokenSigner::NotAuthorizedError => e
-        error_result("not authorized: #{e.message}")
-      rescue ::System::PeerCapabilityTokenSigner::SigningError => e
-        error_result("token minting failed: #{e.message}")
       end
 
       # L0: discover the isolation tiers + their container-runtime mapping.
@@ -5763,12 +5787,26 @@ module Ai
         }
       end
 
+      # SECRET DISCLOSURE (IMP-27cc7dceb97b). `secret_preview` — the first 8
+      # characters of the live HMAC webhook secret — was dropped from this
+      # serializer. A plain removal, deliberately not a retrieval path or a
+      # refusal: this is a READ action, nothing is minted here, so there is
+      # nothing to deliver and nobody to strand.
+      #
+      # The column and the operator UI are untouched: the REST twin
+      # (Api::V1::System::DiskImageWebhooksController#index →
+      # CiWebhooksTab.tsx) is the surface that field was designed for —
+      # "this is the secret you saved earlier" only means something to a human
+      # looking at a screen. On the MCP arm nothing read it; `id` and `label`
+      # already disambiguate rows. So all it bought here was a partial
+      # disclosure into the same two durable sinks as a whole secret — the same
+      # reasoning badbaef6c used to delete the 12-char previews from
+      # bootstrap_disk_image_ci.
       def serialize_disk_image_webhook(wh)
         {
           id: wh.id,
           label: wh.label,
           status: wh.status,
-          secret_preview: wh.secret_preview,
           received_count: wh.received_count,
           last_received_at: wh.last_received_at&.iso8601,
           created_at: wh.created_at&.iso8601

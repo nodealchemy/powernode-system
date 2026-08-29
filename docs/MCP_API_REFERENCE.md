@@ -182,7 +182,7 @@ Backed by `Ai::Tools::SystemPackageRepositoryTool`. Manages apt/rpm package repo
 | Action | What it does | Audience |
 |---|---|---|
 | `system_list_disk_image_publications` | List publications for a NodePlatform (filterable by status / arch / git_sha) | operator, agent |
-| `system_list_disk_image_webhooks` | List webhook rows (per-pipeline; the URL embeds the webhook UUID) | operator, agent |
+| `system_list_disk_image_webhooks` | List webhook rows (per-pipeline; the URL embeds the webhook UUID). Carries no `secret_preview` (IMP-27cc7dceb97b) — the operator UI reads that from `GET /api/v1/system/disk_image_webhooks`, which gates on `system.disk_image_webhooks.read` rather than this action's `system.modules.read`, so it is not a drop-in fallback for every caller | operator, agent |
 | `system_set_default_disk_image_publication` | Flip the platform's default-boot publication to a different row | operator, agent |
 | `system_set_disk_image_retention` | Set per-NodePlatform `retention_count` (count-based; 7-day grace fixed) | operator, agent |
 | `system_list_disk_image_publications` (also exposed inline) | Operator-curated listing for the UI's publications panel | operator |
@@ -297,7 +297,7 @@ Backed by `Ai::Tools::SystemFleetTool`. The L0–L3 substrate for running agents
 | `system_grant_instance_mcp_tools` | L2 — grant an instance-agent the platform-MCP tool-name glob patterns it may invoke (default-deny until granted) | operator |
 | `system_discover_peers` | A2A — list online, operator-enabled agent peers in the account and the skills they offer (capability discovery) | operator, agent |
 | `system_grant_instance_peer_skills` | A2A — grant an instance-agent the peer skill-name glob patterns it may invoke on *other* instances (default-deny) | operator |
-| `system_mint_peer_capability_token` | A2A — mint an Ed25519-signed capability token proving `caller_instance` may invoke a `skill` on `target_instance`; gated on the A2A policy | operator, agent |
+| `system_mint_peer_capability_token` | **Always refuses** (IMP-27cc7dceb97b) — the envelope+signature pair is signing material and an MCP result is persisted with the conversation and forwarded to the model provider. Use `system_authorize_peer_call` to check the policy; `system_launch_agent_fleet` for a cross-instance call (token minted server-side into the delegation descriptor); `POST /api/v1/system/node_instance_peers/<id>/execute` for a self-edge call (needs `system.peers.execute`) | operator, agent |
 | `system_authorize_peer_call` | A2A — three-gate, default-deny authorization decision for a peer skill invocation (caller granted + target online/enabled + skill offered) | agent |
 | `system_launch_agent_fleet` | L3 — launch an agent-fleet orchestration mission: provision a fleet of agent-instances, grant L2 + L2.5 capabilities, delegate work | operator |
 | `system_agent_fleet_status` | L3 — inspect an agent-fleet mission: status, current_phase, member/assignment counts, aggregated report, reaped count | operator, agent |

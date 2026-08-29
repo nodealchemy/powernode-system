@@ -125,9 +125,19 @@ without rework.
   (`RequireAndVerifyClientCert`, default-off via `Config.A2AListenAddr`). Each call
   carries a **signed Ed25519 capability token** in `Authorization: Bearer` —
   minted by `System::PeerCapabilityTokenSigner` (envelope `{sub, aud, skill, exp,
-  jti}`, Vault-held key, never logged — *not* a JWT) via the
-  `system_mint_peer_capability_token` action, advertised at
-  `node_api/a2a/capability_keys`. The agent verifier checks `aud == self`,
+  jti}`, Vault-held key, never logged — *not* a JWT), advertised at
+  `node_api/a2a/capability_keys`. Minting happens **server-side only**, in two
+  places, neither of which returns the token to its caller:
+  `System::AgentFleetMissionService#mint_delegation_token` mints the
+  **cross-instance** edge and packages it into the delegation descriptor
+  (reached via `system_launch_agent_fleet`), and
+  `POST /api/v1/system/node_instance_peers/:id/execute` mints a **self-edge**
+  token (caller == target, the peer running its own offered skill) into the
+  dispatched `System::Task`. The `system_mint_peer_capability_token` MCP action
+  now refuses unconditionally (IMP-27cc7dceb97b): a tool result is persisted
+  with the conversation and forwarded to the model provider, so the
+  envelope+signature pair cannot ride it. `system_authorize_peer_call` answers
+  the policy question with no secret. The agent verifier checks `aud == self`,
   `sub == mTLS CN`, and `skill == tool`.
 - **Authorization — three gates** (`System::PeerCapabilityService`, default-deny,
   mirrors the federation "trust ≠ authorization" model at the instance layer):
