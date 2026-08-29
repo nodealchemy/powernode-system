@@ -3305,12 +3305,19 @@ end
     end
 
     describe "system_provision_ci_worker / list / terminate" do
-      it "creates a ci_worker Worker + returns one-time token" do
+      # IMP-27cc7dceb97b — the minted token is deliberately NOT on this
+      # surface any more (an MCP result is persisted into
+      # ai_messages.processing_metadata and forwarded to the model provider).
+      # The disclosure surface is ci_workers#rotate_token over HTTP. The
+      # disclosure oracle proper lives in
+      # system_fleet_ci_worker_mcp_disclosure_spec.rb.
+      it "creates a ci_worker Worker and names the retrieval path instead of returning the token" do
         r = call("system_provision_ci_worker", name: "build-runner-1")
         expect(r[:success]).to be true
         expect(r[:data][:ci_worker]).to be_present
-        expect(r[:data][:token_plaintext]).to be_present
-        expect(r[:data][:note]).to include("Not recoverable")
+        expect(r[:data]).not_to have_key(:token_plaintext)
+        expect(r[:data][:token_delivery]).to include("rotate_token")
+        expect(r[:data][:note]).to include("POWERNODE_CI_WORKER_TOKEN")
         worker = ::Worker.find_by(name: "build-runner-1")
         expect(worker.has_role?("ci_worker")).to be true
       end

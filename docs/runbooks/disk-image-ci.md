@@ -48,18 +48,29 @@ booting from this NodePlatform
 
 ## Phase 1 — Provision a CI worker ✅
 
-The CI worker is a `Worker` row (role `ci_worker`) — **not** a NodeInstance. The platform issues a registration token; the operator installs and registers a Gitea Actions runner against it on a host of their choosing (any docker-capable Linux box; doesn't have to be a Powernode-managed node).
+The CI worker is a `Worker` row (role `ci_worker`) — **not** a NodeInstance. The platform mints a token for it; the operator installs and registers a Gitea Actions runner on a host of their choosing (any docker-capable Linux box; doesn't have to be a Powernode-managed node).
 
 ```javascript
 platform.system_provision_ci_worker({
   name: "image-builder-1"   // operator-chosen identifier; this is the ONLY parameter
 })
-// → { worker: { id, name, role: "ci_worker", token: "<one-time-displayed>" }, ... }
+// → { success: true, data: { ci_worker: { id, name, roles: ["ci_worker"], status, ... },
+//                            token_delivery: "...", note: "..." } }
 ```
 
-Earlier doc revisions implied the action took `hostname`, `provider_region_id`, `provider_instance_type_id`, and `build_targets` and provisioned a managed NodeInstance — none of that is correct. The action is synchronous and just mints a `Worker` row + token.
+Earlier doc revisions implied the action took `hostname`, `provider_region_id`, `provider_instance_type_id`, and `build_targets` and provisioned a managed NodeInstance — none of that is correct. The action is synchronous and just mints a `Worker` row.
 
-**Install + register the runner manually** (per Gitea Actions docs) using the returned token:
+**The MCP action does NOT return the plaintext token** (IMP-27cc7dceb97b). An MCP tool result is truncated into `ai_messages.processing_metadata` and forwarded in full to the model provider, so it is not a private channel the way an HTTP response is. Fetch the token exactly once over the operator API:
+
+```bash
+curl -X POST -H "Authorization: Bearer $OPERATOR_JWT" \
+  https://<platform>/api/v1/system/ci_workers/<worker-id>/rotate_token
+# → { "success": true, "data": { "ci_worker": {...}, "token_plaintext": "<shown once>", "note": "..." } }
+```
+
+That endpoint is ungated (one response, no approval) but needs the `system.ci_workers.rotate_token` permission, which `system.ci_workers.create` does not imply. The `POST /api/v1/system/ci_workers` REST create returns the token directly if you have `system.ci_workers.create` and are provisioning over HTTP rather than through an agent.
+
+**Install + register the runner manually** (per Gitea Actions docs) using that token:
 
 ```bash
 # On the operator's chosen host

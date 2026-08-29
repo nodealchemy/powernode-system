@@ -1343,7 +1343,7 @@ module Ai
             }
           },
           "system_provision_ci_worker" => {
-            description: "Provision a CI worker (a Worker with the 'ci_worker' role). Returns the worker plus a one-time-shown plaintext token. Token is NOT recoverable — operator must store immediately.",
+            description: "Provision a CI worker (a Worker with the 'ci_worker' role). Returns the worker record only. The plaintext token is NOT returned on this surface — a tool result is persisted with the conversation and forwarded to the model provider. Obtain the token exactly once via POST /api/v1/system/ci_workers/<id>/rotate_token (ungated, one response; needs system.ci_workers.rotate_token, which this action's permission does not imply).",
             parameters: {
               name: { type: "string", required: true, description: "Display name for the new CI worker" }
             }
@@ -5451,6 +5451,36 @@ module Ai
         )
       end
 
+      # SECRET DISCLOSURE (IMP-27cc7dceb97b). This used to return
+      # `token_plaintext: worker.token`. It is the extension-side ALIAS of
+      # Ai::Tools::DiskImageOperatorTool#provision_ci_worker, which core fixed
+      # the same way in badbaef6c (IMP-fa6cf8ee1eb6) — and this alias is in the
+      # production instance grant, so an agent told "provision_ci_worker will
+      # not hand you the token" simply reached for this name instead.
+      #
+      # An MCP tool RESULT is not a private channel the way the HTTP response of
+      # Api::V1::System::CiWorkersController#create is.
+      # Ai::AgentToolBridgeService writes a 200-char truncation of the result
+      # into `tool_calls_log`, which Api::V1::Ai::ConversationsController
+      # persists into ai_messages.processing_metadata — a durable jsonb column
+      # never re-filtered on read (Ai::SensitiveParams cannot reach it: the
+      # value is a String and `.filter` returns non-Hash input unchanged) — and
+      # it forwards the FULL json as a role:"tool" message to the model
+      # provider on the next turn. So a mint that is correctly "shown once,
+      # never stored" over HTTP became here a durable at-rest copy AND an
+      # outbound transmission to a third party.
+      #
+      # SUBSTITUTE CHOSEN: a retrieval path, not a refusal. Nothing is
+      # stranded — Api::V1::System::CiWorkersController#rotate_token
+      # (routes.rb: `resources :ci_workers ... member { post :rotate_token }`)
+      # mints a fresh, immediately usable token and returns it in ONE HTTP 200.
+      # It is NOT `gate!`-wrapped, so unlike disk_image_webhooks#rotate_secret
+      # it cannot answer `pending` under the default intervention policy; it
+      # gates only on the `system.ci_workers.rotate_token` permission, which
+      # this action's own `system.ci_workers.create` does not imply.
+      #
+      # The REST twin is deliberately unchanged and remains the disclosure
+      # surface: an HTTP response acquires neither sink.
       def provision_ci_worker(params)
         worker = ::Worker.create_worker!(
           name: params[:name],
@@ -5458,11 +5488,15 @@ module Ai
           roles: [ "ci_worker" ]
         )
 
+        # worker.token holds the plaintext (a virtual attribute set by
+        # create_worker!). It is deliberately NOT bound into the return.
         success_result(
           ci_worker: ::System::CiWorkerSerializer.new(worker).as_json,
-          # SHOWN EXACTLY ONCE — operator must store immediately
-          token_plaintext: worker.token,
-          note: "Store this token in your CI secrets as POWERNODE_CI_WORKER_TOKEN. Not recoverable — rotate to get a new one."
+          token_delivery: "not disclosed here — a tool result is persisted with the conversation and forwarded to the " \
+                          "model provider. Get the plaintext exactly once at " \
+                          "POST /api/v1/system/ci_workers/#{worker.id}/rotate_token (ungated, answers in one response; " \
+                          "needs system.ci_workers.rotate_token, which this action's permission does not imply).",
+          note: "Fetch the token over the operator API and store it in your CI secrets as POWERNODE_CI_WORKER_TOKEN."
         )
       end
 

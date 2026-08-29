@@ -195,7 +195,7 @@ See [`DISK_IMAGE_CI.md`](./DISK_IMAGE_CI.md) for the operator-facing workflow th
 
 | Action | What it does | Audience |
 |---|---|---|
-| `system_provision_ci_worker` | Mint a `Worker` row (role `ci_worker`) + a one-time registration token; operator installs the Gitea Actions runner manually against the token | operator |
+| `system_provision_ci_worker` | Mint a `Worker` row (role `ci_worker`). Returns the worker record only — the plaintext token is **not** returned on the MCP surface (a tool result is persisted with the conversation and forwarded to the model provider, IMP-27cc7dceb97b). Fetch it once via `POST /api/v1/system/ci_workers/<id>/rotate_token` | operator |
 | `system_terminate_ci_worker` | Tear down a CI worker row (Gitea deregistration is operator-managed) | operator |
 | `system_list_ci_workers` | List CI workers + their last seen-online timestamp | operator, agent |
 | `provision_ci_worker` (parent platform alias) | Same as `system_provision_ci_worker`; legacy name from the parent platform tool registry | operator |
