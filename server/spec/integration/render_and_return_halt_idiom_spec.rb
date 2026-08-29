@@ -535,11 +535,6 @@ RSpec.describe "render-and-return halt idiom (authorization bypass guard)" do
   # separate offer, and batch-fixing auto-discovered authorization sites is
   # exactly what the bulk-operation rule forbids.
   KNOWN_UNFIXED_BARE_RENDER = {
-    "server/app/controllers/api/v1/ai/team_templates_reviews_controller.rb#authorize_code_reviews_read!" =>
-      "core (parent repo), outside IMP-563999967998's pinned federation scope - queued",
-    "server/app/controllers/api/v1/ai/team_templates_reviews_controller.rb#authorize_code_reviews_manage!" =>
-      "core (parent repo); create_review_comment/update_review_comment write behind the 403 - queued",
-
     "extensions/marketing/server/app/controllers/api/v1/marketing/campaign_contents_controller.rb#authorize_read!" =>
       "marketing extension, outside this task's scope - queued",
     "extensions/marketing/server/app/controllers/api/v1/marketing/campaign_contents_controller.rb#authorize_manage!" =>
