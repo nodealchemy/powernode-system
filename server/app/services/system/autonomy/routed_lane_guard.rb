@@ -30,12 +30,19 @@ module System
     # every approval minted in the extension. Six sites drive core
     # Ai::AutonomyGate.evaluate directly, which mints its own approvals and
     # never passes through here; they are safe only because their action
-    # categories are disjoint from DecisionEngine.routed_action_categories.
+    # categories are disjoint from the routed set.
+    #
+    # WHERE THE ROUTED SET COMES FROM. Not DecisionEngine alone —
+    # System::Autonomy::ActionCategoryRouter, which asks every router that
+    # DECLARES itself and answers WHICH one routes a category. Reading only
+    # SIGNAL_BINDINGS made AdaptationGate's four change_type-only categories
+    # invisible here, so their missing rows took the quiet arm below, and the
+    # alarm named the wrong constant besides (IMP-7a6c9a70e050).
     #
     # WHY THIS IS A MIXIN AND NOT A DecisionEngine CLASS METHOD
     #
-    # The routed SET belongs to DecisionEngine (and is read from it below), but
-    # the REFUSAL is the gate's own contract: it returns the gate's result hash,
+    # The routed SET belongs to the routers that declare it (and is read from
+    # ActionCategoryRouter below), but the REFUSAL is the gate's own contract: it returns the gate's result hash,
     # logs under the gate's own tag, and names the gate's own agent. Putting it
     # here makes adopting it a structural, observable property of a gate class —
     # `Klass.include?(RoutedLaneGuard)` — which a spec can enumerate and enforce
@@ -63,10 +70,14 @@ module System
       # Callers hand over the WHOLE arm rather than asking a predicate and
       # composing their own result, so a second gate cannot adopt half of it.
       def refuse_unpermitted_action(action_category)
-        if routed_lane?(action_category)
+        # NAME THE ROUTER, never assume one. This said "routed by DecisionEngine"
+        # unconditionally, which is false for the four `project.*` categories only
+        # System::AdaptationGate routes — an operator following the alarm to
+        # SIGNAL_BINDINGS would find nothing there (IMP-7a6c9a70e050).
+        if (router = ::System::Autonomy::ActionCategoryRouter.router_for(action_category))
           Rails.logger.error(
             "[#{autonomy_log_tag}] MISCONFIGURED LANE: '#{action_category}' is routed by " \
-            "DecisionEngine but has NO intervention policy row on agent '#{agent&.name}'. " \
+            "#{router.name} but has NO intervention policy row on agent '#{agent&.name}'. " \
             "Every signal on this lane is being blocked and no operator is reached. " \
             "Re-run that agent's seed against this database."
           )
@@ -80,10 +91,6 @@ module System
           "[#{autonomy_log_tag}] Action '#{action_category}' not in agent '#{agent&.name}' policies — blocked"
         )
         { decision: :blocked, reason: "not_permitted" }
-      end
-
-      def routed_lane?(action_category)
-        ::System::Fleet::DecisionEngine.routed_action_categories.include?(action_category)
       end
 
       # Log prefix, derived so a new gate inherits a correct tag without

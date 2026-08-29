@@ -33,6 +33,17 @@ module System
   #      share a single queue, and what lets a routed plan be released by the
   #      ordinary approved lane instead of a bespoke callback.
   class AdaptationGate
+    # THIS CLASS IS A ROUTER, and for a long time nothing knew it.
+    #
+    # CHANGE_TYPE_CATEGORIES below maps a change_type onto a
+    # `project.<change_type>` action category and hands it to
+    # FleetAutonomyService#gate_action! — four of which
+    # DecisionEngine::SIGNAL_BINDINGS never names. RoutedLaneGuard read only
+    # the engine's set, so a MISSING policy row for those four took its quiet
+    # `not_permitted` arm and arrived back here labelled "blocked by policy"
+    # (IMP-7a6c9a70e050). Declaring the routing is what makes the guard see it.
+    extend ::System::Autonomy::ActionCategoryRouter
+
     AUTO_APPLY = "auto_apply_within_bounds"
     ROUTED     = "routed"
 
@@ -90,6 +101,22 @@ module System
     CAUSE_REJECTION_COOLDOWN = "suppressed_by_rejection_cooldown"
     CAUSE_NO_REQUEST_STORE   = "no_chain_or_request_store"
     CAUSE_UNKNOWN            = "unknown"
+
+    # A FIFTH CAUSE, split out of CAUSE_POLICY_BLOCKED (IMP-7a6c9a70e050).
+    # `permitted_actions` IS the policy-row set, so the gate's :blocked arm
+    # covers two opposite situations: the operator answered no, and nobody has
+    # ever configured this lane. The second is a deploy defect — db:seed is
+    # first-boot-only — and telling an operator their policy blocked it sends
+    # them to tune a row that does not exist.
+    #
+    # TAKEN FROM THE SEAM, never re-spelled. RoutedLaneGuard is what decides a
+    # lane is routed-but-unseeded and what stamps the gate value, so it owns the
+    # word; aliasing keeps one source of truth. And a copied literal could not
+    # be caught later — frozen string literals are interned globally (the pragma
+    # is hook-enforced repo-wide), so a duplicate `"policy_missing"` is the SAME
+    # object and passes every equality and identity check right up until someone
+    # edits one of the two spellings.
+    CAUSE_POLICY_MISSING = ::System::Autonomy::RoutedLaneGuard::GATE_POLICY_MISSING
 
     # FleetAutonomyService's suppression vocabulary -> ours. Anything unmapped
     # stays CAUSE_UNKNOWN, which the consumer treats as loudly as a real gap:
@@ -150,12 +177,28 @@ module System
           { disposition: ROUTED, approval_request_id: nil, cause: cause,
             detail: detail_for_cause(cause, gate) }
         else
-          # :blocked — the policy forbids this category, or the agent does not
-          # permit it. Not cleared, and deliberately NOT reported as an absent
-          # gate: the gate answered, and the answer was no.
-          { disposition: ROUTED, approval_request_id: nil,
-            cause: CAUSE_POLICY_BLOCKED,
-            detail: "blocked by policy: #{gate[:gate].presence || gate[:reason]}" }
+          # :blocked — two OPPOSITE failures share this arm, and which one it is
+          # decides where the operator is sent (IMP-7a6c9a70e050).
+          #
+          #   * an unseeded lane   — nothing answered; the configuration is
+          #     absent. RoutedLaneGuard stamps GATE_POLICY_MISSING because this
+          #     class declares the category routed. Re-run the seed.
+          #   * anything else      — the gate answered, and the answer was no.
+          #     Deliberately NOT reported as an absent gate.
+          #
+          # Read the GATE, never infer from the reason string: "not_permitted"
+          # is what both looked like before the guard could see this router's
+          # categories, which is exactly how the first reading got lost.
+          if gate[:gate] == CAUSE_POLICY_MISSING
+            { disposition: ROUTED, approval_request_id: nil,
+              cause: CAUSE_POLICY_MISSING,
+              detail: "no intervention policy row for #{category} on the " \
+                      "#{FLEET_AGENT_NAME} agent — re-run that agent's seed against this database" }
+          else
+            { disposition: ROUTED, approval_request_id: nil,
+              cause: CAUSE_POLICY_BLOCKED,
+              detail: "blocked by policy: #{gate[:gate].presence || gate[:reason]}" }
+          end
         end
       end
 
@@ -271,6 +314,14 @@ module System
 
       def action_category_for(change_type)
         CHANGE_TYPE_CATEGORIES.fetch(change_type.to_s, DEFAULT_CATEGORY)
+      end
+
+      # The ActionCategoryRouter declaration — EXACTLY what #action_category_for
+      # can return, derived from the same constants rather than restated, so a
+      # new change_type cannot be routed without becoming visible to
+      # RoutedLaneGuard.
+      def routed_action_categories
+        [ DEFAULT_CATEGORY, *CHANGE_TYPE_CATEGORIES.values ].uniq.freeze
       end
 
       private

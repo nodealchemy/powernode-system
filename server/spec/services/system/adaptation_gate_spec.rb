@@ -208,6 +208,79 @@ RSpec.describe System::AdaptationGate do
     end
   end
 
+  # IMP-7a6c9a70e050 — TWO FAILURES BEHIND ONE :blocked ARM, AGAIN.
+  #
+  # This class is a SECOND router: it maps a change_type onto a
+  # `project.<change_type>` category that DecisionEngine::SIGNAL_BINDINGS never
+  # names, and hands it to the same FleetAutonomyService#gate_action!. The
+  # misconfigured-lane seam (System::Autonomy::RoutedLaneGuard, IMP-5a450411d873
+  # / IMP-b400ec1a2df8) could not see those four categories, so a MISSING policy
+  # row took the quiet `not_permitted` arm and arrived here labelled
+  # CAUSE_POLICY_BLOCKED — "blocked by policy" for a lane no policy has ever
+  # answered. An operator was sent to policy tuning when the fix was re-running
+  # a seed.
+  #
+  # BOTH DIRECTIONS ARE ASSERTED. A change that collapsed the two into
+  # policy_missing would be the same misdiagnosis pointed the other way —
+  # reporting an operator's deliberate block as a deploy defect — and a
+  # one-directional oracle passes it.
+  describe "the two failures wearing the :blocked arm" do
+    def request_count = ::Ai::ApprovalRequest.where(account: account).count
+
+    context "a routed category with NO policy row (nothing answered)" do
+      it "declares policy_missing, not an operator's block" do
+        answer = disposition
+
+        expect(answer[:disposition]).to eq("routed")
+        expect(answer[:cause]).to eq(::System::Autonomy::RoutedLaneGuard::GATE_POLICY_MISSING)
+        expect(answer[:approval_request_id]).to be_nil
+      end
+
+      # The detail string is what an operator reads. "blocked by policy" is the
+      # sentence that sent them to the Autonomy modal instead of the seed.
+      it "does not describe the absence of configuration as a policy decision" do
+        expect(disposition[:detail].to_s).not_to match(/blocked by policy/)
+      end
+
+      it "lands no write" do
+        expect { disposition }.not_to change { request_count }
+        expect(plan.reload.status).to eq("draft")
+      end
+    end
+
+    context "a routed category with an EXPLICIT block row (the operator answered)" do
+      before { policy!("block") }
+
+      it "still declares policy_blocked" do
+        answer = disposition
+
+        expect(answer[:disposition]).to eq("routed")
+        expect(answer[:cause]).to eq(described_class::CAUSE_POLICY_BLOCKED)
+        expect(answer[:cause]).not_to eq(::System::Autonomy::RoutedLaneGuard::GATE_POLICY_MISSING)
+      end
+
+      it "lands no write" do
+        expect { disposition }.not_to change { request_count }
+        expect(plan.reload.status).to eq("draft")
+      end
+    end
+
+    # The four categories this offer is about. project.adapt and
+    # project.cost_control were already visible through SIGNAL_BINDINGS; these
+    # are the ones only this router names, and each must reach the seam.
+    #
+    # The category comes from the change_type ARGUMENT, which is what
+    # AdaptationDispatchService passes; plan_data's own change_type is not
+    # consulted here, so it deliberately stays at the shared fixture value.
+    %w[relocate schema_change security_change scale_horizontal].each do |change_type|
+      it "reports a missing row for #{change_type} as policy_missing" do
+        answer = disposition(change_type: change_type)
+
+        expect(answer[:cause]).to eq(::System::Autonomy::RoutedLaneGuard::GATE_POLICY_MISSING)
+      end
+    end
+  end
+
   # IMP-fec9abb225c6 (1) — close_plan! rejected a plan in ANY status.
   #
   # Its only guard was `plan.status == "rejected"`, and Ai::GoalPlan#reject! is a

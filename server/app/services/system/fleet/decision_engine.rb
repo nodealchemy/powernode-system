@@ -19,6 +19,13 @@ module System
       # configured (single-plane) and until #14 stamps owners.
       include ::System::Autonomy::ControlPlaneFence
 
+      # This engine ROUTES: SIGNAL_BINDINGS maps a signal kind onto an
+      # action_category that both gate_action! call sites hand to the gate.
+      # Declaring that makes the routing enumerable, so RoutedLaneGuard reads
+      # the union of every router rather than this one alone
+      # (IMP-7a6c9a70e050). `routed_action_categories` below is the declaration.
+      extend ::System::Autonomy::ActionCategoryRouter
+
       # RCP v2 (campaign 019f9250, increment p0c) — INV-1: no self-management.
       # A DISTINCT fence from ControlPlaneFence above (see
       # SelfManagementFence's doc comment): this one answers "is the target
@@ -611,7 +618,8 @@ module System
         }
       }.freeze
 
-      # Every action_category the platform ROUTES a signal to.
+      # Every action_category THIS ROUTER routes a signal to — its
+      # ActionCategoryRouter declaration.
       #
       # This is the set that MUST have an Ai::InterventionPolicy row on the
       # agent running the sense pass. Without a row, FleetAutonomyService
@@ -621,7 +629,10 @@ module System
       #
       # Exposed so the gate can tell a MISCONFIGURED lane (routed by code,
       # unseeded in this database) from an arbitrary unknown category, and so
-      # a spec can assert every routed lane is actually seeded.
+      # a spec can assert every routed lane is actually seeded. NOT the whole
+      # routed set — the gate reads ActionCategoryRouter's union, because
+      # System::AdaptationGate routes four `project.*` categories that appear
+      # in no signal binding.
       def self.routed_action_categories
         SIGNAL_BINDINGS.values.filter_map { |b| b[:action_category] }.uniq.freeze
       end

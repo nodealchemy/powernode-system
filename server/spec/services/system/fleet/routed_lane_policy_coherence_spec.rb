@@ -85,10 +85,15 @@ RSpec.describe "routed lane / intervention policy coherence" do
       .pluck(:action_category)
   end
 
-  it "seeds an intervention policy row for EVERY action_category the DecisionEngine routes to" do
+  # THE UNION, not DecisionEngine alone (IMP-7a6c9a70e050). System::AdaptationGate
+  # is a second router: it resolves a `project.<change_type>` category that no
+  # signal binding names, and four of those were outside every assertion here.
+  # System::Autonomy::ActionCategoryRouter is the declared set the gate itself
+  # reads, so asserting against it is asserting against what actually blocks.
+  it "seeds an intervention policy row for EVERY action_category the platform routes to" do
     expect(agent).to be_present, "Fleet Autonomy agent was not seeded"
 
-    routed = System::Fleet::DecisionEngine.routed_action_categories
+    routed = System::Autonomy::ActionCategoryRouter.routed_action_categories
     expect(routed).not_to be_empty
 
     fleet_seeded = policies_for("Fleet Autonomy")
@@ -103,8 +108,9 @@ RSpec.describe "routed lane / intervention policy coherence" do
     end
 
     expect(missing).to be_empty, <<~MSG
-      These action_categories are ROUTED by DecisionEngine::SIGNAL_BINDINGS but have
-      no active intervention policy row on the agent that gates them:
+      These action_categories are ROUTED by a declared
+      System::Autonomy::ActionCategoryRouter but have no active intervention policy
+      row on the agent that gates them:
 
         #{missing.join("\n  ")}
 
@@ -128,14 +134,14 @@ RSpec.describe "routed lane / intervention policy coherence" do
   it "makes every routed category permitted from the gate's own perspective" do
     service = System::Fleet::FleetAutonomyService.new(account: account, agent: agent)
     permitted = service.send(:permitted_actions)
-    fleet_gated = System::Fleet::DecisionEngine.routed_action_categories - CVE_GATED
+    fleet_gated = System::Autonomy::ActionCategoryRouter.routed_action_categories - CVE_GATED
 
     expect(fleet_gated - permitted).to be_empty
   end
 
   describe "a missing row is reported as MISCONFIGURATION, not as a policy decision" do
     let(:routed_category) do
-      (System::Fleet::DecisionEngine.routed_action_categories - CVE_GATED).first
+      (System::Autonomy::ActionCategoryRouter.routed_action_categories - CVE_GATED).first
     end
 
     it "blocks with the policy_missing gate and logs at error level" do

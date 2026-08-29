@@ -1674,13 +1674,14 @@ RSpec.describe System::Fleet::DecisionEngine do
     # category the SIGNAL binding gates on. An account holding a project.adapt
     # policy but none for project.scale_horizontal therefore takes the gate's
     # :blocked arm on every SLO breach, which returns ROUTED with NO request
-    # minted.
+    # minted — declared policy_missing, because nothing answered
+    # (IMP-7a6c9a70e050).
     #
     # The question this pins is "what would an operator actually see", not "what
     # did the code return": nothing was minted, so nobody owns this plan. It must
     # NOT report applied — the plan wedges in draft, and the validate-arc
     # exemption means F3-11 cannot escalate it either.
-    it "reports a policy-blocked plan as unapplied, with nothing minted to act on" do
+    it "reports a gate-refused plan as unapplied, with nothing minted to act on" do
       decision = nil
       expect { decision = decide_slo_violation }
         .not_to change { Ai::ApprovalRequest.where(account: account).count }
@@ -1690,7 +1691,10 @@ RSpec.describe System::Fleet::DecisionEngine do
         gate: Ai::Provisioning::AdaptationDispatchService::GATE_ROUTED
       )
       expect(decision[:remediation][:approval_request_id]).to be_nil
-      expect(decision[:remediation][:reason]).to match(/blocked by policy/)
+      # IMP-7a6c9a70e050: no row exists here, so the reason names the MISSING
+      # configuration. It used to say "blocked by policy" — a policy decision
+      # nobody had made.
+      expect(decision[:remediation][:reason]).to match(/no intervention policy row for project\.scale_horizontal/)
       expect(Ai::GoalPlan.find(decision[:remediation][:plan_id]).status).to eq("draft")
     end
 
@@ -2299,7 +2303,14 @@ RSpec.describe System::Fleet::DecisionEngine do
     # The blocked arm had no reader. applied: false is honest but inert, so the
     # only symptom of a missing policy was a mission that silently never
     # adapted. It has to say so out loud.
-    it "raises a fleet event when the gate blocks for want of a policy" do
+    #
+    # IMP-7a6c9a70e050 — and it has to say the RIGHT thing. There is no
+    # project.scale_horizontal row in this context, so nothing has answered:
+    # that is a deploy defect (db:seed is first-boot-only), not a policy
+    # decision. It used to arrive as "policy_blocked / blocked by policy",
+    # sending an operator to the Autonomy modal to tune a row that does not
+    # exist.
+    it "raises a fleet event naming the MISSING configuration when no policy row exists" do
       expect { decide_slo_violation }
         .to change { System::FleetEvent.where(kind: "fleet.adaptation_blocked").count }.by(1)
 
@@ -2307,8 +2318,26 @@ RSpec.describe System::Fleet::DecisionEngine do
       expect(event.severity).to eq("high")
       expect(event.payload["mission_id"]).to eq(mission.id)
       expect(event.payload["action_category"]).to eq("project.scale_horizontal")
-      expect(event.payload["detail"]).to match(/blocked by policy/)
+      expect(event.payload["cause"]).to eq("policy_missing")
+      expect(event.payload["detail"]).not_to match(/blocked by policy/)
+    end
+
+    # THE OTHER DIRECTION, and it is not symmetric decoration: a change that
+    # collapsed both cases into policy_missing would report an operator's own
+    # decision as a configuration error — the same misdiagnosis inverted. A
+    # one-directional oracle passes it.
+    it "still reports an operator's explicit block as a policy decision" do
+      Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                     action_category: "project.scale_horizontal",
+                                     policy: "block", is_active: true)
+
+      expect { decide_slo_violation }
+        .to change { System::FleetEvent.where(kind: "fleet.adaptation_blocked").count }.by(1)
+
+      event = System::FleetEvent.where(kind: "fleet.adaptation_blocked").last
+      expect(event.severity).to eq("high")
       expect(event.payload["cause"]).to eq("policy_blocked")
+      expect(event.payload["detail"]).to match(/blocked by policy/)
     end
 
     # IMP-fec9abb225c6 (3) — THE UNBOUNDED ALARM.
@@ -2375,7 +2404,7 @@ RSpec.describe System::Fleet::DecisionEngine do
 
       expect(cost[:remediation][:applied]).to be(false),
                                               "fixture drifted — this example needs a plan that did NOT proceed"
-      expect(cost[:remediation][:reason]).to match(/blocked by policy/),
+      expect(cost[:remediation][:reason]).to match(/no intervention policy row for project\.scale_horizontal/),
                                              "the fold clobbered the only statement of why nothing moved"
       expect(cost[:remediation][:folded_into]).to match(/project_cost_breach folded into the in-flight/)
     end
