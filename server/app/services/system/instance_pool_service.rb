@@ -780,11 +780,12 @@ module System
           next
         end
 
-        member.update!(
-          config: member.config.merge(
-            "last_seed_reload_at" => now.iso8601,
-            "seed_reload_count" => attempts + 1
-          )
+        # Two keys only — see System::ConfigDocument. `member` came out of the
+        # query at the top of this loop and has since survived a provider
+        # power-cycle round trip, so its document is stale by construction.
+        member.merge_config!(
+          "last_seed_reload_at" => now.iso8601,
+          "seed_reload_count" => attempts + 1
         )
         cycled += 1
       end
@@ -1145,7 +1146,7 @@ module System
       end
       return false if flagged_at && flagged_at >= member.pool_acquired_at
 
-      member.update!(config: (member.config || {}).merge("pool_claimed_stale_flagged_at" => now.iso8601))
+      member.merge_config!("pool_claimed_stale_flagged_at" => now.iso8601)
       true
     end
 

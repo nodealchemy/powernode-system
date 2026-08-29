@@ -195,7 +195,10 @@ module System
         new_binding.delete("device_name")
       end
 
-      node_instance.update!(config: (node_instance.config || {}).merge("storage_volume" => new_binding))
+      # Only `storage_volume` — see System::ConfigDocument. `node_instance` is
+      # an association on a migration row that has been open across a sync and
+      # a cutover, so its document is arbitrarily old.
+      node_instance.merge_config!("storage_volume" => new_binding)
       append_audit!(
         message: "Promoted binding to target volume #{target_volume.id}",
         details: { volume_id: target_volume.id, subpath: target_subpath }

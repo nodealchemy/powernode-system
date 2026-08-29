@@ -203,13 +203,15 @@ module System
         "created_at" => Time.current.iso8601,
         "status"     => cloud_result[:status]
       }
-      instance.update!(config: config.merge("created_images" => images))
+      # Only `created_images` — see System::ConfigDocument. The instance was
+      # loaded before a cloud round trip; the whole document is stale by now.
+      instance.merge_config!("created_images" => images)
     end
 
     def forget_cloud_image(instance, image_id)
       config = instance.config || {}
       images = Array(config["created_images"]).reject { |img| img["image_id"] == image_id }
-      instance.update!(config: config.merge("created_images" => images))
+      instance.merge_config!("created_images" => images)
     end
 
     # ----- Local synthesis primitives — return size_bytes on success -----

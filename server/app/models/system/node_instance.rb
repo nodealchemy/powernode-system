@@ -112,6 +112,12 @@ module System
     # indistinguishable from one that never ran.
     include System::PreservesTaskHistory
 
+    # `config` is a SHARED jsonb document with a dozen unaware writers (see
+    # System::ConfigDocument). Write a key with #merge_config! / remove one with
+    # #delete_config_keys! — never a read-modify-write of the whole document,
+    # which silently erases whatever landed in the interval.
+    include System::ConfigDocument
+
     # Volume associations (Release 4)
     has_many :provider_volumes, class_name: "System::ProviderVolume"
 
@@ -644,10 +650,14 @@ module System
       suggestion = suggest_network_profile
       promote = suggestion == "heavyweight" && network_profile == "lightweight"
 
-      update!(
-        network_profile: promote ? "heavyweight" : network_profile,
-        config: (config || {}).merge("network_profile_source" => "suggested_first_heartbeat")
-      )
+      # Column and config document written SEPARATELY — see
+      # System::ConfigDocument. This runs INSIDE the heartbeat request cycle,
+      # alongside the four telemetry writers, so folding the jsonb into the
+      # same `update!` would have this path erase its own siblings' documents.
+      transaction do
+        update!(network_profile: promote ? "heavyweight" : network_profile)
+        merge_config!("network_profile_source" => "suggested_first_heartbeat")
+      end
 
       if promote
         ::System::Fleet::EventBroadcaster.emit!(
@@ -1070,8 +1080,8 @@ module System
     #      AGENT_HARDWARE_HINT_SOURCE_KEY). Any other writer's value wins
     #      and keeps winning.
     #
-    # update_columns (like record_capabilities! above) — this runs on every
-    # heartbeat and must not fire callbacks or touch updated_at. The
+    # Written with `touch: false` (like record_capabilities! above) — this runs
+    # on every heartbeat and must not fire callbacks or touch updated_at. The
     # no-change early return keeps the steady state write-free.
     def apply_agent_hardware_hints!(caps)
       hints = self.class.hardware_hints_from_capabilities(caps)
@@ -1086,11 +1096,19 @@ module System
       end
       return if writable.empty?
 
-      new_cfg = cfg.merge(writable)
-                   .merge(AGENT_HARDWARE_HINT_SOURCE_KEY => last.merge(writable))
-      return if new_cfg == cfg
+      document = writable.merge(AGENT_HARDWARE_HINT_SOURCE_KEY => last.merge(writable))
+      # The no-change early return is load-bearing: in steady state the agent
+      # re-reports identical hints on every heartbeat, and `writable` is
+      # non-empty for them (they match their recorded source). Comparing the
+      # SUBSET this would write, rather than a rebuilt whole document, keeps
+      # that check exact now that only the subset is written.
+      return if document.all? { |key, value| cfg.key?(key) && cfg[key] == value }
 
-      update_columns(config: new_cfg)
+      # Only the hint keys plus their provenance key — see
+      # System::ConfigDocument. Another heartbeat-cycle path, and the one most
+      # likely to race the telemetry writers: same request, same column.
+      # `touch: false` preserves the previous #update_columns semantics.
+      merge_config!(document, touch: false)
     end
 
     # === Cascade-destroy helpers ===

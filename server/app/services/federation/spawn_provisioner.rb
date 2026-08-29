@@ -108,13 +108,9 @@ module Federation
         # column on system_node_instances; there is no `metadata`
         # column). Downstream reconciliation correlates by reading
         # `config["federation_spawn"]`.
-        if instance
-          instance.update!(
-            config: (instance.config || {}).merge(
-              "federation_spawn" => payload
-            )
-          )
-        end
+        # Only `federation_spawn` — see System::ConfigDocument. `instance` may
+        # have been handed in by the caller several provider calls ago.
+        instance&.merge_config!("federation_spawn" => payload)
 
         success(
           node_id: node.id,

@@ -552,12 +552,19 @@ module System
         "expires_at"             => (now + ttl).iso8601,
         "task_scoped"            => true
       }
-      attrs = { config: (instance.config || {}).merge("fulfillment_lease" => blob) }
+      # The lease COLUMNS and the config document are written separately — see
+      # System::ConfigDocument. Carrying the jsonb in the same attribute hash
+      # would write the whole document as it looked when this instance was
+      # acquired, erasing every heartbeat since.
+      attrs = {}
       unless instance.in_pool?
         attrs[:lifecycle_class]  = "task_scoped"
         attrs[:lease_expires_at] = now + ttl
       end
-      instance.update!(attrs)
+      instance.transaction do
+        instance.update!(attrs) if attrs.any?
+        instance.merge_config!("fulfillment_lease" => blob)
+      end
     end
 
     # ---- smoking: verify the leased instance in place ----

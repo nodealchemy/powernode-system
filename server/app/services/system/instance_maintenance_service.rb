@@ -481,14 +481,14 @@ module System
     end
 
     def update_maintenance_record(instance, results)
-      config = instance.config || {}
-      config["last_maintenance"] = {
+      # Only `last_maintenance` — see System::ConfigDocument. This runs AFTER
+      # every maintenance task has shelled out to the node, so the in-memory
+      # document is minutes old and the node has heartbeated repeatedly.
+      instance.merge_config!("last_maintenance" => {
         "ran_at" => Time.current.iso8601,
         "tasks" => results.keys,
         "success" => results.values.all? { |r| r[:success] }
-      }
-
-      instance.update!(config: config)
+      })
     end
   end
 end

@@ -374,9 +374,8 @@ module System
         binding[:subpath] = subpath
       end
 
-      instance.update!(
-        config: (instance.config || {}).merge("storage_volume" => binding)
-      )
+      # Only `storage_volume` — see System::ConfigDocument.
+      instance.merge_config!("storage_volume" => binding)
 
       binding
     rescue StandardError => e
@@ -424,7 +423,8 @@ module System
         "initiated_at" => Time.current.iso8601,
         "initiated_by_user_id" => @initiated_by_user&.id
       }.compact
-      instance.update!(config: (instance.config || {}).merge("standalone_deployment" => marker))
+      # Only `standalone_deployment` — see System::ConfigDocument.
+      instance.merge_config!("standalone_deployment" => marker)
     rescue StandardError => e
       Rails.logger.warn("[PlatformDeploymentOrchestrator] could not stamp standalone marker: #{e.message}")
     end

@@ -3828,7 +3828,8 @@ module Ai
             subpath: subpath, role: role, attached_at: Time.current.iso8601,
             vt_kind => v.config[vt_kind]&.merge("subpath" => subpath)
           }
-          instance.update!(config: (instance.config || {}).merge("storage_volume" => binding))
+          # Only `storage_volume` — see System::ConfigDocument.
+          instance.merge_config!("storage_volume" => binding)
         else
           return error_result("Volume already attached to another instance") if v.attached?
           return error_result("Volume is not available to attach (status: #{v.status})") unless v.can_attach?
@@ -3841,7 +3842,7 @@ module Ai
             mount_point: ::System::Platform::StorageRecommendations.mount_point_for(account: @account, role: role),
             attached_at: Time.current.iso8601
           }
-          instance.update!(config: (instance.config || {}).merge("storage_volume" => binding))
+          instance.merge_config!("storage_volume" => binding)
         end
         success_result(volume: serialize_volume(v.reload, full: true), binding: binding)
       end
@@ -3859,8 +3860,9 @@ module Ai
           return error_result("Instance not found") unless instance
           bound_volume_id = bound_storage_volume_id(instance)
           return error_result("Volume not attached to this instance") unless bound_volume_id == v.id.to_s
-          new_config = (instance.config || {}).except("storage_volume")
-          instance.update!(config: new_config)
+          # A key REMOVAL is `config - ARRAY[...]` in Postgres, not a rewrite
+          # of the document minus one key — see System::ConfigDocument.
+          instance.delete_config_keys!("storage_volume")
           success_result(detached: true, volume_id: v.id, instance_id: instance.id)
         else
           # Block volume — flip pool status back to available.
@@ -3870,7 +3872,7 @@ module Ai
           # Best-effort: also clear the binding from the instance's config
           instance = ::System::NodeInstance.find_by(id: previous_instance_id)
           if instance
-            instance.update!(config: (instance.config || {}).except("storage_volume"))
+            instance.delete_config_keys!("storage_volume")
           end
           success_result(detached: true, volume_id: v.id, instance_id: previous_instance_id)
         end
@@ -4836,10 +4838,13 @@ module Ai
         # Drain state lives under `config["drain_*"]` keys. Future migration
         # may promote these to a typed column when drain logic gains
         # cordon/stop integration.
-        instance.config ||= {}
-        instance.config["drain_initiated_at"] = initiated_at
-        instance.config["drain_timeout_seconds"] = timeout
-        instance.save!
+        # Two keys only — see System::ConfigDocument. Mutating the loaded
+        # document and calling save! writes the WHOLE jsonb back, erasing every
+        # heartbeat telemetry key the node wrote since this object was found.
+        instance.merge_config!(
+          "drain_initiated_at" => initiated_at,
+          "drain_timeout_seconds" => timeout
+        )
 
         if defined?(::System::FleetEvent)
           ::System::FleetEvent.create!(

@@ -465,7 +465,8 @@ module System
         instance = ::System::InstancePoolService.acquire!(
           account: account, pool_name: plan["pool_name"], pool_id: plan["pool_id"]
         )
-        instance.update!(config: (instance.config || {}).merge("fleet_operation_id" => claim_key))
+        # Only `fleet_operation_id` — see System::ConfigDocument.
+        instance.merge_config!("fleet_operation_id" => claim_key)
         instance
       else
         node = ::System::Node.where(account_id: account.id).find(plan["node_id"])
@@ -543,9 +544,10 @@ module System
     def record_isolation_on_instance!(instance, isolation)
       return if isolation.blank?
 
-      cfg = instance.config.is_a?(Hash) ? instance.config.deep_dup : {}
-      cfg["isolation"] = isolation
-      instance.update_columns(config: cfg)
+      # Only `isolation` — see System::ConfigDocument. `touch: false` keeps the
+      # previous #update_columns semantics: this stamp is not a lifecycle event
+      # and must not move updated_at.
+      instance.merge_config!({ "isolation" => isolation }, touch: false)
     end
 
     def peers_for(members)

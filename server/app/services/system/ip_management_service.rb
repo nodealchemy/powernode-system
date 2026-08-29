@@ -67,13 +67,17 @@ module System
         result = provider_adapter.associate_ip(instance.cloud_instance_id, allocation_id: allocation_id)
 
         if result[:success]
-          instance.update!(
-            public_ip_address: result[:public_ip],
-            config: (instance.config || {}).merge(
+          # Column and config document written SEPARATELY — see
+          # System::ConfigDocument. Folding the jsonb into the same `update!`
+          # would serialize the whole document as it looked before the provider
+          # call above, erasing any heartbeat that landed during it.
+          instance.transaction do
+            instance.update!(public_ip_address: result[:public_ip])
+            instance.merge_config!(
               "ip_allocation_id" => result[:allocation_id],
               "ip_association_id" => result[:association_id]
             )
-          )
+          end
 
           {
             success: true,
@@ -125,15 +129,13 @@ module System
           Rails.logger.warn("[IpManagementService] Failed to release IP: #{release_result[:error]}") unless release_result[:success]
         end
 
-        # Update instance
-        config = instance.config || {}
-        config.delete("ip_allocation_id")
-        config.delete("ip_association_id")
-
-        instance.update!(
-          public_ip_address: nil,
-          config: config
-        )
+        # Removing two keys is `config - ARRAY[...]` in Postgres, not a
+        # re-serialization of the whole document minus two keys — see
+        # System::ConfigDocument.
+        instance.transaction do
+          instance.update!(public_ip_address: nil)
+          instance.delete_config_keys!("ip_allocation_id", "ip_association_id")
+        end
 
         { success: true }
       rescue Providers::BaseProvider::ProviderError => e

@@ -47,7 +47,10 @@ RSpec.describe System::StorageMigration, type: :model do
     it "sets metadata[promote_failed] and leaves node_instance untouched when the node_instance update raises" do
       instance.update!(config: { "storage_volume" => { "volume_id" => source_volume.id } })
       m = build_migration(status: "cutover")
-      allow_any_instance_of(System::NodeInstance).to receive(:update!).and_raise(StandardError, "boom")
+      # The binding write is now System::ConfigDocument#merge_config! (one
+      # jsonb key against the current row) rather than a whole-document
+      # update! — same property under test, different seam.
+      allow_any_instance_of(System::NodeInstance).to receive(:merge_config!).and_raise(StandardError, "boom")
 
       m.transition_to!("completed")
 

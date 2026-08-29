@@ -140,17 +140,17 @@ module System
       Rails.logger.info("[NetbootService] Enabling netboot for #{instance.name}")
 
       begin
-        # Update instance config to enable netboot
-        config = instance.config || {}
-        config["netboot"] = {
+        # Only the `netboot` key — see System::ConfigDocument. `instance` is
+        # supplied by the caller, so its document is as old as whenever that
+        # caller loaded it; the node has been heartbeating telemetry into the
+        # same column since.
+        instance.merge_config!("netboot" => {
           "enabled" => true,
           "boot_type" => options[:boot_type] || "localboot",
           "kernel" => options[:kernel],
           "initrd" => options[:initrd],
           "append" => options[:append]
-        }
-
-        instance.update!(config: config)
+        })
 
         # Generate and write PXE configuration
         pxe_config = generate_pxe_config(instance)
@@ -169,12 +169,13 @@ module System
       Rails.logger.info("[NetbootService] Disabling netboot for #{instance.name}")
 
       begin
-        # Update instance config to disable netboot
-        config = instance.config || {}
-        config["netboot"] ||= {}
-        config["netboot"]["enabled"] = false
-
-        instance.update!(config: config)
+        # Only the `netboot` key — see System::ConfigDocument. The subtree is
+        # composed from the in-memory copy, which is sound because this service
+        # is its only writer: the worst case is re-stating boot_type from a
+        # stale read, not erasing another writer's document.
+        netboot = instance.config&.dig("netboot")
+        netboot = {} unless netboot.is_a?(Hash)
+        instance.merge_config!("netboot" => netboot.merge("enabled" => false))
 
         # Remove PXE configuration file
         remove_pxe_config(instance)

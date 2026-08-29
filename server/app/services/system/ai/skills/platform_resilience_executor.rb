@@ -91,11 +91,15 @@ module System
           timeout = (params[:timeout_seconds] || 600).to_i
           initiated_at = Time.current.iso8601
 
-          instance.config ||= {}
-          instance.config["drain_initiated_at"] = initiated_at
-          instance.config["drain_timeout_seconds"] = timeout
-          instance.config["drain_initiated_by_user_id"] = @user&.id
-          instance.save!
+          # Three keys only — see System::ConfigDocument. Mutating the loaded
+          # document and calling save! writes the WHOLE jsonb back, erasing the
+          # heartbeat telemetry (boot_lkg, module_verify_state, sdwan_state,
+          # runtime_metrics) that lands in this same column every ~30s.
+          instance.merge_config!(
+            "drain_initiated_at" => initiated_at,
+            "drain_timeout_seconds" => timeout,
+            "drain_initiated_by_user_id" => @user&.id
+          )
 
           emit_event!(
             kind: "platform.resilience.drain_started",
