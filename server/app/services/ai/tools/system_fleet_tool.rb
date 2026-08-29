@@ -26,6 +26,25 @@ module Ai
       # to know them. (IMP-e89d83547bad)
       INNER_ACTION_KEYS = %i[op maintenance_action resilience_action].freeze
 
+      # IMP-7f01dfcb13e0 — a grant is applied server-side immediately, but an
+      # MCP client caches tools/list at connect. The write now fires
+      # `notifications/tools/list_changed` (System::NodeInstancePeer), which is
+      # correct per protocol and harmless to a client that ignores it — but
+      # whether a given client re-lists on it cannot be established here, so the
+      # response says the truthful thing either way. Without this line the
+      # documented recovery ("a missing tool is an instance-grant gap — grant it
+      # with mode: add") appears to succeed while changing nothing the caller
+      # can observe, inviting a retry, an over-wide re-grant, or an escalation
+      # to breakglass that was never needed.
+      MCP_GRANT_SESSION_NOTICE =
+        "Applied server-side immediately. A connected MCP session caches its tools/list " \
+        "from connect time: a notifications/tools/list_changed notification was broadcast " \
+        "to this account's active sessions, but a client that does not act on it will keep " \
+        "the old catalog — newly granted tools stay invisible and removed tools stay " \
+        "advertised (they are still refused at call time) until the session RECONNECTS. " \
+        "If the tool is still not listed after this call, reconnect the MCP session before " \
+        "re-granting or widening further."
+
       # Per-action permission map. Aligned with the registered
       # `system.<resource>.<action>` catalog — the authoritative home is the
       # Permissions.register_catalog(namespace: "system") block in
@@ -2702,7 +2721,8 @@ module Ai
         return refusal if refusal
 
         granted = peer.grant_mcp_tools!(patterns, mode: (params[:mode].to_s == "add" ? :add : :replace))
-        success_result(instance_id: instance.id, granted_mcp_tools: granted)
+        success_result(instance_id: instance.id, granted_mcp_tools: granted,
+                       session_notice: MCP_GRANT_SESSION_NOTICE)
       end
 
       # A2A: grant an instance-agent the peer skill-name glob patterns it may
