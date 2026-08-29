@@ -33,12 +33,38 @@ module System
     #   the first pass got it wrong: a producer can pass the command as a
     #   VARIABLE, which no literal `command: "..."` grep will ever surface.
     #   start/stop/reboot/terminate were retired on the strength of the row count
-    #   alone and had to be restored (see below). The nine above were re-checked
-    #   for variable producers too — the only ones that exist are
-    #   NodeInstanceGating (start/stop/reboot/terminate), ModuleBuildBatch
+    #   alone and had to be restored (see below). The variable producers that
+    #   exist are NodeInstanceGating (#gate_or_execute and #create_instance_operation
+    #   for start/stop/reboot/terminate, AND #gate_ip_action for
+    #   associate_public_ip / disassociate_public_ip), ModuleBuildBatch
     #   #member_task_command (ci.module_build / ci.package_build), DecisionEngine
     #   (sync_modules / apply_config) and the storage managers (storage.*).
-    #   None of them can emit any of the nine.
+    #
+    #   THIS PARAGRAPH USED TO END "None of them can emit any of the nine", AND
+    #   THAT WAS FALSE (IMP-8d944d656c0b). NodeInstanceGating has TWO variable
+    #   producers, not one: #gate_ip_action composes `system.task.#{event}` for
+    #   the :associate_public_ip (node_instances_controller.rb:251) and
+    #   :disassociate_public_ip (:277) endpoints. The miss was invisible for the
+    #   same reason the paragraph warns about — the second producer was found by
+    #   re-reading the concern, not by grepping it.
+    #
+    #   TWO COMMITS, TWO DIFFERENT FAILURE MODES. The retirement above happened
+    #   HERE, in 58702a16, which deleted these two registry entries (they pointed
+    #   at System::Runtime::ManagePublicIp) along with that class. It left
+    #   System::Task::COMMANDS alone, so in that window the Task INSERTED
+    #   normally and then failed later, in the worker, as "Unsupported command:
+    #   associate_public_ip" — a failed task row rather than a failed request.
+    #   04be5e5b is the commit that made COMMANDS an inclusion validation and
+    #   dropped the two verbs from it (it only ADDED registry entries here,
+    #   restoring start/stop/reboot/terminate). Only from 04be5e5b does the
+    #   insert itself fail, turning a late worker-side failure into a 422 on
+    #   every request that names a policy block rather than a missing command.
+    #
+    #   The DISPOSITION (restore both verbs — which needs a dispatch route here,
+    #   and 58702a16^ still has ManagePublicIp to start from — or delete the
+    #   endpoints) is an open operator decision; the drift guard that would have
+    #   caught it lives at
+    #   spec/integration/gate_composed_task_categories_spec.rb.
     #
     # The provider plane the nine nominally owned is really performed by
     # MCP tool -> ProvisioningService / InstanceControlService against the
@@ -57,6 +83,11 @@ module System
     # #control_or_error calls create_instance_operation(event.to_s), so the
     # command is a VARIABLE — invisible to a literal grep, which is how the
     # first pass concluded they had no producer.
+    # (Accuracy note, IMP-8d944d656c0b: #control_or_error itself has NO callers
+    # today — all four lifecycle actions route through #gate_or_execute, which
+    # composes the same four commands — so it is a DORMANT producer, and the
+    # live justification for keeping these four registered is #gate_or_execute
+    # plus the cloud-provider execution path described below.)
     #
     # For a CLOUD provider this registry IS their execution path: that concern
     # fires the provider call in-thread only for local_qemu and explicitly
