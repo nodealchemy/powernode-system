@@ -90,7 +90,6 @@ const GRANT_ACTIVE: FederationGrant = {
   source_cidrs: [],
   unrestricted: true,
   grantor_user_id: 'user-1',
-  bearer_token_preview: null,
 };
 
 const GRANT_REVOKED: FederationGrant = {

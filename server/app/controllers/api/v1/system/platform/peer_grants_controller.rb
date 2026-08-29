@@ -99,7 +99,8 @@ module Api
             )
 
             if grant.save
-              render_success({ grant: serialize(grant) }, status: :created)
+              # The ONE reveal: issuance. See the note on #serialize.
+              render_success({ grant: serialize(grant, reveal_token: true) }, status: :created)
             else
               render_error("Grant creation failed: #{grant.errors.full_messages.join(', ')}",
                           status: :unprocessable_content)
@@ -149,7 +150,37 @@ module Api
             Array(raw).map(&:to_s).map(&:strip).reject(&:blank?).uniq
           end
 
-          def serialize(grant)
+          # SECRET DISCLOSURE (IMP-27cc7dceb97b). This used to always emit
+          # `bearer_token_preview: grant.bearer_token`. Two distinct problems,
+          # only one of which was the name:
+          #
+          #   1. The name lied. System::FederationGrant#bearer_token returns
+          #      "fgs.<grant_id>.<hmac>" IN FULL — the complete credential a
+          #      federated peer presents. Nothing about it is a preview, and a
+          #      key named "…_preview" invites a reader to treat it as safe to
+          #      log, display or paste.
+          #
+          #   2. The value was not a shown-once mint. #bearer_token is DERIVED
+          #      on every call (HMAC of the server secret over
+          #      "federation-grant:<id>"), so this serializer re-emitted the
+          #      live credential on EVERY #index read — for active, expired,
+          #      revoked and archived grants alike — while #index gates on
+          #      `system.peers.read` and issuing gates on `system.peers.manage`.
+          #      The read permission therefore yielded the credential the manage
+          #      permission issues.
+          #
+          # The reveal itself is legitimate and is kept: an HTTP response is not
+          # an MCP tool result — it acquires neither ai_messages
+          # .processing_metadata nor the role:"tool" message forwarded to the
+          # model provider — and #create is the one moment the operator must
+          # receive the credential. So the token rides #create only, under the
+          # honest key `bearer_token`. #index and #revoke carry none.
+          #
+          # Nothing is stranded: an operator who loses a token revokes the grant
+          # and issues a new one, the same recovery shape
+          # Sdwan::Executors::ProposeFederationPeer's single-use acceptance
+          # token already has.
+          def serialize(grant, reveal_token: false)
             lifecycle =
               if grant.archived?
                 "archived"
@@ -161,7 +192,7 @@ module Api
                 "active"
               end
 
-            {
+            payload = {
               id: grant.id,
               federation_peer_id: grant.federation_peer_id,
               remote_subject: grant.remote_subject,
@@ -178,9 +209,10 @@ module Api
               sdwan_network_ids: Array(grant.sdwan_network_ids),
               source_cidrs:      Array(grant.source_cidrs),
               unrestricted: grant.unrestricted?,
-              grantor_user_id: grant.grantor_user_id,
-              bearer_token_preview: grant.respond_to?(:bearer_token) ? grant.bearer_token : nil
+              grantor_user_id: grant.grantor_user_id
             }
+            payload[:bearer_token] = grant.bearer_token if reveal_token
+            payload
           end
         end
       end

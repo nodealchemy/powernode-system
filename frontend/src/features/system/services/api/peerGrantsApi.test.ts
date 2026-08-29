@@ -65,7 +65,16 @@ const GRANT: FederationGrant = {
   source_cidrs: ['10.0.0.0/8'],
   unrestricted: false,
   grantor_user_id: 'user-99',
-  bearer_token_preview: 'tok_abc…',
+};
+
+// IMP-27cc7dceb97b — `bearer_token` is present ONLY on the POST /grants
+// issuance response. GET /grants and POST .../revoke omit it entirely, so the
+// list fixture above must not carry it: a list fixture that does would assert,
+// as the frontend's only statement about the list shape, the very disclosure
+// the server removed. Not a real credential.
+const GRANT_ISSUED: FederationGrant = {
+  ...GRANT,
+  bearer_token: 'fgs.fixture.notarealtoken',
 };
 
 const GRANT_2: FederationGrant = {
@@ -205,7 +214,7 @@ describe('peerGrantsApi', () => {
 
   describe('issue()', () => {
     it('calls POST /system/platform/peers/:peerId/grants with the full request body', async () => {
-      mockPost.mockResolvedValueOnce(envelope({ grant: GRANT }));
+      mockPost.mockResolvedValueOnce(envelope({ grant: GRANT_ISSUED }));
 
       await peerGrantsApi.issue(PEER_ID, ISSUE_REQUEST);
 
@@ -214,7 +223,7 @@ describe('peerGrantsApi', () => {
     });
 
     it('interpolates peerId correctly into the URL', async () => {
-      mockPost.mockResolvedValueOnce(envelope({ grant: GRANT }));
+      mockPost.mockResolvedValueOnce(envelope({ grant: GRANT_ISSUED }));
 
       await peerGrantsApi.issue('peer-different-456', ISSUE_REQUEST);
 
@@ -225,17 +234,18 @@ describe('peerGrantsApi', () => {
     });
 
     it('returns the unwrapped grant (extracts .grant from envelope)', async () => {
-      mockPost.mockResolvedValueOnce(envelope({ grant: GRANT }));
+      mockPost.mockResolvedValueOnce(envelope({ grant: GRANT_ISSUED }));
 
       const result = await peerGrantsApi.issue(PEER_ID, ISSUE_REQUEST);
 
-      expect(result).toEqual(GRANT);
+      expect(result).toEqual(GRANT_ISSUED);
+      expect(result.bearer_token).toBe('fgs.fixture.notarealtoken');
       expect(result.id).toBe('grant-1');
       expect(result.lifecycle).toBe('active');
     });
 
     it('sends the resource_kind and remote_subject in the request body', async () => {
-      mockPost.mockResolvedValueOnce(envelope({ grant: GRANT }));
+      mockPost.mockResolvedValueOnce(envelope({ grant: GRANT_ISSUED }));
 
       await peerGrantsApi.issue(PEER_ID, ISSUE_REQUEST);
 
@@ -245,7 +255,7 @@ describe('peerGrantsApi', () => {
     });
 
     it('sends permission_scopes in the request body', async () => {
-      mockPost.mockResolvedValueOnce(envelope({ grant: GRANT }));
+      mockPost.mockResolvedValueOnce(envelope({ grant: GRANT_ISSUED }));
 
       await peerGrantsApi.issue(PEER_ID, ISSUE_REQUEST);
 

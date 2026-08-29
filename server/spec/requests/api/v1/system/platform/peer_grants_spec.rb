@@ -76,7 +76,14 @@ RSpec.describe "Api::V1::System::Platform::PeerGrants", type: :request do
       expect(grant["lifecycle"]).to eq("active")
       expect(grant["unrestricted"]).to be false
       expect(grant["source_cidrs"]).to eq([ "10.0.0.0/24" ])
-      expect(grant["bearer_token_preview"]).to start_with("fgs.")
+      # IMP-27cc7dceb97b — issuance is the one reveal, and the key is now
+      # honestly named (it carries the FULL credential, never a preview).
+      # #index / #revoke carry no token at all; see
+      # peer_grants_token_exposure_spec.rb for that oracle.
+      # Predicate, not `start_with`: the matcher would print the token itself
+      # in a failure message.
+      expect(grant["bearer_token"].to_s.start_with?("fgs.")).to be(true),
+        "the issued bearer token does not carry the signed-envelope prefix"
     end
 
     it "clamps TTL to MIN_TTL when below 7 days" do

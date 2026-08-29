@@ -25,7 +25,12 @@ export interface FederationGrant {
   source_cidrs: string[];
   unrestricted: boolean;
   grantor_user_id: string | null;
-  bearer_token_preview: string | null;
+  /**
+   * Present ONLY on the POST /grants issuance response (IMP-27cc7dceb97b).
+   * It is the FULL live bearer credential, not a preview — never log, render
+   * or persist it. List and revoke responses omit it entirely.
+   */
+  bearer_token?: string | null;
 }
 
 export interface IssueGrantRequest {
