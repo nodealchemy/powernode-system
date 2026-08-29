@@ -46,6 +46,47 @@ module System
     # rolls back rather than silently leaving tokens live (fail-closed).
     after_update :publish_capability_revocation!, if: :capability_revoking_change?
 
+    # IMP-7f01dfcb13e0 — an MCP client caches tools/list at connect; the
+    # protocol's only invalidation mechanism is
+    # `notifications/tools/list_changed`. Rewriting this peer's grant changes
+    # what the platform MCP will advertise to it, so every write of
+    # granted_mcp_tools must fire that notification.
+    #
+    # Lives on the MODEL, not on the grant tool action, so that
+    # #grant_mcp_tools!, a direct update!, and every service that rewrites the
+    # column (pool recycling's revoke-to-empty, fleet-mission provisioning,
+    # dev-cell bootstrap) are all covered by one rung. Verified: nothing writes
+    # this COLUMN outside #grant_mcp_tools! — no update_all, upsert, raw UPDATE,
+    # or mass-assignment path reaches it (the peers controller permits only
+    # enabled/status).
+    #
+    # Deliberately NOT on :destroy. Two paths remove the whole peer ROW without
+    # this callback — SystemFleetTool#destroy_instance's raw
+    # `DELETE FROM system_node_instance_peers` (DESTROY_INSTANCE_FKS) and
+    # NodeInstance#cascade_destroy_dependents!'s destroy_all. Both destroy the
+    # peer only because the INSTANCE is going away, so the session whose catalog
+    # would be stale is going away with it, and no surviving session's grant
+    # changed. Adding :destroy here would broadcast on instance teardown for no
+    # catalog that anyone still holds.
+    #
+    # Direction-agnostic on purpose: a NARROWED session that keeps a stale
+    # catalog advertises tools it can no longer invoke. That is a wrong-failure-
+    # mode / correctness problem, not an escalation — Mcp::Principal re-reads
+    # the stored grant on every call, so the reduced grant is still enforced.
+    #
+    # after_commit, not after_update: a rolled-back grant must not tell clients
+    # to re-list. That also keeps it strictly downstream of the fail-closed
+    # after_update revocation publisher — if that one raises, the save rolls
+    # back and this never runs.
+    #
+    # LATENT TRAP for a future caller: only ONE after_commit fires per
+    # transaction, so a caller that wrapped grant_mcp_tools! and a second save
+    # of this peer in one explicit transaction would drop the notification.
+    # Not reachable today — none of the grant call sites sits inside a wrapping
+    # transaction block.
+    after_commit :notify_mcp_tool_catalog_changed, on: %i[create update],
+                 if: :mcp_tool_grant_changed?
+
     # Atomically increment execution counters and last_executed_at.
     def record_execution!(success:)
       self.class.where(id: id).update_all([
@@ -113,6 +154,38 @@ module System
     end
 
     private
+
+    def mcp_tool_grant_changed?
+      return false unless saved_change_to_granted_mcp_tools?
+      # A brand-new peer that starts at the default-deny empty grant has not
+      # changed any catalog — announcing is not granting.
+      return Array(granted_mcp_tools).any? if previously_new_record?
+
+      true
+    end
+
+    # Account-scoped by construction: Mcp::SessionNotifier addresses an account,
+    # while the grant is per-instance. Deliberate — a tools/list re-fetch is
+    # cheap and idempotent, sibling sessions get their own permission-scoped
+    # catalog back, and the session -> instance mapping is not resolvable from
+    # here. It cannot become a disclosure channel: the notification carries NO
+    # params, so a sibling session learns "re-list", never which instance
+    # exists or what it was granted. A sibling that re-lists gets its OWN
+    # permission-scoped catalog back (Mcp::Principal#filter_tools), so the
+    # residual signal is only "some grant in this account changed at time T" —
+    # the same account-wide channel semantic_tool_discovery_service already
+    # uses.
+    #
+    # The rescue is belt-and-braces: Mcp::SessionNotifier already swallows its
+    # own transport errors, so this only catches a failure to reach it at all.
+    # Either way a committed grant must not be undone by a pubsub outage.
+    def notify_mcp_tool_catalog_changed
+      ::Mcp::SessionNotifier.notify_tools_changed(account)
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[System::NodeInstancePeer] tools/list_changed notify failed for peer #{id}: #{e.message}"
+      )
+    end
 
     def capability_revoking_change?
       (saved_change_to_enabled? && !enabled) || saved_change_to_granted_peer_skills?
