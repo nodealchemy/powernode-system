@@ -49,6 +49,52 @@ module Sdwan
       !revoked? && last_downloaded_at.nil? && access_grant.active?
     end
 
+    # Retrievability for the AUTHENTICATED OWNER path
+    # (Api::V1::System::Sdwan::MyDevicesController#show), deliberately WITHOUT
+    # the `last_downloaded_at.nil?` clause that `downloadable?` carries.
+    #
+    # That clause is the ANONYMOUS BOOTSTRAP TOKEN's security property, not the
+    # device's. The bootstrap URL is a bearer credential with no identity behind
+    # it: anyone who obtains the link — a forwarded Slack message, a proxy log, a
+    # shoulder-surfed screen — can fetch the private key, so consumption has to
+    # be one-shot. None of that holds for a request the platform has
+    # authenticated as the grant's own user. There is no link to replay; the
+    # requester already holds the key they are asking for, so a second fetch
+    # discloses nothing a first fetch did not.
+    #
+    # Carrying single-use across to this path would be actively harmful. It is
+    # the ONLY delivery route for a device issued with mint_bootstrap_token:
+    # false (the agent arm, increment 4), so one fumbled copy/paste, one closed
+    # tab, or one lost laptop would strand the device permanently and force an
+    # operator round-trip to re-issue — for a user who is already proven to be
+    # the rightful recipient. The single-use trade (replay risk vs. usability)
+    # only pays when the credential is a URL; here it buys nothing.
+    #
+    # The two clauses that ARE about the device — revocation and grant status —
+    # are kept verbatim. Retrieval still stops the moment access is cut.
+    #
+    # `last_downloaded_at` keeps being stamped on every owner fetch (see the
+    # controller): it stays the "when was the config the user holds rendered"
+    # clock that the staleness sensor's three-state oracle and the revoked-device
+    # reaper read, and re-fetching only makes that clock MORE accurate. Deciding
+    # NOT to add a separate download counter is deliberate — that would be a
+    # schema change whose only consumer would be an audit view nothing has asked
+    # for, and the sensor's oracle is defined over this column alone.
+    #
+    # ONE-WAY INTERACTION WITH THE ANONYMOUS LINK, AND IT IS THE RIGHT WAY ROUND.
+    # Because `downloadable?` still requires `last_downloaded_at.nil?`, an owner
+    # who self-serves a device that ALSO has a live bootstrap URL turns that URL
+    # 410 Gone. That is not a broken link — it is single-use working: the config
+    # was delivered, to the rightful recipient, and a bearer URL that outlives
+    # its delivery is the thing single-use exists to prevent. The reverse does
+    # NOT hold: consuming the bootstrap URL leaves owner retrieval intact, which
+    # is the whole point of dropping the clause here. No link is invalidated by
+    # anything a NON-owner can do — a refused request never reaches
+    # mark_downloaded! (asserted in my_device_config_spec.rb).
+    def owner_retrievable?
+      !revoked? && access_grant.active?
+    end
+
     def revoke!(reason: nil)
       return if revoked?
 

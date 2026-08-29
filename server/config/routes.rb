@@ -378,6 +378,20 @@ Rails.application.routes.draw do
           get "bootstrap/:token", to: "bootstrap#show",
               constraints: { token: /[^\/]+/ }
 
+          # Authenticated self-service twin of the bootstrap endpoint: the
+          # grant's OWN user fetches their config under their own identity,
+          # with no one-shot URL involved. Not nested under
+          # networks/access_grants — the caller is the recipient, not an
+          # operator navigating the topology, and they know only the device
+          # id. Ownership is the authorization (see the controller); there is
+          # deliberately no permission string, because a VPN recipient is an
+          # ordinary user and an undefined permission name degrades to
+          # admin-only, locking out the very person this route serves.
+          # Action is `#show`, not `#config`: AbstractController already
+          # defines `config` and `render` calls it, so an action of that name
+          # recurses (same reason `metrics/dispatch` routes to `#index`).
+          get "my_devices/:id/config", to: "my_devices#show"
+
           # Slice 6: federation scaffold (data-only in v1).
           resources :federation_peers do
             member { post :revoke }
