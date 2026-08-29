@@ -98,7 +98,7 @@ time, and re-checked nowhere afterwards.
 Wiring it up is blocked on a POLICY decision rather than plumbing: none of
 `AdaptationProposerService::ADAPTATION_SKILLS` (`scale_project`,
 `relocate_workload`, `attach_storage`, `configure_sdwan_for_project`) is in
-`ALLOWED_EXECUTORS`, so calling `#validate_plan` on an adaptation-appended plan
+`ALLOWED_EXECUTORS`, so calling `#validate_plan` on an adaptation plan
 today would reject every step of a lane that currently executes.
 
 ### Over-decomposition guards
