@@ -83,6 +83,16 @@ const MISSING_RETRIEVABLE = (() => {
   return d as SdwanMyDevice;
 })();
 
+// A truthy NON-boolean in the gate field. Types are erased at runtime and
+// this value comes off the wire, so a truthiness gate (`d.retrievable ?`)
+// would render a live, clickable download button for it; only a strict
+// `=== true` suppresses it. The string "false" is the nastiest shape because
+// it reads as a negative and evaluates as a positive.
+const TRUTHY_NON_BOOLEAN_RETRIEVABLE = {
+  ...device({ id: 'dev-6', label: 'Stringly typed' }),
+  retrievable: 'false',
+} as unknown as SdwanMyDevice;
+
 const renderPage = () =>
   render(
     <BrowserRouter>
@@ -227,6 +237,18 @@ describe('MyVpnDevicesPage — download control gating', () => {
       screen.queryByRole('button', { name: 'Download config for Unknown vintage' })
     ).not.toBeInTheDocument();
     expect(screen.getByTestId('unavailable-dev-5')).toBeInTheDocument();
+  });
+
+  it('offers NO download when `retrievable` is a truthy non-boolean', async () => {
+    mockListMyDevices.mockResolvedValue([TRUTHY_NON_BOOLEAN_RETRIEVABLE]);
+
+    renderPage();
+
+    await screen.findByText('Stringly typed');
+    expect(
+      screen.queryByRole('button', { name: 'Download config for Stringly typed' })
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('unavailable-dev-6')).toBeInTheDocument();
   });
 
   it('gates each row independently when both pending rows are listed together', async () => {

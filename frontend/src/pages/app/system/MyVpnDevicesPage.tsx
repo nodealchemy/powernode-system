@@ -178,7 +178,18 @@ const MyVpnDevicesPage: React.FC = () => {
                       false. Gating on the status string would render a
                       download button the server answers 410 to.
                     */}
-                    {d.retrievable ? (
+                    {/*
+                      `=== true`, not a truthiness test. `retrievable` is
+                      typed boolean, but types are erased at runtime and this
+                      value arrives from the network — a truthy NON-boolean
+                      (the string "false", "0", any non-empty string) would
+                      pass `d.retrievable ?` and render a live, clickable
+                      button whose only backstop is the server's 410. The
+                      strict comparison makes the gate mean exactly "the
+                      server said true", so every other value — false,
+                      missing, malformed — lands on the unavailable arm.
+                    */}
+                    {d.retrievable === true ? (
                       <Button
                         variant="secondary"
                         size="sm"
