@@ -84,10 +84,22 @@ an action description to a skill via, in order:
 2. a static regex `STATIC_ACTION_MAP` (first match wins), then
 3. `DEFAULT_EXECUTOR` (`provision_full_stack`).
 
-`validate_plan` re-checks that every step's skill is in `ALLOWED_EXECUTORS`,
-that the graph is acyclic, and that every dependency references a real step.
-This is what makes the path *deterministic and bounded*: the brief can only
-produce provisioning skills the platform recognizes.
+What bounds the path is `#rewrite_step!`, which applies `ALLOWED_EXECUTORS` on
+the way *into* the plan: the brief can only produce provisioning skills the
+platform recognizes.
+
+`#validate_plan` also checks that list, plus acyclicity and that every
+dependency references a real step — but it has **no production caller**.
+Nothing in core or in any extension invokes it; only specs do (verified
+2026-08-29, IMP-4707960fc610). So do not read "`validate_plan` re-checks X" as
+a live guarantee about a composed plan — the list is enforced once, at rewrite
+time, and re-checked nowhere afterwards.
+
+Wiring it up is blocked on a POLICY decision rather than plumbing: none of
+`AdaptationProposerService::ADAPTATION_SKILLS` (`scale_project`,
+`relocate_workload`, `attach_storage`, `configure_sdwan_for_project`) is in
+`ALLOWED_EXECUTORS`, so calling `#validate_plan` on an adaptation-appended plan
+today would reject every step of a lane that currently executes.
 
 ### Over-decomposition guards
 
