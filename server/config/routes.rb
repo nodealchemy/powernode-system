@@ -392,6 +392,13 @@ Rails.application.routes.draw do
           # recurses (same reason `metrics/dispatch` routes to `#index`).
           get "my_devices/:id/config", to: "my_devices#show"
 
+          # Increment 3a: the index a recipient needs to DISCOVER their own
+          # device id in the first place — increment 2 above gave them a
+          # route to fetch config once they already know it, but nothing
+          # gave them the id. Same controller, same ownership authorization,
+          # JSON (not text/plain) since this lists metadata, not a config file.
+          get "my_devices", to: "my_devices#index"
+
           # Slice 6: federation scaffold (data-only in v1).
           resources :federation_peers do
             member { post :revoke }

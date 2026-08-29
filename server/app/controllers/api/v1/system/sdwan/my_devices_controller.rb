@@ -61,11 +61,45 @@ module Api
           # name degrades to admin-only on this platform, and the sole disclosure
           # surface is the caller's own key material — nothing a coarser gate
           # could scope more tightly. See the class comment above for the full
-          # argument, and my_device_config_spec.rb for the ownership,
-          # cross-account, unauthenticated, revoked, and grant-suspended
-          # refusals that pin it. (check-authz-coverage.sh flags this file on the
-          # private helper `def own_device`, which is not an action at all — the
-          # only action is the read-shape `show`.)
+          # argument, and my_device_config_spec.rb / my_devices_index_spec.rb
+          # for the ownership, cross-account, unauthenticated, revoked, and
+          # grant-suspended refusals that pin it. (check-authz-coverage.sh
+          # flags this file on the private helpers `own_device` /
+          # `owned_devices`, neither of which is an action — the only actions
+          # are the read shapes `index` and `show`, both ownership-scoped
+          # through the same `owned_devices` predicate.)
+
+          # GET /api/v1/system/sdwan/my_devices
+          #
+          # Increment 3a: the caller's own devices, so the frontend (and the
+          # caller) can discover the id `#show` needs — increment 2 built the
+          # retrieval route but nothing surfaced the id to retrieve. Same
+          # ownership scope as `#show` (`owned_devices`, below), so a device
+          # this endpoint lists is exactly the set `#show` can serve; no
+          # separate rule to drift.
+          #
+          # `index` is a safe action name here: nothing in the
+          # AbstractController/ActionController ancestry defines `index`
+          # (unlike `config`, see the comment on `#show`), so there is no
+          # shadow-and-recurse hazard to check for.
+          #
+          # Returns JSON, not text/plain like `#show` — this lists metadata
+          # for a list-plus-download-button UI, not a config file to paste
+          # into a WireGuard client. It never reads `private_key_b64` (or any
+          # Vault-backed field) at all, so there is no code path here that
+          # could leak key material — the absence is structural, not a
+          # redaction step someone could forget.
+          def index
+            # See the identical guard in `#show`: authenticate_request also
+            # succeeds for a worker principal (bearer worker token, or
+            # forwarded mTLS client cert), which leaves current_user nil.
+            # There is no "a worker's own devices" concept, so refuse on the
+            # identity rather than falling through to an always-empty scope.
+            return render_unauthorized("authentication required") if current_user.blank?
+
+            devices = owned_devices.order(created_at: :desc)
+            render_success(devices: devices.map { |d| serialize_device(d) })
+          end
 
           # GET /api/v1/system/sdwan/my_devices/:id/config
           #
@@ -173,11 +207,48 @@ module Api
           # closed — `system_sdwan_access_grants.user_id = <caller>` is never
           # true for a NULL-joined row, so a device whose grant was hard-deleted
           # stays unreachable exactly as it was under the inner join.
-          def own_device
+          #
+          # SHARED by `#index` and `#show` (via `own_device` below) — this is
+          # the ONE ownership rule for this controller. Do not add a second
+          # `.merge(::Sdwan::AccessGrant.where(user_id: ...))` anywhere else;
+          # two copies of the same predicate are free to drift apart.
+          def owned_devices
             ::Sdwan::UserDevice
               .eager_load(:access_grant)
               .merge(::Sdwan::AccessGrant.where(user_id: current_user.id))
-              .find_by(id: params[:id])
+          end
+
+          def own_device
+            owned_devices.find_by(id: params[:id])
+          end
+
+          # NO KEY MATERIAL: deliberately omits public_key, private_key_b64,
+          # and everything VaultCredential-backed. An index has no reason to
+          # touch key material at all — see the class comment on `#index`.
+          # `network_id` reads through the already eager_load'ed access_grant,
+          # so this stays a single query for the whole list (CLAUDE.md
+          # eager-loading rule).
+          def serialize_device(d)
+            {
+              id: d.id,
+              label: d.label,
+              status: device_status(d),
+              retrievable: d.owner_retrievable?,
+              network_id: d.access_grant.sdwan_network_id,
+              created_at: d.created_at.iso8601,
+              last_downloaded_at: d.last_downloaded_at&.iso8601
+            }
+          end
+
+          # Derived, not stored: UserDevice has no `status` column, only the
+          # revoked_at / last_downloaded_at timestamps `#show` already reads.
+          # Mirrors the model's `active` / `downloaded` / `pending_download`
+          # scopes so this string means the same thing everywhere it appears.
+          def device_status(d)
+            return "revoked" if d.revoked?
+            return "downloaded" if d.last_downloaded_at.present?
+
+            "pending_download"
           end
 
           # Mirrors BootstrapController's private helper rather than sharing one:
