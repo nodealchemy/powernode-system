@@ -422,8 +422,14 @@ RSpec.describe System::Fleet::Sensors::SdwanServiceHealthSensor do
     # Autonomy resolves policies with where(ai_agent_id: agent.id), so a
     # policy on any other agent leaves gate_action! returning :blocked.
     it "seeds the gate policy on the agent that runs the sense pass" do
-      seed = Rails.root.join("../extensions/system/server/db/seeds/fleet_autonomy_agent.rb")
-      expect(seed.read).to include('"system.sdwan_service_health_investigate" => "notify_and_proceed"')
+      # Read the DECLARATION, not the seed text. These policy sets moved out
+      # of fleet_autonomy_agent.rb into System::Governance::PolicyDeclarations
+      # so the boot reconciler can assert them against a RUNNING database;
+      # the seed now consumes that constant. Grepping the seed file for a
+      # literal tested a string that no longer lives there, while the
+      # property it cares about moved with the constant.
+      expect(System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES)
+        .to include("system.sdwan_service_health_investigate" => "notify_and_proceed")
     end
 
     # The third end of the lane, and the least obvious. notify_and_proceed

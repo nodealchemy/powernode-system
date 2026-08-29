@@ -313,7 +313,18 @@ module System
         # system.module_verify_investigate (notify-only; no applier exists,
         # because re-serving the same artifact cannot change what the node
         # resolved — the gitleaks v4 empty-artifact incident is the proof).
-        ::System::Fleet::Sensors::ModuleVerifyFailedSensor
+        ::System::Fleet::Sensors::ModuleVerifyFailedSensor,
+        # IMP-a8f9fa74284d — the boot/LKG ARM oracle. BootLkgStateWriter has
+        # derived `arm_state` from the agent's heartbeat since IMP-b8d5cfa33b79
+        # and nothing consumed it, so "is this node armed with a valid
+        # last-known-good?" was answerable but never asked — leaving the
+        # question an operator faces before pulling a control plane answered by
+        # the absence of an alarm. Emits system.node_lkg_unarmed /
+        # system.node_lkg_stale -> system.node_lkg_investigate (notify-only; no
+        # applier exists and none can, because the LKG is frozen on the node's
+        # own disk). Runs HERE because this tick gates as the Fleet Autonomy
+        # agent, which is the agent its policy is declared on.
+        ::System::Fleet::Sensors::BootLkgArmSensor
       ].freeze
 
       # Scoped to THIS account. The fleet agents are seeded global (account_id

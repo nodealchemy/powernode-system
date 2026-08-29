@@ -328,8 +328,14 @@ RSpec.describe System::Fleet::Sensors::SdwanApplyHealthSensor do
     # auto_approve, which collects for dashboards without ever reaching an
     # operator — the silent downgrade this lane must not inherit.
     it "seeds the gate policy on the agent that runs the sense pass" do
-      seed = Rails.root.join("../extensions/system/server/db/seeds/fleet_autonomy_agent.rb")
-      expect(seed.read).to include('"system.sdwan_apply_investigate" => "notify_and_proceed"')
+      # Read the DECLARATION, not the seed text. These policy sets moved out
+      # of fleet_autonomy_agent.rb into System::Governance::PolicyDeclarations
+      # so the boot reconciler can assert them against a RUNNING database;
+      # the seed now consumes that constant. Grepping the seed file for a
+      # literal tested a string that no longer lives there, while the
+      # property it cares about moved with the constant.
+      expect(System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES)
+        .to include("system.sdwan_apply_investigate" => "notify_and_proceed")
     end
 
     # Membership here is DECLARED, never inferred. Without it the standing

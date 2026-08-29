@@ -390,6 +390,38 @@ module System
           skill: nil,
           action_category: "system.module_verify_investigate"
         },
+        # IMP-a8f9fa74284d — BootLkgArmSensor. System::BootLkgStateWriter has
+        # derived `arm_state` on every heartbeat since IMP-b8d5cfa33b79 and
+        # nothing consumed it: the platform could answer "is this node armed
+        # with a valid last-known-good?" while the question an operator faces
+        # before pulling a control plane was still answered by the absence of
+        # an alarm.
+        #
+        # skill: nil, and there is NO safe applier to name. The LKG is frozen
+        # on the node's own disk by the agent at boot; nothing the platform can
+        # dispatch re-arms it, and borrowing the nearest side-effectful
+        # executor to fill this slot would act on plumbing that is fine
+        # (IMP-df40782d3f4d is the precedent for why that is worse than an
+        # unbound lane). The repair is a person restoring or re-capturing the
+        # LKG.
+        #
+        # Same category for both kinds because they share one disposition
+        # (reach an operator), while keeping distinct kinds and fingerprints so
+        # "cannot be shown to be armed" and "armed but aged" stay separable.
+        #
+        # DO NOT collapse to system.observation — the fleet seed maps that to
+        # auto_approve, which files the signal for dashboards and reaches NO
+        # operator, which is the entire point of this lane. Listed in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES for the
+        # standing-fingerprint reason recorded there.
+        "system.node_lkg_unarmed" => {
+          skill: nil,
+          action_category: "system.node_lkg_investigate"
+        },
+        "system.node_lkg_stale" => {
+          skill: nil,
+          action_category: "system.node_lkg_investigate"
+        },
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
           action_category: "system.sdwan_vip_failover",

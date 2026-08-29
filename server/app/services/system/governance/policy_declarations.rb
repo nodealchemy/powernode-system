@@ -260,6 +260,24 @@ module System
         # fingerprint stands until a human changes an artifact or an image.
         "system.module_verify_investigate" => "notify_and_proceed",
 
+        # IMP-a8f9fa74284d — BootLkgArmSensor (node_lkg_unarmed +
+        # node_lkg_stale): whether a live node is armed with a valid
+        # last-known-good composition. System::BootLkgStateWriter has derived
+        # that answer on every heartbeat since IMP-b8d5cfa33b79 and nothing
+        # asked. Seeded HERE for the same mechanical reason as the categories
+        # above — the sensor fires from FleetAutonomyService::SENSORS and gates
+        # as THIS agent, so a policy anywhere else is invisible to the tick and
+        # every signal would die at the gate.
+        #
+        # notify_and_proceed, never auto_approve: there is NO applier and can be
+        # none — the LKG is frozen on the node's own disk by the agent at boot,
+        # and nothing the platform dispatches re-arms it. "Proceed" means
+        # "notify the operator", who restores or re-captures it. Also in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
+        # fingerprint stands until a person acts — and on a fleet still running
+        # pre-boot/LKG agents it stands indefinitely.
+        "system.node_lkg_investigate" => "notify_and_proceed",
+
         # StuckTaskBacklogSensor — "tasks are piling up behind the janitor". Seeded
         # HERE for the same mechanical reason as the categories above: the sensor
         # fires from FleetAutonomyService::SENSORS and gates as THIS agent, so a

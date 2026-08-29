@@ -76,26 +76,37 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
 
   let(:policy_seed_text) { File.read(policy_seed_path) }
 
-  # The seed defines `fleet_policies = { ... }` then immediately consumes it
-  # via `count = System::Seeds::AgentSetupHelpers.upsert_policies!(...)` —
-  # slicing the source between those two markers isolates the hash literal
-  # without needing to `load` the seed (which would require a Rails env).
-  # `.uniq` mirrors real Hash literal semantics: a duplicate key would
-  # collapse at runtime even though the source scan would see it twice, so
-  # counting unique keys is what actually matches `fleet_policies.size`.
+  # Scan the DECLARATIONS file, not the seed and not the constant.
+  #
+  # These policy sets moved out of fleet_autonomy_agent.rb into
+  # System::Governance::PolicyDeclarations so the boot reconciler can assert
+  # them against a RUNNING database; the seed now just consumes the constant,
+  # so slicing its source between two markers found nothing and this spec
+  # RAISED rather than failing an assertion.
+  #
+  # Still a TEXT SCAN, deliberately: this file is a docs-vs-source count check
+  # that runs without a Rails env (referencing the constant here raises
+  # NameError: uninitialized constant System). Slicing between the constant
+  # assignment and its `.freeze` isolates the literal the same way the old
+  # marker pair isolated the seed's hash. `.uniq` mirrors real Hash semantics —
+  # a duplicate key collapses at runtime while the scan would see it twice.
+  let(:declarations_path) do
+    File.expand_path("../../app/services/system/governance/policy_declarations.rb", __dir__)
+  end
+  let(:declarations_text) { File.read(declarations_path) }
+
   let(:seeded_policy_keys) do
-    start = policy_seed_text.index("fleet_policies = {")
+    start = declarations_text.index("FLEET_AUTONOMY_POLICIES = {")
     unless start
-      raise "could not find `fleet_policies = {` in #{policy_seed_path} — " \
-            "has the seed been restructured? update this spec's regex."
+      raise "could not find `FLEET_AUTONOMY_POLICIES = {` in #{declarations_path} — " \
+            "has the declaration been restructured? update this spec's scan."
     end
-    stop = policy_seed_text.index("count = System::Seeds", start)
+    stop = declarations_text.index("}.freeze", start)
     unless stop
-      raise "could not find the end of the fleet_policies block " \
-            "(`count = System::Seeds...`) in #{policy_seed_path} — update this spec's regex."
+      raise "could not find the end of the FLEET_AUTONOMY_POLICIES block (`}.freeze`) " \
+            "in #{declarations_path} — update this spec's scan."
     end
-    block = policy_seed_text[start...stop]
-    block.scan(/"(system\.[a-zA-Z0-9_.]+)"\s*=>/).flatten.uniq
+    declarations_text[start...stop].scan(/"(system\.[a-zA-Z0-9_.]+)"\s*=>/).flatten.uniq
   end
 
   let(:executors_doc_text) { File.read(executors_doc_path) }
@@ -203,7 +214,7 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
     )
     expect(stated).to eq(seeded_policy_keys.size),
       "FLEET_SENSORS.md claims Fleet Autonomy has #{stated} policies; " \
-      "#{policy_seed_path}'s fleet_policies hash actually has #{seeded_policy_keys.size} keys"
+      "#{declarations_path}'s FLEET_AUTONOMY_POLICIES actually has #{seeded_policy_keys.size} keys"
   end
 
   # ==========================================================================

@@ -190,9 +190,15 @@ RSpec.describe System::Fleet::Sensors::StuckTaskBacklogSensor do
     # the signal for a dashboard and reaches NO operator — which would make
     # this sensor itself inert.
     it "seeds the gate policy on the agent that runs the sense pass" do
-      seed = Rails.root.join("../extensions/system/server/db/seeds/fleet_autonomy_agent.rb")
-
-      expect(seed.read).to include('"system.task_backlog_investigate" => "notify_and_proceed"')
+      # Read the DECLARATION, not the seed text. These policy sets moved out
+      # of fleet_autonomy_agent.rb into System::Governance::PolicyDeclarations
+      # so the boot reconciler can assert them against a RUNNING database;
+      # the seed now consumes that constant. Grepping the seed file for a
+      # literal therefore tested a string that no longer exists there, while
+      # the property it cares about — this category is gated on the agent
+      # whose tick runs the sense pass — moved with the constant.
+      expect(System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES)
+        .to include("system.task_backlog_investigate" => "notify_and_proceed")
     end
 
     # Without this the standing fingerprint of a still-broken janitor scores

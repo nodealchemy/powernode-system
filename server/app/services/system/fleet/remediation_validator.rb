@@ -104,6 +104,24 @@ module System
       #                                            clears only when a person
       #                                            re-issues the device, far
       #                                            beyond SETTLE_WINDOW.
+      #   system.node_lkg_investigate            — IMP-a8f9fa74284d. A live
+      #                                            node the platform cannot
+      #                                            show is armed with a valid
+      #                                            last-known-good, or one
+      #                                            whose LKG confirmation has
+      #                                            aged out. There is no
+      #                                            applier and can be none:
+      #                                            the LKG is frozen on the
+      #                                            node's own disk by the
+      #                                            agent at boot, so nothing
+      #                                            the platform dispatches
+      #                                            re-arms it. On a fleet
+      #                                            still running agents that
+      #                                            predate the boot/LKG block
+      #                                            the condition clears only
+      #                                            when a rollout replaces
+      #                                            them — indefinitely beyond
+      #                                            SETTLE_WINDOW.
       NON_REMEDIATING_ACTION_CATEGORIES = %w[
         system.observation
         system.sdwan_service_health_investigate
@@ -114,6 +132,7 @@ module System
         system.sdwan_user_device_config_investigate
         system.module_verify_investigate
         system.task_backlog_investigate
+        system.node_lkg_investigate
       ].freeze
 
       def initialize(account:, agent: nil)
