@@ -95,8 +95,8 @@ module System
         nil
       end
 
-      # Tries both key forms: the controller passes an
-      # ActionController::Parameters, specs and internal callers pass a plain
+      # Tries both key forms: the controller passes the parsed heartbeat body
+      # (indifferent access), specs and internal callers pass a plain
       # symbol-keyed hash, and a symbol-keyed hash silently reading as
       # "reported nothing" would be a false green.
       def fetch(entry, key)

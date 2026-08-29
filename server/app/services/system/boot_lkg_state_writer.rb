@@ -192,11 +192,10 @@ module System
         TRUTHY.include?(raw.to_s.downcase) ? true : nil
       end
 
-      # Tries BOTH forms regardless of which the caller passed. The two sibling
-      # writers only ever see an ActionController::Parameters (indifferent
-      # access), so their string-only fallback is enough for them; this class is
-      # also called with plain hashes, and a symbol-keyed one silently reading
-      # as "reported nothing" would be a false green.
+      # Tries BOTH forms regardless of which the caller passed. The heartbeat
+      # hands over the parsed body (indifferent access), but this class is also
+      # called with plain symbol-keyed hashes, and one of those silently
+      # reading as "reported nothing" would be a false green.
       def fetch(entry, key)
         return nil if entry.nil?
 

@@ -91,9 +91,9 @@ module Sdwan
       end
 
       def normalize_network(entry)
-        # `key?`-bearing but not a Hash (ActionController::Parameters), so
-        # read through [] rather than converting — to_unsafe_h on a nested
-        # element is not available for every shape Rails hands us here.
+        # Read through [] rather than converting: the element may be a
+        # symbol-keyed hash from an internal caller or a string-keyed one from
+        # the heartbeat body, and both arms below cover either.
         raw_subsystems = entry[:subsystem_states] || entry["subsystem_states"]
         subsystems     = normalize_subsystems(raw_subsystems)
         # TRUE only when the agent sent a NON-EMPTY list AND every element of
