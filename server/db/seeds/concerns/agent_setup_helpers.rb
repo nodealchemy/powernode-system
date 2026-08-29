@@ -394,7 +394,7 @@ module System
       # rendered ⇒ registered ⇒ saveable, with no third state left.
       #
       # It also cannot eat legitimate operator tuning. An operator editing a
-      # REGISTERED category — including the 33 rows the manual-operations and
+      # REGISTERED category — including the 26 rows the manual-operations and
       # instance-pool seeds write at the very scope-"global"/nil-agent shape the
       # ghost wears — is never in the relation, because the predicate reads the
       # category and not the row. Deleting by that shape instead was the

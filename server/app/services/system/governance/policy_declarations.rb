@@ -20,44 +20,202 @@ module System
     # The seed consumes this same constant, so first boot and every later
     # reconcile agree by construction rather than by two lists staying in sync.
     module PolicyDeclarations
-      # Operator-path rows for System::Task commands: scope "global", no agent,
-      # no user. Verbs are the OPERATOR's default, deliberately conservative for
-      # anything that destroys or overwrites state.
+      # Gate-path rows for System::Task commands: scope "global", no agent, no
+      # user. These are the defaults for every caller that reaches the gate —
+      # operator AND agent, see "WHO THIS ACTUALLY GOVERNS" below — and are
+      # deliberately conservative for anything that destroys or overwrites
+      # state, or that hands the caller an unvalidated payload on a node.
       #
-      # NOTE (IMP-944567d41689): this key set currently disagrees with
-      # System::Task::COMMANDS in both directions — it declares categories for
-      # commands the model refuses to insert, and omits real commands. That
-      # drift is tracked separately; this constant records what is declared
-      # TODAY so the reconciler is honest about the current contract rather than
-      # silently repairing a vocabulary question it has no mandate to decide.
-      MANUAL_OPERATION_POLICIES = {
-        "system.task.start" => "auto_approve",
-        "system.task.stop" => "auto_approve",
-        "system.task.restart" => "auto_approve",
-        "system.task.reboot" => "auto_approve",
-        "system.task.terminate" => "require_approval",        # destroys instance
-        "system.task.provision" => "notify_and_proceed",      # creates infra
-        "system.task.deprovision" => "require_approval",      # destroys infra
-        "system.task.associate_public_ip" => "auto_approve",
-        "system.task.disassociate_public_ip" => "auto_approve",
-        "system.task.create_volume" => "notify_and_proceed",
-        "system.task.delete_volume" => "require_approval",
-        "system.task.attach_volume" => "auto_approve",
-        "system.task.detach_volume" => "notify_and_proceed",
-        "system.task.create_snapshot" => "auto_approve",
-        "system.task.delete_snapshot" => "require_approval",
-        "system.task.restore_snapshot" => "require_approval", # rolls back state
-        "system.task.create_network" => "notify_and_proceed",
-        "system.task.delete_network" => "require_approval",
-        "system.task.sync" => "auto_approve",
-        "system.task.sync_modules" => "auto_approve",
-        "system.task.apply_config" => "notify_and_proceed",
-        "system.task.build_module" => "notify_and_proceed",
-        "system.task.commit_module" => "notify_and_proceed",
-        "system.task.ssh_command" => "require_approval",      # arbitrary code execution
-        "system.task.backup" => "auto_approve",
-        "system.task.restore" => "require_approval",          # overwrites state
-        "system.task.custom" => "require_approval"            # unknown semantics
+      # THE KEY SET IS DERIVED FROM System::Task::COMMANDS (IMP-944567d41689).
+      # It used to be a hand-written list, and it had drifted THREE ways at
+      # once: it declared 19 categories for commands the model REFUSES to insert
+      # (provision, deprovision, the two public-IP verbs, the seven volume/
+      # snapshot verbs, the two network verbs, sync, build_module,
+      # commit_module, backup, restore, custom), it omitted 12 commands that are
+      # real and in daily use (upgrade_boot_image, a2a_call, the seven storage.*
+      # verbs, the two ci.* verbs, probe.module_smoke), and the engine's
+      # registration + the seed's key set both inherited the drift because they
+      # read this constant. A hand-synced list drifts again the next time a
+      # command lands, which is exactly how it arrived here; deriving it means
+      # a command cannot exist without an operator policy row, and a policy row
+      # cannot exist for a command that does not.
+      #
+      # WHO THIS ACTUALLY GOVERNS — WIDER THAN "AN OPERATOR CLICKING A BUTTON".
+      #
+      # These rows are written at MANUAL_OPERATION_SCOPE, which is scope
+      # "global" with ai_agent_id: nil. Two things follow, and the verbs below
+      # were chosen against BOTH:
+      #
+      #   * Ai::InterventionPolicy#agent_matches? returns TRUE whenever
+      #     ai_agent_id is nil, and InterventionPolicyService#resolve admits the
+      #     scope-"global" audience for an AGENT caller by design (it is the
+      #     account-wide floor; only scope "action_type" is operator-only). No
+      #     agent-scoped row exists anywhere in the `system.task.*` namespace, so
+      #     these ARE the rows an AI agent resolves against. "auto_approve" here
+      #     means an agent — including one carrying a prompt injection — runs the
+      #     command unattended with no human in the loop.
+      #   * the payload is not vetted. TasksController#create permits
+      #     `options: {}` — arbitrary JSONB, with no server-side validation of
+      #     any storage/probe/build field — and hands it to the node agent, which
+      #     interpolates it into systemd units, /etc/exports.d entries, curl
+      #     arguments and find/chown arguments. Several handlers below are
+      #     therefore ROOT-EQUIVALENT primitives on an arbitrary fleet node when
+      #     driven by a hostile payload, whatever their names suggest.
+      #
+      # So the question each verb answers is NOT "is this routine when the
+      # platform issues it?" — every in-process producer (ChownDispatchService,
+      # NfsExportManager, SmbUserManager, GatewayProvisioningService,
+      # AssignmentReconciliationService, BootImage::UpgradeDispatcher,
+      # AgentFleetMissionService, ModuleSmokeProbe) calls System::Task.create!
+      # directly and NEVER meets the gate, so the machine path is unaffected by
+      # anything here. The only callers these verbs govern are the gate sites:
+      # TasksController#create and NodeInstanceGating. For the handlers whose
+      # payload is unvalidated, that means the only caller a loose verb serves is
+      # the adversarial one — a permissive verb buys nothing operationally and
+      # sells the whole node.
+      #
+      # WHAT A DECLARED ROW BUYS, AND WHAT IT COSTS. Absence resolves to
+      # require_approval (Ai::InterventionPolicyService#default_policy), so a
+      # declared require_approval is a NO-OP on resolution and only makes the
+      # control tunable in the Autonomy modal (registration is derived from this
+      # same constant — see lib/powernode_system/engine.rb). Any verb looser
+      # than that is a WIDENING for an install PolicyReconciler converges, and
+      # note that notify_and_proceed PROCEEDS: it is a widening too, not a
+      # softer form of approval.
+      MANUAL_OPERATION_DEFAULT_VERBS = {
+        # --- Instance lifecycle (server-dispatched, ExecutionDispatcher::COMMAND_REGISTRY)
+        "start" => "auto_approve",
+        "stop" => "auto_approve",
+        "restart" => "auto_approve",
+        "reboot" => "auto_approve",
+        "terminate" => "require_approval",         # destroys the instance
+        "sync_modules" => "auto_approve",
+        "apply_config" => "notify_and_proceed",
+        "ssh_command" => "require_approval",       # arbitrary code execution
+
+        # --- Agent-delegated (ExecutionDispatcher::AGENT_DELEGATED_COMMANDS)
+        #
+        # Writes the target UKI to the ESP and runs `systemctl reboot`
+        # (agent/internal/runtime/tasks/handlers/upgrade_boot_image.go). Not
+        # permissive under any reading: the recovery path for a bad image is an
+        # A/B boot-slot rollback, and on a self-hosted control plane the node
+        # being rebooted may be the one serving the approval UI.
+        "upgrade_boot_image" => "require_approval",
+
+        # Drives a PEER instance: NodeInstancePeersController mints a capability
+        # token and enqueues this; the callee verifies the token's Ed25519
+        # signature before acting, so the payload cannot widen what the caller
+        # was granted. It crosses an instance boundary rather than a privilege
+        # one — proceeds, but an operator should see that it happened.
+        "a2a_call" => "notify_and_proceed",
+
+        # --- storage.* — READ THE AGENT HANDLERS, NOT THE NAMES. Five of these
+        # seven are unvalidated root primitives on the target node. They are
+        # require_approval for the same reason `ssh_command` is, and in three
+        # cases they are a STRICTLY STRONGER primitive than ssh_command because
+        # they do not announce themselves as remote execution.
+        #
+        # storage.mount is ARBITRARY ROOT CODE EXECUTION. agent/internal/
+        # storage/systemd.go: `filepath.Join(SystemdUnitDir, task.UnitName)` then
+        # os.WriteFile, `systemctl daemon-reload`, `systemctl start <UnitName>`.
+        # UnitName is unsanitised, so the caller picks the filename under
+        # /etc/systemd/system (traversal and overwrite included), and
+        # renderMountUnit interpolates `strings.Join(task.Options, ",")` raw into
+        # the unit body — a newline in one option injects arbitrary systemd
+        # directives. Name the unit `*.service` and the injected
+        # `[Service] ExecStart=` is what `systemctl start` then runs, as root.
+        "storage.mount" => "require_approval",
+        # NOT storage-scoped. StopAndRemoveMountUnit runs `systemctl stop
+        # <UnitName>` and deletes the unit file, with the same unsanitised
+        # UnitName — `powernode-<uuid>-rails.service` stops the control plane and
+        # removes its unit. A denial-of-service primitive over any unit on the
+        # node, not an unmount.
+        "storage.unmount" => "require_approval",
+        # NOTHING BINDS THIS TO A SHARE. exports.go writes
+        # `<ExportPath> <PeerIP>/128(<Options>)` into /etc/exports.d and runs
+        # `exportfs -ra`; ExportPath, PeerIP and Options are all unvalidated. So
+        # `export_path: "/"` with `no_root_squash` exports the node's root
+        # filesystem, writable as root, to whatever peer the caller names — host
+        # compromise, not an ACL edit. (NfsExportManager#grant! and #revoke!
+        # also both ride this one command, so one verb would govern widening and
+        # narrowing even if the arguments were bounded.)
+        "storage.exports.apply" => "require_approval",
+        # samba-tool create / delete / set_password (SmbUserManager). Credential
+        # lifecycle for a share principal — bounded to Samba's own user database
+        # rather than to arbitrary node state, which is why this one stays a
+        # notify rather than joining its five siblings above.
+        "storage.smb_user.apply" => "notify_and_proceed",
+        # Same unvalidated-unit-name class as storage.mount: ProvisionGateway
+        # writes and starts a systemd unit whose name and body the caller
+        # supplies. Root code execution by the same mechanism.
+        "storage.gateway.provision" => "require_approval",
+        # Tears that gateway down, and every consumer mounted through it loses
+        # its path at once — the widest blast radius of the seven even before
+        # the unit-name problem.
+        "storage.gateway.deprovision" => "require_approval",
+        # Recursive `find <MountPath> -uid OLD -exec chown NEW`. chown.go refuses
+        # ONLY "" and "/", so `mount_path: "/etc", old_uid: 0, new_uid: <any>`
+        # is permitted and hands the node's configuration tree to an
+        # unprivileged uid — privilege escalation, not a slow maintenance job.
+        # The reversibility that makes the MACHINE path safe does not exist for
+        # a caller this verb governs: chown_previous_uid/gid is recorded on a
+        # StorageAssignment, and a hand-issued or agent-issued task has no
+        # StorageAssignment at all, so there is nothing to reverse from.
+        "storage.chown" => "require_approval",
+
+        # --- ci.* — build on a LEASED module-forge builder. Not inert: the
+        # build's TERMINAL step is a registry write. module-forge-build.sh
+        # pushes UNSIGNED to the OCI registry under the caller-supplied OCI_REF
+        # using the platform's ORAS credentials, and the content-addressed skip
+        # path `oras tag`s an already-published artifact as OCI_REF — so the tag
+        # is attacker-chosen either way. Two things bound it, and they are why
+        # this is notify rather than require_approval: the agent gets 403 from
+        # config/ci_build_context unless the instance is a module-forge builder
+        # holding an active module_build lease, and the promote path filters to
+        # the batch's own tracked_task_ids, so an injected batch_id cannot slip a
+        # digest into a promote.
+        "ci.module_build" => "notify_and_proceed",
+        "ci.package_build" => "notify_and_proceed",
+
+        # --- probe.* — the CHECK NAMES are allow-listed
+        # (probeModuleSmokeChecks); their ARGUMENTS are not, so this is not the
+        # read-only observation its name promises. checkHealthEndpoint runs
+        # `curl -X <method> <endpoint>` with both caller-supplied, from the
+        # node's HOST network namespace, discarding the body and returning the
+        # status code — an arbitrary-verb HTTP request plus a blind SSRF and
+        # port-scan oracle against anything the node can reach. checkLddClosure
+        # runs `chroot /sysroot ldd <path>` on a caller-supplied path.
+        #
+        # It stays auto_approve anyway, and the reasoning is the bound, not the
+        # name: every one of those primitives is strictly weaker than what the
+        # allow-listed check set already grants, none of them WRITES, and the
+        # three checks cannot be extended by payload. A caller who can issue
+        # this can read status codes and linker output — not change node state.
+        # If a fourth check is ever added, re-derive this verb before shipping it.
+        "probe.module_smoke" => "auto_approve"
+      }.freeze
+
+      # Fail-safe for a command added to System::Task::COMMANDS without a verb
+      # above. It matches what absence already resolves to, so an undeclared
+      # command behaves exactly as it does today rather than crashing boot —
+      # and the registration spec is what forces the decision to be made.
+      MANUAL_OPERATION_FALLBACK_VERB = "require_approval"
+
+      # LOAD-TIME DEPENDENCY, stated because its failure mode is silent. This
+      # class body now references ::System::Task, so PolicyDeclarations cannot
+      # load unless the model does. The engine reads this constant from inside
+      # a block that rescues StandardError into a `Rails.logger.warn`
+      # (lib/powernode_system/engine.rb), so a System::Task that failed to
+      # autoload there would not raise — it would leave EVERY extension
+      # action_category unregistered, with one warn line as the only evidence,
+      # and PATCH /api/v1/system/autonomy refusing every operator edit.
+      # The vacuity guard in
+      # spec/lib/powernode_system/system_task_category_vocabulary_spec.rb
+      # ("has real inputs on both sides") is what catches that state: an empty
+      # registry fails it rather than passing both set-difference examples.
+      MANUAL_OPERATION_POLICIES = ::System::Task::COMMANDS.to_h { |command|
+        [ "system.task.#{command}",
+          MANUAL_OPERATION_DEFAULT_VERBS.fetch(command, MANUAL_OPERATION_FALLBACK_VERB) ]
       }.freeze
 
       # The row SHAPE these declarations resolve at. Load-bearing: an

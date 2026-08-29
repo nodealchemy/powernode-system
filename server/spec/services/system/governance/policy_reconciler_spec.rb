@@ -46,7 +46,8 @@ RSpec.describe System::Governance::PolicyReconciler do
     # because the query's lack of an is_active filter is easy to "tidy up".
     # A skipped set contributes no MISSING rows precisely because it was never
     # examined, so counting only `missing` reported the extension-enabled-after-
-    # first-boot install — ~168 of 195 rows absent — as perfectly clean.
+    # first-boot install — 117 of the 189 declared rows absent, every one of
+    # them in a skipped agent set — as perfectly clean.
     it "reports DRIFT when a set is skipped, even with nothing missing" do
       # Reconcile FIRST so every agent-less set is satisfied. What remains is
       # only the skipped agent sets — the state this example exists to catch.
@@ -293,21 +294,50 @@ RSpec.describe System::Governance::PolicyReconciler do
       expect(resolved[:record]).to be_nil
     end
 
-    it "declares 27 rows in an 11/7/9 split" do
-      expect(declared.size).to eq(27)
+    # The set is DERIVED from System::Task::COMMANDS (IMP-944567d41689), so
+    # this split moves whenever a command lands or leaves — which is the point
+    # of pinning it: the reconciler's header states these numbers as its
+    # justification for widening, and a command added without a verb decision
+    # would silently change how much it widens.
+    it "declares 20 rows in a 6/5/9 split" do
+      expect(declared.size).to eq(20)
+      expect(declared.size).to eq(System::Task::COMMANDS.size)
       expect(declared.values.tally).to eq(
-        "auto_approve" => 11,
-        "notify_and_proceed" => 7,
+        "auto_approve" => 6,
+        "notify_and_proceed" => 5,
         "require_approval" => 9
       )
     end
 
-    it "widens 18 of them relative to the absence they replace" do
+    it "widens 11 of them relative to the absence they replace" do
       widening, no_op = declared.partition { |_, verb| proceeds_unattended.include?(verb) }
 
-      expect(widening.size).to eq(18)
+      expect(widening.size).to eq(11)
       expect(no_op.size).to eq(9)
       expect(no_op.map(&:last).uniq).to eq(%w[require_approval])
+    end
+
+    # The named ones, pinned individually. The set-level counts above would
+    # stay green if a root-equivalent handler traded places with a harmless
+    # one, and these six are where that trade would be silent: five storage
+    # verbs whose agent handlers take an UNVALIDATED payload (an unsanitised
+    # systemd unit name written under /etc/systemd/system and started, an
+    # unbounded /etc/exports.d entry, a chown rooted at any path but "/"), plus
+    # the boot-image rewrite. See MANUAL_OPERATION_DEFAULT_VERBS for the
+    # per-command derivation.
+    it "parks every command whose node-side handler takes an unvalidated payload" do
+      %w[
+        storage.mount storage.unmount storage.exports.apply
+        storage.gateway.provision storage.gateway.deprovision storage.chown
+        upgrade_boot_image ssh_command
+      ].each do |command|
+        expect(declared.fetch("system.task.#{command}")).to eq("require_approval"),
+                                                            "system.task.#{command} is declared " \
+                                                            "#{declared['system.task.' + command].inspect}. These rows " \
+                                                            "resolve for AGENT callers too (scope global, nil agent), and " \
+                                                            "TasksController permits an arbitrary options JSONB, so anything " \
+                                                            "looser hands an unattended root primitive to a prompt-injected agent."
+      end
     end
   end
 end

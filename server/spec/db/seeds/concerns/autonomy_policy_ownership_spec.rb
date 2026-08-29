@@ -123,7 +123,7 @@ RSpec.describe "Autonomy policy row ownership", type: :request do
 
     # THE NAMED WRONG FIX. Deleting scope-"global" agent-less rows wholesale
     # would destroy the operator's own tuning of registered categories AND the
-    # 33 rows `system_manual_operation_policies.rb` / `system_instance_pool_policies.rb`
+    # 26 rows `system_manual_operation_policies.rb` / `system_instance_pool_policies.rb`
     # seed at exactly that shape.
     it "NEVER collects a row for a REGISTERED category, whatever its shape" do
       agent = create(:ai_agent, account: account, agent_type: "monitor", name: "Fleet Autonomy")

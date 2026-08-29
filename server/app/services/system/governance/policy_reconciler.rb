@@ -44,11 +44,16 @@ module System
     # for any declared verb looser than require_approval it REPLACES a parked
     # write with one that proceeds.
     #
-    # As declared today that is most of the set: of the 27 rows in
-    # PolicyDeclarations::MANUAL_OPERATION_POLICIES, 11 are auto_approve and 7
-    # notify_and_proceed — 18 that proceed without an approval where absence
-    # would have parked. Only the 9 require_approval rows are no-ops on
-    # resolution.
+    # As declared today that is a MINORITY of the set: of the 20 rows in
+    # PolicyDeclarations::MANUAL_OPERATION_POLICIES, 6 are auto_approve and 5
+    # notify_and_proceed — 11 that proceed without an approval where absence
+    # would have parked. The other 9 are require_approval and so are no-ops on
+    # resolution. Note that notify_and_proceed counts as a widening here: it
+    # proceeds.
+    #
+    # (That set is now DERIVED from System::Task::COMMANDS — IMP-944567d41689 —
+    # so the split moves whenever a command lands or leaves. The counts are
+    # pinned in spec/services/system/governance/policy_reconciler_spec.rb.)
     #
     # This is defensible, and is the intended behaviour: it converges an
     # established install onto what its own first boot would have written, and
@@ -69,9 +74,13 @@ module System
         # A SKIPPED set is drift, not a neutral outcome. An install that enables
         # this extension AFTER its first boot never seeds the agents (db:seed is
         # first-boot only — the whole argument this class exists for), so every
-        # agent set skips and ~168 of 195 declared rows are absent. Counting
-        # only `missing` reported that install as CLEAN: the skipped set
-        # contributes no missing rows precisely because it was never examined.
+        # agent set skips — 117 declared rows across 8 of the 11 sets, out of
+        # 189 declared in total. Counting only `missing` reported that install
+        # as CLEAN: the skipped set contributes no missing rows precisely
+        # because it was never examined. (Both figures are sums over
+        # PolicyDeclarations and move with it; the prose they replace said
+        # "~168 of 195", which did not match the constants even before
+        # IMP-944567d41689 shrank the manual set from 27 rows to 20.)
         #
         # That is the flagship scenario the reconciler was built for, and it was
         # the one it stayed silent about.

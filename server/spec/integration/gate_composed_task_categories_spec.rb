@@ -149,6 +149,27 @@ module GateComposedTaskCategories
       commands: -> { %w[start stop reboot terminate] }
     },
     {
+      file: "app/services/system/governance/policy_declarations.rb",
+      line: 217,
+      source: '"system.task.#{command}"',
+      # NOT a gate site: it composes the category NAME the seed, PolicyReconciler
+      # and the engine's registration all consume, and calls no gate. Enumerated
+      # anyway because the composed-shape backstop scan finds it and cannot tell
+      # the difference — and because enumerating it is what makes the derivation
+      # this file's subject: the value set is System::Task::COMMANDS itself, so
+      # asserting insertability here pins that the declaration can never again
+      # name a category no command backs (IMP-944567d41689, which removed 19 such
+      # names and added the 12 that were missing).
+      executor: nil,
+      domain: "PolicyDeclarations::MANUAL_OPERATION_POLICIES derives its key set " \
+              "from System::Task::COMMANDS. Like the tasks_controller entry this " \
+              "is close to a TAUTOLOGY — COMMANDS checked against a validator " \
+              "holding the same frozen array — and is kept for the same reason: " \
+              "the constant and the validator have not been decoupled, and the " \
+              "backstop scan sees this line whether or not it is enumerated.",
+      commands: -> { ::System::Task::COMMANDS }
+    },
+    {
       file: "app/services/ai/tools/system_fleet_tool.rb",
       line: 368,
       source: 'action_category: "system.task.terminate"',

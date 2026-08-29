@@ -82,32 +82,48 @@ RSpec.describe "system node instance public-IP endpoints (gate outcome)", type: 
   # falls through to its require_approval default, which on this install parks
   # an approval request (Ai::ApprovalChain IS core, so AutonomyGate's core-mode
   # auto-proceed fork never runs). PRODUCTION resolves these two categories to
-  # auto_approve — System::Governance::PolicyDeclarations::MANUAL_OPERATION_POLICIES
-  # lines 41-42 — so the rows are seeded here in exactly the shape the seed
+  # auto_approve, so the rows are seeded here in exactly the shape the seed
   # writes (MANUAL_OPERATION_SCOPE + MANUAL_OPERATION_ATTRIBUTES). Without them
   # the spec would exercise the approval branch and never reach the insert that
   # is broken.
+  #
+  # THE VERB IS A LITERAL NOW, AND THAT IS A CHANGE WORTH READING (IMP-944567d41689).
+  # This used to `.fetch` it from PolicyDeclarations::MANUAL_OPERATION_POLICIES,
+  # with a raise saying a missing key meant either the DELETE disposition had
+  # been executed or something was wrong. Neither happened. That constant is now
+  # DERIVED from System::Task::COMMANDS, and these two verbs were never in
+  # COMMANDS — so they left the declaration as a consequence of removing 19
+  # phantom categories, not as a ruling on these two endpoints. The disposition
+  # is STILL PARKED: the routes, NodeInstancesController#associate_public_ip /
+  # #disassociate_public_ip and NodeInstanceGating#gate_ip_action are all
+  # untouched, and this spec still pins the same 422.
+  #
+  # WHAT DID CHANGE, and it is operator-visible: these two categories are no
+  # longer REGISTERED either (the engine derives registration from the same
+  # constant). Production still carries both rows from the 07-16 seed run —
+  # nothing deletes them, db:seed is first-boot only — so they keep rendering in
+  # the Autonomy modal while PATCH /api/v1/system/autonomy now refuses to save
+  # an edit to them. `db/seeds/system_autonomy_orphan_cleanup.rb` is the sweep
+  # that would collect them, and it is seed-gated too.
+  #
+  # Under RESTORE this literal goes back to reading the declaration (the verbs
+  # would be derived again the moment the commands rejoin COMMANDS). Under
+  # DELETE this spec goes away with the endpoint it exercises.
+  #
+  # A `let`, not a constant: a bare constant assigned inside a describe block
+  # lands on Object, which is this repo's recorded duplicate-constant clobber
+  # class.
+  let(:production_public_ip_verb) { "auto_approve" }
+
   before do
     %w[system.task.associate_public_ip system.task.disassociate_public_ip].each do |category|
       declarations = ::System::Governance::PolicyDeclarations
-      # Removing these two declarations is the natural FIRST step of the DELETE
-      # disposition, and a bare `.fetch` KeyError from a `before` hook would
-      # kill every example here naming neither the endpoint nor the cause.
-      policy = declarations::MANUAL_OPERATION_POLICIES.fetch(category) do
-        raise "#{category} is no longer declared in " \
-              "System::Governance::PolicyDeclarations::MANUAL_OPERATION_POLICIES. " \
-              "If the public-IP endpoints were DELETED (the operator disposition " \
-              "this spec was written to inform — see the header), delete this spec " \
-              "along with them. If the declaration went away for any other reason, " \
-              "that is itself the bug: the endpoint at " \
-              "node_instances_controller.rb:237/:256 still gates on this category."
-      end
 
       ::Ai::InterventionPolicy.create!(
         account: account,
         action_category: category,
         **declarations::MANUAL_OPERATION_SCOPE,
-        policy: policy,
+        policy: production_public_ip_verb,
         **declarations::MANUAL_OPERATION_ATTRIBUTES
       )
     end
