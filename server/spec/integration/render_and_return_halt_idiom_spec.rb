@@ -508,8 +508,26 @@ RSpec.describe "render-and-return halt idiom (authorization bypass guard)" do
   # exactly the leak spec/integration/private_extension_isolation_spec.rb
   # exists to prevent, and which it asks to be avoided by DERIVING the private
   # locations rather than naming them. So they are derived and excluded here.
-  # Private extensions live in their own repositories and carry their own copy
-  # of this guard; nothing about them is decided, or disclosed, in this file.
+  #
+  # This exclusion is unconditionally correct regardless of what is actually
+  # true on the private side — it must hold even if no private extension were
+  # covered at all, because the leak is in the baseline mechanism, not in
+  # whether an offender exists. So this file asserts nothing about coverage:
+  # whether, and how well, any given private extension's own controller tree
+  # is scanned for this idiom is a fact that belongs to (and must be verified
+  # in) that extension's own repository, never here.
+  #
+  # A prior version of this comment claimed private extensions "carry their
+  # own copy of this guard" as settled fact. That was untrue when written —
+  # no private extension had any such spec, and hand-scanning (not this file,
+  # which cannot see that tree) later found three S1 authorization-bypass
+  # defects of exactly this shape sitting in one private controller. A
+  # detector whose own comment overstates its reach is worse than one that is
+  # silent about it: the overstatement is why a reader stops looking. Since
+  # then, at least one private extension has ported a copy of this guard into
+  # its own repo (its own baseline, never entering this mirror) — but that is
+  # a fact about that repo, not a property this file can assert or enforce for
+  # every private extension, and it must not be restated here as one.
   def private_extension_root
     Pathname.new(File.expand_path("../../../../..", __dir__)).join("extensions", "private")
   end
