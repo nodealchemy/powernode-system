@@ -217,6 +217,53 @@ func TestBuildHeartbeat_ArmTelemetry_OnNormalBoot(t *testing.T) {
 	}
 }
 
+// IMP-5890f8543acc: a zero-valued BootLKG.ConfirmedAt (e.g. an old/malformed
+// on-disk LKG that predates the field, or one written by a code path that
+// never stamped it) must never serialize as the Go zero time
+// ("0001-01-01T00:00:00Z") — that string round-trips through Time.iso8601 on
+// the server and gets stored as a real-looking confirmation timestamp. The
+// sibling guard at the breadcrumb read (bc.LKGConfirmedAt.IsZero(), a few
+// lines above in buildHeartbeat) already refuses to derive an age from a zero
+// time; this asserts the same discipline on the LKG-read path: the field must
+// be omitted (empty string + omitempty), not populated with the zero-time
+// string.
+func TestBuildHeartbeat_ZeroLKGConfirmedAt_Omitted(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	origLKG, origBC := BootLKGPath, BootBreadcrumbPath
+	BootLKGPath = filepath.Join(dir, "assignment-lkg.json")
+	BootBreadcrumbPath = filepath.Join(dir, "boot-composed.json")
+	defer func() { BootLKGPath, BootBreadcrumbPath = origLKG, origBC }()
+
+	lkg := validLKG(t, cacheDir)
+	lkg.ConfirmedAt = time.Time{} // zero value — never stamped / predates the field
+	if err := WriteBootLKG(BootLKGPath, lkg); err != nil {
+		t.Fatal(err)
+	}
+	// No breadcrumb written: buildHeartbeat's LoadBreadcrumb branch is
+	// independent of the LKG-read branch under test here.
+
+	s := &Service{cfg: Config{StatePath: filepath.Join(dir, "state.json"), OnError: func(string, error) {}}}
+	p := s.buildHeartbeat("boot-1", nil)
+
+	if !p.LKGPresent {
+		t.Fatal("lkg_present must still be true — the LKG itself is present, only confirmed_at is unknown")
+	}
+	if p.LKGConfirmedAt != "" {
+		t.Fatalf("a zero ConfirmedAt must never serialize as a timestamp string, got %q", p.LKGConfirmedAt)
+	}
+	body, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal heartbeat: %v", err)
+	}
+	if strings.Contains(string(body), "lkg_confirmed_at") {
+		t.Fatalf("lkg_confirmed_at must be OMITTED entirely on the wire for a zero ConfirmedAt, got: %s", body)
+	}
+	if strings.Contains(string(body), "0001-01-01") {
+		t.Fatalf("the Go zero-time sentinel must never appear on the wire, got: %s", body)
+	}
+}
+
 func TestLKGFallbackDisabled_Sentinel(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "lkg-fallback.disabled")

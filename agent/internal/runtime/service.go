@@ -649,7 +649,9 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 	}
 	if lkg, err := LoadBootLKG(BootLKGPath); err == nil {
 		payload.LKGPresent = true
-		payload.LKGConfirmedAt = lkg.ConfirmedAt.UTC().Format(time.RFC3339)
+		if !lkg.ConfirmedAt.IsZero() {
+			payload.LKGConfirmedAt = lkg.ConfirmedAt.UTC().Format(time.RFC3339)
+		}
 		payload.LKGModuleCount = len(lkg.Modules)
 	}
 	// On a pivot (native root-mode) node the compose path grants capabilities
