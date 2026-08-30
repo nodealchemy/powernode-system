@@ -853,7 +853,13 @@ module Ai
             }
           },
           "system_promote_module_version" => {
-            description: "Promote a NodeModuleVersion through its lifecycle (staging|blessed|live|retired)",
+            # IMP-65bea54e4081 — the description is the surface an agent reads
+            # BEFORE calling, so the ladder/pointer split has to be stated here
+            # too: correcting it only in the response teaches the caller after
+            # it has already acted on "promote" meaning "ship it".
+            description: "Promote a NodeModuleVersion through its lifecycle (staging|blessed|live|retired). " \
+                         "Advances promotion_state ONLY — it does not change which version the fleet serves " \
+                         "(NodeModule#current_version_id); check promoted_to_current in the response.",
             parameters: {
               module_version_id: { type: "string", required: true, description: "UUID of the NodeModuleVersion to promote" },
               target_state: { type: "string", required: true, description: "Target promotion state: staging | blessed | live | retired" }
@@ -3587,13 +3593,54 @@ module Ai
         error_result(e.message)
       end
 
+      # IMP-65bea54e4081 — promotion advances the LADDER and nothing else.
+      # NodeModuleVersion#promote_to! writes promotion_state plus AT MOST one
+      # timestamp column (a staging->built step is a legal transition that
+      # stamps nothing); it does not touch NodeModule#current_version_id, which
+      # is the pointer the node-facing download resolves
+      # (Api::V1::System::NodeApi::ModulesController#download reads
+      # `@module.current_version&.artifact`). So `promoted: true` on its own
+      # says a label changed, and is indistinguishable from a fleet change.
+      #
+      # This verb deliberately does NOT call NodeModule#promote_to_version!:
+      # RestartAfterUpdate.arm! fires there, so making promotion move the
+      # pointer would restart services fleet-wide. Whether it SHOULD, and
+      # whether publish should stop auto-promoting past the ladder
+      # (ModulePublicationProcessor defaults auto_promote? to true, so a
+      # never-staged version can become current), are open lifecycle-gating
+      # questions filed separately — not decided here.
+      #
+      # promote_to_version! is the SANCTIONED writer of current_version_id and
+      # the only one that arms a restart — not the only writer:
+      # PackageBuildWebhookService:140 and AccountBootstrapService:284 both
+      # update! the column directly. That is why the fields below are read back
+      # from the row rather than inferred from which method ran.
+      #
+      # What this reports, modelled on the REST publish path's
+      # promoted_to_current (ModulePublicationsController#create):
+      #   promoted_to_current     — is this version what the fleet now serves?
+      #   current_version_changed — did the served artifact move across this
+      #                             call? (a before/after read of the pointer,
+      #                             so it states the delta, not causation)
+      #   current_version_id      — what the fleet serves, whichever row that is.
       def promote_module_version(params)
         version = ::System::NodeModuleVersion
                   .joins(:node_module)
                   .where(system_node_modules: { account_id: @account.id })
                   .find(params[:module_version_id])
+        node_module = version.node_module
+        current_before = node_module.current_version_id
+
         version.promote_to!(params[:target_state])
-        success_result(promoted: true, version: serialize_version(version.reload))
+
+        current_after = node_module.reload.current_version_id
+        success_result(
+          promoted: true,
+          promoted_to_current: current_after == version.id,
+          current_version_changed: current_after != current_before,
+          current_version_id: current_after,
+          version: serialize_version(version.reload)
+        )
       end
 
       # === Drift ===
@@ -4850,6 +4897,13 @@ module Ai
           module_id: v.node_module_id,
           version_number: v.version_number,
           promotion_state: v.promotion_state,
+          # IMP-65bea54e4081 — promotion_state is the ladder; `current` is
+          # whether the fleet actually serves this row (NodeModuleVersion#
+          # current?, i.e. the module's current_version_id). The two are
+          # independent: nothing in the promotion path moves the pointer, and
+          # publish can make a never-promoted version current. Without this
+          # field a "live" version and the served version look the same here.
+          current: v.current?,
           oci_digest: v.try(:oci_digest),
           fsverity_root_hash: v.try(:fsverity_root_hash),
           live_at: v.try(:live_at)&.iso8601,
