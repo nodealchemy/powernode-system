@@ -587,8 +587,11 @@ RSpec.describe System::Fleet::DecisionEngine do
       # this, the lane re-dispatches every tick forever, and each failed task
       # also leaves the node unsuppressed, so the loop is loud AND useless.
       #
-      # The escalation mirrors apply_template_closure_drift's arm: report
-      # requires_reprovision rather than pretending an apply will fix it.
+      # The escalation mirrors apply_template_closure_drift's arm: DECLARE
+      # convergence_deferred rather than pretending an apply will fix it. The
+      # declaration is what RemediationValidator reads to settle the outcome
+      # `inconclusive` instead of scoring it — see
+      # deferred_convergence_outcome_spec.rb, which asserts the ROW.
       it "escalates to reprovision instead of re-dispatching after a reboot_pending failure" do
         System::Task.create!(
           account: account, operable: instance, command: "apply_config", status: "failed",
@@ -599,7 +602,7 @@ RSpec.describe System::Fleet::DecisionEngine do
 
         d = decide_drift("system.config_drift")
 
-        expect(d[:remediation]).to include(applied: false, requires_reprovision: true)
+        expect(d[:remediation]).to include(applied: false, convergence_deferred: true)
         expect(System::Task.where(account: account, command: "apply_config",
                                   operable: instance, status: "pending").count).to eq(0),
                                                                                   "re-dispatched an apply that cannot converge a reboot_required module"
@@ -1150,7 +1153,8 @@ RSpec.describe System::Fleet::DecisionEngine do
         d = engine.decide(closure_signal(requires_approval: false))
 
         expect(d[:decision]).to eq(:proceed)
-        expect(d[:remediation]).to include(applied: true, requires_reprovision: false)
+        expect(d[:remediation]).to include(applied: true)
+        expect(d[:remediation]).not_to have_key(:convergence_deferred)
         expect(System::NodeModuleAssignment.find_by(node: node, node_module: module_a)).to be_present
         expect(System::Task.find_by(account: account, command: "sync_modules", operable: instance)).to be_present
       end
@@ -1159,7 +1163,7 @@ RSpec.describe System::Fleet::DecisionEngine do
         result = engine.execute_approved!(approved_closure_request)
 
         expect(result[:applied]).to be true
-        expect(result[:requires_reprovision]).to be false
+        expect(result).not_to have_key(:convergence_deferred)
         expect(result[:assignments_created]).to contain_exactly(module_a.id)
         expect(System::NodeModuleAssignment.find_by(node: node, node_module: module_a)).to be_present
         task = System::Task.find_by(account: account, command: "sync_modules", operable: instance)
@@ -1173,7 +1177,7 @@ RSpec.describe System::Fleet::DecisionEngine do
         result = engine.execute_approved!(approved_closure_request)
 
         expect(result[:applied]).to be true
-        expect(result[:requires_reprovision]).to be true
+        expect(result[:convergence_deferred]).to be true
         expect(result[:assignments_created]).to contain_exactly(module_a.id)
         expect(System::NodeModuleAssignment.find_by(node: node, node_module: module_a)).to be_present
         expect(System::Task.where(account: account, command: "sync_modules", operable: instance)).to be_empty

@@ -205,7 +205,16 @@ module System
               # F3-11(a): provenance for the sensor-failure guard — absence of
               # this fingerprint only counts as "effective" on ticks where
               # this sensor actually ran.
-              "sensor" => sensor_for(signals[i])
+              "sensor" => sensor_for(signals[i]),
+              # IMP-848c7e953e2d: the applier's own declaration that it could
+              # not converge the fleet (see #deferred_convergence). Persisted
+              # here because the ROW is the only thing a later tick, a
+              # dashboard, or an operator ever reads — the previous attempt at
+              # this evidence (`requires_reprovision` on the applier's return
+              # hash) had three writers and zero readers, so it recorded the
+              # skip where nothing looked.
+              "convergence_deferred" => (true if deferred_convergence(decision)),
+              "deferred_reason" => (decision.dig(:remediation, :reason).to_s.presence if deferred_convergence(decision))
             }.compact
           )
           recorded += 1
@@ -215,7 +224,9 @@ module System
 
       # Score every due pending outcome against the current sense pass. A due
       # outcome's fingerprint still present in the live signals => INEFFECTIVE;
-      # absent => EFFECTIVE (the triggering condition cleared).
+      # absent => EFFECTIVE (the triggering condition cleared). A due outcome
+      # whose applier DECLARED convergence_deferred is settled INCONCLUSIVE
+      # without consulting the signals at all — see the branch below.
       #
       # F3-11(a): absence is only evidence when the outcome's OWNING sensor ran
       # this tick — collect_signals rescues per-sensor failures, so a crashed
@@ -225,12 +236,35 @@ module System
       # pending and re-validate on the next clean tick. A LIVE fingerprint is
       # positive evidence and still scores ineffective regardless.
       def validate_due!(current_signals:, failed_sensors: [])
-        return { effective: 0, ineffective: 0 } if @account.nil?
+        return { effective: 0, ineffective: 0, inconclusive: 0 } if @account.nil?
 
         active = Array(current_signals).map(&:fingerprint).to_set
         failed = Array(failed_sensors).map(&:to_s).to_set
-        result = { effective: 0, ineffective: 0 }
+        result = { effective: 0, ineffective: 0, inconclusive: 0 }
         RemediationOutcome.where(account_id: @account.id).due.find_each do |outcome|
+          # IMP-848c7e953e2d — checked BEFORE the presence test, because for a
+          # deferred remediation NEITHER answer is evidence. Absence is not:
+          # the closure applier creates precisely the assignment rows its own
+          # sensor subtracts, so the fingerprint is gone by construction rather
+          # than by convergence. Presence is not either: the reboot_pending
+          # escalation deliberately dispatched nothing, so of course the drift
+          # still fires. `inconclusive` is the vocabulary's existing terminal
+          # non-scoring status: ineffective_streak's `status IN (effective,
+          # ineffective)` filter EXCLUDES it — note excludes, not breaks, so a
+          # run of ineffectives on either side of one still accumulates to the
+          # threshold. (effectiveness_score also returns nil for it, but that
+          # reader has no production callers, so it is not what makes this
+          # safe.) Settling here therefore takes the row out of the F3-11 brake
+          # in both directions — which is why DecisionEngine#decide reads
+          # RemediationOutcome.deferred_convergence? and routes this lane into
+          # the same escalation the streak feeds. Do not remove one without the
+          # other.
+          if outcome.metadata.is_a?(Hash) && outcome.metadata["convergence_deferred"]
+            outcome.update!(status: "inconclusive", validated_at: Time.current)
+            result[:inconclusive] += 1
+            next
+          end
+
           if active.include?(outcome.fingerprint)
             outcome.update!(status: "ineffective", validated_at: Time.current)
             result[:ineffective] += 1
@@ -250,6 +284,15 @@ module System
 
       def proceeded?(decision)
         decision.is_a?(Hash) && decision[:decision] == :proceed
+      end
+
+      # IMP-848c7e953e2d — DECLARED by the applier, never inferred, exactly as
+      # the `:proposal` exemption above is. An applier that did the part it
+      # could and knows the fleet cannot converge until the node reboots says
+      # so in its return hash; anything else is a remediation the validate arc
+      # is entitled to score.
+      def deferred_convergence(decision)
+        decision.dig(:remediation, :convergence_deferred).present?
       end
 
       def resource_ref_for(signal)

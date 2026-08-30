@@ -106,6 +106,50 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
     end
   end
 
+  # IMP-848c7e953e2d — the deferred-convergence branch, driven DIRECTLY off the
+  # declaration and the metadata rather than through DecisionEngine. The
+  # end-to-end coverage lives in deferred_convergence_outcome_spec.rb; these two
+  # isolate the validator's own halves, so a regression in branch placement or
+  # in the metadata key does not have to be diagnosed through a whole engine
+  # tick.
+  describe "deferred convergence" do
+    def deferred(fingerprint, reason: "a reboot is required")
+      proceeded(fingerprint).merge(
+        remediation: { applied: true, convergence_deferred: true, reason: reason }
+      )
+    end
+
+    it "record_proceeded! persists the applier's declaration onto the row" do
+      validator.record_proceeded!(decisions: [ deferred("fp-def") ], signals: [ sig("fp-def") ])
+
+      o = System::Fleet::RemediationOutcome.pending.find_by(fingerprint: "fp-def")
+      expect(o.metadata["convergence_deferred"]).to be true
+      expect(o.metadata["deferred_reason"]).to eq("a reboot is required")
+    end
+
+    it "does not persist the key for a remediation that did not declare it" do
+      validator.record_proceeded!(decisions: [ proceeded("fp-plain") ], signals: [ sig("fp-plain") ])
+
+      o = System::Fleet::RemediationOutcome.pending.find_by(fingerprint: "fp-plain")
+      expect(o.metadata).not_to have_key("convergence_deferred")
+      expect(o.metadata).not_to have_key("deferred_reason")
+    end
+
+    it "validate_due! settles it inconclusive whether the fingerprint is absent or present" do
+      validator.record_proceeded!(decisions: [ deferred("fp-gone"), deferred("fp-live") ],
+                                  signals: [ sig("fp-gone"), sig("fp-live") ])
+      System::Fleet::RemediationOutcome.where(fingerprint: %w[fp-gone fp-live])
+                                       .update_all(settle_until: 2.minutes.ago)
+
+      result = validator.validate_due!(current_signals: [ sig("fp-live") ])
+
+      expect(result).to eq(effective: 0, ineffective: 0, inconclusive: 2)
+      expect(System::Fleet::RemediationOutcome.where(fingerprint: %w[fp-gone fp-live]).pluck(:status))
+        .to all(eq("inconclusive"))
+      expect(System::Fleet::RemediationOutcome.find_by(fingerprint: "fp-gone").validated_at).to be_present
+    end
+  end
+
   # F3-11(a) — the sensor-failure guard needs to know which sensor owns each
   # outcome. BaseSensor#signal tags every signal payload with its producing
   # sensor; record_proceeded! persists that tag onto the outcome.

@@ -162,7 +162,7 @@ module System
         validator.validate_due!(current_signals: signals, failed_sensors: failed_sensors)
       rescue StandardError => e
         Rails.logger.error("[FleetAutonomy] remediation validation failed: #{e.class}: #{e.message}")
-        { effective: 0, ineffective: 0 }
+        { effective: 0, ineffective: 0, inconclusive: 0 }
       end
 
       def safe_record(validator, decisions, signals, correlation_id)

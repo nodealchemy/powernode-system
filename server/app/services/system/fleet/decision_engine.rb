@@ -730,6 +730,45 @@ module System
           return decision
         end
 
+        # IMP-848c7e953e2d — the deferred lane's brake, into the SAME escalation.
+        #
+        # A remediation that DECLARED it could not converge (convergence_deferred)
+        # settles `inconclusive`, which is held out of the streak on purpose:
+        # neither the fingerprint's absence nor its presence is evidence about an
+        # action that dispatched nothing. But holding it out ALSO removes the only
+        # thing that ever told an operator — the file this reads from says so in
+        # its own words (RemediationValidator's :proposal exemption, "this pins
+        # ineffective_streak at 0 ... which disables F3-11 as the lane's brake"),
+        # and that exemption names its replacement. This is ours.
+        #
+        # It is the SAME lane, not a second one: the HIGH fleet.remediation_stuck
+        # event, the forced require_approval, the consent-budget skip, and the
+        # open_operator_request? terminal state all carry over unchanged. Routing
+        # here also stops the row churn, because the escalated decision is not
+        # :proceed, so record_proceeded! mints nothing further.
+        #
+        # THAT LAST PROPERTY IS ALSO THE DANGER, and it is why the predicate is
+        # time-bounded rather than a plain "has a deferred outcome" read. No
+        # :proceed means no new outcome row, so nothing this lane does can ever
+        # lift its own block — unlike the streak, which keeps proceeding below
+        # the threshold and so can be reset by an `effective` row. And the
+        # fingerprint is per-instance (`module_drift:<instance_id>`), not
+        # per-drift, so an unbounded block would take that instance out of
+        # autonomous remediation for every FUTURE drift too, including ordinary
+        # ones a live sync would fix. RemediationOutcome::DEFERRED_BLOCK_WINDOW
+        # bounds it; the constant carries the reasoning.
+        #
+        # ONE DEDUP CYCLE LATE, deliberately: the deferral is discovered AFTER the
+        # gate (inside apply_remediation!), so it cannot re-gate in its own tick.
+        # The outcome settles on a later tick and this fires on the next decide —
+        # still sooner than the streak's three windows, and through machinery that
+        # is already proven rather than a second escalation path.
+        if deferred_convergence?(signal)
+          decision = escalate_stuck_remediation!(signal, binding, 0, deferred: true)
+          ::System::Fleet::EventBroadcaster.emit_decision!(account: account, decision: decision, signal: signal)
+          return decision
+        end
+
         skill_result = invoke_skill(binding, signal) if binding[:skill]
 
         gate_result = autonomy_service.gate_action!(
@@ -929,6 +968,18 @@ module System
         0
       end
 
+      # IMP-848c7e953e2d — same shape and same failure policy as the streak read
+      # above: never let the bookkeeping query block a decision. False on error
+      # means the tick behaves as it did before this lane existed.
+      def deferred_convergence?(signal)
+        ::System::Fleet::RemediationOutcome.deferred_convergence?(
+          account: account, fingerprint: signal.fingerprint
+        )
+      rescue StandardError => e
+        Rails.logger.warn("[FleetDecisionEngine] deferred-convergence read failed: #{e.message}")
+        false
+      end
+
       # Campaign 019f6084 §2.4.3: system.template_closure_drift's blast
       # radius is TemplateApprovalPolicy's call, not the seeded
       # InterventionPolicy's — the sensor only ever fires for an instance
@@ -953,8 +1004,9 @@ module System
       # (the operator-facing alert; bounded to once per DEDUP_TTL by the
       # engine's fingerprint dedup) and gates with a forced require_approval —
       # the resolved policy already proved itself ineffective N times.
-      def escalate_stuck_remediation!(signal, binding, streak)
+      def escalate_stuck_remediation!(signal, binding, streak, deferred: false)
         metadata = skill_metadata_payload(signal, nil).merge("remediation_stuck_streak" => streak)
+        metadata = metadata.merge("convergence_deferred" => true) if deferred
 
         # IMP-01a025b3: the escalation has a TERMINAL STATE. Without one it had
         # none: this lane skips both the skill and the remediation, and
@@ -1000,7 +1052,8 @@ module System
             fingerprint: signal.fingerprint,
             action_category: binding[:action_category],
             remediation_stuck: true,
-            ineffective_streak: streak
+            ineffective_streak: streak,
+            convergence_deferred: deferred
           }
         end
 
@@ -1013,7 +1066,11 @@ module System
             "signal_kind" => signal.kind,
             "action_category" => binding[:action_category],
             "ineffective_streak" => streak,
-            "threshold" => STUCK_STREAK_THRESHOLD
+            "threshold" => STUCK_STREAK_THRESHOLD,
+            # IMP-848c7e953e2d — WHY this fingerprint is stuck. The deferred lane
+            # reaches here with streak 0, so without this an operator reading the
+            # event would see "0 consecutive ineffective outcomes" and no cause.
+            "convergence_deferred" => deferred
           }.merge(signal.payload.is_a?(Hash) ? signal.payload.slice("instance_id", "node_id") : {}),
           source: "decision_engine.stuck_escalation",
           correlation_id: signal.fingerprint
@@ -1023,8 +1080,14 @@ module System
           binding[:action_category],
           metadata: metadata,
           reasoning: {
-            summary: "Remediation stuck: #{signal.kind} (#{signal.fingerprint}) — " \
-                     "#{streak} consecutive ineffective outcomes; operator decision required"
+            summary: if deferred
+                       "Remediation stuck: #{signal.kind} (#{signal.fingerprint}) — the last " \
+                       "remediation declared it could not converge until this node reboots; " \
+                       "re-running it is futile, so an operator decision is required"
+                     else
+                       "Remediation stuck: #{signal.kind} (#{signal.fingerprint}) — " \
+                       "#{streak} consecutive ineffective outcomes; operator decision required"
+                     end
           },
           force_policy: "require_approval",
           # Unreachable for an advisory today (its outcomes are never recorded,
@@ -1040,7 +1103,8 @@ module System
           fingerprint: signal.fingerprint,
           action_category: binding[:action_category],
           remediation_stuck: true,
-          ineffective_streak: streak
+          ineffective_streak: streak,
+          convergence_deferred: deferred
         )
       end
 
@@ -1116,8 +1180,9 @@ module System
         # missing assignments; a cloud_init instance also gets a sync_modules
         # task (reuses dispatch_reconcile_task, same as system.module_drift).
         # A pivot instance's composed union is boot-time-fixed, so the task
-        # is skipped in favor of a requires_reprovision flag — see
-        # #apply_template_closure_drift.
+        # is skipped and the result DECLARES convergence_deferred, which
+        # RemediationValidator settles as `inconclusive` rather than scoring
+        # it — see #apply_template_closure_drift.
         "system.template_closure_drift" => { method: :apply_template_closure_drift },
         # IMP-41eb6ddbc490: staging→blessed was fully built for detection and
         # gating and dead-ended here. ModulePromotionSensor found eligible
@@ -1144,8 +1209,13 @@ module System
         # relocate, re-shape storage/SDWAN) are destructive and multi-step, so
         # the applier composes a diff plan + approval request and stops. The
         # result carries proposal: true so nothing downstream mistakes a minted
-        # plan for a converged workload (same intent as the
-        # requires_reprovision flag on apply_template_closure_drift).
+        # plan for a converged workload. Same intent as the convergence_deferred
+        # flag on apply_template_closure_drift, and both are declared by the
+        # applier and read by RemediationValidator#record_proceeded! — but a
+        # DIFFERENT mechanism, and the difference matters: :proposal SKIPS the
+        # outcome row entirely, while convergence_deferred MINTS one that later
+        # settles `inconclusive`. The proposal lane has nothing to settle; the
+        # deferred lane does, and that row is the evidence an operator reads.
         "system.project_slo_violation" => { method: :propose_project_adaptation },
         "system.project_drift" => { method: :propose_project_adaptation },
         "system.project_cost_breach" => { method: :propose_project_adaptation }
@@ -1753,8 +1823,32 @@ module System
       #     a live sync updates running_module_digests but never remounts
       #     the union), so queuing sync_modules would be a silent no-op.
       #     The assignments are still created (a future reboot/reprovision
-      #     picks them up); the result is flagged requires_reprovision so
-      #     nothing downstream mistakes this for a completed convergence.
+      #     picks them up) and the result declares convergence_deferred.
+      #
+      # IMP-848c7e953e2d — that declaration replaces the write-only
+      # `requires_reprovision` flag this arm used to return (three writers, no
+      # readers), and it is DEFENCE IN DEPTH here rather than a live defect
+      # being closed. Say why, so nobody re-derives it: this signal kind never
+      # reaches the validate arc at all. #force_policy_for forces
+      # require_approval whenever the payload's requires_approval is set, and it
+      # is always set — the sensor filters instances by
+      # TemplateApprovalPolicy::LIVE_INSTANCE_SCOPE and the policy counts nodes
+      # over that SAME scope, so a firing sensor implies a non-zero
+      # provisioned_node_count. Forced require_approval means the decision is
+      # :pending, and RemediationValidator only records :proceed, so no outcome
+      # row exists to mis-score. (Nor does the approved replay create one:
+      # execute_approved_actions! stamps the request and never calls the
+      # validator, so NO gated lane is measured at all — filed as improvement
+      # 01a053c9-228f-7132-b98e-a2efb5c288cf, fingerprint "orchestration|
+      # .../fleet_autonomy_service.rb|approved-execution-mints-no-remediation-outcome".)
+      #
+      # What the declaration guards against is the day this lane does proceed.
+      # TemplateApplyService#apply! creates exactly the assignment rows
+      # TemplateClosureDriftSensor subtracts, so after one apply the sensor's
+      # difference is empty BY CONSTRUCTION and the fingerprint is absent from
+      # every later pass — and note that #apply! runs on BOTH arms, above this
+      # split, so the cloud_init arm is silenced the same way. The pivot arm is
+      # singled out only because it is the arm that also dispatches nothing.
       def apply_template_closure_drift(signal, skill_result)
         payload = signal.payload.is_a?(Hash) ? signal.payload : {}
         instance_id = payload["instance_id"] || payload[:instance_id]
@@ -1777,14 +1871,18 @@ module System
         if instance.pivot_boot?
           return {
             applied: true, instance_id: instance.id, node_id: node.id,
-            assignments_created: created_module_ids, requires_reprovision: true,
+            assignments_created: created_module_ids, convergence_deferred: true,
             reason: "pivot-booted instance composes its module union at boot — assignments created; " \
                     "a rolling reprovision (reboot) is required for them to take effect"
           }
         end
 
         sync_result = dispatch_reconcile_task(signal, skill_result, command: "sync_modules")
-        sync_result.merge(assignments_created: created_module_ids, requires_reprovision: false)
+        # NOTE: no convergence_deferred key here, rather than an explicit false.
+        # dispatch_reconcile_task can itself return the reboot_pending
+        # escalation, which DECLARES the deferral; merging a false over it
+        # would erase the one fact this result exists to carry.
+        sync_result.merge(assignments_created: created_module_ids)
       end
 
       def dispatch_reconcile_task(signal, skill_result, command:)
@@ -1835,6 +1933,14 @@ module System
       # IMP-f1c1e6d61104 (c) — nil unless this instance's LAST finished reconcile
       # of the same command failed because a module needs a reboot.
       #
+      # IMP-848c7e953e2d — the returned hash declares convergence_deferred.
+      # This lane's fingerprint is the OPPOSITE case to the pivot closure arm:
+      # the drift is still live on every later pass (nobody rebooted), so the
+      # validator scored it ineffective every window and three of those tripped
+      # STUCK_STREAK_THRESHOLD into a false fleet.remediation_stuck for a lane
+      # that declined correctly. Presence is no more evidence than absence when
+      # convergence was deferred, so this settles `inconclusive` too.
+      #
       # Ordered by completed_at and status-checked SEPARATELY on purpose:
       # System::Task stamps completed_at on fail!/abort!/cancel! as well as
       # complete!, so a timestamp alone cannot tell a failure from a success —
@@ -1851,7 +1957,7 @@ module System
         return nil unless last.error_message.to_s.include?("reboot_pending")
 
         {
-          applied: false, instance_id: instance.id, requires_reprovision: true,
+          applied: false, instance_id: instance.id, convergence_deferred: true,
           reason: "last #{command} failed with reboot_pending — the module's content cannot be " \
                   "materialized live; a reboot (or rolling reprovision) is required, so another " \
                   "reconcile would fail identically"

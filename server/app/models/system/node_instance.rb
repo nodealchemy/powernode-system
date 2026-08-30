@@ -879,14 +879,16 @@ module System
     # nothing to stamp. On LocalQemu that leaves a FALSE NEGATIVE, and the error
     # direction is the unsafe one: Fleet::DecisionEngine#apply_template_closure_drift
     # takes the NON-pivot arm, which dispatches a `sync_modules` reconcile task
-    # to the agent and then merges `requires_reprovision: false` over the
-    # result. For a union that is boot-time-fixed that reconcile cannot take
-    # effect, and nothing in the returned payload says so — whereas the pivot
-    # arm returns requires_reprovision: true. (The non-pivot arm can still
-    # report applied: false for its own reasons — a disruption budget, a
-    # missing target — so the failure is "no reprovision flag", not "always
-    # claims success".) Making the adapter defaults observable is out of scope
-    # here; this note exists so the default is not mistaken for a decision.
+    # that a boot-time-fixed union cannot act on. The PIVOT arm declares
+    # `convergence_deferred` immediately (IMP-848c7e953e2d); the non-pivot arm
+    # reaches the same declaration only via reboot_pending_escalation, i.e.
+    # AFTER the agent has failed one reconcile — so a false negative DELAYS the
+    # declaration by a round trip rather than losing it, and that arm can also
+    # legitimately return applied: false for its own reasons (a disruption
+    # budget, a missing target). The consequences live in DecisionEngine and
+    # RemediationValidator; this note only records the error direction, so the
+    # unset default is not mistaken for a decision. Making the adapter defaults
+    # observable is out of scope here.
     def pivot_boot?
       own_config = config
       boot_mode = own_config.is_a?(Hash) ? (own_config["boot_mode"] || own_config[:boot_mode]) : nil
