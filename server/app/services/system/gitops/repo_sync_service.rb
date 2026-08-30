@@ -19,6 +19,12 @@ module System
     #
     # Reference: comprehensive stabilization sweep P5.
     class RepoSyncService
+      # Raised when the Vault payload at `vault_credential_path` does not carry
+      # the key the chosen auth branch needs. Without it the two branches fail
+      # in ways that read as anything BUT a credential problem — see
+      # #require_creds!.
+      class CredentialShapeError < StandardError; end
+
       Result = Struct.new(:ok?, :work_tree_path, :commit_sha, :error, keyword_init: true)
 
       WORK_TREE_ROOT = Rails.root.join("tmp/gitops")
@@ -115,15 +121,41 @@ module System
 
         if @repository.repo_url.start_with?("https://", "http://")
           # Build a one-shot askpass that returns the password
+          require_creds!(creds, "password")
           askpass = build_askpass_script(creds["username"], creds["password"])
           { "GIT_ASKPASS" => askpass, "GIT_TERMINAL_PROMPT" => "0" }
         elsif @repository.repo_url.start_with?("git@", "ssh://")
+          require_creds!(creds, "ssh_key")
           ssh_key_file = build_ssh_key_file(creds["ssh_key"])
           ssh_command = "ssh -i #{ssh_key_file} -o StrictHostKeyChecking=no -o IdentitiesOnly=yes"
           { "GIT_SSH_COMMAND" => ssh_command }
         else
           {}
         end
+      end
+
+      # Fail with one honest "the credential payload is the wrong shape" instead
+      # of letting each auth branch invent its own misleading symptom. The HTTPS
+      # branch is nil-TOLERANT (`password.to_s`) and would attempt auth with a
+      # BLANK password, which surfaces as a plain permission denial; the SSH
+      # branch is nil-FRAGILE (`nil.end_with?`) and would raise NoMethodError,
+      # which sync!'s blanket rescue writes verbatim into
+      # GitopsSyncRun#error_message. Neither reads as a credential problem.
+      #
+      # Reports PRESENCE, SHAPE and KEY NAMES only — never a credential value.
+      def require_creds!(creds, *required)
+        unless creds.is_a?(Hash)
+          raise CredentialShapeError,
+                "Vault credential payload at #{@repository.vault_credential_path} is not a Hash " \
+                "(got #{creds.class})"
+        end
+
+        missing = required.reject { |name| creds[name].to_s.present? }
+        return if missing.empty?
+
+        raise CredentialShapeError,
+              "Vault credential payload at #{@repository.vault_credential_path} is missing " \
+              "#{missing.join(', ')} (keys present: #{creds.keys.map(&:to_s).sort.join(', ')})"
       end
 
       def fetch_vault_creds
