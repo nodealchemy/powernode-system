@@ -65,7 +65,7 @@ standard proposal review queue, not a per-action autonomy policy.
 | Parse `fleet.yaml` from a git repo | Shipped (`DesiredStateParser`) |
 | Compute diff against current state | Shipped (`DiffEngine`) |
 | Reconciler opens proposals per change | Shipped (`Reconciler`) |
-| MCP actions: register / sync / get_sync_run / get_drift_report | Shipped (gap remediation slices closed) |
+| MCP actions: list_repositories / get_repository / register / sync / get_sync_run / get_drift_report / apply_proposal | Shipped (gap remediation slices closed; the two reads under IMP-f07be27ba0b0) |
 | Proposal-apply path (post-approval execution) | Shipped for `template` / `module` / `assignment` kinds via `system_gitops_apply_proposal`; **destroy + provider_config remain follow-ups** |
 | Reconciler-driven auto-apply (`repository.auto_apply`) | Shipped — auto-approves + applies non-destructive (create / update) diffs, gated by the kill-switch + per-tick cap; destroys always stay manual |
 | Drift sensor (alert when reality drifts from git) | Shipped (`GitopsDriftSensor`, registered in `FleetAutonomyService::SENSORS`; emits `system.gitops.drift_detected`) |
@@ -459,13 +459,29 @@ read the error:
 
   The `required_credential_keys` value is the same set `RepoSyncService`
   enforces — `build_git_env` passes it straight to `require_creds!` — so the
-  advertised contract cannot drift from the enforced one. Feed both fields to
-  the probe:
+  advertised contract cannot drift from the enforced one.
 
-  This read is REST-only. The MCP `serialize_gitops_repository` carries the
-  same two fields, but its sole call site is `system_gitops_register_repository`,
-  so over MCP you see them only on the repository you just created. There is
-  no MCP verb that reads an existing GitOps repository back.
+  The same read is on the MCP surface (IMP-f07be27ba0b0 — before it,
+  `serialize_gitops_repository`'s only call site was
+  `system_gitops_register_repository`, so over MCP you saw these fields only on
+  a repository you had just created yourself):
+
+  ```javascript
+  platform.system_gitops_list_repositories({})
+  platform.system_gitops_get_repository({ id: "gitops-repo-1" })
+  ```
+
+  Both MCP verbs return the one projection, so the credential contract cannot
+  drift between them. It is *not* byte-identical to the REST body above: the
+  MCP projection omits `metadata` and `updated_at` and renders timestamps as
+  ISO-8601 strings. Every field this section is about — `vault_credential_path`,
+  `required_credential_keys` — is on both.
+
+  The **probe below is REST-only, deliberately** — it is not mirrored onto MCP.
+  Naming an arbitrary Vault KV path is a different exposure for an agent
+  principal than for an operator in the admin UI, so the read tells you which
+  path a repository uses and the probe stays a human action. Feed the two
+  fields you just read into it:
 
   ```bash
   curl -X POST -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \

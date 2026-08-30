@@ -293,6 +293,26 @@ module Ai
         "system_gitops_sync_repository"     => "system.modules.update",
         "system_gitops_get_sync_run"        => "system.modules.read",
         "system_gitops_get_drift_report"    => "system.modules.read",
+        # IMP-f07be27ba0b0 — read verbs, gated identically to their sibling
+        # gitops reads above.
+        #
+        # The REST twin gates on system.gitops.read, and matching it here was
+        # available (two lines, touching no existing verb) but WRONG for the
+        # audience: engine.rb registers system.gitops.read with
+        # `grant: { system_worker: true }` and nothing else, so an `admin`
+        # operator — who this read exists for — could not call it at all. The
+        # `resource :modules` grant in the same file gives `admin: :all` and
+        # `system_worker: %i[read update]`, so system.modules.read is the name
+        # an operator actually holds.
+        #
+        # The consequence, stated rather than left implicit: reading a
+        # repository's vault_credential_path moves from {system_worker,
+        # super_admin} on REST to {admin, system_worker, super_admin} here, and
+        # any agent principal granted system.modules.read for ordinary module
+        # work can now enumerate every GitOps repo's Vault KV PATH. Paths and
+        # key names only, never values — but it is a widening, not parity.
+        "system_gitops_get_repository"      => "system.modules.read",
+        "system_gitops_list_repositories"   => "system.modules.read",
 
         # === Missing-features slice Vault DR-3 — pepper rotation ===
         # Highest tier permission — rotation is a fleet-wide cryptographic op.
@@ -378,6 +398,18 @@ module Ai
       # Note the interaction: terminate is gated, the row-delete is not, so a
       # caller can still destroy the ROW a parked terminate is waiting on — the
       # approval then fails resolve_scoped rather than terminating anything.
+      # IMP-f07be27ba0b0 — declared rather than added to the frozen
+      # undeclared-actions snapshot. Both are pure reads, so `mutating: false`
+      # makes gated_action? false and #execute takes the same `return
+      # call(params)` path an undeclared action takes; the difference is that
+      # the surface is now governed and no undeclared-action audit sighting is
+      # recorded for it. The five older gitops verbs sit in the snapshot
+      # (server/spec/fixtures/governance/undeclared_actions.txt), whose header
+      # says that list MAY ONLY SHRINK — adding two more would have been the
+      # reviewed decision it warns about, for no gain over declaring them.
+      declare_action "system_gitops_get_repository", mutating: false
+      declare_action "system_gitops_list_repositories", mutating: false
+
       declare_action "system_terminate_instance",
                      mutating: true,
                      # Literal, not the executor's ACTION_CATEGORY constant:
@@ -1483,6 +1515,16 @@ module Ai
               id: { type: "string", required: true, description: "GitopsRepository id" }
             }
           },
+          "system_gitops_list_repositories" => {
+            description: "List every GitOps repository registered for this account, with the same projection system_gitops_get_repository returns. Use this to discover repository ids — no other verb reports them for a repository this caller did not itself register.",
+            parameters: {}
+          },
+          "system_gitops_get_repository" => {
+            description: "Read one registered GitOps repository's configuration and last-sync state: repo_url, branch, path_prefix, auto_apply, enabled, last_status/last_error/last_synced_at, and the credential contract — `vault_credential_path` (the Vault KV path the sync reads) and `required_credential_keys` (the key NAMES that path must carry for this remote's scheme). Key names and the path only, never credential values. To check whether that path actually resolves and holds those keys, use the REST probe POST /api/v1/admin_settings/vault/test { path:, required_keys: } — there is deliberately no MCP verb for it.",
+            parameters: {
+              id: { type: "string", required: true, description: "GitopsRepository id (account-scoped)" }
+            }
+          },
 
           # === Missing-features slice Vault DR-3 — pepper rotation ===
           "system_rotate_vault_transit_pepper" => {
@@ -1777,6 +1819,8 @@ module Ai
         when "system_gitops_sync_repository"        then gitops_sync_repository(params)
         when "system_gitops_get_sync_run"           then gitops_get_sync_run(params)
         when "system_gitops_get_drift_report"       then gitops_get_drift_report(params)
+        when "system_gitops_list_repositories"      then gitops_list_repositories(params)
+        when "system_gitops_get_repository"         then gitops_get_repository(params)
         # Missing-features slice Vault DR-3
         when "system_rotate_vault_transit_pepper"   then rotate_vault_transit_pepper(params)
         # Missing-features slice 6b — GitOps apply path
@@ -6015,6 +6059,38 @@ module Ai
           diff_count: diff_result.diffs.size,
           diffs: diff_result.diffs.map { |d| d.respond_to?(:to_h) ? d.to_h : d }
         )
+      end
+
+      # IMP-f07be27ba0b0 — the read half of this surface. Until these two
+      # verbs existed, serialize_gitops_repository had exactly one call site,
+      # gitops_register_repository, so over MCP a repository's configuration
+      # was visible only to the caller that had just created it and supplied
+      # the values itself. That left the credential contract added by
+      # IMP-0f914db2c7cf (vault_credential_path + required_credential_keys)
+      # reachable through REST alone.
+      #
+      # Both go through serialize_gitops_repository rather than assembling a
+      # projection here: the REST and MCP halves drifted precisely because
+      # each resource had two shapes, and a second one written here would put
+      # the next credential-contract field back out of reach on this side.
+      #
+      # NO PROBE. The REST surface pairs this read with
+      # POST /api/v1/admin_settings/vault/test { path:, required_keys: },
+      # which reports whether the path resolves and carries those key names.
+      # That probe is deliberately NOT mirrored here — an agent principal
+      # naming arbitrary Vault KV paths is a different exposure from an
+      # operator doing it in the admin UI, and the decision is pinned in
+      # server/spec/services/ai/tools/system_fleet_gitops_repository_read_spec.rb.
+      def gitops_list_repositories(_params)
+        repos = ::System::GitopsRepository.where(account_id: @account.id).order(:name)
+
+        success_result(repositories: repos.map { |r| serialize_gitops_repository(r) })
+      end
+
+      def gitops_get_repository(params)
+        repo = ::System::GitopsRepository.where(account_id: @account.id).find(params[:id])
+
+        success_result(repository: serialize_gitops_repository(repo))
       end
 
       def serialize_gitops_repository(repo)

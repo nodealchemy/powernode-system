@@ -169,6 +169,8 @@ Backed by `Ai::Tools::SystemPackageRepositoryTool`. Manages apt/rpm package repo
 
 | Action | What it does | Audience |
 |---|---|---|
+| `system_gitops_list_repositories` | List the account's registered repositories — over MCP, the only way to discover their ids | operator, agent |
+| `system_gitops_get_repository` | Read one repository's configuration + credential contract (`vault_credential_path`, `required_credential_keys` — path and key NAMES, never values) | operator, agent |
 | `system_gitops_register_repository` | Register a Git repository as a fleet-state source (URL + branch + auth ref) | operator, agent |
 | `system_gitops_sync_repository` | Trigger a sync (fetch + parse fleet.yaml + compute diff against effective state) | operator, agent |
 | `system_gitops_get_sync_run` | Fetch one sync run with the diff payload + proposed change set | operator, agent |
