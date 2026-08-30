@@ -192,8 +192,9 @@ After all batches complete:
 platform.system_drift_report({ template_id: "<edge-template>" })
 // → { drift: false }   (all instances now running v1.26.0)
 
-platform.system_get_instance({ id: "<sample-instance>" })
-// → { instance: { running_module_digests: { nginx: "sha256:<v1.26-digest>", ... } } }
+platform.system_get_instance({ instance_id: "<sample-instance>" })
+// → { instance: { running_module_digests: { "<nginx-node-module-id>": "sha256:<v1.26-digest>", ... } } }
+//    (keyed by node_module_id, not by module name)
 ```
 
 ## Extract a learning
@@ -223,7 +224,7 @@ If you ran the circuit-breaker drill, restore the fleet to a known state:
 ).execute(
   template_id: template_id,
   module_id: module_id,
-  target_version_id: "v-1.24.0",
+  target_version_id: "<previous-version-id>",   # a NodeModuleVersion UUID, not a "v-<semver>" string
   batch_pct: 50                 # faster rollback
 )
 ```

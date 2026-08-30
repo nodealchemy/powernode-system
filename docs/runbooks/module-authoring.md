@@ -382,8 +382,10 @@ The platform's `ModuleOciIngestService` polls the registry; when a new tag appea
 ## Phase 6 — Verify publication ✅
 
 ```javascript
-platform.system_list_module_versions({ module_name: "my-nginx" })
-// → { versions: [{ id, version_string, promotion_state: "built", composefs_digest, ... }] }
+// Every module verb takes the module's UUID, never its name. Resolve it once —
+// system_list_modules returns { id, name, ... } for the account's catalog.
+platform.system_list_module_versions({ module_id: "<module-id>" })
+// → { versions: [{ id, module_id, version_number, promotion_state: "built", current, oci_digest, ... }] }
 ```
 
 The column is `promotion_state` (not `lifecycle_state`); valid states are `built, staging, blessed, live, retired`. `built` is the freshly-ingested state; promote through `staging → blessed → live`, demote/rollback to `retired`. Promotion advances that ladder and at most one timestamp column; it does not change which version the fleet serves.
@@ -392,15 +394,15 @@ Promote through the lifecycle:
 
 ```javascript
 // built → staging (visible to operators; can be assigned to test instances)
-platform.system_promote_module_version({ id: "<version-id>", to: "staging" })
+platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "staging" })
 
 // staging → blessed (passes operator review)
-platform.system_promote_module_version({ id: "<version-id>", to: "blessed" })
+platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "blessed" })
 
 // blessed → live (the last ladder rung; gated by require_approval policy).
 // This does NOT roll the version out — use system_rollback_module_version to
 // repoint current_version_id, or a rolling_module_upgrade for a batched rollout.
-platform.system_promote_module_version({ id: "<version-id>", to: "live" })
+platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "live" })
 ```
 
 The `module_promotion_sensor` warns if a version has been in `staging` more than 24 h without operator action.
@@ -412,9 +414,15 @@ Templates compose modules into reusable bundles:
 ```javascript
 platform.system_assign_module_to_template({
   template_id: "<template-id>",
-  module_name: "my-nginx",
-  // Optional metadata available to the agent at boot:
-  metadata: {
+  module_id: "<module-id>",
+  // Optional per-template config stored on the TemplateModule join. The key is
+  // `config` — `metadata` is not a declared parameter and is dropped WITHOUT an
+  // error (the tool validates required params, not unknown ones).
+  // Note this is not "config the agent sees at boot": TemplateApplyService
+  // creates each NodeModuleAssignment without copying the join's config, and
+  // NodeModuleAssignment#merged_config merges the module's config with the
+  // ASSIGNMENT's own, never the join's.
+  config: {
     "purpose": "edge-cdn-tokyo"
   }
 })

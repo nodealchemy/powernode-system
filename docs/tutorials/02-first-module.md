@@ -277,26 +277,30 @@ platform's `ModuleOciIngestService` polls the registry and creates a
 ## Step 8 — Verify ingestion
 
 ```javascript
-platform.system_list_module_versions({ module_name: "my-redis" })
+// Module verbs take the module's UUID, never its name — system_list_modules
+// returns { id, name, ... } for the account's catalog.
+platform.system_list_module_versions({ module_id: "<my-redis-module-id>" })
 // → { versions: [{
-//      id: "v-redis-0.1.0",
-//      version_string: "0.1.0",
+//      id: "0199c8f1-...",              // UUIDv7, not a "v-<name>-<semver>" string
+//      module_id: "0199c8ee-...",
+//      version_number: 1,               // integer, not a semver string
 //      promotion_state: "built",
-//      composefs_digest: "sha256:abc...",
+//      current: false,                  // whether the FLEET serves this row
+//      oci_digest: "sha256:abc...",
 //      fsverity_root_hash: "sha256:def...",
-//      cosign_verified: true,
-//      ...
+//      live_at: null,
+//      retired_at: null
 //    }] }
 ```
 
-**Expected outcome:** the version row exists, signature verified, `promotion_state` is `built`. Promote through `staging → blessed → live` as you verify the module behaves correctly. The column is `promotion_state` (not `lifecycle_state`); valid states are `built, staging, blessed, live, retired`:
+**Expected outcome:** the version row exists and `promotion_state` is `built`. This response carries no signature field, so it is not where you confirm signing — check the `ModuleArtifact` rows / the build-batch surface instead. (Do not infer verification from the row existing: `ingest_native!` is unsigned by design, and outside production `ModuleOciIngestService` defaults to `LocalOciAdapter`, which reports every signature as verified.) Promote through `staging → blessed → live` as you verify the module behaves correctly. The column is `promotion_state` (not `lifecycle_state`); valid states are `built, staging, blessed, live, retired`:
 
 ```javascript
-platform.system_promote_module_version({ id: "v-redis-0.1.0", to: "staging" })
+platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "staging" })
 // Test on a non-prod NodeInstance
-platform.system_promote_module_version({ id: "v-redis-0.1.0", to: "blessed" })
+platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "blessed" })
 // Operator review passed; module is recommendable
-platform.system_promote_module_version({ id: "v-redis-0.1.0", to: "live" })
+platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "live" })
 // Top of the ladder — note this does NOT put the version on the fleet
 ```
 
@@ -309,12 +313,16 @@ Promotion to `live` is often `require_approval` — check `module_promote_to_liv
 ```javascript
 platform.system_assign_module_to_template({
   template_id: "<base-or-hardened-template-id>",
-  module_name: "my-redis"
+  module_id: "<my-redis-module-id>"
 })
 
 // Provision a fresh instance from that template
-platform.system_create_node({ hostname: "redis-test-1", node_template_id: "<template-id>", ... })
-platform.system_provision_instance({ node_id: ... })
+platform.system_create_node({ name: "redis-test-1", template_id: "<template-id>" })
+platform.system_provision_instance({
+  node_id: "<node-id>",
+  provider_region_id: "<region-id>",          // required — provisioning errors without it
+  provider_instance_type_id: "<instance-type-id>"
+})
 // Wait ~3-5 min for KVM boot + module reconcile
 ```
 
@@ -324,9 +332,11 @@ appears in `running_module_digests`.
 ## Verification
 
 ```javascript
-platform.system_get_instance({ id: "<instance-id>" })
+platform.system_get_instance({ instance_id: "<instance-id>" })
 // → { instance: {
-//      running_module_digests: { "my-redis": "sha256:abc...", "system-base": "...", ... },
+//      // keyed by node_module_id (UUID), NOT by module name — the agent
+//      // reports module_digests as node_module_id -> oci_digest
+//      running_module_digests: { "0199c8ee-...": "sha256:abc...", ... },
 //      ...
 //    }}
 
@@ -350,16 +360,16 @@ Leaves the catalog seeded with `my-redis` for future reference, but
 removes the test instance:
 
 ```javascript
-platform.system_terminate_instance({ id: "<instance-id>" })
+platform.system_terminate_instance({ instance_id: "<instance-id>" })
 
 // Unassign so the next instance from this template doesn't get the test module
 platform.system_unassign_module_from_template({
   template_id: "<template-id>",
-  module_name: "my-redis"
+  module_id: "<my-redis-module-id>"
 })
 
 // (Optional) archive the module if you don't want it visible in the catalog
-platform.system_delete_module({ name: "my-redis" })   // cascade-deletes versions
+platform.system_delete_module({ module_id: "<my-redis-module-id>" })   // cascade-deletes versions
 ```
 
 ## Troubleshooting
