@@ -327,7 +327,7 @@ platform.system_provision_instance({
 ```
 
 ```javascript
-platform.system_get_instance({ id: "<new-instance>" })
+platform.system_get_instance({ instance_id: "<new-instance>" })
 // → { instance: { status: "running", node_platform_id, ... } }
 
 // Verify the booted artifact by inspecting the NodePlatform's current default publication:

@@ -471,7 +471,7 @@ platform.system_sdwan_revoke_federation_peer({ federation_peer_id: "..." })
 // peer stays as-is until an operator approves — nothing is cut at call time.
 
 // Terminate the child platform instance if no longer needed
-platform.system_terminate_instance({ id: "<child-instance>" })
+platform.system_terminate_instance({ instance_id: "<child-instance>" })
 ```
 
 ## Troubleshooting

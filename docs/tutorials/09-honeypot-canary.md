@@ -233,7 +233,7 @@ platform.system_unassign_module_from_template({
 })
 
 // Or terminate the test instance entirely
-platform.system_terminate_instance({ id: "<test-instance-id>" })
+platform.system_terminate_instance({ instance_id: "<test-instance-id>" })
 ```
 
 ## Troubleshooting

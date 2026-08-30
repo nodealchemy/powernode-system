@@ -56,7 +56,13 @@ module ModuleDocsMcpCallSignatures
     "docs/runbooks/template-authoring.md",
     "docs/runbooks/vault-credential-restoration.md",
     "docs/tutorials/02-first-module.md",
-    "docs/tutorials/06-rolling-upgrade.md"
+    "docs/tutorials/06-rolling-upgrade.md",
+    # BATCH 1 — the bare `id:` rename family. 24 call sites across 14 files
+    # passed a resource id under the key `id` where the verb declares
+    # `<resource>_id`; the values were already ids, so it was a pure key
+    # rename. Only these two files became fully clean as a result.
+    "docs/runbooks/storage-migration.md",
+    "docs/tutorials/13-expose-service-tls.md"
   ].freeze
 
   # Call sites left BROKEN on purpose, each tracked by a filed finding, because

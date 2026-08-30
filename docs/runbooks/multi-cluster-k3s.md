@@ -194,7 +194,7 @@ Operators must be on the same SDWAN network or have a federation route to reach 
 platform.kubernetes_list_clusters()
 
 // Get specific cluster details (status, version, node count)
-platform.kubernetes_get_cluster({ id: "cluster-prod-id" })
+platform.kubernetes_get_cluster({ cluster_id: "cluster-prod-id" })
 
 // List nodes in a cluster (control-plane + workers)
 platform.kubernetes_list_nodes({ cluster_id: "cluster-prod-id" })

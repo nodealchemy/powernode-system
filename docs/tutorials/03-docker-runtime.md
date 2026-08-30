@@ -112,7 +112,7 @@ platform.system_sdwan_attach_peer({
 
 ```javascript
 // Find the template the instance was provisioned from
-platform.system_get_instance({ id: "<instance-id>" })
+platform.system_get_instance({ instance_id: "<instance-id>" })
 // → { instance: { node_template_id: "<template-id>", ... } }
 
 // Resolve the docker-engine module's id (assign takes module_id, not a name)

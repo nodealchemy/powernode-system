@@ -218,7 +218,7 @@ platform.system_report_storage_migration_progress({
 binding actually swapped:
 
 ```javascript
-platform.system_get_instance({ id: "<instance-id>" })
+platform.system_get_instance({ instance_id: "<instance-id>" })
 // → instance.config.storage_volume.volume_id === "<target-volume-id>"
 ```
 

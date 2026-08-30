@@ -121,7 +121,7 @@ thread the same `operation_id` through when retrying a failed provision.
 **Verify provisioning:**
 
 ```javascript
-platform.system_get_instance({ id: "<instance-id>" })
+platform.system_get_instance({ instance_id: "<instance-id>" })
 // → { instance: { status: "provisioning", task_id, last_heartbeat_at: null, ... } }
 
 // To watch task progress, list current tasks for the instance and read the matching row:
@@ -163,7 +163,7 @@ The instance heartbeats every 30 s. Per-tick:
 **Verify health:**
 
 ```javascript
-platform.system_get_instance({ id: "<instance-id>" })
+platform.system_get_instance({ instance_id: "<instance-id>" })
 // → { instance: {
 //      status: "running",
 //      last_heartbeat_at: "2026-05-04T13:42:01Z",
@@ -206,7 +206,7 @@ Drain coordinates with Devops layer:
 ## Phase 6 — Decommission ✅
 
 ```javascript
-platform.system_terminate_instance({ id: "<instance-id>" })
+platform.system_terminate_instance({ instance_id: "<instance-id>" })
 // → { instance_id, status: "terminated" }
 // (single-step AASM transition running/stopped/error → terminated; there is
 //  no intermediate "terminating" instance state)

@@ -273,13 +273,13 @@ platform.system_sdwan_get_routing_summary({ network_id: "net-tenant-a" })
 
 ```javascript
 platform.kubernetes_decommission_cluster({ cluster_id: "<cluster-b-id>" })
-platform.system_terminate_instance({ id: "<k3s-server-b-1-instance>" })
-platform.system_terminate_instance({ id: "<k3s-worker-b-1-instance>" })
-platform.system_sdwan_delete_network({ id: "net-tenant-b" })
+platform.system_terminate_instance({ instance_id: "<k3s-server-b-1-instance>" })
+platform.system_terminate_instance({ instance_id: "<k3s-worker-b-1-instance>" })
+platform.system_sdwan_delete_network({ network_id: "net-tenant-b" })
 
 // Optionally remove the tenant-b templates
-platform.system_delete_template({ id: "<tenant-b-k3s-server-template-id>" })
-platform.system_delete_template({ id: "<tenant-b-k3s-worker-template-id>" })
+platform.system_delete_template({ template_id: "<tenant-b-k3s-server-template-id>" })
+platform.system_delete_template({ template_id: "<tenant-b-k3s-worker-template-id>" })
 ```
 
 ## Troubleshooting

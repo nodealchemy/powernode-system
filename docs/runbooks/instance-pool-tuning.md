@@ -88,7 +88,7 @@ After claim:
 **Use the claimed instance** like any other NodeInstance:
 
 ```javascript
-platform.system_get_instance({ id: claim.instance.id })
+platform.system_get_instance({ instance_id: claim.instance.id })
 // → standard NodeInstance row with all the modules already running
 ```
 
@@ -98,7 +98,7 @@ When the workload is done:
 
 ```javascript
 // Option A: terminate (default for ephemeral)
-platform.system_terminate_instance({ id: "<instance-id>" })
+platform.system_terminate_instance({ instance_id: "<instance-id>" })
 // → cascade FKs fire; pool reaper provisions a replacement
 ```
 

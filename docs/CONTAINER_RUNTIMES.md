@@ -264,7 +264,7 @@ Symptoms: `system_provision_docker_runtime` succeeds but daemon connections fail
 
 - Check the agent's reconciler state cache: `cat /var/lib/powernode-agent/reconciler.json` on the node.
 - Verify the SDWAN peer is up: `wg show wg-pn` on the node should show a recent `latest handshake`.
-- The `Sdwan::Peer.host_address` is the source of truth — confirm it via `platform.system_sdwan_get_peer({ id: '<peer-id>' })`.
+- The `Sdwan::Peer.host_address` is the source of truth — confirm it via `platform.system_sdwan_get_peer({ peer_id: '<peer-id>' })`.
 
 ### `daemon.json` overrides not applied (slice 10)
 

@@ -321,10 +321,10 @@ To tear down the public endpoint while leaving Tutorial 04's cluster intact:
 
 ```javascript
 // Remove the DNAT port mapping (stops public :443 from forwarding)
-platform.system_sdwan_delete_port_mapping({ id: "pm-..." })
+platform.system_sdwan_delete_port_mapping({ port_mapping_id: "pm-..." })
 
 // Remove the Virtual IP
-platform.system_sdwan_delete_virtual_ip({ id: "vip-..." })
+platform.system_sdwan_delete_virtual_ip({ virtual_ip_id: "vip-..." })
 ```
 
 Revoke the cert only if it's compromised — for staging certs you can simply let

@@ -226,7 +226,7 @@ kubectl --kubeconfig ~/.kube/k3s.yaml get pod hello -w
 migrate:
 
 ```javascript
-platform.system_drain_instance({ id: "<bootstrap-instance-id>" })
+platform.system_drain_instance({ instance_id: "<bootstrap-instance-id>" })
 // Within ~10s, VIP migrates to next k3s-server-bearing peer (if any)
 platform.system_sdwan_get_virtual_ip({ name: "k3s_api_endpoint" })
 // → { virtual_ip: { holders: [<different instance>], ... } }
@@ -243,8 +243,8 @@ kubectl --kubeconfig ~/.kube/k3s.yaml get nodes
 platform.kubernetes_decommission_cluster({ cluster_id: "cluster-<uuid>" })
 // Cascade-deletes KubernetesNode rows; releases VIP; underlying NodeInstances NOT terminated
 
-platform.system_terminate_instance({ id: "<bootstrap-instance>" })
-platform.system_terminate_instance({ id: "<worker-instance>" })
+platform.system_terminate_instance({ instance_id: "<bootstrap-instance>" })
+platform.system_terminate_instance({ instance_id: "<worker-instance>" })
 ```
 
 ## Troubleshooting

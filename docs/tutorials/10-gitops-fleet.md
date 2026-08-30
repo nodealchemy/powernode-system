@@ -273,7 +273,7 @@ unattended:
 
 ```javascript
 // Deletes proposed by the diff are review-only — remove the resource yourself:
-platform.system_delete_node({ id: "<node-id>" })   // explicit, operator-initiated
+platform.system_delete_node({ node_id: "<node-id>" })   // explicit, operator-initiated
 ```
 
 You keep the audit trail + PR review benefits, and create/update converges
