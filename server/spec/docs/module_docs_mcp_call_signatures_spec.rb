@@ -73,7 +73,19 @@ module ModuleDocsMcpCallSignatures
     # `<resource>_id`; the values were already ids, so it was a pure key
     # rename. Only these two files became fully clean as a result.
     "docs/runbooks/storage-migration.md",
-    "docs/tutorials/13-expose-service-tls.md"
+    "docs/tutorials/13-expose-service-tls.md",
+    # IMP-d40df31d9cef — the whole GitOps tutorial, every call site. Its
+    # troubleshooting section prescribed platform.list_vault_credentials, a verb
+    # in NEITHER registry, as the only diagnostic it offered for a failing sync;
+    # a tree-wide sweep with this parser confirms it was the sole unlabelled
+    # nonexistent verb under docs/. The only others are the two in
+    # FLEET_SENSORS.md:475-476, which the surrounding prose marks "aspirational"
+    # — note that being commented out is NOT what exempts them (see the
+    # extract_calls docstring: a call on a `//` line is still checked); they are
+    # simply in a file COVERED_DOCS does not list, and would red if it did.
+    # The verb-existence example below catches this class already — it simply
+    # never ran on this file, because COVERED_DOCS is opt-in per file.
+    "docs/tutorials/10-gitops-fleet.md"
   ].freeze
 
   # Call sites left BROKEN on purpose, each tracked by a filed finding, because

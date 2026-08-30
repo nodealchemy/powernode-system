@@ -32,7 +32,7 @@ flowchart TD
     AR --> Op2{Operator<br/>approves?}
     Op2 -->|yes| App[ApplyService<br/>walks diff in dependency order]
     App --> Done[Resources<br/>materialized in DB<br/>+ instances reconcile]
-    App --> SR[SyncRun status:<br/>applied / partial / failed]
+    App --> SR[SyncRun status:<br/>success / partial / failed]
     Op2 -->|edit| Edit[Adjust YAML +<br/>re-trigger sync]
     Edit --> RS
     Drift[Drift sensor<br/>every 60s] -- "reality drifts" --> Repo
@@ -68,7 +68,7 @@ standard proposal review queue, not a per-action autonomy policy.
 | MCP actions: register / sync / get_sync_run / get_drift_report | Shipped (gap remediation slices closed) |
 | Proposal-apply path (post-approval execution) | Shipped for `template` / `module` / `assignment` kinds via `system_gitops_apply_proposal`; **destroy + provider_config remain follow-ups** |
 | Reconciler-driven auto-apply (`repository.auto_apply`) | Shipped — auto-approves + applies non-destructive (create / update) diffs, gated by the kill-switch + per-tick cap; destroys always stay manual |
-| Drift sensor (alert when reality drifts from git) | Shipped (`GitopsDriftSensor`, registered in `FleetAutonomyService::SENSORS`; emits `gitops.drift_detected`) |
+| Drift sensor (alert when reality drifts from git) | Shipped (`GitopsDriftSensor`, registered in `FleetAutonomyService::SENSORS`; emits `system.gitops.drift_detected`) |
 | Operator UI for diff review + approval | Partial — generic `ApprovalRequest` UI works; GitOps-specific drill-in panel forthcoming |
 
 GitOps applies the **create/update** path for the core kinds (`template`,
@@ -101,7 +101,7 @@ imperative commands and hopes the snapshot reflects intent."
 | Requirement | How |
 |---|---|
 | A Gitea repo (or any git remote) for the fleet config | `platform.create_gitea_repository` |
-| Operator with `system.gitops.read` + `system.gitops.write` permissions | Default for admins |
+| Permissions: `system.modules.read` / `system.modules.update` for the `platform.*` calls, `system.gitops.read` / `system.gitops.sync` for the `curl` ones | Default for admins — neither family is in a permission catalog, so both currently resolve admin-only |
 | A running Powernode platform with at least one Account configured | Default |
 | (Optional) Tutorial 02 module authoring done | Helps you understand the templates section of fleet.yaml |
 
@@ -169,8 +169,8 @@ schema docs in [`../runbooks/gitops-reconciliation.md`](../runbooks/gitops-recon
 ```javascript
 // Create the repo first
 platform.create_gitea_repository({
-  owner: "<account>",
-  repo: "fleet-config",
+  repo_name: "fleet-config",
+  organization: "<account>",   // omit for the personal namespace
   private: true
 })
 
@@ -179,26 +179,42 @@ platform.create_gitea_repository({
 
 // Register with the platform's reconciler
 platform.system_gitops_register_repository({
+  name: "fleet-config",        // required; unique within the account
   repo_url: "git@registry.example.com:<account>/fleet-config.git",
   branch: "main",
-  ssh_credential_id: "<vault-cred-id>",
-  reconcile_interval_seconds: 300
+  vault_credential_path: "secret/data/powernode/gitops/fleet-deploy-key"
 })
-// → { repository: { id: "gitops-repo-1", status: "syncing", ... } }
+// → { repository: { id: "gitops-repo-1", last_status: "pending", ... } }
 ```
 
-**Expected outcome:** repo registered; reconciler will pull on its
-configured interval (default 5 min) and any time `system_gitops_sync_repository`
-is invoked.
+`vault_credential_path` is a Vault KV path, not a credential id. Store
+**one** of the two shapes at that path, matching your remote:
+`{ ssh_key }` for `git@` / `ssh://`, or `{ username, password }` for
+`https://` (and plain `http://`, which takes the same branch) —
+`RepoSyncService#build_git_env` picks by URL scheme. Inline credentials in
+`repo_url` (`https://user:pass@...`) are rejected at validation.
+
+**Expected outcome:** repo registered; reconciler will pull on the platform's
+fixed 5-minute tick and any time `system_gitops_sync_repository` is invoked.
+The interval is **not** per-repository — `GitopsRepository.due_for_sync` is
+called with a hardcoded 5-minute staleness
+(`api/v1/system/worker_api/gitops_controller.rb`), so there is no registration
+parameter that changes it.
 
 ## Step 3 — Trigger a sync
 
 ```javascript
 platform.system_gitops_sync_repository({
-  repository_id: "gitops-repo-1"
+  id: "gitops-repo-1"          // the GitopsRepository id
 })
-// → { sync_run: { id, status: "in_progress", ... } }
+// → { repository_id, ok, diff_count, proposal_ids, synced_revision,
+//     diff_summary, error }
 ```
+
+The reconcile runs **synchronously** inside this call — `ok` and `error` are
+already final when it returns. Note that the response carries no sync-run id,
+despite the verb's own description promising one; Step 4 shows where to get
+it.
 
 The reconciler:
 
@@ -210,30 +226,42 @@ The reconciler:
 
 ## Step 4 — Review the diff
 
+Run ids come from REST — no MCP verb returns or lists one. The REST twin of
+Step 3 hands the id back directly:
+
+```bash
+# Trigger + get the run id in one call (the REST equivalent of Step 3)
+curl -X POST -H "Authorization: Bearer $JWT" \
+  http://localhost:3000/api/v1/system/gitops_repositories/gitops-repo-1/sync_now
+# → { sync_run: { id, status, error_message, ... }, ok, diff_count, proposal_ids, diff_summary }
+
+# Or list the timeline of past runs
+curl -H "Authorization: Bearer $JWT" \
+  http://localhost:3000/api/v1/system/gitops_repositories/gitops-repo-1/sync_runs
+# → { sync_runs: [ { id, status, error_message, diff_count, proposal_ids, ... }, ... ] }
+#   newest first, 50 most recent
+```
+
 ```javascript
 platform.system_gitops_get_sync_run({
   sync_run_id: "<run-id>"
 })
-// → {
-//      diff: {
-//        templates: { add: ["edge-cdn"], update: [], delete: [] },
-//        nodes:     { add: ["edge-tokyo-01", "edge-tokyo-02", "edge-london-01"], update: [], delete: [] },
-//        sdwan: {
-//          networks:    { add: ["edge-fabric"], ... },
-//          peers:       { add: [...] },
-//          virtual_ips: { add: ["cdn-frontend"] }
-//        }
-//      },
-//      proposals: [
-//        { id: "prop-1", action: "create_template", payload: { name: "edge-cdn", ... }, status: "pending_approval" },
-//        ...
-//      ],
-//      status: "diff_ready"
-//    }
+// → { sync_run: {
+//      id, gitops_repository_id,
+//      status,                 // running | success | failed | partial
+//      started_at, completed_at, duration_seconds,
+//      diff_count,
+//      proposal_ids,           // ids only — fetch each proposal to see its payload
+//      synced_revision,
+//      diff_summary,           // per-kind counts, not a full diff
+//      error_message
+//    } }
 ```
 
-**Expected outcome:** human-readable diff + per-change proposals awaiting
-approval.
+**Expected outcome:** `diff_count` + the ids of the per-change proposals
+awaiting approval. The run carries a summary, not the diff itself — read the
+`Ai::AgentProposal` rows for per-change payloads, or use
+`system_gitops_get_drift_report` (below) for the diff bodies.
 
 ## Step 5 — Approve the diff
 
@@ -283,13 +311,14 @@ automatically; only destructive operations stay hands-on by design.
 
 ```javascript
 platform.system_gitops_get_sync_run({ sync_run_id })
-// → {
-//      status: "applied",                    // "partial" if some proposals are still pending approval
-//      applied_actions: [...],
-//      failed_actions: [],
-//      drift_after_apply: {}                 // should be empty for applied create/update kinds
-//    }
+// → { sync_run: { status: "success", diff_count, proposal_ids, ... } }
+//   "partial" means the tick hit MAX_PROPOSALS_PER_TICK, NOT that some
+//   proposals are still awaiting approval — a run's status describes the
+//   reconcile pass, not whether its proposals were applied.
 ```
+
+The sync run does not report apply results. To confirm convergence, re-read
+the drift report below: it recomputes desired-vs-live from scratch.
 
 ## Step 8 — Operate via PRs from now on
 
@@ -306,13 +335,16 @@ To make any fleet change:
 ## Verification
 
 ```javascript
-platform.system_gitops_get_drift_report({ repository_id: "gitops-repo-1" })
-// → { drift: false }   (when reality matches git)
+platform.system_gitops_get_drift_report({ id: "gitops-repo-1" })
+// → { repository_id, synced_revision, drift: false, diff_count: 0, diffs: [] }
+//   (when reality matches git; read-only — opens no proposals)
 ```
 
 When drift exists (reality diverges from git — e.g., an operator made an
 imperative change), `GitopsDriftSensor` (registered in the Fleet Autonomy
-reconciler, runs every 60s) emits `gitops.drift_detected` FleetEvents;
+reconciler, runs every 60s) emits `system.gitops.drift_detected` FleetEvents
+(the kind is namespaced — filtering on a bare `gitops.drift_detected` matches
+nothing);
 the operator must either commit the change back to git or reconcile it
 away.
 
@@ -342,13 +374,80 @@ git source-of-truth. Either:
 - Reconcile away the drift (treat git as authoritative): approve the
   proposals that revert the imperative changes.
 
-**SSH credential resolution fails** — `ssh_credential_id` doesn't resolve
-in Vault. Verify credential exists:
+**Sync fails / SSH credential doesn't resolve** — read the failed sync run.
+It is the only place the platform records why a reconcile stopped:
 
-```javascript
-platform.list_vault_credentials({ scope: "system" })
-// → check the credential exists and was rotated correctly
+```bash
+curl -H "Authorization: Bearer $JWT" \
+  http://localhost:3000/api/v1/system/gitops_repositories/<id>/sync_runs
+# → { sync_runs: [ { status: "failed", error_message: "RuntimeError: git clone failed: ...", ... } ] }
 ```
+
+Do **not** read the repository's own `last_error` for this. `Reconciler`
+writes `last_status`/`last_error` in exactly one place, on the success path
+after the diff — **no failure path reaches it** (the three early returns and
+the outer `rescue` all finalize the sync run and exit first), and nothing
+else in the platform writes that column. So a repository that has never
+synced successfully still reads `last_status: "pending"` with
+`last_error: null` while every run underneath it is failing. `last_error` is
+non-null only in the `partial` case, where it reports the per-tick proposal
+cap.
+
+Two things the platform will not tell you, both worth knowing before you
+read the error:
+
+- **A Vault miss is reported as a git failure, not a Vault one.**
+  `RepoSyncService#fetch_vault_creds` rescues a failed Vault read, logs it,
+  and returns `nil`; `build_git_env` then falls through to an **anonymous**
+  clone. Whatever git then says is what lands in `error_message` — for an
+  `https://` remote an authentication failure, for a `git@` remote usually
+  `Host key verification failed.`, because the anonymous path sets no
+  `GIT_SSH_COMMAND` and git falls back to the Rails process's ambient ssh
+  config. The Vault cause appears only in the log, and the two lines are at
+  **different levels**, so a WARN-only or ERROR-only filter shows you half of
+  it:
+
+  ```
+  WARN   [Gitops::RepoSync] Vault credential fetch failed: <reason>
+  ERROR  [Gitops::RepoSync] <repository-id>: RuntimeError: git clone failed: <sanitized stderr>
+  ```
+
+  The second line reads `git fetch failed` rather than `git clone failed`
+  whenever the work tree under `tmp/gitops/<account>/<repository>` already
+  exists, since that path fast-forwards instead of cloning. Grep the backend
+  service log for `Gitops::RepoSync` at both levels before concluding the
+  deploy key is wrong.
+
+- **Check Vault itself first — that part IS exposed.** Before suspecting the
+  credential, rule out a sealed or unreachable Vault:
+
+  ```bash
+  curl -X POST -H "Authorization: Bearer $JWT" \
+    http://localhost:3000/api/v1/admin_settings/vault/test
+  # → { connected, sealed, initialized, version, latency_ms }
+  #   or { connected: false, error: "Cannot reach Vault at <addr>" }
+  ```
+
+  `connected` is false whenever Vault is sealed, so a `sealed: true` here
+  explains every credential failure at once and no per-repository digging is
+  needed.
+
+- **Nothing exposes a credential path's contents or existence.** Plenty of
+  platform code reads Vault KV, but no MCP verb and no REST route will read,
+  list, or test a specific path for you — checked against the whole tool
+  registry (604 verbs) and the 9 introspection tools. Neither `serialize_repo`
+  (REST) nor `serialize_gitops_repository` (MCP) echoes `vault_credential_path`
+  back either, so you cannot confirm from the platform which path a repository
+  is configured with. Read it out of band instead, as
+  [`../runbooks/gitops-reconciliation.md`](../runbooks/gitops-reconciliation.md)
+  describes:
+
+  ```bash
+  vault kv get secret/data/powernode/gitops/fleet-deploy-key
+  ```
+
+  Confirm it holds the shape `RepoSyncService` expects for your remote's
+  scheme (see Step 2). Capability gap, filed separately.
 
 **Module versions in fleet.yaml not pinned, surprise upgrades happen** —
 pin specific versions in `fleet.yaml` (e.g., `- nginx@1.26.0`) instead
@@ -372,4 +471,4 @@ the right one.
 - **[`SMOKE_TEST.md`](../SMOKE_TEST.md)** — once `smoke_test_gitops_reconciler.rb`
   lands, it'll exercise this flow at the platform layer.
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-08-30_
