@@ -101,7 +101,7 @@ imperative commands and hopes the snapshot reflects intent."
 | Requirement | How |
 |---|---|
 | A Gitea repo (or any git remote) for the fleet config | `platform.create_gitea_repository` |
-| Permissions: `system.modules.read` / `system.modules.update` for the `platform.*` calls, `system.gitops.read` / `system.gitops.sync` for the `curl` ones | Default for admins — neither family is in a permission catalog, so both currently resolve admin-only |
+| Permissions: `system.modules.read` / `system.modules.update` for the module-shaped `platform.*` calls; `system.gitops.read` for the repository reads that carry the credential contract (REST `index`/`show`/`sync_runs` and the `system_gitops_get_repository` / `system_gitops_list_repositories` MCP verbs); `system.gitops.sync` for the REST `sync_now`. The other `system_gitops_*` MCP verbs stay on `system.modules.read` / `.update` | Both families are registered in the `system` catalog (`server/lib/powernode_system/engine.rb`). `admin` holds `system.modules.*` and — since IMP-b1191457a091 — `system.gitops.read`. `system.gitops.sync` and `.reconcile` are granted only to `system_worker`, so the REST `sync_now` needs `system_worker` (or `super_admin`), not a plain admin |
 | A running Powernode platform with at least one Account configured | Default |
 | (Optional) Tutorial 02 module authoring done | Helps you understand the templates section of fleet.yaml |
 

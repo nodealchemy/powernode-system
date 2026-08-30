@@ -293,26 +293,39 @@ module Ai
         "system_gitops_sync_repository"     => "system.modules.update",
         "system_gitops_get_sync_run"        => "system.modules.read",
         "system_gitops_get_drift_report"    => "system.modules.read",
-        # IMP-f07be27ba0b0 — read verbs, gated identically to their sibling
-        # gitops reads above.
+        # IMP-f07be27ba0b0 — read verbs. NOT gated like the sibling gitops
+        # reads above: these two are the first MCP surface to return
+        # serialize_gitops_repository, whose projection carries
+        # vault_credential_path (IMP-0f914db2c7cf). On system.modules.read that
+        # put a GitOps repository's Vault KV PATH in front of every principal
+        # holding module read for ordinary module work — {admin, system_worker,
+        # super_admin} instead of REST's {system_worker, super_admin}.
         #
-        # The REST twin gates on system.gitops.read, and matching it here was
-        # available (two lines, touching no existing verb) but WRONG for the
-        # audience: engine.rb registers system.gitops.read with
-        # `grant: { system_worker: true }` and nothing else, so an `admin`
-        # operator — who this read exists for — could not call it at all. The
-        # `resource :modules` grant in the same file gives `admin: :all` and
-        # `system_worker: %i[read update]`, so system.modules.read is the name
-        # an operator actually holds.
+        # IMP-b1191457a091 fixed the permission MODEL rather than the symptom.
+        # system.gitops.read was registered worker-only, so no assignable role
+        # held the operator read its own REST controller and GitOps tab are
+        # gated on; that is what forced these verbs onto a different name.
+        # engine.rb now grants it to admin as well, so matching REST here costs
+        # the operator nothing.
         #
-        # The consequence, stated rather than left implicit: reading a
-        # repository's vault_credential_path moves from {system_worker,
-        # super_admin} on REST to {admin, system_worker, super_admin} here, and
-        # any agent principal granted system.modules.read for ordinary module
-        # work can now enumerate every GitOps repo's Vault KV PATH. Paths and
-        # key names only, never values — but it is a widening, not parity.
-        "system_gitops_get_repository"      => "system.modules.read",
-        "system_gitops_list_repositories"   => "system.modules.read",
+        # State the direction of travel honestly, both ways. Parity was reached
+        # by RAISING REST, not only by lowering MCP: REST's read audience gains
+        # `admin`, which it never had. The net HUMAN audience for the Vault path
+        # is therefore unchanged — {admin, system_worker, super_admin} before and
+        # after. What actually narrows is the population this finding named: a
+        # non-admin principal holding system.modules.read for ordinary module
+        # work (a custom role, an agent user) no longer reaches the projection.
+        #
+        # And this map is not the only gate on that audience: action_permitted?
+        # returns early for internal? and instance_authorized? (see the note at
+        # its definition), so an instance principal granted these tool NAMES
+        # still gets the projection without any permission being consulted.
+        # Changing the name here does not touch that path.
+        #
+        # Paths and key names only, never values — and no credential PROBE is
+        # mirrored to MCP.
+        "system_gitops_get_repository"      => "system.gitops.read",
+        "system_gitops_list_repositories"   => "system.gitops.read",
 
         # === Missing-features slice Vault DR-3 — pepper rotation ===
         # Highest tier permission — rotation is a fleet-wide cryptographic op.

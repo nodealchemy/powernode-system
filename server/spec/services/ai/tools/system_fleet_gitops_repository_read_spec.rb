@@ -192,10 +192,16 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps repository read verbs (IMP-f0
       expect(defs).to have_key("system_gitops_list_repositories")
     end
 
-    it "gates both reads on the same permission as its sibling gitops reads" do
+    # IMP-b1191457a091 — this used to assert parity with
+    # system_gitops_get_drift_report (system.modules.read). That was the wrong
+    # anchor: the drift report does not return serialize_gitops_repository, and
+    # these two verbs do, so following it put a Vault KV path in front of every
+    # module-read holder. The anchor is now the REST twin, which is the surface
+    # whose audience this projection was designed for. The audience oracle
+    # itself lives in system_fleet_gitops_read_gate_spec.rb.
+    it "gates both reads on the permission its REST twin requires" do
       %w[system_gitops_get_repository system_gitops_list_repositories].each do |action|
-        expect(described_class::ACTION_PERMISSIONS[action])
-          .to eq(described_class::ACTION_PERMISSIONS["system_gitops_get_drift_report"])
+        expect(described_class::ACTION_PERMISSIONS[action]).to eq("system.gitops.read")
       end
     end
 
@@ -252,7 +258,7 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps repository read verbs (IMP-f0
       r = gated.execute(params: { action: "system_gitops_list_repositories" })
 
       expect(r[:success]).to be false
-      expect(r[:error]).to include("permission denied: system.modules.read")
+      expect(r[:error]).to include("permission denied: system.gitops.read")
       expect(r[:error]).not_to include(described_class::REQUIRED_PERMISSION)
     end
   end

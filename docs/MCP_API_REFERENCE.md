@@ -177,7 +177,14 @@ Backed by `Ai::Tools::SystemPackageRepositoryTool`. Manages apt/rpm package repo
 | `system_gitops_get_drift_report` | Per-repository drift summary (rows that diverge from declared state) | operator, agent |
 | `system_gitops_apply_proposal` | Apply a proposed change set — gated via `Ai::AgentProposal` approval | operator, agent |
 
-**Permissions:** `system.gitops.{view,sync,apply}`
+**Permissions:** not one family — read the map in `SystemFleetTool::ACTION_PERMISSIONS`, not this
+heading. `system_gitops_get_repository` / `system_gitops_list_repositories` gate on
+`system.gitops.read` (IMP-b1191457a091 — the same name their REST twin uses, because these two
+return the `vault_credential_path` projection). `system_gitops_get_sync_run` /
+`system_gitops_get_drift_report` gate on `system.modules.read`; `system_gitops_register_repository`
+/ `system_gitops_sync_repository` / `system_gitops_apply_proposal` gate on
+`system.modules.update`. There is no `system.gitops.view` / `.apply` permission — the registered
+names are `read` / `write` / `sync` / `reconcile` (`server/lib/powernode_system/engine.rb`).
 
 #### Disk image CI publication management
 

@@ -223,8 +223,28 @@ module PowernodeSystem
                      grant: { system_worker: true }
           permission "system.gitops.sync", "Sync a GitOps repository (worker)",
                      grant: { system_worker: true }
+          # IMP-b1191457a091 — `admin` added. This is the OPERATOR-facing read:
+          # the REST controller gates index/show/sync_runs on it and the
+          # OperationsHub GitOps tab is filtered on it (frontend
+          # OperationsHubPage.tsx, entityRegistry.ts), yet it was registered
+          # worker-only, so no assignable role held it — the tab was invisible
+          # to every admin and the MCP read verbs were pushed onto
+          # system.modules.read instead, widening a Vault-path projection's
+          # audience. No worker code path requires this name (the reconcile
+          # tick uses system.gitops.reconcile, worker_api/gitops_controller.rb),
+          # so nothing here has to stay worker-only; system_worker is kept
+          # rather than moved.
+          #
+          # .reconcile and .sync are left untouched by that task, NOT vindicated
+          # by it. .reconcile is genuinely a worker tick. .sync is not: the REST
+          # sync_now it gates is an operator action with an operator button
+          # (GitopsTab.tsx), so it carries the same modelling defect this line
+          # fixes, as does system.gitops.write below — granted to NO role at all
+          # while the create/update/destroy controls gate on it. Both are filed
+          # rather than fixed here; do not read their absence as a decision that
+          # they are correct.
           permission "system.gitops.read", "Read GitOps repository state",
-                     grant: { system_worker: true }
+                     grant: { admin: true, system_worker: true }
           permission "system.gitops.write", "Modify GitOps repository state", grant: {}
           permission "system.metrics.read", "Read system metrics + telemetry",
                      grant: { system_worker: true }
