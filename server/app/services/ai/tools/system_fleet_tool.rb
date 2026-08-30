@@ -691,7 +691,21 @@ module Ai
             parameters: {}
           },
           "system_provision_instance" => {
-            description: "Provision a new cloud instance for a node (asynchronous; returns task_id). " \
+            description: "Provision a new cloud instance for a node. SYNCHRONOUS: the call blocks on the " \
+                         "provider until the instance row is created or the attempt fails, and it creates NO " \
+                         "System::Task — there is no task_id. The MACHINE is still coming up when this " \
+                         "returns: the returned status is the provider's create-time status, so poll " \
+                         "system_get_instance for boot/enrollment readiness. " \
+                         "On success returns provisioned:true and data:{instance:{id, status, ...}, " \
+                         "cloud_instance_id} — the id names a real NodeInstance row and status is that row's " \
+                         "state at return. On failure the provisioning has ALREADY failed: do not report it " \
+                         "as started or in flight. A failure AFTER the row was created returns that same " \
+                         "data:{instance, cloud_instance_id} beside the error, normally with the row moved to " \
+                         ":error — read both, because a failed provision can strand a live billable cloud " \
+                         "resource (system_terminate_instance reclaims it, and is itself approval-gated). A " \
+                         "failure BEFORE any row exists — plan quota, unknown region/SKU, an unregistered or " \
+                         "instance-incapable provider, an rcp_member_provisioning invariant violation — " \
+                         "carries no data.instance. " \
                          "Agents SHOULD send a stable operation_id per logical request — retries carrying " \
                          "the same operation_id reuse the in-flight instance instead of provisioning a duplicate.",
             parameters: {
@@ -3097,7 +3111,32 @@ module Ai
           operation_id: params[:operation_id],
           options: params[:options] || {}
         )
-        return error_result(result.error || "provisioning failed") unless result.success?
+        unless result.success?
+          # IMP-2679c830ea1a — the call is synchronous, so a failure here is a
+          # COMPLETED failure, and every post-create failure arm of
+          # ProvisioningService has already left a NodeInstance row behind in
+          # :error (possibly still owning a billable cloud resource). Returning
+          # only a message stranded that row: the caller had no id with which to
+          # inspect or terminate it. Pre-create failures (quota, unknown
+          # region/SKU, unsupported provider) carry no instance in result.data,
+          # and the key is omitted rather than sent as nil — a nil under the
+          # right key reads as "the row exists and I could not identify it".
+          failed = { success: false, error: result.error || "provisioning failed" }
+          errored_instance = result.data.is_a?(Hash) ? result.data[:instance] : nil
+          if errored_instance
+            # Same shape and the same dig path as the success arm
+            # (data.instance.id), so a caller does not need two resolutions for
+            # one verb — System::Ai::Skills::ProvisionClusterExecutor already
+            # reads dig(:data, :instance, :id) on success and had nothing to
+            # read on failure. cloud_instance_id rides along because it is what
+            # decides whether a live billable resource was stranded:
+            # terminate_orphaned_cloud_instance is best-effort and swallows its
+            # own failures.
+            failed[:data] = { instance: serialize_instance(errored_instance),
+                              cloud_instance_id: errored_instance.cloud_instance_id }
+          end
+          return failed
+        end
 
         instance = result.data[:instance]
         success_result(
