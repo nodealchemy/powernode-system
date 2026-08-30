@@ -128,7 +128,15 @@ Composes `system_create_node` + `system_provision_instance` per node. Hard cap a
 **Inputs:** `template_id`, `module_id`, `target_version_id`, `batch_pct` (default), `max_consecutive_failures`, `health_timeout_sec`
 **Outputs:** `total_instances`, `batch_size`, `batch_count`, `estimated_total_seconds`, `circuit_breaker`, `batches`
 
-Plans a circuit-breaker-protected rolling upgrade. The executor returns a *plan*; the autonomy reconciler executes it batch-by-batch, gating on health between batches.
+Computes a batched upgrade plan. **PLAN ONLY — NOT IMPLEMENTED beyond that
+point:** the executor returns the plan and nothing executes it. There is no
+batch advancer, health check or circuit breaker for module upgrades;
+`max_consecutive_failures` and `health_timeout_sec` are echoed into the
+returned `circuit_breaker` hash (`status: "not_implemented"`) and read by
+nothing, and `batch_pct` is not a blast-radius control. Operator procedure:
+[Tutorial 06 § What to do instead](./tutorials/06-rolling-upgrade.md#what-to-do-instead).
+For the same shape actually implemented, see `boot_image_drift_rollout`, which
+dispatches each batch and converges tick-by-tick off its own drift sensor.
 
 ### `runbook_generate` — Template runbook
 
@@ -444,17 +452,24 @@ Hard-capped at 50 per call — larger fleets go through `rolling_module_upgrade`
 { "template_id": "tmpl-abc", "module_id": "mod-nginx", "target_version_id": "v-1.26.0",
   "batch_pct": 20, "max_consecutive_failures": 2, "health_timeout_sec": 300 }
 
-// Output (success.data)
+// Output (success.data) — a plan. Nothing executes it.
 {
   "total_instances": 50,
   "batch_size": 10,
   "batch_count": 5,
   "estimated_total_seconds": 1500,
-  "circuit_breaker": { "max_consecutive_failures": 2, "tripped_after_seconds": null },
+  "circuit_breaker": { "trips_after_consecutive_failures": 2,
+                       "health_timeout_sec": 300,
+                       "status": "not_implemented" },
   "batches": [
-    { "index": 0, "instance_ids": ["..."], "phase": "pending" },
-    { "index": 1, "instance_ids": ["..."], "phase": "pending" }
-  ]
+    { "index": 0, "instance_ids": ["..."], "size": 10,
+      "estimated_seconds": 1200, "status": "planned" },
+    { "index": 1, "instance_ids": ["..."], "size": 10,
+      "estimated_seconds": 1200, "status": "planned" }
+  ],
+  "requires_approval": true,
+  "executed": false,
+  "note": "PLAN ONLY — nothing advances these batches. ..."
 }
 ```
 

@@ -3,9 +3,12 @@
 # Companion seed for docs/examples/04-rolling-module-upgrade.md.
 #
 # Demonstrates the rolling_module_upgrade skill executor by setting up a small
-# fleet (10 instances, persistent state-only) and running the executor in plan
-# mode (the autonomy reconciler executes batches in production; this seed just
-# verifies the plan computation).
+# fleet (10 instances, persistent state-only) and running the executor.
+#
+# IMP-e8dc40813adb — the executor is PLAN ONLY, in production as much as here.
+# Nothing executes the plan: no batch advancer, health check or circuit breaker
+# exists for module upgrades. This seed verifies the plan computation, which is
+# the whole of what the executor does.
 #
 # Run via:
 #   cd server && bundle exec rails runner \
@@ -86,7 +89,8 @@ else
   puts "  ⚠️  Skill failed: #{result[:error]}"
 end
 
-puts "  ℹ️  To execute the plan in production, the autonomy reconciler picks up"
-puts "       the require_approval ApprovalRequest, operator approves, and batches"
-puts "       run sequentially with health checks between."
+puts "  ⚠️  NOT IMPLEMENTED: nothing executes this plan, in production or here."
+puts "       There is no batch advancer, health check or circuit breaker for module"
+puts "       upgrades, and batch_pct is not a blast-radius control. To actually move"
+puts "       the fleet, see docs/tutorials/06-rolling-upgrade.md 'What to do instead'."
 puts "  Done. See docs/examples/04-rolling-module-upgrade.md."

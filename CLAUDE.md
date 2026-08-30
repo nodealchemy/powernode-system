@@ -157,7 +157,7 @@ See `docs/runbooks/README.md` for the full index (audience + prereqs + runtime p
 - `03-docker-runtime.md` — Phase 1 Docker daemon provisioning
 - `04-k3s-cluster.md` — Phase 2 K3s cluster with VIP-backed api_endpoint
 - `05-multi-cluster-k3s.md` — multi-cluster + SDWAN isolation
-- `06-rolling-upgrade.md` — batched module upgrades with circuit breaker
+- `06-rolling-upgrade.md` — module upgrade plans (the batched runtime + circuit breaker are NOT IMPLEMENTED) + the manual procedure that works
 - `07-cve-response.md` — full CVE response pipeline (drill)
 - `08-instance-pool.md` — pre-warmed pools for bursty workloads
 - `09-honeypot-canary.md` — decoy assets + intervention policy

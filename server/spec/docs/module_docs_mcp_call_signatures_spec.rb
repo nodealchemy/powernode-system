@@ -104,13 +104,20 @@ module ModuleDocsMcpCallSignatures
     # troubleshooting table tells an operator to poll
     # system.disk_image_publish_failed through a `kind_prefix` recent_events
     # does not declare.
-    ["docs/runbooks/disk-image-ci.md", "recent_events"] => %w[kind_prefix],
-    # 01a05174-e4c3-71c2-b89d-111ef3328576 — system_drift_report is per-instance
-    # only. system_platform_maintenance({ op: "drift_check" }) is template-scoped
-    # but its detector is a hardcoded `return false` stub, so there is no working
-    # fleet-wide drift answer; renaming this key would quietly downgrade a
-    # fleet-wide claim to a single-instance spot check.
-    ["docs/tutorials/06-rolling-upgrade.md", "system_drift_report"] => %w[template_id]
+    ["docs/runbooks/disk-image-ci.md", "recent_events"] => %w[kind_prefix]
+    # RETIRED by IMP-e8dc40813adb (this spec's own instruction: the entry
+    # matched no call site once the example was removed).
+    #
+    # Was: 01a05174-e4c3-71c2-b89d-111ef3328576 —
+    # ["docs/tutorials/06-rolling-upgrade.md", "system_drift_report"] => %w[template_id]
+    #
+    # That finding is NOT fixed and is not claimed to be: system_drift_report is
+    # still per-instance only, and system_platform_maintenance({ op:
+    # "drift_check" }) is still a hardcoded stub. What changed is that
+    # 06-rolling-upgrade.md's Verification section no longer MAKES the
+    # template-scoped call — rewriting it (its premise, "after all batches
+    # complete", was false) replaced the fictional call with prose stating the
+    # per-instance limit and the stub outright. Other files may still carry it.
   }.freeze
 end
 

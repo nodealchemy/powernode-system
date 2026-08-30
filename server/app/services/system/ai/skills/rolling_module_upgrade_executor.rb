@@ -3,13 +3,33 @@
 module System
   module Ai
     module Skills
-      # Plan + dispatch a rolling module upgrade across the fleet for a given
-      # Template. v0 returns a structured *plan* (batch boundaries, gating,
-      # estimated impact); the autonomy reconciler is responsible for stepping
-      # through batches and pausing on circuit-breaker trip. Returning a plan
-      # rather than executing in-band keeps the executor side-effect-free
-      # for non-confirmed runs and makes the M7 ApprovalRequest payload a
-      # one-step copy.
+      # Plan a rolling module upgrade across the fleet for a given Template.
+      # This executor returns a structured *plan* (batch boundaries, estimated
+      # impact) and does nothing else.
+      #
+      # IMP-e8dc40813adb — NOTHING EXECUTES THE PLAN. There is no batch
+      # advancer, no health check, and no circuit breaker anywhere in the
+      # platform for module upgrades. The original header promised "dispatch"
+      # and deferred the walk to an "M7 reconciler"; M7 was never built, and
+      # the phrase survived only in this file's own comments and in the note
+      # this executor returns. Both are corrected here rather than left to
+      # imply a runtime a caller would wait on.
+      #
+      # Consequences a caller must know before trusting the plan:
+      #   - batch_pct is NOT a blast-radius control. It sizes groups in a
+      #     document. Even if something walked them, the version an instance
+      #     receives resolves from NodeModule#current_version_id — a per-MODULE
+      #     pointer — so moving it moves every instance carrying that module at
+      #     once. There is no per-instance version selection to batch over.
+      #   - max_consecutive_failures and health_timeout_sec are echoed into the
+      #     returned circuit_breaker hash and read by nothing.
+      #
+      # The implemented reference for this shape is
+      # BootImageDriftRolloutExecutor: it dispatches its current batch through
+      # UpgradeDispatcher and converges tick-by-tick by re-planning off its own
+      # drift sensor, which is why it needs no advancer. The equivalent module
+      # lane does not exist. Operator procedure meanwhile:
+      # docs/tutorials/06-rolling-upgrade.md § "What to do instead".
       #
       # Reference: Golden Eclipse plan M6 — Skills catalog (rolling_module_upgrade).
       class RollingModuleUpgradeExecutor < BaseSkillExecutor
@@ -23,20 +43,23 @@ module System
 
         skill_descriptor(
           name: "rolling_module_upgrade",
-          description: "Plan a batched rolling upgrade of a NodeModule across all instances of a Template, with circuit-breaker and health gating",
+          description: "Compute a batched rolling-upgrade plan for a NodeModule across all instances of a Template. " \
+                       "PLAN ONLY — the plan is NOT executed: no batch advancer, health check or circuit breaker " \
+                       "exists, so nothing advances the batches. See the class doc for the manual procedure.",
           category: "devops",
           inputs: {
             template_id: { type: "string", required: true },
             module_id: { type: "string", required: true },
             target_version_id: { type: "string", required: true },
             batch_pct: { type: "integer", required: false, default: DEFAULT_BATCH_PCT,
-                         description: "Percent of fleet to upgrade per batch (1-100). Smaller = safer + slower." },
+                         description: "Percent of fleet per batch (1-100). Sizes groups in the returned plan only — " \
+                                      "it is NOT a blast-radius control, because nothing executes the batches." },
             max_consecutive_failures: { type: "integer", required: false,
                                         default: DEFAULT_MAX_CONSECUTIVE_FAILS,
-                                        description: "Trip the circuit-breaker after this many consecutive batch failures" },
+                                        description: "NOT IMPLEMENTED — echoed into the returned circuit_breaker hash and read by nothing" },
             health_timeout_sec: { type: "integer", required: false,
                                   default: DEFAULT_HEALTH_TIMEOUT_SEC,
-                                  description: "How long to wait for a batch to report healthy heartbeats before marking failed" }
+                                  description: "NOT IMPLEMENTED — echoed into the returned circuit_breaker hash and read by nothing" }
           },
           outputs: {
             total_instances: :integer,
@@ -85,7 +108,7 @@ module System
               batch_size: 0,
               batch_count: 0,
               estimated_total_seconds: 0,
-              circuit_breaker: { trips_after_consecutive_failures: max_consecutive_failures, status: "armed" },
+              circuit_breaker: { trips_after_consecutive_failures: max_consecutive_failures, status: "not_implemented" },
               batches: [],
               note: "no eligible instances for template — nothing to do"
             )
@@ -107,10 +130,13 @@ module System
             batch_size: batch_size,
             batch_count: batches.size,
             estimated_total_seconds: batches.sum { |b| b[:estimated_seconds] },
+            # status is "not_implemented", never "armed": there is no breaker to
+            # arm. Both fields below are the caller's own arguments echoed back,
+            # so a caller must not read this hash as evidence of a live gate.
             circuit_breaker: {
               trips_after_consecutive_failures: max_consecutive_failures,
               health_timeout_sec: health_timeout_sec,
-              status: "armed"
+              status: "not_implemented"
             },
             target: {
               module_id: module_id,
@@ -120,7 +146,11 @@ module System
             },
             batches: batches,
             requires_approval: true,
-            note: "plan returned; M7 reconciler advances batches one at a time, gating each via system.fleet_rolling_upgrade ApprovalRequest"
+            executed: false,
+            note: "PLAN ONLY — nothing advances these batches. No batch advancer, health check or circuit " \
+                  "breaker is implemented for module upgrades, so approving this plan does not roll anything " \
+                  "out. To actually move the fleet, see docs/tutorials/06-rolling-upgrade.md " \
+                  "§ \"What to do instead\"."
           )
         end
       end

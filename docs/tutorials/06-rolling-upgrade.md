@@ -2,11 +2,26 @@
 
 > Status: active
 
-> **What you'll learn:** Upgrade a module version across a fleet in batches,
-> with health-check gates between batches and an automatic circuit breaker
-> that pauses for operator review when too many instances fail in a row.
+> ## ⚠️ The batched runtime this tutorial described is NOT IMPLEMENTED
 >
-> **Time:** ~30 min (most of which is watching batches complete)
+> `RollingModuleUpgradeExecutor` computes a **plan and stops**. There is no
+> batch advancer, no health check and no circuit breaker anywhere in the
+> platform for module upgrades — approving a plan rolls nothing out. Earlier
+> revisions of this page described all three as working. They never were.
+>
+> `batch_pct` is **not** a safety control. It sizes groups in a document.
+>
+> The plan-mode walkthrough (Steps 1–2) is still accurate and useful for
+> sizing an upgrade. Everything that claimed to *execute* a plan is marked
+> NOT IMPLEMENTED below. For the procedure that actually moves a fleet
+> today, jump to [What to do instead](#what-to-do-instead).
+
+> **What you'll learn:** How to compute a batched upgrade plan, what the
+> platform does and does not do with it, and the manual procedure that
+> actually moves a module version across a fleet — including why that
+> procedure cannot be batched either.
+>
+> **Time:** ~10 min
 >
 > **Builds on:** [Tutorial 02](./02-first-module.md) (you understand module
 > versions + promotion) and [Tutorial 03](./03-docker-runtime.md) (you have a
@@ -20,57 +35,80 @@
 
 ```mermaid
 flowchart TD
-    Op[Operator] --> Plan[RollingModuleUpgradeExecutor<br/>plan mode<br/>batch_pct=20%]
-    Plan --> Plan2[Skill plans batches:<br/>50 instances → 5 × 10]
-    Plan2 --> Apr[ApprovalRequest<br/>created]
-    Apr --> Op2{Operator<br/>approves?}
-    Op2 -->|yes| B1[Batch 1: upgrade 10 instances]
-    Op2 -->|edit| Edit[Adjust batch_pct or<br/>max_consecutive_failures]
-    Edit --> Op2
-    B1 --> H1{Health checks<br/>pass?}
-    H1 -->|yes| B2[Batch 2: upgrade 10]
-    H1 -->|>2 in a row fail| CB[Circuit breaker<br/>tripped]
-    CB --> Apr2[New ApprovalRequest:<br/>continue / rollback / abort]
-    Apr2 --> Op3{Operator<br/>decides}
-    Op3 -->|continue| B2
-    Op3 -->|rollback| RB[Rollback completed batches]
-    Op3 -->|abort| Stop[Investigate failed instances]
-    B2 --> B3[...batches 3-5]
-    B3 --> Done[All instances on new version<br/>system.drift_report = false]
+    Op[Operator] --> Plan[RollingModuleUpgradeExecutor<br/>batch_pct=20%]
+    Plan --> Plan2[Plan computed:<br/>50 instances → 5 × 10]
+    Plan2 --> Stop([Returns the plan.<br/>Nothing advances the batches.])
+
+    Stop -.->|NOT IMPLEMENTED| Ghost1[Batch 1 upgraded]
+    Ghost1 -.->|NOT IMPLEMENTED| Ghost2[Health check]
+    Ghost2 -.->|NOT IMPLEMENTED| Ghost3[Circuit breaker]
+
+    Op --> Manual[Manual procedure:<br/>see 'What to do instead']
+    Manual --> Ptr[Repoint NodeModule<br/>current_version_id]
+    Ptr --> Fleet[Every instance carrying<br/>that module converges]
+
+    style Ghost1 stroke-dasharray: 5 5
+    style Ghost2 stroke-dasharray: 5 5
+    style Ghost3 stroke-dasharray: 5 5
 ```
 
-By the end you'll have upgraded a module (e.g., `nginx` 1.24 → 1.26)
-across a 50-instance fleet with zero unsafe rollouts.
+The dashed path is what earlier revisions of this tutorial described. It does
+not exist. The solid paths are what the platform does today.
 
 ## Concept refresher
 
 **`rolling_module_upgrade`** is a skill executor (see
-[`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md)) that:
+[`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md)). What it does, in full:
 
-1. Plans a batched sequence based on `batch_pct` (default 10%; this tutorial uses 20%)
-2. Creates an `ApprovalRequest` per Fleet Autonomy intervention policy
-   (`system.fleet_rolling_upgrade` is `require_approval`)
-3. On approval, walks batches one at a time
-4. After each batch, runs health checks (default: instance heartbeats with
-   new module digest in `running_module_digests`)
-5. Tracks consecutive failures; trips circuit breaker at
-   `max_consecutive_failures` (default 2)
-6. On trip: emits `module.upgrade.circuit_breaker_tripped` event + creates
-   a continuation ApprovalRequest with options `continue_anyway` /
-   `rollback_completed_batches` / `abort`
+1. Validates `batch_pct` is 1–100
+2. Looks up the module and confirms `target_version_id` appears in its
+   version list
+3. Lists the template's `running`/`starting` instances and slices them into
+   batch-sized groups
+4. Returns the plan, with `executed: false`
 
-**Why batch?** Limits blast radius. A bad version reaches at most
-`batch_pct` of the fleet before the circuit trips.
+Then it returns. That is the whole executor
+([`rolling_module_upgrade_executor.rb`](../../server/app/services/system/ai/skills/rolling_module_upgrade_executor.rb)).
 
-**Why approval?** Even with healthy batches, the rollout itself is a
-controlled production change — operator should sign off on timing.
+**NOT IMPLEMENTED — no code in the platform does any of the following:**
+
+| Promised | Reality |
+|---|---|
+| Walks batches one at a time after approval | Nothing advances the batches. There is no reconciler that reads the plan; the plan is returned to the caller and discarded |
+| Per-batch health checks against `running_module_digests` | The executor never reads `running_module_digests`. No health check exists |
+| Circuit breaker trips at `max_consecutive_failures` | No breaker exists. The argument is echoed into the returned `circuit_breaker` hash (now `status: "not_implemented"`) and read by nothing |
+| `health_timeout_sec` bounds a health window | Echoed into the same hash. Read by nothing |
+| Emits `module.upgrade.*` events | Nothing in the platform emits these events |
+| Continuation ApprovalRequest with `continue_anyway` / `rollback_completed_batches` / `abort` | No such ApprovalRequest type, and no handler for any of the three options |
+
+**Why isn't `batch_pct` a safety control?** Two independent reasons, and the
+second survives even if someone builds the advancer:
+
+1. Nothing executes the batches, so the grouping has no runtime effect at all.
+2. The version an instance receives is resolved from
+   `NodeModule#current_version_id` — a **per-module** pointer, read at download
+   time by the node-facing endpoint. There is no per-instance version
+   selection, so there is nothing to batch *over*. Moving that pointer moves it
+   for **every instance carrying that module** simultaneously.
+
+**What about the approval?** `system.fleet_rolling_upgrade` really is
+`require_approval` ([`FLEET_SENSORS.md`](../FLEET_SENSORS.md)), and the plan
+really does carry `requires_approval: true`. The approval gate is real. What
+is missing is anything that acts on the approval.
+
+**Where this shape *is* implemented:** `boot_image_drift_rollout` does the
+equivalent for **boot images** — it dispatches each batch through
+`UpgradeDispatcher` and converges tick-by-tick by re-planning off its own
+drift sensor, canary-first and halting on the first failed batch. It needs no
+batch advancer because convergence is tick-driven. No equivalent lane exists
+for modules.
 
 ## Prerequisites
 
 | Requirement | How |
 |---|---|
 | Existing fleet ≥10 NodeInstances assigned a common module (e.g., `nginx 1.24.0`) | Provision via Tutorial 01 + assign via Tutorial 02 pattern |
-| New version (`nginx 1.26.0`) published, plus the version id you will target | Tutorial 02 step 6–8. `promotion_state` is not checked by `RollingModuleUpgradeExecutor` — it accepts any version id present in the module's version list, so a `built` version is a valid target. It does not check `oci_digest` either — it only copies that into the plan as `target_oci_digest` — so verify the target carries one yourself before approving the rollout |
+| New version (`nginx 1.26.0`) published, plus the version id you will target | Tutorial 02 step 6–8. `promotion_state` is not checked by `RollingModuleUpgradeExecutor` — it accepts any version id present in the module's version list, so a `built` version is a valid target. It does not check `oci_digest` either — it only copies that into the plan as `target_oci_digest` — so verify the target carries one yourself before moving the pointer |
 | Operator permission `system.fleet_rolling_upgrade` (often paired with approval rights) | Default for admin users |
 
 ## Step 1 — Identify the upgrade target
@@ -116,118 +154,234 @@ result = ::System::Ai::Skills::RollingModuleUpgradeExecutor.new(
 #      batch_size: 10,
 #      batch_count: 5,
 #      estimated_total_seconds: 1500,
-#      circuit_breaker: { trips_after_consecutive_failures: 2, status: "armed" },
+#      circuit_breaker: { trips_after_consecutive_failures: 2,
+#                         health_timeout_sec: 300,
+#                         status: "not_implemented" },
 #      batches: [
-#        { index: 0, instance_ids: [...10], phase: "pending" },
+#        { index: 0, instance_ids: [...10], size: 10,
+#          estimated_seconds: 1200, status: "planned" },
 #        ...
-#      ]
+#      ],
+#      executed: false,
+#      note: "PLAN ONLY — nothing advances these batches. ..."
 #    }
 ```
 
 (Defaults if you omit them: `batch_pct: 10`, `max_consecutive_failures: 2`,
 `health_timeout_sec: 600`.)
 
-**Expected outcome:** plan shows 5 batches of 10 instances each, ~25 min
-total (5 batches × 5 min health window).
+**Expected outcome:** a plan showing 5 batches of 10 instances each.
 
-## Step 3 — Approve the plan
+Read the returned fields carefully:
 
-Operator opens `/app/approvals` UI → reviews the plan → optionally edits
-`batch_pct` (smaller for Tier-1 services) or `max_consecutive_failures`
-(1 for stricter stop-on-fail) → clicks Approve.
+- `status: "not_implemented"` — the `circuit_breaker` hash is your two
+  arguments echoed back. It is not evidence of a live gate.
+- `executed: false` — the plan was computed and nothing was done with it.
+- `estimated_total_seconds: 1500` is an ETA hint only (a flat
+  `ETA_PER_INSTANCE_SEC = 120` × instance count). It is not a measured
+  health window, and no batch is timed against it.
 
-Once approved, the autonomy reconciler picks up the plan on its next
-60s tick and starts executing.
+**The plan is still useful** — it tells you how many instances carry the
+module and confirms the target version resolves. Treat it as a sizing
+document, then perform the upgrade with the manual procedure in
+[What to do instead](#what-to-do-instead).
 
-## Step 4 — Watch progress
+## Step 3 — Approve the plan — NOT IMPLEMENTED
+
+An `ApprovalRequest` is genuinely created and genuinely gates
+(`system.fleet_rolling_upgrade` is `require_approval`), and you can approve it
+in `/app/approvals`. **Approving it has no effect on the fleet.** No reconciler
+reads the plan; nothing starts executing on the next tick or any tick.
+
+There is also no "Edit plan" affordance that changes a rollout, because there
+is no rollout — editing `batch_pct` or `max_consecutive_failures` only changes
+numbers in a document.
+
+## Step 4 — Watch progress — NOT IMPLEMENTED
 
 ```javascript
+// NOT IMPLEMENTED — nothing in the platform emits module.upgrade.* events.
+// `recent_events` does not declare a `kind_prefix` parameter either, so this
+// call is doubly wrong: it would not filter even if the events existed.
 platform.recent_events({ kind_prefix: "module.upgrade", limit: 100 })
-// → events: [
-//      { kind: "module.upgrade.batch_started", batch_index: 0, instance_count: 10, ... },
-//      { kind: "module.upgrade.instance_started", instance_id, target_version, ... },
-//      { kind: "module.upgrade.instance_health_check", instance_id, healthy: true, ... },
-//      { kind: "module.upgrade.batch_completed", batch_index: 0, healthy_count: 10, failed_count: 0, ... },
-//      { kind: "module.upgrade.batch_started", batch_index: 1, ... }
-//    ]
+// → no module.upgrade.* events, ever
 ```
 
-Or via UI: `/app/system/operations` → "Active rolling upgrades" panel
-shows batch status + per-instance progress.
+There is no "Active rolling upgrades" panel at `/app/system/operations`.
 
-## Step 5 — Circuit breaker scenario (drill)
+To observe a module upgrade you performed manually, poll the instances
+directly — see [Verification](#verification) below.
 
-To rehearse circuit breaker behavior, deliberately publish a broken
-version (e.g., nginx with a syntax error in its config):
+## Step 5 — Circuit breaker scenario (drill) — NOT IMPLEMENTED
 
-1. Build & publish `nginx 1.26.0-broken` via Tutorial 02
-2. Run Step 2 with `target_version_id: "v-1.26.0-broken"`
-3. After 2 instances in batch 1 fail health checks:
+**Do not attempt this drill.** It reads as a safe rehearsal and is the
+opposite: it instructs you to publish a deliberately broken version, on the
+promise that a circuit breaker stops the rollout after two failures. No
+circuit breaker exists. If you separately repoint the module at the broken
+version (the manual procedure below), **every instance carrying that module
+converges on it** with nothing to stop the spread.
+
+None of the following exists:
+
+- the `module.upgrade.circuit_breaker_tripped` event
+- the `rolling_upgrade_continuation` ApprovalRequest type
+- the `continue_anyway` option — no handler
+- the `rollback_completed_batches` option — no handler, and no record of which
+  batches "completed" to roll back
+- the `abort` option — no handler
+
+Your only real stop button is repointing `current_version_id` back to the
+previous version yourself, which is the same one-call operation as rolling
+forward. Confirm it is available **before** you move the pointer — see the
+next section.
+
+## What to do instead
+
+There is **no automated bound** on a module upgrade today: no batching, no
+health gate, no automatic stop. The procedure below is what actually moves a
+fleet, and it is deliberately written to make its own limits visible rather
+than to look like a supervised rollout.
+
+**The pointer, not the promotion state, is what the fleet serves.** A node
+downloading a module resolves `NodeModule#current_version_id`
+(`NodeApi::ModulesController#download` reads `@module.current_version&.artifact`).
+Promoting a version through `staging → blessed → live` advances a label and
+changes nothing about what the fleet receives — see
+[Tutorial 02](./02-first-module.md) and
+[`module-authoring.md`](../runbooks/module-authoring.md).
+
+### 1. Verify the target before you move anything
 
 ```javascript
-// Reconciler emits:
-{ kind: "module.upgrade.circuit_breaker_tripped",
-  batch_index: 1,
-  failed_instance_ids: ["...", "..."],
-  reason: "max_consecutive_failures (2) exceeded" }
-
-// And creates an approval request:
-{ approval_request: {
-    type: "rolling_upgrade_continuation",
-    options: ["continue_anyway", "rollback_completed_batches", "abort"]
-}}
+platform.system_list_module_versions({ module_id: "<nginx-module-id>" })
 ```
 
-Operator decides:
+The target version must carry an `oci_digest` — without one it has no
+mountable artifact and instances will fail to mount the module.
 
-- **`continue_anyway`** — ignore the trip, proceed (use only when failures are transient)
-- **`rollback_completed_batches`** — restore previously-upgraded instances to v1.24.0 (use when the new version has a fundamental flaw)
-- **`abort`** — stop here; investigate failed instances manually
+### 2. Confirm you have a way back — BEFORE the flip
+
+This is the step that replaces the circuit breaker, and it is the only
+pre-flight check that materially bounds your risk.
+
+A rollback target must be a version of the same module that is
+`rollback_usable?`: it has an `oci_digest`, and its recorded artifact size is
+above the non-empty floor (`system.module_publish.min_artifact_bytes`) — a
+version with an *unknown* size is accepted, since old rows predate size
+recording. If the version you are leaving is the only usable one, moving the
+pointer forward is a one-way door until you republish a good build.
+
+### 3. Move the pointer
+
+```javascript
+platform.system_rollback_module_version({
+  module_id:  "<nginx-module-id>",
+  version_id: "<target-version-uuid>",   // a NodeModuleVersion UUID
+  reason:     "nginx 1.24.0 → 1.26.0"
+})
+```
+
+Despite the name, this is the **sanctioned writer of `current_version_id`**
+(it calls `NodeModule#promote_to_version!`) and it imposes no direction — it
+moves the pointer forward as readily as backward, subject only to the
+`rollback_usable?` check above. `system_promote_module_version` will **not**
+do this; it advances `promotion_state` only.
+
+Note that `promote_to_version!` also arms `RestartAfterUpdate`, so services
+provided by that module restart as instances converge.
+
+### 4. Understand what you just did
+
+The pointer is per-module. **Every instance carrying that module** now
+converges on the new version at its own next reconcile — not just the ones you
+are watching, and not in any order you control. There is no batch.
+
+`system_refresh_instance_modules` pulls a *single* instance forward
+immediately by queueing a `sync_modules` task:
+
+```javascript
+platform.system_refresh_instance_modules({ instance_id: "<instance-id>" })
+```
+
+Use it to inspect one instance on the new version sooner than the others.
+**It does not hold the other instances back** — it changes *when* an instance
+converges, never *what* it converges to. Calling it in groups looks like a
+batched rollout and is not one; the rest of the fleet is already moving.
+
+### 5. Watch, and be ready to reverse
+
+```javascript
+platform.system_get_instance({ instance_id: "<sample-instance>" })
+// → { instance: { running_module_digests: { "<nginx-node-module-id>": "sha256:..." } } }
+```
+
+If the new version is bad, reverse it with the same verb from step 3, naming
+the previous version. That is a manual decision by a watching operator — there
+is nothing automatic behind you.
+
+### If you need a real blast-radius bound
+
+Since a module's pointer cannot be scoped to part of a fleet, genuine
+staging requires separating the *scope*, not the rollout:
+
+- **[Instance pools](./08-instance-pool.md)** — for stateless workloads,
+  replace instances rather than upgrading in place: claim a fresh instance on
+  the new version, drain the old one. Blast radius is one instance at a time
+  and rollback is "stop claiming".
+- **A separate module row for the canary template** — two `NodeModule` rows
+  have two independent `current_version_id` pointers, so you can move one
+  without moving the other. This is a real cost (two modules to publish and
+  keep in step) and is the honest price of staging today.
 
 ## Verification
 
-After all batches complete:
+Once the fleet has converged (each instance at its own next reconcile —
+there are no batches to complete):
 
 ```javascript
-platform.system_drift_report({ template_id: "<edge-template>" })
-// → { drift: false }   (all instances now running v1.26.0)
-
 platform.system_get_instance({ instance_id: "<sample-instance>" })
 // → { instance: { running_module_digests: { "<nginx-node-module-id>": "sha256:<v1.26-digest>", ... } } }
 //    (keyed by node_module_id, not by module name)
 ```
 
+Compare that digest against the target version's `oci_digest`. This is a
+per-instance check and you will need to repeat it across the instances you
+care about — poll until they converge, or until one does not.
+
+`system_drift_report` answers the same question for **one instance**
+(`{ instance_id }`); it has no template-wide form. There is no working
+fleet-wide drift answer: `system_platform_maintenance({ op: "drift_check" })`
+is template-scoped but its detector is a hardcoded stub.
+
 ## Extract a learning
+
+If you ran a real upgrade, record what you learned about **the manual
+procedure** — not about batch sizing, which had no effect:
 
 ```javascript
 platform.create_learning({
-  title: "nginx 1.24 → 1.26 rolling upgrade — batch_pct=20% works for edge fleet",
+  title: "nginx 1.24 → 1.26 module upgrade — pointer flip converged the edge fleet in ~N min",
   category: "best_practice",
-  content: "50-instance edge fleet: 20% batches × 5 batches × ~5min health window = 25 min total. Zero circuit breaker trips. Recommend keeping batch_pct=20% for similar-sized fleets; reduce to 10% for Tier-1 services with smaller blast radius tolerance.",
-  tags: ["rolling-upgrade", "nginx", "batch-sizing"]
+  content: "Repointed current_version_id via system_rollback_module_version. All 50 instances converged within N minutes with no batching (the pointer is per-module, so the fleet moves together). Confirmed a usable rollback target existed first. Watch: RestartAfterUpdate armed, so nginx restarted as each instance converged.",
+  tags: ["module-upgrade", "nginx", "current-version-pointer"]
 })
 ```
 
-Future similar upgrades surface this learning in the
-`rolling_module_upgrade` skill's reasoning.
-
 ## Cleanup
 
-If you ran the circuit-breaker drill, restore the fleet to a known state:
+**Do not re-run the executor to roll back — it does nothing.** Reverse a bad
+upgrade the same way you applied it, by moving the pointer:
 
-```ruby
-# If you chose abort/rollback, no further action needed
-# If you chose continue_anyway and the version was actually broken, manually
-# rollback by re-running the executor with the previous version as target:
-::System::Ai::Skills::RollingModuleUpgradeExecutor.new(
-  account: account, agent: fleet_autonomy_agent
-).execute(
-  template_id: template_id,
-  module_id: module_id,
-  target_version_id: "<previous-version-id>",   # a NodeModuleVersion UUID, not a "v-<semver>" string
-  batch_pct: 50                 # faster rollback
-)
+```javascript
+platform.system_rollback_module_version({
+  module_id:  "<nginx-module-id>",
+  version_id: "<previous-version-uuid>",   // a NodeModuleVersion UUID, not "v-<semver>"
+  reason:     "reverting 1.26.0"
+})
 ```
+
+Omitting `version_id` picks the newest other version that is
+`rollback_usable?`, which is usually what you want for an emergency revert.
 
 ## Troubleshooting
 
@@ -244,42 +398,45 @@ platform.agent_introspect({ agent_id: "<fleet-autonomy-uuid>" })
 // Look for "intervention_policies" containing system.fleet_rolling_upgrade
 ```
 
-**Batch never starts after approval** — autonomy reconciler is paused or
-its tick isn't running. Check:
+**Batch never starts after approval** — **this is expected and is not a
+fault.** Nothing advances the batches; there is no reconciler to be paused and
+no tick to be broken. Do not debug sidekiq for this. Use the manual procedure
+in [What to do instead](#what-to-do-instead).
 
-```bash
-sudo systemctl status 'powernode-*-sidekiq.service'
-journalctl -u 'powernode-*-sidekiq.service' | grep fleet_autonomy
-```
+**Nothing happened after I approved the plan** — same cause as above. The
+approval gate is real; the thing it gates was never built.
 
-**Health checks always fail** — default health check requires the instance
-to heartbeat with new digest in `running_module_digests`. If your
-heartbeat is broken (Tutorial 03 troubleshooting covers diagnosis) or
-your agent is offline, every batch fails. Fix the underlying connectivity
-first.
+**Instances don't pick up the new version after the pointer flip** — the
+pointer move is the platform's whole side of the operation; convergence is the
+agent's. Check the instance is heartbeating at all (Tutorial 03
+troubleshooting), then force one forward with
+`system_refresh_instance_modules({ instance_id })` and re-read its
+`running_module_digests`. If a `sync_modules` task is queued but the digest
+never changes, the module likely has no mountable artifact — confirm the
+target version carries an `oci_digest`.
 
-**`max_consecutive_failures: 2` trips on transient network blips** — if
-your instances flap between healthy/unhealthy due to network conditions,
-either raise the threshold or fix the underlying networking (the
-threshold is a symptom, not the cause).
+**Rollback target refused** — `system_rollback_module_version` returns "has no
+mountable artifact" when the version you named is missing an `oci_digest`, or
+its recorded artifact size is below `system.module_publish.min_artifact_bytes`.
+A version with an *unknown* size is accepted (old rows predate size recording),
+so this is a real artifact problem, not a metadata gap. Republish a good build.
 
-**Rollback doesn't fully restore previous version** — the rollback path
-re-runs `rolling_module_upgrade` with the previous version as target. A
-`retired` version is still kept for rollback/audit, so retiring the old
-version doesn't break rollback by itself — but if the version **row was
-deleted** outright, rollback fails because `target_version_id` no longer
-resolves. Keep the prior version row (even `retired`) until you're certain
-you'll never roll back.
+**Rollback doesn't fully restore previous version** — a `retired` version is
+still kept for rollback/audit, so retiring the old version doesn't break
+rollback by itself — but if the version **row was deleted** outright, rollback
+fails because the version no longer resolves. Keep the prior version row (even
+`retired`) until you're certain you'll never roll back.
 
 ## What's next
 
-- **[Tutorial 07 — CVE response](./07-cve-response.md)** — uses
-  `rolling_module_upgrade` as the actual remediation; CVE response is
-  essentially "automated rolling upgrade triggered by a CVE signal."
+- **[Tutorial 07 — CVE response](./07-cve-response.md)** — CVE remediation
+  routes to `rolling_module_upgrade` as its remediation step, so it inherits
+  this gap: the CVE lane plans and does not roll out. See
+  [`cve-response.md`](../runbooks/cve-response.md) Phase 6.
 - **[Tutorial 08 — Instance pools](./08-instance-pool.md)** — for
-  stateless workloads, **pool replacement** is often safer than in-place
-  upgrade: terminate old instance, claim a fresh new-version one from the
-  pool. Pools cut blast radius further.
+  stateless workloads, **pool replacement** is the one blast-radius bound that
+  actually works today: terminate old instance, claim a fresh new-version one
+  from the pool.
 - **[`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md)** §`rolling_module_upgrade` —
   full skill input/output reference.
 - **[`FLEET_SENSORS.md`](../FLEET_SENSORS.md)** — `system.fleet_rolling_upgrade`

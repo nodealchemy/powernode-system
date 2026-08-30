@@ -2,18 +2,20 @@
 
 # K3s full-lifecycle smoke — Phase 6: Rolling module upgrade.
 #
-# Validates the rolling_module_upgrade skill executor — the canary +
-# batch upgrade plan that Fleet Autonomy / CVE Responder dispatch when
-# a NodeModuleVersion promotes to live. At db tier the executor returns
-# a plan (no side effects); at site+ tier the autonomy reconciler steps
-# through batches with circuit-breaker gating.
+# Validates the rolling_module_upgrade skill executor's plan computation.
+#
+# IMP-e8dc40813adb — the executor returns a plan and nothing executes it, at
+# EVERY tier. There is no autonomy reconciler stepping through batches and no
+# circuit-breaker gating anywhere in the platform for module upgrades; the
+# "site+ tier executes" note this header used to carry described a runtime that
+# was never built. The plan structure asserted below is the whole contract.
 #
 # Tier semantics:
 #   db (default): synthesize NodeModuleVersion + invoke executor + assert
 #                 plan structure (total_instances, batch_count, batches
 #                 with canary first). No actual upgrade.
-#   site+:        full execution would require Fleet Autonomy + ApprovalRequest
-#                 chain; documented in runbook §Phase 6.
+#   site+:        identical — there is no execution path to exercise. The
+#                 ApprovalRequest gate is real, but nothing acts on an approval.
 #
 # Asserts:
 #   - RollingModuleUpgradeExecutor descriptor registered with the right slug
