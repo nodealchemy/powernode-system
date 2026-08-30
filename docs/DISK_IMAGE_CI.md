@@ -263,7 +263,6 @@ The latest publication is auto-promoted to `current` for its NodePlatform when i
 
 ```javascript
 platform.system_set_default_disk_image_publication({
-  node_platform_id: "<id>",
   publication_id: "<publication-id>"   // must currently be in status "published"
 })
 ```

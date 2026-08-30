@@ -172,7 +172,6 @@ platform.system_list_disk_image_publications({ node_platform_id: "<platform-id>"
 
 ```javascript
 platform.system_set_default_disk_image_publication({
-  node_platform_id: "<platform-id>",
   publication_id: "<pub-id>"
 })
 ```
@@ -185,7 +184,6 @@ prior known-good publication using the same action — pass the previous
 
 ```javascript
 platform.system_set_default_disk_image_publication({
-  node_platform_id: "<platform-id>",
   publication_id: "<previous-pub-id>"
 })
 ```

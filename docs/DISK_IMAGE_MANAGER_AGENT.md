@@ -182,7 +182,6 @@ explicit set-default swap.
 3. Swap the default back:
    ```javascript
    platform.system_set_default_disk_image_publication({
-     node_platform_id: "<id>",
      publication_id: "<previous-pub-id>"
    })
    ```

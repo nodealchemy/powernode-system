@@ -295,7 +295,6 @@ The action accepts only `retention_count` — there is no `retention_days` param
 
 ```javascript
 platform.system_set_default_disk_image_publication({
-  node_platform_id: "<your-platform-id>",
   publication_id: "<new-publication-id>"
 })
 ```

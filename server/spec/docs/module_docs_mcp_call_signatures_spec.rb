@@ -57,6 +57,13 @@ module ModuleDocsMcpCallSignatures
     "docs/runbooks/vault-credential-restoration.md",
     "docs/tutorials/02-first-module.md",
     "docs/tutorials/06-rolling-upgrade.md",
+    # BATCH 4 — system_set_default_disk_image_publication declares only
+    # publication_id; five sites also passed node_platform_id, which the
+    # executor never reads (it derives the platform from the publication,
+    # system_fleet_tool.rb:5446) and which nothing rejects. disk-image-ci.md
+    # keeps one KNOWN_BROKEN recent_events call, below.
+    "docs/DISK_IMAGE_MANAGER_AGENT.md",
+    "docs/runbooks/disk-image-ci.md",
     # BATCH 3 — no doc edit: its only failure was a `// ...same inputs...`
     # elision, which the required-parameter check now correctly exempts. It is
     # here so the exemption itself has live coverage in this spec.
@@ -81,6 +88,11 @@ module ModuleDocsMcpCallSignatures
     # emits the module.upgrade.* events this step tells an operator to poll for
     # (RollingModuleUpgradeExecutor is plan-only and has no emitter).
     ["docs/tutorials/06-rolling-upgrade.md", "recent_events"] => %w[kind_prefix],
+    # Same finding, second call site (IMP-84c318bf31f9 batch 4): the
+    # troubleshooting table tells an operator to poll
+    # system.disk_image_publish_failed through a `kind_prefix` recent_events
+    # does not declare.
+    ["docs/runbooks/disk-image-ci.md", "recent_events"] => %w[kind_prefix],
     # 01a05174-e4c3-71c2-b89d-111ef3328576 — system_drift_report is per-instance
     # only. system_platform_maintenance({ op: "drift_check" }) is template-scoped
     # but its detector is a hardcoded `return false` stub, so there is no working
