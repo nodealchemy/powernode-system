@@ -16,6 +16,28 @@ RSpec.describe System::ProvisioningService do
     allow(System::Providers::Registry).to receive(:for_node).and_return(adapter)
   end
 
+  # M1 Self-Serve Hardening — when the business extension is loaded
+  # (POWERNODE_INCLUDE_PRIVATE_EXTENSIONS=1) ProvisioningService consults
+  # Billing::ProvisioningQuotaGuard early in #provision_instance: after
+  # validate_node! and the INV-1 self-management fence, but before region
+  # lookup, the capability gate and the RCP INV-2/INV-6 checks. A bare
+  # `create(:account)` carries no Billing subscription, so the guard denies
+  # with "no_subscription" and every example whose subject sits BELOW that
+  # point (47 of the 68 here — the INV-1 raise and the #terminate_instance
+  # examples are unaffected) asserted against the quota guard instead of its
+  # own subject. Allowing the guard here is what lets those examples reach
+  # their subject in the extension-loaded configuration —
+  # it is NOT a way of pinning the file to the flagless one. Same idiom as
+  # server/spec/services/ai/tools/provisioning_tool_spec.rb and
+  # extensions/system/server/spec/services/ai/tools/system_fleet_tool_provision_contract_spec.rb.
+  # The guard's own precedence is covered explicitly in the
+  # "billing quota guard precedence" block at the bottom of this file.
+  before do
+    if defined?(::Billing::ProvisioningQuotaGuard)
+      allow(::Billing::ProvisioningQuotaGuard).to receive(:allow?).and_return([ true, nil ])
+    end
+  end
+
   def provision(operation_id: nil, options: {})
     described_class.provision_instance(
       node: node,
@@ -940,6 +962,13 @@ RSpec.describe System::ProvisioningService do
 
       expect(result.success?).to be(false)
       expect(result.error).to match(/NFS/)
+      # Assert the INV-2 violation PAYLOAD, not only the message. The message
+      # alone does not distinguish this violation from any other error string
+      # that happens to mention NFS, and a violation_for that produced the
+      # right prose under the wrong invariant label would still pass a regex.
+      expect(result.data[:invariant]).to eq("INV-2")
+      expect(result.data[:node_id]).to eq(member_node.id)
+      expect(result.data[:boot_mode]).to eq("uefi_disk")
       expect(System::NodeInstance.where(node: member_node)).to be_empty
     end
 
@@ -955,6 +984,9 @@ RSpec.describe System::ProvisioningService do
       )
 
       expect(result.success?).to be(true)
+      # A bare success? assertion would also hold for any early ok-return; pin
+      # that the provision actually ran through to instance creation.
+      expect(System::NodeInstance.where(node: member_node).count).to eq(1)
     end
 
     it "rejects when the resolved storage cannot be verified as local (fails closed under strict mode)" do
@@ -970,6 +1002,10 @@ RSpec.describe System::ProvisioningService do
 
       expect(result.success?).to be(false)
       expect(result.error).to match(/could not verify/)
+      expect(result.data[:invariant]).to eq("INV-6")
+      expect(result.data[:storage_name]).to eq("dsm-data")
+      expect(result.data[:verified]).to be(false)
+      expect(System::NodeInstance.where(node: node)).to be_empty
     end
 
     it "allows provisioning once storage is confirmed local via a live list_volume_types answer" do
@@ -982,6 +1018,58 @@ RSpec.describe System::ProvisioningService do
       result = provision(options: { rcp_member_provisioning: true })
 
       expect(result.success?).to be(true)
+      expect(System::NodeInstance.where(node: node).count).to eq(1)
+    end
+  end
+
+  # The counterpart to the top-of-file `allow?` stub: the stub keeps every
+  # other example on its own subject, so the quota guard's own precedence
+  # needs coverage of its own rather than being silently stubbed away.
+  #
+  # This block only has a subject when the business extension is loaded
+  # (POWERNODE_INCLUDE_PRIVATE_EXTENSIONS=1 / BUNDLE_GEMFILE=Gemfile.private).
+  # In the core-mode / public-clone configuration there is no guard to
+  # exercise, so it reports PENDING with that reason rather than passing
+  # vacuously.
+  describe "billing quota guard precedence (business extension)" do
+    # default_storage is load-bearing: rcp_member_storage_violation returns
+    # early on a blank storage_name, so with an empty connection config the
+    # `not_to receive(:network_backed_storage?)` expectation below could not
+    # fail even if the guard stopped running first.
+    let(:proxmox_connection) do
+      instance_double("System::ProviderConnection", config: { "default_storage" => "dsm-data" }, provider: nil)
+    end
+    let(:proxmox_adapter) do
+      instance_double("System::Providers::ProxmoxProvider",
+        provider_type: "proxmox", supports?: true, connection: proxmox_connection)
+    end
+
+    before do
+      unless defined?(::Billing::ProvisioningQuotaGuard)
+        skip "Billing::ProvisioningQuotaGuard is not loaded — run with "              "POWERNODE_INCLUDE_PRIVATE_EXTENSIONS=1 to exercise this block"
+      end
+      allow(::Billing::ProvisioningQuotaGuard).to receive(:allow?)
+        .with(account: node.account).and_return([ false, "no_subscription" ])
+    end
+
+    it "denies with the guard's reason and an upgrade payload, creating no instance row" do
+      result = nil
+      expect { result = provision }.not_to change(System::NodeInstance, :count)
+
+      expect(result.success?).to be(false)
+      expect(result.error).to eq("no_subscription")
+      expect(result.data).to eq(requires_upgrade: true, reason: "no_subscription")
+    end
+
+    it "runs BEFORE the RCP INV-2/INV-6 checks, so a denial never reaches them" do
+      allow(System::Providers::Registry).to receive(:for_node).and_return(proxmox_adapter)
+      expect(System::Autonomy::BootPathInvariantCheck).not_to receive(:violation_for)
+      expect(System::Autonomy::StorageLocalityCheck).not_to receive(:network_backed_storage?)
+
+      result = provision(options: { rcp_member_provisioning: true })
+
+      expect(result.success?).to be(false)
+      expect(result.error).to eq("no_subscription")
     end
   end
 end
