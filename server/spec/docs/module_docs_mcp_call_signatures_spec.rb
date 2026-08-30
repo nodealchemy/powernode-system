@@ -33,19 +33,28 @@ require "rails_helper"
 # constant that another spec can clobber (an order-dependent "already
 # initialized constant" flake).
 module ModuleDocsMcpCallSignatures
-  # The two files the finding named, plus the sibling that documents the same
-  # two verbs (06-rolling-upgrade.md already used module_id — it is here so a
-  # future edit cannot regress it back to the name form).
+  # Every doc whose `platform.<verb>({ ... })` examples are known to match the
+  # verbs' declared parameters. Widening this list is the acceptance signal for
+  # IMP-84c318bf31f9: a file enters only once every call site in it passes.
   #
-  # Scope note: this is NOT the full extent of the defect. Pointing the same
-  # parser at every doc under extensions/system/docs reports 204 failing
-  # examples across 31 files (measured 2026-08-30) — the same renames plus
-  # system_provision_instance examples missing both required provider params.
-  # That sweep is filed as its own finding rather than swept into this commit;
-  # mass-editing 31 operator docs unreviewed is the bulk-change hazard the
-  # repo's own guardrails call out. Widen this list as those are fixed.
+  # Scope note (IMP-84c318bf31f9, measured 2026-08-30): 31 docs under
+  # extensions/system/docs contain a platform call. Pointing this same parser at
+  # all 31 reports 207 failing examples in 24 of them; 3 of those failures are
+  # the two KNOWN_BROKEN sites below, so 204 across 23 files remain to drain.
+  # It is drained in reviewable batches rather than one mass edit — 31 operator
+  # docs changed in a single unreviewed commit is the bulk-change hazard the
+  # repo's own guardrails call out. Add files here as batches land.
+  #
+  # BATCH 0 — files that already passed the tree-wide sweep with no edit. They
+  # are listed to stop a future edit regressing them, not because anything was
+  # fixed in them.
   COVERED_DOCS = [
+    "docs/CLAUDE_TMUX_MODULE.md",
+    "docs/SDWAN_ARCHITECTURE.md",
+    "docs/runbooks/acme-issuance.md",
     "docs/runbooks/module-authoring.md",
+    "docs/runbooks/template-authoring.md",
+    "docs/runbooks/vault-credential-restoration.md",
     "docs/tutorials/02-first-module.md",
     "docs/tutorials/06-rolling-upgrade.md"
   ].freeze
