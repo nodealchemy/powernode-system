@@ -5029,15 +5029,15 @@ module Ai
 
       def list_instance_pools(_params)
         pools = ::System::InstancePool.for_account(@account).order(:name)
-        success_result(data: {
+        success_result(
           pools: pools.map(&:to_summary),
           count: pools.count
-        })
+        )
       end
 
       def get_instance_pool(params)
         pool = ::System::InstancePool.for_account(@account).find(params[:id])
-        success_result(data: {
+        success_result(
           pool: pool.to_summary.merge(
             members: pool.node_instances.order(:pool_state, :pool_warming_started_at).limit(50).map do |m|
               {
@@ -5050,7 +5050,7 @@ module Ai
               }
             end
           )
-        })
+        )
       end
 
       def create_instance_pool(params)
@@ -5067,7 +5067,7 @@ module Ai
           provider_instance_type_id: params[:provider_instance_type_id],
           preferred_regions: Array(params[:preferred_regions]).compact_blank
         )
-        success_result(data: { pool: pool.to_summary })
+        success_result(pool: pool.to_summary)
       rescue ActiveRecord::RecordInvalid => e
         error_result("instance pool validation failed: #{e.message}")
       end
@@ -5085,7 +5085,7 @@ module Ai
         return error_result("no mutable fields supplied") if attrs.empty?
 
         pool.update!(attrs)
-        success_result(data: { pool: pool.reload.to_summary })
+        success_result(pool: pool.reload.to_summary)
       rescue ActiveRecord::RecordInvalid => e
         error_result("instance pool validation failed: #{e.message}")
       end
@@ -5093,7 +5093,7 @@ module Ai
       def drain_instance_pool(params)
         pool = ::System::InstancePool.for_account(@account).find(params[:id])
         result = ::System::InstancePoolService.drain!(pool: pool)
-        success_result(data: { pool: pool.reload.to_summary, drain_result: result })
+        success_result(pool: pool.reload.to_summary, drain_result: result)
       end
 
       def acquire_pooled_instance(params)
@@ -5103,7 +5103,7 @@ module Ai
           pool_id: params[:pool_id],
           lifecycle_class: params[:lifecycle_class]
         )
-        success_result(data: {
+        success_result(
           instance: {
             id: instance.id,
             name: instance.name,
@@ -5114,7 +5114,7 @@ module Ai
             private_ip_address: instance.private_ip_address,
             public_ip_address: instance.public_ip_address
           }
-        })
+        )
       rescue ::System::InstancePoolService::NoReadyMembersError => e
         error_result("no ready pool members: #{e.message}")
       rescue ::System::InstancePoolService::PoolError => e
@@ -5134,7 +5134,7 @@ module Ai
       def replenish_instance_pool(params)
         pool = ::System::InstancePool.for_account(@account).find(params[:id])
         result = ::System::InstancePoolService.replenish!(pool: pool)
-        success_result(data: { pool: pool.reload.to_summary, replenish_result: result })
+        success_result(pool: pool.reload.to_summary, replenish_result: result)
       rescue ::System::InstancePoolService::PoolError => e
         error_result(e.message)
       end

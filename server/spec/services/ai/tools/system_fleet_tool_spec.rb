@@ -5411,4 +5411,145 @@ end
       expect(outputs).not_to have_key(:spawn_payload)
     end
   end
+
+  # IMP-0b6d91ec76a0 — the seven instance-pool actions called
+  # Ai::Tools::BaseTool#success_result(data: { ... }) against a POSITIONAL
+  # parameter (base_tool.rb: `def success_result(data)`), so the keyword
+  # collapsed into a hash literal and the emitted payload was
+  # `{ success: true, data: { data: { ... } } }` — one level deeper than every
+  # other action on this tool — including the three pool siblings that were
+  # already flat: system_recycle_pool, system_return_pooled_instance and
+  # system_delete_instance_pool. Ten pool handlers, seven of them wrong.
+  #
+  # Cosmetic for six of them. NOT cosmetic for system_acquire_pooled_instance,
+  # whose description promises "Returns the NodeInstance immediately": the
+  # instance landed at data.data.instance, so a caller resolving it the way
+  # every sibling verb works read nil and concluded the claim produced nothing
+  # — while the pool member was really CLAIMED. Silent pool-capacity leak, and
+  # a retrying agent claims a second member.
+  #
+  # ORACLE: the payload's top-level key SET, matched exactly. An existence
+  # check (`have_key(:instance)`, or a dig) is satisfied by data.data too,
+  # which is exactly how this survived. Every other assertion in this block
+  # is a tripwire on the fixture, not the defect oracle — the key-set match
+  # is what fails against the double-nested shape. For acquire the payload is additionally pinned
+  # AGAINST THE ROW — the defect is the divergence between what the response
+  # reports and what the pool member's state actually is, and an assertion on
+  # either side alone cannot see it.
+  describe "instance-pool payload nesting (IMP-0b6d91ec76a0)" do
+    let(:provider_region) { create(:system_provider_region) }
+    let(:provider_instance_type) { create(:system_provider_instance_type) }
+
+    # target_size 1 with exactly one ready member => deficit 0, so replenish!
+    # returns before provision_warming_member! and no provider is touched.
+    let(:pool) do
+      ::System::InstancePool.create!(
+        account: account, node_template: template,
+        name: "nesting-pool", target_size: 1, min_size: 0, max_size: 5,
+        lifecycle_class: "ephemeral", status: "active",
+        provider_region: provider_region,
+        provider_instance_type: provider_instance_type
+      )
+    end
+
+    let(:pool_node) do
+      create(:system_node, account: account, node_template: template,
+                           lifecycle_class: "ephemeral", name: "nesting-mem")
+    end
+
+    let!(:ready_member) do
+      create(:system_node_instance, :running, node: pool_node,
+             instance_pool_id: pool.id,
+             pool_state: "ready",
+             pool_warming_started_at: 5.minutes.ago,
+             provider_region: provider_region,
+             provider_instance_type: provider_instance_type)
+    end
+
+    # Drain terminates every ready member through the cloud provider, so it
+    # gets its own empty pool: the wind-down loop has nothing to iterate and
+    # the assertion stays about the payload shape.
+    let(:empty_pool) do
+      ::System::InstancePool.create!(
+        account: account, node_template: template,
+        name: "nesting-empty", target_size: 0, min_size: 0, max_size: 2,
+        lifecycle_class: "ephemeral", status: "active",
+        provider_region: provider_region,
+        provider_instance_type: provider_instance_type
+      )
+    end
+
+    it "returns the acquired NodeInstance at the documented data.instance path" do
+      r = call("system_acquire_pooled_instance", pool_id: pool.id)
+
+      expect(r[:success]).to be true
+      # Equality, not existence: `data` carries the payload itself.
+      expect(r[:data].keys).to contain_exactly(:instance)
+      expect(r[:data][:instance][:id]).to eq(ready_member.id)
+      # ...and it names a real NodeInstance row, not just a matching id.
+      expect(::System::NodeInstance.find(r[:data][:instance][:id])).to eq(ready_member)
+    end
+
+    it "reports a pool_state that matches the claimed member's actual row" do
+      r = call("system_acquire_pooled_instance", pool_id: pool.id)
+
+      # The member IS claimed either way — that is the defect. The response
+      # has to agree with the row at the path a caller reads.
+      expect(ready_member.reload.pool_state).to eq("claimed")
+      expect(r.dig(:data, :instance, :pool_state)).to eq("claimed")
+      expect(pool.reload.claimed_count).to eq(1)
+      expect(pool.ready_count).to eq(0)
+    end
+
+    it "emits system_list_instance_pools one level deep" do
+      r = call("system_list_instance_pools")
+      expect(r[:success]).to be true
+      expect(r[:data].keys).to contain_exactly(:pools, :count)
+      expect(r[:data][:pools].map { |p| p[:id] }).to include(pool.id)
+    end
+
+    it "emits system_get_instance_pool one level deep" do
+      r = call("system_get_instance_pool", id: pool.id)
+      expect(r[:success]).to be true
+      expect(r[:data].keys).to contain_exactly(:pool)
+      expect(r[:data][:pool][:id]).to eq(pool.id)
+    end
+
+    it "emits system_create_instance_pool one level deep" do
+      r = call("system_create_instance_pool",
+               name: "nesting-created", template_id: template.id, target_size: 1)
+      expect(r[:success]).to be true
+      expect(r[:data].keys).to contain_exactly(:pool)
+      expect(::System::InstancePool.find(r[:data][:pool][:id]).name).to eq("nesting-created")
+    end
+
+    it "emits system_update_instance_pool one level deep" do
+      r = call("system_update_instance_pool", id: pool.id, target_size: 3)
+      expect(r[:success]).to be true
+      expect(r[:data].keys).to contain_exactly(:pool)
+      expect(r[:data][:pool][:target_size]).to eq(3)
+    end
+
+    it "emits system_drain_instance_pool one level deep" do
+      r = call("system_drain_instance_pool", id: empty_pool.id)
+      expect(r[:success]).to be true
+      expect(r[:data].keys).to contain_exactly(:pool, :drain_result)
+      expect(r[:data][:pool][:status]).to eq("draining")
+    end
+
+    it "emits system_replenish_instance_pool one level deep" do
+      r = call("system_replenish_instance_pool", id: pool.id)
+      expect(r[:success]).to be true
+      expect(r[:data].keys).to contain_exactly(:pool, :replenish_result)
+      expect(r[:data][:replenish_result][:provisioned]).to eq(0)
+    end
+
+    # One of the three verbs that were already correct — pinned so a future
+    # "make them consistent" edit cannot regress it in the other direction.
+    it "leaves the already-correct system_recycle_pool sibling one level deep" do
+      r = call("system_recycle_pool", id: pool.id)
+      expect(r[:success]).to be true
+      expect(r[:data].keys).to contain_exactly(:pool, :recycle_result)
+    end
+  end
 end
