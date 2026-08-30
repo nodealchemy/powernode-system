@@ -627,8 +627,11 @@ RSpec.describe System::NodeInstance, type: :model do
   end
 
   # Campaign 019f6084 §2.4.3 — TemplateClosureDriftSensor's pivot-vs-cloud_init
-  # remediation split depends on this predicate reading the SAME field
-  # ProvisioningService threads boot_mode from (node.node_template.config).
+  # remediation split depends on this predicate reading the boot mode the
+  # instance was ACTUALLY provisioned with. IMP-831a81e02d25: that is the
+  # value ProvisioningService resolves and now stamps into the instance's own
+  # config at spawn; the template lookup survives only as a fallback for rows
+  # provisioned before that stamp existed.
   describe '#pivot_boot?' do
     let(:instance) { create(:system_node_instance, node: node) }
 
@@ -654,6 +657,36 @@ RSpec.describe System::NodeInstance, type: :model do
     it 'is false when the node has no template-resolvable config (defensive)' do
       allow(instance).to receive(:node).and_return(nil)
       expect(instance.pivot_boot?).to be false
+    end
+
+    # IMP-831a81e02d25 ORACLE. The template path alone is green against the
+    # defect: what the predicate got WRONG is an instance spawned with an
+    # explicit boot_mode option on a template that declares none. Only a
+    # per-instance record can answer that, so this example is unpassable by
+    # any template-config implementation.
+    it "is true from the instance's own recorded boot_mode when the template declares none" do
+      expect(node.node_template.config['boot_mode']).to be_nil
+      instance.merge_config!('boot_mode' => 'direct_kernel')
+
+      expect(instance.pivot_boot?).to be true
+    end
+
+    # The other direction of the same divergence, and the mutant-killer for a
+    # "consult both, take whichever is pivot" implementation: an instance
+    # spawned cloud_init on a direct_kernel template did NOT pivot-boot.
+    it "prefers the instance's own recorded boot_mode over the template's" do
+      node.node_template.update!(config: { 'boot_mode' => 'direct_kernel' })
+      instance.merge_config!('boot_mode' => 'cloud_init')
+
+      expect(instance.pivot_boot?).to be false
+    end
+
+    # Pre-existing rows carry no stamp and MUST keep the old answer.
+    it 'falls back to the template when the instance recorded no boot_mode' do
+      node.node_template.update!(config: { 'boot_mode' => 'uefi_disk' })
+      expect(instance.config).not_to have_key('boot_mode')
+
+      expect(instance.pivot_boot?).to be true
     end
   end
 

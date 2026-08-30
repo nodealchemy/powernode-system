@@ -287,6 +287,61 @@ RSpec.describe System::ProvisioningService do
       expect(adapter).to have_received(:create_instance)
         .with(hash_including(boot_mode: "uefi_disk"))
     end
+
+    # IMP-831a81e02d25 — the resolved boot mode was computed here and thrown
+    # away, leaving NodeInstance#pivot_boot? to re-infer it from the template
+    # and get the options-override case wrong. The producer now declares it.
+    #
+    # The second expectation is the load-bearing one: it reads the value the
+    # ADAPTER was handed out of the same call, so the stored value cannot
+    # drift from the provisioned one. The first pins it to a concrete string
+    # so the pair can't both be nil and pass vacuously.
+    it "records the resolved boot_mode on the instance when options override a bare template" do
+      expect(node.node_template.config["boot_mode"]).to be_nil
+      captured = nil
+      allow(adapter).to receive(:create_instance) do |params|
+        captured = params
+        { success: true, cloud_instance_id: "i-boot-4", status: "running" }
+      end
+
+      result = provision(operation_id: "op-boot-4", options: { boot_mode: "direct_kernel" })
+
+      instance = result.data[:instance].reload
+      expect(instance.config["boot_mode"]).to eq("direct_kernel")
+      expect(instance.config["boot_mode"]).to eq(captured[:boot_mode])
+      expect(instance.pivot_boot?).to be true
+      # Tripwire, not a defect detector: the stamp goes through
+      # System::ConfigDocument#merge_config!, which merges in Postgres and so
+      # CANNOT clobber a sibling key. This fails only if someone reverts the
+      # write to a whole-document update! — which spec/lint/
+      # node_instance_config_write_seam_spec.rb also catches, from source.
+      expect(instance.config["operation_id"]).to eq("op-boot-4")
+    end
+
+    it "records the template's boot_mode on the instance when no option overrides it" do
+      node.node_template.update!(config: { "boot_mode" => "uefi_disk" })
+      allow(adapter).to receive(:create_instance)
+        .and_return(success: true, cloud_instance_id: "i-boot-5", status: "running")
+
+      instance = provision.data[:instance].reload
+
+      expect(instance.config["boot_mode"]).to eq("uefi_disk")
+      expect(instance.pivot_boot?).to be true
+    end
+
+    # Nothing resolves a boot mode, so the adapter applies its OWN default and
+    # never reports which — see the comment on #pivot_boot?. Recording a guess
+    # here would be worse than recording nothing: the row would assert a boot
+    # mode no one established.
+    it "records no boot_mode when neither options nor template resolve one" do
+      expect(node.node_template.config["boot_mode"]).to be_nil
+      allow(adapter).to receive(:create_instance)
+        .and_return(success: true, cloud_instance_id: "i-boot-6", status: "running")
+
+      instance = provision.data[:instance].reload
+
+      expect(instance.config).not_to have_key("boot_mode")
+    end
   end
 
   # RCP campaign 019f9250, P1-a prerequisite fix — build_provider_params previously

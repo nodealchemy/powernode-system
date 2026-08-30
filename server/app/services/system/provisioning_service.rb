@@ -129,6 +129,30 @@ module System
         options: options
       )
 
+      # IMP-831a81e02d25 — declare the resolved boot mode on the row instead of
+      # leaving NodeInstance#pivot_boot? to re-derive it from the template, which
+      # gets the override case backwards (an explicit options[:boot_mode] on a
+      # template declaring none read back as cloud_init). The value is read
+      # straight off the params hash that is about to be handed to the adapter,
+      # so what the row records cannot drift from what was provisioned.
+      #
+      # Stamped BEFORE the provider call: a failed create can still leave a live
+      # guest behind, and that row should say what it was asked to boot as.
+      #
+      # When nothing resolved a boot mode the key is simply absent and we record
+      # nothing — the adapter then applies its own default and does not report
+      # which back (create_instance's response carries no boot_mode key), so a
+      # stamp here would be a guess asserted as fact. #pivot_boot? falls back to
+      # the template for such rows, exactly as before.
+      #
+      # #merge_config! (System::ConfigDocument), NOT update!(config: merged):
+      # `config` is a shared jsonb document the agent's telemetry lanes write
+      # to every ~30s, and a read-modify-write here would hold a stale copy of
+      # it across the provider round trip below.
+      if provider_params[:boot_mode].present?
+        instance.merge_config!("boot_mode" => provider_params[:boot_mode].to_s)
+      end
+
       cloud_result = provider_adapter.create_instance(provider_params)
 
       # F1 (IMP 019fe4c4-b373): success without a provider identity is not

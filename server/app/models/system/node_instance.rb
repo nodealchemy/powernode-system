@@ -843,22 +843,59 @@ module System
     # updates `running_module_digests` but the mounted union is never
     # remounted without a reboot (campaign 019f6084 §2.4.3 — the
     # template-closure drift sensor's remediation split on this predicate).
-    # "cloud_init" (or unset — the provider default) boots a full guest OS
-    # and composes the union under a chrootable RootDirectory, which the
-    # on-node reconcile loop CAN remount live.
+    # "cloud_init" boots a full guest OS and composes the union under a
+    # chrootable RootDirectory, which the on-node reconcile loop CAN
+    # remount live. An unset boot_mode is not a third value — it means no
+    # one resolved it; see #pivot_boot? for why that is not benign.
     PIVOT_BOOT_MODES = %w[direct_kernel uefi_disk].freeze
 
-    # True when this instance was provisioned with a pivot boot_mode. There
-    # is no dedicated column for it — boot_mode is threaded at spawn time
-    # from the node's template config (see
-    # ProvisioningService#build_provider_params), so this reads it from the
-    # same place. Unknown/unset defaults to false (cloud_init) — the safer
-    # assumption for remediation planning is "can live-apply" rather than
-    # silently flagging a reboot for a boot mode this predicate doesn't
-    # recognize.
+    # True when this instance was provisioned with a pivot boot_mode.
+    #
+    # The instance's OWN config["boot_mode"] is authoritative: ProvisioningService
+    # resolves the effective boot mode at spawn (an explicit options[:boot_mode]
+    # first, else the template's config["boot_mode"]) and stamps the value it
+    # hands the provider onto this row. Re-deriving it from the template — as
+    # this did before IMP-831a81e02d25 — gets the override case backwards: an
+    # instance spawned direct_kernel by a spawn option on a template declaring
+    # no boot_mode read back false.
+    #
+    # The template lookup is the FALLBACK, and it is not vestigial: rows
+    # provisioned before the stamp existed carry no key, and so do rows that
+    # never went through ProvisioningService at all (the bare-metal claim seed,
+    # a direct POST to NodeInstancesController#create). All of those keep
+    # exactly the answer they had. The stamp is also not durable against a
+    # caller-supplied whole `config` document — NodeInstancesController#update
+    # permits `config: {}` and assigns it wholesale, so a PUT omitting the key
+    # drops the stamp back to the fallback. That is the pre-existing
+    # shared-document hazard System::ConfigDocument describes, not something
+    # this predicate can fix.
+    #
+    # Unset still resolves to false. That is NOT the "safe" default this comment
+    # used to call it — it is UNRESOLVED, and its error direction is the unsafe
+    # one. When neither the options nor the template declare a boot mode, each
+    # adapter applies its own (cloud_init for ProxmoxProvider, direct_kernel for
+    # LocalQemuProvider) and does not report which back to the spawn path — its
+    # create_instance response carries no boot_mode key at all — so there is
+    # nothing to stamp. On LocalQemu that leaves a FALSE NEGATIVE, and the error
+    # direction is the unsafe one: Fleet::DecisionEngine#apply_template_closure_drift
+    # takes the NON-pivot arm, which dispatches a `sync_modules` reconcile task
+    # to the agent and then merges `requires_reprovision: false` over the
+    # result. For a union that is boot-time-fixed that reconcile cannot take
+    # effect, and nothing in the returned payload says so — whereas the pivot
+    # arm returns requires_reprovision: true. (The non-pivot arm can still
+    # report applied: false for its own reasons — a disruption budget, a
+    # missing target — so the failure is "no reprovision flag", not "always
+    # claims success".) Making the adapter defaults observable is out of scope
+    # here; this note exists so the default is not mistaken for a decision.
     def pivot_boot?
-      tmpl_config = node&.node_template&.config
-      boot_mode = tmpl_config.is_a?(Hash) ? (tmpl_config["boot_mode"] || tmpl_config[:boot_mode]) : nil
+      own_config = config
+      boot_mode = own_config.is_a?(Hash) ? (own_config["boot_mode"] || own_config[:boot_mode]) : nil
+
+      if boot_mode.blank?
+        tmpl_config = node&.node_template&.config
+        boot_mode = tmpl_config.is_a?(Hash) ? (tmpl_config["boot_mode"] || tmpl_config[:boot_mode]) : nil
+      end
+
       PIVOT_BOOT_MODES.include?(boot_mode.to_s)
     end
 
