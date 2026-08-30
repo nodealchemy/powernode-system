@@ -205,10 +205,12 @@ platform.kubernetes_decommission_cluster({ cluster_id: "cluster-staging-id" })
 // → cascade-deletes all member KubernetesNode rows; underlying NodeInstances are NOT terminated
 ```
 
-For per-cluster module rolling upgrades, scope by template. The
-`system-rolling-module-upgrade` skill is driven by the autonomy reconciler
-(Fleet Autonomy / CVE Responder); operators trigger it by opening a rolling
-upgrade from `/app/system/operations` rather than a one-shot MCP call. Its
+For per-cluster module rolling upgrades, scope by template. **The
+`system-rolling-module-upgrade` skill PLANS ONLY — no autonomy reconciler
+drives it, and nothing walks the batches it returns** (see
+[`../tutorials/06-rolling-upgrade.md`](../tutorials/06-rolling-upgrade.md) for
+the manual procedure that works). Fleet Autonomy / CVE Responder bind the
+skill, so an approved action produces the plan below and stops there. Its
 input contract, scoped to one cluster's server template:
 
 ```jsonc

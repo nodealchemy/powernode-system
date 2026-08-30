@@ -103,6 +103,12 @@ Wraps `System::DockerDaemonProvisionerService.provision!` for skill-based dispat
 
 Reconciles a NodeInstance's running modules against its assigned modules. Returns planned attach/detach/update actions with disruption %. Sets `requires_approval=true` when disruption exceeds threshold.
 
+**The executor applies nothing, and nothing applies its plan.** `resolved` is `true` only when there was no drift to begin with; whenever a plan is returned it is `false`, whatever `requires_approval` says.
+
+Three DecisionEngine bindings invoke this executor. `system.module_drift` and `system.config_drift` go on to dispatch a `System::Task` (`sync_modules` / `apply_config`) — but only when `requires_approval` is false, which `#dispatch_reconcile_task` re-reads as its auto-apply budget. `system.instance_silent` reboots the instance and ignores the result entirely.
+
+The dispatched task is **not** an instruction to perform `planned_actions`. It copies them into its options, where nothing reads them: the on-node agent's sync handler takes only `force_resync` and `module_id` and calls `Reconciler.RunOnce`, re-deriving the desired set on the node. The same drift converges, by the generic reconcile the 60s tick already runs. Treat `planned_actions` as an operator-facing preview (it is what the ApprovalRequest displays), and poll the task — not this return — to learn whether the fleet converged.
+
 ### `module_compose` — Template draft from workload description
 
 **Source:** `module_compose_executor.rb`
@@ -375,7 +381,7 @@ Every executor returns `{ success: true, data: {...} }` on the happy path or `{ 
     "detach": [],
     "update": ["nginx (1.24.0 → 1.26.0)"]
   },
-  "note": "auto-apply pending M7 reconciler",
+  "note": "plan only, nothing applied: within the auto-apply budget, so the fleet lane may dispatch a sync_modules task for these actions",
   "drift_report": { "/* full system_drift_report payload */": null }
 }
 
@@ -473,7 +479,7 @@ Hard-capped at 50 per call — larger fleets go through `rolling_module_upgrade`
 }
 ```
 
-The autonomy reconciler executes the plan batch-by-batch. Health checks between batches; trips circuit breaker after `max_consecutive_failures`.
+**NOT IMPLEMENTED — nothing executes this plan.** No autonomy reconciler walks the batches, there is no health check between them, and `max_consecutive_failures` / `health_timeout_sec` are echoed into the `circuit_breaker` hash above and read by nothing. `batch_pct` sizes groups in a document; it is not a blast-radius control, because the version an instance receives resolves from `NodeModule#current_version_id` — a per-**module** pointer, so moving it moves every instance carrying that module at once. See [`docs/tutorials/06-rolling-upgrade.md`](./tutorials/06-rolling-upgrade.md) for the manual procedure that does work.
 
 ### `runbook_generate`
 

@@ -107,6 +107,19 @@ RSpec.describe "rolling-upgrade docs vs. what RollingModuleUpgradeExecutor actua
       Dir.glob(File.join(ext_root, "server/{app,lib}/**/*.rb")).sort
     end
 
+    # IMP-b948ea7fa382 — the M7 sweep below runs over a WIDER tree than the
+    # two above it. Those two hunt for a runtime, which could only live in
+    # server/{app,lib}. A deferral comment is a claim, and a claim misleads
+    # wherever a reader meets it: the seeds are operator-facing by this
+    # file's own argument (see example_rolling_upgrade.rb below — "an operator
+    # running the seed reads its stdout as the authority"), and the worker
+    # jobs are where a reader would go looking for the tick that supposedly
+    # drives the reconciler. All three trees are clean today, so the wider
+    # glob costs nothing and closes the hole before someone fills it.
+    let(:shipped_sources) do
+      Dir.glob(File.join(ext_root, "{server/{app,lib,db/seeds},worker/app}/**/*.rb")).sort
+    end
+
     it "contains no batch advancer, circuit breaker, or continuation handler for module upgrades" do
       vocabulary = /circuit_breaker_tripped|rollback_completed_batches|continue_anyway|rolling_upgrade_continuation/
       offenders = ruby_sources.select { |f| File.read(f).match?(vocabulary) }
@@ -118,6 +131,59 @@ RSpec.describe "rolling-upgrade docs vs. what RollingModuleUpgradeExecutor actua
       offenders = ruby_sources.select { |f| File.read(f).include?("module.upgrade.") }
 
       expect(offenders).to be_empty
+    end
+
+    # IMP-b948ea7fa382 — the ghost, swept.
+    #
+    # "M7" was a milestone in the Golden Eclipse plan, and naming it as
+    # PROVENANCE is fine and stays legal here: "Reference: Golden Eclipse plan
+    # M7 — <thing>" appears on FleetAutonomyService, DecisionEngine, the
+    # reconcile controller and the channel, and each of those things exists.
+    # What is banned is the other use — DEFERRING behaviour to it. Two files
+    # did that, and each deferral hid a false success:
+    # RollingModuleUpgradeExecutor promised an advancer ("M7 reconciler
+    # advances batches one at a time"), and DriftRemediateExecutor returned
+    # `resolved: !requires_approval` under the note "auto-apply pending M7
+    # reconciler". ScaleProjectExecutor then repeated the first one verbatim
+    # while surfacing that same plan, which is why an absence check on ONE
+    # file was not enough.
+    #
+    # A comment deferring to unbuilt infrastructure reads to the next reader
+    # as a pending dependency owned by somebody else. There is no M7 owner.
+    it "defers no behaviour to an 'M7' that was never built" do
+      deferral = /
+        M7\ (?:reconciler|will|owns|milestone\ will|ApprovalRequest)  # names it as the actor
+        |
+        (?:pending|until|awaiting|waiting\ on|blocked\ on|deferred\ to|lives\ in)\ M7  # as the blocker
+        |
+        TODO\(M7                                     # the sanctioned milestone-TODO form
+      /x
+      offenders = shipped_sources.select { |f| File.read(f).match?(deferral) }
+
+      expect(offenders.map { |f| f.delete_prefix("#{ext_root}/") }).to be_empty
+    end
+  end
+
+  # IMP-b948ea7fa382 — the second caller. ScaleProjectExecutor surfaces this
+  # same plan as outputs.rolling_upgrade_plan, and its comment used to explain
+  # the plan-only shape as deliberate by naming the reconciler that would walk
+  # the batches. The M7 sweep above is ABSENCE-only, and this file's own header
+  # argues absence alone is vacuous — deleting the comment outright would
+  # satisfy it and leave the next reader with no warning at all. So pin the
+  # replacement here.
+  describe "ScaleProjectExecutor#run_vertical_resize (the second caller of the plan)" do
+    let(:scale) do
+      self.class.read(ext_root, "server/app/services/system/ai/skills/scale_project_executor.rb")
+    end
+
+    it "warns that nothing executes the plan it surfaces, rather than explaining it away" do
+      comment = scale[/# vertical_resize produces a plan only.*?def run_vertical_resize/m] ||
+                raise("could not locate the run_vertical_resize preamble in scale_project_executor.rb")
+
+      expect(comment).to match(/NOTHING EXECUTES IT/i)
+      expect(comment).to match(/no batch advancer|there is no batch advancer/i)
+      # And it must point at the procedure that does work, not just say no.
+      expect(comment).to include("06-rolling-upgrade.md")
     end
   end
 
@@ -231,6 +297,44 @@ RSpec.describe "rolling-upgrade docs vs. what RollingModuleUpgradeExecutor actua
                 raise("could not locate the rolling_module_upgrade section in SKILL_EXECUTORS.md")
 
       expect(section).to match(/NOT IMPLEMENTED/)
+    end
+
+    # IMP-b948ea7fa382 — the file has TWO rolling_module_upgrade sections: the
+    # reference entry at "### `rolling_module_upgrade` — Batched fleet upgrade"
+    # and a bare "### `rolling_module_upgrade`" in the JSON appendix. The
+    # example above scopes to the first, so the appendix kept the original
+    # claim in slightly different words ("The autonomy reconciler executes the
+    # plan batch-by-batch") — two lines under a JSON body already saying
+    # "status": "not_implemented" and "PLAN ONLY". A section-scoped guard
+    # inherits the coverage boundary of its heading regex.
+    it "corrects the appendix section too, not just the reference entry" do
+      appendix = doc[/^### `rolling_module_upgrade`\n.*?(?=^### )/m] ||
+                 raise("could not locate the rolling_module_upgrade JSON appendix in SKILL_EXECUTORS.md")
+
+      expect(appendix).not_to match(/The autonomy reconciler executes the plan batch-by-batch/)
+      expect(appendix).to match(/NOT IMPLEMENTED/)
+      expect(appendix).to match(/not a blast-radius control/i)
+    end
+  end
+
+  # IMP-b948ea7fa382 — two runbooks told an operator the same thing in wording
+  # no M7 regex could catch: that a reconciler drives the skill in prod. Both
+  # get the matched pair, since deleting the sentence would leave an operator
+  # planning an upgrade with no warning that it will not run.
+  describe "the runbooks that told an operator a reconciler drives the upgrade" do
+    it "docs/runbooks/multi-cluster-k3s.md says the skill plans only" do
+      doc = self.class.read(ext_root, "docs/runbooks/multi-cluster-k3s.md")
+
+      expect(doc).not_to match(/skill is driven by the autonomy reconciler/)
+      expect(doc).to match(/PLANS ONLY/)
+      expect(doc).to match(/nothing walks the batches/i)
+    end
+
+    it "docs/runbooks/k3s-smoke-full-lifecycle.md does not promise a prod reconciler tick" do
+      doc = self.class.read(ext_root, "docs/runbooks/k3s-smoke-full-lifecycle.md")
+
+      expect(doc).not_to match(/Fleet Autonomy's reconciler tick does that in prod/)
+      expect(doc).to match(/no reconciler tick advances\s*\n?these batches/i)
     end
   end
 

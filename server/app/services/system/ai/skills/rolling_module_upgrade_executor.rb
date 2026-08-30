@@ -10,10 +10,15 @@ module System
       # IMP-e8dc40813adb — NOTHING EXECUTES THE PLAN. There is no batch
       # advancer, no health check, and no circuit breaker anywhere in the
       # platform for module upgrades. The original header promised "dispatch"
-      # and deferred the walk to an "M7 reconciler"; M7 was never built, and
-      # the phrase survived only in this file's own comments and in the note
-      # this executor returns. Both are corrected here rather than left to
-      # imply a runtime a caller would wait on.
+      # and deferred the walk to a reconciler that milestone M7 was supposed
+      # to deliver; that milestone shipped FleetAutonomyService and its
+      # sensors, and no such reconciler. The promise survived only in this
+      # file's own comments and in the note this executor returns. Both are
+      # corrected here rather than left to imply a runtime a caller would wait
+      # on. IMP-b948ea7fa382 removed the last two restatements of it
+      # (ScaleProjectExecutor and DriftRemediateExecutor) and pinned their
+      # absence in spec/docs/rolling_upgrade_docs_accuracy_spec.rb, which is
+      # why this paragraph no longer quotes the phrase verbatim.
       #
       # Consequences a caller must know before trusting the plan:
       #   - batch_pct is NOT a blast-radius control. It sizes groups in a

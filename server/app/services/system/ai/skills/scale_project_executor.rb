@@ -506,11 +506,18 @@ module System
           }
         end
 
-        # vertical_resize produces a plan only — RollingModuleUpgradeExecutor
-        # is plan-returning by design (M7 reconciler advances batches one at
-        # a time through ApprovalRequest). We surface the plan in
-        # outputs.rolling_upgrade_plan and leave the side-effect outputs
-        # empty.
+        # vertical_resize produces a plan only, and NOTHING EXECUTES IT.
+        # RollingModuleUpgradeExecutor slices instances into batches and
+        # returns; there is no batch advancer, health check, or circuit
+        # breaker for module upgrades anywhere in the platform (pinned by
+        # spec/docs/rolling_upgrade_docs_accuracy_spec.rb). This comment used
+        # to explain the plan-only shape as deliberate, by naming a milestone
+        # reconciler that would walk the batches through ApprovalRequest —
+        # that reconciler was never built, and repeating the promise here made
+        # a second caller look supervised. We surface the plan in
+        # outputs.rolling_upgrade_plan and leave the side-effect outputs empty;
+        # an operator has to perform the upgrade themselves (see
+        # docs/tutorials/06-rolling-upgrade.md, "What to do instead").
         def run_vertical_resize(template_id:, module_id:, target_version_id:, dry_run:)
           if dry_run
             return success(

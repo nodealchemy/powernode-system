@@ -222,7 +222,9 @@ Synthesizes a newer `System::NodeModuleVersion` for `k3s-server`, invokes
 `System::Ai::Skills::RollingModuleUpgradeExecutor` with valid inputs, and
 asserts the executor produces a plan with `batches: [...]` where the first
 batch is canary-sized (smallest among all batches). Does not actually
-execute the upgrade — Fleet Autonomy's reconciler tick does that in prod.
+execute the upgrade — and neither does prod: no reconciler tick advances
+these batches, in any environment. The executor plans and returns
+(`../tutorials/06-rolling-upgrade.md` has the manual procedure).
 
 #### Phase 7 — CVE drill
 
