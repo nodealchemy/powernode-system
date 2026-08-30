@@ -1452,7 +1452,7 @@ module Ai
             }
           },
           "system_gitops_sync_repository" => {
-            description: "Trigger an immediate reconcile run for a registered repository. Creates a GitopsSyncRun row + opens proposals for any diffs found. Returns the sync_run_id for polling.",
+            description: "Trigger an immediate reconcile run for a registered repository. Creates a GitopsSyncRun row + opens proposals for any diffs found. The reconcile runs SYNCHRONOUSLY — `ok`, `diff_count`, `proposal_ids` and `error` are already final when this returns, so there is nothing to poll for. Returns `sync_run_id`: the id of the GitopsSyncRun this call finalized, for passing to system_gitops_get_sync_run to re-read the full record (timings, diff_summary, error_message) later. CAUTION: on a standby control plane the reconcile is skipped entirely and still returns ok:true with diff_count 0 and no error — indistinguishable from a repository that is fully in sync. Check `diff_summary` for a `skipped` marker before concluding the fleet matches the repo.",
             parameters: {
               id: { type: "string", required: true, description: "GitopsRepository id" }
             }
@@ -5906,10 +5906,21 @@ module Ai
 
       def gitops_sync_repository(params)
         repo = ::System::GitopsRepository.where(account_id: @account.id).find(params[:id])
-        result = ::System::Gitops::Reconciler.reconcile!(repository: repo)
+
+        # Create the run HERE and hand it to the reconciler, mirroring the
+        # REST sync_now action. The reconciler would otherwise create its own
+        # (`@sync_run || @repository.schedule_sync!`) and never surface the id,
+        # which left system_gitops_get_sync_run unreachable through the MCP
+        # surface alone — no verb returned a run id and no verb lists runs
+        # (IMP-d4923c10977e). The run is already terminal when this returns:
+        # reconcile! is synchronous, so sync_run_id is a handle for fetching
+        # the finalized record, not for polling a pending one.
+        run = repo.schedule_sync!
+        result = ::System::Gitops::Reconciler.reconcile!(repository: repo, sync_run: run)
 
         success_result(
           repository_id: repo.id,
+          sync_run_id: run.id,
           ok: result.ok?,
           diff_count: result.diff_count,
           proposal_ids: result.proposal_ids,

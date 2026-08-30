@@ -3591,8 +3591,11 @@ end
           ok?: true, diff_count: 0, proposal_ids: [],
           synced_revision: "abc123", diff_summary: { templates: 0 }, error: nil
         )
+        # sync_run: is passed so the run the reconciler finalizes is the one
+        # whose id the caller gets back (IMP-d4923c10977e).
         expect(::System::Gitops::Reconciler).to receive(:reconcile!)
-          .with(repository: instance_of(::System::GitopsRepository))
+          .with(repository: instance_of(::System::GitopsRepository),
+                sync_run: instance_of(::System::GitopsSyncRun))
           .and_return(result)
 
         r = call("system_gitops_sync_repository", id: repo.id)
@@ -3607,6 +3610,95 @@ end
         )
         r = call("system_gitops_sync_repository", id: other_repo.id)
         expect(r[:success]).to be false
+      end
+
+      # IMP-d4923c10977e — the action's description advertises that it
+      # "Returns the sync_run_id". It did not: the executor called
+      # Reconciler.reconcile! WITHOUT a sync_run, so the run row was created
+      # deep inside the reconciler and never surfaced. system_gitops_get_sync_run
+      # was therefore unreachable through the MCP surface alone (no verb
+      # returned an id, and no verb lists runs). The REST sync_now action had
+      # always done it correctly; the MCP executor now mirrors it.
+      it "returns a sync_run_id that resolves to a real GitopsSyncRun for this repository" do
+        result = ::System::Gitops::Reconciler::Result.new(
+          ok?: true, diff_count: 0, proposal_ids: [],
+          synced_revision: "abc123", diff_summary: { templates: 0 }, error: nil
+        )
+        allow(::System::Gitops::Reconciler).to receive(:reconcile!).and_return(result)
+
+        r = call("system_gitops_sync_repository", id: repo.id)
+
+        expect(r[:success]).to be true
+        # Not merely "the key exists" — a nil under the right key is the same
+        # defect with better manners.
+        sync_run_id = r[:data][:sync_run_id]
+        expect(sync_run_id).to be_present
+
+        run = ::System::GitopsSyncRun.find_by(id: sync_run_id)
+        expect(run).to be_present
+        expect(run.gitops_repository_id).to eq(repo.id)
+      end
+
+      # The returned id must be the run the reconciler ACTUALLY used, not an
+      # orphan created alongside one the reconciler made for itself. An
+      # executor that creates a run but forgets to pass `sync_run:` still
+      # returns an id resolving to a real row — one stranded at "running"
+      # forever while a second, invisible row carries the real outcome.
+      it "returns the id of the run the reconciler finalized, and it is already terminal" do
+        repo_result  = double(ok?: true, work_tree_path: "/tmp/repo", commit_sha: "deadbee", error: nil)
+        parse_result = double(ok?: true, desired_state: double, error: nil)
+        diff_result  = double(ok?: true, diffs: [], error: nil)
+        allow(::System::Gitops::RepoSyncService).to receive(:sync!).and_return(repo_result)
+        allow(::System::Gitops::DesiredStateParser).to receive(:parse!).and_return(parse_result)
+        allow(::System::Gitops::DiffEngine).to receive(:diff!).and_return(diff_result)
+
+        expect { @r = call("system_gitops_sync_repository", id: repo.id) }
+          .to change { ::System::GitopsSyncRun.where(gitops_repository_id: repo.id).count }.by(1)
+
+        run = ::System::GitopsSyncRun.find(@r[:data][:sync_run_id])
+        # The reconcile is SYNCHRONOUS — the run is final by the time the
+        # verb returns. "Returns the sync_run_id for polling" described a
+        # workflow that does not exist.
+        expect(run.status).to eq("success")
+        expect(run.completed_at).to be_present
+        expect(run.synced_revision).to eq("deadbee")
+      end
+
+      # The FAILURE path is the case the description actually sells: "re-read
+      # the full record (… error_message) later". A fix that returned the id
+      # only on the success branch would satisfy every assertion above.
+      it "returns a resolvable id for a FAILED reconcile, carrying the error_message" do
+        allow(::System::Gitops::RepoSyncService).to receive(:sync!)
+          .and_return(double(ok?: false, work_tree_path: nil, commit_sha: nil, error: "clone refused: bad deploy key"))
+
+        r = call("system_gitops_sync_repository", id: repo.id)
+
+        expect(r[:success]).to be true
+        expect(r[:data][:ok]).to be false
+        run = ::System::GitopsSyncRun.find(r[:data][:sync_run_id])
+        expect(run.status).to eq("failed")
+        expect(run.completed_at).to be_present
+        expect(run.error_message).to eq("clone refused: bad deploy key")
+      end
+
+      # The property the finding is really about: system_gitops_get_sync_run
+      # was unreachable through the MCP surface ALONE, because no verb handed
+      # out an id and no verb lists runs. Pin the round trip rather than
+      # inferring it from GitopsSyncRun.for_account's scope by reading.
+      it "hands back an id that system_gitops_get_sync_run can actually fetch" do
+        allow(::System::Gitops::RepoSyncService).to receive(:sync!)
+          .and_return(double(ok?: true, work_tree_path: "/tmp/repo", commit_sha: "cafe123", error: nil))
+        allow(::System::Gitops::DesiredStateParser).to receive(:parse!)
+          .and_return(double(ok?: true, desired_state: double, error: nil))
+        allow(::System::Gitops::DiffEngine).to receive(:diff!).and_return(double(ok?: true, diffs: [], error: nil))
+
+        synced = call("system_gitops_sync_repository", id: repo.id)
+        fetched = call("system_gitops_get_sync_run", sync_run_id: synced[:data][:sync_run_id])
+
+        expect(fetched[:success]).to be true
+        expect(fetched[:data][:sync_run][:id]).to eq(synced[:data][:sync_run_id])
+        expect(fetched[:data][:sync_run][:gitops_repository_id]).to eq(repo.id)
+        expect(fetched[:data][:sync_run][:status]).to eq("success")
       end
     end
 
