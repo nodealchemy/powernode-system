@@ -65,7 +65,17 @@ RSpec.describe "System::Task command membership across the spec tree" do
       "services/system/fleet/sensors/stuck_task_backlog_sensor_spec.rb" => [31],
       # `command` ranges over a hardcoded
       # %w[start stop restart reboot terminate] list in the enclosing .each.
-      "services/system/runtime/control_instance_spec.rb" => [38]
+      "services/system/runtime/control_instance_spec.rb" => [38],
+      # `command_insertable?` is an INSERTABILITY PROBE, not a fixture. It is
+      # reached from two call sites (:310, :332) whose values are the command
+      # names DECLARED BY GATE SITES plus KNOWN_BROKEN_COMMANDS — precisely the
+      # set whose membership is unknown, which is what the enclosing examples
+      # exist to decide. Requiring a listed literal here would invert the file:
+      # the probe must be free to ask about a name System::Task refuses, and
+      # the "every named category resolves to an insertable command" example is
+      # red exactly when one does. It calls .new + .valid? and never persists,
+      # so an unlisted value reaches no database and no dispatch route.
+      "integration/gate_composed_task_categories_spec.rb" => [234]
     }
   end
 
