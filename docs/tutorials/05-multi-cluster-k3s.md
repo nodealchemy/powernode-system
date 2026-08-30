@@ -134,12 +134,12 @@ platform.system_create_template({ name: "tenant-b-k3s-server" })
 
 platform.system_assign_module_to_template({
   template_id: "<tenant-b-k3s-server-template-id>",
-  // Module verbs take the NodeModule UUID, never its name — system_list_modules returns { id, name }.
+  // The template-assignment verbs take the NodeModule UUID, not its name — system_list_modules returns { id, name }.
   module_id: "<k3s-server-module-id>"
 })
 
 platform.system_update_instance({
-  id: "<k3s-server-b-1-instance>",
+  instance_id: "<k3s-server-b-1-instance>",
   node_template_id: "<tenant-b-k3s-server-template-id>"
 })
 ```
@@ -168,7 +168,7 @@ platform.system_create_template({
 })
 
 platform.system_update_instance({
-  id: "<k3s-worker-b-1-instance>",
+  instance_id: "<k3s-worker-b-1-instance>",
   node_template_id: "<tenant-b-k3s-worker-template-id>"
 })
 ```

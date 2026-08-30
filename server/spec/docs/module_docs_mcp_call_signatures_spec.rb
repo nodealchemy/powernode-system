@@ -224,7 +224,12 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
         in_string = ch
       elsif ch == "/" && body[i + 1] == "/"
         line_end = body.index("\n", i) || body.length
-        return true if depth.zero? && at_key_position && body[i...line_end].include?("...")
+        # The `...` must LEAD the comment. Merely containing one matches an
+        # ordinary English ellipsis in a comment that happens to follow a
+        # comma ("// waits, then... retries"), which would silently switch the
+        # required-parameter check off for that call with no signal. All 15 of
+        # the tree's real elisions lead with it ("// ... usual args ...").
+        return true if depth.zero? && at_key_position && body[i...line_end].match?(%r{\A//\s*\.\.\.})
 
         i = line_end
         next

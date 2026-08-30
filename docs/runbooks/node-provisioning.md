@@ -183,7 +183,7 @@ For `persistent` instances running workloads (Docker daemon, K3s server), prefer
 
 ```javascript
 platform.system_drain_instance({
-  id: "<instance-id>",
+  instance_id: "<instance-id>",
   timeout_seconds: 600,           // give workloads up to 10 min to relocate
   cordon_only: false              // false → also stop services after cordon
 })

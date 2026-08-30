@@ -46,7 +46,7 @@ platform.system_sdwan_attach_peer({ network_id: "<sdwan-net>", node_instance_id:
 // Step 3: assign the k3s-server module
 platform.system_assign_module_to_template({
   template_id: "<k3s-server-template>",
-  // Module verbs take the NodeModule UUID, never its name — system_list_modules returns { id, name }.
+  // The template-assignment verbs take the NodeModule UUID, not its name — system_list_modules returns { id, name }.
   module_id: "<k3s-server-module-id>"
   // No target_cluster_id needed for the bootstrap node — it CREATES the cluster
 })

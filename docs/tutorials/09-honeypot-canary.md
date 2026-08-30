@@ -87,7 +87,7 @@ segmentation + immutable initramfs + fs-verity makes that hard.
 ```javascript
 platform.system_assign_module_to_template({
   template_id: "<honeypot-template-id>",      // or your existing template
-  // Module verbs take the NodeModule UUID, never its name — system_list_modules returns { id, name }.
+  // The template-assignment verbs take the NodeModule UUID, not its name — system_list_modules returns { id, name }.
   module_id: "<honeypot-canary-module-id>",
   config: {
     canary_files: [
