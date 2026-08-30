@@ -46,7 +46,8 @@ platform.system_sdwan_attach_peer({ network_id: "<sdwan-net>", node_instance_id:
 // Step 3: assign the k3s-server module
 platform.system_assign_module_to_template({
   template_id: "<k3s-server-template>",
-  module_name: "k3s-server"
+  // Module verbs take the NodeModule UUID, never its name — system_list_modules returns { id, name }.
+  module_id: "<k3s-server-module-id>"
   // No target_cluster_id needed for the bootstrap node — it CREATES the cluster
 })
 // → wait ~90s for cluster bootstrap
@@ -68,7 +69,7 @@ platform.system_provision_instance({ node_id: "<node-id>", ... })
 platform.system_sdwan_attach_peer({ network_id: "<sdwan-net>", node_instance_id: "<instance-id>" })
 platform.system_assign_module_to_template({
   template_id: "<k3s-staging-template>",
-  module_name: "k3s-server"
+  module_id: "<k3s-server-module-id>"
 })
 
 // Wait ~90s, then:
@@ -92,7 +93,7 @@ platform.system_provision_instance({ node_id: "<worker-node-id>", ... })
 // Assign k3s-agent WITH explicit target_cluster_id
 platform.system_assign_module_to_template({
   template_id: "<worker-template>",
-  module_name: "k3s-agent",
+  module_id: "<k3s-agent-module-id>",
   config: {
     target_cluster_id: "cluster-prod-id"          // ← REQUIRED for multi-cluster
   }
@@ -126,7 +127,7 @@ platform.system_sdwan_attach_peer({ network_id: "<sdwan-net>", node_instance_id:
 // Assign k3s-server WITH target_cluster_id (this server JOINS, doesn't create)
 platform.system_assign_module_to_template({
   template_id: "<k3s-server-template>",
-  module_name: "k3s-server",
+  module_id: "<k3s-server-module-id>",
   config: {
     target_cluster_id: "cluster-prod-id"
   }
@@ -237,7 +238,7 @@ platform.system_provision_instance({ node_id: "<new-server-node>", ... })
 platform.system_sdwan_attach_peer({ ... })
 platform.system_assign_module_to_template({
   template_id: "<existing-server-template>",
-  module_name: "k3s-server",
+  module_id: "<k3s-server-module-id>",
   config: { target_cluster_id: "<existing-cluster-id>" }
 })
 // → second server joins etcd; cluster goes from 1-replica to 3-replica (etcd default)

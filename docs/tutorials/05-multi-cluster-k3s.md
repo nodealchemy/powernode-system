@@ -134,7 +134,8 @@ platform.system_create_template({ name: "tenant-b-k3s-server" })
 
 platform.system_assign_module_to_template({
   template_id: "<tenant-b-k3s-server-template-id>",
-  module_name: "k3s-server"
+  // Module verbs take the NodeModule UUID, never its name — system_list_modules returns { id, name }.
+  module_id: "<k3s-server-module-id>"
 })
 
 platform.system_update_instance({
@@ -294,7 +295,7 @@ platform.kubernetes_decommission_cluster({ cluster_id: "<wrong-cluster>" })   //
 
 // Update assignment
 platform.system_assign_module_to_template({
-  template_id, module_name: "k3s-agent",
+  template_id, module_id: "<k3s-agent-module-id>",
   config: { target_cluster_id: "<correct-cluster-id>" }     // overwrites prior
 })
 ```

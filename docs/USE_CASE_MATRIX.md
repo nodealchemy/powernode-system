@@ -94,7 +94,8 @@ platform.system_provision_instance({
 // For each k3s-agent NodeInstance, set the assignment metadata:
 platform.system_assign_module_to_template({
   template_id: "<worker-template>",
-  module_name: "k3s-agent",
+  // Module verbs take the NodeModule UUID, never its name — system_list_modules returns { id, name }.
+  module_id: "<k3s-agent-module-id>",
   config: { target_cluster_id: "<cluster-A-uuid>" }
 })
 ```

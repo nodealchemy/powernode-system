@@ -87,7 +87,8 @@ segmentation + immutable initramfs + fs-verity makes that hard.
 ```javascript
 platform.system_assign_module_to_template({
   template_id: "<honeypot-template-id>",      // or your existing template
-  module_name: "honeypot-canary",
+  // Module verbs take the NodeModule UUID, never its name — system_list_modules returns { id, name }.
+  module_id: "<honeypot-canary-module-id>",
   config: {
     canary_files: [
       "/etc/cluster-admin-credentials.yaml",
@@ -229,7 +230,7 @@ runbook. Honeypot triggers are never "noise" — investigate every one.
 // Unassign the canary module (removes decoy files + stops watchers)
 platform.system_unassign_module_from_template({
   template_id: "<template-id>",
-  module_name: "honeypot-canary"
+  module_id: "<honeypot-canary-module-id>"
 })
 
 // Or terminate the test instance entirely

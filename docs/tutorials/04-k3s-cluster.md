@@ -103,7 +103,8 @@ platform.system_sdwan_attach_peer({ network_id, node_instance_id })
 ```javascript
 platform.system_assign_module_to_template({
   template_id: "<template-id>",
-  module_name: "k3s-server"
+  // Module verbs take the NodeModule UUID, never its name — system_list_modules returns { id, name }.
+  module_id: "<k3s-server-module-id>"
 })
 ```
 
@@ -159,7 +160,7 @@ platform.system_sdwan_attach_peer({ network_id, node_instance_id })
 ```javascript
 platform.system_assign_module_to_template({
   template_id: "<worker-template>",
-  module_name: "k3s-agent",
+  module_id: "<k3s-agent-module-id>",
   config: {
     target_cluster_id: "<cluster-id-from-step-3>"
   }
