@@ -207,7 +207,8 @@ platform.kubernetes_decommission_cluster({ cluster_id: "cluster-staging-id" })
 
 For per-cluster module rolling upgrades, scope by template. **The
 `system-rolling-module-upgrade` skill PLANS ONLY — no autonomy reconciler
-drives it, and nothing walks the batches it returns** (see
+drives it, and it returns no batches to walk: the upgrade is FLEET-ATOMIC**
+(see
 [`../tutorials/06-rolling-upgrade.md`](../tutorials/06-rolling-upgrade.md) for
 the manual procedure that works). Fleet Autonomy / CVE Responder bind the
 skill, so an approved action produces the plan below and stops there. Its
@@ -219,10 +220,20 @@ input contract, scoped to one cluster's server template:
   "template_id": "<k3s-prod-server-template>",     // scopes to cluster-prod's servers
   "module_id": "mod-k3s-server",
   "target_version_id": "v-k3s-1.31.0",
-  "batch_pct": 50,                                  // smaller batches for control plane
+  // No batch_pct: the upgrade is FLEET-ATOMIC. current_version_id is a
+  // per-MODULE pointer, so every instance carrying mod-k3s-server converges
+  // together — including servers in OTHER clusters that share the module row.
+  // template_id scopes the PLAN's instance listing, not the pointer.
   "max_consecutive_failures": 1
 }
 ```
+
+> **Per-cluster staging needs a per-cluster module row.** Because the pointer
+> is per-module, giving `cluster-prod` a different k3s version from
+> `cluster-staging` requires two `NodeModule` rows (each with its own
+> `current_version_id`), or replacing instances out of an
+> [instance pool](../tutorials/08-instance-pool.md). A percentage never
+> delivered this and no longer pretends to.
 
 ## Anti-pattern: single-server cluster
 

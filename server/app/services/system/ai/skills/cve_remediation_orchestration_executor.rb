@@ -151,7 +151,12 @@ module System
                   template_id: template_id,
                   target_version_id: blessed.id,
                   ok: plan[:success] == true,
-                  batch_count: plan.dig(:data, :batch_count),
+                  # IMP-b948ea7fa382 — was batch_count, which the plan no
+                  # longer returns. Module upgrades are fleet-atomic, so there
+                  # is no batch count to report; total_instances below is the
+                  # population that moves together. This flag is descriptive
+                  # only — nothing branches on it.
+                  fleet_atomic: true,
                   total_instances: plan.dig(:data, :total_instances),
                   error: plan[:error]
                 }

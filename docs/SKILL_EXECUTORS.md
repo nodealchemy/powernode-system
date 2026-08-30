@@ -127,22 +127,37 @@ Ranks modules against a workload description semantically (embedding cosine simi
 
 Composes `system_create_node` + `system_provision_instance` per node. Hard cap at 50 instances per call — larger rolls go through `rolling_module_upgrade` with explicit operator approval. Bound to Runtime Manager.
 
-### `rolling_module_upgrade` — Batched fleet upgrade
+### `rolling_module_upgrade` — Fleet-atomic module upgrade
 
 **Source:** `rolling_module_upgrade_executor.rb`
 **Category:** `release_management` (subdomain: `modules`)
-**Inputs:** `template_id`, `module_id`, `target_version_id`, `batch_pct` (default), `max_consecutive_failures`, `health_timeout_sec`
-**Outputs:** `total_instances`, `batch_size`, `batch_count`, `estimated_total_seconds`, `circuit_breaker`, `batches`
+**Inputs:** `template_id`, `module_id`, `target_version_id`, `max_consecutive_failures`, `health_timeout_sec`
+**Outputs:** `total_instances`, `affected_instance_ids`, `estimated_total_seconds`, `circuit_breaker`
 
-Computes a batched upgrade plan. **PLAN ONLY — NOT IMPLEMENTED beyond that
-point:** the executor returns the plan and nothing executes it. There is no
-batch advancer, health check or circuit breaker for module upgrades;
-`max_consecutive_failures` and `health_timeout_sec` are echoed into the
-returned `circuit_breaker` hash (`status: "not_implemented"`) and read by
-nothing, and `batch_pct` is not a blast-radius control. Operator procedure:
+Sizes a module upgrade. Two independent limits, and both matter:
+
+**FLEET-ATOMIC — the upgrade cannot be batched or staged.** The version an
+instance receives resolves from `NodeModule#current_version_id`, a
+per-**module** pointer read at download, and `system_node_module_assignments`
+(the only per-node row for a module) carries **no version column of any kind**.
+So there is no per-instance version selection to batch over: every instance
+carrying the module converges together. `batch_pct` was removed from this
+executor's contract in IMP-b948ea7fa382 rather than kept as an accepted-and-
+ignored input. For a genuine blast-radius bound, separate the **scope** —
+[instance pools](./tutorials/08-instance-pool.md), or a second `NodeModule` row
+with its own pointer ([Tutorial 06 § If you need a real blast-radius bound](./tutorials/06-rolling-upgrade.md#if-you-need-a-real-blast-radius-bound)).
+
+**PLAN ONLY — NOT IMPLEMENTED beyond that point:** the executor returns the
+plan and nothing executes it. There is no advancer or circuit breaker for
+module upgrades; `max_consecutive_failures` and `health_timeout_sec` are echoed
+into the returned `circuit_breaker` hash (`status: "not_implemented"`) and read
+by nothing. Operator procedure:
 [Tutorial 06 § What to do instead](./tutorials/06-rolling-upgrade.md#what-to-do-instead).
-For the same shape actually implemented, see `boot_image_drift_rollout`, which
+
+For a batched rollout that IS implemented, see `boot_image_drift_rollout` — it
 dispatches each batch and converges tick-by-tick off its own drift sensor.
+Batching works there because boot images are selected per-instance; modules are
+not.
 
 ### `runbook_generate` — Template runbook
 
@@ -454,32 +469,27 @@ Hard-capped at 50 per call — larger fleets go through `rolling_module_upgrade`
 ### `rolling_module_upgrade`
 
 ```json
-// Input
+// Input — there is no batch_pct: the upgrade is FLEET-ATOMIC.
 { "template_id": "tmpl-abc", "module_id": "mod-nginx", "target_version_id": "v-1.26.0",
-  "batch_pct": 20, "max_consecutive_failures": 2, "health_timeout_sec": 300 }
+  "max_consecutive_failures": 2, "health_timeout_sec": 300 }
 
 // Output (success.data) — a plan. Nothing executes it.
 {
   "total_instances": 50,
-  "batch_size": 10,
-  "batch_count": 5,
-  "estimated_total_seconds": 1500,
+  "affected_instance_ids": ["...", "...50 ids — they all move together"],
+  "estimated_total_seconds": 6000,
   "circuit_breaker": { "trips_after_consecutive_failures": 2,
                        "health_timeout_sec": 300,
                        "status": "not_implemented" },
-  "batches": [
-    { "index": 0, "instance_ids": ["..."], "size": 10,
-      "estimated_seconds": 1200, "status": "planned" },
-    { "index": 1, "instance_ids": ["..."], "size": 10,
-      "estimated_seconds": 1200, "status": "planned" }
-  ],
   "requires_approval": true,
   "executed": false,
-  "note": "PLAN ONLY — nothing advances these batches. ..."
+  "note": "PLAN ONLY — nothing moves the fleet from this plan, and the upgrade is FLEET-ATOMIC ..."
 }
 ```
 
-**NOT IMPLEMENTED — nothing executes this plan.** No autonomy reconciler walks the batches, there is no health check between them, and `max_consecutive_failures` / `health_timeout_sec` are echoed into the `circuit_breaker` hash above and read by nothing. `batch_pct` sizes groups in a document; it is not a blast-radius control, because the version an instance receives resolves from `NodeModule#current_version_id` — a per-**module** pointer, so moving it moves every instance carrying that module at once. See [`docs/tutorials/06-rolling-upgrade.md`](./tutorials/06-rolling-upgrade.md) for the manual procedure that does work.
+**NOT IMPLEMENTED — nothing executes this plan.** Nothing reads it and nothing moves the pointer from it; `max_consecutive_failures` / `health_timeout_sec` are echoed into the `circuit_breaker` hash above and read by nothing.
+
+**FLEET-ATOMIC — and there is no batch_pct to size.** The version an instance receives resolves from `NodeModule#current_version_id` — a per-**module** pointer — and `system_node_module_assignments` has no version column, so moving the pointer moves every instance carrying that module at once. `affected_instance_ids` is that whole population, not a first batch. Real staging means separating the scope: an instance pool, or a second `NodeModule` row with its own pointer. See [`docs/tutorials/06-rolling-upgrade.md`](./tutorials/06-rolling-upgrade.md) for the manual procedure that does work.
 
 ### `runbook_generate`
 

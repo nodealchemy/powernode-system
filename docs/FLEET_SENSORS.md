@@ -542,7 +542,7 @@ Source: `db/seeds/fleet_autonomy_agent.rb`. Approval chain: `Fleet Autonomy Acti
 | `system.instance_terminate` | `require_approval` | Destructive — releases provider VM, cascade-FK deletes managed rows |
 | `system.cert_revoke` | `require_approval` | Cuts active mTLS session |
 | `system.module_promote_to_live` | `require_approval` | Advances `promotion_state` (to `blessed`); does **not** change which version the fleet serves |
-| `system.fleet_rolling_upgrade` | `require_approval` | Touches many instances; `rolling_module_upgrade` skill plans batches |
+| `system.fleet_rolling_upgrade` | `require_approval` | Touches every instance carrying the module — the upgrade is FLEET-ATOMIC, and the `rolling_module_upgrade` skill only sizes it (it executes nothing) |
 | `system.region_expansion` | `require_approval` | Cost-bearing |
 | `system.capacity_resize` | `require_approval` | Cost-bearing; `capacity_recommend` skill emits the proposal |
 | `system.observation` | `auto_approve` | Pure observation — no remediation; collects events for dashboards |

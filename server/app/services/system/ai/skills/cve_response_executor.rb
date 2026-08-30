@@ -186,11 +186,20 @@ module System
             module_ids: exposed_modules.map { |m| m[:module_id] },
             description: "Trigger module CI for each exposed module to produce a patched OCI artifact"
           }
+          # IMP-b948ea7fa382 — this step used to carry a severity-scaled
+          # batch_pct, which read as "criticals move faster in bigger groups".
+          # rolling_module_upgrade no longer accepts one: the served version is
+          # a per-module pointer, so every instance carrying an exposed module
+          # converges together whatever the severity. Severity still changes
+          # the approval gate (gate_for below); it cannot change blast radius.
           steps << {
             step: "rolling_upgrade",
             module_ids: exposed_modules.map { |m| m[:module_id] },
-            batch_pct: severity == "critical" ? 25 : 10,
-            description: "Once new versions are published+blessed, roll out across affected templates"
+            fleet_atomic: true,
+            description: "Once new versions are published+blessed, roll out across affected templates. " \
+                         "FLEET-ATOMIC: every instance carrying the module converges together — there is " \
+                         "no batching. For a staged rollout, separate the scope (instance pool, or a " \
+                         "second NodeModule row)."
           }
           { steps: steps, ordering: "sequential" }
         end

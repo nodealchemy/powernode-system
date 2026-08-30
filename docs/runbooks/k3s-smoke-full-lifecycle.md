@@ -220,10 +220,13 @@ SMOKE_K3S_LEVEL=db bundle exec rails runner \
 
 Synthesizes a newer `System::NodeModuleVersion` for `k3s-server`, invokes
 `System::Ai::Skills::RollingModuleUpgradeExecutor` with valid inputs, and
-asserts the executor produces a plan with `batches: [...]` where the first
-batch is canary-sized (smallest among all batches). Does not actually
+asserts the executor produces a plan whose `affected_instance_ids` covers the
+whole eligible population, with **no batch structure at all**. It used to
+assert a canary-sized first batch; that check was removed with `batch_pct` in
+IMP-b948ea7fa382, because the upgrade is FLEET-ATOMIC — `current_version_id`
+is a per-module pointer, so there is no subset to canary. Does not actually
 execute the upgrade — and neither does prod: no reconciler tick advances
-these batches, in any environment. The executor plans and returns
+anything here, in any environment. The executor plans and returns
 (`../tutorials/06-rolling-upgrade.md` has the manual procedure).
 
 #### Phase 7 — CVE drill

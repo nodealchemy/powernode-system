@@ -72,7 +72,6 @@ result = executor.execute(
   template_id: template.id,
   module_id: nginx_module.id,
   target_version_id: v_new.id,
-  batch_pct: 20,
   max_consecutive_failures: 2,
   health_timeout_sec: 300
 )
@@ -80,17 +79,18 @@ result = executor.execute(
 if result[:success]
   data = result[:data]
   puts "  ✅ rolling_module_upgrade plan computed:"
-  puts "       total_instances:        #{data[:total_instances]}"
-  puts "       batch_size:             #{data[:batch_size]}"
-  puts "       batch_count:            #{data[:batch_count]}"
+  puts "       total_instances:         #{data[:total_instances]}"
+  puts "       affected_instance_ids:   #{Array(data[:affected_instance_ids]).size} instance(s), all moving together"
   puts "       estimated_total_seconds: #{data[:estimated_total_seconds]}"
-  puts "       circuit_breaker:        #{data[:circuit_breaker]}"
+  puts "       circuit_breaker:         #{data[:circuit_breaker]}"
 else
   puts "  ⚠️  Skill failed: #{result[:error]}"
 end
 
 puts "  ⚠️  NOT IMPLEMENTED: nothing executes this plan, in production or here."
 puts "       There is no batch advancer, health check or circuit breaker for module"
-puts "       upgrades, and batch_pct is not a blast-radius control. To actually move"
-puts "       the fleet, see docs/tutorials/06-rolling-upgrade.md 'What to do instead'."
+puts "       upgrades. And the upgrade is FLEET-ATOMIC: current_version_id is a"
+puts "       per-module pointer, so there is no batch_pct to size — every instance"
+puts "       carrying the module converges together. To actually move the fleet,"
+puts "       see docs/tutorials/06-rolling-upgrade.md 'What to do instead'."
 puts "  Done. See docs/examples/04-rolling-module-upgrade.md."

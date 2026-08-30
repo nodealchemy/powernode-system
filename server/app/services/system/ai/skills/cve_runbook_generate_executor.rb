@@ -198,7 +198,6 @@ module System
             MD
           else
             module_ids = exposed_modules.map { |m| m[:module_id] }
-            batch_pct = severity.to_s == "critical" ? 25 : 10
             <<~MD
               ## Remediation Plan
 
@@ -213,7 +212,13 @@ module System
 
               3. **Rolling upgrade** — once new versions are blessed, dispatch
                  `system_promote_module_version` for each module, then trigger
-                 `rolling_module_upgrade` with batch_pct=#{batch_pct}.
+                 `rolling_module_upgrade`. This upgrade is **FLEET-ATOMIC**:
+                 the served version resolves from a per-module pointer
+                 (`NodeModule#current_version_id`), so every instance carrying
+                 the module converges together. There is no batch size to
+                 choose. If this fleet needs a staged rollout, stage the
+                 *scope* instead — an instance pool, or a second NodeModule
+                 row with its own pointer.
             MD
           end
         end
@@ -226,9 +231,10 @@ module System
 
               This remediation **requires operator approval** before any
               state-changing action dispatches. Severity=#{severity}, risk_score=#{risk_score}.
-              Approval requests appear in the Fleet Approval queue; reviewer
-              should confirm the rolling_upgrade batch_pct is appropriate
-              for the current fleet load.
+              Approval requests appear in the Fleet Approval queue. The
+              rolling_upgrade step is FLEET-ATOMIC, so the reviewer is
+              approving a move of the whole affected population at once —
+              there is no batch size to tune down for current fleet load.
             MD
           else
             <<~MD
@@ -289,28 +295,45 @@ module System
               **Per-module rollback commands:**
 
               ```
-              # For each module above, repromote the previous version:
-              mcp__powernode__platform_system_promote_module_version(
-                node_module_id: "<module_id>",
-                node_module_version_id: "<previous_version_id>",
-                target_state: "live"
-              )
-
-              # Then redrive the rolling upgrade with the previous version,
-              # using a CONSERVATIVE batch (5%) since the population may
-              # already be partially mid-upgrade:
-              mcp__powernode__platform_system_rolling_module_upgrade(
-                node_module_id: "<module_id>",
-                batch_pct: 5,
-                pause_on_error: true
+              # For each module above, repoint current_version_id at the
+              # previous version. This is the ONE call that reverts what the
+              # fleet serves; there is no second "redrive" step.
+              mcp__powernode__platform_system_rollback_module_version(
+                module_id:  "<module_id>",
+                version_id: "<previous_version_id>",
+                reason:     "reverting CVE remediation"
               )
               ```
 
-              **Verification of rollback:** the FleetEvent stream should show
-              `system.module.version_changed` rows for each affected node within
-              60–120s. If a node still reports the (broken) new version after
-              5 min, drain + reprovision via `system_provision_instance` against
-              the prior NodePlatform disk image.
+              Two things this rollback is NOT, both of which earlier revisions
+              of this runbook asserted:
+
+              - It is **not** `system_promote_module_version`. That advances a
+                version's `promotion_state` label and does not move
+                `current_version_id`, so repromoting the old version leaves the
+                fleet running the bad one.
+              - It is **not** pace-able. The rollback is **FLEET-ATOMIC** for
+                the same reason the upgrade was: `current_version_id` is a
+                per-module pointer. Every instance carrying the module reverts
+                together at its own next reconcile. Omitting `version_id`
+                auto-selects the most recent version with a mountable
+                artifact, which is usually what you want in an emergency.
+
+              **Verification of rollback:** poll the instances directly —
+              nothing emits a per-node version-change event, so there is no
+              event stream to watch:
+
+              ```
+              mcp__powernode__platform_system_get_instance(instance_id: "<id>")
+              # → running_module_digests, keyed by node_module_id. Compare
+              #   against the target version's oci_digest.
+              ```
+
+              This is a per-instance check and you must repeat it across the
+              instances you care about. If a node still reports the (broken)
+              new version after 5 min, drain + reprovision via
+              `system_provision_instance` against the prior NodePlatform disk
+              image.
             MD
           end
         end

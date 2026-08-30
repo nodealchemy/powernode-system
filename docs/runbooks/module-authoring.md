@@ -401,7 +401,9 @@ platform.system_promote_module_version({ module_version_id: "<version-id>", targ
 
 // blessed → live (the last ladder rung; gated by require_approval policy).
 // This does NOT roll the version out — use system_rollback_module_version to
-// repoint current_version_id, or a rolling_module_upgrade for a batched rollout.
+// repoint current_version_id. There is no batched alternative: the pointer is
+// per-module, so the rollout is FLEET-ATOMIC (rolling_module_upgrade only
+// SIZES it and executes nothing). See tutorials/06-rolling-upgrade.md.
 platform.system_promote_module_version({ module_version_id: "<version-id>", target_state: "live" })
 ```
 

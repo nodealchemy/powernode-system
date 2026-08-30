@@ -56,7 +56,10 @@ h.assert(desc[:name] == "rolling_module_upgrade", "descriptor name == rolling_mo
 h.assert(desc[:inputs].key?(:template_id), "input :template_id declared")
 h.assert(desc[:inputs].key?(:module_id), "input :module_id declared")
 h.assert(desc[:inputs].key?(:target_version_id), "input :target_version_id declared")
-h.assert(desc[:outputs].key?(:batches), "output :batches declared")
+# IMP-b948ea7fa382 — module upgrades are fleet-atomic; the descriptor no
+# longer declares a batch structure or a batch_pct to size it.
+h.assert(desc[:outputs].key?(:affected_instance_ids), "output :affected_instance_ids declared")
+h.assert(!desc[:inputs].key?(:batch_pct), "input :batch_pct is NOT declared (fleet-atomic)")
 
 # ── Find or synthesize template + module + target version ───────────
 h.step("Resolve k3s-server template + module + create synthetic target version")
@@ -101,8 +104,7 @@ begin
   result = executor.execute(
     template_id:        template.id,
     module_id:          k3s_module.id,
-    target_version_id:  target_version.id,
-    batch_pct:          25
+    target_version_id:  target_version.id
   )
 
   # Even if the executor returns failure (e.g. missing related state), we
@@ -112,20 +114,17 @@ begin
     h.ok("executor returned success")
     data = result[:data] || {}
     h.assert(data.key?(:total_instances), "result.data has :total_instances")
-    h.assert(data.key?(:batch_count), "result.data has :batch_count")
-    h.assert(data.key?(:batches), "result.data has :batches array")
-    batches = Array(data[:batches])
-    h.assert(batches.size >= 1, "batches has >= 1 entry (got #{batches.size})")
-
-    first = batches.first
-    if first.is_a?(Hash) && first[:size]
-      sizes = batches.map { |b| b[:size].to_i }
-      # Canary is the first batch and must be the smallest (or equal smallest)
-      h.assert(first[:size].to_i <= sizes.min,
-               "first batch is canary-sized: #{first[:size]} (smallest in batch sizes #{sizes.inspect})")
-    else
-      h.warn_msg("batches don't expose :size — skipping canary-size assertion")
-    end
+    h.assert(data.key?(:affected_instance_ids), "result.data has :affected_instance_ids")
+    # IMP-b948ea7fa382 — there is no canary batch to assert on. The earlier
+    # version of this tier checked that the first batch was the smallest,
+    # which described a staging property the platform never had: the served
+    # version is a per-module pointer, so the affected set moves as one.
+    affected = Array(data[:affected_instance_ids])
+    h.assert(affected.size == data[:total_instances].to_i,
+             "affected set covers the whole eligible population " \
+             "(#{affected.size} == #{data[:total_instances]})")
+    h.assert(!data.key?(:batches) && !data.key?(:batch_count),
+             "result.data exposes no batch structure (fleet-atomic)")
   else
     h.warn_msg("executor returned failure: #{result[:error]}")
     h.warn_msg("this is acceptable at db tier if the fleet_tool can't see instances; " \

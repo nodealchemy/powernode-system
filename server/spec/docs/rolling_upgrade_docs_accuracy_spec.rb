@@ -83,6 +83,21 @@ RSpec.describe "rolling-upgrade docs vs. what RollingModuleUpgradeExecutor actua
       expect(executor).not_to match(/M7 reconciler advances batches/)
     end
 
+    # IMP-b948ea7fa382 — the contract removal, pinned at the SOURCE rather
+    # than only through .descriptor (which the executor spec asserts by
+    # equality). This catches a reintroduction in the perform signature or a
+    # local default constant, neither of which the descriptor would show.
+    it "accepts no batch_pct anywhere: not as an input, a keyword, or a default" do
+      expect(executor).not_to match(/batch_pct:/)
+      expect(executor).not_to match(/DEFAULT_BATCH_PCT/)
+    end
+
+    it "returns one atomic affected set rather than a batch structure" do
+      expect(executor).to include("affected_instance_ids")
+      expect(executor).not_to match(/each_slice/)
+      expect(executor).not_to match(/batch_size|batch_count/)
+    end
+
     it "states in its skill_descriptor that it plans only" do
       # The descriptor description is what an AGENT reads BEFORE calling, so
       # the plan/execute split has to be stated there too — correcting it only
@@ -222,9 +237,32 @@ RSpec.describe "rolling-upgrade docs vs. what RollingModuleUpgradeExecutor actua
       expect(doc).not_to match(/A bad version reaches at most\s*\n?`?batch_pct`? of the fleet before the circuit trips/)
     end
 
-    it "states plainly that the executor plans and nothing advances the batches" do
+    # IMP-b948ea7fa382 — the matched pair moved with the decision. The old
+    # truthful replacement ("nothing advances the batches") is now itself
+    # misleading: it concedes there ARE batches and implies an advancer would
+    # complete the story. The operator decision was that module upgrades are
+    # fleet-atomic, so the honest replacement names that AND the two staging
+    # mechanisms that actually exist — otherwise an operator who needs a
+    # blast-radius bound is left with a "no" and no procedure.
+    it "states plainly that the upgrade is fleet-atomic and that nothing executes the plan" do
       expect(doc).to match(/NOT IMPLEMENTED/)
-      expect(doc).to match(/nothing advances the batches/i)
+      expect(doc).to match(/FLEET-ATOMIC/i)
+      expect(doc).to match(/no version column/i)
+    end
+
+    it "names both staging mechanisms that do exist, rather than only refusing" do
+      bound = doc[/^### If you need a real blast-radius bound.*?(?=^## )/m] ||
+              raise("could not locate the blast-radius-bound section in 06-rolling-upgrade.md")
+
+      expect(bound).to match(/instance pool/i)
+      expect(bound).to match(/separate module row|second `NodeModule` row|two `NodeModule` rows/i)
+    end
+
+    # The removal has to be visible where a caller would COPY it. A tutorial
+    # that still shows batch_pct in its invocation teaches the dead parameter
+    # regardless of what the prose says two screens up.
+    it "shows no batch_pct in the executor invocation it tells the operator to copy" do
+      expect(doc).not_to match(/^\s*batch_pct:\s*\d+/)
     end
 
     it "marks the circuit breaker and all three continuation options as unimplemented" do
@@ -292,11 +330,18 @@ RSpec.describe "rolling-upgrade docs vs. what RollingModuleUpgradeExecutor actua
       expect(doc).not_to match(/the autonomy reconciler executes it batch-by-batch, gating on health between batches/)
     end
 
-    it "says the plan is returned and never executed" do
-      section = doc[/^### `rolling_module_upgrade` — Batched fleet upgrade.*?(?=^### )/m] ||
+    it "says the plan is returned and never executed, and that the upgrade is fleet-atomic" do
+      section = doc[/^### `rolling_module_upgrade` — Fleet-atomic module upgrade.*?(?=^### )/m] ||
                 raise("could not locate the rolling_module_upgrade section in SKILL_EXECUTORS.md")
 
       expect(section).to match(/NOT IMPLEMENTED/)
+      expect(section).to match(/FLEET-ATOMIC/i)
+      # The input list is the thing a caller copies — it must not still name
+      # the removed parameter.
+      expect(section).to match(/^\*\*Inputs:\*\*.*$/)
+      expect(section[/^\*\*Inputs:\*\*.*$/]).not_to include("batch_pct")
+      expect(section[/^\*\*Outputs:\*\*.*$/]).to include("affected_instance_ids")
+      expect(section[/^\*\*Outputs:\*\*.*$/]).not_to match(/batch_size|batch_count|batches/)
     end
 
     # IMP-b948ea7fa382 — the file has TWO rolling_module_upgrade sections: the
@@ -313,7 +358,14 @@ RSpec.describe "rolling-upgrade docs vs. what RollingModuleUpgradeExecutor actua
 
       expect(appendix).not_to match(/The autonomy reconciler executes the plan batch-by-batch/)
       expect(appendix).to match(/NOT IMPLEMENTED/)
-      expect(appendix).to match(/not a blast-radius control/i)
+      # IMP-b948ea7fa382 — the appendix carries a copyable JSON input body, so
+      # it is the likeliest place for the removed parameter to survive. The
+      # heading-scoped guard above cannot see this section (bare heading), and
+      # that is exactly how the previous false claim lived on here.
+      expect(appendix).to match(/FLEET-ATOMIC/i)
+      expect(appendix).not_to match(/"batch_pct"\s*:/)
+      expect(appendix).not_to match(/"batch_size"\s*:|"batch_count"\s*:|"batches"\s*:/)
+      expect(appendix).to match(/"affected_instance_ids"/)
     end
   end
 
@@ -321,20 +373,32 @@ RSpec.describe "rolling-upgrade docs vs. what RollingModuleUpgradeExecutor actua
   # no M7 regex could catch: that a reconciler drives the skill in prod. Both
   # get the matched pair, since deleting the sentence would leave an operator
   # planning an upgrade with no warning that it will not run.
+  # IMP-b948ea7fa382 — these two pairs originally demanded the phrases
+  # "nothing walks the batches" / "no reconciler tick advances these batches".
+  # Once module upgrades were accepted as fleet-atomic those replacements
+  # became misleading in the same way the tutorial's was: they concede there
+  # ARE batches and imply an advancer would finish the story. There are none.
+  # The guard now demands the fleet-atomic replacement instead — and asserts
+  # the conceding wording is GONE, so a future edit cannot drift back to it.
   describe "the runbooks that told an operator a reconciler drives the upgrade" do
-    it "docs/runbooks/multi-cluster-k3s.md says the skill plans only" do
+    it "docs/runbooks/multi-cluster-k3s.md says the skill plans only, and returns no batches" do
       doc = self.class.read(ext_root, "docs/runbooks/multi-cluster-k3s.md")
 
       expect(doc).not_to match(/skill is driven by the autonomy reconciler/)
+      expect(doc).not_to match(/nothing walks the batches/i)
       expect(doc).to match(/PLANS ONLY/)
-      expect(doc).to match(/nothing walks the batches/i)
+      expect(doc).to match(/FLEET-ATOMIC/i)
     end
 
-    it "docs/runbooks/k3s-smoke-full-lifecycle.md does not promise a prod reconciler tick" do
+    it "docs/runbooks/k3s-smoke-full-lifecycle.md does not promise a prod reconciler tick, nor a canary batch" do
       doc = self.class.read(ext_root, "docs/runbooks/k3s-smoke-full-lifecycle.md")
 
       expect(doc).not_to match(/Fleet Autonomy's reconciler tick does that in prod/)
-      expect(doc).to match(/no reconciler tick advances\s*\n?these batches/i)
+      # The smoke seed's canary-batch assertions were deleted with batch_pct;
+      # this doc described them, so it had to stop.
+      expect(doc).not_to match(/first\s*\n?batch is canary-sized/i)
+      expect(doc).to match(/FLEET-ATOMIC/i)
+      expect(doc).to match(/affected_instance_ids/)
     end
   end
 

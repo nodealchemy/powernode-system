@@ -258,9 +258,17 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
         expect(r[:data][:outputs][:rolling_upgrade_plan]).to be_nil
       end
 
-      it "delegates to RollingModuleUpgradeExecutor and surfaces the batched plan" do
-        plan = { total_instances: 5, batch_size: 1, batch_count: 5,
-                 estimated_total_seconds: 600, batches: [], requires_approval: true }
+      # IMP-b948ea7fa382 — this stub is hand-written, so it does NOT track the
+      # inner executor's real contract: it kept passing with batch_size/
+      # batch_count/batches long after the executor stopped returning them,
+      # because the consumer just re-exported whatever the stub held. Keep it
+      # in step with RollingModuleUpgradeExecutor's actual output shape (the
+      # equality pin for that shape lives in
+      # rolling_module_upgrade_executor_spec.rb ".descriptor").
+      it "delegates to RollingModuleUpgradeExecutor and surfaces the fleet-atomic plan" do
+        plan = { total_instances: 5,
+                 affected_instance_ids: %w[i-1 i-2 i-3 i-4 i-5],
+                 estimated_total_seconds: 600, requires_approval: true }
         rmu = instance_double(::System::Ai::Skills::RollingModuleUpgradeExecutor,
                               execute: { success: true, data: plan })
         allow(::System::Ai::Skills::RollingModuleUpgradeExecutor).to receive(:new).and_return(rmu)
@@ -273,6 +281,15 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
         expect(r[:data][:scaling_strategy]).to eq("vertical_resize")
         expect(r[:data][:count]).to eq(5)
         expect(r[:data][:outputs][:rolling_upgrade_plan]).to eq(plan)
+
+        # The re-export used to be batch_count/batch_size. Reading keys the
+        # plan no longer carries would have published a batch story in nils,
+        # so pin what replaced them.
+        action = r[:data][:planned_actions].first
+        expect(action).not_to have_key(:batch_count)
+        expect(action).not_to have_key(:batch_size)
+        expect(action[:fleet_atomic]).to be true
+        expect(action[:affected_instance_ids]).to eq(%w[i-1 i-2 i-3 i-4 i-5])
       end
     end
 

@@ -2,14 +2,24 @@
 
 > Status: active
 
-> ## ⚠️ The batched runtime this tutorial described is NOT IMPLEMENTED
+> ## ⚠️ Module upgrades are FLEET-ATOMIC, and the batched runtime this tutorial described is NOT IMPLEMENTED
 >
-> `RollingModuleUpgradeExecutor` computes a **plan and stops**. There is no
-> batch advancer, no health check and no circuit breaker anywhere in the
-> platform for module upgrades — approving a plan rolls nothing out. Earlier
+> Two separate facts, and the first one is permanent:
+>
+> **1. A module upgrade cannot be batched or staged.** The version an instance
+> receives resolves from `NodeModule#current_version_id` — a per-**module**
+> pointer read at download time — and `system_node_module_assignments`, the
+> only per-node row for a module, carries **no version column of any kind**.
+> There is nothing to batch *over*. Every instance carrying the module
+> converges together. `batch_pct` was accordingly **removed** from the
+> executor's contract (IMP-b948ea7fa382); it is not accepted and ignored, it
+> is gone. If you need a real blast-radius bound, you must separate the
+> *scope* — see [If you need a real blast-radius bound](#if-you-need-a-real-blast-radius-bound).
+>
+> **2. Nothing executes the plan.** `RollingModuleUpgradeExecutor` computes a
+> **plan and stops**. There is no advancer, no health check and no circuit
+> breaker for module upgrades — approving a plan rolls nothing out. Earlier
 > revisions of this page described all three as working. They never were.
->
-> `batch_pct` is **not** a safety control. It sizes groups in a document.
 >
 > The plan-mode walkthrough (Steps 1–2) is still accurate and useful for
 > sizing an upgrade. Everything that claimed to *execute* a plan is marked
@@ -35,9 +45,9 @@
 
 ```mermaid
 flowchart TD
-    Op[Operator] --> Plan[RollingModuleUpgradeExecutor<br/>batch_pct=20%]
-    Plan --> Plan2[Plan computed:<br/>50 instances → 5 × 10]
-    Plan2 --> Stop([Returns the plan.<br/>Nothing advances the batches.])
+    Op[Operator] --> Plan[RollingModuleUpgradeExecutor<br/>no batch_pct — fleet-atomic]
+    Plan --> Plan2[Plan computed:<br/>50 instances, one atomic set]
+    Plan2 --> Stop([Returns the plan.<br/>Nothing acts on it.])
 
     Stop -.->|NOT IMPLEMENTED| Ghost1[Batch 1 upgraded]
     Ghost1 -.->|NOT IMPLEMENTED| Ghost2[Health check]
@@ -60,12 +70,11 @@ not exist. The solid paths are what the platform does today.
 **`rolling_module_upgrade`** is a skill executor (see
 [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md)). What it does, in full:
 
-1. Validates `batch_pct` is 1–100
-2. Looks up the module and confirms `target_version_id` appears in its
+1. Looks up the module and confirms `target_version_id` appears in its
    version list
-3. Lists the template's `running`/`starting` instances and slices them into
-   batch-sized groups
-4. Returns the plan, with `executed: false`
+2. Lists the template's `running`/`starting` instances and reports them as one
+   atomic set (`affected_instance_ids`) — there is no slicing step
+3. Returns the plan, with `executed: false`
 
 Then it returns. That is the whole executor
 ([`rolling_module_upgrade_executor.rb`](../../server/app/services/system/ai/skills/rolling_module_upgrade_executor.rb)).
@@ -81,15 +90,22 @@ Then it returns. That is the whole executor
 | Emits `module.upgrade.*` events | Nothing in the platform emits these events |
 | Continuation ApprovalRequest with `continue_anyway` / `rollback_completed_batches` / `abort` | No such ApprovalRequest type, and no handler for any of the three options |
 
-**Why isn't `batch_pct` a safety control?** Two independent reasons, and the
-second survives even if someone builds the advancer:
+**Why is there no `batch_pct` any more?** Because it could never have been a
+safety control, for a reason that survives building the advancer:
 
-1. Nothing executes the batches, so the grouping has no runtime effect at all.
-2. The version an instance receives is resolved from
-   `NodeModule#current_version_id` — a **per-module** pointer, read at download
-   time by the node-facing endpoint. There is no per-instance version
-   selection, so there is nothing to batch *over*. Moving that pointer moves it
-   for **every instance carrying that module** simultaneously.
+The version an instance receives is resolved from
+`NodeModule#current_version_id` — a **per-module** pointer, read at download
+time by the node-facing endpoint. The only per-node row for a module,
+`system_node_module_assignments`, has **no version column** (its columns are
+`auto_resolved`, `config`, `node_id`, `node_module_id`, `priority`,
+`source_template_module_id`, `enabled`, and timestamps). So there is no
+per-instance version selection, and nothing to batch *over*. Moving that
+pointer moves it for **every instance carrying that module** simultaneously.
+
+An input that cannot affect the outcome is worse than a missing one — it reads
+as pacing — so `batch_pct` was removed from the contract outright rather than
+accepted and ignored. A stale caller that still passes it is not rejected; the
+value is simply dropped, and the resulting plan is identical.
 
 **What about the approval?** `system.fleet_rolling_upgrade` really is
 `require_approval` ([`FLEET_SENSORS.md`](../FLEET_SENSORS.md)), and the plan
@@ -130,11 +146,10 @@ not its `promotion_state`. Check it carries an `oci_digest`.
 
 ## Step 2 — Plan the upgrade (dry-run via the executor)
 
-The `rolling_module_upgrade` skill is a `monitor`-agent executor: in
-production the **autonomy reconciler** runs the batches (Step 3), but you
-can compute the plan up-front in **plan mode** by invoking the executor
-directly. (There is no `execute_skill` MCP action — the executor is a Ruby
-class; run it via `rails runner` or a seed, exactly as
+The `rolling_module_upgrade` skill is a `monitor`-agent executor. It only ever
+computes a plan — nothing runs it in production either (Step 3) — and you
+invoke it directly to size an upgrade. (There is no `execute_skill` MCP action
+— the executor is a Ruby class; run it via `rails runner` or a seed, exactly as
 [`db/seeds/example_rolling_upgrade.rb`](../../server/db/seeds/example_rolling_upgrade.rb)
 does.)
 
@@ -145,41 +160,39 @@ result = ::System::Ai::Skills::RollingModuleUpgradeExecutor.new(
   template_id:               "<edge-template>",
   module_id:                 "<nginx-module-id>",
   target_version_id:         "v-1.26.0",
-  batch_pct:                 20,
   max_consecutive_failures:  2,
   health_timeout_sec:        300
 )
 # → {
 #      total_instances: 50,
-#      batch_size: 10,
-#      batch_count: 5,
-#      estimated_total_seconds: 1500,
+#      affected_instance_ids: [...all 50 — they move together],
+#      estimated_total_seconds: 6000,
 #      circuit_breaker: { trips_after_consecutive_failures: 2,
 #                         health_timeout_sec: 300,
 #                         status: "not_implemented" },
-#      batches: [
-#        { index: 0, instance_ids: [...10], size: 10,
-#          estimated_seconds: 1200, status: "planned" },
-#        ...
-#      ],
 #      executed: false,
-#      note: "PLAN ONLY — nothing advances these batches. ..."
+#      note: "PLAN ONLY — nothing moves the fleet from this plan, and the
+#             upgrade is FLEET-ATOMIC when you do move it ..."
 #    }
 ```
 
-(Defaults if you omit them: `batch_pct: 10`, `max_consecutive_failures: 2`,
-`health_timeout_sec: 600`.)
+(Defaults if you omit them: `max_consecutive_failures: 2`,
+`health_timeout_sec: 600`. There is no `batch_pct` — see above.)
 
-**Expected outcome:** a plan showing 5 batches of 10 instances each.
+**Expected outcome:** a plan naming all 50 instances in one set. That set is
+the blast radius of the pointer flip in
+[What to do instead](#what-to-do-instead); it is not a first batch.
 
 Read the returned fields carefully:
 
 - `status: "not_implemented"` — the `circuit_breaker` hash is your two
   arguments echoed back. It is not evidence of a live gate.
 - `executed: false` — the plan was computed and nothing was done with it.
-- `estimated_total_seconds: 1500` is an ETA hint only (a flat
+- `estimated_total_seconds: 6000` is an ETA hint only (a flat
   `ETA_PER_INSTANCE_SEC = 120` × instance count). It is not a measured
-  health window, and no batch is timed against it.
+  health window, and nothing is timed against it.
+- `affected_instance_ids` is the **whole** population that converges, not a
+  first batch. There is no second set.
 
 **The plan is still useful** — it tells you how many instances carry the
 module and confirms the target version resolves. Treat it as a sizing
@@ -194,8 +207,8 @@ in `/app/approvals`. **Approving it has no effect on the fleet.** No reconciler
 reads the plan; nothing starts executing on the next tick or any tick.
 
 There is also no "Edit plan" affordance that changes a rollout, because there
-is no rollout — editing `batch_pct` or `max_consecutive_failures` only changes
-numbers in a document.
+is no rollout — and there is no batch size to edit even in principle. Editing
+`max_consecutive_failures` only changes numbers in a document.
 
 ## Step 4 — Watch progress — NOT IMPLEMENTED
 

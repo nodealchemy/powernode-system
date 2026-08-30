@@ -78,18 +78,51 @@ RSpec.describe System::Ai::Skills::CveRunbookGenerateExecutor do
         expect(result[:data][:runbook_markdown]).to include("requires operator approval")
       end
 
-      it "uses batch_pct=10 for non-critical severity" do
-        result = executor.execute(cve_id: cve.cve_id)
-        expect(result[:data][:runbook_markdown]).to include("batch_pct=10")
+      # IMP-b948ea7fa382 — the generated runbook used to instruct the operator
+      # to "trigger rolling_module_upgrade with batch_pct=10" (25 when
+      # critical). That parameter no longer exists on the skill, so the
+      # instruction was about to become uncopyable. The runbook is the most
+      # operator-facing surface this executor has: it must state the
+      # fleet-atomic property rather than a batch size.
+      it "tells the operator the rolling upgrade is fleet-atomic, naming no batch size" do
+        md = executor.execute(cve_id: cve.cve_id)[:data][:runbook_markdown]
+
+        expect(md).to match(/FLEET-ATOMIC/)
+        expect(md).to match(/current_version_id/)
+        expect(md).not_to match(/batch_pct/)
+      end
+
+      it "points at the two staging mechanisms instead of a percentage" do
+        md = executor.execute(cve_id: cve.cve_id)[:data][:runbook_markdown]
+
+        # Whitespace-tolerant: these phrases sit in a wrapped heredoc, and a
+        # rewrap is not a meaning change. The claim being pinned is that both
+        # mechanisms are NAMED, not how the line happens to break.
+        expect(md).to match(/instance\s+pool/i)
+        expect(md).to match(/second\s+NodeModule\s+row/i)
       end
 
       context "with critical severity" do
         before { cve.update!(severity: "critical") }
 
-        it "uses batch_pct=25 in the rolling upgrade step" do
-          result = executor.execute(cve_id: cve.cve_id)
-          expect(result[:data][:runbook_markdown]).to include("batch_pct=25")
+        it "does not scale blast radius by severity — there is nothing to scale" do
+          md = executor.execute(cve_id: cve.cve_id)[:data][:runbook_markdown]
+
+          expect(md).not_to match(/batch_pct/)
+          expect(md).to match(/FLEET-ATOMIC/)
         end
+      end
+
+      # The rollback block was fabricated end-to-end: it named an MCP action
+      # that does not exist (system_rolling_module_upgrade — zero occurrences
+      # repo-wide outside this file) and told the operator to revert by
+      # repromoting, which moves a LABEL and not current_version_id. Pin the
+      # real verb, since a rollback runbook is read under time pressure.
+      it "names a rollback verb that exists and actually moves the pointer" do
+        md = executor.execute(cve_id: cve.cve_id)[:data][:runbook_markdown]
+
+        expect(md).to match(/system_rollback_module_version/)
+        expect(md).not_to match(/system_rolling_module_upgrade/)
       end
     end
 

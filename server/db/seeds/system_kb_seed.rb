@@ -169,7 +169,10 @@ articles = [
       2. **Exposure** — `ExposureCalculator` matches `affected_packages` against module SBOMs
       3. **Triage** — `cve_response` skill computes risk_score and remediation plan
       4. **Approval** — `require_approval` policy gates fleet-wide responses (risk_score ≥ 50)
-      5. **Remediate** — `rolling_module_upgrade` skill executes batched upgrades with circuit breaker
+      5. **Remediate** — `rolling_module_upgrade` skill SIZES the upgrade and stops there. It executes
+         nothing: no batch advancer or circuit breaker exists, and the upgrade is FLEET-ATOMIC anyway
+         (`current_version_id` is a per-module pointer). An operator moves the fleet by repointing it —
+         see `docs/tutorials/06-rolling-upgrade.md`
       6. **Verify** — exposure recompute confirms zero remaining affected instances
       7. **Learn** — `create_learning` documents the response for future similar CVEs
 

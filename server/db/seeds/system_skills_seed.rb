@@ -202,17 +202,26 @@ SKILLS_DATA = [
     name: "Rolling Module Upgrade",
     slug: "system-rolling-module-upgrade",
     invocation_mode: "workflow_step",
-    description: "Plan a batched rolling upgrade of a NodeModule across all instances of a Template, with circuit-breaker and health gating",
+    description: "Size a FLEET-ATOMIC module upgrade across all instances of a Template — PLAN ONLY, and the upgrade cannot be batched or staged",
     category: "release_management",
     subdomain: "modules",
     executor: "System::Ai::Skills::RollingModuleUpgradeExecutor",
-    tags: %w[rolling-upgrade modules release circuit-breaker],
+    tags: %w[rolling-upgrade modules release fleet-atomic],
     system_prompt: <<~PROMPT.strip
-      Plan a batched rolling upgrade of a NodeModule across a Template fleet without full downtime.
-      Inputs: template_id, module_id, target_version_id, batch_pct (default 10%),
-      max_consecutive_failures (default 2), health_timeout_sec.
-      Returns a plan with batches + circuit-breaker config; the autonomy reconciler
-      executes it batch-by-batch.
+      Size a module upgrade across a Template fleet. Inputs: template_id, module_id,
+      target_version_id, max_consecutive_failures (default 2), health_timeout_sec.
+
+      FLEET-ATOMIC. The version an instance receives resolves from
+      NodeModule#current_version_id, a per-MODULE pointer, and the per-node
+      assignment row carries no version column. So every instance carrying the
+      module converges together and there is no batch size to choose. Do not offer
+      the operator a percentage, a canary batch, or a paced rollout — none exist.
+
+      PLAN ONLY: nothing in the platform executes this plan. Moving the fleet is a
+      manual repoint of current_version_id (system_rollback_module_version, which
+      moves the pointer in either direction). For genuine staging, separate the
+      SCOPE instead: an instance pool, or a second NodeModule row with its own
+      pointer. See docs/tutorials/06-rolling-upgrade.md.
     PROMPT
   },
   {

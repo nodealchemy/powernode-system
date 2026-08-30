@@ -507,10 +507,13 @@ module System
         end
 
         # vertical_resize produces a plan only, and NOTHING EXECUTES IT.
-        # RollingModuleUpgradeExecutor slices instances into batches and
+        # RollingModuleUpgradeExecutor names the affected instances and
         # returns; there is no batch advancer, health check, or circuit
         # breaker for module upgrades anywhere in the platform (pinned by
-        # spec/docs/rolling_upgrade_docs_accuracy_spec.rb). This comment used
+        # spec/docs/rolling_upgrade_docs_accuracy_spec.rb). There are no
+        # batches to advance either: the upgrade is FLEET-ATOMIC, because the
+        # served version is a per-module pointer (IMP-b948ea7fa382).
+        # This comment used
         # to explain the plan-only shape as deliberate, by naming a milestone
         # reconciler that would walk the batches through ApprovalRequest —
         # that reconciler was never built, and repeating the promise here made
@@ -546,9 +549,14 @@ module System
             dry_run: false,
             count: plan[:total_instances].to_i,
             scaling_strategy: "vertical_resize",
+            # IMP-b948ea7fa382 — batch_count/batch_size used to be re-exported
+            # here. The plan no longer carries them (module upgrades are
+            # fleet-atomic), and reading absent keys would have re-published
+            # them as nil — a batch story told in nils. Surface the atomic set
+            # instead, which is what the plan now means.
             planned_actions: [ { step: "rolling_module_upgrade_plan",
-                                 batch_count: plan[:batch_count],
-                                 batch_size: plan[:batch_size],
+                                 fleet_atomic: true,
+                                 affected_instance_ids: plan[:affected_instance_ids],
                                  estimated_total_seconds: plan[:estimated_total_seconds] } ],
             outputs: empty_outputs.merge(rolling_upgrade_plan: plan),
             failures: [],
