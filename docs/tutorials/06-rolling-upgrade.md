@@ -70,7 +70,7 @@ controlled production change — operator should sign off on timing.
 | Requirement | How |
 |---|---|
 | Existing fleet ≥10 NodeInstances assigned a common module (e.g., `nginx 1.24.0`) | Provision via Tutorial 01 + assign via Tutorial 02 pattern |
-| New version (`nginx 1.26.0`) published + promoted to `blessed` or `live` | Tutorial 02 step 6–8 |
+| New version (`nginx 1.26.0`) published, plus the version id you will target | Tutorial 02 step 6–8. `promotion_state` is not checked by `RollingModuleUpgradeExecutor` — it accepts any version id present in the module's version list, so a `built` version is a valid target. It does not check `oci_digest` either — it only copies that into the plan as `target_oci_digest` — so verify the target carries one yourself before approving the rollout |
 | Operator permission `system.fleet_rolling_upgrade` (often paired with approval rights) | Default for admin users |
 
 ## Step 1 — Identify the upgrade target
@@ -86,8 +86,9 @@ platform.system_list_instances({ template_id: "<edge-template>" })
 // → { instances: [{ id, status: "running", running_module_digests: { nginx: "sha256:..." } }, ...50] }
 ```
 
-**Expected outcome:** confirm 50 instances running v1.24.0 and v1.26.0
-available for promotion.
+**Expected outcome:** confirm 50 instances running v1.24.0, and v1.26.0
+present in this list — being in the list is what makes it a valid target,
+not its `promotion_state`. Check it carries an `oci_digest`.
 
 ## Step 2 — Plan the upgrade (dry-run via the executor)
 

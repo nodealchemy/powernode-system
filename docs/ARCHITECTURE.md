@@ -93,7 +93,12 @@ artifact per architecture.
 
 **Promotion lifecycle** (`NodeModuleVersion#promote_to!`):
 `built → staging → blessed → live → retired`, gated by `PromotionCriteria`
-(N successful instances run version V for ≥ M minutes). Exposed to
+(N successful instances run version V for ≥ M minutes). This ladder is a
+platform-side label: it does **not** determine what a node receives. The
+node-facing download resolves `NodeModule#current_version_id`
+(`NodeApi::ModulesController#download` reads `@module.current_version&.artifact`),
+which the promotion path never writes — publishing writes it, and
+`system_rollback_module_version` repoints it forward or back. Exposed to
 operators via `POST /api/v1/system/node_module_versions/:id/promote`
 (body: `target_state`) and rollback via
 `POST /api/v1/system/node_modules/:id/rollback` (body: optional

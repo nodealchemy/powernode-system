@@ -386,7 +386,7 @@ platform.system_list_module_versions({ module_name: "my-nginx" })
 // → { versions: [{ id, version_string, promotion_state: "built", composefs_digest, ... }] }
 ```
 
-The column is `promotion_state` (not `lifecycle_state`); valid states are `built, staging, blessed, live, retired`. `built` is the freshly-ingested state; promote through `staging → blessed → live`, demote/rollback to `retired`.
+The column is `promotion_state` (not `lifecycle_state`); valid states are `built, staging, blessed, live, retired`. `built` is the freshly-ingested state; promote through `staging → blessed → live`, demote/rollback to `retired`. Promotion advances that ladder and at most one timestamp column; it does not change which version the fleet serves.
 
 Promote through the lifecycle:
 
@@ -397,7 +397,9 @@ platform.system_promote_module_version({ id: "<version-id>", to: "staging" })
 // staging → blessed (passes operator review)
 platform.system_promote_module_version({ id: "<version-id>", to: "blessed" })
 
-// blessed → live (rolls out fleet-wide; gated by require_approval policy)
+// blessed → live (the last ladder rung; gated by require_approval policy).
+// This does NOT roll the version out — use system_rollback_module_version to
+// repoint current_version_id, or a rolling_module_upgrade for a batched rollout.
 platform.system_promote_module_version({ id: "<version-id>", to: "live" })
 ```
 
@@ -494,8 +496,53 @@ The `mask` directive is a deliberate escape hatch — use sparingly; it inverts 
 | Cosign signature rejected | Static-key mismatch (default path) — repo's `POWERNODE_COSIGN_PRIVATE_KEY` doesn't correspond to the platform's `POWERNODE_COSIGN_PUBLIC_KEY`; only the keyless fallback checks `cosign_identity_regexp`/`cosign_issuer_regexp` | Confirm the repo's cosign key secret with your platform operator; for the keyless fallback, verify the signing CI's OIDC issuer matches your regexp |
 | Module shows in registry but no `NodeModuleVersion` row | OCI ingest hasn't run yet | Wait 60 s for the next ingest poll; check `journalctl -u 'powernode-*-sidekiq.service' \| grep ModuleOciIngest` |
 | `protected_spec` collision on assignment | Another module owns one of your protected files | Rename your file or use `mask` in a `config`-variety override |
-| Assignment to template succeeds but agent doesn't pull | Module is still `built` promotion_state — agents only pull `blessed`+ | Promote: `system_promote_module_version` |
+| Assignment to template succeeds but agent doesn't pull | The module's `current_version_id` does not point at a version carrying a mountable artifact. That pointer — **not** `promotion_state` — is what the node-facing download resolves (`NodeApi::ModulesController#download` reads `@module.current_version&.artifact`) | [Why the agent isn't pulling](#why-the-agent-isnt-pulling), below. Promoting is **not** the fix |
 | fs-verity digest mismatch on agent | Module artifact corrupted during transit | Re-run CI build; the platform re-ingests on next OCI poll |
+
+### Why the agent isn't pulling
+
+No node-facing surface consults `promotion_state`, so promoting a version cannot change
+what an agent receives. `promotion_state` is a ladder the *platform* reads for its own
+decisions (the `module_promotion_sensor`, the staging check in
+`DecisionEngine#apply_module_promotion`, CVE remediation's candidate filter, compliance
+counts); `NodeModule#current_version_id` is what a node is served. Start by finding out
+what the pointer points at — `system_list_module_versions` marks the served row
+`current: true` — then match the cause:
+
+**1. The pointer was never moved onto your build.** Publishing writes it by default, but
+withholds it in several cases, and the two publish paths report differently:
+
+- The Gitea module webhook (`gitea_module#handle` → `System::ModulePublicationProcessor`)
+  withholds when the module sets `auto_promote` false, when the erofs layer is under the
+  non-empty floor, or when `System::CoreProvenanceGate` refuses the build's core provenance
+  (that gate is inert unless the publish carries a `native_build`). Each emits a
+  high-severity `system.module_promotion_withheld` event naming the reason — read it first.
+- The REST/worker publish (`ModulePublicationsController#create`) withholds on `auto_promote`
+  false, on the same non-empty floor, and on a batch-atomic deferral when a sibling module in
+  the same build batch is still building. Only the deferral emits an event
+  (`system.module_promotion_deferred`); the other two are log-only. **So the absence of a
+  withheld event does not mean the pointer moved** — check `current: true` rather than
+  inferring from events.
+
+  Fix: repoint with `system_rollback_module_version({ module_id, version_id })`. Despite the
+  name it moves `current_version_id` **forward** as well as back, and it is the writer that
+  arms `RestartAfterUpdate`. It refuses a target whose artifact is missing, whose `oci_digest`
+  is blank, or whose recorded size is below the same non-empty floor
+  (`NodeModuleVersion#rollback_usable?`) — which is precisely the floor case above, so for
+  that one repointing is not available: lower the floor
+  (`SiteSetting system.module_publish.min_artifact_bytes`) and republish, or fix the build so
+  the layer carries real content. A deferral needs no action — the orchestrator promotes the
+  whole batch when its siblings finish.
+
+**2. The pointer was moved onto a spec-only version.** Editing a module's versioned
+attributes (`file_spec`, `config`, `dependency_spec`, `protected_spec`, …) fires
+`NodeModule#auto_create_version`, which creates a new version row and points
+`current_version_id` at it. That row carries no build artifact, so `download` returns
+"Module has no published artifact" and the agent has nothing to mount. Fix: republish so a
+build artifact lands on the new version, or repoint to the last version that has one.
+
+Whether the promotion ladder *should* gate what the fleet serves is an open lifecycle-gating
+question tracked separately (IMP-c7d618b0b72f); this runbook describes current behaviour only.
 
 ## How the System Concierge should use this
 

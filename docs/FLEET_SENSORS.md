@@ -115,7 +115,7 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 **Watches:** `NodeModuleVersion.lifecycle_state` transitions (staging → blessed)
 **Threshold:** Module spends >24h in staging without operator promotion → `module_promotion_pending` signal
 **Signals:** `module.promotion_ready`, `module.promotion_stalled`
-**Recommended remediation:** None automated — operator promotes via UI or `system_promote_module_version` MCP action.
+**Recommended remediation:** promotion to `blessed`, approval-gated — `system.module_promotion_ready` is bound in `DecisionEngine::SIGNAL_BINDINGS` to the `system.module_promote_to_live` category, applied by `DecisionEngine#apply_module_promotion` (which re-checks the version is still `staging`) via `ModulePromotionService.promote!`. An operator can do the same by hand in the UI or with `system_promote_module_version`. **Either way this advances `promotion_state` only — it does not change which version the fleet serves.** The node-facing download resolves `NodeModule#current_version_id` (`NodeApi::ModulesController#download` reads `@module.current_version&.artifact`), and nothing in the promotion path writes that pointer. To put this version on the fleet, repoint it as well: `system_rollback_module_version({ module_id, version_id })` moves `current_version_id` forward as well as back, and refuses a target with no mountable artifact. `system_list_module_versions` marks the served row `current: true`.
 
 ### `certificate_expiry_sensor` — TLS cert expiration
 
@@ -541,7 +541,7 @@ Source: `db/seeds/fleet_autonomy_agent.rb`. Approval chain: `Fleet Autonomy Acti
 | `system.instance_reprovision` | `require_approval` | Destructive — wipes ephemeral state |
 | `system.instance_terminate` | `require_approval` | Destructive — releases provider VM, cascade-FK deletes managed rows |
 | `system.cert_revoke` | `require_approval` | Cuts active mTLS session |
-| `system.module_promote_to_live` | `require_approval` | Promotes module across the fleet |
+| `system.module_promote_to_live` | `require_approval` | Advances `promotion_state` (to `blessed`); does **not** change which version the fleet serves |
 | `system.fleet_rolling_upgrade` | `require_approval` | Touches many instances; `rolling_module_upgrade` skill plans batches |
 | `system.region_expansion` | `require_approval` | Cost-bearing |
 | `system.capacity_resize` | `require_approval` | Cost-bearing; `capacity_recommend` skill emits the proposal |

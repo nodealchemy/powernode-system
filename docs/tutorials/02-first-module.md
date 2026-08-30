@@ -297,8 +297,10 @@ platform.system_promote_module_version({ id: "v-redis-0.1.0", to: "staging" })
 platform.system_promote_module_version({ id: "v-redis-0.1.0", to: "blessed" })
 // Operator review passed; module is recommendable
 platform.system_promote_module_version({ id: "v-redis-0.1.0", to: "live" })
-// Now eligible for fleet-wide rollout
+// Top of the ladder — note this does NOT put the version on the fleet
 ```
+
+Promotion moves `promotion_state` and nothing else. It does **not** change which version a node is served: the node-facing download resolves `NodeModule#current_version_id`, which the promotion path never writes. Step 7's webhook is what moves it: `gitea_module#handle` runs `System::ModulePublicationProcessor`, which writes `current_version_id` by default. It withholds that write when the module sets `auto_promote` false or when the erofs layer is under the non-empty floor, emitting a high-severity `system.module_promotion_withheld` event naming the reason. (A third condition, a `System::CoreProvenanceGate` refusal, applies only to native builds — the gate is inert on this path.) `system_list_module_versions` marks the served row `current: true`; if no row carries it, repoint with `system_rollback_module_version({ module_id, version_id })`, which moves the pointer forward as well as back — though it refuses a target below that same floor. See [module-authoring.md](../runbooks/module-authoring.md#why-the-agent-isnt-pulling) for the full decision tree.
 
 Promotion to `live` is often `require_approval` — check `module_promote_to_live` intervention policy. Demoting / rolling back uses the same MCP action with `to: "retired"` (no `archived` state — that's old documentation).
 

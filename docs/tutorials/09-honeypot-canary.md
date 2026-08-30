@@ -80,7 +80,7 @@ segmentation + immutable initramfs + fs-verity makes that hard.
 |---|---|
 | A NodeInstance you can SSH to (via SDWAN) | Tutorial 01 + `system_sdwan_create_access_grant` |
 | Operator with `system.honeypot.read` permission | Default for admins |
-| `honeypot-canary` module in catalog (promoted ≥ blessed) | Ships in default catalog |
+| `honeypot-canary` module in catalog, with a `current: true` version carrying an artifact | Ships in default catalog. A promotion state is **not** a prerequisite — no node-facing surface reads `promotion_state`; the agent is served whatever `NodeModule#current_version_id` points at |
 
 ## Step 1 — Assign the canary module
 
