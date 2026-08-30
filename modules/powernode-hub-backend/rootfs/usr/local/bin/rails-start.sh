@@ -343,6 +343,19 @@ echo "[rails-start] schema-drift backstop check…"
 echo "[rails-start] governance policy reconcile…"
 /usr/local/bin/bundle exec rails runner /usr/local/bin/governance-reconcile.rb || true
 
+# --- Role-grant reconcile (advisory, NEVER fatal) ---------------------------
+# Same shape, same reason, different table. db:seed is FIRST BOOT ONLY and every
+# other caller of Role.sync_from_config! is first-install-only too, so a grant
+# added to the permission catalog after an install's first boot never becomes a
+# role_permissions row there — the operator is refused and NOTHING errors.
+# Permissions::RoleGrantReconciler creates absence only; it never updates a role
+# and never deletes a grant, so an out-of-catalog grant (including every grant
+# belonging to an extension this boot did not compose) survives. Running
+# Role.sync_from_config! here instead would DELETE those — it is full
+# destructive reconciliation against the catalog loaded in this process.
+echo "[rails-start] role-grant reconcile…"
+/usr/local/bin/bundle exec rails runner /usr/local/bin/role-grants-reconcile.rb || true
+
 # --- Ensure the host's own HTTPS login ingress for the bundled reverse proxy ---
 # Root cause this closes (imp 019f6c3d): the reverse-proxy-traefik service runs
 # `traefik` directly and never generates a dynamic config, and in extension mode
