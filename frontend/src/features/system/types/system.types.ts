@@ -775,6 +775,11 @@ export interface SystemGitopsRepository {
   repo_url: string;
   branch: string;
   path_prefix: string;
+  // Vault KV PATH and the key NAMES that path must hold for this remote's
+  // scheme — never credential material. Optional because the API only began
+  // returning them in IMP-0f914db2c7cf; a cached client may not see them.
+  vault_credential_path?: string | null;
+  required_credential_keys?: string[];
   enabled: boolean;
   auto_apply: boolean;
   last_synced_at?: string | null;

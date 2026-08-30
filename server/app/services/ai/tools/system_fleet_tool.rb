@@ -6024,6 +6024,11 @@ module Ai
           repo_url: repo.repo_url,
           branch: repo.branch,
           path_prefix: repo.path_prefix,
+          # PATH and key NAMES only, never credential material. See
+          # serialize_repo in gitops_repositories_controller.rb for why these
+          # are safe and what they pair with (IMP-0f914db2c7cf).
+          vault_credential_path: repo.vault_credential_path,
+          required_credential_keys: repo.required_credential_keys,
           auto_apply: repo.auto_apply,
           enabled: repo.enabled,
           last_status: repo.last_status,

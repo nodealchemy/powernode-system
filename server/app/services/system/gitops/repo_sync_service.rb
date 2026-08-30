@@ -119,13 +119,20 @@ module System
         creds = fetch_vault_creds
         return {} unless creds
 
+        # The required key set comes from the REPOSITORY, not from a literal
+        # here, so the operator surfaces that advertise it (serialize_repo,
+        # serialize_gitops_repository, and the credential-path probe on
+        # POST /api/v1/admin_settings/vault/test) cannot drift from what this
+        # branch actually enforces. IMP-0f914db2c7cf.
+        required = Array(@repository.required_credential_keys)
+
         if @repository.repo_url.start_with?("https://", "http://")
-          # Build a one-shot askpass that returns the password
-          require_creds!(creds, "password")
+          # Build a one-shot askpass that answers both git prompts
+          require_creds!(creds, *required)
           askpass = build_askpass_script(creds["username"], creds["password"])
           { "GIT_ASKPASS" => askpass, "GIT_TERMINAL_PROMPT" => "0" }
         elsif @repository.repo_url.start_with?("git@", "ssh://")
-          require_creds!(creds, "ssh_key")
+          require_creds!(creds, *required)
           ssh_key_file = build_ssh_key_file(creds["ssh_key"])
           ssh_command = "ssh -i #{ssh_key_file} -o StrictHostKeyChecking=no -o IdentitiesOnly=yes"
           { "GIT_SSH_COMMAND" => ssh_command }
@@ -144,6 +151,18 @@ module System
       #
       # Reports PRESENCE, SHAPE and KEY NAMES only — never a credential value.
       def require_creds!(creds, *required)
+        # An EMPTY contract must refuse, not wave the clone through unchecked.
+        # Unreachable today — the scheme dispatch lives on the repository and
+        # every arm that gets here has keys — but the coupling between this
+        # file's branches and the model's is by convention, so a future branch
+        # added on one side only fails CLOSED instead of silently enforcing
+        # nothing and letting build_askpass_script write a blank password.
+        if required.compact.empty?
+          raise CredentialShapeError,
+                "No credential contract for #{@repository.repo_url} — refusing to authenticate " \
+                "with an unchecked payload from #{@repository.vault_credential_path}"
+        end
+
         unless creds.is_a?(Hash)
           raise CredentialShapeError,
                 "Vault credential payload at #{@repository.vault_credential_path} is not a Hash " \
@@ -166,14 +185,32 @@ module System
       end
 
       def build_askpass_script(username, password)
-        # Single-use script that echoes the password. Username is embedded
-        # in the URL via the standard Git mechanism.
+        # Single-use script that answers whichever prompt git asks. Git invokes
+        # GIT_ASKPASS once PER PROMPT with the prompt text as $1, and for a
+        # remote carrying no userinfo it asks "Username for '...'" FIRST. This
+        # shim previously ignored $1 and echoed the password every time, so
+        # such a clone authenticated as <password>:<password> and the Vault
+        # `username` was read and discarded. The comment here asserted the
+        # username "is embedded in the URL via the standard Git mechanism" —
+        # nothing put it there; clone_fresh uses repo_url verbatim.
         path = "#{work_tree_path}.askpass"
         File.open(path, "w", 0o700) do |f|
-          f.write("#!/bin/bash\necho '#{password.to_s.gsub("'", %q('"'"'))}'\n")
+          f.write(<<~SH)
+            #!/bin/bash
+            case "$1" in
+              Username*) echo '#{shell_quote(username)}' ;;
+              *)         echo '#{shell_quote(password)}' ;;
+            esac
+          SH
         end
         FileUtils.chmod(0o700, path)
         path
+      end
+
+      # Close a single-quoted shell literal, emit a quoted quote, reopen. The
+      # value never reaches a log or an exception — only this one-shot file.
+      def shell_quote(value)
+        value.to_s.gsub("'", %q('"'"'))
       end
 
       def build_ssh_key_file(key_content)

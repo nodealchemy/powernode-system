@@ -396,8 +396,13 @@ cap.
 Two things the platform will not tell you, both worth knowing before you
 read the error:
 
-- **A Vault miss is reported as a git failure, not a Vault one.**
-  `RepoSyncService#fetch_vault_creds` rescues a failed Vault read, logs it,
+- **A Vault miss is reported as a git failure, not a Vault one.** This is the
+  READ-FAILURE case specifically — an unreachable Vault, a sealed one, a path
+  that does not exist, a denied policy. A path that resolves to the *wrong
+  shape* is a different case and fails honestly: `require_creds!` raises
+  `CredentialShapeError` naming the missing key before git runs at all.
+
+  On a read failure, `RepoSyncService#fetch_vault_creds` rescues, logs it,
   and returns `nil`; `build_git_env` then falls through to an **anonymous**
   clone. Whatever git then says is what lands in `error_message` — for an
   `https://` remote an authentication failure, for a `git@` remote usually
@@ -432,22 +437,72 @@ read the error:
   explains every credential failure at once and no per-repository digging is
   needed.
 
-- **Nothing exposes a credential path's contents or existence.** Plenty of
-  platform code reads Vault KV, but no MCP verb and no REST route will read,
-  list, or test a specific path for you — checked against the whole tool
-  registry (604 verbs) and the 9 introspection tools. Neither `serialize_repo`
-  (REST) nor `serialize_gitops_repository` (MCP) echoes `vault_credential_path`
-  back either, so you cannot confirm from the platform which path a repository
-  is configured with. Read it out of band instead, as
+- **Then check the path, which is the other half.** A reachable, unsealed
+  Vault still fails the sync if the repository points at a path that does not
+  exist or holds the wrong keys. The REST read echoes the configuration back,
+  so you can see what to probe without leaving the platform:
+
+  ```bash
+  curl -H "Authorization: Bearer $JWT" \
+    http://localhost:3000/api/v1/system/gitops_repositories/$REPO_ID
+  # → gitops_repository: { ..., vault_credential_path, required_credential_keys }
+  ```
+
+  `required_credential_keys` is derived from your remote's URL: `ssh_key` for
+  `git@`/`ssh://`; `password` for an `https://` remote that already names a
+  user (`https://bot@host/repo.git`); `password` **and** `username` for one
+  that does not, because git then prompts for the username first and the
+  askpass shim has to answer it. `[]` means an anonymous repo with no
+  credential path. `null` means the opposite and is worth acting on: the
+  repository HAS a credential path but its URL scheme matches neither auth
+  branch, so the sync clones anonymously and ignores the path entirely.
+
+  The `required_credential_keys` value is the same set `RepoSyncService`
+  enforces — `build_git_env` passes it straight to `require_creds!` — so the
+  advertised contract cannot drift from the enforced one. Feed both fields to
+  the probe:
+
+  This read is REST-only. The MCP `serialize_gitops_repository` carries the
+  same two fields, but its sole call site is `system_gitops_register_repository`,
+  so over MCP you see them only on the repository you just created. There is
+  no MCP verb that reads an existing GitOps repository back.
+
+  ```bash
+  curl -X POST -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
+    -d '{"path":"secret/data/powernode/gitops/fleet-deploy-key","required_keys":["ssh_key"]}' \
+    http://localhost:3000/api/v1/admin_settings/vault/test
+  # → { connected, sealed, ..., credential_path, path_present,
+  #     credential_keys, required_keys, missing_keys, shape_ok }
+  ```
+
+  Read it as: `path_present: false` — nothing at that path. `shape_ok: false`
+  with `missing_keys: ["ssh_key"]` — the path resolves but not to what this
+  remote needs; `credential_keys` lists what it *does* hold. `path_present:
+  null` with a `path_error` — the read itself failed (a denied policy, say),
+  which is deliberately not reported as an absent path. `shape_ok: null` —
+  you sent no `required_keys`, so the key names are reported but the shape was
+  not judged; that is a declined verdict, not a pass. A blank value counts as
+  missing, matching the sync path.
+
+  A successful probe also invalidates that path's entry in the Vault read
+  cache, so the next sync reads what the probe just saw rather than re-serving
+  a stale five-minute-old hit. Probe after fixing a payload and the next sync
+  agrees with you.
+
+  Three limits worth knowing. The probe reports **key names only, never
+  values** — by design, and nothing should change that. It requires
+  `admin.settings.security`, not the `admin.settings.read` that the plain
+  connectivity check above needs, because naming an arbitrary KV path
+  discloses what lives there. And it deliberately does not participate in the
+  Vault circuit breaker, so repeated probes of an unreadable path cannot trip
+  Vault offline for the rest of the platform. For the values themselves, read
+  out of band as
   [`../runbooks/gitops-reconciliation.md`](../runbooks/gitops-reconciliation.md)
   describes:
 
   ```bash
   vault kv get secret/data/powernode/gitops/fleet-deploy-key
   ```
-
-  Confirm it holds the shape `RepoSyncService` expects for your remote's
-  scheme (see Step 2). Capability gap, filed separately.
 
 **Module versions in fleet.yaml not pinned, surprise upgrades happen** —
 pin specific versions in `fleet.yaml` (e.g., `- nginx@1.26.0`) instead

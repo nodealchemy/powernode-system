@@ -112,6 +112,15 @@ module Api
             repo_url: repo.repo_url,
             branch: repo.branch,
             path_prefix: repo.path_prefix,
+            # A Vault KV PATH and a set of key NAMES — never credential
+            # material. Both were write-only before IMP-0f914db2c7cf: the API
+            # accepted vault_credential_path and never echoed it, so an
+            # operator could not confirm which path a failing repository was
+            # configured with. Pair them with
+            # POST /api/v1/admin_settings/vault/test { path:, required_keys: }
+            # to see whether that path resolves and carries these keys.
+            vault_credential_path: repo.vault_credential_path,
+            required_credential_keys: repo.required_credential_keys,
             enabled: repo.enabled,
             auto_apply: repo.auto_apply,
             last_synced_at: repo.last_synced_at,
