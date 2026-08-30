@@ -57,6 +57,10 @@ module ModuleDocsMcpCallSignatures
     "docs/runbooks/vault-credential-restoration.md",
     "docs/tutorials/02-first-module.md",
     "docs/tutorials/06-rolling-upgrade.md",
+    # BATCH 3 — no doc edit: its only failure was a `// ...same inputs...`
+    # elision, which the required-parameter check now correctly exempts. It is
+    # here so the exemption itself has live coverage in this spec.
+    "docs/runbooks/expose-service.md",
     # BATCH 1 — the bare `id:` rename family. 24 call sites across 14 files
     # passed a resource id under the key `id` where the verb declares
     # `<resource>_id`; the values were already ids, so it was a pure key
@@ -111,7 +115,7 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
       body = balanced_body(text, open_brace)
       next if body.nil?
 
-      calls << [verb, top_level_keys(body), line]
+      calls << [verb, top_level_keys(body), line, elides_arguments?(body)]
     end
     calls
   end
@@ -181,6 +185,53 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
     keys
   end
 
+  # True when the example deliberately ELIDES arguments: a bare `...`, or a `//`
+  # comment containing `...`, standing where a KEY would go. Such an example
+  # makes no claim about completeness, so the required-parameter check is not
+  # applied to it — every key it DOES show is still checked.
+  #
+  # Measured for IMP-84c318bf31f9: 15 of the tree's call sites are elided this
+  # way, and each was producing a "missing required" failure that is a parser
+  # artefact rather than a doc defect. Nothing goes stale: the exemption is read
+  # out of the file, so deleting the `...` restores the check on the next run.
+  #
+  # `{ node_id: ... }` is deliberately NOT this case. There the ellipsis is a
+  # VALUE, and the example still asserts that node_id is the whole argument
+  # list — which for system_provision_instance is false and does not work.
+  def self.elides_arguments?(body)
+    depth = 0
+    i = 0
+    at_key_position = true
+    in_string = nil
+    while i < body.length
+      ch = body[i]
+      if in_string
+        i += 2 and next if ch == "\\"
+        in_string = nil if ch == in_string
+      elsif ch == '"' || ch == "'" || ch == "`"
+        in_string = ch
+      elsif ch == "/" && body[i + 1] == "/"
+        line_end = body.index("\n", i) || body.length
+        return true if depth.zero? && at_key_position && body[i...line_end].include?("...")
+
+        i = line_end
+        next
+      elsif ch == "{" || ch == "["
+        depth += 1
+      elsif ch == "}" || ch == "]"
+        depth -= 1
+      elsif depth.zero? && ch == ","
+        at_key_position = true
+      elsif depth.zero? && at_key_position && body[i, 3] == "..."
+        return true
+      elsif depth.zero? && !ch.match?(/\s/)
+        at_key_position = false
+      end
+      i += 1
+    end
+    false
+  end
+
   # verb => { name => required? }, from the verb's OWN declaration.
   #
   # Two registries, because MCP has two. PlatformApiToolRegistry::TOOLS maps a
@@ -236,7 +287,7 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
         expect(calls).not_to be_empty
       end
 
-      calls.each do |verb, keys, line|
+      calls.each do |verb, keys, line, elided|
         declared = declared_parameters(verb)
 
         it "#{verb} at line #{line} is a registered MCP verb" do
@@ -274,6 +325,11 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
             "which #{verb} does not accept. Declared: #{declared.keys.sort.inspect}"
           )
         end
+
+        # An explicitly elided example (`{ node_id: "...", ... }`) claims nothing
+        # about completeness, so no required-parameter example is generated for
+        # it. Its unknown-key example above still runs.
+        next if elided
 
         it "#{verb} at line #{line} supplies every required parameter" do
           missing = declared.select { |_, required| required }.keys - keys
