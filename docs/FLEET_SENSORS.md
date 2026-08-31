@@ -53,8 +53,8 @@ flowchart LR
         S24[sdwan_user_device_config_staleness]
         S25[module_verify_failed]
     end
-    subgraph Signals["FleetEvent signal kinds"]
-        Sig[instance.* / module.* / cert.* / config.* / gitops.*<br/>sdwan.* / honeypot.* / slo.* / project.* / storage.* / fleet.trading_*]
+    subgraph Signals["Sensor signal kinds (FleetEvent also carries non-sensor kinds, e.g. sdwan.credential_issued)"]
+        Sig[system.* — every sensor kind is system.-prefixed<br/>system.instance_silent / system.module_drift / system.cert_expiring<br/>system.sdwan_peer_drift / system.slo_violation / system.project_drift]
     end
     subgraph Executors["Skill executors (representative — see SKILL_EXECUTOR_CATALOG.md for all 54)"]
         E1[drift_remediate]
@@ -77,6 +77,44 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 
 ## Sensor Reference
 
+> **Signal-kind correction — IMP-e839dd0ffc05 (2026-08-31).** Twelve blocks below
+> named signal kinds that **no sensor has ever emitted**, and the diagram above
+> advertised ten namespaces that do not exist. **Every kind a fleet sensor emits is
+> `system.`-prefixed**; `DecisionEngine::SIGNAL_BINDINGS` keys on those names, so an
+> intervention policy bound to any name in the left column below **never fires and
+> reports no error** — check yours against this table. The fabricated names are
+> listed rather than deleted so an operator who wrote one down can find it.
+>
+> | Named in this doc before 2026-08-31 | Actually emitted |
+> |---|---|
+> | `instance.silent` | `system.instance_silent` |
+> | `module.drift_detected` | `system.module_drift` |
+> | `cert.expiring` | `system.cert_expiring` (node certs) / `system.acme_cert_expiring` (platform ACME certs) |
+> | `config.drift_detected` | `system.config_drift` |
+> | `sdwan.peer_drift`, `sdwan.peer_drift_detected` | `system.sdwan_peer_drift` |
+> | `sdwan.bgp_unhealthy` | `system.sdwan_bgp_session_unhealthy`, `system.sdwan_bgp_session_stale` |
+> | `sdwan.vip_holder_silent` | `system.sdwan_vip_unreachable` |
+> | `honeypot.access`, `honeypot.access_attempted` | `system.honeypot_access` |
+> | `slo.violated` | `system.slo_violation` |
+> | `system.instance_state_drift` | `system.instance_state_drifted` (note the `-ed`) |
+> | `gitops.drift_detected` | `system.gitops.drift_detected` (the one kind with two dots) |
+> | `project.slo_violation`, `project.drift`, `project.cost_breach` | `system.project_slo_violation`, `system.project_drift`, `system.project_cost_breach` |
+>
+> **Recovery signals are NOT IMPLEMENTED.** The blocks below advertised
+> detected/resolved PAIRS the platform does not build. No sensor emits a recovery
+> counterpart — recovery is the fingerprint's **absence on a later tick**, which the
+> `sdwan_reachability_sensor` block already stated. Withdrawn as NOT IMPLEMENTED:
+> `instance.recovered`, `module.drift_resolved`, `cert.expired`, `cert.rotated`,
+> `config.drift_resolved`, `sdwan.peer_drift_resolved`, `sdwan.bgp_recovered`,
+> `sdwan.vip_holder_recovered`, `honeypot.access_blocked`, `slo.recovered`,
+> `gitops.drift_resolved`. Do not wait for one; poll for the signal's absence.
+>
+> Pinned by `spec/docs/fleet_sensors_signal_kinds_spec.rb`, which asserts file-wide
+> that the kinds named here EQUAL the kinds the sensors in
+> `server/app/services/system/fleet/sensors/` can emit. The two CVE sensors under
+> `cve_ops/sensors/` are out of that set and out of this reference, by the same
+> scoping as the sensor count above.
+
 ### `stuck_task_backlog_sensor` — System task backlog staleness
 
 **Source:** `stuck_task_backlog_sensor.rb`
@@ -89,16 +127,16 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 
 **Source:** `instance_status_sensor.rb`
 **Watches:** `System::NodeInstance.last_heartbeat_at`
-**Threshold:** Configurable per-template; default 5 minutes silent → `instance_silent` signal
-**Signals:** `instance.silent`, `instance.recovered`
+**Threshold:** Configurable per-template; `SILENT_THRESHOLD` default **3 minutes** silent → `system.instance_silent` signal
+**Signals:** `system.instance_silent` — the only kind this sensor emits. No recovery counterpart exists; recovery is the fingerprint's absence on a later tick.
 **Recommended remediation:** `attribute_failure` (skill) for diagnostics, then operator-initiated reprovision.
 
 ### `module_drift_sensor` — Module config drift
 
 **Source:** `module_drift_sensor.rb`
 **Watches:** `NodeInstance.running_module_digests` vs assigned module digests
-**Threshold:** Any digest mismatch → `module_drift` signal
-**Signals:** `module.drift_detected`, `module.drift_resolved`
+**Threshold:** Any digest mismatch → `system.module_drift` signal
+**Signals:** `system.module_drift` — the only kind this sensor emits. No recovery counterpart exists; recovery is the fingerprint's absence on a later tick.
 **Recommended remediation:** `drift_remediate` skill (Fleet Autonomy auto-runs with `notify_and_proceed`).
 
 ### `boot_image_drift_sensor` — Boot-image freshness drift
@@ -125,16 +163,24 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 
 **Source:** `certificate_expiry_sensor.rb`
 **Watches:** `NodeCertificate.not_after` (mTLS instance certs from `InternalCaService`)
-**Threshold:** Cert expires within 14 days → `cert_expiring` signal; expired → `cert_expired` signal
-**Signals:** `cert.expiring`, `cert.expired`, `cert.rotated`
+**Threshold:** Cert expires within `ADVISORY_WINDOW` (**7 days**) → `system.cert_expiring` signal. Severity carries the urgency (`:high` inside `URGENT_WINDOW`, else `:medium`); there is no separate already-expired kind, and no post-rotation kind — the rotation is an ACTION (`system.cert_rotate`), not a signal.
+**Signals:** `system.cert_expiring` — the only kind this sensor emits.
 **Recommended remediation:** Auto-rotate via `system.cert_rotate` action (Fleet Autonomy `auto_approve` policy). 90-day default lifetime.
+
+### `cert_expiry_sensor` — Platform ACME cert expiration
+
+**Source:** `cert_expiry_sensor.rb` (class `CertExpirySensor`)
+**Watches:** `System::AcmeCertificate.expires_at` — the Let's Encrypt / internal-CA certs Traefik terminates on the platform's **public listeners**. Deliberately distinct from `certificate_expiry_sensor` above, which watches on-node `System::NodeCertificate` mTLS identity certs: different store, different remediation path, and therefore a different signal kind.
+**Threshold:** Within `AcmeCertificate::RENEWAL_WINDOW` (30 days) → `:medium`; within 7 days → `:high` (a renewal has been failing — CA availability or DNS-01 propagation).
+**Signals:** `system.acme_cert_expiring` — the only kind this sensor emits.
+**Recommended remediation:** `system.acme_cert_rotate` — the sensor is pure read-side and NEVER renews; the DecisionEngine routes to the `platform_maintenance` `cert_rotate` capability.
 
 ### `config_drift_sensor` — On-node config drift
 
 **Source:** `config_drift_sensor.rb`
 **Watches:** Agent-reported config hash vs platform-computed config hash
-**Threshold:** Hash mismatch → `config_drift` signal
-**Signals:** `config.drift_detected`, `config.drift_resolved`
+**Threshold:** Hash mismatch → `system.config_drift` signal
+**Signals:** `system.config_drift` — the only kind this sensor emits. No recovery counterpart exists; recovery is the fingerprint's absence on a later tick.
 **Recommended remediation:** `drift_remediate` skill (same as module drift).
 
 ### `sdwan_reachability_sensor` — Hub reachability
@@ -156,40 +202,41 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 
 **Source:** `sdwan_drift_sensor.rb`
 **Watches:** Agent-reported wg interface state vs platform desired config
-**Threshold:** Interface missing or wrong AllowedIPs → `sdwan.peer_drift` signal
-**Signals:** `sdwan.peer_drift_detected`, `sdwan.peer_drift_resolved`
+**Threshold:** Interface missing or wrong AllowedIPs → `system.sdwan_peer_drift` signal
+**Signals:** `system.sdwan_peer_drift` — the only kind this sensor emits. No recovery counterpart exists; recovery is the fingerprint's absence on a later tick.
 **Recommended remediation:** `sdwan_peer_remediate` skill — rotate keys + force tunnel re-establish.
 
 ### `sdwan_bgp_session_health_sensor` — iBGP session health
 
 **Source:** `sdwan_bgp_session_health_sensor.rb`
 **Watches:** `Sdwan::BgpSession.state` (Idle/Connect/Active/OpenSent/OpenConfirm/Established)
-**Threshold:** Session non-Established for >10 minutes → `sdwan.bgp_unhealthy` signal
-**Signals:** `sdwan.bgp_unhealthy`, `sdwan.bgp_recovered`
+**Threshold:** Session non-Established for longer than `UNHEALTHY_WINDOW` (**5 minutes**) → `system.sdwan_bgp_session_unhealthy` signal
+**Signals:** four kinds, two lanes. Session health: `system.sdwan_bgp_session_unhealthy`, and `system.sdwan_bgp_session_stale` (the report itself aged out). Attribution of the agent's observation, which is a separate oracle — an observation the platform cannot attribute to one network must never be scored as health: `system.sdwan_bgp_observation_unattributable` (a report already ACTED on under the old shape) and `system.sdwan_bgp_observation_not_measured` (a self-declared absence). No recovery counterpart exists; recovery is the fingerprint's absence on a later tick.
 **Recommended remediation:** `sdwan_bgp_session_remediate` skill (planning-only; operator runs `vtysh` recommendation).
 
 ### `sdwan_vip_reachability_sensor` — VIP holder health
 
 **Source:** `sdwan_vip_reachability_sensor.rb`
 **Watches:** `Sdwan::VirtualIp.holder_peer_ids` against peer handshake health
-**Threshold:** Single-holder VIP's holder is silent → `sdwan.vip_holder_silent` signal
-**Signals:** `sdwan.vip_holder_silent`, `sdwan.vip_holder_recovered`
+**Threshold:** Single-holder VIP's holder is silent → `system.sdwan_vip_unreachable` signal
+**Signals:** `system.sdwan_vip_unreachable` — the only kind this sensor emits, for anycast and single-holder VIPs alike; one signal per unreachable HOLDER either way. Three things differ by `anycast?`: the fingerprint (per holder vs per VIP, so an anycast VIP does not collapse its holders into one decision), the severity (`:high` at 10 min only for single-holder — an anycast VIP degrades gracefully and stays `:medium` until the 30-minute `:critical` floor), and `payload.remediation_action` (nil for anycast, whose failover happens at the BGP layer). No recovery counterpart exists; recovery is the fingerprint's absence on a later tick.
 **Recommended remediation:** `sdwan_vip_failover` skill — promotes the next failover candidate.
 
 ### `honeypot_access_sensor` — Canary module access
 
 **Source:** `honeypot_access_sensor.rb`
 **Watches:** `CanaryModuleService` access logs on canary modules placed in the catalog
-**Threshold:** Any access attempt → `honeypot.access` signal (high severity)
-**Signals:** `honeypot.access_attempted`, `honeypot.access_blocked`
+**Threshold:** Any access attempt → `system.honeypot_access` signal (always `:critical`, never `:high` — a canary access is by definition an indicator of compromise)
+**Signals:** `system.honeypot_access` — the only kind this sensor emits, one per running instance hosting the accessed canary module (falling back to one instance-less signal when nothing hosts it). Nothing signals that an access was blocked.
+**Input:** this sensor does not observe the access itself. It READS `system.honeypot_triggered` FleetEvents that `CanaryModuleService.observe_access!` writes, and elevates them into the autonomy pipeline — so that kind is an INPUT here, not a signal this sensor emits.
 **Recommended remediation:** None automated — escalates to operator + governance pipeline.
 
 ### `slo_violation_sensor` — SLO breach detection
 
 **Source:** `slo_violation_sensor.rb`
 **Watches:** `Slo::Definition` rolling-window metrics
-**Threshold:** SLO breach → `slo.violated` signal
-**Signals:** `slo.violated`, `slo.recovered`
+**Threshold:** SLO breach → `system.slo_violation` signal
+**Signals:** `system.slo_violation` — the only kind this sensor emits, and **it cannot currently fire**: the sensor is DORMANT by decision (IMP-6355c5adc382), because repo-wide nothing but a spec ever creates a `System::Slo::Definition`. `project_slo_sensor` below is the SLO lane that actually fires. No recovery counterpart exists.
 **Recommended remediation:** None automated — surfaces in operator dashboard for manual investigation.
 
 ### `trading_pressure_sensor` — Cross-domain coordination
@@ -205,16 +252,16 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 
 **Source:** `instance_state_drift_sensor.rb`
 **Watches:** `NodeInstance` rows whose model status disagrees with provider truth (e.g., DB says `running`, provider says `stopped`).
-**Threshold:** Any mismatch outside the in-flight task window → `system.instance_state_drift` signal
-**Signals:** `system.instance_state_drift`
+**Threshold:** Any mismatch outside the in-flight task window → `system.instance_state_drifted` signal
+**Signals:** `system.instance_state_drifted` — the only kind this sensor emits. **Note the `-ed`.** This doc dropped it until IMP-e839dd0ffc05 (see the correction table above); `SIGNAL_BINDINGS` has only ever keyed the `-ed` form, so a policy bound to the shorter spelling never fires.
 **Recommended remediation:** Reconcile — operator-acknowledged correction or `notify_and_proceed` reassertion.
 
 ### `gitops_drift_sensor` — Fleet.yaml vs effective fleet divergence
 
 **Source:** `gitops_drift_sensor.rb` (Phase 6c GitOps reconciler integration)
 **Watches:** `fleet.yaml`-declared state vs effective fleet (assignments / templates / instances).
-**Threshold:** Diff present → `gitops.drift_detected` signal with the proposal payload
-**Signals:** `gitops.drift_detected`, `gitops.drift_resolved`
+**Threshold:** Diff present → `system.gitops.drift_detected` signal with the proposal payload
+**Signals:** `system.gitops.drift_detected` — the only kind this sensor emits, and the only emitted kind carrying TWO dots (every other sensor kind is `system.<name>`). No recovery counterpart exists; recovery is the fingerprint's absence on a later tick.
 **Recommended remediation:** `Gitops::ApplyService` proposes a reconcile change via `Ai::AgentProposal` (operator approval required for apply).
 
 ### `package_drift_sensor` — Package repository freshness
@@ -229,8 +276,8 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 
 **Source:** `project_slo_sensor.rb`
 **Watches:** Project-scoped rolling-window metrics (latency, error rate, cost guardrail, SDWAN throughput), read from `System::ProjectMetric` rows written each tick by `System::ProjectMetricsCollector`.
-**Threshold:** Per-project SLO breach OR cost guardrail trip → typed signal (`project.slo_violation`, `project.drift`, `project.cost_breach`).
-**Signals:** `project.slo_violation`, `project.drift`, `project.cost_breach`
+**Threshold:** Per-project SLO breach OR cost guardrail trip → typed signal (`system.project_slo_violation`, `system.project_drift`, `system.project_cost_breach`).
+**Signals:** `system.project_slo_violation`, `system.project_drift`, `system.project_cost_breach`
 **Recommended remediation:** None automated — feeds the project dashboard for operator review.
 
 **Operator-declared targets** live on the mission's `configuration["slo_targets"]`:
