@@ -154,8 +154,8 @@ Sibling ordering (`After=`/`Requires=` on another service *in this same
 manifest*) must NOT be hand-written into `unit_body` — the generated unit
 name (`powernode-<moduleUUID>-<name>.service`) isn't known until attach time.
 Express those as `dependencies:` instead; the agent emits the matching
-`After=`/`Requires=` lines. Non-sibling ordering (e.g.
-`After=network-online.target`) stays in the body verbatim.
+ordering lines. Non-sibling ordering (e.g. `After=network-online.target`)
+stays in the body verbatim.
 
 When `unit_body` is present and `user:` is omitted, the body's own `User=`
 line governs — the row is saved with no `service_user`/`system_user`
@@ -176,6 +176,38 @@ line governs — the row is saved with no `service_user`/`system_user`
   same manifest (cross-module service dependencies are NOT supported — modules
   depend on modules, services depend on services within a module).
 - `dependencies[*].kind` (if present) must be one of `start_before | requires_health | softdep`.
+
+### What each dependency `kind` renders to
+
+The agent turns each edge into systemd directives on the *dependent's* unit:
+
+| `kind` | Emitted | Meaning |
+|---|---|---|
+| `start_before` | `After=` + `Requires=` | target must be running before this service starts |
+| `requires_health` | `After=` + `Requires=` | target must pass its health check first |
+| `softdep` | `After=` + `Wants=` | target preferred-running, explicitly **not** required |
+
+`start_before` and `requires_health` coincide today: the agent has no
+readiness gate (units render `Type=simple`, and `health.*` is read only by
+the on-demand smoke probe), so "healthy first" is not expressible as a
+directive distinct from "started first". The strict form is the
+conservative reading. An unrecognised `kind` also renders `Requires=`, so a
+manifest written against a newer server cannot silently lose a necessity
+guarantee on an older agent.
+
+Two cautions when reaching for `softdep`:
+
+- **`Wants=` does not wait for success.** `After=` orders only against the
+  target's job *finishing*, not succeeding. A `softdep` onto a `Type=oneshot`
+  service will let this service start after the target **failed**. Do not use
+  it for an edge that stages credentials or other material this service needs
+  — that is what `start_before` is for.
+- **Neither kind expresses recovery.** `Requires=` cancels this service's
+  start job if the target fails, and systemd does not re-run the cancelled
+  job when the target later succeeds. A dependency that fails and then
+  self-heals leaves its hard dependents stopped until something restarts
+  them. Expressing that needs `Upholds=` on the *target*, which the agent
+  does not yet emit.
 
 ## Idempotency and Deletion
 

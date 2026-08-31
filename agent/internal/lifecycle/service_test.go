@@ -548,3 +548,222 @@ func TestAttachServices_EmptyServices_NoOp(t *testing.T) {
 		t.Errorf("expected no shell-outs on empty input, got %+v", r.Invocations)
 	}
 }
+
+// TestWriteDependencyDirectives_PerKind pins the EXACT directive block each
+// dependency kind renders, as an EQUALITY over the whole block rather than a
+// per-kind "contains Requires=" existence check.
+//
+// That distinction is the point of the test. The defect it was written for is
+// precisely that all three kinds rendered IDENTICALLY as a hard Requires=, so
+// an existence check ("start_before emits Requires=") passes on the broken
+// code and proves nothing about whether kind is read at all.
+//
+// Kind semantics are specified by System::ModuleServiceDependency
+// (server/app/models/system/module_service_dependency.rb:8-12):
+//
+//	start_before     target running before source starts    -> After= + Requires=
+//	requires_health  target healthy before source starts    -> After= + Requires=
+//	softdep          target preferred, explicitly NOT required -> After= + Wants=
+//
+// start_before and requires_health coincide DELIBERATELY: systemd has no
+// notion of the agent's own health checks, so "healthy first" is not
+// expressible as a directive distinct from "started first", and the strict
+// form is the conservative reading. They are pinned as separate rows anyway,
+// so a future divergence has to be a deliberate edit to this table rather
+// than a silent side effect of touching the renderer.
+func TestWriteDependencyDirectives_PerKind(t *testing.T) {
+	cases := []struct {
+		kind string
+		want string
+	}{
+		{manifest.DependencyKindStartBefore, "After=powernode-mod-1-dep.service\nRequires=powernode-mod-1-dep.service\n"},
+		{manifest.DependencyKindRequiresHealth, "After=powernode-mod-1-dep.service\nRequires=powernode-mod-1-dep.service\n"},
+		{manifest.DependencyKindSoftdep, "After=powernode-mod-1-dep.service\nWants=powernode-mod-1-dep.service\n"},
+	}
+	rendered := make(map[string]string, len(cases))
+	for _, tc := range cases {
+		var b strings.Builder
+		writeDependencyDirectives(&b, "mod-1", []manifest.DependencyEdge{{Service: "dep", Kind: tc.kind}})
+		if got := b.String(); got != tc.want {
+			t.Errorf("kind %q rendered:\n%q\nwant:\n%q", tc.kind, got, tc.want)
+		}
+		rendered[tc.kind] = b.String()
+	}
+	// The defect in its own words: kind was ignored, so every kind produced
+	// the same block. softdep MUST NOT render like a hard requirement.
+	if rendered[manifest.DependencyKindSoftdep] == rendered[manifest.DependencyKindStartBefore] {
+		t.Errorf("softdep and start_before render identically (%q) — dependency kind is being ignored",
+			rendered[manifest.DependencyKindSoftdep])
+	}
+}
+
+// TestWriteDependencyDirectives_MixedKinds pins that one service carrying
+// edges of different kinds splits them across Requires= and Wants= rather
+// than collapsing every edge onto whichever directive the first edge chose,
+// and that each directive lists its units sorted (stable output keeps
+// writeIfChanged from re-attaching on a no-op reorder).
+func TestWriteDependencyDirectives_MixedKinds(t *testing.T) {
+	var b strings.Builder
+	writeDependencyDirectives(&b, "m", []manifest.DependencyEdge{
+		{Service: "zeta", Kind: manifest.DependencyKindSoftdep},
+		{Service: "bravo", Kind: manifest.DependencyKindStartBefore},
+		{Service: "alpha", Kind: manifest.DependencyKindSoftdep},
+		{Service: "charlie", Kind: manifest.DependencyKindRequiresHealth},
+	})
+	want := "After=powernode-m-alpha.service powernode-m-bravo.service powernode-m-charlie.service powernode-m-zeta.service\n" +
+		"Requires=powernode-m-bravo.service powernode-m-charlie.service\n" +
+		"Wants=powernode-m-alpha.service powernode-m-zeta.service\n"
+	if got := b.String(); got != want {
+		t.Errorf("mixed-kind render:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// TestWriteDependencyDirectives_UnknownKindIsStrict pins that an
+// unrecognised kind renders as a hard Requires=, never as Wants= and never
+// dropped. A newer server teaching the fleet a kind this agent has not
+// learned must not silently downgrade a necessity guarantee.
+func TestWriteDependencyDirectives_UnknownKindIsStrict(t *testing.T) {
+	var b strings.Builder
+	writeDependencyDirectives(&b, "m", []manifest.DependencyEdge{{Service: "dep", Kind: "some_future_kind"}})
+	want := "After=powernode-m-dep.service\nRequires=powernode-m-dep.service\n"
+	if got := b.String(); got != want {
+		t.Errorf("unknown kind rendered:\n%q\nwant strict:\n%q", got, want)
+	}
+}
+
+// TestResolvedDependencyEdges_LegacyNamesOnly pins the backward-compatibility
+// contract: a payload from a server that emits only the names-only
+// `dependencies` field renders EXACTLY as it did before dependency_edges
+// existed — a hard Requires=. Wire-compat in the other direction (an older
+// agent ignoring the new field) is a property of encoding/json, not of code
+// this repo can assert here.
+func TestResolvedDependencyEdges_LegacyNamesOnly(t *testing.T) {
+	svc := manifest.Service{Name: "proxy", StartCommand: "/bin/true", Dependencies: []string{"bootstrap"}}
+	edges := svc.ResolvedDependencyEdges()
+	if len(edges) != 1 || edges[0].Service != "bootstrap" || edges[0].Kind != manifest.DefaultDependencyKind {
+		t.Fatalf("legacy names-only fallback produced %+v", edges)
+	}
+	got := RenderUnit(svc, "mod-123")
+	for _, want := range []string{"After=powernode-mod-123-bootstrap.service", "Requires=powernode-mod-123-bootstrap.service"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in legacy-payload unit body:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Wants=powernode-mod-123-bootstrap.service") {
+		t.Errorf("legacy names-only payload must not downgrade to Wants=:\n%s", got)
+	}
+}
+
+// TestResolvedDependencyEdges_EdgesAreAuthoritative pins that when the
+// kind-bearing field is present it WINS over the names-only field rather
+// than being merged with it — a name left behind in `dependencies` must not
+// resurrect an edge the server dropped from `dependency_edges`.
+func TestResolvedDependencyEdges_EdgesAreAuthoritative(t *testing.T) {
+	svc := manifest.Service{
+		Name:            "proxy",
+		StartCommand:    "/bin/true",
+		Dependencies:    []string{"bootstrap", "stale"},
+		DependencyEdges: []manifest.DependencyEdge{{Service: "bootstrap", Kind: manifest.DependencyKindSoftdep}},
+	}
+	got := RenderUnit(svc, "m")
+	if strings.Contains(got, "stale") {
+		t.Errorf("dropped edge resurrected from the names-only field:\n%s", got)
+	}
+	if !strings.Contains(got, "Wants=powernode-m-bootstrap.service") {
+		t.Errorf("kind from dependency_edges not honoured:\n%s", got)
+	}
+	if strings.Contains(got, "Requires=powernode-m-bootstrap.service") {
+		t.Errorf("softdep edge still rendered as a hard requirement:\n%s", got)
+	}
+}
+
+// TestResolvedDependencyEdges_EmptyKindDefaults pins the contract for an
+// edge that arrives in dependency_edges with no kind at all — a
+// hand-written manifest entry, or a server that emits the field with a
+// blank kind. It must be normalised to DefaultDependencyKind (the strict
+// form), never left empty and never treated as soft.
+//
+// Added because a mutation that removed the defaulting SURVIVED the rest
+// of this file: the empty string already falls through to Requires= by
+// accident of the softdep-only branch, so the rendering looked correct
+// while the documented normalisation was dead code.
+func TestResolvedDependencyEdges_EmptyKindDefaults(t *testing.T) {
+	svc := manifest.Service{
+		Name:            "proxy",
+		StartCommand:    "/bin/true",
+		DependencyEdges: []manifest.DependencyEdge{{Service: "bootstrap"}},
+	}
+	edges := svc.ResolvedDependencyEdges()
+	if len(edges) != 1 {
+		t.Fatalf("expected 1 edge, got %+v", edges)
+	}
+	if edges[0].Kind != manifest.DefaultDependencyKind {
+		t.Errorf("empty kind normalised to %q, want %q", edges[0].Kind, manifest.DefaultDependencyKind)
+	}
+	got := RenderUnit(svc, "m")
+	if !strings.Contains(got, "Requires=powernode-m-bootstrap.service") {
+		t.Errorf("empty-kind edge must render strict:\n%s", got)
+	}
+	if strings.Contains(got, "Wants=powernode-m-bootstrap.service") {
+		t.Errorf("empty-kind edge must not render as best-effort:\n%s", got)
+	}
+}
+
+// TestDependencyKindConstants_MatchWireValues pins the kind constants to
+// their LITERAL wire values — the strings System::ModuleServiceDependency
+// ::KINDS puts on the wire (server/app/models/system/
+// module_service_dependency.rb:12).
+//
+// Every other test in this file compares rendering against the constants,
+// which makes those assertions self-referential: a mutation renaming
+// DependencyKindSoftdep's VALUE to "soft_dep" left the whole suite green
+// while, on the wire, every softdep edge would have stopped matching and
+// fallen back to a hard Requires= — silently reinstating the defect this
+// file exists to prevent. This test is the only thing standing between
+// that mutation and a green run.
+func TestDependencyKindConstants_MatchWireValues(t *testing.T) {
+	cases := []struct{ got, want string }{
+		{manifest.DependencyKindStartBefore, "start_before"},
+		{manifest.DependencyKindRequiresHealth, "requires_health"},
+		{manifest.DependencyKindSoftdep, "softdep"},
+		// The server's own import default: ManifestImportService uses
+		// `dep.fetch("kind", "requires_health")`, so a kindless edge must
+		// resolve to the same thing on both sides of the wire.
+		{manifest.DefaultDependencyKind, "requires_health"},
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("kind constant is %q, want the wire value %q", tc.got, tc.want)
+		}
+	}
+}
+
+// TestRenderUnitMode_UnitBodyMixedKinds pins kind-awareness on the
+// unit_body render path specifically, as an equality over the appended
+// [Unit] block.
+//
+// This path carries the MAJORITY of the fleet's dependency edges —
+// dev-cell (bootstrap/provision/mcp-proxy/credential/executor) and
+// claude-tmux are all unit_body services — yet a mutation that made
+// renderUnitBodyMode strict-convert every edge (ignoring kinds on that
+// branch alone) survived the rest of this file, because the only
+// unit_body dependency test used the legacy names-only field.
+func TestRenderUnitMode_UnitBodyMixedKinds(t *testing.T) {
+	body := "[Unit]\nDescription=x\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n\n[Install]\nWantedBy=multi-user.target\n"
+	svc := manifest.Service{
+		Name:     "executor",
+		UnitBody: body,
+		DependencyEdges: []manifest.DependencyEdge{
+			{Service: "bootstrap", Kind: manifest.DependencyKindStartBefore},
+			{Service: "telemetry", Kind: manifest.DependencyKindSoftdep},
+		},
+	}
+	got := RenderUnitMode(svc, "mod-abc", RootModeNative)
+	wantBlock := "\n[Unit]\n" +
+		"After=powernode-mod-abc-bootstrap.service powernode-mod-abc-telemetry.service\n" +
+		"Requires=powernode-mod-abc-bootstrap.service\n" +
+		"Wants=powernode-mod-abc-telemetry.service\n"
+	if !strings.Contains(got, wantBlock) {
+		t.Errorf("unit_body path did not honour dependency kinds.\nwant appended block:\n%q\ngot unit:\n%s", wantBlock, got)
+	}
+}

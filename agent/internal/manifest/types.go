@@ -140,7 +140,81 @@ type Service struct {
 	HealthTimeoutSeconds      int               `json:"health_timeout_seconds,omitempty"`
 	HealthInitialDelaySeconds int               `json:"health_initial_delay_seconds,omitempty"`
 	Dependencies              []string          `json:"dependencies,omitempty"` // names of services that must start before this one
-	Metadata                  map[string]any    `json:"metadata,omitempty"`
+	// DependencyEdges carries the same edges as Dependencies plus each
+	// edge's KIND, which decides whether the rendered unit gets a hard
+	// Requires= or a best-effort Wants= (see lifecycle.writeDependencyDirectives).
+	//
+	// Additive on purpose. `dependencies` (names only) stays on the wire
+	// unchanged so an agent older than this field keeps working against a
+	// server that emits both, and this agent keeps working against a server
+	// that emits only `dependencies` — see ResolvedDependencyEdges. omitempty
+	// is LOAD-BEARING for the same reason it is on UnitBody: a service with
+	// no dependencies hashes byte-identically to before, so ServicesHash does
+	// not churn fleet-wide. Services that DO declare dependencies re-attach
+	// once, which is the intended effect of shipping a corrected renderer.
+	DependencyEdges []DependencyEdge `json:"dependency_edges,omitempty"`
+	Metadata        map[string]any   `json:"metadata,omitempty"`
+}
+
+// Dependency kinds, mirroring System::ModuleServiceDependency::KINDS
+// (server/app/models/system/module_service_dependency.rb). The model is
+// the specification; these constants must not drift from it.
+const (
+	// DependencyKindStartBefore: target must be running before source starts.
+	DependencyKindStartBefore = "start_before"
+	// DependencyKindRequiresHealth: target must pass its health check first.
+	DependencyKindRequiresHealth = "requires_health"
+	// DependencyKindSoftdep: target preferred-running but NOT required.
+	DependencyKindSoftdep = "softdep"
+
+	// DefaultDependencyKind is assumed for an edge that arrives without a
+	// kind — i.e. from the legacy names-only `dependencies` field. It matches
+	// the server's own import default (ManifestImportService uses
+	// `dep.fetch("kind", "requires_health")`) and renders to the strict
+	// Requires= form, so a payload with no kinds behaves exactly as it did
+	// before DependencyEdges existed.
+	DefaultDependencyKind = DependencyKindRequiresHealth
+)
+
+// DependencyEdge is one kind-carrying dependency edge between two services
+// of the SAME module. Service names the depended-on service (matching a
+// sibling Service.Name); Kind is one of the DependencyKind* constants.
+type DependencyEdge struct {
+	Service string `json:"service"`
+	Kind    string `json:"kind,omitempty"`
+}
+
+// ResolvedDependencyEdges returns this service's dependency edges with kinds
+// attached, reconciling the two wire representations:
+//
+//   - DependencyEdges present (server new enough to emit kinds) — used as-is,
+//     with an empty Kind defaulted to DefaultDependencyKind.
+//   - DependencyEdges absent (older server, or a hand-written manifest that
+//     only lists names) — synthesized from Dependencies at DefaultDependencyKind.
+//
+// It deliberately does NOT merge the two: when the kind-bearing field is
+// present it is authoritative, so a server that drops an edge from
+// dependency_edges drops it from the rendered unit too rather than having a
+// stale name in `dependencies` silently resurrect it as a hard requirement.
+func (s Service) ResolvedDependencyEdges() []DependencyEdge {
+	if len(s.DependencyEdges) > 0 {
+		out := make([]DependencyEdge, 0, len(s.DependencyEdges))
+		for _, e := range s.DependencyEdges {
+			if e.Kind == "" {
+				e.Kind = DefaultDependencyKind
+			}
+			out = append(out, e)
+		}
+		return out
+	}
+	if len(s.Dependencies) == 0 {
+		return nil
+	}
+	out := make([]DependencyEdge, 0, len(s.Dependencies))
+	for _, name := range s.Dependencies {
+		out = append(out, DependencyEdge{Service: name, Kind: DefaultDependencyKind})
+	}
+	return out
 }
 
 // ServicesHash returns a stable SHA256 hash of the manifest's services

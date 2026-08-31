@@ -137,8 +137,21 @@ module System
     # internal/lifecycle package expects. `dependencies` carries
     # the names of services that must be `Type=notify`-up before
     # this one starts; the agent topologically sorts on these.
+    #
+    # `dependency_edges` carries the SAME edges plus each edge's
+    # KIND, which the agent needs to decide whether the rendered
+    # unit gets a hard `Requires=` or a best-effort `Wants=`.
+    # Emitting the kind is not cosmetic: without it every edge —
+    # including one the manifest declared `softdep` — rendered as
+    # a hard `Requires=` on-node (IMP-f87b5689aca2).
+    #
+    # Both fields ship. `dependencies` is unchanged and remains
+    # the only field an agent older than dependency_edges reads,
+    # so this addition cannot strand a fleet mid-rollout; a newer
+    # agent prefers `dependency_edges` and falls back to
+    # `dependencies` when an older server omits it.
     def serialize_module_services(mod)
-      services = mod.respond_to?(:module_services) ? mod.module_services.includes(:dependencies) : []
+      services = mod.respond_to?(:module_services) ? mod.module_services.includes(:dependencies, outgoing_dependencies: :depends_on_module_service) : []
       services.map do |svc|
         {
           name:                          svc.name,
@@ -166,12 +179,26 @@ module System
           health_timeout_seconds:        svc.health_timeout_seconds,
           health_initial_delay_seconds:  svc.health_initial_delay_seconds,
           dependencies:                  svc.dependencies.map(&:name),
+          dependency_edges:              serialize_service_dependency_edges(svc),
           metadata:                      svc.metadata || {}
         }
       end
     rescue StandardError => e
       ::Rails.logger.warn("[ModulesController#serialize_module_services] #{e.class}: #{e.message}")
       []
+    end
+
+    # The kind-carrying form of a service's outgoing dependency edges.
+    # `kind` is one of System::ModuleServiceDependency::KINDS; the agent
+    # maps it to a systemd directive (start_before/requires_health ->
+    # Requires=, softdep -> Wants=).
+    def serialize_service_dependency_edges(svc)
+      return [] unless svc.respond_to?(:outgoing_dependencies)
+      svc.outgoing_dependencies.filter_map do |edge|
+        target = edge.depends_on_module_service
+        next if target.nil?
+        { service: target.name, kind: edge.kind }
+      end
     end
 
     # Fleet-managed Unix users declared by this module. Includes

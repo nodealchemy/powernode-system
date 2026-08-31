@@ -366,8 +366,8 @@ func RenderUnitMode(svc manifest.Service, moduleID string, mode RootMode) string
 	b.WriteString(" (module ")
 	b.WriteString(moduleID)
 	b.WriteString(")\n")
-	if len(svc.Dependencies) > 0 {
-		writeDependencyDirectives(&b, moduleID, svc.Dependencies)
+	if edges := svc.ResolvedDependencyEdges(); len(edges) > 0 {
+		writeDependencyDirectives(&b, moduleID, edges)
 	}
 
 	b.WriteString("\n[Service]\n")
@@ -437,24 +437,91 @@ func RenderUnitMode(svc manifest.Service, moduleID string, mode RootMode) string
 	return b.String()
 }
 
-// writeDependencyDirectives writes the After=/Requires= lines for a
-// service's Dependencies into an already-opened [Unit] section. Sorted
-// for stable output (same input → same file → writeIfChanged correctly
-// skips a no-op re-attach). Shared by the generated-unit path and
-// renderUnitBodyMode's appended [Unit] section so both name dependent
-// units identically.
-func writeDependencyDirectives(b *strings.Builder, moduleID string, dependencies []string) {
-	deps := append([]string(nil), dependencies...)
-	sort.Strings(deps)
-	var depUnits []string
-	for _, d := range deps {
-		depUnits = append(depUnits, UnitName(moduleID, d))
+// writeDependencyDirectives writes the ordering and necessity lines for a
+// service's dependency edges into an already-opened [Unit] section. Shared by
+// the generated-unit path and renderUnitBodyMode's appended [Unit] section so
+// both name dependent units identically. Each directive's units are sorted for
+// stable output (same input → same file → writeIfChanged correctly skips a
+// no-op re-attach).
+//
+// The KIND of each edge decides which necessity directive it lands on.
+// System::ModuleServiceDependency (server/app/models/system/
+// module_service_dependency.rb:8-12) is the specification:
+//
+//	start_before     target must be running before source starts
+//	requires_health  target must pass its health check before source starts
+//	softdep          target preferred-running but NOT required (best-effort)
+//
+// Rendering:
+//
+//   - After= carries EVERY edge regardless of kind. All three kinds are
+//     ordering constraints; they differ only in how badly the source needs
+//     the target to have succeeded.
+//   - Requires= carries start_before and requires_health. These two coincide
+//     because systemd has no notion of the agent's own health checks, so
+//     "healthy first" is not expressible as a directive distinct from
+//     "started first"; the strict form is the conservative reading.
+//   - Wants= carries softdep, and only softdep. "Preferred but not required"
+//     is exactly what Wants= means, and rendering it as Requires= made a
+//     dependency the manifest declared as optional able to strand its
+//     dependent — the edge reads soft and behaved hard.
+//   - An UNRECOGNISED kind falls to Requires=, never Wants= and never
+//     dropped. A server teaching the fleet a kind this agent predates must
+//     not silently downgrade a necessity guarantee.
+//
+// NOTE — what this does NOT fix, stated plainly because the surrounding
+// change is easy to mistake for a fix to the outage that prompted it
+// (IMP-f87b5689aca2).
+//
+// Requires= means "cancel my start job if the dependency fails"; it does
+// NOT mean "start me when the dependency later succeeds". A dependency
+// that fails and then self-heals still leaves its hard dependents stopped,
+// because systemd never re-runs the cancelled job. That is what stranded
+// dev-cell's mcp-proxy behind a transiently-failing bootstrap.
+//
+// Routing softdep to Wants= does not address that case, and as of this
+// commit CANNOT: every dependency edge declared in every shipped manifest
+// is start_before (9 of 9), so no edge in the fleet changes rendering at
+// all. This function now honours a kind that nothing yet declares.
+//
+// Expressing recovery needs Upholds= on the DEPENDENCY unit. This function
+// cannot emit it — it sees one service's OUTGOING edges — but that is an
+// increment boundary, NOT an architectural blocker: AttachServicesMode and
+// AttachServicesNative both hold the full []manifest.Service and already
+// build a whole-module graph in topoSort, so inverting the edges there is
+// a small change. It is deferred, not impossible.
+func writeDependencyDirectives(b *strings.Builder, moduleID string, edges []manifest.DependencyEdge) {
+	var all, required, wanted []string
+	for _, e := range edges {
+		unit := UnitName(moduleID, e.Service)
+		all = append(all, unit)
+		if e.Kind == manifest.DependencyKindSoftdep {
+			wanted = append(wanted, unit)
+			continue
+		}
+		// start_before, requires_health, and anything unrecognised.
+		required = append(required, unit)
 	}
-	b.WriteString("After=")
-	b.WriteString(strings.Join(depUnits, " "))
-	b.WriteString("\n")
-	b.WriteString("Requires=")
-	b.WriteString(strings.Join(depUnits, " "))
+	writeUnitList(b, "After=", all)
+	writeUnitList(b, "Requires=", required)
+	writeUnitList(b, "Wants=", wanted)
+}
+
+// writeUnitList writes "<directive><space-joined sorted units>\n", or
+// nothing at all when the list is empty. Omitting the line is what "this
+// service has no dependencies of that strength" means. It is not merely
+// cosmetic: systemd treats an empty assignment ("Requires=") as a
+// documented RESET of the list, so emitting one would be a no-op line
+// that reads like a constraint. (Checked with `systemd-analyze verify`
+// on systemd 255: an empty Requires= produces no diagnostic at all,
+// which is precisely why it should not be emitted — it would be silent.)
+func writeUnitList(b *strings.Builder, directive string, units []string) {
+	if len(units) == 0 {
+		return
+	}
+	sort.Strings(units)
+	b.WriteString(directive)
+	b.WriteString(strings.Join(units, " "))
 	b.WriteString("\n")
 }
 
@@ -485,9 +552,9 @@ func renderUnitBodyMode(svc manifest.Service, moduleID string, mode RootMode) st
 		b.WriteString("\n")
 	}
 
-	if len(svc.Dependencies) > 0 {
+	if edges := svc.ResolvedDependencyEdges(); len(edges) > 0 {
 		b.WriteString("\n[Unit]\n")
-		writeDependencyDirectives(&b, moduleID, svc.Dependencies)
+		writeDependencyDirectives(&b, moduleID, edges)
 	}
 
 	if mode == RootModeChroot {
