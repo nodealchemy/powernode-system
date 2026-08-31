@@ -333,6 +333,92 @@ RSpec.describe "FLEET_SENSORS.md signal kinds vs. the sensors that emit them" do
       -> { "diagram advertises namespaces no kind uses: #{(globbed - real_namespaces).inspect}" }
   end
 
+  # ── Oracle E: the emitted set is COMPLETE, not merely non-empty ───────────
+
+  describe "the emitted-set derivation" do
+    # Raised in review of this file: a literal scan cannot see a kind emitted
+    # through a variable, and "zero literal hits" therefore never licenses
+    # "nothing emits this". Every equality above rests on EMITTED being the
+    # whole truth, so the completeness claim needs its own oracle rather than a
+    # comment.
+    #
+    # Rather than DECLARE the blind spot, this closes it: every `kind:` in the
+    # directory must fall into one of three resolvable cases. A fourth case —
+    # an interpolated or computed kind — is what the parser genuinely cannot
+    # see, and this example fails the moment one appears, naming the file, so
+    # the parser is extended instead of quietly under-reporting.
+    it "leaves no `kind:` argument the parser cannot resolve" do
+      unresolved = Dir[File.join(ext_root, SENSORS_DIR, "*.rb")].flat_map { |path|
+        src = File.read(path)
+        src.to_enum(:scan, /\bkind:/).filter_map do
+          off = Regexp.last_match.begin(0)
+          line = src[(src.rindex("\n", off) || -1) + 1...(src.index("\n", off) || src.length)]
+          arg  = src[off, 200].sub(/\Akind:\s*/, "")
+
+          # (0) a COMMENT line. base_sensor.rb:9 documents the signal SHAPE
+          #     with a placeholder (`kind: "system.<topic>"`) inside a `#`
+          #     block. The main parser strips comments before building
+          #     EMITTED, so a placeholder never reaches the emitted set — but
+          #     this scan reads raw source, so without this clause it reports
+          #     prose as an unresolvable emit. Skipping the line (not the
+          #     placeholder shape) keeps the exclusion narrow: a real emit that
+          #     happens to contain `<` is still caught.
+          next if line.lstrip.start_with?("#")
+          # (1) a CLOSED `system.` string literal — the ordinary emit. The
+          #     closing quote is load-bearing: `arg.start_with?('"system.')`
+          #     was the first version and it let
+          #     `kind: "system.module_#{flavor}_drift"` through, which the main
+          #     parser's own regex then failed to extract — a kind emitted and
+          #     silently absent from EMITTED, with a sibling literal in the
+          #     same file keeping the per-file non-vacuity check quiet. That is
+          #     precisely the variable-emitter hole this example exists for,
+          #     and it survived the example that was supposed to close it.
+          next if arg.match?(/\A"system\.[a-z0-9_.]+"/)
+          # (2) a SIGNAL_KIND-style constant, resolved above;
+          next if arg.match?(/\A[A-Z][A-Z0-9_]*(SIGNAL|KIND)[A-Z0-9_]*\b/) || arg.match?(/\A[A-Z][A-Z0-9_]*\b/) && arg[/\A[A-Z][A-Z0-9_]*/].match?(/SIGNAL|KIND/)
+          # (3) FORWARDING, which emits nothing on its own: a helper's own
+          #     parameter list (`def signal(kind:, …)`, base_sensor.rb:36,
+          #     boot_lkg_arm_sensor.rb:192, project_slo_sensor.rb:313) or a
+          #     pass-through of that parameter (`kind: kind`). The literal each
+          #     forwards is captured at the CALL site — boot_lkg at :114/:125,
+          #     project_slo at :185/:203/:238/:261/:298 — so these contribute
+          #     nothing and must not be read as unresolved;
+          next if line.match?(/\bdef\s+\w*signal\w*\(/) || arg.match?(/\Akind\b/)
+          # (4) a query, excluded from the emitted set by design;
+          next if line.include?("where(")
+          # (4b) a `kind:` belonging to an unrelated API. One exists:
+          #      package_drift_sensor.rb:39 passes a PACKAGE REPOSITORY kind to
+          #      `System::PackageAdapters.for`. Named by its call rather than
+          #      waved through by shape, so a computed SIGNAL kind cannot hide
+          #      behind the same "it's a method chain" reasoning.
+          next if line.include?("PackageAdapters.for(")
+          # (5) the ternary, whose arms are string literals on the next line.
+          next if arg.match?(/\A[a-z_?.\s]+\?\s*\n?\s*"system\./m)
+
+          "#{File.basename(path)}: #{arg.lines.first.to_s.strip}"
+        end
+      }
+
+      expect(unresolved).to eq([]),
+        -> { "kind: arguments the parser cannot resolve (EMITTED would be incomplete and every equality above vacuous on that side): #{unresolved.inspect}" }
+    end
+
+    it "reconciles against the DecisionEngine's bindings" do
+      # INDEPENDENT oracle on the same completeness claim, from the consumer
+      # side: a kind emitted through a shape the parser missed would show up
+      # here as a binding with no emitter. The only two are the CVE sensors,
+      # which live in cve_ops/sensors/ and are outside both this directory and
+      # this document — the scope boundary, asserted rather than assumed.
+      engine = File.read(File.join(ext_root, "server/app/services/system/fleet/decision_engine.rb"))
+      bound = engine.scan(/^\s*"(system\.[a-z0-9_.]+)"\s*=>/).flatten.uniq
+      expect(bound.size).to be > 40, "SIGNAL_BINDINGS scan collapsed — this oracle would be vacuous"
+
+      expect(EMITTED - bound).to eq([]),
+        -> { "emitted but bound to no action category: #{(EMITTED - bound).inspect}" }
+      expect(bound - EMITTED).to eq([ "system.cve_critical_published", "system.module_critical_upgrade_ready" ])
+    end
+  end
+
   # ── Oracle D: the withdrawn kinds stay contained ──────────────────────────
 
   describe "the withdrawn signal kinds" do
