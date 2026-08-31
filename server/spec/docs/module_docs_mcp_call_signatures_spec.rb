@@ -85,7 +85,28 @@ module ModuleDocsMcpCallSignatures
     # simply in a file COVERED_DOCS does not list, and would red if it did.
     # The verb-existence example below catches this class already — it simply
     # never ran on this file, because COVERED_DOCS is opt-in per file.
-    "docs/tutorials/10-gitops-fleet.md"
+    "docs/tutorials/10-gitops-fleet.md",
+    # IMP-ebc1d180dc10 — two silently-dropped keys, both withdrawn in the doc
+    # rather than deleted. system_acquire_pooled_instance declares only
+    # pool_name/pool_id/lifecycle_class; :72 also passed acquired_by and
+    # acquired_for under a comment promising they were "stamped on the claim
+    # record" (acquire! writes exactly pool_state + pool_acquired_at, and
+    # there is no claim record other than the instance row). :107 passed
+    # pool_id to system_return_pooled_instance, which declares only
+    # instance_id. Those were the file's ONLY two failing sites — its other
+    # six call sites already passed — so it graduates straight to COVERED_DOCS
+    # and gets whole-file coverage rather than a per-verb COVERED_CALLS entry.
+    # The withdrawal note added a 9th site: the system_lease_ci_runner call in
+    # the Phase 2 blockquote, which the parser matches inside prose and which
+    # this file therefore now checks too.
+    #
+    # Known gap, measured: COVERED_DOCS has no per-verb existence pin, so
+    # DELETING the corrected acquire example passes green (346 -> 343 examples,
+    # 0 failures) — only the example count moves. COVERED_CALLS' "documents at
+    # least one platform.<verb> call" guard would catch that, but it checks
+    # only its listed verbs and would drop the other seven sites here. Filed as
+    # 01a05631-ce0d-7e7c-aa4c-6833fbc20291 rather than fixed in a docs task.
+    "docs/runbooks/instance-pool-tuning.md"
   ].freeze
 
   # Docs NOT in COVERED_DOCS, pinned one VERB at a time.
