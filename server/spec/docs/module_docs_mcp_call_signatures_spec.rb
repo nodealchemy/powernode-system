@@ -213,6 +213,14 @@ module ModuleDocsMcpCallSignatures
   # file is still swept. It buys silence for one named fiction, not a blanket
   # pass for the doc that carries it.
   #
+  # An entry takes effect ONLY on a call site that is COMMENTED OUT
+  # (IMP-6f2ebf01424a). Every rationale here argues about a commented-out
+  # example, and none of them is an argument for exempting a live one: a live
+  # call to a verb no registry implements PRESCRIBES the fiction rather than
+  # describing it, and an operator copying it cannot run it at all. Adding an
+  # entry for a live call site does not silence the sweep — it adds a second
+  # failure. See aspirational_exemption?.
+  #
   # Not the same register as docs/.verify/ASPIRATIONAL_MCP.md, and deliberately
   # not merged with it. That catalog serves check-mcp-actions.sh, which greps
   # only `system_`/`kubernetes_`/`docker_`-prefixed verbs and SKIPS any line
@@ -268,8 +276,8 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   covered_calls = ModuleDocsMcpCallSignatures::COVERED_CALLS
 
   # Extract `platform.<verb>({ ... })` calls, returning
-  # [verb, top_level_keys, line_number, elides_arguments?]. Brace/bracket depth
-  # aware, string aware, and skips `//`
+  # [verb, top_level_keys, line_number, elides_arguments?, commented_out?].
+  # Brace/bracket depth aware, string aware, and skips `//`
   # comments INSIDE an argument literal, so a nested `options: { ... }`
   # contributes only `options` and a `// → { ... }` response comment is not
   # mistaken for an argument.
@@ -294,16 +302,25 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
     text.to_enum(:scan, /platform\.([a-z0-9_]+)\(\s*\{/).each do
       verb = Regexp.last_match(1)
       open_brace = Regexp.last_match.end(0) - 1
-      line = text[0...Regexp.last_match.begin(0)].count("\n") + 1
+      start = Regexp.last_match.begin(0)
+      line = text[0...start].count("\n") + 1
       body = balanced_body(text, open_brace)
       next if body.nil?
 
-      calls << [verb, top_level_keys(body), line, elides_arguments?(body)]
+      # Framing is read at the VERB, not at the `{`, so `commented` describes
+      # the same line as `line` — the two differ for `platform.foo(\n  { ... }`
+      # — and matches extract_noarg_calls, which has always read it there.
+      # balanced_body still starts at the brace; only this flag moves. No doc
+      # writes that shape today, so reading it at the brace instead is an
+      # equivalent mutant: a convention fix, not a behaviour fix.
+      calls << [ verb, top_level_keys(body), line, elides_arguments?(body),
+                 comment_framed?(text, start) ]
     end
     calls
   end
 
-  # Extract NO-ARGUMENT calls — `platform.<verb>()` — returning [verb, line].
+  # Extract NO-ARGUMENT calls — `platform.<verb>()` — returning
+  # [verb, line, commented_out?].
   #
   # Kept separate from extract_calls, which requires an opening `{` because
   # everything it exists to check is a property of the argument literal. A
@@ -324,8 +341,9 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
     calls = []
     text.to_enum(:scan, /platform\.([a-z0-9_]+)\(\s*\)/).each do
       verb = Regexp.last_match(1)
-      line = text[0...Regexp.last_match.begin(0)].count("\n") + 1
-      calls << [ verb, line ]
+      start = Regexp.last_match.begin(0)
+      line = text[0...start].count("\n") + 1
+      calls << [ verb, line, comment_framed?(text, start) ]
     end
     calls
   end
@@ -660,6 +678,11 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
       // })
     MD
 
+    # A live call, for the commented/live distinction below.
+    live_call = <<~MD
+      platform.system_get_node({ node_id: "<id>" })
+    MD
+
     # extract_calls is a class method on the group, so every fixture is parsed
     # HERE, at group-body scope, and the examples only assert on the results.
     framed_multiline_calls   = extract_calls(framed_multiline)
@@ -669,6 +692,7 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
     framed_then_unframed_calls = extract_calls(framed_then_unframed)
     live_call_after_a_url_calls = extract_calls(live_call_after_a_url)
     framed_key_on_opening_line_calls = extract_calls(framed_key_on_opening_line)
+    live_call_calls = extract_calls(live_call)
 
     it "extracts a commented-out call whose closing brace is on a later // line" do
       expect(framed_multiline_calls.map(&:first)).to(
@@ -709,6 +733,58 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
         eq(%w[sensor silent_threshold_minutes])
       )
     end
+
+    # IMP-6f2ebf01424a. The checker cannot honour the ASPIRATIONAL_VERBS
+    # contract without this: an exemption's whole justification is that the doc
+    # is COMMENTED OUT and marked aspirational, and the parser is the only
+    # thing that knows whether that is true of a given site.
+    it "reports whether a call site is commented out" do
+      expect(framed_multiline_calls.first&.at(4)).to be(true)
+    end
+
+    it "reports a live call site as not commented out" do
+      expect(live_call_calls.first&.at(4)).to be(false)
+    end
+
+    # The sweep consumes no-arg sites too, and exempts on the same rule, so the
+    # flag has to be right for both shapes — not just the one that happens to
+    # carry an exemption today.
+    noarg_framed_calls = extract_noarg_calls("// platform.health()\n")
+    noarg_live_calls   = extract_noarg_calls("platform.health()\n")
+
+    it "reports a commented-out NO-ARG call site as commented out" do
+      expect(noarg_framed_calls).to eq([ [ "health", 1, true ] ])
+    end
+
+    it "reports a live NO-ARG call site as not commented out" do
+      expect(noarg_live_calls).to eq([ [ "health", 1, false ] ])
+    end
+  end
+
+  # IMP-6f2ebf01424a — an aspirational exemption covers a COMMENTED-OUT site
+  # only.
+  #
+  # ASPIRATIONAL_VERBS is keyed [path, verb], and every rationale in it is an
+  # argument about a commented-out example: the call is written out, marked
+  # "aspirational" inline, and the prose beneath it names the real path. None
+  # of that is an argument for exempting a LIVE call. A live call to a verb no
+  # registry implements is the exact failure the tree-wide sweep exists to
+  # catch — an operator copies it and it cannot run at all — and it is strictly
+  # worse than the unlabelled case, because the doc is now prescribing the
+  # fiction rather than describing it.
+  #
+  # Measured before this guard: planting
+  # `platform.system_get_sensor_config({ sensor: "instance_status" })` live in
+  # FLEET_SENSORS.md's own threshold section left the suite at 0 failures. The
+  # exemption absorbed it in silence.
+  #
+  # This does NOT reverse the policy stated at ASPIRATIONAL_VERBS: being
+  # commented out still exempts nothing on its own, and a commented-out call is
+  # still parsed and checked like any other. It makes the comment marker
+  # NECESSARY for an exemption, not sufficient — the hand-written entry is
+  # still what grants it.
+  def self.aspirational_exemption?(aspirational_verbs, relative_path, verb, commented)
+    commented && aspirational_verbs.key?([ relative_path, verb ])
   end
 
   targets.each do |relative_path, only_verbs|
@@ -845,6 +921,31 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   aspirational_verbs = ModuleDocsMcpCallSignatures::ASPIRATIONAL_VERBS
   exercised_aspirational = []
 
+  # The gate itself, on a real entry. The tree-wide guard below asserts that no
+  # live call currently rides an exemption; it cannot see whether the gate
+  # would DECLINE one, because with the docs clean both readings of the rule
+  # agree on every site in the tree. These three pin the rule directly.
+  # A synthetic one-entry list, NOT ASPIRATIONAL_VERBS itself. Every real entry
+  # is designed to retire itself, so a hash that empties is the expected end
+  # state — reading `keys.first` out of it would make these three examples fail
+  # on the day the fiction is finally implemented, accusing a gate that is fine.
+  sample_list = { [ "docs/zz_fixture.md", "zz_fixture_verb" ] => "fixture" }.freeze
+  exemption_when_commented = aspirational_exemption?(sample_list, "docs/zz_fixture.md", "zz_fixture_verb", true)
+  exemption_when_live      = aspirational_exemption?(sample_list, "docs/zz_fixture.md", "zz_fixture_verb", false)
+  exemption_when_unlisted  = aspirational_exemption?(sample_list, "docs/zz_fixture.md", "zz_other_verb", true)
+
+  it "grants an aspirational exemption to a commented-out, listed call site" do
+    expect(exemption_when_commented).to be_truthy
+  end
+
+  it "declines the exemption when the same listed call is LIVE" do
+    expect(exemption_when_live).to be_falsey
+  end
+
+  it "declines the exemption for a verb the list does not name" do
+    expect(exemption_when_unlisted).to be_falsey
+  end
+
   # File::FNM_DOTMATCH so DOT-directories are swept too. Without it Dir.glob
   # skips docs/.verify/ silently, which is where the sibling shell checker
   # (check-mcp-actions.sh) and its ASPIRATIONAL_MCP.md catalog live — the one
@@ -855,9 +956,10 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
     text = File.read(absolute)
     # [verb, line] for both call shapes. The parameter families still see only
     # extract_calls; this pair is what the EXISTENCE check consumes.
-    sites = extract_calls(text).map { |verb, _keys, line, _elided| [ verb, line ] } +
-            extract_noarg_calls(text)
-    [ relative, sites.sort_by(&:last) ] unless sites.empty?
+    sites = extract_calls(text).map { |verb, _keys, line, _elided, commented|
+              [ verb, line, commented ]
+            } + extract_noarg_calls(text)
+    [ relative, sites.sort_by { |_verb, line, _commented| line } ] unless sites.empty?
   end
 
   # Anti-vacuity, as an equality oracle rather than a "> 0" smoke test: a glob
@@ -878,13 +980,20 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
 
   describe "verb existence (tree-wide, ungated by COVERED_DOCS)" do
     swept.each do |relative_path, sites|
-      sites.each do |verb, line|
+      sites.each do |verb, line, commented|
         # Resolved here, at example-GROUP scope: declared_parameters is a class
         # method on this group and is not callable from inside an `it` block.
         declared = declared_parameters(verb)
 
-        if aspirational_verbs.key?([ relative_path, verb ])
-          exercised_aspirational << [ relative_path, verb ]
+        # Recorded on the LIST MATCH, not on the exemption. The guard below
+        # asks whether an entry still matches a call site at all; an entry
+        # whose example was merely UNCOMMENTED still matches one, and telling
+        # its author "the example was probably removed — delete the entry"
+        # would destroy the policy record over an edit that only needs the
+        # comment markers put back.
+        exercised_aspirational << [ relative_path, verb ] if aspirational_verbs.key?([ relative_path, verb ])
+
+        if aspirational_exemption?(aspirational_verbs, relative_path, verb, commented)
 
           # Asserted STILL ABSENT, so the exemption retires itself.
           it "#{relative_path}:#{line} #{verb} is still unimplemented, as its exemption claims" do
@@ -906,11 +1015,57 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
             "nor Ai::Introspection::McpToolRegistrar::INTROSPECTION_TOOLS, so an operator " \
             "copying #{relative_path}:#{line} cannot call it at all. Either the verb is " \
             "misspelled, or the doc describes a capability the platform does not have — in " \
-            "which case say so in the prose and add it to ASPIRATIONAL_VERBS with a reason."
+            "which case COMMENT THE EXAMPLE OUT, say so in the prose, and add it to " \
+            "ASPIRATIONAL_VERBS with a reason. An entry alone does NOT exempt a LIVE call " \
+            "— the exemption is for a doc that describes a missing capability, not one " \
+            "that prescribes it. Otherwise, implement the verb."
           )
         end
       end
     end
+  end
+
+  # The other half of the same contract, and DELIBERATELY redundant with the
+  # gate rather than derived from it. This recomputes the decision from the
+  # swept sites instead of reading what the gate decided.
+  #
+  # That redundancy is load-bearing, and mutation testing is how it was priced.
+  # Hardcoding the gate's `commented` argument to true survives every example
+  # here, because on a clean tree no listed verb has a live call site, so the
+  # real flag and `true` agree everywhere — an equivalent mutant relative to
+  # the docs corpus, and unkillable without planting the very defect the policy
+  # forbids. Measured with the defect planted (a live
+  # system_get_sensor_config call in FLEET_SENSORS.md): pristine gives 2
+  # failures, that mutant gives 1 — this example. Deriving this guard from the
+  # gate instead would have made the same mutant give 0, turning an equivalent
+  # mutant into a lethal blind spot. Two independent detectors, on purpose.
+  #
+  # Independent in the gate WIRING and the list lookup, not in the flag: both
+  # read comment_framed?, so a wrong flag defeats both at once. That predicate
+  # is deliberately loose — it asks only whether the line opens with `//`, so a
+  # line opening with a protocol-relative path would read as commented. No such
+  # site exists: swept 2026-08-31, 351 call sites tree-wide, exactly 3 report
+  # commented and all 3 are genuine (FLEET_SENSORS.md:526 and :527,
+  # node-provisioning.md:210).
+  #
+  # It also names the situation outright, because the failure the gate produces
+  # ("calls a registered MCP verb") does not say that an exemption was
+  # declined, and the doc edit that causes it — uncommenting an aspirational
+  # example, or writing a live one beside it — is the one an author is most
+  # likely to make in good faith.
+  it "exempts commented-out call sites only (no live call rides an exemption)" do
+    live_exempted = swept.flat_map do |relative_path, sites|
+      sites.filter_map do |verb, line, commented|
+        "#{relative_path}:#{line} #{verb}" if !commented && aspirational_verbs.key?([ relative_path, verb ])
+      end
+    end
+    expect(live_exempted).to(
+      be_empty,
+      "#{live_exempted.inspect} calls a verb ASPIRATIONAL_VERBS exempts, but the call is " \
+      "LIVE, not commented out. The exemption's whole claim is that the doc describes " \
+      "something that does not exist yet; a live call PRESCRIBES it, and an operator " \
+      "copying it cannot run it at all. Comment the example out, or implement the verb."
+    )
   end
 
   # Same staleness guard the KNOWN_BROKEN list gets below, and for the same
