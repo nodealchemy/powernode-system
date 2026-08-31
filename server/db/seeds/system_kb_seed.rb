@@ -10,6 +10,20 @@
 # Run via:
 #   cd server && bundle exec rails runner \
 #     "load Rails.root.join('../extensions/system/server/db/seeds/system_kb_seed.rb')"
+#
+# ⚠️ EDITING AN ARTICLE HERE DOES NOT CORRECT AN ALREADY-SEEDED DEPLOYMENT.
+# The per-article writer below does re-assign and save on a content change, but
+# only if this file is executed again — and db/seeds does not re-run after first
+# boot. On an installed deployment the stale article keeps serving Concierge RAG
+# and /app/wiki until an operator explicitly re-runs the command above (or edits
+# the row through `platform.update_kb_article`). If you are correcting a factual
+# claim, say so in the task report: the source is fixed, the live rows are not.
+#
+# Re-running is not free, so prefer `platform.update_kb_article` for a one-article
+# correction: the writer below assigns `published_at: Time.current` and resets
+# `views_count` / `likes_count` to 0 unconditionally, so `changed?` is true for
+# EVERY article and a re-run rewrites all of them — zeroing engagement counters
+# and re-stamping publication dates across the whole set.
 
 puts "\n  Seeding System Extension KB articles..."
 
@@ -135,15 +149,21 @@ articles = [
   {
     slug: "multi-cluster-k3s",
     title: "Multi-cluster K3s Patterns",
-    excerpt: "Operator guide for running multiple K3s clusters in one account with metadata.target_cluster_id, HA control plane via slice 3 VIP failover, and per-cluster kubeconfig retrieval.",
+    excerpt: "Operator guide for running multiple K3s clusters in one account: bootstrap, HA control plane via slice 3 VIP failover, and per-cluster kubeconfig retrieval. Adding workers to a chosen cluster is not implemented — k3s-agent joins are refused once a second cluster exists.",
     content: <<~MD
       # Multi-cluster K3s
 
       Patterns for running prod + staging + workload-specific K3s clusters in a single Powernode account.
 
-      ## Critical rule
+      ## Critical rule — adding workers to a chosen cluster is NOT IMPLEMENTED
 
-      **Every k3s-agent module assignment MUST set `metadata.target_cluster_id`** in multi-cluster accounts. Without it, agents auto-select the most recent active cluster — workers join the wrong cluster silently.
+      **Once a second non-error cluster exists in the account, every k3s-agent join is refused.** `resolve_membership_cluster!` raises `AmbiguousClusterError` and the platform emits `system.k3s_ambiguous_cluster_join_refused` at severity `high`. No node is produced — the worker does not join the wrong cluster, it does not join at all.
+
+      `target_cluster_id` is wired on the platform side and unreachable from the agent: the handshake handler forwards a supplied value into `join_request!`, but `k3sd.AgentManager.TargetClusterID` is declared and consumed and never written, and `k3sd.ModulesAPI` hands the K3s reconcilers module **names** only — so assignment config never reaches the K3s reconcilers. Setting `config.target_cluster_id` on the module assignment stores the value and changes nothing about the join.
+
+      An earlier revision of this article said the opposite — that agents "auto-select the most recent active cluster" and "join the wrong cluster silently". That fallback applies only when there is exactly one candidate cluster. Do not go looking for a misplaced node; there is none.
+
+      Single-cluster accounts are unaffected: with exactly one non-error cluster the worker joins it without a target.
 
       ## HA control plane
 
@@ -223,7 +243,8 @@ articles = [
 
       ## K3s
 
-      - Agent can't join → verify same SDWAN network as bootstrap server; check `metadata.target_cluster_id`
+      - Agent can't join, `system.k3s_ambiguous_cluster_join_refused` (severity `high`) in the event stream → the account has two or more non-error clusters. Expected, not a misconfiguration: nothing on the agent supplies a `target_cluster_id`, so the platform refuses rather than guessing. No operator-side fix today
+      - Agent can't join, no refusal event → verify same SDWAN network as bootstrap server
       - Token mismatch → restart `powernode-agent` to clear stale cache
       - Pod-to-pod traffic unencrypted → known gap (slice 9 not yet shipped); use NetworkPolicy + service mesh
 

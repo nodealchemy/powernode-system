@@ -141,7 +141,7 @@ See `docs/runbooks/README.md` for the full index (audience + prereqs + runtime p
 - `expose-service.md` — publish a service publicly with TLS (VIP → port map → ACME → Traefik expose lifecycle)
 - `publish-service.md` — publish a service locally at `/svc/<slug>` to your own authenticated users (Sdwan::Service local plane + ForwardAuth)
 - `instance-pool-tuning.md` — pool sizing + reaping (slice 7)
-- `multi-cluster-k3s.md` — multi-cluster K3s with `metadata.target_cluster_id` + HA control plane
+- `multi-cluster-k3s.md` — multi-cluster K3s bootstrap + HA control plane. Adding workers to a *chosen* cluster (Phase 3) is NOT IMPLEMENTED: `target_cluster_id` is wired on the platform side and unreachable from the agent, so k3s-agent joins are refused once a second cluster exists
 - `disk-image-ci.md` — disk image CI operator workflow
 - `federation-setup.md` — multi-region/multi-account federation peering
 - `federation-troubleshooting.md` — diagnostic procedures for federation failures
