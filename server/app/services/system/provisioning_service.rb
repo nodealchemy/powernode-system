@@ -36,11 +36,20 @@ module System
       # M1 Self-Serve Hardening — gate provisioning on the active subscription's
       # plan limits. Surfaces a structured deny reason that propagates up through
       # Runtime::Result.err and onto the caller's `requires_upgrade` payload.
+      #
+      # The payload is built by Powernode::BillingBridge.upgrade_payload so this
+      # producer and the bridge's own denials share ONE key set — the frontend
+      # UpgradeRequiredCard must not have to branch on which of them denied.
+      # `cap` / `upgrade_url` are nil here: this direct-guard path has no plan
+      # context to compute them from (the bridge path does).
       if defined?(::Billing::ProvisioningQuotaGuard)
         allow, reason = ::Billing::ProvisioningQuotaGuard.allow?(account: node.account)
         unless allow
           Rails.logger.info("[ProvisioningService] Quota guard denied provisioning: #{reason}")
-          return Runtime::Result.err(error: reason, data: { requires_upgrade: true, reason: reason })
+          return Runtime::Result.err(
+            error: reason,
+            data: ::Powernode::BillingBridge.upgrade_payload(reason: reason)
+          )
         end
       end
 

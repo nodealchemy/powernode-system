@@ -1113,7 +1113,13 @@ RSpec.describe System::ProvisioningService do
 
       expect(result.success?).to be(false)
       expect(result.error).to eq("no_subscription")
-      expect(result.data).to eq(requires_upgrade: true, reason: "no_subscription")
+      # The denial rides the SAME canonical contract the BillingBridge emits,
+      # so UpgradeRequiredCard does not have to branch on which producer denied.
+      expect(result.data[:requires_upgrade]).to be(true)
+      expect(result.data[:reason]).to eq("no_subscription")
+      expect(result.data).to have_key(:cap)
+      expect(result.data).to have_key(:upgrade_url)
+      expect(result.data.keys).to match_array(::Powernode::BillingBridge::UPGRADE_PAYLOAD_KEYS)
     end
 
     it "runs BEFORE the RCP INV-2/INV-6 checks, so a denial never reaches them" do
