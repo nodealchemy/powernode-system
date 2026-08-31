@@ -912,6 +912,25 @@ services:
       Environment=DEV_CELL_RUNTIME_DIR=/run/dev-cell
       Environment=DEV_CELL_MCP_PROXY_BIND=127.0.0.1
       Environment=DEV_CELL_MCP_PROXY_PORT=18443
+      # Root-only route table (docs/operations/mcp-environment-isolation.md
+      # Part II). ABSENT IS THE NORMAL CASE and is harmless: with no file the
+      # proxy serves exactly the two hardcoded mTLS routes (/mcp and its
+      # /mcp/prod alias), i.e. pre-routing behaviour. Only bearer-credentialed
+      # destinations can be declared here — the node's mTLS cert is reachable
+      # ONLY from the built-in routes, so no edit to this file can manufacture
+      # a route that presents it. A malformed file is a BOOT FAILURE, not a
+      # skipped route: an operator must never believe a destination is wired
+      # when it was silently dropped. Mode 0600 root:root — this is where a
+      # dev/sandbox bearer lives instead of user-readable ~/.claude.json.
+      Environment=DEV_CELL_MCP_ROUTES_FILE=/etc/dev-cell/mcp-routes.json
+      # Phase-2 gate. Default OFF. When set to 1, logs the negotiated MCP
+      # protocol version and the PRESENCE (never the value) of the Mcp-Method /
+      # Mcp-Name mirror headers. Proxy-side tools/call name denial is only
+      # sound if this client actually negotiates 2026-07-28 and sends Mcp-Name
+      # — the server skips the whole mirror check for clients that signal no
+      # stateless version (streamable_http_controller.rb:857), so a header
+      # present-but-untrusted is not enough. Turn on, capture, turn off.
+      #Environment=DEV_CELL_MCP_PROXY_LOG_PROTOCOL=1
 
       ExecStart=/usr/local/bin/node /usr/local/bin/dev-cell-mcp-proxy.js
       Restart=on-failure
