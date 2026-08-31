@@ -106,7 +106,36 @@ module ModuleDocsMcpCallSignatures
     # least one platform.<verb> call" guard would catch that, but it checks
     # only its listed verbs and would drop the other seven sites here. Filed as
     # 01a05631-ce0d-7e7c-aa4c-6833fbc20291 rather than fixed in a docs task.
-    "docs/runbooks/instance-pool-tuning.md"
+    "docs/runbooks/instance-pool-tuning.md",
+    # IMP-1abe2148b0f3 — 8 failing call sites, 16 examples. Five were
+    # mechanical (system_create_node declares name/template_id, not
+    # hostname/node_template_id, and no metadata; system_provision_instance's
+    # two required provider ids; system_create_template's required
+    # node_platform_id; system_sdwan_create_firewall_rule's
+    # firewall_action/src_selector/dst_selector/port_from/port_to/name, whose
+    # `{ kind: "vip" }` selector is not one of the four
+    # Sdwan::FirewallRule::SELECTOR_KINDS either). Three were not: Steps 3-4
+    # were built on re-templating a PROVISIONED instance, which no MCP verb
+    # does. system_update_node declares node_template_id and writes it, but the
+    # only thing that materializes NodeModuleAssignment rows FROM A TEMPLATE'S
+    # CLOSURE is System::TemplateApplyService (other services create assignment
+    # rows directly — InferenceDeploymentService:114, FlowExporterDeployer:147,
+    # ModuleCommitService:493 — none of them from a template). Its callers are
+    # ProvisioningService#apply_node_template, FulfillmentAdvanceOrchestrator,
+    # the autonomous Fleet::DecisionEngine arm and
+    # POST /api/v1/system/nodes/:id/apply_template. Exactly one is MCP-reachable
+    # — system_provision_instance, and only while provisioning — so no MCP verb
+    # applies a template to an ALREADY-PROVISIONED node, and
+    # Runtime::SyncModules reads node.node_module_assignments, not the
+    # template. Those two calls are withdrawn in the doc (kept visible with a
+    # what-is-actually-true table, per instance-pool-tuning.md) rather than
+    # corrected, so the file is fully clean and takes whole-file coverage.
+    # The fictional recent_events({ kind_prefix: "system.k3s" }) poll for a
+    # cluster.bootstrapped event that nothing emits was replaced by prose
+    # naming the real observable — the same treatment that RETIRED the
+    # system_drift_report KNOWN_BROKEN entry below, and the reason this file
+    # needs no new exclusion.
+    "docs/tutorials/05-multi-cluster-k3s.md"
   ].freeze
 
   # Docs NOT in COVERED_DOCS, pinned one VERB at a time.
