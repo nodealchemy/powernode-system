@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "rack/utils"
 
 # IMP-c43c4829fe11 — three documents told an operator that `target_cluster_id`
 # is a working knob with a forgiving fallback. It is neither.
@@ -59,24 +60,44 @@ require "spec_helper"
 # here as TEXT, which is the only mechanism that would catch the claim
 # regressing in a seed.
 #
-# What this does NOT catch: the same belief restated in wording none of these
-# regexes match, or in a doc not listed here. THREE other files under
-# extensions/system/docs carry the same fabricated fallback and are out of this
-# task's scope — reported, not pinned:
+# IMP-f249d9d1af47 extended this guard to the remaining documents. The sweep
+# that found them was built from the CLAIM, not the phrase: each of the five
+# documents stated one falsehood in different words, and a phrase sweep for
+# "most recent active" finds three of them and misses the rest.
 #
-#   * docs/CONTAINER_RUNTIMES.md:96 — "the agent silently joins the
-#     most-recently-created" (also :73, :101-103, :283)
-#   * docs/USE_CASE_MATRIX.md:108 — "auto-select most recent active cluster"
-#     (also :15, :105, :111, :218)
-#   * docs/tutorials/04-k3s-cluster.md:72 — "the agent picks the first cluster
-#     it finds". Different WORDING for the same falsehood, which is why a
-#     phrase sweep for "most recent active" would miss it.
+#   * docs/tutorials/04-k3s-cluster.md — "the agent picks the first cluster it
+#     finds", plus a Troubleshooting row promising a 404. The handlers map
+#     AmbiguousClusterError to 409 and NoClusterAvailableError to 422
+#     (runtime_handshake_handlers.rb:167-170); nothing there returns 404, so an
+#     operator debugging by status code was looking for the wrong response
+#     entirely. Both codes are pinned below.
+#   * docs/CONTAINER_RUNTIMES.md — "the agent silently joins the
+#     most-recently-created", and a stale "Known gap (2026-06-03)" claiming the
+#     server-side ambiguity guard had not shipped. It had; the omitted-ID case
+#     is the guarded one.
+#   * docs/USE_CASE_MATRIX.md — "auto-select most recent active cluster (legacy
+#     single-cluster contract preserved)", with use case 3 marked "Works".
+#   * docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md — a SIXTH wording the filed task
+#     did not name: the k3s-server example "joins clusters by target_cluster_id
+#     metadata" (k3s-server has no join path at all), and a claim that the field
+#     "lives on the NodeInstance.metadata JSONB". Nothing reads it from there,
+#     or from assignment config; the only source consumed is the handshake
+#     request parameter.
+#   * docs/SMOKE_TEST.md carries a different defect in kind, not this
+#     fabrication: db/seeds/smoke_test_k3s_agent_join.rb:90 really does pass
+#     target_cluster_id — at the SERVICE layer, bypassing the agent — so a green
+#     run evidences the wired platform half only. Pinned as a scope clarifier.
 #
-# docs/SMOKE_TEST.md was initially listed here and does NOT belong: its four
-# mentions describe smoke-test coverage, and db/seeds/smoke_test_k3s_agent_join.rb
-# really does pass target_cluster_id — at the SERVICE layer, bypassing the agent.
-# It is a scope over-claim ("2 k3s-agents join via target_cluster_id"), not this
-# fabrication.
+# GUARD SHAPE for a keep-it-visible withdrawal: absence is unusable, because the
+# false text is deliberately retained. Every live claim needs CONTAINMENT (it
+# appears only inside that file's marked withdrawal region, as a two-cell row)
+# PLUS PRESENCE (it is still carried, so deleting the table fails too), and the
+# truthful replacement must be present. Exemptions are scoped to the REGION,
+# never document-wide — a false claim parked in a Troubleshooting section would
+# otherwise be silently exempt. Every pattern below matches at least once today;
+# a pattern that matches nothing is an absence assertion wearing a containment
+# costume, which is how three of the previous iteration's eight patterns came to
+# be vacuous.
 #
 # It is a regression pin on known statements, not a semantic check.
 RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
@@ -87,6 +108,143 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     raise "expected #{rel} to exist under #{ext_root}" unless File.exist?(path)
 
     File.read(path)
+  end
+
+  # Whitespace-normalised view, for TRUTH assertions only. The corrected prose
+  # is hard-wrapped, so a byte-exact match would redden on a reflow that changed
+  # nothing an operator reads.
+  #
+  # The per-line blockquote marker is stripped first, and that is load-bearing,
+  # not tidiness: several of these corrections live inside `>` callouts, so
+  # collapsing whitespace alone leaves a stray ">" in the middle of every
+  # sentence that wraps — a truth pattern spanning the wrap then matches
+  # nothing and the assertion silently becomes a check on the wrap point. That
+  # is the same shape as the regex-across-a-wrapped-line that made the previous
+  # iteration's baseline red without anyone noticing. Containment checks are
+  # line-based and do NOT use this, so nothing here can exempt a false claim.
+  def self.squish(text)
+    text.lines.map { |line| line.sub(/\A\s*>\s?/, "") }.join(" ").gsub(/\s+/, " ")
+  end
+
+  # PRESENCE, reported compactly. A bare `expect(doc).to match(...)` on a whole
+  # document dumps the entire file into the failure output and buries the
+  # reason; the previous iteration's failures were unreadable for exactly that.
+  # Returns the patterns that are absent, so a failure names them and nothing
+  # else. Matching is done on the squished text, so a reflow that changed
+  # nothing an operator reads cannot redden it.
+  def self.absent(text, patterns)
+    squished = squish(text)
+    patterns.reject { |pattern| squished.match?(pattern) }.map(&:inspect)
+  end
+
+  # ABSENCE, reported compactly and by line, for wording that was rewritten
+  # outright rather than withdrawn (so it has no row to live in). Same reason
+  # as `absent`: a bare `not_to match` on a whole document prints the document.
+  def self.present_sites(doc, patterns)
+    doc.lines.each_with_index.flat_map do |line, i|
+      patterns.select { |pattern| line.match?(pattern) }
+              .map { |pattern| "#{i + 1}: #{pattern.inspect} :: #{line.strip[0, 80]}" }
+    end
+  end
+
+  # CONTAINMENT. A withdrawn claim may appear only inside `region` — this
+  # file's marked withdrawal block, never the whole document — and only as a
+  # two-cell table row whose first cell opens with a quote or a backtick.
+  # `row_prefix` carries the blockquote marker where the table is nested in one.
+  # Returns the offending "line-number: text" sites, so a failure names them.
+  #
+  # The exemption is keyed to the region's LINE RANGE, not to whether the region
+  # text happens to contain the line. A review caught the content-keyed version:
+  # `region.include?(line)` is a substring test, so a byte-identical copy of a
+  # withdrawal row pasted anywhere in the document — the realistic markdown
+  # copy-paste regression — was silently exempt, in exactly the Troubleshooting
+  # section this helper's comment claimed to have closed off.
+  def self.claims_outside_withdrawal(doc, region, pattern, row_prefix: "")
+    raise "withdrawal region not found — the containment check would be vacuous" if region.to_s.strip.empty?
+
+    start_char = doc.index(region)
+    raise "withdrawal region is not a slice of this document" if start_char.nil?
+
+    first_line = doc[0...start_char].count("\n")
+    last_line = first_line + region.count("\n")
+
+    # Exactly two cells: three pipes, neither cell containing one. The looser
+    # `.+ \| .+` this replaced admitted a three-cell row, so the "two cells"
+    # the comment pins was not in fact pinned.
+    row_shape = /\A#{Regexp.escape(row_prefix)}\| ["`][^|]*\| [^|]*\|\s*\z/
+    doc.lines.each_with_index.filter_map do |line, i|
+      next unless line.match?(pattern)
+      next if i.between?(first_line, last_line) && line.match?(row_shape)
+
+      "#{i + 1}: #{line.strip[0, 100]}"
+    end
+  end
+
+  REFUSAL_EVENT = "system.k3s_ambiguous_cluster_join_refused"
+
+  # Every mention of the refusal event that states a severity at all must say
+  # `high`. A doc-wide `to match(/severity `high`/)` is satisfied by any single
+  # site and cannot see one mention drifting to "medium" or "warning" — an
+  # operator filtering their event stream on the wrong severity is exactly the
+  # mis-diagnosis these pages exist to stop.
+  #
+  # WINDOWED over the squished text, not line-based. The prose is hard-wrapped,
+  # so the event name and its severity routinely land on different lines: a
+  # line-based version of this check let a `high` -> `medium` mutant through in
+  # USE_CASE_MATRIX.md, because that site's event name is on the line above its
+  # severity and the OTHER mention kept the presence assertion green.
+  # Windows are CLAMPED so one mention cannot borrow the next mention's
+  # severity: two events within ~90 squished characters would otherwise let the
+  # first window absorb the second's `high` and mask a drift in the first.
+  def self.severity_windows(text)
+    squished = squish(text)
+    starts = []
+    offset = 0
+    while (i = squished.index(REFUSAL_EVENT, offset))
+      starts << i
+      offset = i + REFUSAL_EVENT.length
+    end
+
+    starts.each_with_index.map do |i, n|
+      lo = [i - 60, n.zero? ? 0 : starts[n - 1] + REFUSAL_EVENT.length, 0].max
+      hi = [i + REFUSAL_EVENT.length + 90, starts[n + 1] || squished.length].min
+      squished[lo...hi]
+    end
+  end
+
+  def self.severity_stating_windows(text)
+    severity_windows(text).select { |w| w.match?(/severity/i) }
+  end
+
+  def self.softened_severity_sites(text)
+    severity_stating_windows(text).reject { |w| w.match?(/severity `high`/) }
+  end
+
+  # The set of cluster statuses that count toward the ambiguity, cross-checked
+  # against the model rather than spell-checked. Five documents now state this
+  # sentence; a per-document copy is how `provisioning` — a NodeInstance status,
+  # not a KubernetesCluster one — survived in tutorial 05 while the runbook's
+  # own guard sat one directory away. Phrasing-independent: it anchors on the
+  # scope expression and reads whatever backticked tokens the sentence names.
+  def self.ambiguity_sentence(text)
+    squish(text)[/`where\.not\(status: "error"\)`.{0,400}?counts toward the ambiguity[^.]*\./]
+  end
+
+  def self.cluster_statuses
+    model = File.read(File.expand_path("../../../../../server/app/models/devops/kubernetes_cluster.rb", __dir__))
+    model[/STATUSES\s*=\s*%w\[([^\]]+)\]/, 1].split
+  end
+
+  RSpec.shared_examples "an ambiguity-status sentence" do
+    it "names only cluster statuses the model defines, and every one that counts" do
+      statuses = self.class.cluster_statuses
+      sentence = self.class.ambiguity_sentence(doc)
+      expect(sentence).not_to be_nil, "no ambiguity-scope sentence found to check"
+
+      named = sentence.scan(/`(\w+)`/).flatten.uniq
+      expect(named - statuses).to be_empty
+      expect((statuses - %w[error active]) - named).to be_empty
+    end
   end
 
   # --- code: the premise the docs must be written to ----------------------
@@ -224,6 +382,35 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
       expect(service).to match(/kind: "system\.k3s_ambiguous_cluster_join_refused"/)
       expect(service).to match(/severity: :high/)
     end
+
+    # The docs corrected here tell an operator to debug by HTTP status. A
+    # tutorial previously promised a 404 for a bad target, which is a different
+    # failure from the auto-select fabrication and would survive correcting only
+    # the fallback prose. Pin the mapping END TO END — the rescue's symbol AND
+    # the number that symbol resolves to — because either half can move
+    # independently: `:unprocessable_content` is itself a rename of
+    # `:unprocessable_entity` (see the DEPRECATED_STATUS_ALIASES table in
+    # api_response.rb), so pinning only the symbol would let the wire code drift.
+    it "maps the two join failures to the 422 and 409 the docs now quote" do
+      handlers = self.class.read(
+        ext_root, "server/app/controllers/concerns/system/runtime_handshake_handlers.rb"
+      )
+      join = handlers[/def handle_join_request.*?(?=^    # Generic K3s ready handler)/m]
+      expect(join).not_to be_nil, "expected a handle_join_request method to slice"
+
+      expect(join).to match(
+        /rescue ::System::KubernetesClusterProvisionerService::NoClusterAvailableError => e\n\s*render_error\(e\.message, :unprocessable_content\)/
+      )
+      expect(join).to match(
+        /rescue ::System::KubernetesClusterProvisionerService::AmbiguousClusterError => e\n\s*render_error\(e\.message, :conflict\)/
+      )
+
+      expect(Rack::Utils::SYMBOL_TO_STATUS_CODE.fetch(:unprocessable_content)).to eq(422)
+      expect(Rack::Utils::SYMBOL_TO_STATUS_CODE.fetch(:conflict)).to eq(409)
+
+      # And nothing on this path returns the 404 the tutorial promised.
+      expect(join).not_to match(/:not_found/)
+    end
   end
 
   # --- docs: matched pairs -------------------------------------------------
@@ -360,23 +547,12 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     # purpose is factual precision. Cross-checked against the model rather than
     # spell-checked, so a real status rename redirects the doc instead of
     # silently passing.
-    it "names the ambiguity candidate statuses that the model actually defines" do
-      model = self.class.read(
-        File.expand_path("../../../../..", __dir__),
-        "server/app/models/devops/kubernetes_cluster.rb"
-      )
-      statuses = model[/STATUSES\s*=\s*%w\[([^\]]+)\]/, 1].split
-      expect(statuses).to include("error")
-
-      counting = statuses - %w[error active]
-      counting.each do |status|
-        expect(doc).to match(/`#{Regexp.escape(status)}`/),
-                       "withdrawal table omits `#{status}`, which counts toward the ambiguity"
-      end
-
-      invented = doc.scan(/a cluster (?:still )?`(\w+)`/).flatten.uniq - statuses
-      expect(invented).to be_empty, "doc names cluster status(es) the model does not define: #{invented}"
-    end
+    # Was a per-document copy of this check, with a scan regex (`a cluster
+    # still \`x\`) keyed to one phrasing. Four more documents now state the same
+    # sentence in their own words, and the copy could not see any of them —
+    # which is how `provisioning`, a NodeInstance status the cluster model does
+    # not define, survived in tutorial 05. One implementation, five documents.
+    it_behaves_like "an ambiguity-status sentence"
 
     it "keeps the withdrawn instruction visible and marked NOT IMPLEMENTED" do
       expect(doc).to match(/NOT IMPLEMENTED/)
@@ -416,4 +592,337 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
       expect(seed).to match(/platform\.update_kb_article/)
     end
   end
+
+  # ── IMP-f249d9d1af47: the remaining documents ───────────────────────────
+
+  # The established wording, shared so a fifth phrasing cannot be invented for
+  # a sixth document. Every corrected page must state all six.
+  REFUSAL_WORDING = [
+    /AmbiguousClusterError/,
+    /system\.k3s_ambiguous_cluster_join_refused/,
+    /severity `high`/,
+    /no node is produced at all/,
+    /NOT IMPLEMENTED/,
+    /wired on the platform side and unreachable from the agent/
+  ].freeze
+
+  describe "docs/tutorials/04-k3s-cluster.md" do
+    let(:doc) { self.class.read(ext_root, "docs/tutorials/04-k3s-cluster.md") }
+    # The withdrawal table is nested inside a blockquote callout under Step 5,
+    # bounded by the "Expected outcome" paragraph that follows it.
+    let(:region) { doc[/^> ### ⚠️ Choosing a cluster with `target_cluster_id` is NOT IMPLEMENTED.*?(?=^\*\*Expected outcome:)/m].to_s }
+
+    # This file is the reason the task exists: it stated the fabrication in
+    # wording no phrase sweep for "most recent active" would find.
+    LIVE_04 = {
+      "mandatory-tag mechanism" => /is the mandatory tag on/,
+      "picks-the-first fallback" => /first cluster it finds/,
+      "404 troubleshooting" => /gets a 404/,
+      "mandatory-when-multiple" => /is mandatory when more than one/
+    }.freeze
+
+    HISTORICAL_04 = [
+      # Rewritten outright rather than withdrawn, so neither has a row.
+      /joins workers with `target_cluster_id`/,
+      /^## Step 5 — Assign `k3s-agent` with target_cluster_id$/
+    ].freeze
+
+    it "states each withdrawn claim only inside the Step 5 withdrawal table" do
+      LIVE_04.each do |label, pattern|
+        expect(self.class.claims_outside_withdrawal(doc, region, pattern, row_prefix: "> "))
+          .to be_empty, "#{label} still stated as instruction, not withdrawal"
+      end
+    end
+
+    it "carries every withdrawn claim as a labelled row" do
+      LIVE_04.each do |label, pattern|
+        expect(doc).to match(pattern), "#{label} is not carried in the withdrawal table at all"
+      end
+    end
+
+    it "does not reintroduce wording from earlier revisions" do
+      expect(self.class.present_sites(doc, HISTORICAL_04)).to be_empty
+    end
+
+    it "states the refusal in the sibling documents' wording" do
+      expect(self.class.absent(doc, REFUSAL_WORDING)).to be_empty
+    end
+
+    # The 404 correction is useless if it does not name what an operator will
+    # actually see, so pin both codes and the mapping site.
+    it "gives the real status codes in place of the withdrawn 404" do
+      expect(self.class.absent(doc, [
+                                 /\*\*409\*\*/,
+                                 /\*\*422\*\*/,
+                                 /runtime_handshake_handlers\.rb:167-170/,
+                                 /neither case returns a 404/
+                               ])).to be_empty
+    end
+
+    # Presence alone does not see a code DRIFTING. Both real codes appear more
+    # than once, so flipping one troubleshooting mention back to 404 left every
+    # presence assertion satisfied — a mutant survived exactly that way. The
+    # invariant is the SET: the only status codes this page emphasises are the
+    # two the handlers actually return. Cross-checked against the handler rather
+    # than hardcoded, so a change in the mapping redirects the doc instead of
+    # quietly passing.
+    it "emphasises no status code the handshake cannot return" do
+      handlers = self.class.read(
+        ext_root, "server/app/controllers/concerns/system/runtime_handshake_handlers.rb"
+      )
+      join = handlers[/def handle_join_request.*?(?=^    # Generic K3s ready handler)/m].to_s
+      real = join.scan(/render_error\(e\.message, :(\w+)\)/).flatten.uniq
+                 .map { |sym| Rack::Utils::SYMBOL_TO_STATUS_CODE.fetch(sym.to_sym).to_s }
+
+      expect(real.sort).to eq(%w[409 422])
+      expect(doc.scan(/\*\*(\d{3})\*\*/).flatten.uniq.sort).to eq(real.sort)
+    end
+
+    it "never states the refusal at anything but severity high" do
+      # Non-vacuous first: a document that stopped naming a severity anywhere
+      # would otherwise pass this by having nothing to check.
+      expect(self.class.severity_stating_windows(doc)).not_to be_empty
+      expect(self.class.softened_severity_sites(doc)).to be_empty
+    end
+
+    it_behaves_like "an ambiguity-status sentence"
+
+    # The tutorial builds ONE cluster, which is the case that works. Correcting
+    # it into "target_cluster_id is broken" without saying so would leave a
+    # reader thinking the tutorial itself no longer works.
+    it "keeps the single-cluster path stated as working" do
+      expect(self.class.absent(doc, [
+                                 /exactly one non-error cluster in the account a worker joins without a target/
+                               ])).to be_empty
+    end
+  end
+
+  describe "docs/CONTAINER_RUNTIMES.md" do
+    let(:doc) { self.class.read(ext_root, "docs/CONTAINER_RUNTIMES.md") }
+    let(:region) { doc[/^\| Withdrawn claim \| What is actually true \|.*?(?=^## Module Catalog)/m].to_s }
+
+    LIVE_CR = {
+      "must-carry mechanism" => /`k3s-agent` module assignments must/,
+      "silent most-recent join" => /the agent silently joins the most-recently-created/,
+      # The stale gap notice is its own falsehood: it told operators the
+      # server-side ambiguity guard had NOT shipped, which inverts the truth
+      # and is exactly the guard that now refuses the join.
+      "stale known-gap notice" => /there is no server-side validation guard that/,
+      "remove-the-metadata advice" => /remove the metadata to fall back to/
+    }.freeze
+
+    HISTORICAL_CR = [
+      /^### Multi-cluster routing via `target_cluster_id`$/,
+      /validation rejects join requests for any other cluster ID/
+    ].freeze
+
+    it "states each withdrawn claim only inside the withdrawal table" do
+      LIVE_CR.each do |label, pattern|
+        expect(self.class.claims_outside_withdrawal(doc, region, pattern))
+          .to be_empty, "#{label} still stated as instruction, not withdrawal"
+      end
+    end
+
+    it "carries every withdrawn claim as a labelled row" do
+      LIVE_CR.each do |label, pattern|
+        expect(doc).to match(pattern), "#{label} is not carried in the withdrawal table at all"
+      end
+    end
+
+    it "does not reintroduce wording from earlier revisions" do
+      expect(self.class.present_sites(doc, HISTORICAL_CR)).to be_empty
+    end
+
+    it "states the refusal in the sibling documents' wording" do
+      expect(self.class.absent(doc, REFUSAL_WORDING)).to be_empty
+    end
+
+    it "never states the refusal at anything but severity high" do
+      # Non-vacuous first: a document that stopped naming a severity anywhere
+      # would otherwise pass this by having nothing to check.
+      expect(self.class.severity_stating_windows(doc)).not_to be_empty
+      expect(self.class.softened_severity_sites(doc)).to be_empty
+    end
+
+    it_behaves_like "an ambiguity-status sentence"
+
+    # The routing diagram survives the withdrawal, so it must be labelled or it
+    # reads as current behaviour on its own — a picture outlives the prose above
+    # it in a reader's memory.
+    it "labels the surviving routing diagram as intent, not behaviour" do
+      expect(self.class.absent(doc, [
+                                 /The diagram below is the intended design, not current behaviour/
+                               ])).to be_empty
+      diagram_at = doc.index("```mermaid\nflowchart TB\n    Op[Operator]")
+      caveat_at = doc.index("The diagram below is the intended design")
+      expect(diagram_at).not_to be_nil
+      expect(caveat_at).not_to be_nil
+      expect(caveat_at).to be < diagram_at
+    end
+  end
+
+  describe "docs/USE_CASE_MATRIX.md" do
+    let(:doc) { self.class.read(ext_root, "docs/USE_CASE_MATRIX.md") }
+    # Bounded by the "What to watch" heading that follows the table. The
+    # document has an earlier "What to watch" (use case 2); the non-greedy
+    # match starts at the Withdrawn-claim header, so it cannot reach back.
+    let(:region) { doc[/^\| Withdrawn claim \| What is actually true \|.*?(?=^\*\*What to watch\*\*)/m].to_s }
+
+    LIVE_UM = {
+      "MUST-carry caveat" => /module assignment \*\*MUST\*\* carry `metadata\.target_cluster_id`/,
+      "agent-reads-it mechanism" => /Agent reads `target_cluster_id` from module assignment metadata at boot/,
+      "agent-passes-it-through" => /Agent passes through to `JoinRequest` HTTP body/,
+      "auto-select fallback" => /auto-select most recent active cluster \(legacy single-cluster contract preserved\)/,
+      "restart-to-pick-up advice" => /Agent must restart to pick up changes to `target_cluster_id`/
+    }.freeze
+
+    HISTORICAL_UM = [
+      /Multi-cluster K3s ✅/,
+      /k3s-agent joins the wrong cluster/
+    ].freeze
+
+    it "states each withdrawn claim only inside the withdrawal table" do
+      LIVE_UM.each do |label, pattern|
+        expect(self.class.claims_outside_withdrawal(doc, region, pattern))
+          .to be_empty, "#{label} still stated as instruction, not withdrawal"
+      end
+    end
+
+    it "carries every withdrawn claim as a labelled row" do
+      LIVE_UM.each do |label, pattern|
+        expect(doc).to match(pattern), "#{label} is not carried in the withdrawal table at all"
+      end
+    end
+
+    it "does not reintroduce wording from earlier revisions" do
+      expect(self.class.present_sites(doc, HISTORICAL_UM)).to be_empty
+    end
+
+    # This is the highest-traffic of the corrected files and its quick-reference
+    # table is what most readers see. A corrected walkthrough under a row still
+    # marked "Works" is worse than no correction: the row is the summary a
+    # reader trusts.
+    it "no longer marks use case 3 as working, in the quick-reference row too" do
+      row = doc.lines.find { |l| l.start_with?("| 3 | Multi-cluster K3s in one account") }
+      expect(row).not_to be_nil, "quick-reference row for use case 3 is gone"
+      expect(row).to include("❌ Not implemented")
+      expect(row).not_to include("✅")
+    end
+
+    it "states the refusal in the sibling documents' wording" do
+      expect(self.class.absent(doc, REFUSAL_WORDING)).to be_empty
+    end
+
+    it "never states the refusal at anything but severity high" do
+      # Non-vacuous first: a document that stopped naming a severity anywhere
+      # would otherwise pass this by having nothing to check.
+      expect(self.class.severity_stating_windows(doc)).not_to be_empty
+      expect(self.class.softened_severity_sites(doc)).to be_empty
+    end
+
+    it_behaves_like "an ambiguity-status sentence"
+  end
+
+  # Corrected by an earlier iteration (eac22f66) and never pinned here — which
+  # is how an invented cluster status survived in it while the runbook's own
+  # copy of that check sat one directory away. Scoped to the claims this task
+  # verified; its established wording predates this guard and is not restated.
+  describe "docs/tutorials/05-multi-cluster-k3s.md" do
+    let(:doc) { self.class.read(ext_root, "docs/tutorials/05-multi-cluster-k3s.md") }
+
+    it_behaves_like "an ambiguity-status sentence"
+
+    it "never states the refusal at anything but severity high" do
+      expect(self.class.severity_stating_windows(doc)).not_to be_empty
+      expect(self.class.softened_severity_sites(doc)).to be_empty
+    end
+
+    it "still names the refusal it was corrected to state" do
+      expect(self.class.absent(doc, [
+                                 /AmbiguousClusterError/,
+                                 /system\.k3s_ambiguous_cluster_join_refused/,
+                                 /severity `high`/
+                               ])).to be_empty
+    end
+  end
+
+  describe "docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md (a sixth wording)" do
+    let(:doc) { self.class.read(ext_root, "docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md") }
+
+    # Both were rewritten rather than kept as rows: neither was an instruction
+    # an operator could have followed, so there is nothing to recognise.
+    it "no longer claims k3s-server joins clusters by target_cluster_id" do
+      expect(self.class.present_sites(doc, [/joins clusters by target_cluster_id metadata/]))
+        .to be_empty
+    end
+
+    # The second error here is a LOCATION claim, and it is independently false:
+    # nothing reads target_cluster_id from NodeInstance.metadata, from module
+    # assignment config, or from anywhere but the handshake request parameter.
+    it "no longer places the field on NodeInstance.metadata" do
+      expect(self.class.present_sites(doc, [/lives on the `NodeInstance\.metadata` JSONB/]))
+        .to be_empty
+    end
+
+    it "names the only source the platform actually consumes" do
+      expect(self.class.absent(doc, [
+                                 /module-assignment `config`/,
+                                 /nothing reads it from either place/,
+                                 /runtime_handshake_handlers\.rb:164/,
+                                 /NOT IMPLEMENTED/,
+                                 # A review caught the first draft claiming the
+                                 # join_request parameter was the ONLY source
+                                 # the platform consumes. `handle_k3s_ready`
+                                 # forwards `params[:cluster_id]` into the same
+                                 # kwarg (`:195`), and the agent really does
+                                 # send that one — it just names the cluster the
+                                 # node is already in. Both phases must be
+                                 # stated, or the correction replaces one
+                                 # over-claim with another.
+                                 /`phase=join_request`/,
+                                 /`phase=ready`/,
+                                 /`:195`/
+                               ])).to be_empty
+    end
+  end
+
+  describe "docs/SMOKE_TEST.md (a scope over-claim, not the fabrication)" do
+    let(:doc) { self.class.read(ext_root, "docs/SMOKE_TEST.md") }
+
+    # Different in kind from the other five: the drill really does pass
+    # target_cluster_id, at the SERVICE layer. The risk is that a green run gets
+    # read as evidence the operator path works, so the fix is a clarifying
+    # clause wherever the drill is described — not a withdrawal.
+    it "never describes the drill's join without saying the agent is bypassed" do
+      unqualified = doc.lines.each_with_index.filter_map do |line, i|
+        next unless line.match?(/k3s-agents join via target_cluster_id/)
+        next if line.match?(/bypassing the agent/)
+
+        "#{i + 1}: #{line.strip[0, 100]}"
+      end
+      expect(unqualified).to be_empty
+    end
+
+    it "cites the service-layer call site and what a green run does not prove" do
+      expect(self.class.absent(doc, [
+                                 /smoke_test_k3s_agent_join\.rb:90/,
+                                 /not the operator path/,
+                                 # The run-order table names the same drill and
+                                 # was reached by no pattern until a review
+                                 # pointed it out.
+                                 /target_cluster_id join \(service-layer, agent bypassed\)/
+                               ])).to be_empty
+    end
+
+    # The clarifier is only true while the seed really does call the service
+    # directly. If the drill is ever rewritten to drive a real agent, this
+    # redirects to the doc instead of leaving a stale hedge in place.
+    it "matches what the seed actually does" do
+      seed = self.class.read(ext_root, "server/db/seeds/smoke_test_k3s_agent_join.rb")
+      expect(self.class.absent(seed, [
+                                 /::System::KubernetesClusterProvisionerService\.join_request!\( node_instance: inst, target_cluster_id: cluster\.id \)/
+                               ])).to be_empty
+    end
+  end
+
 end

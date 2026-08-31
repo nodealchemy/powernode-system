@@ -267,7 +267,9 @@ viewer in active sweep).
   without rebuilding the base module)
 - **Phase 2 K3s** — full container runtime stack: cluster provisioner,
   agent reconciler state machine, module catalog seed, multi-cluster
-  `metadata.target_cluster_id` join validation
+  join validation (the platform half of `target_cluster_id`; the agent-side
+  producer is [NOT IMPLEMENTED](./docs/CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--not-implemented),
+  so multi-cluster worker placement does not work today)
 - **Phase 1 Docker** — managed `Devops::DockerHost` with InternalCaService
   TLS provisioning + cascade-FK decommission
 

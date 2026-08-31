@@ -114,8 +114,9 @@ today nothing supplies it.** Two corrections to what this page used to say:
   emits `system.k3s_ambiguous_cluster_join_refused` at severity `high`
   (`kubernetes_cluster_provisioner_service.rb:329`). The single-cluster fallback
   applies only when there is exactly one candidate — and "candidate" is
-  `where.not(status: "error")`, so a cluster still `provisioning` counts toward
-  the ambiguity.
+  `where.not(status: "error")`, so a cluster in `pending`, `bootstrapping`,
+  `degraded` or `disconnected` counts toward the ambiguity, not just an
+  `active` one.
 - **The agent has no way to send it.** The server reads it from the handshake
   (`runtime_handshake_handlers.rb:164`); the agent sources it from
   `k3sd.AgentManager.TargetClusterID`, whose doc comment says it is "read from

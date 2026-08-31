@@ -84,7 +84,7 @@ listed in [Pass 1](#pass-1--single-node-qemu).
 | `smoke_test_flannel_over_sdwan.rb` | 8 | K3s overlay | Sdwan::Network pod_subnet_prefix + flannel cluster bootstrap → cluster.metadata["pod_cidr"] stamped + SubnetAdvertisement(source: "pod_subnet") created + bootstrap_config returns flannel_iface/flannel_backend=host-gw/cluster_cidr | no |
 | `smoke_test_k3s_site_bootstrap.rb` | 9 | K3s lifecycle ph.1 | SDWAN network + pod_subnet_prefix + k3s-server bootstrap + VIP + SubnetAdvertisement; site-parameterizable via `SMOKE_K3S_SITE=a\|b` | site+ (db tier: synth) |
 | `smoke_test_k3s_ha_control_plane.rb` | 9 | K3s lifecycle ph.2 | 3-server HA cluster + VIP failover candidates + synthetic `VirtualIp#failover!` | site+ (db tier: synth) |
-| `smoke_test_k3s_agent_join.rb` | 9 | K3s lifecycle ph.3 | 2 k3s-agents join via target_cluster_id + CniProfileMismatch negative test | site+ (db tier: synth) |
+| `smoke_test_k3s_agent_join.rb` | 9 | K3s lifecycle ph.3 | 2 k3s-agents join via target_cluster_id + CniProfileMismatch negative test. **At the default db tier the drill passes `target_cluster_id` into `join_request!` at the service layer (`smoke_test_k3s_agent_join.rb:90`), bypassing the agent** — a green run evidences the wired platform half only, not the operator path, which is [NOT IMPLEMENTED](./USE_CASE_MATRIX.md#use-case-3--multi-cluster-k3s--not-implemented) | site+ (db tier: synth) |
 | `smoke_test_k3s_pod_plane.rb` | 9 | K3s lifecycle ph.4 | runtime bootstrap_config payload + (site+) nginx deploy + tcpdump on wg-sdwan-* | site+ (db tier: contract only) |
 | `smoke_test_k3s_federation.rb` | 9 | K3s lifecycle ph.5 | System::FederationPeer propose/accept incl. the single-use acceptance-token round-trip (Site A ↔ Site B) + cross-site API plane | full (below full: skip-clean) |
 | `smoke_test_k3s_rolling_upgrade.rb` | 9 | K3s lifecycle ph.6 | rolling_module_upgrade executor descriptor + plan synthesis (canary-first batch sequencing) | site+ (db tier: plan only) |
@@ -402,7 +402,7 @@ mode at db tier (no VMs, ~5 min) and agent-driven mode at single+ tiers
 |-------|------|----------|----------------------|
 | 1 | `smoke_test_k3s_site_bootstrap.rb` | db | bootstrap + pod_cidr + VIP + SubnetAdvertisement |
 | 2 | `smoke_test_k3s_ha_control_plane.rb` | db | 3-server cluster + synthetic VIP failover |
-| 3 | `smoke_test_k3s_agent_join.rb` | db | target_cluster_id join + CniProfileMismatch negative |
+| 3 | `smoke_test_k3s_agent_join.rb` | db | target_cluster_id join (service-layer, agent bypassed) + CniProfileMismatch negative |
 | 4 | `smoke_test_k3s_pod_plane.rb` | site | bootstrap_config contract; full kubectl/tcpdump at site+ |
 | 5 | `smoke_test_k3s_federation.rb` | full | (skipped at db; requires both sites + federation) |
 | 6 | `smoke_test_k3s_rolling_upgrade.rb` | db | executor descriptor + plan synthesis (canary-first) |

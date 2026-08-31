@@ -84,7 +84,7 @@ Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented
 | `system_list_templates` | List NodeTemplates |
 | `system_get_template` | Fetch a Template + its module assignments |
 | `system_update_template` | Edit any field `system_create_template` accepts: name, description, enabled, public, node_platform_id, admin_user, config (`config` replaces the stored hash) |
-| `system_assign_module_to_template` | Add a module to a Template, with the join's own `priority`, `enabled`, `config` (e.g. `target_cluster_id`) and `recommends_override`. Refuses error-severity composition conflicts; `enabled: false` stages the assignment without shipping it and skips the conflict check |
+| `system_assign_module_to_template` | Add a module to a Template, with the join's own `priority`, `enabled`, `config` and `recommends_override`. (`config` is stored verbatim and is delivered by whatever consumes it; `target_cluster_id` is the known exception — it is stored and never delivered, see [CONTAINER_RUNTIMES.md](./CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--not-implemented).) Refuses error-severity composition conflicts; `enabled: false` stages the assignment without shipping it and skips the conflict check |
 | `system_update_template_module` | Edit an existing assignment in place (priority/enabled/config/recommends_override). **`enabled: false` is the correct way to remove a module** — unassigning destroys the join, which nullifies `source_template_module_id` on every derived NodeModuleAssignment and orphans them permanently. Re-enabling runs the conflict check |
 | `system_list_modules` | List NodeModules |
 | `system_get_module` | Fetch a Module + its categories + dependencies |

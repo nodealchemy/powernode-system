@@ -67,10 +67,25 @@ sequenceDiagram
     note over VIP,A1: If bootstrap server drains:<br/>VIP migrates to next holder<br/>workers' K3S_URL keeps resolving
 ```
 
-### Multi-cluster routing via `target_cluster_id`
+### Multi-cluster routing via `target_cluster_id` — NOT IMPLEMENTED
 
-In accounts with more than one cluster, `k3s-agent` module assignments must
-carry `metadata.target_cluster_id` so the agent joins the right cluster.
+**Putting a worker in a chosen cluster does not work today.**
+`target_cluster_id` is wired on the platform side and unreachable from the
+agent: `k3sd.AgentManager.TargetClusterID` is declared and consumed
+(`JoinRequest(ctx, m.TargetClusterID)`) but never written, and
+`k3sd.ModulesAPI` is `AssignedModules(ctx) ([]string, error)` — module
+**names** only — so assignment config never reaches the K3s reconcilers. Every
+worker's join therefore carries an empty target, and in an account with more
+than one non-error cluster the platform **refuses** it: `AmbiguousClusterError`,
+with `system.k3s_ambiguous_cluster_join_refused` emitted at severity `high`
+(`kubernetes_cluster_provisioner_service.rb:329`) and 409 returned. The worker
+does not join the wrong cluster; **no node is produced at all**.
+
+Single-cluster accounts are unaffected — with exactly one non-error cluster the
+join is unambiguous and succeeds without a target. The producer is tracked
+separately (IMP-a5f236e8cc56 gap 3).
+
+The diagram below is the intended design, not current behaviour:
 
 ```mermaid
 flowchart TB
@@ -93,16 +108,12 @@ flowchart TB
     W2 -. "joins via VIP" .-> S2
 ```
 
-Without `target_cluster_id`, the agent silently joins the most-recently-created
-active cluster the API returns — wrong in multi-cluster accounts.
-
-> **Known gap (2026-06-03):** there is no server-side validation guard that
-> *rejects* an ambiguous join (no `NoClusterAvailableError` / multi-cluster
-> disambiguation error) when `target_cluster_id` is omitted in an account with
-> more than one cluster. Until that guard ships, always set
-> `metadata.target_cluster_id` on `k3s-agent` assignments in multi-cluster
-> accounts. The join-time *mismatch* check below (rejecting a wrong explicit ID)
-> already works; only the *missing*-ID case is unguarded.
+| Withdrawn claim | What is actually true |
+|---|---|
+| "In accounts with more than one cluster, `k3s-agent` module assignments must carry `metadata.target_cluster_id` so the agent joins the right cluster" | Required by the platform, and impossible to supply from the agent. Setting it on the assignment changes nothing about the join. |
+| "Without `target_cluster_id`, the agent silently joins the most-recently-created active cluster the API returns" | There is no most-recently-created fallback for a multi-cluster account. `resolve_membership_cluster!` (`kubernetes_cluster_provisioner_service.rb:351`) auto-selects **only when there is exactly one candidate**; with more than one it raises `AmbiguousClusterError` and the join fails. "Candidate" is `where.not(status: "error")`, so a cluster in `pending`, `bootstrapping`, `degraded` or `disconnected` counts toward the ambiguity, not just an `active` one. |
+| "Known gap (2026-06-03): there is no server-side validation guard that rejects an ambiguous join when `target_cluster_id` is omitted in an account with more than one cluster" | That guard shipped. The omitted-ID case is precisely the one that is now guarded: `resolve_membership_cluster!` emits and raises rather than guessing. What is missing is the agent-side producer, not the server-side check. |
+| "remove the metadata to fall back to `join most recent active cluster`" (Troubleshooting) | Removing it is what triggers the refusal. There is no most-recent fallback once a second non-error cluster exists, and nothing on the assignment reaches the agent to remove. |
 
 ## Module Catalog
 
@@ -280,7 +291,7 @@ Symptoms: agent posts `phase=join_request` but cluster fails to add it; agent lo
 
 - `api_endpoint` mismatch: K3s api_endpoint uses an SDWAN VIP (slice 3). If the worker isn't on the same SDWAN network as the bootstrap node, the VIP is unreachable. Confirm with `system_sdwan_list_peers` that both peers are on the same network.
 - Token mismatch (rare): platform regenerated the join token but the agent has a stale cache. Force re-fetch by removing the systemd drop-in `/etc/systemd/system/k3s-agent.service.d/override.conf` and restarting `powernode-agent`.
-- Multi-cluster confusion: if `metadata.target_cluster_id` is set on the agent module assignment, validation rejects join requests for any other cluster ID. Set the right ID via `platform.system_assign_module_to_template` or remove the metadata to fall back to "join most recent active cluster."
+- Multi-cluster refusal: with more than one non-error cluster in the account the join is **refused**, not misrouted — the handshake returns **409** (`AmbiguousClusterError`) and `system.k3s_ambiguous_cluster_join_refused` is emitted at severity `high`. Setting `metadata.target_cluster_id` on the assignment does not help, because the value never reaches the agent — see [Multi-cluster routing](#multi-cluster-routing-via-target_cluster_id--not-implemented) for the withdrawn instructions and what replaced them. There is no operator-side workaround today; add workers before a second cluster exists.
 
 ### kubelet logs unavailable
 

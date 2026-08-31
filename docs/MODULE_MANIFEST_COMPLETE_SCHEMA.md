@@ -501,7 +501,7 @@ security:
 
 ### Example 4 — K3s server module
 
-A cluster-control-plane module that exposes the K8s API and joins clusters by target_cluster_id metadata.
+A cluster-control-plane module that exposes the K8s API. (`k3s-server` bootstraps its own cluster and never issues a `join_request`, so `target_cluster_id` does not apply to it — an HA server still registers against a cluster on `phase=ready`, but only the one it bootstrapped. On `k3s-agent` workers the field is [NOT IMPLEMENTED](./CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--not-implemented) on the agent side.)
 
 ```yaml
 schema_version: 1
@@ -557,7 +557,7 @@ security:
   user_namespace: false      # k3s needs real root for kubelet ops
 ```
 
-Notice the `target_cluster_id` metadata used for multi-cluster K3s joining lives on the `NodeInstance.metadata` JSONB, not in manifest.yaml — same reasoning as parent-module wiring.
+Notice `target_cluster_id` is not a manifest.yaml key — same reasoning as parent-module wiring. Two corrections to earlier revisions of this line: it is a **module-assignment `config`** key, not `NodeInstance.metadata`; and nothing reads it from either place. The platform consumes `target_cluster_id` only as a runtime-handshake request parameter, from two phases: `phase=join_request` (`runtime_handshake_handlers.rb:164`), which the agent never populates, and the `cluster_id` an already-joined node echoes on `phase=ready` (`:195`), which can only name the cluster it is already in. Neither lets an operator choose one, so multi-cluster worker placement is [NOT IMPLEMENTED](./CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--not-implemented).
 
 ### Example 5 — Privileged hardening module (`security-hardening`)
 

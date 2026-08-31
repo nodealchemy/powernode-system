@@ -5,7 +5,10 @@
 > **What you'll learn:** Provision a K3s control plane + worker on Powernode
 > NodeInstances. The platform auto-bootstraps `k3s-server`, allocates a
 > SDWAN-backed `api_endpoint` VIP (slice 3 — survives bootstrap-node loss
-> via automatic failover), and joins workers with `target_cluster_id`.
+> via automatic failover), and joins a worker to it. This tutorial builds a
+> **single** cluster, which is the case that works: with exactly one non-error
+> cluster in the account a worker joins without a target. Choosing among
+> several is NOT IMPLEMENTED — see [Step 5](#step-5--assign-k3s-agent-single-cluster-accounts).
 >
 > **Time:** ~25 min (with two NodeInstances)
 >
@@ -68,9 +71,14 @@ peer in the cluster, and worker `K3S_URL` keeps resolving — no kubectl /
 operator action required. (Single-server cluster: VIP failover has nowhere
 to go; for production HA you want ≥2 servers.)
 
-**`metadata.target_cluster_id`** is the mandatory tag on `k3s-agent`
-assignments in multi-cluster accounts — without it, the agent picks the
-first cluster it finds, which is wrong if you have more than one.
+**`metadata.target_cluster_id`** never reaches the agent. It is wired on the
+platform side and unreachable from the agent, so a worker's join always
+carries an empty target. With exactly one non-error cluster that is
+unambiguous and the join succeeds. With more than one the platform
+**refuses** it: `AmbiguousClusterError`, with
+`system.k3s_ambiguous_cluster_join_refused` emitted at severity `high`, and
+**no node is produced at all**. The withdrawn instruction is kept visible in
+[Step 5](#step-5--assign-k3s-agent-single-cluster-accounts).
 
 ## Prerequisites
 
@@ -155,21 +163,42 @@ platform.system_provision_instance({ node_id: ... })
 platform.system_sdwan_attach_peer({ network_id, node_instance_id })
 ```
 
-## Step 5 — Assign `k3s-agent` with target_cluster_id
+## Step 5 — Assign `k3s-agent` (single-cluster accounts)
+
+This tutorial's account has exactly one cluster, so the worker joins it
+without a target:
 
 ```javascript
 platform.system_assign_module_to_template({
   template_id: "<worker-template>",
-  module_id: "<k3s-agent-module-id>",
-  config: {
-    target_cluster_id: "<cluster-id-from-step-3>"
-  }
+  module_id: "<k3s-agent-module-id>"
 })
 ```
 
-**Expected outcome:** `target_cluster_id` is mandatory when more than one
-cluster exists in the account. Within ~60s the agent picks up the
-assignment, requests the join token, and joins:
+> ### ⚠️ Choosing a cluster with `target_cluster_id` is NOT IMPLEMENTED
+>
+> Earlier revisions of this step passed
+> `config: { target_cluster_id: "<cluster-id-from-step-3>" }`. The assignment
+> succeeds and the value is stored, but it never reaches the node.
+> `k3sd.AgentManager.TargetClusterID` is declared and consumed
+> (`JoinRequest(ctx, m.TargetClusterID)`) but never written, and
+> `k3sd.ModulesAPI` is `AssignedModules(ctx) ([]string, error)` — module
+> **names** only — so assignment config has no channel to the K3s reconcilers.
+> The **server** half is real: `handle_join_request` forwards
+> `params[:target_cluster_id].presence` into `join_request!`
+> (`runtime_handshake_handlers.rb:164`), so a value that arrived would be
+> honoured. `target_cluster_id` is wired on the platform side and unreachable
+> from the agent. The producer is tracked separately (IMP-a5f236e8cc56 gap 3).
+>
+> | Withdrawn claim | What is actually true |
+> |---|---|
+> | "`metadata.target_cluster_id` is the mandatory tag on `k3s-agent` assignments in multi-cluster accounts" | Required by the platform, and impossible to supply from the agent. Setting it on the assignment changes nothing about the join. |
+> | "without it, the agent picks the first cluster it finds" | There is no picks-the-first fallback for a multi-cluster account. `resolve_membership_cluster!` (`kubernetes_cluster_provisioner_service.rb:351`) auto-selects **only when there is exactly one candidate**; with more than one it raises `AmbiguousClusterError` and the join fails. "Candidate" is `where.not(status: "error")`, so a cluster in `pending`, `bootstrapping`, `degraded` or `disconnected` counts toward the ambiguity, not just an `active` one. |
+> | "most common cause is wrong `target_cluster_id`. The agent tries to join and gets a 404" (Troubleshooting) | The agent never sends the field on `phase=join_request`, so it cannot be wrong — and no path here returns 404. `AmbiguousClusterError` maps to **409** and `NoClusterAvailableError` to **422** (`runtime_handshake_handlers.rb:167-170`). An operator debugging by status code was looking for the wrong response entirely. |
+> | "`target_cluster_id` is mandatory when more than one cluster exists in the account" | No node is produced at all. The platform emits `system.k3s_ambiguous_cluster_join_refused` at severity `high` (`kubernetes_cluster_provisioner_service.rb:329`) and returns 409. Looking for a misplaced node will not find one. There is no operator-side workaround: add workers **before** a second cluster exists. |
+
+**Expected outcome:** within ~60s the agent picks up the assignment, requests
+the join token, and joins:
 
 ```javascript
 platform.recent_events({ kind_prefix: "system.k3s.handshake.join", limit: 5 })
@@ -274,16 +303,24 @@ platform.list_agents()
 platform.agent_introspect({ agent_id: "<sdwan-manager-uuid>" })
 ```
 
-**Worker stuck at `join_request`** — most common cause is wrong
-`target_cluster_id`. The agent tries to join and gets a 404. Check:
+**Worker stuck at `join_request`** — in a single-cluster account, check the
+worker's SDWAN reachability to the `api_endpoint` VIP first. In an account with
+more than one non-error cluster the join is **refused**, not misrouted: the
+handshake returns **409** (`AmbiguousClusterError`), and
+`system.k3s_ambiguous_cluster_join_refused` is emitted at severity `high`. A
+`target_cluster_id` naming a missing or `error` cluster returns **422**
+(`NoClusterAvailableError`). Both are mapped at
+`runtime_handshake_handlers.rb:167-170`; neither case returns a 404. Earlier
+revisions of this page blamed a wrong `target_cluster_id` and a 404 response —
+withdrawn in [Step 5](#step-5--assign-k3s-agent-single-cluster-accounts). Check:
 
 ```javascript
 platform.system_get_template({ template_id: "<template-id>" })
 // → { template: { ..., modules: [{ id, name, variety }, ...] } }
-// Confirm k3s-agent is among the template's modules; then verify the
-// assignment's config.target_cluster_id matches an existing cluster id
-// (the per-assignment config isn't in this summary — check it where you set it
-//  in Step 5, or via the node_module_assignments REST endpoint).
+// Confirm k3s-agent is among the template's modules, then confirm the account
+// still has exactly one non-error cluster — a second one refuses every
+// subsequent worker join (409), and produces no node.
+platform.kubernetes_list_clusters()
 ```
 
 **`kubectl` from operator workstation hangs** — your workstation isn't on
