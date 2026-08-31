@@ -229,6 +229,15 @@ module System
         # Emits system.acme_cert_expiring → platform_maintenance cert_rotate.
         ::System::Fleet::Sensors::CertExpirySensor,
         ::System::Fleet::Sensors::ModulePromotionSensor,
+        # Asserts that what a module has BUILT and what the fleet RUNS have
+        # converged, and alarms when they have not. Deliberately keyed on
+        # NodeModule#current_version_id (the only thing agents materialize) and
+        # NOT on promotion_state, and deliberately derived from STATE rather
+        # than from the absence of a withheld event — the 2026-08-25 stall
+        # emitted refusals, stopped emitting them, and still never promoted, so
+        # an event-absence detector would have stayed silent throughout.
+        # Advisory: emits system.module_promotion_stalled, binds to no action.
+        ::System::Fleet::Sensors::ModulePromotionBacklogSensor,
         # `capability:<tag>` requirements no module on the account provides.
         # Advisory only — closing a gap means authoring a module, which must
         # pass the human reuse gate (see the sensor's own doc).
