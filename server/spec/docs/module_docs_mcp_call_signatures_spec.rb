@@ -15,8 +15,8 @@ require "rails_helper"
 #
 # The pin is mechanical, not a spelling test: it parses every
 # `platform.<verb>({ ... })` example in the covered files and checks the
-# top-level keys against that verb's OWN action_definitions, resolved through
-# PlatformApiToolRegistry::TOOLS. It therefore keeps working when a parameter
+# top-level keys — and each one's value SHAPE — against that verb's OWN
+# action_definitions, resolved through PlatformApiToolRegistry::TOOLS. It therefore keeps working when a parameter
 # is renamed in the tool, which is the drift that produced this finding.
 #
 # What it does NOT cover:
@@ -24,8 +24,12 @@ require "rails_helper"
 #     separate claim with its own drift (02-first-module.md and
 #     module-authoring.md both document version fields the serializer does not
 #     emit); filed separately rather than rewritten here.
-#   * Whether the values are meaningful — only that the KEYS are accepted and
-#     that every required parameter is supplied.
+#   * Whether the values are MEANINGFUL. Since IMP-389daefb3ab4 a value's
+#     SHAPE is checked against the declared type — an object where a scalar is
+#     declared is the "nested it under an extra key" mistake — but nothing
+#     reads the value itself, and the keys INSIDE an object literal are still
+#     unchecked, because no tool declares a nested schema to check them
+#     against. See shape_mismatches.
 #   * Prose mentions of a verb with no call site, and — for the PARAMETER
 #     checks only — docs outside COVERED_DOCS/COVERED_CALLS. Verb EXISTENCE is
 #     swept tree-wide and ungated; see the sweep at the bottom of this file for
@@ -405,7 +409,8 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   covered_doc_sites = ModuleDocsMcpCallSignatures::COVERED_DOC_CALL_SITES
 
   # Extract `platform.<verb>({ ... })` calls, returning
-  # [verb, top_level_keys, line_number, elides_arguments?, commented_out?].
+  # [verb, top_level_entries, line_number, elides_arguments?, commented_out?],
+  # where top_level_entries is [[key, value_shape], ...].
   # Brace/bracket depth aware, string aware, and skips `//`
   # comments INSIDE an argument literal, so a nested `options: { ... }`
   # contributes only `options` and a `// → { ... }` response comment is not
@@ -442,7 +447,7 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
       # balanced_body still starts at the brace; only this flag moves. No doc
       # writes that shape today, so reading it at the brace instead is an
       # equivalent mutant: a convention fix, not a behaviour fix.
-      calls << [ verb, top_level_keys(body), line, elides_arguments?(body),
+      calls << [ verb, top_level_entries(body), line, elides_arguments?(body),
                  comment_framed?(text, start) ]
     end
     calls
@@ -562,9 +567,36 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
     region
   end
 
-  # Top-level keys of a JS object-literal body: identifiers at depth 0 that
-  # start a `key:` pair or stand alone as ES6 shorthand.
-  def self.top_level_keys(body)
+  # The same scan, keeping each key's VALUE SHAPE — :object, :array, :scalar,
+  # :elided (the value is `...`) or :shorthand (no `:` at all).
+  #
+  # The keys alone were all this parser kept (IMP-389daefb3ab4), so a doc could
+  # write an object where the tool declares a string and nothing looked: the
+  # key is present, so the required-parameter check passes, and the value is
+  # never examined. Measured before this: nesting the REQUIRED node_platform_id
+  # inside an object in template-authoring.md left the suite at 0 failures.
+  #
+  # Shape is as far as it goes, and the limit is not laziness. Checking nested
+  # KEYS needs a nested declaration to check them against, and none exists.
+  # Swept 2026-08-31 across every tool directory INCLUDING extensions/private:
+  # 172 parameters declare `type: "object"`, and not one of them carries a
+  # nested `properties:` — `object` is where every object declaration stops,
+  # with the inner grammar (fleet_spec, reuse_check, recommends_override,
+  # config) written only in the parameter's English description.
+  #
+  # The census is the weaker argument, though, and it is not absolute: nested
+  # schemas are not wholly absent from the tree — trading_simulation_tool.rb
+  # declares `items: { type: "string" }` on two ARRAY parameters, which is an
+  # element type, not an object's keys, and so is no oracle for the
+  # `config:`/`metadata:` nesting this finding is about.
+  #
+  # The structural argument is the one to rely on: MCP's own schema synthesizer
+  # emits `{"type", "description"}` per parameter and discards everything else
+  # (mcp_platform_tool_registrar.rb:531-535). A tool that declared a nested
+  # schema tomorrow could not get it onto the wire, so an operator's client
+  # never sees one either. A per-key nested check would have nothing to compare
+  # against — an inert gate. Widen this when that synthesizer carries more.
+  def self.top_level_entries(body)
     keys = []
     depth = 0
     i = 0
@@ -588,7 +620,7 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
         at_key_position = true
       elsif depth.zero? && at_key_position && ch.match?(/[A-Za-z_]/)
         ident = body[i..].match(/\A[A-Za-z_][A-Za-z0-9_]*/)[0]
-        keys << ident
+        keys << [ ident, value_shape(body, i + ident.length) ]
         at_key_position = false
         i += ident.length
         next
@@ -598,6 +630,38 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
       i += 1
     end
     keys
+  end
+
+  # The shape of the value that follows a key, read from just past the
+  # identifier. Comments between the `:` and the value are skipped, so
+  # `config: // see below\n { ... }` still reads as an object.
+  #
+  # :shorthand means "no value to look at" — ES6 shorthand (`{ a, b }`), and
+  # also a `key:` that runs out of body, which is the same thing for our
+  # purposes since both are skipped. :elided is the `...` placeholder, and is
+  # NOT elides_arguments?: that one asks whether the whole example elides
+  # OTHER arguments, this one whether THIS value is written out. `k: .5` reads
+  # as :elided on the leading dot — a misnomer, and harmless, because both are
+  # skipped by shape_mismatches.
+  def self.value_shape(body, after_ident)
+    i = after_ident
+    i += 1 while i < body.length && body[i].match?(/\s/)
+    return :shorthand unless body[i] == ":"
+
+    i += 1
+    loop do
+      i += 1 while i < body.length && body[i].match?(/\s/)
+      break unless body[i] == "/" && body[i + 1] == "/"
+
+      i = body.index("\n", i) || body.length
+    end
+    case body[i]
+    when "{" then :object
+    when "[" then :array
+    when "." then :elided
+    when nil then :shorthand
+    else :scalar
+    end
   end
 
   # True when the example deliberately ELIDES arguments: a bare `...`, or a `//`
@@ -664,6 +728,83 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   # a spec gap and waved through.
   def self.declared_parameters(verb)
     from_tool_registry(verb) || from_introspection_registry(verb)
+  end
+
+  # verb => { name => declared type string }, from the same two registries.
+  # Separate from declared_parameters because that one answers "is it
+  # required?" and every caller of it wants exactly that; folding a second
+  # question into its return value would ripple through four call sites for no
+  # gain.
+  def self.declared_types(verb)
+    types_from_tool_registry(verb) || types_from_introspection_registry(verb)
+  end
+
+  # The "string" default matches MCP's own synthesizer
+  # (mcp_platform_tool_registrar.rb:532), which is what an operator's client
+  # actually receives for a parameter that omits :type. No parameter in the
+  # tree omits it today, so dropping the default is an equivalent mutant —
+  # verified, it survives — and the default is here for agreement with the
+  # wire contract rather than for any live call site.
+  def self.types_from_tool_registry(verb)
+    klass_name = Ai::Tools::PlatformApiToolRegistry::TOOLS[verb]
+    return nil if klass_name.nil?
+
+    definition = klass_name.constantize.action_definitions[verb]
+    return nil if definition.nil?
+
+    (definition[:parameters] || {}).transform_keys(&:to_s)
+                                   .transform_values { |spec| (spec[:type] || "string").to_s }
+  end
+
+  def self.types_from_introspection_registry(verb)
+    tool = Ai::Introspection::McpToolRegistrar::INTROSPECTION_TOOLS
+           .find { |t| t[:id] == "platform.#{verb}" }
+    return nil if tool.nil?
+
+    ((tool[:input_schema] || {})[:properties] || {}).transform_keys(&:to_s)
+                                                    .transform_values { |spec| (spec[:type] || "string").to_s }
+  end
+
+  # Keys whose literal is the wrong SHAPE for the declared type, as
+  # "<key>: declared <type>, got <shape>".
+  #
+  # Three rules, and the asymmetry between them is evidence-driven:
+  #
+  #   * declared `object` — the literal must be an object.
+  #   * declared `array` — the literal must be an array.
+  #   * declared anything else (a scalar type) — the literal must not be an
+  #     OBJECT. An array is accepted.
+  #
+  # That last exception is not laxity, it is the tool declarations being
+  # imprecise in a way this spec must not punish a doc for. system_create_module
+  # and system_update_module declare mask/file_spec/package_spec/
+  # dependency_spec/protected_spec as `type: "string"` and their descriptions
+  # say "newline-joined globs OR ENCODED ARRAY" — and the model means it:
+  # NodeModule#encode_spec returns a non-String attribute verbatim
+  # (node_module.rb:654-655), so an Array is a correct value for a
+  # string-declared parameter. Flagging it would tell the author of a correct
+  # example that they had nested the value under an extra key. Since the
+  # declaration cannot express string-or-array, this arm is dropped rather
+  # than exempted one parameter at a time; tighten it if tools ever declare a
+  # union. Nothing is lost against the finding this closes, which is about
+  # values nested inside an OBJECT.
+  #
+  # Scalar TYPES are deliberately not compared to each other either:
+  # `limit: 10` against `integer` and `id: "<uuid>"` against `string` are the
+  # same check written twice, and docs write placeholders where real values go,
+  # so string-vs-integer would flag prose. :shorthand and :elided values assert
+  # nothing and are skipped.
+  def self.shape_mismatches(entries, declared_types)
+    entries.filter_map do |key, shape|
+      declared = declared_types[key]
+      next if declared.nil? || shape == :shorthand || shape == :elided
+
+      case declared
+      when "object" then "#{key}: declared object, got #{shape}" unless shape == :object
+      when "array"  then "#{key}: declared array, got #{shape}" unless shape == :array
+      else "#{key}: declared #{declared}, got object" if shape == :object
+      end
+    end
   end
 
   def self.from_tool_registry(verb)
@@ -934,11 +1075,11 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
     end
 
     it "reads a comment-framed call's keys through the // framing" do
-      expect(framed_multiline_calls.first&.at(1)).to eq(%w[sensor silent_threshold_minutes])
+      expect(framed_multiline_calls.first&.at(1)&.map(&:first)).to eq(%w[sensor silent_threshold_minutes])
     end
 
     it "still extracts a commented-out call that closes on its own line" do
-      expect(framed_single_line_calls.map { |verb, keys, _, _| [ verb, keys ] }).to(
+      expect(framed_single_line_calls.map { |verb, entries, _, _| [ verb, entries.map(&:first) ] }).to(
         eq([ [ "system_get_sensor_config", %w[sensor] ] ])
       )
     end
@@ -960,7 +1101,7 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
     end
 
     it "reads a key written beside the opening brace of a framed call" do
-      expect(framed_key_on_opening_line_calls.first&.at(1)).to(
+      expect(framed_key_on_opening_line_calls.first&.at(1)&.map(&:first)).to(
         eq(%w[sensor silent_threshold_minutes])
       )
     end
@@ -989,6 +1130,77 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
 
     it "reports a live NO-ARG call site as not commented out" do
       expect(noarg_live_calls).to eq([ [ "health", 1, false ] ])
+    end
+  end
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Value shapes (IMP-389daefb3ab4).
+  #
+  # No doc in the covered set has a shape mismatch today, so the 134 examples
+  # generated from real call sites are all green and can prove nothing about
+  # the rule. These pin it on fixture data instead.
+  describe "value shapes" do
+    shaped = top_level_entries('a: { x: 1 }, b: [ 1 ], c: "s", d: ..., e, f: // note' + "\n" + ' { y: 2 }')
+
+    it "reads each key's value shape" do
+      expect(shaped).to eq(
+        [ [ "a", :object ], [ "b", :array ], [ "c", :scalar ],
+          [ "d", :elided ], [ "e", :shorthand ], [ "f", :object ] ]
+      )
+    end
+
+    object_for_scalar  = shape_mismatches([ [ "k", :object ] ], { "k" => "string" })
+    array_for_scalar   = shape_mismatches([ [ "k", :array ] ], { "k" => "string" })
+    array_for_object   = shape_mismatches([ [ "k", :array ] ], { "k" => "object" })
+    scalar_for_object  = shape_mismatches([ [ "k", :scalar ] ], { "k" => "object" })
+    scalar_for_array   = shape_mismatches([ [ "k", :scalar ] ], { "k" => "array" })
+    matching_object    = shape_mismatches([ [ "k", :object ] ], { "k" => "object" })
+    undeclared_key     = shape_mismatches([ [ "k", :object ] ], {})
+    elided_value       = shape_mismatches([ [ "k", :elided ] ], { "k" => "object" })
+    shorthand_value    = shape_mismatches([ [ "k", :shorthand ] ], { "k" => "object" })
+    scalar_type_pair   = shape_mismatches([ [ "k", :scalar ] ], { "k" => "integer" })
+
+    it "reports an object where a scalar is declared" do
+      expect(object_for_scalar).to eq([ "k: declared string, got object" ])
+    end
+
+    # NOT a mismatch, and the reason is in shape_mismatches: five live
+    # parameters declare `string` and accept an encoded array, so the
+    # declaration cannot tell a wrong array from a right one.
+    it "accepts an array where a scalar is declared" do
+      expect(array_for_scalar).to be_empty
+    end
+
+    it "reports a scalar where an object is declared" do
+      expect(scalar_for_object).to eq([ "k: declared object, got scalar" ])
+    end
+
+    it "reports an array where an object is declared" do
+      expect(array_for_object).to eq([ "k: declared object, got array" ])
+    end
+
+    it "reports a scalar where an array is declared" do
+      expect(scalar_for_array).to eq([ "k: declared array, got scalar" ])
+    end
+
+    it "accepts a value whose shape matches" do
+      expect(matching_object).to be_empty
+    end
+
+    # An unknown key is the unknown-key example's business, not this one's;
+    # reporting it here would double every such failure.
+    it "says nothing about a key the tool does not declare" do
+      expect(undeclared_key).to be_empty
+    end
+
+    it "says nothing about an elided or shorthand value" do
+      expect([ elided_value, shorthand_value ]).to eq([ [], [] ])
+    end
+
+    # Deliberate: docs write placeholders where real values go, so comparing
+    # scalar TYPES would flag prose rather than defects.
+    it "does not compare scalar types to each other" do
+      expect(scalar_type_pair).to be_empty
     end
   end
 
@@ -1078,7 +1290,8 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
         end
       end
 
-      calls.each do |verb, keys, line, elided|
+      calls.each do |verb, entries, line, elided|
+        keys = entries.map(&:first)
         declared = declared_parameters(verb)
 
         # Verb EXISTENCE is not asserted here. It runs tree-wide and ungated in
@@ -1116,6 +1329,44 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
             be_empty,
             "#{relative_path}:#{line} calls #{verb} with #{unknown.inspect}, " \
             "which #{verb} does not accept. Declared: #{declared.keys.sort.inspect}"
+          )
+        end
+
+        # IMP-389daefb3ab4. The unknown-key example above proves the key is
+        # accepted and stops there; nothing looked at what the doc puts under
+        # it. So an example could nest a REQUIRED id inside an object — the
+        # shape of the mistake this finding is about — and satisfy both of the
+        # other checks. Runs for elided examples too: eliding OTHER arguments
+        # says nothing about the shape of the ones actually shown.
+        # No `|| {}`: declared_types and declared_parameters return nil under
+        # byte-identical conditions and `declared.nil?` already returned above,
+        # so a default here would only hide the silent-nil path the assertion
+        # below exists to catch.
+        types = declared_types(verb)
+        mismatched = shape_mismatches(entries, types)
+
+        it "#{verb} at line #{line} passes values of the shape the tool declares" do
+          # Anti-vacuity. This check is silent across the whole tree today, so
+          # a lookup that resolves to nothing is indistinguishable from a clean
+          # pass — verified as a mutant, which survived until this assertion
+          # existed. It is also a real consistency claim: declared_parameters
+          # and declared_types read the two registries independently, and a
+          # verb whose parameter set differs between them means one of the two
+          # resolvers is wrong.
+          expect(types.keys).to(
+            match_array(declared.keys),
+            "#{verb}: declared_types sees #{types.keys.sort.inspect} but declared_parameters " \
+            "sees #{declared.keys.sort.inspect}. The two resolvers disagree, so the shape " \
+            "check below is reading a different parameter set from the checks above."
+          )
+
+          expect(mismatched).to(
+            be_empty,
+            "#{relative_path}:#{line} calls #{verb} with #{mismatched.inspect}. An object " \
+            "where a scalar is declared usually means the example nested the value under " \
+            "an extra key; a scalar where an object is declared means the opposite. Note " \
+            "that only the SHAPE is checked — no tool in the platform declares a nested " \
+            "schema, so the keys INSIDE an object literal are still unguarded."
           )
         end
 
@@ -1222,7 +1473,7 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
     text = File.read(absolute)
     # [verb, line] for both call shapes. The parameter families still see only
     # extract_calls; this pair is what the EXISTENCE check consumes.
-    sites = extract_calls(text).map { |verb, _keys, line, _elided, commented|
+    sites = extract_calls(text).map { |verb, _entries, line, _elided, commented|
               [ verb, line, commented ]
             } + extract_noarg_calls(text)
     [ relative, sites.sort_by { |_verb, line, _commented| line } ] unless sites.empty?
