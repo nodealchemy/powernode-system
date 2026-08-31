@@ -4107,8 +4107,11 @@ end
         resource_id: nil, current: nil, desired: { name: "no-platform" }
       })
       r = call("system_gitops_apply_proposal", proposal_id: proposal.id)
+      # IMP-4a3a45df69bc — a refusal reports success: false; the detail rides
+      # top-level :error, the applied flag keeps its dig path under :data.
+      expect(r[:success]).to be false
       expect(r[:data][:applied]).to be false
-      expect(r[:data][:error]).to include("node_platform")
+      expect(r[:error]).to include("node_platform")
     end
 
     it "applies a module create diff" do
@@ -4127,8 +4130,9 @@ end
     it "rejects non-approved proposals" do
       proposal = make_proposal(diff: { kind: "template", change: "create", name: "x" }, status: "pending_review")
       r = call("system_gitops_apply_proposal", proposal_id: proposal.id)
+      expect(r[:success]).to be false
       expect(r[:data][:applied]).to be false
-      expect(r[:data][:error]).to include("only 'approved'")
+      expect(r[:error]).to include("only 'approved'")
     end
 
     it "rejects proposals with non-gitops source" do
@@ -4139,8 +4143,9 @@ end
         proposed_changes: { diff: {}, source: "manual" }
       )
       r = call("system_gitops_apply_proposal", proposal_id: proposal.id)
+      expect(r[:success]).to be false
       expect(r[:data][:applied]).to be false
-      expect(r[:data][:error]).to include("source is not 'gitops'")
+      expect(r[:error]).to include("source is not 'gitops'")
     end
 
     it "informational diffs are no-ops with success status" do
@@ -4160,8 +4165,9 @@ end
         resource_id: tmpl.id, current: { name: tmpl.name }, desired: nil
       })
       r = call("system_gitops_apply_proposal", proposal_id: proposal.id)
+      expect(r[:success]).to be false
       expect(r[:data][:applied]).to be false
-      expect(r[:data][:error]).to include("not yet implemented")
+      expect(r[:error]).to include("not yet implemented")
     end
   end
 

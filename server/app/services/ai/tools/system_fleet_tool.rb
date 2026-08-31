@@ -6160,12 +6160,30 @@ module Ai
             proposal_status: proposal.reload.status
           )
         else
-          base = { applied: false, error: result.error, proposal_id: proposal.id }
-          base[:stale_conflict] = true if result.stale_conflict
-          # Surface as success_result with applied: false so the operator
-          # can read the conflict reason without it looking like an error.
-          # (Genuine system errors raise + are caught by the rescue chain.)
-          success_result(**base)
+          # IMP-4a3a45df69bc — a proposal that did NOT apply is a refusal, and a
+          # refusal must not ride the success channel. This arm previously
+          # returned success_result(applied: false, ...) so that "the operator
+          # can read the conflict reason without it looking like an error"; but
+          # the reason travels on the failure shape too (`error`), so nothing
+          # was bought but the label, and the price was the only field an
+          # autonomous caller can branch on. A stale conflict is precisely the
+          # case where such a caller must STOP: reality drifted, the fleet does
+          # not match the repository, and the operator has to re-sync for a
+          # fresh proposal. `success: true` told it to carry on.
+          #
+          # The distinguishing fields keep their dig paths under `data` (the
+          # same shape and depth as the success arm, per provision_instance's
+          # failure arm), so anything already reading data.stale_conflict /
+          # data.applied is unaffected. The reason itself MOVES: it was
+          # data.error and is now top-level `error`, which is where
+          # error_result puts it and where the MCP transport looks — the
+          # tools/call payload now also carries isError (streamable_http_
+          # controller.rb, `result[:success] == false`), so the refusal is
+          # visible at protocol level and not only in the body.
+          failed = { success: false, error: result.error || "apply failed" }
+          failed[:data] = { applied: false, proposal_id: proposal.id }
+          failed[:data][:stale_conflict] = true if result.stale_conflict
+          failed
         end
       end
 
