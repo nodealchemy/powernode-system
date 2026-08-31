@@ -411,6 +411,123 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
       # And nothing on this path returns the 404 the tutorial promised.
       expect(join).not_to match(/:not_found/)
     end
+
+    # IMP-d231ab902879 — the eighth surface. Seven documents and a seeded KB
+    # article withdrew the auto-select fabrication; it survived in the one
+    # place an operator reads mid-failure while looking for the remedy: the
+    # rendered 422 body. `render_error(e.message, ...)` above ships this
+    # literal verbatim over HTTP, so it is operator documentation with no doc
+    # guard over it — hence the assertion lives here beside the premise it
+    # depends on rather than in a second file with its own copy of it.
+    #
+    # Reassembled from source rather than line-matched: the literal is a
+    # multi-line `\`-continued concatenation, so a line-based check cannot see
+    # a clause that wraps, and a whole-file match would be satisfied by any of
+    # the surrounding comments that legitimately discuss auto-select.
+    # A review caught the hole this now closes: keying on the FIRST
+    # `raise NoClusterAvailableError,` in the method is not the same as keying
+    # on the target-not-found one. `resolve_membership_cluster!` raises that
+    # class TWICE — the second for the error-state case — so collapsing the
+    # target-not-found raise to a single line silently re-aimed the helper at
+    # the error-state message, and the assertion that names the withdrawn
+    # fabrication then passed VACUOUSLY on a mutant that reintroduced it.
+    # Slice the `unless c` block itself, and prove the literal is the one
+    # meant before returning it, so a miss raises instead of passing.
+    def self.target_not_found_message(service)
+      body = service[/^    def resolve_membership_cluster!\(.*?^    end$/m]
+      raise "resolve_membership_cluster! did not slice — this guard would be vacuous" if body.nil?
+
+      block = body[/^        unless c$.*?^        end$/m]
+      raise "the `unless c` (target-not-found) block did not slice" if block.nil?
+
+      lines = block.lines.map(&:rstrip)
+      at = lines.index { |l| l.strip == "raise NoClusterAvailableError," }
+      raise "no multi-line `raise NoClusterAvailableError,` in the `unless c` block" if at.nil?
+
+      literal = lines[(at + 1)..].take_while { |l| l.strip.start_with?('"') }
+      raise "the raise in the `unless c` block carries no string literal" if literal.empty?
+
+      message = literal.map { |l| l.strip.sub(/\s*\\\z/, "").sub(/\A"/, "").sub(/"\z/, "") }.join
+
+      # Identity check: a truncated reassembly (a continuation line opening
+      # with an interpolation or a different quote style) would otherwise make
+      # every negative assertion below pass on a fragment.
+      unless message.start_with?("target cluster ") && message.include?("not found in account")
+        raise "sliced the wrong raise, or reassembled a fragment: #{message.inspect}"
+      end
+
+      message
+    end
+
+    # The anchor the message points at. Kept as one constant so the assertion
+    # that the message cites it and the assertion that it RESOLVES cannot
+    # drift apart into two different anchors.
+    CLUSTER_ROUTING_ANCHOR = "multi-cluster-routing-via-target_cluster_id--not-implemented"
+
+    let(:service) do
+      self.class.read(ext_root, "server/app/services/system/kubernetes_cluster_provisioner_service.rb")
+    end
+    let(:message) { self.class.target_not_found_message(service) }
+
+    it "the unknown-target 422 body no longer advises omitting the field to auto-select" do
+      # The withdrawn advice, and why it is worse than the docs it matched:
+      # taken literally in the multi-cluster account this error is most likely
+      # to fire in, omitting the target turns this 422 into a 409.
+      expect(message).not_to match(/auto-select/i),
+                             "the 422 body still advises auto-select: #{message.inspect}"
+      expect(message).not_to match(/most[- ]recent/i),
+                             "the 422 body still promises a most-recent fallback: #{message.inspect}"
+    end
+
+    it "the unknown-target 422 body states both arms of what omitting it actually does" do
+      # Both arms, because this message IS reachable on a path where omitting
+      # the field would have worked: an account with exactly one non-error
+      # cluster resolves without a target. A flat "you cannot omit it" would be
+      # a new inaccuracy in the other direction.
+      expect(message).to match(/exactly one non-error cluster/),
+                         "the 422 body does not state the single-cluster arm: #{message.inspect}"
+      expect(message).to match(/AmbiguousClusterError/),
+                         "the 422 body does not name the refusal error: #{message.inspect}"
+      expect(message).to match(/#{Regexp.escape(REFUSAL_EVENT)}/),
+                         "the 422 body does not name the refusal event: #{message.inspect}"
+      expect(message).to match(/409/),
+                         "the 422 body does not state the refusal status: #{message.inspect}"
+      # The third arm. A review caught this missing: with NO non-error cluster
+      # omitting the field falls through to `candidates.first == nil` and
+      # fails 422, not 409 — and a deleted sole cluster is the likeliest
+      # reason the reader is seeing this message at all. Stating only the 409
+      # arm was a fresh inaccuracy of the same shape as the withdrawn one.
+      expect(message).to match(/with none it fails as this request did \(422\)/),
+                         "the 422 body does not state the zero-cluster arm: #{message.inspect}"
+
+      # It must still say what actually failed, and what to check first — an
+      # accurate message that drops the remedy is useless at the moment it is
+      # read.
+      expect(message).to match(/not found in account/)
+      expect(message).to match(/verify the cluster_id/)
+    end
+
+    it "the unknown-target 422 body cites the canonical anchor, exactly once" do
+      cites = message.scan(/CONTAINER_RUNTIMES\.md##{Regexp.escape(CLUSTER_ROUTING_ANCHOR)}/)
+      expect(cites.size).to eq(1),
+                            "expected exactly one citation of the canonical anchor, got #{cites.size}: #{message.inspect}"
+    end
+
+    # A dead link in an error message is a fresh fabrication of the same shape
+    # as the one being withdrawn — it sends the operator somewhere that does
+    # not answer them. Resolve the anchor against the document's own headings
+    # by GitHub's slug rule rather than trusting the string.
+    it "the anchor the 422 body cites resolves to a heading in CONTAINER_RUNTIMES.md" do
+      doc = self.class.read(ext_root, "docs/CONTAINER_RUNTIMES.md")
+      slugs = doc.lines.grep(/\A#{'#'}{1,6} /).map do |heading|
+        heading.sub(/\A#+\s*/, "").strip.downcase
+               .gsub(/[^a-z0-9 _-]/, "")
+               .tr(" ", "-")
+      end
+
+      expect(slugs).to include(CLUSTER_ROUTING_ANCHOR),
+                       "no heading in CONTAINER_RUNTIMES.md slugifies to #{CLUSTER_ROUTING_ANCHOR.inspect}"
+    end
   end
 
   # --- docs: matched pairs -------------------------------------------------

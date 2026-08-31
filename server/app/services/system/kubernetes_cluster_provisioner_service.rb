@@ -354,9 +354,28 @@ module System
               .where(account_id: account.id, id: @target_cluster_id)
               .first
         unless c
+          # This message is rendered verbatim as the 422 body
+          # (runtime_handshake_handlers.rb), so it is operator documentation
+          # and is read at the moment the operator is least able to doubt it.
+          # It previously advised omitting target_cluster_id "to auto-select
+          # most recent" — advice that is wrong exactly when taken: with a
+          # second non-error cluster in the account, omitting it raises
+          # AmbiguousClusterError below and turns this 422 into a 409. State
+          # all three arms, because omitting IS correct for a single-cluster
+          # account: a flat "you cannot omit it" would be a new inaccuracy in
+          # the other direction, and stating only the 409 arm would be a third
+          # one — with NO non-error cluster, omitting falls through to
+          # candidates.first == nil and fails 422, not 409.
           raise NoClusterAvailableError,
                 "target cluster #{@target_cluster_id} not found in account #{account.id} — " \
-                "verify cluster_id, or omit target_cluster_id to auto-select most recent"
+                "verify the cluster_id and that the cluster still exists in this account; " \
+                "if it was decommissioned, the node must be repointed or re-bootstrapped. " \
+                "Omitting target_cluster_id is not a general workaround: it resolves only " \
+                "when the account has exactly one non-error cluster; with more than one the " \
+                "join is refused (409 AmbiguousClusterError, " \
+                "system.k3s_ambiguous_cluster_join_refused), and with none it fails as this " \
+                "request did (422). See " \
+                "docs/CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--not-implemented"
         end
         if c.status == "error"
           raise NoClusterAvailableError,

@@ -342,6 +342,30 @@ RSpec.describe System::KubernetesClusterProvisionerService do
         }.to raise_error(described_class::NoClusterAvailableError, /target cluster/)
       end
 
+      # IMP-d231ab902879. The docs guard pins that the corrected literal is in
+      # the file; it cannot prove that literal is the one that reaches the
+      # operator. Execute the raise, and assert the counterfactual in the same
+      # example — this context has two clusters, so it is precisely the account
+      # in which the withdrawn advice ("omit target_cluster_id to auto-select
+      # most recent") would have converted this 422 into a 409.
+      it "the unknown-target message does not advise the omission that would 409 here" do
+        message = begin
+          described_class.join_request!(
+            node_instance: agent_instance,
+            target_cluster_id: "00000000-0000-0000-0000-000000000000"
+          )
+          raise "expected NoClusterAvailableError"
+        rescue described_class::NoClusterAvailableError => e
+          e.message
+        end
+
+        expect(message).not_to match(/auto-select/i)
+        expect(message).not_to match(/most[- ]recent/i)
+        expect(message).to include("exactly one non-error cluster")
+        expect(message).to include("system.k3s_ambiguous_cluster_join_refused")
+        expect(message).to include("with none it fails as this request did (422)")
+      end
+
       it "refuses to join a target cluster in error state" do
         @cluster_a.update!(status: "error")
         expect {
