@@ -111,13 +111,15 @@ module ModuleDocsMcpCallSignatures
     # Was: 01a05174-e4c3-71c2-b89d-111ef3328576 —
     # ["docs/tutorials/06-rolling-upgrade.md", "system_drift_report"] => %w[template_id]
     #
-    # That finding is NOT fixed and is not claimed to be: system_drift_report is
-    # still per-instance only, and system_platform_maintenance({ op:
-    # "drift_check" }) is still a hardcoded stub. What changed is that
-    # 06-rolling-upgrade.md's Verification section no longer MAKES the
+    # system_drift_report is still per-instance only. What changed first is
+    # that 06-rolling-upgrade.md's Verification section no longer MAKES the
     # template-scoped call — rewriting it (its premise, "after all batches
     # complete", was false) replaced the fictional call with prose stating the
-    # per-instance limit and the stub outright. Other files may still carry it.
+    # per-instance limit outright. IMP-0d106a152c47 then closed the other half:
+    # system_platform_maintenance({ op: "drift_check" }) was a hardcoded stub
+    # and is now wired to NodeInstance#module_drift, so that section documents
+    # it as the deployment-scoped answer. Other files may still carry the
+    # template_id call shape (docs/runbooks/cve-response.md did).
   }.freeze
 end
 

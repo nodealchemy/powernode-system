@@ -437,6 +437,56 @@ module System
       required_ids.all? { |mid| running.key?(mid.to_s) }
     end
 
+    # Module drift for THIS instance: what the agent reports mounted
+    # (running_module_digests, keyed by node_module_id) versus the current
+    # version of every module its node is assigned.
+    #
+    #   missing    — assigned, nothing reported mounted for it
+    #   extra      — reported mounted, no longer assigned
+    #   mismatched — reported mounted at a digest other than current
+    #
+    # Intended as the one definition of module drift. It was copied into
+    # SystemFleetTool#drift_report and ModuleDriftSensor, and a third caller
+    # (PlatformMaintenanceExecutor's deployment-scoped drift_check) shipped as
+    # a hardcoded `false` instead — IMP-0d106a152c47. Those three now call this.
+    #
+    # NOT yet converged, and it disagrees: Compliance::ComplianceSnapshotService
+    # #collect_drift_summary carries a fourth copy that computes `missing` and
+    # `extra` but NO `mismatched`, so an instance running a stale digest of
+    # every module it is assigned counts as `reconciled` in the compliance
+    # evidence document. Reported under IMP-0d106a152c47, out of its scope.
+    # A new caller belongs here rather than in a fifth variant.
+    #
+    # Scope note: this measures the instance against its NODE's assignments,
+    # which is the layer `system_refresh_instance_modules` (task
+    # `sync_modules`) actually reconciles — so anything reported here is
+    # remediable. Whether the node's assignments still match its TEMPLATE is a
+    # separate question this does not answer.
+    def module_drift
+      # `node` is a required belongs_to — no nil branch here on purpose: a
+      # rescue-to-empty would report "no drift" for a broken row, which is the
+      # failure mode this method was written to end.
+      assigned = node.node_modules.includes(:current_version).each_with_object({}) do |m, acc|
+        digest = m.current_version&.oci_digest
+        acc[m.id] = digest if digest
+      end
+      running = running_module_digests || {}
+
+      missing = assigned.reject { |id, _| running.key?(id.to_s) || running.key?(id) }
+      extra   = running.reject { |id, _| assigned.key?(id) || assigned.key?(id.to_s) }
+      mismatched = assigned.each_with_object({}) do |(id, want), acc|
+        have = running[id.to_s] || running[id]
+        acc[id] = { want: want, have: have } if have && have != want
+      end
+
+      { missing: missing, extra: extra, mismatched: mismatched }
+    end
+
+    def module_drifted?
+      drift = module_drift
+      drift[:missing].any? || drift[:extra].any? || drift[:mismatched].any?
+    end
+
     # Idempotent transition: warming → ready (called from provisioning
     # success callback / heartbeat success). Returns true if the
     # transition succeeded, false if state didn't allow it (e.g. already

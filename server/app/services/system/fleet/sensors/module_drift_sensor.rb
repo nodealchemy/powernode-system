@@ -4,9 +4,13 @@ module System
   module Fleet
     module Sensors
       # Detects instances whose `running_module_digests` JSONB does not match
-      # their assigned modules' current_version.oci_digest. Reuses the
-      # SystemFleetTool drift_report logic via direct AR access (cheaper than
-      # going back through the MCP tool — sensors are hot-path).
+      # their assigned modules' current_version.oci_digest. The comparison
+      # itself lives on NodeInstance#module_drift — the one definition, shared
+      # with SystemFleetTool#drift_report and the deployment-scoped drift_check
+      # — reached by direct AR access rather than back through the MCP tool.
+      # Note #module_drift still loads each instance's assigned modules per
+      # instance, so this sensor is one query per assigned module per running
+      # instance; that is unchanged from the copy it replaced, not fixed by it.
       class ModuleDriftSensor < BaseSensor
         def sense
           ::System::NodeInstance
@@ -37,21 +41,12 @@ module System
         private
 
         def compute_drift(inst)
-          running = inst.running_module_digests || {}
-          assigned = inst.node.node_modules.includes(:current_version).each_with_object({}) do |m, acc|
-            digest = m.current_version&.oci_digest
-            acc[m.id] = digest if digest
-          end
+          drift = inst.module_drift
+          # Named limbs, not drift.values — a fourth key added to #module_drift
+          # would silently change what this sensor treats as "no drift".
+          return nil if drift[:missing].empty? && drift[:extra].empty? && drift[:mismatched].empty?
 
-          missing = assigned.reject { |id, _| running.key?(id.to_s) || running.key?(id) }
-          extra   = running.reject { |id, _| assigned.key?(id) || assigned.key?(id.to_s) }
-          mismatched = assigned.each_with_object({}) do |(id, want), acc|
-            have = running[id.to_s] || running[id]
-            acc[id] = { want: want, have: have } if have && have != want
-          end
-
-          return nil if missing.empty? && extra.empty? && mismatched.empty?
-          { missing: missing, extra: extra, mismatched: mismatched }
+          drift
         end
 
         def severity_for(drift)

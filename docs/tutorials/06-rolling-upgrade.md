@@ -362,9 +362,43 @@ per-instance check and you will need to repeat it across the instances you
 care about — poll until they converge, or until one does not.
 
 `system_drift_report` answers the same question for **one instance**
-(`{ instance_id }`); it has no template-wide form. There is no working
-fleet-wide drift answer: `system_platform_maintenance({ op: "drift_check" })`
-is template-scoped but its detector is a hardcoded stub.
+(`{ instance_id }`); it has no template-wide form. To sweep a deployment's
+template in one call, use `drift_check`:
+
+```javascript
+platform.system_platform_maintenance({
+  op: "drift_check",
+  deployment_id: "<deployment-id>"   // omit to scan every deployment
+})
+// → { data: { deployments: [ { deployment_id, deployment_name, template,
+//                              drift_count,
+//                              drifted_instances: [ { id, status, name, drift } ],
+//                              not_reporting_count,
+//                              not_reporting_instances: [ { id, status, name } ] } ] },
+//     recommendations: [ "..." ] }
+```
+
+Read `recommendations` and `not_reporting_count` as carefully as
+`drift_count`:
+
+- `not_reporting_count` is instances that have **never heartbeated**. Drift
+  is **unknown** for them, not clear — they are excluded from the "nothing
+  to remediate" recommendation for that reason. An instance that HAS
+  heartbeated and reports nothing mounted is counted as drift, not here.
+- The sweep covers instances in `pending`, `provisioning`, `running` and
+  `stopped` (`NodeInstance.active`). Instances in `starting`, `stopping`,
+  `rebooting` or `error` are in **neither** count, and nothing in the payload
+  says so — check those by instance.
+
+`drift_check` compares each instance against the modules its **node** is
+assigned. That is the layer a `sync_modules` reconcile (queued by
+`system_refresh_instance_modules`) acts on, so what it reports is the
+remediable kind. Whether a node's assignments still match the template it
+was built from is a separate question neither verb answers.
+
+> Until IMP-0d106a152c47 (2026-08-31) `drift_check`'s detector was a
+> hardcoded `false`: it reported every deployment healthy without looking.
+> If you are reading an older run's output, it proves nothing.
 
 ## Extract a learning
 

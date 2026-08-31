@@ -17,8 +17,10 @@ module System
       #                       days_until_expiry, needs_renewal_now)
       #   - "cert_rotate"   → trigger renewal of a specific cert OR every
       #                       cert past its renewal window
-      #   - "drift_check"   → return drift state for the deployment's
-      #                       active instances (read-only)
+      #   - "drift_check"   → return module drift for the deployment's
+      #                       active instances — what each agent reports
+      #                       mounted vs the current version of the modules
+      #                       its node is assigned (read-only)
       #   - "health_check"  → aggregate platform health (rails, worker,
       #                       redis, pg, acme, sdwan, federation)
       #
@@ -29,7 +31,7 @@ module System
 
         skill_descriptor(
           name: "platform_maintenance",
-          description: "Routine platform maintenance — certificate renewal, drift checks, health snapshots. Use this skill when the operator asks about (a) which certs are expiring soon, (b) whether they should rotate something, (c) the current platform health, or (d) whether any instances have drifted from their template.",
+          description: "Routine platform maintenance — certificate renewal, drift checks, health snapshots. Use this skill when the operator asks about (a) which certs are expiring soon, (b) whether they should rotate something, (c) the current platform health, or (d) whether any instances have drifted from the modules their node is assigned.",
           category: "devops",
           inputs: {
             action: { type: "string", required: true,
@@ -154,55 +156,63 @@ module System
 
           summaries = deployments.map { |d| drift_summary_for(d) }
           drifted_total = summaries.sum { |s| s[:drift_count] }
+          silent_total  = summaries.sum { |s| s[:not_reporting_count] }
 
           recs = []
           recs << "No deployments declared — drift check is a no-op." if deployments.empty?
-          recs << "#{drifted_total} instance(s) drifted from their template — call system_refresh_instance_modules per instance to remediate." if drifted_total.positive?
-          recs << "All instances are at their template state — nothing to remediate." if deployments.any? && drifted_total.zero?
+          recs << "#{drifted_total} instance(s) drifted from their assigned modules — call system_refresh_instance_modules per instance to remediate." if drifted_total.positive?
+          recs << "#{silent_total} instance(s) have never heartbeated — drift is UNKNOWN for them, not clear." if silent_total.positive?
+          recs << "All reporting instances match their assigned modules — nothing to remediate." if deployments.any? && drifted_total.zero? && silent_total.zero?
 
           success(action: "drift_check", data: { deployments: summaries }, recommendations: recs)
         end
 
+        # No nil-template branch: node_template_id is a required belongs_to on a
+        # NOT NULL column, so the guard that used to stand here could not run —
+        # and what it returned was an all-clear row.
         def drift_summary_for(deployment)
-          return base_drift_row(deployment, 0, []) unless deployment.node_template_id
-
           # Find instances tied to this deployment's template (mirrors
           # the Scaling panel's compute_actual_replicas logic — uses the
           # actual table_name, not the association alias).
           instances = ::System::NodeInstance
                         .joins(:node)
+                        .includes(node: { node_modules: :current_version })
                         .where(system_nodes: { node_template_id: deployment.node_template_id,
                                                account_id: @account.id })
                         .active
 
-          drifted = instances.where("running_module_digests IS DISTINCT FROM ?", []).select do |inst|
-            instance_drifted?(inst, deployment.node_template)
-          end
+          # An instance that has never heartbeated has not drifted — it has not
+          # ANSWERED yet. Counting "everything assigned is missing" as drift
+          # there would bury real drift under provisioning noise, so those are
+          # reported in their own bucket instead of being silently dropped.
+          #
+          # The discriminator is last_heartbeat_at, NOT an empty digest map:
+          # #record_heartbeat! writes running_module_digests unconditionally, so
+          # a live agent that has mounted nothing persists `{}`. That is drift —
+          # ModuleDriftSensor emits system.module_drift for exactly that row
+          # (spec/services/system/fleet/sensors_spec.rb) and drift_report calls
+          # it drift — and keying off emptiness here would have made this verb
+          # the one consumer that reported it clean.
+          reporting, silent = instances.partition { |inst| inst.last_heartbeat_at.present? }
+          drifted = reporting.select(&:module_drifted?)
 
-          base_drift_row(
-            deployment,
-            drifted.size,
-            drifted.map { |i| { id: i.id, status: i.status, name: i.name } }
-          )
+          base_drift_row(deployment, drifted, silent)
         end
 
-        def instance_drifted?(_instance, _template)
-          # Best-effort: if the platform's drift detector returns a value
-          # we'll trust it; otherwise return false (the system_drift_report
-          # MCP action remains the source of truth for full drift detail).
-          false
-        rescue StandardError
-          false
-        end
-
-        def base_drift_row(deployment, count, list)
+        def base_drift_row(deployment, drifted, silent)
           {
             deployment_id: deployment.id,
             deployment_name: deployment.name,
             template: deployment.node_template&.name,
-            drift_count: count,
-            drifted_instances: list
+            drift_count: drifted.size,
+            drifted_instances: drifted.map { |i| instance_row(i).merge(drift: i.module_drift) },
+            not_reporting_count: silent.size,
+            not_reporting_instances: silent.map { |i| instance_row(i) }
           }
+        end
+
+        def instance_row(instance)
+          { id: instance.id, status: instance.status, name: instance.name }
         end
 
         # ── health_check: aggregate snapshot (mirrors PlatformHealthController) ─

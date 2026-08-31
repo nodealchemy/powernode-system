@@ -3743,18 +3743,13 @@ module Ai
 
       def drift_report(params)
         instance = account_instances.find(params[:instance_id])
-        running = instance.running_module_digests || {}
-        assigned = instance.node.node_modules.includes(:current_version).each_with_object({}) do |m, acc|
-          digest = m.current_version&.oci_digest
-          acc[m.id] = digest if digest
-        end
-
-        missing = assigned.reject { |id, _| running.key?(id.to_s) || running.key?(id) }
-        extra   = running.reject { |id, _| assigned.key?(id) || assigned.key?(id.to_s) }
-        mismatched = assigned.each_with_object({}) do |(id, want), acc|
-          have = running[id.to_s] || running[id]
-          acc[id] = { want: want, have: have } if have && have != want
-        end
+        # NodeInstance#module_drift is the single definition of module drift —
+        # shared with ModuleDriftSensor and the deployment-scoped drift_check
+        # in PlatformMaintenanceExecutor (IMP-0d106a152c47).
+        drift = instance.module_drift
+        missing    = drift[:missing]
+        extra      = drift[:extra]
+        mismatched = drift[:mismatched]
 
         success_result(
           drift: missing.any? || extra.any? || mismatched.any?,
