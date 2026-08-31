@@ -82,8 +82,8 @@ module ModuleDocsMcpCallSignatures
     # in NEITHER registry, as the only diagnostic it offered for a failing sync;
     # a tree-wide sweep with this parser confirms it was the sole unlabelled
     # nonexistent verb under docs/. The others are the sensor-config pair in
-    # FLEET_SENSORS.md, which the surrounding prose marks "aspirational" —
-    # only one of which this parser extracts (see ASPIRATIONAL_VERBS).
+    # FLEET_SENSORS.md, which the surrounding prose marks "aspirational" — both
+    # of which this parser now extracts (see ASPIRATIONAL_VERBS).
     #
     # That gap is now closed at the root: IMP-2a5a9a0fed0a moved verb existence
     # OUT of this per-file allowlist and into the tree-wide sweep at the bottom
@@ -217,14 +217,17 @@ module ModuleDocsMcpCallSignatures
   # not merged with it. That catalog serves check-mcp-actions.sh, which greps
   # only `system_`/`kubernetes_`/`docker_`-prefixed verbs and SKIPS any line
   # starting `//`, `#` or `>` — so it cannot see a commented-out call at all,
-  # and reports "0 unknown" on the very site this list exempts.
+  # and reports "0 unknown" on both of the sites this list exempts.
   #
   # Neither checker contains the other, so do not treat one green as covering
   # the other's ground. This sweep reads bare verbs the script's prefix filter
   # drops (recent_events, execute_agent, list_agents) and does not accept a
   # comment marker as an exemption; the script in turn matches a call the same
   # way wherever it appears, so it is not bounded by this parser's brace
-  # balancing. Keep both in step by hand when adding an entry to either.
+  # balancing. Keep both in step by hand when adding an entry to either — but
+  # note that ASPIRATIONAL_MCP.md legitimately stays EMPTY while both entries
+  # here are `//`-framed, because the script's comment filter cannot see them.
+  # An entry there is owed only for a site the script CAN see, i.e. a live one.
   ASPIRATIONAL_VERBS = {
     # IMP-2a5a9a0fed0a. FLEET_SENSORS.md's "Configuring Sensor Thresholds"
     # section shows a sensor-config read/write pair that no MCP verb provides.
@@ -236,25 +239,26 @@ module ModuleDocsMcpCallSignatures
     # one thing this exemption is for. Being commented out is NOT what exempts
     # it; a call on a `//` line is checked like any other (see extract_calls).
     #
-    # This is the ONLY exemption the tree-wide sweep needs. Measured 2026-08-31
-    # on extensions/system c3c4c062: 31 docs under docs/ contain a call this
-    # parser can extract, and across every verb they call, exactly one resolves
-    # in neither Ai::Tools::PlatformApiToolRegistry::TOOLS nor
-    # Ai::Introspection::McpToolRegistrar::INTROSPECTION_TOOLS.
-    #
-    # Its sibling system_update_sensor_config (FLEET_SENSORS.md:527) is equally
-    # fictional but is NOT listed, because the parser never yields it and an
-    # entry for it would fail the staleness guard below. Its argument literal
-    # spans several `//` comment lines, so balanced_body skips past the closing
-    # brace on the LAST of them, never balances, and drops the call. That is a
-    # real blind spot — it narrows the extract_calls docstring's claim that a
-    # call on a `//` line is still checked. Precisely: such a call is dropped
-    # when a SUBSEQUENT `//` line carries the closing brace. A `//`-opened call
-    # whose continuation lines are not themselves commented parses fine.
-    # Filed as 01a05811-5e1b-7828-8a13-fef31cf3ab5a rather than widened here;
-    # fixing it will surface this second site and want a second entry.
+    # These are the ONLY exemptions the tree-wide sweep needs. Measured
+    # 2026-08-31 on extensions/system 4d286116: 31 docs under docs/ contain a
+    # call this parser can extract, and across every verb they call, exactly
+    # two resolve in neither Ai::Tools::PlatformApiToolRegistry::TOOLS nor
+    # Ai::Introspection::McpToolRegistrar::INTROSPECTION_TOOLS — and both are
+    # this one pair, in this one section.
     [ "docs/FLEET_SENSORS.md", "system_get_sensor_config" ] =>
-      "no MCP read verb for Fleet::SensorConfig; the doc says so and names the Rails/REST path"
+      "no MCP read verb for Fleet::SensorConfig; the doc says so and names the Rails/REST path",
+    # Its write sibling (FLEET_SENSORS.md:527), under the same ⚠️ line and the
+    # same "Until those MCP wrappers ship" prose.
+    #
+    # It was NOT listed here until IMP-f97c629e59d7, and not because anyone
+    # judged it differently: the parser could not yield it, so an entry would
+    # have failed the staleness guard below. Its argument literal spans several
+    # `//` comment lines, and balanced_body used to skip past the closing brace
+    # on the LAST of them and drop the call. Fixing that surfaced this site,
+    # which is what this entry is. The pair is now symmetric, as the prose
+    # always was.
+    [ "docs/FLEET_SENSORS.md", "system_update_sensor_config" ] =>
+      "no MCP write verb for Fleet::SensorConfig; same section, same ⚠️ line, same Rails/REST path"
   }.freeze
 end
 
@@ -263,18 +267,28 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   covered_docs = ModuleDocsMcpCallSignatures::COVERED_DOCS
   covered_calls = ModuleDocsMcpCallSignatures::COVERED_CALLS
 
-  # Extract `platform.<verb>({ ... })` calls, returning [verb, top_level_keys,
-  # line_number]. Brace/bracket depth aware, string aware, and skips `//`
+  # Extract `platform.<verb>({ ... })` calls, returning
+  # [verb, top_level_keys, line_number, elides_arguments?]. Brace/bracket depth
+  # aware, string aware, and skips `//`
   # comments INSIDE an argument literal, so a nested `options: { ... }`
   # contributes only `options` and a `// → { ... }` response comment is not
   # mistaken for an argument.
   #
-  # A call written on a `//` comment LINE is still extracted and checked. That
-  # is deliberate: a commented-out example is one an operator copies just the
-  # same, so it should be as correct as a live one. It also means commenting a
-  # call out does not silence this spec — the `documents at least one MCP call`
-  # guard below is what catches a doc edit that drops every call and would
-  # otherwise make this whole file pass vacuously.
+  # A call written on a `//` comment LINE is still extracted and checked,
+  # however many lines its argument literal spans — provided the `//` STARTS
+  # each line, after whitespace only. A commented-out call framed some other
+  # way (blockquoted `> //`, list-indented `- //`, or with a blank line
+  # breaking the run) is still dropped; see comment_framed?. That is
+  # deliberate: a
+  # commented-out example is one an operator copies just the same, so it should
+  # be as correct as a live one. It also means commenting a call out does not
+  # silence this spec — the `documents at least one MCP call` guard below is
+  # what catches a doc edit that drops every call and would otherwise make this
+  # whole file pass vacuously.
+  #
+  # The multi-line half of that claim was FALSE until IMP-f97c629e59d7: a
+  # closing brace on a subsequent `//` line was skipped as a comment, so the
+  # literal never balanced and the call was dropped. See balanced_body.
   def self.extract_calls(text)
     calls = []
     text.to_enum(:scan, /platform\.([a-z0-9_]+)\(\s*\{/).each do
@@ -318,7 +332,28 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
 
   # Given the index of an opening `{`, return the text strictly inside its
   # matching `}`, or nil when the literal never closes (a truncated example).
+  #
+  # Two passes, because a `//` means two different things (IMP-f97c629e59d7).
+  # Inside a LIVE example it introduces a comment, and skipping to end-of-line
+  # is right. But when the whole example is COMMENTED OUT, the leading `//` on
+  # each line is framing rather than a comment, and skipping past it swallows
+  # any closing brace that shares a line with it — the literal then never
+  # balances and the call is dropped silently, costing no example anywhere.
+  # That was live: FLEET_SENSORS.md's system_update_sensor_config was invisible
+  # to every family in this file, including the tree-wide existence sweep.
+  #
+  # So: scan the text as written first, and only if that fails AND the call is
+  # comment-framed, retry against the de-framed region. A live truncated
+  # example is unaffected — it fails the first pass and is not framed, so it is
+  # still dropped rather than stitched to whatever follows.
   def self.balanced_body(text, open_index)
+    body = scan_balanced(text, open_index)
+    return body unless body.nil? && comment_framed?(text, open_index)
+
+    scan_balanced(comment_framed_region(text, open_index), 0)
+  end
+
+  def self.scan_balanced(text, open_index)
     depth = 0
     i = open_index
     in_string = nil
@@ -341,6 +376,43 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
       i += 1
     end
     nil
+  end
+
+  # True when the call's own line is COMMENTED OUT — the line opens with `//`
+  # before reaching the `{`. Deliberately anchored at the start of the line: a
+  # `//` appearing mid-line (inside a URL string, say) is not framing, and
+  # treating it as such would let the retry stitch a live truncated example to
+  # unrelated comment lines below it.
+  def self.comment_framed?(text, open_index)
+    line_start = (text.rindex("\n", open_index) || -1) + 1
+    text[line_start...open_index].match?(%r{\A[ \t]*//})
+  end
+
+  # The commented-out example, from its opening `{`, with the leading `//`
+  # framing stripped from each continuation line.
+  #
+  # Bounded by the comment RUN: it ends at the first line that is not itself
+  # framed, so the retry cannot reach past the block into prose, or into a
+  # separate comment block further down, to manufacture a balance.
+  #
+  # Say what that does NOT buy, because the difference matters: prose written
+  # INSIDE the same `//` run is de-framed along with everything else and then
+  # parsed as code. A withdrawal note under a commented-out example — this
+  # repo's keep-it-visible convention — carrying a stray `}` would close the
+  # literal and contribute an English word as a key. Latent, not live: exactly
+  # one `//` run in the tree contains a platform call (FLEET_SENSORS.md
+  # 525-530) and it is clean. The raw scan must also have failed across the
+  # whole rest of the file for it to be reachable at all.
+  def self.comment_framed_region(text, open_index)
+    line_end = text.index("\n", open_index) || text.length
+    region = +text[open_index...line_end]
+    (text[(line_end + 1)..] || "").each_line do |line|
+      frame = line.match(%r{\A[ \t]*//[ \t]?})
+      break if frame.nil?
+
+      region << "\n" << line[frame.end(0)..].to_s.chomp
+    end
+    region
   end
 
   # Top-level keys of a JS object-literal body: identifiers at depth 0 that
@@ -505,6 +577,140 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
     )
   end
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # Parser coverage (IMP-f97c629e59d7).
+  #
+  # Every family in this file consumes extract_calls, so a call the parser
+  # DROPS is invisible to all of them AND costs no example — the failure mode
+  # is a silent green, which no doc-level assertion can see. These examples pin
+  # the drop rules directly, on fixture text rather than on whichever doc
+  # happens to carry the shape today, so the guarantee survives a doc edit.
+  describe "extract_calls" do
+    # The shape that was silently dropped: the whole example is commented out,
+    # and the closing brace lands on a LATER `//` line. Skipping to end-of-line
+    # at each `//` swallowed that brace, so the literal never balanced.
+    framed_multiline = <<~MD
+      ```javascript
+      // platform.system_update_sensor_config({                                // aspirational
+      //   sensor: "instance_status",
+      //   silent_threshold_minutes: 10  // default 5
+      // })
+      ```
+    MD
+
+    # Control: a commented-out call that closes on its own line always parsed.
+    framed_single_line = <<~MD
+      ```javascript
+      // platform.system_get_sensor_config({ sensor: "instance_status" })      // aspirational
+      ```
+    MD
+
+    # Control: a genuinely truncated LIVE example must still be dropped —
+    # extracting it would invent keys the doc does not show.
+    #
+    # truncated_live, truncated_live_then_comment and framed_then_unframed
+    # carry no ``` fences on purpose. A backtick opens a string for the
+    # scanner, so a fence silently swallows everything after it and would make
+    # a be_empty expectation pass for the wrong reason — which is exactly how
+    # the first draft of these let two over-reach mutants live. (The two
+    # positive fixtures above keep their fences: there the raw scan starts past
+    # the opening fence and the closing fence is unframed, so it ends the
+    # region before any backtick is read.)
+    truncated_live = <<~MD
+      platform.system_get_node({ node_id: "<id>",
+    MD
+
+    # Control: a LIVE call is never comment-framed, so the retry must not run
+    # for it. Without that anchoring, the `}` on the note below would close the
+    # literal and the parser would report a call the doc does not make, with a
+    # key ("the") invented out of English prose.
+    truncated_live_then_comment = <<~MD
+      platform.system_get_node({ node_id: "<id>",
+      // the rest of this example was trimmed }
+    MD
+
+    # Control on the other side: the comment-framed region ends where the
+    # comment block ends. Prose breaks the run, so the brace in the LATER,
+    # unrelated comment block must not close this literal — the call stays
+    # dropped rather than being reported with keys read out of English.
+    framed_then_unframed = <<~MD
+      // platform.system_get_node({
+      //   node_id: "<id>",
+
+      Prose between the two.
+
+      // an unrelated later comment: }
+    MD
+
+    # Control: framing is recognised only at the START of the line. A `//`
+    # earlier in a LIVE line (inside a URL, here) is not framing, and treating
+    # it as such would close this truncated call on the note below it and
+    # report `trimmed` — an English word — as a documented parameter.
+    live_call_after_a_url = <<~MD
+      See http://ops/x — platform.system_get_node({ node_id: "<id>",
+      // trimmed }
+    MD
+
+    # Control: the region is seeded with the tail of the call's OWN line, so
+    # keys that sit beside the opening brace are read like any other. Nothing
+    # in the docs tree has this shape today, which is why it needs a fixture.
+    framed_key_on_opening_line = <<~MD
+      // platform.system_update_sensor_config({ sensor: "instance_status",
+      //   silent_threshold_minutes: 10
+      // })
+    MD
+
+    # extract_calls is a class method on the group, so every fixture is parsed
+    # HERE, at group-body scope, and the examples only assert on the results.
+    framed_multiline_calls   = extract_calls(framed_multiline)
+    framed_single_line_calls = extract_calls(framed_single_line)
+    truncated_live_calls     = extract_calls(truncated_live)
+    truncated_live_then_comment_calls = extract_calls(truncated_live_then_comment)
+    framed_then_unframed_calls = extract_calls(framed_then_unframed)
+    live_call_after_a_url_calls = extract_calls(live_call_after_a_url)
+    framed_key_on_opening_line_calls = extract_calls(framed_key_on_opening_line)
+
+    it "extracts a commented-out call whose closing brace is on a later // line" do
+      expect(framed_multiline_calls.map(&:first)).to(
+        eq(%w[system_update_sensor_config]),
+        "the call was DROPPED. Nothing else in this file can see that: a dropped call " \
+        "generates no example, so the drop reads as a pass everywhere downstream."
+      )
+    end
+
+    it "reads a comment-framed call's keys through the // framing" do
+      expect(framed_multiline_calls.first&.at(1)).to eq(%w[sensor silent_threshold_minutes])
+    end
+
+    it "still extracts a commented-out call that closes on its own line" do
+      expect(framed_single_line_calls.map { |verb, keys, _, _| [ verb, keys ] }).to(
+        eq([ [ "system_get_sensor_config", %w[sensor] ] ])
+      )
+    end
+
+    it "drops a truncated LIVE call rather than inventing its arguments" do
+      expect(truncated_live_calls).to be_empty
+    end
+
+    it "does not close a truncated LIVE call on a brace in the comment below it" do
+      expect(truncated_live_then_comment_calls).to be_empty
+    end
+
+    it "does not stitch a comment-framed call across an unframed line" do
+      expect(framed_then_unframed_calls).to be_empty
+    end
+
+    it "treats a mid-line // as a comment, not as framing" do
+      expect(live_call_after_a_url_calls).to be_empty
+    end
+
+    it "reads a key written beside the opening brace of a framed call" do
+      expect(framed_key_on_opening_line_calls.first&.at(1)).to(
+        eq(%w[sensor silent_threshold_minutes])
+      )
+    end
+  end
+
   targets.each do |relative_path, only_verbs|
     describe(only_verbs ? "#{relative_path} (#{only_verbs.join(', ')} only)" : relative_path) do
       path = File.join(ext_root, relative_path)
@@ -625,11 +831,17 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   #
   # So this sweep reads the docs tree directly rather than either list, and a
   # doc added tomorrow is covered the day it lands with no opt-in step. It sees
-  # both `platform.verb({ ... })` and no-arg `platform.verb()` sites, and
-  # descends dot-directories. What it still cannot see is a call whose argument
-  # literal never balances — see ASPIRATIONAL_VERBS for the one live instance
-  # and the finding tracking it. "Tree-wide" is a claim about the FILES swept;
-  # within a file it is bounded by what extract_calls can parse.
+  # both `platform.verb({ ... })` and no-arg `platform.verb()` sites, whether
+  # live or commented out and however many lines they span, and descends
+  # dot-directories. What it still cannot see is a call whose argument literal
+  # never balances even after the comment framing is removed: a genuinely
+  # truncated example, or one framed some way other than a line-leading `//`
+  # (blockquoted, list-indented, or a run broken by a blank line). Neither has
+  # a live instance as of 2026-08-31 — measured over all 31 docs, the new
+  # parser drops 0 of the 325 call sites the bare regex finds, against 1 for
+  # the old one — and extract_calls' own examples above pin the rules rather
+  # than leaving them to this paragraph. "Tree-wide" is a claim about the
+  # FILES swept; within a file it is bounded by what extract_calls can parse.
   aspirational_verbs = ModuleDocsMcpCallSignatures::ASPIRATIONAL_VERBS
   exercised_aspirational = []
 
