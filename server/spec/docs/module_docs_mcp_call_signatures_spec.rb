@@ -104,12 +104,15 @@ module ModuleDocsMcpCallSignatures
     # the Phase 2 blockquote, which the parser matches inside prose and which
     # this file therefore now checks too.
     #
-    # Known gap, measured: COVERED_DOCS has no per-verb existence pin, so
-    # DELETING the corrected acquire example passes green (346 -> 343 examples,
-    # 0 failures) — only the example count moves. COVERED_CALLS' "documents at
-    # least one platform.<verb> call" guard would catch that, but it checks
-    # only its listed verbs and would drop the other seven sites here. Filed as
-    # 01a05631-ce0d-7e7c-aa4c-6833fbc20291 rather than fixed in a docs task.
+    # RETIRED by IMP-4081ea184746. Was: "Known gap, measured: COVERED_DOCS has
+    # no per-verb existence pin, so DELETING the corrected acquire example
+    # passes green (346 -> 343 examples, 0 failures) — only the example count
+    # moves." It did, and it was still true at 658 -> 655 the day it was fixed.
+    # COVERED_DOC_CALL_SITES now pins every site in every covered file, so
+    # deleting that example reddens naming the verb. Its per-SITE multiset is
+    # what closes the case COVERED_CALLS' existence guard could not: this file
+    # is 9 sites over 9 distinct verbs, which is the only reason a per-verb pin
+    # would have caught the acquire deletion at all.
     "docs/runbooks/instance-pool-tuning.md",
     # IMP-1abe2148b0f3 — 8 failing call sites, 16 examples. Five were
     # mechanical (system_create_node declares name/template_id, not
@@ -141,6 +144,131 @@ module ModuleDocsMcpCallSignatures
     # needs no new exclusion.
     "docs/tutorials/05-multi-cluster-k3s.md"
   ].freeze
+
+  # Every call site each COVERED_DOCS file must go on documenting
+  # (IMP-4081ea184746) — one token per SITE, not per verb.
+  #
+  # COVERED_DOCS buys a file the unknown-key and required-parameter checks, and
+  # those checks are generated PER CALL SITE. Delete the call site and the
+  # examples it generated simply stop existing: measured on this tree, deleting
+  # the corrected system_acquire_pooled_instance example from
+  # instance-pool-tuning.md took the suite from 658 examples to 655 with ZERO
+  # failures. Nothing reddened when an edit removed the very call a finding was
+  # closed by correcting — the one regression the opt-in exists to prevent.
+  #
+  # COVERED_CALLS' per-verb `documents at least one platform.<verb> call` guard
+  # is the right shape but the wrong scope twice over. It pins only the verbs
+  # it lists, so reusing it here would have covered the acquire site and
+  # dropped the other eight in that file. And it pins EXISTENCE, so it cannot
+  # see the deletion of one site among several calling the same verb — which
+  # is 33 of this set's 142 sites, including both corrected
+  # system_provision_instance calls in 05-multi-cluster-k3s.md and the single
+  # elided call in expose-service.md that is the only live coverage of
+  # elides_arguments? anywhere in this spec. Hence a MULTISET: the count of
+  # tokens per verb is the count of sites the file must keep.
+  #
+  # A no-arg site is written `verb()`, and is a DIFFERENT token from `verb`.
+  # It has to be, because the shapes are not interchangeable here: a no-arg
+  # site generates no unknown-key and no required-parameter example at all, so
+  # rewriting `platform.verb({ ... })` to `platform.verb()` deletes both checks
+  # while leaving the verb documented. Distinct tokens make that rewrite redden
+  # like any other deletion. Five verbs in this set are no-arg only.
+  #
+  # A FLOOR, not an equality: the file must still carry at least these sites,
+  # and may carry more. Adding a call site is ordinary doc work and should not
+  # need a spec edit — IMP-84c318bf31f9's drain is still landing corrected
+  # sites in these files. The cost is real and is stated rather than hidden:
+  # sites added from here on are unpinned until someone extends this list, so
+  # a batch that adds sites should extend it in the same commit. Equality would
+  # cost nothing today (this list is exact as of 2026-08-31) and was rejected
+  # only because it taxes every future doc addition.
+  COVERED_DOC_CALL_SITES = {
+    "docs/CLAUDE_TMUX_MODULE.md" => %w[
+      system_assign_module_to_template
+    ],
+    "docs/SDWAN_ARCHITECTURE.md" => %w[
+      system_sdwan_compile_ovn_plan system_sdwan_compile_route_policy system_sdwan_get_bgp_config_for_peer
+    ],
+    "docs/runbooks/acme-issuance.md" => %w[
+      system_acme_create_dns_credential system_acme_get_certificate system_acme_provision_certificate
+      system_acme_provision_certificate system_acme_renew_certificate system_acme_revoke_certificate
+    ],
+    "docs/runbooks/module-authoring.md" => %w[
+      system_assign_module_to_template system_list_module_versions system_promote_module_version
+      system_promote_module_version system_promote_module_version system_validate_module_manifest
+    ],
+    "docs/runbooks/template-authoring.md" => %w[
+      system_assign_module_to_template system_compose_preview_template system_create_template
+      system_update_template_module
+    ],
+    "docs/runbooks/vault-credential-restoration.md" => %w[
+      create_learning system_rotate_vault_transit_pepper
+    ],
+    "docs/tutorials/02-first-module.md" => %w[
+      list_gitea_workflow_runs system_assign_module_to_template system_create_node
+      system_delete_module system_drift_report system_get_instance
+      system_list_module_versions system_promote_module_version system_promote_module_version
+      system_promote_module_version system_provision_instance system_terminate_instance
+      system_unassign_module_from_template system_validate_module_manifest
+    ],
+    "docs/tutorials/06-rolling-upgrade.md" => %w[
+      agent_introspect create_learning list_agents()
+      recent_events system_get_instance system_get_instance
+      system_list_instances system_list_module_versions system_list_module_versions
+      system_platform_maintenance system_refresh_instance_modules system_rollback_module_version
+      system_rollback_module_version
+    ],
+    "docs/DISK_IMAGE_MANAGER_AGENT.md" => %w[
+      system_list_disk_image_publications system_set_default_disk_image_publication
+    ],
+    "docs/runbooks/disk-image-ci.md" => %w[
+      dispatch_gitea_workflow get_gitea_job_logs get_gitea_workflow_run
+      provision_disk_image_webhook recent_events system_list_ci_workers()
+      system_list_disk_image_publications system_list_disk_image_webhooks() system_provision_ci_worker
+      system_set_default_disk_image_publication system_set_default_disk_image_publication system_set_disk_image_retention
+      system_terminate_ci_worker
+    ],
+    "docs/runbooks/expose-service.md" => %w[
+      system_expose_service_publicly system_expose_service_publicly system_expose_service_publicly
+    ],
+    "docs/runbooks/storage-migration.md" => %w[
+      system_approve_storage_migration system_cancel_storage_migration system_cleanup_storage_migration
+      system_cleanup_storage_migration system_get_instance system_get_storage_migration
+      system_get_volume system_get_volume system_list_storage_assignments_by_owner
+      system_list_storage_migrations system_migrate_storage_component system_report_storage_migration_progress
+      system_report_storage_migration_progress system_report_storage_migration_progress system_report_storage_migration_progress
+      system_report_storage_migration_progress system_report_storage_migration_progress system_revert_storage_migration_binding
+      system_storage_chown_retry system_storage_chown_retry system_storage_chown_status
+      system_test_nfs_export
+    ],
+    "docs/tutorials/13-expose-service-tls.md" => %w[
+      system_expose_service_publicly system_sdwan_delete_port_mapping system_sdwan_delete_virtual_ip
+      system_sdwan_list_networks() system_sdwan_list_peers
+    ],
+    "docs/tutorials/10-gitops-fleet.md" => %w[
+      create_gitea_repository system_delete_node system_gitops_apply_proposal
+      system_gitops_get_drift_report system_gitops_get_repository system_gitops_get_sync_run
+      system_gitops_get_sync_run system_gitops_list_repositories system_gitops_register_repository
+      system_gitops_sync_repository
+    ],
+    "docs/runbooks/instance-pool-tuning.md" => %w[
+      system_acquire_pooled_instance system_create_instance_pool system_delete_instance_pool
+      system_drain_instance_pool system_get_instance system_get_instance_pool
+      system_lease_ci_runner system_return_pooled_instance system_terminate_instance
+    ],
+    "docs/tutorials/05-multi-cluster-k3s.md" => %w[
+      kubernetes_decommission_cluster kubernetes_get_kubeconfig kubernetes_get_kubeconfig
+      kubernetes_list_clusters() kubernetes_list_clusters() kubernetes_list_clusters()
+      kubernetes_list_nodes kubernetes_list_nodes system_assign_module_to_template
+      system_assign_module_to_template system_create_node system_create_node
+      system_create_template system_create_template system_delete_template
+      system_delete_template system_provision_instance system_provision_instance
+      system_sdwan_attach_peer system_sdwan_attach_peer system_sdwan_create_firewall_rule
+      system_sdwan_create_firewall_rule system_sdwan_create_network system_sdwan_delete_network
+      system_sdwan_get_routing_summary system_sdwan_get_routing_summary system_terminate_instance
+      system_terminate_instance system_update_template_module
+    ]
+  }.freeze
 
   # Docs NOT in COVERED_DOCS, pinned one VERB at a time.
   #
@@ -274,6 +402,7 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   ext_root = File.expand_path("../../..", __dir__)
   covered_docs = ModuleDocsMcpCallSignatures::COVERED_DOCS
   covered_calls = ModuleDocsMcpCallSignatures::COVERED_CALLS
+  covered_doc_sites = ModuleDocsMcpCallSignatures::COVERED_DOC_CALL_SITES
 
   # Extract `platform.<verb>({ ... })` calls, returning
   # [verb, top_level_keys, line_number, elides_arguments?, commented_out?].
@@ -559,6 +688,44 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
                                .index_with { |name| required.include?(name) }
   end
 
+  # Pinned call sites the file no longer documents, as "<token> (have N of M)".
+  #
+  # A MULTISET floor: a verb with three pinned sites needs three, and a file
+  # that has GAINED a site is ordinary doc work and not a finding — see
+  # COVERED_DOC_CALL_SITES.
+  #
+  # Keyword arguments on purpose, and be precise about what they buy. The
+  # direction is unguarded at the CALL, not in the body: on a tree where the
+  # pin is exact, binding the two the other way round inverts the policy to
+  # "police sites the doc has ADDED, ignore ones it has deleted" and every
+  # example in this file still passes — verified as a mutant, which survived.
+  # Keywords make that swap self-announcing at the call site rather than
+  # impossible; the fixture examples below pin this body's direction, not the
+  # caller's binding. It stays unkillable while the pin is exact, because the
+  # floor policy allows a doc to carry MORE than it pins and none does today.
+  def self.missing_pinned_sites(pinned:, documented:)
+    have = documented.tally
+    pinned.tally.filter_map do |token, want|
+      got = have.fetch(token, 0)
+      "#{token} (have #{got} of #{want})" if got < want
+    end
+  end
+
+  # Files opted into the parameter checks with no site pin, and pins naming a
+  # file that is not opted in. Extracted so its direction is pinned on fixture
+  # data: on a tree where the two lists agree, a mutant that compares either
+  # list against itself passes every example generated from the real data.
+  def self.pin_coverage_gaps(covered_docs, pinned_paths)
+    [ covered_docs - pinned_paths, pinned_paths - covered_docs ]
+  end
+
+  # Pins that name a file but no sites. Extracted for the same reason: on a
+  # tree where no entry is empty, a mutant that returns [] unconditionally
+  # passes every example generated from the real data.
+  def self.pins_without_sites(pins)
+    pins.select { |_, sites| sites.empty? }.keys
+  end
+
   # Call sites left BROKEN on purpose, each tracked by a filed finding, because
   # the verb cannot do what the surrounding prose says it does — correcting the
   # parameter names would make a fictional example look verified.
@@ -580,6 +747,70 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
       be_empty,
       "#{overlap.inspect} is in BOTH lists. COVERED_DOCS already checks every call in the " \
       "file, so the COVERED_CALLS entry is redundant — delete it."
+    )
+  end
+
+  # Without this, adding a file to COVERED_DOCS and forgetting its pin gives
+  # that file the parameter checks with no protection against its call sites
+  # being deleted — the exact state IMP-4081ea184746 found every covered file
+  # in. Both directions: a pin for a file that has LEFT COVERED_DOCS pins a
+  # file nothing else checks, and reads as coverage.
+  unpinned_covered, orphan_pins = pin_coverage_gaps(covered_docs, covered_doc_sites.keys)
+
+  it "pins the call sites of every COVERED_DOCS file, and only those" do
+    expect([ unpinned_covered, orphan_pins ]).to(
+      eq([ [], [] ]),
+      "COVERED_DOCS with no COVERED_DOC_CALL_SITES pin: #{unpinned_covered.inspect}. " \
+      "COVERED_DOC_CALL_SITES naming a file not in COVERED_DOCS: #{orphan_pins.inspect}."
+    )
+  end
+
+  # The two comparisons, on asymmetric fixture data. The examples generated
+  # from the real lists cannot see either one's direction: the pin is exact on
+  # this tree, so both set differences are empty in all 16 groups and an
+  # inverted check — which would police what a doc has ADDED and ignore what it
+  # has deleted, the opposite policy — reads as green everywhere.
+  missing_when_a_site_is_gone   = missing_pinned_sites(pinned: %w[alpha beta beta], documented: %w[alpha beta])
+  missing_when_a_site_is_added  = missing_pinned_sites(pinned: %w[alpha], documented: %w[alpha beta])
+  missing_when_shape_changed    = missing_pinned_sites(pinned: %w[alpha], documented: %w[alpha()])
+  gaps_when_a_pin_is_missing    = pin_coverage_gaps(%w[a.md b.md], %w[a.md])
+  gaps_when_a_pin_is_orphaned   = pin_coverage_gaps(%w[a.md], %w[a.md b.md])
+
+  it "reports a verb that has lost ONE of its several call sites" do
+    expect(missing_when_a_site_is_gone).to eq([ "beta (have 1 of 2)" ])
+  end
+
+  it "reports nothing when the file documents a site it is not pinned for" do
+    expect(missing_when_a_site_is_added).to be_empty
+  end
+
+  it "reports a braced site rewritten as a no-arg call" do
+    expect(missing_when_shape_changed).to eq([ "alpha (have 0 of 1)" ])
+  end
+
+  it "reports a COVERED_DOCS file with no pin, on the first limb" do
+    expect(gaps_when_a_pin_is_missing).to eq([ %w[b.md], [] ])
+  end
+
+  it "reports a pin naming a file that is not covered, on the second limb" do
+    expect(gaps_when_a_pin_is_orphaned).to eq([ [], %w[b.md] ])
+  end
+
+  # Same vacuity trap as the COVERED_CALLS guard below: an empty list is a pin
+  # that pins nothing and passes in silence.
+  empty_pins = pins_without_sites(covered_doc_sites)
+  empty_pins_in_fixture = pins_without_sites({ "a.md" => %w[x], "b.md" => [] })
+
+  it "reports a pin that names a file but no call sites" do
+    expect(empty_pins_in_fixture).to eq(%w[b.md])
+  end
+
+  it "names at least one call site per COVERED_DOC_CALL_SITES entry" do
+    empty = empty_pins
+    expect(empty).to(
+      be_empty,
+      "#{empty.inspect} pins no call sites. Remove the file from COVERED_DOCS, or name " \
+      "what it documents."
     )
   end
 
@@ -790,7 +1021,8 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   targets.each do |relative_path, only_verbs|
     describe(only_verbs ? "#{relative_path} (#{only_verbs.join(', ')} only)" : relative_path) do
       path = File.join(ext_root, relative_path)
-      all_calls = extract_calls(File.read(path))
+      text = File.read(path)
+      all_calls = extract_calls(text)
       calls = only_verbs ? all_calls.select { |verb, _, _, _| only_verbs.include?(verb) } : all_calls
 
       if only_verbs
@@ -809,6 +1041,40 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
       else
         it "documents at least one MCP call (the parser still matches this file)" do
           expect(calls).not_to be_empty
+        end
+
+        # The anti-deletion pin. The guard above only fires when EVERY call in
+        # the file is gone; this one fires when any pinned call SITE goes,
+        # which is what actually happens when an edit removes the example a
+        # finding was closed by correcting. One token per site, `verb()` for a
+        # no-arg call — see COVERED_DOC_CALL_SITES.
+        documented_sites = all_calls.map(&:first) +
+                           extract_noarg_calls(text).map { |verb, _line, _commented| "#{verb}()" }
+        pinned_sites = covered_doc_sites.fetch(relative_path, [])
+        missing_sites = missing_pinned_sites(pinned: pinned_sites, documented: documented_sites)
+
+        it "still documents every call site it is pinned for" do
+          # Anti-vacuity: a pin that resolves to nothing in this loop compares
+          # an empty multiset against everything and passes in silence, which
+          # is the same shape as the defect being fixed. The constant-level
+          # guards cannot see this one — they check the hash, not the lookup.
+          expect(pinned_sites).not_to(
+            be_empty,
+            "#{relative_path} resolved to an EMPTY pin here — COVERED_DOC_CALL_SITES has " \
+            "no entry for it, or its entry is empty. The two constant-level guards above " \
+            "say which."
+          )
+
+          expect(missing_sites).to(
+            be_empty,
+            "#{relative_path} no longer documents #{missing_sites.inspect}. Deleting a " \
+            "call site silently removes the examples it generated — the file stays green " \
+            "while the correction it was opted in for is gone. If the deletion was " \
+            "deliberate, drop those tokens from COVERED_DOC_CALL_SITES in the same commit " \
+            "and say why; if the VERB was renamed platform-side, rename the token; and if " \
+            "the site was a KNOWN_BROKEN fiction, deleting it is the endorsed fix and the " \
+            "token should go with it. Still documented: #{documented_sites.sort.inspect}"
+          )
         end
       end
 
