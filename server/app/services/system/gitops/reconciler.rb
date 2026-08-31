@@ -132,17 +132,12 @@ module System
           end
         end
 
-        @repository.update!(
-          last_synced_at: Time.current,
-          last_synced_revision: repo_result.commit_sha,
-          last_diff_count: diffs.size,
-          last_status: truncated ? "partial" : "success",
-          last_error: truncated ? "diff count exceeded MAX_PROPOSALS_PER_TICK=#{MAX_PROPOSALS_PER_TICK}" : nil
-        )
-
+        # The repository-row status write lives in #finalize (the single exit
+        # every terminal path funnels through) — see #record_repository_status.
         finalize(
           sync_run,
           status: truncated ? "partial" : "success",
+          error: truncated ? "diff count exceeded MAX_PROPOSALS_PER_TICK=#{MAX_PROPOSALS_PER_TICK}" : nil,
           diff_count: diffs.size,
           proposal_ids: proposal_ids,
           synced_revision: repo_result.commit_sha,
@@ -291,7 +286,17 @@ module System
       def finalize(sync_run, status:, diff_count: 0, proposal_ids: [],
                    synced_revision: nil, diff_summary: {}, error: nil,
                    applied_proposal_ids: [], failed_proposal_ids: [])
-        sync_run.finalize!(
+        # Repository row FIRST: a raise out of sync_run.finalize! (an oversized
+        # or non-UTF-8 error string reaching a varchar column, say) must not
+        # cost the operator-visible status write on the way past.
+        record_repository_status(status: status, error: error, diff_count: diff_count,
+                                 synced_revision: synced_revision)
+
+        # `&.` because the method-level `rescue` in #reconcile! is reachable
+        # with sync_run still nil — anything raising at or before the
+        # `@repository.schedule_sync!` assignment. Before this it NoMethodError'd
+        # out of #reconcile! instead of returning the documented failed Result.
+        sync_run&.finalize!(
           status: status,
           diff_count: diff_count,
           proposal_ids: proposal_ids,
@@ -310,6 +315,53 @@ module System
           applied_proposal_ids: applied_proposal_ids,
           failed_proposal_ids: failed_proposal_ids
         )
+      end
+
+      # IMP-8c1a94b8e1d6 — mirror the terminal outcome onto the REPOSITORY row.
+      # `last_status` / `last_error` are what the three operator surfaces render
+      # (serialize_repo REST, serialize_gitops_repository MCP, GitopsTab.tsx);
+      # before this, only the success/partial path wrote them, so a repository
+      # whose every sync failed kept reporting its last success — or the
+      # "pending" column default forever, if it had never succeeded.
+      #
+      # Called from #finalize, which every terminal path of #reconcile! funnels
+      # through: the three failure `return finalize` guards, the success/partial
+      # tail, and the method-level `rescue StandardError`. The standby-plane
+      # fence returns EARLIER and deliberately writes nothing — it performs no
+      # reconcile, and both planes share this row, so any status it wrote would
+      # overwrite the ACTIVE plane's real result.
+      #
+      # On a failure, `last_synced_at` / `last_synced_revision` /
+      # `last_diff_count` are left alone — they describe the last SUCCESSFUL
+      # sync, so the row reads "failing now, last good was <sha>".
+      #
+      # `last_error` is truncated to 1000 chars (house style for
+      # operator-visible error columns — Ai::ProviderCredential, Chat::Channel).
+      # The column is `text`, but an unbounded exception message renders into
+      # GitopsTab and every REST/MCP repository read. The sync run keeps the
+      # untruncated string, so nothing is lost.
+      def record_repository_status(status:, error:, diff_count:, synced_revision:)
+        attrs = { last_status: status, last_error: error&.truncate(1000) }
+        unless status == "failed"
+          attrs[:last_synced_at] = Time.current
+          attrs[:last_synced_revision] = synced_revision
+          attrs[:last_diff_count] = diff_count
+        end
+
+        @repository.update!(attrs)
+      rescue StandardError => e
+        Rails.logger.error(
+          "[Gitops::Reconciler] failed to record status=#{status} on repository=#{@repository.id}: " \
+          "#{e.class}: #{e.message}"
+        )
+        # On a FAILED outcome, swallow: #finalize is called from the rescue
+        # handler itself, and turning a gracefully-failed reconcile into a raise
+        # would lose the failed Result and the sync-run write below.
+        # On success/partial, re-raise — #reconcile!'s own rescue then reports
+        # the run as failed, which is what the pre-existing inline
+        # `@repository.update!` did before this write moved into #finalize.
+        # Swallowing there would let a run report success over a stale row.
+        raise unless status == "failed"
       end
     end
   end

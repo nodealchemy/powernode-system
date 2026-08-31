@@ -378,8 +378,38 @@ git source-of-truth. Either:
 - Reconcile away the drift (treat git as authoritative): approve the
   proposals that revert the imperative changes.
 
-**Sync fails / SSH credential doesn't resolve** — read the failed sync run.
-It is the only place the platform records why a reconcile stopped:
+**Sync fails / SSH credential doesn't resolve** — the repository row carries
+the latest outcome, and the sync run carries the per-run detail. Start with
+the row:
+
+```bash
+curl -H "Authorization: Bearer $JWT" \
+  http://localhost:3000/api/v1/system/gitops_repositories/<id>
+# → { gitops_repository: { last_status: "failed", last_error: "RuntimeError: git clone failed: ...", ... },
+#     recent_runs: [ ... ] }
+```
+
+`last_status`/`last_error` are written on **every** terminal path of the
+reconcile — the three early returns, the success/partial tail, and the outer
+`rescue` all funnel through one exit that records them — so `failed` on the
+row means the most recent run failed, and a subsequent success clears
+`last_error` back to null. `last_status: "pending"` now means genuinely never
+run, not "failing silently". In the `partial` case `last_error` reports the
+per-tick proposal cap rather than an error.
+
+On a failure the row's `last_synced_at` / `last_synced_revision` /
+`last_diff_count` are deliberately **not** overwritten — they keep describing
+the last *successful* sync, so the row reads "failing now, last good was
+`<sha>`".
+
+Two notes on what the row does not cover. A **standby** control plane skips
+the whole reconcile and writes nothing here, by design — the active plane owns
+this row. And per-diff problems are not repository-level status either: a
+proposal that could not be opened is only logged (on the sync run it shows up
+implicitly, as `diff_count` exceeding the number of `proposal_ids`), and an
+auto-apply failure is not recorded on the sync run at all — it comes back on
+the sync call's own result, and on the proposal's `impact_assessment`. For the
+full run history, read the runs:
 
 ```bash
 curl -H "Authorization: Bearer $JWT" \
@@ -387,15 +417,12 @@ curl -H "Authorization: Bearer $JWT" \
 # → { sync_runs: [ { status: "failed", error_message: "RuntimeError: git clone failed: ...", ... } ] }
 ```
 
-Do **not** read the repository's own `last_error` for this. `Reconciler`
-writes `last_status`/`last_error` in exactly one place, on the success path
-after the diff — **no failure path reaches it** (the three early returns and
-the outer `rescue` all finalize the sync run and exit first), and nothing
-else in the platform writes that column. So a repository that has never
-synced successfully still reads `last_status: "pending"` with
-`last_error: null` while every run underneath it is failing. `last_error` is
-non-null only in the `partial` case, where it reports the per-tick proposal
-cap.
+> **Changed in IMP-8c1a94b8e1d6.** Before this fix the reconciler wrote
+> `last_status`/`last_error` only on the success path, so a repository whose
+> every run was failing kept reporting its last success — or `pending`
+> forever, if it had never succeeded. Earlier revisions of this tutorial told
+> you not to trust `last_error` and to read the sync run instead. That
+> workaround is retired: the row is now authoritative for the latest outcome.
 
 Two things the platform will not tell you, both worth knowing before you
 read the error:
