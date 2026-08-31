@@ -67,23 +67,104 @@ The `Node` is a logical row. No provider resources are touched here.
 
 ```javascript
 platform.system_create_node({
-  account_id: "<account-id>",                     // current account by default
-  hostname: "edge-tokyo-01",                      // human-readable
-  node_template_id: "tmpl-edge-base",             // composes assigned modules
-  node_platform_id: "platform-ubuntu-2404-amd64", // disk image family
-  node_architecture_id: "arch-amd64",             // kernel + boot binaries
-  lifecycle_class: "persistent",                  // "persistent" | "ephemeral" | "spot"
-  metadata: {                                     // optional; surfaces in dashboard
+  name: "edge-tokyo-01",              // REQUIRED — unique within the account
+  template_id: "<node-template-id>",  // REQUIRED — composes assigned modules
+  description: "Tokyo CDN edge",      // optional
+  enabled: true,                      // optional; default true
+  worker_id: "<worker-id>",           // optional — Worker that services this node's tasks
+  public_address: "203.0.113.10",     // optional
+  allocate_public_ip: false,          // optional; default false
+  config: {                           // optional JSONB — the only free-form field
     "owner": "edge-team",
     "purpose": "tokyo-cdn-edge"
   }
 })
-// → { node: { id, hostname, status: "no_instance", ... } }
+// → { node: { id, name, template_id, worker_id, enabled, template_name,
+//             instance_count, module_count, created_at, ... } }
 ```
 
-**What to watch:**
-- `lifecycle_class` is set at creation time (`persistent` for control-plane / database / SaaS tenant; `ephemeral` for batch / CI / replaceable workers; `spot` for provider-preemptible workloads). The model validates against the allowed set but does not enforce immutability after first provision — operators should still treat the class as fixed in practice, since changing it after instances exist would invalidate downstream allocation assumptions.
-- `node_template_id` determines which modules will be assigned at bootstrap. To reuse an existing fleet template, query first: `platform.system_list_templates`.
+> ### ⚠️ Seven arguments this runbook used to document are NOT ACCEPTED
+>
+> The example above previously passed `account_id`, `hostname`,
+> `node_template_id`, `node_platform_id`, `node_architecture_id`,
+> `lifecycle_class` and `metadata` — every key it showed. `system_create_node`
+> declares only the eight parameters above, and undeclared keys are **dropped
+> without an error**, so the old call did not fail in a way that told you what
+> was wrong. They are listed here rather than deleted, because an operator who
+> planned around one of them needs to see it withdrawn:
+>
+> | Old key | What is actually true |
+> |---|---|
+> | `account_id` | Not a parameter on either surface. The node is created in the caller's authenticated account context. |
+> | `hostname` | The column is `name` (`system_nodes` has no `hostname`). Unique per account. |
+> | `node_template_id` | Renamed to `template_id` on MCP **create** only. REST create takes `node_template_id`, and so does `system_update_node`. |
+> | `node_platform_id` | Not on a Node. The platform is chosen on the **NodeTemplate** (`system_node_templates.node_platform_id`, `NOT NULL`) — pick it with `platform.system_create_template`. |
+> | `node_architecture_id` | Not on a Node or a template. It follows from the platform (`system_node_platforms.node_architecture_id`, `NOT NULL`). |
+> | `lifecycle_class` | **NOT IMPLEMENTED as an argument** — see below. |
+> | `metadata` | No such column. `config` (JSONB) is the free-form field, on both surfaces. |
+
+**`lifecycle_class` — you do not set it on a Node; the pool that creates the
+Node sets it**
+
+`system_nodes.lifecycle_class` is a real column (`default: "persistent"`,
+`NOT NULL`, check constraint `persistent|ephemeral|spot`, mirrored by
+`System::Node::LIFECYCLE_CLASSES` and an inclusion validation). Where its value
+comes from is not what this runbook used to say:
+
+- **You cannot set it on a node you create.** `system_create_node`'s executor
+  slices only `description, enabled, worker_id, public_address,
+  allocate_public_ip, config` (`system_fleet_tool.rb`), and REST's `node_params`
+  does not permit it (`nodes_controller.rb`). A node created either way takes
+  the column default, `persistent`.
+- **You cannot change it afterwards.** REST create and update share one
+  `node_params` permit list, and `system_update_node` takes the MCP create
+  surface with `template_id` renamed to `node_template_id`. None of them
+  includes `lifecycle_class`. So the old "treat the class as fixed in practice"
+  advice was right about the outcome and wrong about the reason: it is not that
+  you *should not* change it, it is that through MCP or REST you *cannot*.
+- **You cannot read it back.** Neither `System::NodeSerializer` (REST) nor the
+  MCP node serializer emits `lifecycle_class`, so no API response tells you a
+  node's class. To see it you need the DB or the Rails console.
+- **The one path that produces a non-default value is an InstancePool.**
+  `System::InstancePoolService#provision_warming_member!` creates each pool
+  member's Node with `lifecycle_class: pool.lifecycle_class` — and a pool's
+  class is constrained to `ephemeral|spot`, so **every pool-member node is
+  `ephemeral` or `spot`, never `persistent`**. Mostly this happens without you:
+  `System::InstancePoolReplenisherJob` is a 60-second Sidekiq cron that POSTs
+  replenish for every `active` or `draining` pool, so an active pool with
+  `target_size >= 1` mints `ephemeral`/`spot` nodes unattended. The manual
+  triggers for the same path are `platform.system_replenish_instance_pool` and
+  REST `POST /api/v1/system/instance_pools/:id/replenish`. This is the *only*
+  way to influence a Node's class, and it is indirect: you choose it on the pool
+  (`platform.system_create_instance_pool`), not on the node — and the reaper
+  applies it on its own schedule.
+- Every other application writer sets `persistent` or nothing:
+  `System::PlatformDeploymentOrchestrator` hardcodes `"persistent"` (the same
+  as the default); the `provision_full_stack` skill executor and the
+  fulfillment orchestrator omit it entirely. Seed scripts
+  (`db/seeds/example_multi_tenant.rb`) write the model directly — not an
+  operator path.
+- **Nothing reads it.** A tree-wide search of `server/`, `extensions/`,
+  `worker/` and the Go agent finds no consumer of a *Node's* `lifecycle_class`;
+  the model comment's "short-circuit expensive bootstrap for short-lived
+  instances" is aspirational. It records intent today; it changes no behaviour.
+
+Two other tables carry a same-named column with a **different value set** — do
+not transfer conclusions between them:
+
+| Column | Values | Set by |
+|---|---|---|
+| `system_nodes.lifecycle_class` | `persistent\|ephemeral\|spot` | not settable directly. `persistent` by default; `ephemeral`/`spot` only on nodes an InstancePool mints (usually via the 60s replenisher cron) |
+| `system_instance_pools.lifecycle_class` | `ephemeral\|spot` only — **no `persistent`** | `platform.system_create_instance_pool`, the Instance Pools UI, and GitOps `fleet.yaml` |
+| `system_node_instances.lifecycle_class` | nullable, no constraint; carries `task_scoped`, which is invalid on the other two | the fulfillment orchestrator, for leased task-scoped instances |
+
+So if you want `ephemeral` or `spot` nodes, create an **InstancePool** with that
+class and let it provision its members — see
+[instance-pool-tuning.md](./instance-pool-tuning.md). The Phase 1 call above
+always builds a `persistent` node.
+
+**What else to watch:**
+- `template_id` determines which modules will be assigned at bootstrap. To reuse an existing fleet template, query first: `platform.system_list_templates`.
 - A `Node` with no `NodeInstance` is harmless — bookkeeping only.
 
 ## Phase 2 — Provision NodeInstance ✅

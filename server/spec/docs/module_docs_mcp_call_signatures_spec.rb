@@ -88,6 +88,28 @@ module ModuleDocsMcpCallSignatures
     "docs/tutorials/10-gitops-fleet.md"
   ].freeze
 
+  # Docs NOT in COVERED_DOCS, pinned one VERB at a time.
+  #
+  # COVERED_DOCS is all-or-nothing per file: a doc enters only once every call
+  # site in it passes. That leaves a corrected call site in an otherwise-unclean
+  # file with no coverage at all, so nothing reddens when a later edit
+  # reintroduces the exact defect that was just fixed. This list closes that gap
+  # without pretending the rest of the file is clean — the listed verbs get the
+  # full unknown-key and required-parameter checks, every other call in the file
+  # is still unchecked and still owed to IMP-84c318bf31f9's drain.
+  #
+  # A file must not appear in both lists (asserted below); when it graduates to
+  # COVERED_DOCS, delete its entry here.
+  COVERED_CALLS = {
+    # IMP-17926b4740a8 — the Phase 1 create example passed seven keys
+    # (account_id, hostname, node_template_id, node_platform_id,
+    # node_architecture_id, lifecycle_class, metadata), NONE of which
+    # system_create_node declares, and neither required parameter. The rest of
+    # this runbook's call sites (system_get_task({ id: }), list_agents,
+    # execute_agent, ...) are the rename family and stay uncovered for now.
+    "docs/runbooks/node-provisioning.md" => %w[system_create_node]
+  }.freeze
+
   # Call sites left BROKEN on purpose, each tracked by a filed finding, because
   # the verb cannot do what the surrounding prose says it does — correcting the
   # parameter names would make a fictional example look verified.
@@ -126,6 +148,7 @@ end
 RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" do
   ext_root = File.expand_path("../../..", __dir__)
   covered_docs = ModuleDocsMcpCallSignatures::COVERED_DOCS
+  covered_calls = ModuleDocsMcpCallSignatures::COVERED_CALLS
 
   # Extract `platform.<verb>({ ... })` calls, returning [verb, top_level_keys,
   # line_number]. Brace/bracket depth aware, string aware, and skips `//`
@@ -316,13 +339,55 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   known_broken = ModuleDocsMcpCallSignatures::KNOWN_BROKEN
   exercised_exclusions = []
 
-  covered_docs.each do |relative_path|
-    describe relative_path do
-      path = File.join(ext_root, relative_path)
-      calls = extract_calls(File.read(path))
+  # A whole-file target carries no verb filter; a COVERED_CALLS target carries
+  # the verbs it pins and ignores every other call in that file.
+  targets = covered_docs.map { |path| [ path, nil ] } +
+            covered_calls.map { |path, verbs| [ path, verbs ] }
 
-      it "documents at least one MCP call (the parser still matches this file)" do
-        expect(calls).not_to be_empty
+  it "keeps COVERED_CALLS disjoint from COVERED_DOCS" do
+    overlap = covered_calls.keys & covered_docs
+    expect(overlap).to(
+      be_empty,
+      "#{overlap.inspect} is in BOTH lists. COVERED_DOCS already checks every call in the " \
+      "file, so the COVERED_CALLS entry is redundant — delete it."
+    )
+  end
+
+  # An empty verb list is truthy, so it would filter every call away AND generate
+  # no per-verb guard — the describe block would emit zero examples and report
+  # green, which is the exact vacuity this mechanism exists to prevent.
+  it "pins at least one verb per COVERED_CALLS entry" do
+    empty = covered_calls.select { |_, verbs| verbs.empty? }.keys
+    expect(empty).to(
+      be_empty,
+      "#{empty.inspect} lists no verbs. An empty list checks nothing and passes silently — " \
+      "name the verbs, or delete the entry."
+    )
+  end
+
+  targets.each do |relative_path, only_verbs|
+    describe(only_verbs ? "#{relative_path} (#{only_verbs.join(', ')} only)" : relative_path) do
+      path = File.join(ext_root, relative_path)
+      all_calls = extract_calls(File.read(path))
+      calls = only_verbs ? all_calls.select { |verb, _, _, _| only_verbs.include?(verb) } : all_calls
+
+      if only_verbs
+        # Per-verb analogue of the whole-file guard below: without it, deleting
+        # the pinned example makes this describe block generate no examples at
+        # all and pass vacuously, which is exactly how the defect gets back in.
+        only_verbs.each do |pinned|
+          it "documents at least one platform.#{pinned} call" do
+            expect(calls.map(&:first)).to(
+              include(pinned),
+              "#{relative_path} no longer calls #{pinned}. If the example was removed on " \
+              "purpose, drop it from COVERED_CALLS too."
+            )
+          end
+        end
+      else
+        it "documents at least one MCP call (the parser still matches this file)" do
+          expect(calls).not_to be_empty
+        end
       end
 
       calls.each do |verb, keys, line, elided|
@@ -389,7 +454,9 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   # per-file "documents at least one MCP call" guard does not catch this: it
   # only fires when EVERY call in the file is gone.
   it "exercises every KNOWN_BROKEN exclusion (none has gone stale)" do
-    expected = known_broken.keys.select { |path, _| covered_docs.include?(path) }
+    expected = known_broken.keys.select do |path, verb|
+      covered_docs.include?(path) || covered_calls[path]&.include?(verb)
+    end
     expect(exercised_exclusions.uniq).to(
       match_array(expected),
       "KNOWN_BROKEN entries that matched no call site: "       "#{(expected - exercised_exclusions.uniq).inspect}. The example was probably "       "removed or reworded — delete the entry and its finding reference."
