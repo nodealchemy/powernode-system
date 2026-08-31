@@ -342,9 +342,13 @@ platform.system_gitops_get_drift_report({ id: "gitops-repo-1" })
 
 When drift exists (reality diverges from git — e.g., an operator made an
 imperative change), `GitopsDriftSensor` (registered in the Fleet Autonomy
-reconciler, runs every 60s) emits `system.gitops.drift_detected` FleetEvents
+reconciler, runs every 60s) emits
+<!-- signal-kind-corrections:start -->
+`system.gitops.drift_detected` FleetEvents
 (the kind is namespaced — filtering on a bare `gitops.drift_detected` matches
-nothing);
+nothing; that bare form is **NOT IMPLEMENTED** and is named here only as the
+mistake to avoid);
+<!-- signal-kind-corrections:end -->
 the operator must either commit the change back to git or reconcile it
 away.
 

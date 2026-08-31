@@ -16,6 +16,39 @@
 > declarative management; you can codify "every prod node gets a honeypot
 > module" in `fleet.yaml`.
 
+<!-- signal-kind-corrections:start -->
+> **Corrected 2026-08-31 (IMP-e491c01f5c01).** This tutorial named a signal
+> kind that does not exist, in nine places — including copy-pasteable
+> `platform.recent_events` calls. Those calls returned an empty list with
+> `success: true`: a successful-looking response, and no indication that the
+> kind was never emitted.
+>
+> | Named here until 2026-08-31 | Actually emitted |
+> |---|---|
+> | `honeypot.access_attempted` (the stored event) | `system.honeypot_triggered` |
+> | `honeypot.access_attempted` (the escalation/alert) | `system.honeypot_access` |
+>
+> `honeypot.access_attempted` is **NOT IMPLEMENTED** and never was. Note that
+> the one fabricated name stood for **two** distinct real kinds — see Step 4.
+>
+> **Also NOT IMPLEMENTED: the trigger mechanism described below.** The steps
+> that follow describe decoy *files* on disk and an inotify watcher inside
+> `powernode-agent` that posts on file access. No such support exists:
+> `agent/` contains no canary, honeypot, or file-access watcher code. (The
+> agent does have a general FleetEvent POST facility —
+> `agent/internal/fleetevent/` — and the endpoint accepts an arbitrary `kind`;
+> what is missing is anything that would DETECT a canary access and call it.)
+> The only in-repo code that emits
+> `system.honeypot_triggered` today is
+> `System::Honeypot::CanaryModuleService.observe_access!`, called from one
+> place: the `after_commit` hook on `System::NodeModuleAssignment` (create).
+> So the real trigger is a canary *module being assigned to a node*, not a
+> file being read. Steps 1–2 and 4–5 (marking a canary, and reading the
+> resulting events) are accurate; the Step 3 simulation is not, and
+> `db/seeds/example_honeypot.rb` fabricates the event directly rather than
+> exercising a real path.
+<!-- signal-kind-corrections:end -->
+
 ## What you're building
 
 ```mermaid
@@ -36,7 +69,7 @@ sequenceDiagram
 
     Atk->>FS: cat /etc/cluster-admin-credentials.yaml
     FS->>Agent: inotify event:<br/>file accessed
-    Agent->>Plat: POST /worker_api/events<br/>honeypot.access_attempted
+    Agent->>Plat: POST /worker_api/events<br/>system.honeypot_triggered
     Plat->>FE: persist FleetEvent
     Sensor->>FE: tick (60s)<br/>finds new event
     Sensor->>Plat: emit escalation event<br/>(severity: high)
@@ -51,7 +84,7 @@ documented response procedure.
 
 A **honeypot canary** is a fake asset placed on a NodeInstance — a file,
 a service, a credential — that no legitimate process should ever access.
-When it IS accessed, the agent emits `honeypot.access_attempted` to the
+When it IS accessed, a `system.honeypot_triggered` FleetEvent is written to the
 platform's `FleetEvent` log. The `honeypot_access_sensor` (see
 [`FLEET_SENSORS.md`](../FLEET_SENSORS.md)) picks this up on its next tick
 (60s) and triggers operator escalation.
@@ -140,9 +173,9 @@ detects the read and posts to platform.
 ## Step 4 — Observe sensor firing
 
 ```javascript
-platform.recent_events({ kind: "honeypot.access_attempted", limit: 10 })
+platform.recent_events({ kind: "system.honeypot_triggered", limit: 10 })
 // → events: [{
-//      kind: "honeypot.access_attempted",
+//      kind: "system.honeypot_triggered",
 //      severity: "high",
 //      payload: {
 //        node_instance_id: "...",
@@ -155,24 +188,41 @@ platform.recent_events({ kind: "honeypot.access_attempted", limit: 10 })
 //    }]
 ```
 
+Two kinds are involved, and filtering on the wrong one returns an empty
+list with `success: true`:
+
+- `system.honeypot_triggered` — written when the canary is touched
+  (`System::Honeypot::CanaryModuleService.observe_access!`). This is the
+  event you query above.
+- `system.honeypot_access` — the ESCALATION signal `honeypot_access_sensor`
+  emits after reading the event above. `DecisionEngine::SIGNAL_BINDINGS`
+  keys on this one, which is what drives the intervention policy.
+
 Within 60s, `honeypot_access_sensor` runs in the autonomy reconciler.
 It:
 
-1. Sees the `honeypot.access_attempted` event
-2. Generates an escalation FleetEvent (severity: high)
+1. Sees the `system.honeypot_triggered` event
+2. Emits a `system.honeypot_access` signal (severity: **critical**) — an
+   in-memory `System::Fleet::Signal` consumed by the DecisionEngine, not a
+   persisted FleetEvent
 3. Per intervention policy, surfaces in operator dashboard
 
 ## Step 5 — Operator response
 
 ```javascript
 platform.governance_dashboard()
-// → { alerts: [{
-//      kind: "honeypot.access_attempted",
-//      severity: "high",
-//      affected_resources: ["instance:<id>"],
-//      ...
-//    }] }
+// → { open_reports, critical_reports, by_type, by_severity,
+//     collusion_indicators, agents_under_investigation }
 ```
+
+> **NOT IMPLEMENTED — corrected 2026-08-31 (IMP-e491c01f5c01).** This step
+> previously showed `governance_dashboard()` returning an `alerts` array whose
+> entries carried a signal `kind`. It returns no such thing:
+> `Ai::Tools::GovernanceTool#governance_dashboard` returns COUNTS over
+> `Ai::GovernanceReport` and `Ai::CollusionIndicator`, and reads no FleetEvent
+> at all — so neither `system.honeypot_access` nor `system.honeypot_triggered`
+> appears there. To see the honeypot events, use `platform.recent_events` as in
+> Step 4.
 
 Recommended response (the muscle memory you're building):
 
@@ -188,16 +238,19 @@ Recommended response (the muscle memory you're building):
 **Event recorded:**
 
 ```javascript
-platform.recent_events({ kind: "honeypot.access_attempted" })
+platform.recent_events({ kind: "system.honeypot_triggered" })
 // → at least one event with the right canary_path
 ```
 
 **Escalation visible:**
 
 ```javascript
-platform.governance_dashboard()
-// → alerts array includes the honeypot.access_attempted entry
+platform.recent_events({ kind: "system.honeypot_access" })
+// → the sensor's escalation signal, if the reconciler has ticked
 ```
+
+(The earlier text checked `governance_dashboard()` for an `alerts` array; it
+has no such key — see the note in Step 5.)
 
 **Sensor active:**
 
@@ -262,7 +315,7 @@ immediately. Watch via:
 
 ```javascript
 platform.recent_events({
-  kind: "honeypot.access_attempted",
+  kind: "system.honeypot_triggered",
   since: "1 hour ago"
 })
 // → if >1 instance in the list, escalate

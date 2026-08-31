@@ -250,13 +250,29 @@ Seventeen sensors are registered in the live tick loop via `FleetAutonomyService
 - `CertificateExpirySensor` — cert within advisory/urgent window → `system.cert_expiring`
 - `ModulePromotionSensor` — staging version meets PromotionCriteria → `system.module_promotion_ready`
 - `ConfigDriftSensor` — assignment changed without dispatched task → `system.config_drift`
-- `SloViolationSensor` / `ProjectSloSensor` — SLO target not met → `system.slo_violation` / `project.slo_violation`
+- `SloViolationSensor` / `ProjectSloSensor` — SLO target not met → `system.slo_violation` / `system.project_slo_violation`
 - `HoneypotAccessSensor` — canary module accessed → `system.honeypot_access`
-- `GitopsDriftSensor` — fleet.yaml-declared state vs effective fleet diverges → `gitops.drift_detected`
-- `InstanceStateDriftSensor` — DB-recorded status disagrees with provider truth → `system.instance_state_drift`
+- `GitopsDriftSensor` — fleet.yaml-declared state vs effective fleet diverges → `system.gitops.drift_detected` (the one kind with two dots)
+- `InstanceStateDriftSensor` — DB-recorded status disagrees with provider truth → `system.instance_state_drifted`
 - `FederationPeerLivenessSensor` — stale peer heartbeat or cert expiry → `system.federation_peer_liveness`
 - `SdwanReachabilitySensor`, `SdwanDriftSensor`, `SdwanBgpSessionHealthSensor`, `SdwanVipReachabilitySensor` — SDWAN-side reachability, drift, BGP session health, VIP reachability
 - `TradingPressureSensor` — cross-domain consumer of pressure signals emitted by sibling extensions (the class name predates the cross-domain generalization; a rename to a neutral `ExternalPressureSensor` is pending)
+
+<!-- signal-kind-corrections:start -->
+> **Corrected 2026-08-31 (IMP-e491c01f5c01).** Three kinds named in the list
+> above were fabricated — no sensor has ever emitted them, so a stream filter or
+> intervention policy keyed on one matched nothing and reported no error.
+> Every kind the fleet sensors emit is `system.`-prefixed.
+>
+> | Named here until 2026-08-31 | Actually emitted |
+> |---|---|
+> | `project.slo_violation` | `system.project_slo_violation` |
+> | `gitops.drift_detected` | `system.gitops.drift_detected` (the one kind with two dots) |
+> | `system.instance_state_drift` | `system.instance_state_drifted` (note the `-ed`) |
+>
+> The left-hand names are **NOT IMPLEMENTED** and never were. If you bound a
+> policy or alert to one, repoint it at the right-hand kind.
+<!-- signal-kind-corrections:end -->
 
 The three on-disk fleet sensors run outside the tick array via their own paths:
 

@@ -92,7 +92,7 @@ platform.system_sdwan_create_virtual_ip({
 // → { virtual_ip: { id, address: "fd00:abcd:1::100", primary_holder_peer_id, ... } }
 ```
 
-When the primary holder goes silent (`sdwan_vip_reachability_sensor` fires `sdwan.vip_holder_silent`), `sdwan_vip_failover` skill (require_approval policy) promotes the next failover candidate. The address doesn't change — kubectl + workers' `K3S_URL` keep working through the transition.
+When the primary holder goes silent (`sdwan_vip_reachability_sensor` fires `system.sdwan_vip_unreachable`), `sdwan_vip_failover` skill (require_approval policy) promotes the next failover candidate. The address doesn't change — kubectl + workers' `K3S_URL` keep working through the transition.
 
 **Anycast VIPs** (`anycast: true`) skip failover — multiple holders all serve the address simultaneously; routing converges to closest.
 
@@ -342,7 +342,7 @@ platform.system_sdwan_list_federation_peers({})
 |---|---|---|
 | Peer stuck `handshake_pending` | Agent didn't pick up config (reconcile not yet fired) | Wait 30 s; or force `systemctl restart powernode-agent` on node |
 | Peer stuck `handshaking` | NAT / firewall blocks WireGuard UDP | Make at least one peer `publicly_reachable: true` with port 51820/udp open; others connect outbound through it |
-| Peer goes `silent` after working | Connection lost / node rebooted | `sdwan_reachability_sensor` fires `sdwan.hub_unreachable`; `sdwan_failover` skill emits hub-promotion plan |
+| Peer goes `silent` after working | Connection lost / node rebooted | `sdwan_reachability_sensor` fires `system.sdwan_hub_unreachable`; `sdwan_failover` skill emits hub-promotion plan |
 | BGP session stuck `Idle` | Wrong AS number or unreachable neighbor | Run `sdwan_bgp_session_remediate` skill (planning) → operator runs `vtysh` per recommendation |
 | BGP session stuck `Active` | Neighbor doesn't respond to Open message | Verify the neighbor is up + has the route to this peer's `/128`; `sdwan_peer_remediate` if mTLS is the issue |
 | VIP failover doesn't promote | `sdwan_vip_failover` blocked by `require_approval` policy | Check approval queue UI; operator approves → executor runs |
@@ -379,7 +379,7 @@ When an operator chats "set up a VPN" / "add a Tokyo edge to our SDWAN" / "kubec
 2. For each phase, surface the relevant MCP action + required inputs — or, for a multi-step build, hand off to the **System Topology Designer** via a composition skill (see above)
 3. For destructive actions (revoke, failover), use `request_confirmation` before invoking
 4. After invoking, watch `last_handshake_at` and BGP `state` transitions; report changes
-5. If a sensor fires while the operator is waiting (e.g., `sdwan.hub_unreachable`), surface the relevant skill (`sdwan_failover` / `sdwan_peer_remediate`) for operator approval
+5. If a sensor fires while the operator is waiting (e.g., `system.sdwan_hub_unreachable`), surface the relevant skill (`sdwan_failover` / `sdwan_peer_remediate`) for operator approval
 
 ## Related docs
 
@@ -392,3 +392,15 @@ When an operator chats "set up a VPN" / "add a Tokyo edge to our SDWAN" / "kubec
 ---
 
 _Last verified: 2026-06-03_
+
+<!-- signal-kind-corrections:start -->
+> **Corrected 2026-08-31 (IMP-e491c01f5c01).** Two fabricated signal kinds were
+> named in this runbook. Both are **NOT IMPLEMENTED** — a `platform.recent_events`
+> filter or intervention policy keyed on either returns empty with
+> `success: true`, giving no sign that the kind does not exist.
+>
+> | Named here until 2026-08-31 | Actually emitted |
+> |---|---|
+> | `sdwan.vip_holder_silent` | `system.sdwan_vip_unreachable` |
+> | `sdwan.hub_unreachable` | `system.sdwan_hub_unreachable` |
+<!-- signal-kind-corrections:end -->

@@ -156,7 +156,7 @@ platform.system_sdwan_failover_virtual_ip({ virtual_ip_id: "<cluster-vip-id>" })
 // → { virtual_ip: { ...new holder... }, failed_over: true }
 ```
 
-`sdwan_vip_reachability_sensor` automatically fires `sdwan.vip_holder_silent` when the primary is silent, and the `sdwan_vip_failover` skill (require_approval policy) handles promotion without operator intervention.
+`sdwan_vip_reachability_sensor` automatically fires `system.sdwan_vip_unreachable` when the primary is silent, and the `sdwan_vip_failover` skill (require_approval policy) handles promotion without operator intervention.
 
 ## Phase 5 — Get kubeconfig per cluster ✅
 

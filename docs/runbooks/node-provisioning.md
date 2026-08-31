@@ -156,7 +156,7 @@ The platform marks the instance `status=running` after the first `phase=ready` P
 The instance heartbeats every 30 s. Per-tick:
 - Agent posts heartbeat (uptime, version, last reconcile result)
 - Platform refreshes `last_heartbeat_at`
-- `instance_status_sensor` runs every 60 s; fires `instance.silent` if no heartbeat in 5 min (default)
+- `instance_status_sensor` runs every 60 s; fires `system.instance_silent` if no heartbeat in 3 min (`InstanceStatusSensor::SILENT_THRESHOLD = 3.minutes`)
 - Module reconciler walks assigned modules; pulls + verifies + mounts updates if module versions changed
 - Task lease: agent claims any pending tasks for this instance via `worker_api/tasks` and runs them
 
@@ -175,7 +175,7 @@ platform.system_drift_report({ instance_id: "<instance-id>" })
 // → { drift: false } or { drift: true, attach: [...], detach: [...], update: [...] }
 ```
 
-If `drift: true`, the `module_drift_sensor` will emit `module.drift_detected`; Fleet Autonomy auto-runs `drift_remediate` (notify_and_proceed policy) on next tick.
+If `drift: true`, the `module_drift_sensor` will emit `system.module_drift`; Fleet Autonomy auto-runs `drift_remediate` (notify_and_proceed policy) on next tick.
 
 ## Phase 5 — Drain (graceful) ⚠️
 
@@ -234,7 +234,7 @@ moves `running → stopping → stopped` or `→ terminated`), not states.
 | `pending` (>5 min) | Worker queue stalled or provider quota | Check `platform.recent_events` for `provider_quota_exceeded`; restart worker via `sudo systemctl restart 'powernode-*-sidekiq.service'`; retry with the **same `operation_id`** |
 | `provisioning` (>10 min) | Provider API timeout, libvirt domain creation hung | `platform.system_cancel_task` the provision task; investigate provider. `terminate` does **not** fire from `provisioning` today — see "Clearing a stuck `provisioning` instance" below |
 | `provisioning`, agent up but never `running` (>5 min after first heartbeat) | Module pull failure | SSH to node (if SDWAN attached) → `journalctl -u powernode-agent` shows the failed module + reason; common: cosign signature mismatch, OCI 404, network |
-| `running` but no heartbeats >5 min | Network partition or agent crash | `platform.recent_events` for `instance.silent`; SSH or console-access via libvirt; manual restart of `powernode-agent.service` |
+| `running` but no heartbeats >3 min | Network partition or agent crash | `platform.recent_events` for `system.instance_silent`; SSH or console-access via libvirt; manual restart of `powernode-agent.service` |
 | `error` (terminal) | Provider/boot failure drove `mark_errored` | Inspect `platform.recent_events`; once the cause is understood, `system_terminate_instance` (allowed from `error`) to release provider resources, then re-provision with a fresh `operation_id` |
 | Drain stalled (>30 min) | Pods can't reschedule (capacity) | Add capacity, or hard-terminate via `system_terminate_instance` |
 | Terminate stalled (>5 min) | Provider VM teardown stuck | Check provider console; in the worst case `system_cancel_task` the teardown task and clean orphan rows manually |

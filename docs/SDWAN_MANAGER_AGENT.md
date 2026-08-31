@@ -192,7 +192,7 @@ sequenceDiagram
     Cron->>SP: tick
     SP->>SP: compare desired wg config<br/>vs agent-reported state
     alt drift detected
-        SP->>DE: sdwan.peer_drift signal
+        SP->>DE: system.sdwan_peer_drift signal
         DE->>Skill: sdwan_peer_remediate
         Skill->>FRR: rotate keys + bounce iface
         FRR-->>Skill: applied
@@ -201,19 +201,36 @@ sequenceDiagram
 
     Cron->>SB: tick
     alt iBGP session !Established for >10 min
-        SB->>DE: sdwan.bgp_unhealthy signal
+        SB->>DE: system.sdwan_bgp_session_unhealthy signal
         DE->>Skill: sdwan_bgp_session_remediate
         Skill->>Op: notify with vtysh recommendation
     end
 
     Cron->>SV: tick
     alt single-holder VIP holder silent
-        SV->>DE: sdwan.vip_holder_silent signal
+        SV->>DE: system.sdwan_vip_unreachable signal
         DE->>Op: open ApprovalRequest<br/>(require_approval, 4h timeout)
         Op->>Skill: approve sdwan_vip_failover
         Skill->>FRR: promote next failover holder
     end
 ```
+
+<!-- signal-kind-corrections:start -->
+> **Corrected 2026-08-31 (IMP-e491c01f5c01).** The three signal names in the
+> sequence diagram above were fabricated — no sensor emits them. They sat in
+> mermaid arrow labels rather than in backticked prose, which is why the
+> file-scoped sweep that corrected `FLEET_SENSORS.md` never saw them.
+>
+> | Named here until 2026-08-31 | Actually emitted |
+> |---|---|
+> | `sdwan.peer_drift` | `system.sdwan_peer_drift` |
+> | `sdwan.bgp_unhealthy` | `system.sdwan_bgp_session_unhealthy` (and `system.sdwan_bgp_session_stale`) |
+> | `sdwan.vip_holder_silent` | `system.sdwan_vip_unreachable` |
+>
+> The left-hand names are **NOT IMPLEMENTED**. A `platform.recent_events`
+> filter or intervention policy keyed on one returns empty with
+> `success: true` — no error, no warning.
+<!-- signal-kind-corrections:end -->
 
 ---
 
