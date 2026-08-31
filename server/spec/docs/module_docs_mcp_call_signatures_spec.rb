@@ -26,7 +26,10 @@ require "rails_helper"
 #     emit); filed separately rather than rewritten here.
 #   * Whether the values are meaningful — only that the KEYS are accepted and
 #     that every required parameter is supplied.
-#   * Prose mentions of a verb with no call site, and docs outside COVERED_DOCS.
+#   * Prose mentions of a verb with no call site, and — for the PARAMETER
+#     checks only — docs outside COVERED_DOCS/COVERED_CALLS. Verb EXISTENCE is
+#     swept tree-wide and ungated; see the sweep at the bottom of this file for
+#     why the two are deliberately asymmetric.
 
 # Namespaced rather than left on Object: these are generic names, and a bare
 # COVERED_DOCS/KNOWN_BROKEN inside a describe block lands as a top-level
@@ -78,13 +81,14 @@ module ModuleDocsMcpCallSignatures
     # troubleshooting section prescribed platform.list_vault_credentials, a verb
     # in NEITHER registry, as the only diagnostic it offered for a failing sync;
     # a tree-wide sweep with this parser confirms it was the sole unlabelled
-    # nonexistent verb under docs/. The only others are the two in
-    # FLEET_SENSORS.md:475-476, which the surrounding prose marks "aspirational"
-    # — note that being commented out is NOT what exempts them (see the
-    # extract_calls docstring: a call on a `//` line is still checked); they are
-    # simply in a file COVERED_DOCS does not list, and would red if it did.
-    # The verb-existence example below catches this class already — it simply
-    # never ran on this file, because COVERED_DOCS is opt-in per file.
+    # nonexistent verb under docs/. The others are the sensor-config pair in
+    # FLEET_SENSORS.md, which the surrounding prose marks "aspirational" —
+    # only one of which this parser extracts (see ASPIRATIONAL_VERBS).
+    #
+    # That gap is now closed at the root: IMP-2a5a9a0fed0a moved verb existence
+    # OUT of this per-file allowlist and into the tree-wide sweep at the bottom
+    # of this file, so a nonexistent verb reddens wherever it is written and
+    # entering COVERED_DOCS is no longer what buys that check.
     "docs/tutorials/10-gitops-fleet.md",
     # IMP-ebc1d180dc10 — two silently-dropped keys, both withdrawn in the doc
     # rather than deleted. system_acquire_pooled_instance declares only
@@ -193,6 +197,65 @@ module ModuleDocsMcpCallSignatures
     # it as the deployment-scoped answer. Other files may still carry the
     # template_id call shape (docs/runbooks/cve-response.md did).
   }.freeze
+
+  # Call sites exempted from the TREE-WIDE verb-existence sweep below, keyed
+  # [relative_path, verb]. Adding a line here is a POLICY CLAIM, not
+  # housekeeping: it asserts that this doc names a verb the platform does not
+  # implement, on purpose, and that the surrounding prose says so. State the
+  # rationale, the way KNOWN_BROKEN and the writer-set ratchets do — an
+  # unexplained exemption is indistinguishable from a defect six months on.
+  #
+  # Self-retiring, like KNOWN_BROKEN: each entry is asserted STILL
+  # UNREGISTERED. Implementing the verb reddens its exemption and forces the
+  # entry's removal, so the list cannot rot into permanent suppression.
+  #
+  # The exemption is per VERB, not per file: every OTHER call in an exempted
+  # file is still swept. It buys silence for one named fiction, not a blanket
+  # pass for the doc that carries it.
+  #
+  # Not the same register as docs/.verify/ASPIRATIONAL_MCP.md, and deliberately
+  # not merged with it. That catalog serves check-mcp-actions.sh, which greps
+  # only `system_`/`kubernetes_`/`docker_`-prefixed verbs and SKIPS any line
+  # starting `//`, `#` or `>` — so it cannot see a commented-out call at all,
+  # and reports "0 unknown" on the very site this list exempts.
+  #
+  # Neither checker contains the other, so do not treat one green as covering
+  # the other's ground. This sweep reads bare verbs the script's prefix filter
+  # drops (recent_events, execute_agent, list_agents) and does not accept a
+  # comment marker as an exemption; the script in turn matches a call the same
+  # way wherever it appears, so it is not bounded by this parser's brace
+  # balancing. Keep both in step by hand when adding an entry to either.
+  ASPIRATIONAL_VERBS = {
+    # IMP-2a5a9a0fed0a. FLEET_SENSORS.md's "Configuring Sensor Thresholds"
+    # section shows a sensor-config read/write pair that no MCP verb provides.
+    # Both sites are commented out and carry an inline "aspirational" marker,
+    # under a ⚠️ line naming the real path ("edit Fleet::SensorConfig via Rails
+    # console or REST today"), and the prose below them says "Until those MCP
+    # wrappers ship". So the doc is not wrong about the platform — it is
+    # deliberately describing something that does not exist yet, which is the
+    # one thing this exemption is for. Being commented out is NOT what exempts
+    # it; a call on a `//` line is checked like any other (see extract_calls).
+    #
+    # This is the ONLY exemption the tree-wide sweep needs. Measured 2026-08-31
+    # on extensions/system c3c4c062: 31 docs under docs/ contain a call this
+    # parser can extract, and across every verb they call, exactly one resolves
+    # in neither Ai::Tools::PlatformApiToolRegistry::TOOLS nor
+    # Ai::Introspection::McpToolRegistrar::INTROSPECTION_TOOLS.
+    #
+    # Its sibling system_update_sensor_config (FLEET_SENSORS.md:527) is equally
+    # fictional but is NOT listed, because the parser never yields it and an
+    # entry for it would fail the staleness guard below. Its argument literal
+    # spans several `//` comment lines, so balanced_body skips past the closing
+    # brace on the LAST of them, never balances, and drops the call. That is a
+    # real blind spot — it narrows the extract_calls docstring's claim that a
+    # call on a `//` line is still checked. Precisely: such a call is dropped
+    # when a SUBSEQUENT `//` line carries the closing brace. A `//`-opened call
+    # whose continuation lines are not themselves commented parses fine.
+    # Filed as 01a05811-5e1b-7828-8a13-fef31cf3ab5a rather than widened here;
+    # fixing it will surface this second site and want a second entry.
+    [ "docs/FLEET_SENSORS.md", "system_get_sensor_config" ] =>
+      "no MCP read verb for Fleet::SensorConfig; the doc says so and names the Rails/REST path"
+  }.freeze
 end
 
 RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" do
@@ -222,6 +285,33 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
       next if body.nil?
 
       calls << [verb, top_level_keys(body), line, elides_arguments?(body)]
+    end
+    calls
+  end
+
+  # Extract NO-ARGUMENT calls — `platform.<verb>()` — returning [verb, line].
+  #
+  # Kept separate from extract_calls, which requires an opening `{` because
+  # everything it exists to check is a property of the argument literal. A
+  # no-arg call has no keys to check and no required parameters to compare
+  # against, so it is invisible to the parameter families by construction and
+  # correctly so. But it still NAMES A VERB, and a fictional verb is just as
+  # uncallable with no arguments as with some — so the tree-wide existence
+  # sweep consumes this too. Measured 2026-08-31: 26 such sites across 12 docs,
+  # 11 distinct verbs, every one of which resolves today; without this they
+  # would be the one shape a "tree-wide" existence claim silently missed.
+  #
+  # Deliberately NOT folded into extract_calls: doing so would hand the
+  # parameter checks a keyless call site in every COVERED_DOCS file, and the
+  # required-parameter example would then fail on verbs that legitimately take
+  # arguments the doc elided by writing `()`. That is the opt-in drain's
+  # problem, not this sweep's.
+  def self.extract_noarg_calls(text)
+    calls = []
+    text.to_enum(:scan, /platform\.([a-z0-9_]+)\(\s*\)/).each do
+      verb = Regexp.last_match(1)
+      line = text[0...Regexp.last_match.begin(0)].count("\n") + 1
+      calls << [ verb, line ]
     end
     calls
   end
@@ -443,10 +533,12 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
       calls.each do |verb, keys, line, elided|
         declared = declared_parameters(verb)
 
-        it "#{verb} at line #{line} is a registered MCP verb" do
-          expect(declared).not_to(be_nil, "platform.#{verb} is not in PlatformApiToolRegistry::TOOLS")
-        end
-
+        # Verb EXISTENCE is not asserted here. It runs tree-wide and ungated in
+        # the sweep at the bottom of this file, which already covers every file
+        # in COVERED_DOCS/COVERED_CALLS; repeating it here would only duplicate
+        # examples. The parameter checks below still need `declared`, so an
+        # unregistered verb drops out of THIS block with no example — the sweep
+        # is what reddens for it.
         next if declared.nil?
 
         tracked = known_broken[[relative_path, verb]]
@@ -494,6 +586,132 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
         end
       end
     end
+  end
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Verb EXISTENCE, tree-wide and UNGATED (IMP-2a5a9a0fed0a).
+  #
+  # The asymmetry with the parameter checks above is DELIBERATE, not an
+  # oversight in one direction or the other:
+  #
+  #   * The unknown-key and required-parameter checks stay opt-in per file
+  #     (COVERED_DOCS) or per verb (COVERED_CALLS), because they are noisy.
+  #     Measured 2026-08-31 by pointing covered_docs at every doc with a
+  #     parseable call: 1017 examples, 77 failures still open against
+  #     IMP-84c318bf31f9's drain. A file enters the allowlist only once it is
+  #     genuinely clean, and opting in is that drain's acceptance signal.
+  #     Do NOT ungate them in passing.
+  #
+  #   * Verb existence is a lookup, not a judgement: a verb resolves in
+  #     PlatformApiToolRegistry::TOOLS / McpToolRegistrar::INTROSPECTION_TOOLS
+  #     or it does not, so there is no backlog to drain before turning it on.
+  #     It is also the worst of the three failure modes: a wrong KEY is either
+  #     rejected or silently dropped, but a fictional VERB cannot be called at
+  #     all, so the doc is not merely imprecise — it is unusable at the moment
+  #     an operator is trusting it most. IMP-d40df31d9cef was exactly that
+  #     (platform.list_vault_credentials, the only diagnostic 10-gitops-fleet.md
+  #     offered for a failing sync), and this check would have caught it years
+  #     earlier had it not been gated behind a per-file allowlist it was never
+  #     added to.
+  #
+  #     Not literally false-positive-free, though, and do not sell it as such:
+  #     from_tool_registry reads TOOLS[verb] and then requires an
+  #     action_definitions entry, so a verb registered only through the generic
+  #     register_extension_tools seam, or reachable only as an ACTION_ALIASES
+  #     key, would report as unregistered. Neither is live — 0 of the doc
+  #     verbs are alias keys and all resolve statically as of 2026-08-31 — but
+  #     an exemption granted for that reason would be a lie, so widen the
+  #     resolver instead if one ever appears.
+  #
+  # So this sweep reads the docs tree directly rather than either list, and a
+  # doc added tomorrow is covered the day it lands with no opt-in step. It sees
+  # both `platform.verb({ ... })` and no-arg `platform.verb()` sites, and
+  # descends dot-directories. What it still cannot see is a call whose argument
+  # literal never balances — see ASPIRATIONAL_VERBS for the one live instance
+  # and the finding tracking it. "Tree-wide" is a claim about the FILES swept;
+  # within a file it is bounded by what extract_calls can parse.
+  aspirational_verbs = ModuleDocsMcpCallSignatures::ASPIRATIONAL_VERBS
+  exercised_aspirational = []
+
+  # File::FNM_DOTMATCH so DOT-directories are swept too. Without it Dir.glob
+  # skips docs/.verify/ silently, which is where the sibling shell checker
+  # (check-mcp-actions.sh) and its ASPIRATIONAL_MCP.md catalog live — the one
+  # directory whose own docs are most likely to contain example call syntax.
+  swept = Dir.glob(File.join(ext_root, "docs", "**", "*.md"), File::FNM_DOTMATCH)
+             .sort.filter_map do |absolute|
+    relative = absolute.delete_prefix("#{ext_root}/")
+    text = File.read(absolute)
+    # [verb, line] for both call shapes. The parameter families still see only
+    # extract_calls; this pair is what the EXISTENCE check consumes.
+    sites = extract_calls(text).map { |verb, _keys, line, _elided| [ verb, line ] } +
+            extract_noarg_calls(text)
+    [ relative, sites.sort_by(&:last) ] unless sites.empty?
+  end
+
+  # Anti-vacuity, as an equality oracle rather than a "> 0" smoke test: a glob
+  # that silently stops matching (a docs/ move, a renamed extension root) would
+  # leave this sweep enumerating nothing and reporting green, which is the
+  # failure mode the whole change exists to remove. Every file the opt-in lists
+  # already name must appear here — if one does not, the sweep is not seeing
+  # the tree it claims to.
+  it "sweeps every doc the opt-in lists already name" do
+    unswept = (covered_docs + covered_calls.keys) - swept.map(&:first)
+    expect(unswept).to(
+      be_empty,
+      "#{unswept.inspect} is opted into the parameter checks but was not found by the " \
+      "tree-wide sweep. The glob is not seeing the docs tree — fix it before trusting a " \
+      "green run here."
+    )
+  end
+
+  describe "verb existence (tree-wide, ungated by COVERED_DOCS)" do
+    swept.each do |relative_path, sites|
+      sites.each do |verb, line|
+        # Resolved here, at example-GROUP scope: declared_parameters is a class
+        # method on this group and is not callable from inside an `it` block.
+        declared = declared_parameters(verb)
+
+        if aspirational_verbs.key?([ relative_path, verb ])
+          exercised_aspirational << [ relative_path, verb ]
+
+          # Asserted STILL ABSENT, so the exemption retires itself.
+          it "#{relative_path}:#{line} #{verb} is still unimplemented, as its exemption claims" do
+            expect(declared).to(
+              be_nil,
+              "platform.#{verb} now resolves in a registry. ASPIRATIONAL_VERBS exempts it " \
+              "on the claim that the platform does not implement it — that claim is now " \
+              "false. Delete the entry so this call site is checked normally, and check " \
+              "whether the surrounding prose still calls it aspirational."
+            )
+          end
+          next
+        end
+
+        it "#{relative_path}:#{line} calls a registered MCP verb (#{verb})" do
+          expect(declared).not_to(
+            be_nil,
+            "platform.#{verb} resolves in NEITHER Ai::Tools::PlatformApiToolRegistry::TOOLS " \
+            "nor Ai::Introspection::McpToolRegistrar::INTROSPECTION_TOOLS, so an operator " \
+            "copying #{relative_path}:#{line} cannot call it at all. Either the verb is " \
+            "misspelled, or the doc describes a capability the platform does not have — in " \
+            "which case say so in the prose and add it to ASPIRATIONAL_VERBS with a reason."
+          )
+        end
+      end
+    end
+  end
+
+  # Same staleness guard the KNOWN_BROKEN list gets below, and for the same
+  # reason: deleting the exempted example leaves the entry matching no call
+  # site, so its self-retiring assertion never runs and the exemption survives
+  # forever with nothing to flag it.
+  it "exercises every ASPIRATIONAL_VERBS exemption (none has gone stale)" do
+    expect(exercised_aspirational.uniq).to(
+      match_array(aspirational_verbs.keys),
+      "ASPIRATIONAL_VERBS entries that matched no call site: " \
+      "#{(aspirational_verbs.keys - exercised_aspirational.uniq).inspect}. The example was " \
+      "probably removed or reworded — delete the entry."
+    )
   end
 
   # Without this, a KNOWN_BROKEN entry can rot silently. Deleting the offending
