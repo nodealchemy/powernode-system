@@ -20,10 +20,90 @@ require "rails_helper"
 # is renamed in the tool, which is the drift that produced this finding.
 #
 # What it does NOT cover:
-#   * RESPONSE shape. The `// → { ... }` comments beside these calls are a
-#     separate claim with its own drift (02-first-module.md and
+#   * RESPONSE shape — and NOT for want of trying. IMP-ef37749c19f8 asked
+#     whether this parser could be extended to assert the `// → { ... }`
+#     comments' RETURN keys against what handlers emit, the way it asserts
+#     parameters against declarations. Measured, tree-wide, the answer is NO,
+#     for five independent reasons. Ranked by how fatal:
+#
+#       1. THERE IS NO DECLARATION TO COMPARE AGAINST. The parameter check
+#          works because `action_definitions[verb][:parameters]` IS the
+#          contract. Nothing on the return side plays that role. Measured on
+#          this tree (66 tool classes, 606 actions): every action definition
+#          carries exactly `:description` and `:parameters` — plus `:name` on
+#          5 and `:requires_approval` on 2 — and every class-level
+#          `.definition` carries exactly `:name`/`:description`/`:parameters`.
+#          Zero declare a return or output shape. Nor does one arrive later:
+#          `McpTool#output_schema` is a hardcoded `{}` stub with no backing
+#          column (mcp_tool.rb:105-107), so the `mcp_tools` row cannot carry
+#          one either.
+#
+#          What clients actually receive for `outputSchema`, on BOTH transports,
+#          is verb-independent by construction:
+#            * streamable HTTP — the transport real MCP clients use — never
+#              calls `build_manifest`. `decorate_tool_entry` sets a literal
+#              `{"type" => "object"}` for protocol >= 2025-06-18 and NOTHING
+#              at all for older revisions (streamable_http_controller.rb:971-976).
+#              Its own comment calls the generic object schema "the truthful
+#              contract", which is the same finding stated from the other side.
+#            * ActionCable `describe_tool` — serves the registered manifest,
+#              whose `outputSchema` is `default_output_schema`
+#              (mcp_platform_tool_registrar.rb:541-550, from `build_manifest`
+#              :510): one shared literal `{success, error}` for all 606.
+#
+#          This is not a parsing problem — the thing being compared against
+#          does not exist. The tripwire below pins the declaration side and the
+#          ActionCable manifest. It deliberately does NOT pin
+#          `decorate_tool_entry`: that literal takes no tool argument, so it is
+#          verb-independent by construction rather than by coincidence, and
+#          pinning three lines that would have to be rewritten to do damage
+#          buys less than it costs. Named here so the omission reads as a
+#          decision.
+#       2. THE DOCS' OWN CLAIM IS DELIBERATELY PARTIAL. 50 of the 65 return
+#          key-sets in the covered corpus (COVERED_DOCS *and* the one
+#          COVERED_CALLS file) carry a `...` elision. For those an
+#          EQUALITY oracle is not merely hard, it is WRONG — the doc asserts
+#          a subset on purpose. Containment is all that is left, and
+#          containment cannot see a MISSING key.
+#       3. HALF THE DOCUMENTED KEYS ARE NESTED, AND THEIR PRODUCER IS NOT
+#          LOCAL. 105 of 207 documented return keys sit below the top level.
+#          They come from `to_summary` on a model, from `serialize_instance`,
+#          or from a service's hash bound to a local — `drain_result: result`
+#          in system_fleet_tool.rb, whose three keys live in
+#          instance_pool_service.rb:346. Reaching them needs interprocedural
+#          analysis across model and service files.
+#       4. THE ROOT OF A `// →` COMMENT IS ITSELF UNDECLARED. `success_result`
+#          wraps as `{success:, data:}` (base_tool.rb:467). 64 of the 65 sites
+#          document the `data` payload; disk-image-ci.md:57 documents the full
+#          envelope. Nothing marks which, so a parser must GUESS the depth its
+#          comparison starts at.
+#       5. HANDLER RESOLUTION IS PARTIAL ANYWAY. Of the 54 verbs with a
+#          key-set return comment, 31 have a single literal-hash
+#          `success_result`; 10 have several (one `// →` cannot be equality-
+#          checked against N key sets), 9 have none in the dispatched method,
+#          2 pass a non-literal, 2 do not resolve through the `when ... then`
+#          dispatch at all.
+#
+#     Net: two independent ~50% cuts (top-level keys; verbs with a resolvable
+#     single literal) leave a handler-source oracle adjudicating on the order
+#     of a quarter of documented return keys — containment-only on three
+#     quarters of THOSE. The two fractions were measured over different
+#     populations, so treat the product as a magnitude, not a figure. Either
+#     one alone already settles it: that is a materially WEAKER instrument
+#     than the parameter gate, not a return-side equivalent of it, and
+#     building it would invite exactly the misreading that this file covers
+#     returns.
+#
+#     Measured, not argued (2026-08-31, at the commit that wrote this header):
+#     with `claim_id` and `host_address` planted in instance-pool-tuning.md's
+#     acquire return comment — two keys the SAME FILE's withdrawal table says
+#     are not returned — this spec ran 826 examples, 0 failures. Nothing
+#     re-runs that experiment, so it is dated on purpose; the tripwire below,
+#     which does re-run, is what carries the claim forward.
+#
+#     Prior drift filed separately and still open: 02-first-module.md and
 #     module-authoring.md both document version fields the serializer does not
-#     emit); filed separately rather than rewritten here.
+#     emit.
 #   * Whether the values are MEANINGFUL. Since IMP-389daefb3ab4 a value's
 #     SHAPE is checked against the declared type — an object where a scalar is
 #     declared is the "nested it under an extra key" mistake — but nothing
@@ -881,6 +961,123 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   # the verbs it pins and ignores every other call in that file.
   targets = covered_docs.map { |path| [ path, nil ] } +
             covered_calls.map { |path, verbs| [ path, verbs ] }
+
+  # ── The RETURN-shape tripwire (IMP-ef37749c19f8) ───────────────────────────
+  #
+  # The header explains at length why this file cannot check documented RETURN
+  # keys. Reason 1 — that there is no per-action return declaration to compare
+  # against — is the only one of the five that could stop being true without
+  # anyone noticing: it takes one `returns:` key on one definition, or one
+  # per-tool outputSchema, and suddenly a real oracle exists and the header's
+  # "NO" is stale prose that nothing contradicts.
+  #
+  # These two examples are that contradiction. They are not a substitute for
+  # the check — nothing here reads a doc — and they must not be mistaken for
+  # one. They assert, by EQUALITY rather than by "no key looks like a return
+  # shape", that the oracle is still absent, so the day it appears this spec
+  # reddens and points whoever added it at the analysis above.
+  #
+  # Equality is deliberate and it is why a new definition-level key reddens
+  # even when it has nothing to do with returns. A containment form ("no key
+  # named :returns") would pass on `output_schema:`, `emits:`, `result:` and
+  # every other spelling, which is precisely the failure mode a tripwire
+  # cannot afford. A spurious red here costs one reviewer one minute; a
+  # silent green costs the next person the whole measurement.
+  #
+  # BOTH definition levels are read, and the second is not redundant. A
+  # single-action tool's `action_definitions` is SYNTHESIZED from
+  # `.definition` by BaseTool's default, which reconstructs the hash as
+  # `{description:, parameters:}` and DISCARDS every other key
+  # (base_tool.rb:17-21). A `returns:` written on such a tool's `.definition`
+  # would therefore be invisible to the action-level assertion while still
+  # being live — PlatformApiToolRegistry.tool_definitions merges
+  # `klass.definition` verbatim for registry actions absent from
+  # `action_definitions`. Reading `.definition` too closes that hole; found in
+  # review, not by construction.
+  describe "return-shape oracle (asserted ABSENT — see the header)" do
+    # The same walk all three examples need. Deliberately NOT
+    # McpPlatformToolRegistrar.tool_classes: that memoizes @tool_classes on the
+    # class, and this file would be the first to populate a memo other specs
+    # in the same process expect to be cold.
+    #
+    # `let`, and instance methods, rather than constants: a constant assigned
+    # inside a block takes its cref from the enclosing LEXICAL scope, which for
+    # a `describe` body is Object — so `ACTION_KEYS = ...` here would define a
+    # generic top-level constant another spec can clobber. That is the same
+    # order-dependent flake the module wrapper at the top of this file exists
+    # to avoid; it applies in here too.
+    let(:platform_tool_classes) do
+      Ai::Tools::PlatformApiToolRegistry.all_tools.values.uniq.filter_map do |class_name|
+        class_name.constantize
+      rescue NameError
+        nil
+      end
+    end
+
+    let(:action_keys) { %i[description name parameters requires_approval].sort }
+    let(:definition_keys) { %i[description name parameters].sort }
+
+    it "declares no return shape on any ACTION, in any tool" do
+      keys = platform_tool_classes.flat_map do |klass|
+        next [] unless klass.respond_to?(:action_definitions)
+
+        klass.action_definitions.values.flat_map(&:keys)
+      end.uniq.sort
+
+      expect(keys).to(
+        eq(action_keys),
+        "An action definition grew a key this spec has not seen: " \
+        "#{(keys - action_keys).inspect}. If it declares a RETURN or OUTPUT " \
+        "shape, the header's reason 1 is now false and a real return-key " \
+        "oracle exists — re-read the five reasons and re-measure before " \
+        "extending this file. If it is unrelated, add it to `action_keys`."
+      )
+    end
+
+    # Not covered by the example above: see the BaseTool synthesis note.
+    it "declares no return shape on any class-level .definition either" do
+      keys = platform_tool_classes.flat_map do |klass|
+        klass.respond_to?(:definition) ? klass.definition.keys : []
+      rescue NotImplementedError
+        []
+      end.uniq.sort
+
+      expect(keys).to(
+        eq(definition_keys),
+        "A tool's .definition grew a key this spec has not seen: " \
+        "#{(keys - definition_keys).inspect}. BaseTool's default " \
+        "action_definitions DISCARDS it (base_tool.rb:17-21), so the " \
+        "action-level example above cannot see it — which is exactly why " \
+        "this one exists. Same question: does it declare a RETURN shape?"
+      )
+    end
+
+    # Scope, stated so it is not overread: this pins the ActionCable
+    # `describe_tool` manifest only. The streamable-HTTP transport builds its
+    # own entry and never reaches build_manifest — see the header's reason 1
+    # for why that path is deliberately left unpinned.
+    it "builds one verb-INDEPENDENT outputSchema into every registered manifest" do
+      registrar = Ai::Tools::McpPlatformToolRegistrar
+      schemas = platform_tool_classes.map do |klass|
+        registrar.send(:build_manifest, klass)["outputSchema"]
+      end.uniq
+
+      expect(schemas).to(
+        eq([ {
+          "type" => "object",
+          "properties" => {
+            "success" => { "type" => "boolean" },
+            "error" => { "type" => "string" }
+          },
+          "required" => [ "success" ]
+        } ]),
+        "The manifest outputSchema is no longer one shared literal across every " \
+        "platform tool (#{schemas.size} distinct schemas). A per-tool — or better, " \
+        "per-ACTION — outputSchema is the declaration the header's reason 1 says " \
+        "does not exist; re-measure before extending this file."
+      )
+    end
+  end
 
   it "keeps COVERED_CALLS disjoint from COVERED_DOCS" do
     overlap = covered_calls.keys & covered_docs

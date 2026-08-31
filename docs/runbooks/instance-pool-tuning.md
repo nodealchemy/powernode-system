@@ -35,8 +35,9 @@ platform.system_create_instance_pool({
   provider_region_id: "region-aws-us-east-1",
   provider_instance_type_id: "type-t3-medium"
 })
-// → { instance_pool: { id, status: "active", target_size: 5,
-//      ready_count: 0, warming_count: 0, claimed_count: 0, ... } }
+// → { pool: { id, name, status: "active", lifecycle_class, target_size: 5,
+//             min_size, max_size, ready_count: 0, warming_count: 0,
+//             claimed_count: 0, errored_count: 0, deficit, last_replenished_at } }
 ```
 
 > The warming-retry window isn't a top-level create field. The reaper reads
@@ -59,12 +60,25 @@ agent posts `phase=ready`; then it flips to `pool_state: "ready"`.
 
 ```javascript
 platform.system_get_instance_pool({ id: "<pool-id>" })
-// → { instance_pool: { ..., status: "active", ready_count, warming_count, claimed_count },
-//      members: [
-//      { instance_id, pool_state: "warming", ... },
-//      { instance_id, pool_state: "ready", ... }
-//    ] }
+// → { pool: { id, name, status: "active", lifecycle_class, target_size,
+//             min_size, max_size, ready_count, warming_count, claimed_count,
+//             errored_count, deficit, last_replenished_at,
+//             members: [
+//               { id, name, pool_state: "warming", status,
+//                 pool_warming_started_at, pool_acquired_at },
+//               { id, name, pool_state: "ready", status,
+//                 pool_warming_started_at, pool_acquired_at }
+//             ] } }
 ```
+
+`members` is nested **inside** `pool`, not a sibling of it, and a member's own
+key is **`id`** (this runbook documented it as `instance_id`, which is not a
+key the roster carries) — the same `System::NodeInstance` id you pass to
+`system_get_instance({ instance_id: })`. The roster is ordered by
+`(pool_state, pool_warming_started_at)` and **capped at 50**: on a pool larger
+than that the roster is truncated while the counts beside it are not, so read
+occupancy from `ready_count` / `warming_count` / `claimed_count` and treat
+`members` as a sample.
 
 ## Phase 2 — Claim a pooled instance ✅
 
@@ -238,7 +252,9 @@ To wind down a pool (e.g., load is gone, or you're switching templates):
 ```javascript
 platform.system_drain_instance_pool({ id: "<pool-id>" })
 // → { pool: { ..., status: "draining" },
-//      drain_result: { drained: <ready_terminated>, claimed_remaining: <still_running> } }
+//      drain_result: { drained: <ready_terminated>,
+//                      terminate_failed: <provider terminate did NOT land>,
+//                      claimed_remaining: <still_running> } }
 ```
 
 Drain sets the pool `status` to `draining`, terminates every **ready**
@@ -253,6 +269,18 @@ as standalone" mode; drain always terminates the ready members.
   returns, ready members have had `terminate_instance` issued
 - A `draining` pool stops being replenished (the reaper skips replenish for
   draining pools, though it still recycles)
+- **`terminate_failed` is not cosmetic.** A member whose provider terminate did
+  not land is parked at `pool_state: "errored"` (not `draining`), and a
+  high-severity `system.pool.terminate_failed` FleetEvent is emitted carrying
+  `failed_instance_ids`. Its VM is very likely still running and still billing.
+  The recycle phase retries those terminates on a bounded, backed-off ladder
+  (`errored_terminate_max_attempts`); once the cap is spent the member is
+  abandoned loudly (`system.pool.terminate_abandoned`, high) and never retried
+  again. The retry is skipped — the member is swept straight to `draining` —
+  when it has no `cloud_instance_id` or is already `status: "terminated"`,
+  i.e. when there is no provider resource left to reclaim. A non-zero
+  `terminate_failed` means go look at the provider console; `drained` alone
+  does not tell you the pool is gone.
 - The pool row stays at `status: "draining"` — there is **no** `drained`
   status. Once members are gone, delete it with `system_delete_instance_pool`
 
@@ -260,7 +288,7 @@ as standalone" mode; drain always terminates the ready members.
 
 ```javascript
 platform.system_delete_instance_pool({ id: "<pool-id>" })
-// → permanently removes the pool row; cannot be undone
+// → { deleted: true, pool_id, pool_name }   // the row is gone; cannot be undone
 ```
 
 Only valid once the pool has **zero** members. Trying to delete a pool that
@@ -282,16 +310,34 @@ for any claimed members to finish their normal terminate, then delete.
 
 ## Observing pool health
 
-The reaper does **not** emit dedicated `pool.*` FleetEvent signals — its
-replenish / recycle / drain decisions go to the worker log
-(`[InstancePoolService] ...`, `[InstancePoolReplenisherJob] ...`). To
-observe a pool:
+Pool activity emits **seven** `system.pool.*` FleetEvent kinds, so most of it
+is queryable via `recent_events` rather than only greppable in the worker log.
+Routine replenish/recycle *decisions* (how many members were provisioned or
+swept on a tick) are log-only; the events fire on the outcomes worth alerting
+on:
+
+| Kind | Severity | Fires when |
+|---|---|---|
+| `system.pool.member_ready` | low | A warming member's agent posted `phase=ready` and it flipped to `ready` |
+| `system.pool.claimed_stale` | medium | A claimed member passed `claimed_ttl_seconds` (flag only — never auto-terminated) |
+| `system.pool.claimed_stale_heartbeat_flagged` | medium | A claimed member's agent heartbeat went stale (flag only, same rationale) |
+| `system.pool.ready_stale_heartbeat_recycled` | medium | A ready member's heartbeat went stale and it was recycled early |
+| `system.pool.terminate_failed` | **high** | Drain's provider terminate did not land; member parked `errored` |
+| `system.pool.terminate_abandoned` | **high** | The bounded errored-terminate retry ladder spent its cap and gave up |
+| `system.pool.mcp_grant_reset_failed` | **high** | A returned member's MCP tool grant could not be reset |
+
+To observe a pool:
 
 - **Live counts** — `system_get_instance_pool` returns `ready_count`,
-  `warming_count`, `claimed_count`, `errored_count`. A `ready_count` that
-  sits at 0 while `target_size > 0` is the user-visible failure mode.
+  `warming_count`, `claimed_count`, `errored_count` (nested under `pool`). A
+  `ready_count` that sits at 0 while `target_size > 0` is the user-visible
+  failure mode.
+- **Pool events** — query `recent_events` for the `system.pool.*` kinds above.
+  The two `high` terminate kinds are the ones that cost money: both mean a VM
+  may still be running and billing.
 - **Worker log** — `journalctl -u 'powernode-*-sidekiq.service' -f | grep
-  InstancePool` shows each tick's replenish/recycle/drain activity.
+  InstancePool` shows each tick's replenish/recycle/drain *counts*, which the
+  events above deliberately do not carry.
 - **Underlying instance events** — individual member provision / terminate
   flows surface in `recent_events` like any other NodeInstance lifecycle
   (e.g. `provider_quota_exceeded`, `module_pull_failed`).
@@ -315,4 +361,4 @@ When an operator chats "I need 50 ephemeral instances for an ML run" / "claim a 
 - [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md) — `provision_cluster` for one-shot multi-instance bursts
 - [`FLEET_SENSORS.md`](../FLEET_SENSORS.md) — `instance_status_sensor` covers pool members
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-08-31_
