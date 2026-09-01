@@ -119,12 +119,17 @@ func AttachServicesMode(ctx context.Context, runner mount.Runner, moduleID strin
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 
+	// Inverted edges, computed once over the WHOLE service set: a unit's
+	// recovery directive names its dependents, which no single Service
+	// carries. See recoveryDependents / writeDependencyDirectives.
+	dependents := recoveryDependents(services)
+
 	results := make([]AttachResult, 0, len(ordered))
 	anyWritten := false
 	for _, svc := range ordered {
 		unitName := UnitName(moduleID, svc.Name)
 		path := filepath.Join(dir, unitName)
-		body := RenderUnitMode(svc, moduleID, mode)
+		body := RenderUnitModeGraph(svc, moduleID, mode, dependents[svc.Name])
 
 		written, err := writeIfChanged(path, body)
 		if err != nil {
@@ -197,11 +202,13 @@ func AttachServicesNative(ctx context.Context, runner mount.Runner, moduleID str
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 
+	dependents := recoveryDependents(services)
+
 	results := make([]AttachResult, 0, len(ordered))
 	for _, svc := range ordered {
 		unitName := UnitName(moduleID, svc.Name)
 		path := filepath.Join(dir, unitName)
-		body := RenderUnitMode(svc, moduleID, RootModeNative)
+		body := RenderUnitModeGraph(svc, moduleID, RootModeNative, dependents[svc.Name])
 		written, err := writeIfChanged(path, body)
 		if err != nil {
 			results = append(results, AttachResult{Unit: unitName, StepErr: fmt.Errorf("write %s: %w", path, err)})
@@ -348,8 +355,22 @@ func RenderUnit(svc manifest.Service, moduleID string) string {
 // for a single Service in the given root mode. Public so tests can assert
 // the content shape without touching the filesystem.
 func RenderUnitMode(svc manifest.Service, moduleID string, mode RootMode) string {
+	return RenderUnitModeGraph(svc, moduleID, mode, nil)
+}
+
+// RenderUnitModeGraph is RenderUnitMode with the service's INVERTED edges
+// supplied: `dependents` names the sibling services (bare names, not unit
+// names) that declared a necessity edge on svc, as computed by
+// recoveryDependents over the module's whole service set.
+//
+// It exists because the outage this fixes is not expressible from one
+// service's own fields. See writeDependencyDirectives for what the
+// directive does and what it costs. Callers that render a single service
+// out of graph context (RenderUnit, RenderUnitMode) pass nil and get the
+// pre-existing output byte-for-byte.
+func RenderUnitModeGraph(svc manifest.Service, moduleID string, mode RootMode, dependents []string) string {
 	if svc.UnitBody != "" {
-		return renderUnitBodyMode(svc, moduleID, mode)
+		return renderUnitBodyMode(svc, moduleID, mode, dependents)
 	}
 
 	var b strings.Builder
@@ -366,8 +387,12 @@ func RenderUnitMode(svc manifest.Service, moduleID string, mode RootMode) string
 	b.WriteString(" (module ")
 	b.WriteString(moduleID)
 	b.WriteString(")\n")
-	if edges := svc.ResolvedDependencyEdges(); len(edges) > 0 {
-		writeDependencyDirectives(&b, moduleID, edges)
+	// len(dependents) > 0 with NO outgoing edges is the exact shape of the
+	// unit that stranded the fleet: dev-cell's bootstrap depends on nothing
+	// and is depended on by three services. Gating this block on outgoing
+	// edges alone would emit no directive on precisely those units.
+	if edges := svc.ResolvedDependencyEdges(); len(edges) > 0 || len(dependents) > 0 {
+		writeDependencyDirectives(&b, moduleID, edges, dependents)
 	}
 
 	b.WriteString("\n[Service]\n")
@@ -469,28 +494,69 @@ func RenderUnitMode(svc manifest.Service, moduleID string, mode RootMode) string
 //     dropped. A server teaching the fleet a kind this agent predates must
 //     not silently downgrade a necessity guarantee.
 //
-// NOTE — what this does NOT fix, stated plainly because the surrounding
-// change is easy to mistake for a fix to the outage that prompted it
-// (IMP-f87b5689aca2).
+// RECOVERY — the inverted edge, and what it costs (IMP-4e0f282bb9f0).
 //
 // Requires= means "cancel my start job if the dependency fails"; it does
 // NOT mean "start me when the dependency later succeeds". A dependency
-// that fails and then self-heals still leaves its hard dependents stopped,
-// because systemd never re-runs the cancelled job. That is what stranded
-// dev-cell's mcp-proxy behind a transiently-failing bootstrap.
+// that fails and then self-heals leaves its hard dependents stopped
+// forever, because systemd never re-runs the cancelled job. That is what
+// stranded dev-cell's mcp-proxy behind a transiently-failing bootstrap on
+// 2026-08-31: bootstrap's start job failed on six HTTP 502s, mcp-proxy's
+// job was cancelled, bootstrap retried under Restart=on-failure and
+// succeeded 107 seconds later, and mcp-proxy stayed dead until a human ran
+// `systemctl start`.
 //
-// Routing softdep to Wants= does not address that case, and as of this
-// commit CANNOT: every dependency edge declared in every shipped manifest
-// is start_before (9 of 9), so no edge in the fleet changes rendering at
-// all. This function now honours a kind that nothing yet declares.
+// Closing that needs a directive on the DEPENDENCY unit naming its
+// dependents, which is why `dependents` is threaded in from
+// recoveryDependents rather than read off svc: a Service carries only its
+// OUTGOING edges. It renders as Wants= — merged into the same sorted line
+// as any outgoing softdep, since systemd keeps one Wants= list per unit.
 //
-// Expressing recovery needs Upholds= on the DEPENDENCY unit. This function
-// cannot emit it — it sees one service's OUTGOING edges — but that is an
-// increment boundary, NOT an architectural blocker: AttachServicesMode and
-// AttachServicesNative both hold the full []manifest.Service and already
-// build a whole-module graph in topoSort, so inverting the edges there is
-// a small change. It is deferred, not impossible.
-func writeDependencyDirectives(b *strings.Builder, moduleID string, edges []manifest.DependencyEdge) {
+// WHY Wants= AND NOT Upholds=. Upholds= is the directive that advertises
+// itself for this ("as long as this unit is up, keep those started"), and
+// a hand-written Upholds= drop-in is what recovered dev-cell by hand. It
+// is nevertheless the wrong directive to GENERATE, because it is a
+// CONTINUOUS want and this function renders every edge on every fleet
+// node. Measured on systemd 255 (255.4-1ubuntu8, the fleet's own version),
+// dependency active throughout:
+//
+//	property                              Wants=      Upholds=
+//	recovers a stranded dependent         yes         yes
+//	`systemctl stop <dependent>` sticks   yes         NO — undone in <2s
+//	skip-logs/30s, condition-gated dep    1           49
+//
+// The middle row is an operator regression: a unit systemd is upholding
+// cannot be stopped for maintenance on its own, and `systemctl mask` is
+// not the escape hatch it would be elsewhere — the agent writes a REAL
+// file at /etc/systemd/system/<unit>, so mask refuses ("File ... already
+// exists"). The only stop is to take the dependency down with it.
+//
+// The bottom row is worse, and it is what actually rules Upholds= out
+// here. An uphold-triggered start of a unit whose Condition*= is unmet is
+// not a FAILED start, so it does not durably trip StartLimitBurst; systemd
+// re-tries it about twice a second, forever. Seven of the nine dependency
+// edges shipped in modules/*/manifest.yaml have a condition-gated
+// dependent, and dev-cell's `provision` is gated on
+// ConditionPathExists=!/persist/dev-cell/state/provisioned — permanently
+// false on every cell that IS provisioned, i.e. the steady state of the
+// whole fleet. Upholds= would put a permanent journal hot-loop on every
+// dev-cell.
+//
+// Wants= gives up one guarantee to avoid both costs: it is pulled in by
+// the dependency's START JOB, not held continuously, so it will not
+// resurrect a dependent that died while the dependency stayed up. That is
+// the right trade. The outage class is "the dependency failed, so the
+// dependent was cancelled" — and a dependency recovering from failure
+// always does so via a start job, which re-expands Wants=. A dependent
+// that instead exhausted its OWN StartLimitBurst is a unit systemd was
+// deliberately told to give up on (dev-cell sets
+// StartLimitIntervalSec=1800/StartLimitBurst=5 for exactly that, see
+// modules/dev-cell/manifest.yaml), and reviving it would defeat the brake.
+//
+// The inverse is emitted for exactly the kinds that render Requires=;
+// softdep gets none. See recoveryDependents for why that mirror is the
+// whole rule.
+func writeDependencyDirectives(b *strings.Builder, moduleID string, edges []manifest.DependencyEdge, dependents []string) {
 	var all, required, wanted []string
 	for _, e := range edges {
 		unit := UnitName(moduleID, e.Service)
@@ -502,9 +568,67 @@ func writeDependencyDirectives(b *strings.Builder, moduleID string, edges []mani
 		// start_before, requires_health, and anything unrecognised.
 		required = append(required, unit)
 	}
+	// The INVERTED edges. Same directive as softdep, deliberately: both mean
+	// "start this too, best-effort" and systemd merges them into one list, so
+	// they are rendered as one sorted Wants= rather than two lines.
+	seen := make(map[string]bool, len(wanted))
+	for _, u := range wanted {
+		seen[u] = true
+	}
+	for _, name := range dependents {
+		unit := UnitName(moduleID, name)
+		if seen[unit] {
+			continue
+		}
+		seen[unit] = true
+		wanted = append(wanted, unit)
+	}
 	writeUnitList(b, "After=", all)
 	writeUnitList(b, "Requires=", required)
 	writeUnitList(b, "Wants=", wanted)
+}
+
+// recoveryDependents inverts a module's dependency graph: it maps each
+// service name to the sibling services that declared a NECESSITY edge on
+// it — precisely the set writeDependencyDirectives renders as Requires=.
+// The result feeds RenderUnitModeGraph's `dependents` argument.
+//
+// Mirroring Requires= is the whole rule, and it is the rule because
+// Requires= is what creates the strand: a cancelled start job is only ever
+// left behind for an edge strong enough to cancel it. softdep never
+// cancels anything, so it needs no inverse — and giving it one would be
+// self-contradictory, dragging up a service the manifest called optional.
+//
+// Two degeneracies are dropped rather than rendered:
+//   - a SELF-EDGE, which would emit a unit that names itself;
+//   - an edge naming a service absent from this module's set, which has no
+//     unit to carry the directive (topoSort tolerates the same case).
+func recoveryDependents(services []manifest.Service) map[string][]string {
+	if len(services) == 0 {
+		return nil
+	}
+	present := make(map[string]bool, len(services))
+	for _, s := range services {
+		present[s.Name] = true
+	}
+	out := make(map[string][]string, len(services))
+	for _, s := range services {
+		seen := make(map[string]bool)
+		for _, e := range s.ResolvedDependencyEdges() {
+			if e.Kind == manifest.DependencyKindSoftdep {
+				continue
+			}
+			if e.Service == s.Name || !present[e.Service] || seen[e.Service] {
+				continue
+			}
+			seen[e.Service] = true
+			out[e.Service] = append(out[e.Service], s.Name)
+		}
+	}
+	for name := range out {
+		sort.Strings(out[name])
+	}
+	return out
 }
 
 // writeUnitList writes "<directive><space-joined sorted units>\n", or
@@ -544,7 +668,7 @@ func writeUnitList(b *strings.Builder, directive string, units []string) {
 // verbatim-body + appended-blocks is valid. No [Install] section is
 // appended — the body carries its own WantedBy=, and appending a
 // second [Install] section would be redundant at best.
-func renderUnitBodyMode(svc manifest.Service, moduleID string, mode RootMode) string {
+func renderUnitBodyMode(svc manifest.Service, moduleID string, mode RootMode, dependents []string) string {
 	var b strings.Builder
 	b.WriteString("# Managed by powernode-agent — DO NOT EDIT.\n")
 	b.WriteString(svc.UnitBody)
@@ -552,9 +676,9 @@ func renderUnitBodyMode(svc manifest.Service, moduleID string, mode RootMode) st
 		b.WriteString("\n")
 	}
 
-	if edges := svc.ResolvedDependencyEdges(); len(edges) > 0 {
+	if edges := svc.ResolvedDependencyEdges(); len(edges) > 0 || len(dependents) > 0 {
 		b.WriteString("\n[Unit]\n")
-		writeDependencyDirectives(&b, moduleID, edges)
+		writeDependencyDirectives(&b, moduleID, edges, dependents)
 	}
 
 	if mode == RootModeChroot {

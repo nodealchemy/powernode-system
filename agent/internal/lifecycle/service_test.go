@@ -583,7 +583,7 @@ func TestWriteDependencyDirectives_PerKind(t *testing.T) {
 	rendered := make(map[string]string, len(cases))
 	for _, tc := range cases {
 		var b strings.Builder
-		writeDependencyDirectives(&b, "mod-1", []manifest.DependencyEdge{{Service: "dep", Kind: tc.kind}})
+		writeDependencyDirectives(&b, "mod-1", []manifest.DependencyEdge{{Service: "dep", Kind: tc.kind}}, nil)
 		if got := b.String(); got != tc.want {
 			t.Errorf("kind %q rendered:\n%q\nwant:\n%q", tc.kind, got, tc.want)
 		}
@@ -609,7 +609,7 @@ func TestWriteDependencyDirectives_MixedKinds(t *testing.T) {
 		{Service: "bravo", Kind: manifest.DependencyKindStartBefore},
 		{Service: "alpha", Kind: manifest.DependencyKindSoftdep},
 		{Service: "charlie", Kind: manifest.DependencyKindRequiresHealth},
-	})
+	}, nil)
 	want := "After=powernode-m-alpha.service powernode-m-bravo.service powernode-m-charlie.service powernode-m-zeta.service\n" +
 		"Requires=powernode-m-bravo.service powernode-m-charlie.service\n" +
 		"Wants=powernode-m-alpha.service powernode-m-zeta.service\n"
@@ -624,7 +624,7 @@ func TestWriteDependencyDirectives_MixedKinds(t *testing.T) {
 // learned must not silently downgrade a necessity guarantee.
 func TestWriteDependencyDirectives_UnknownKindIsStrict(t *testing.T) {
 	var b strings.Builder
-	writeDependencyDirectives(&b, "m", []manifest.DependencyEdge{{Service: "dep", Kind: "some_future_kind"}})
+	writeDependencyDirectives(&b, "m", []manifest.DependencyEdge{{Service: "dep", Kind: "some_future_kind"}}, nil)
 	want := "After=powernode-m-dep.service\nRequires=powernode-m-dep.service\n"
 	if got := b.String(); got != want {
 		t.Errorf("unknown kind rendered:\n%q\nwant strict:\n%q", got, want)
@@ -765,5 +765,164 @@ func TestRenderUnitMode_UnitBodyMixedKinds(t *testing.T) {
 		"Wants=powernode-mod-abc-telemetry.service\n"
 	if !strings.Contains(got, wantBlock) {
 		t.Errorf("unit_body path did not honour dependency kinds.\nwant appended block:\n%q\ngot unit:\n%s", wantBlock, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Recovery inversion (IMP-4e0f282bb9f0).
+//
+// Requires= cancels the dependent's start job when the dependency fails; it
+// never re-runs it when the dependency later succeeds. Closing that needs a
+// directive on the DEPENDENCY unit naming its dependents. These tests pin the
+// inverted edge; the executed proof that the directive actually recovers a
+// stranded dependent lives in TestSystemdHarness_RecoveryProperty.
+// ---------------------------------------------------------------------------
+
+// TestRecoveryDependents_MirrorsRequires pins the inversion rule: a
+// service is pulled up by exactly those of its dependents that declared a
+// NECESSITY edge on it — the same set writeDependencyDirectives renders as
+// Requires=. softdep is excluded in both directions.
+func TestRecoveryDependents_MirrorsRequires(t *testing.T) {
+	services := []manifest.Service{
+		{Name: "bootstrap"},
+		{Name: "mcp-proxy", DependencyEdges: []manifest.DependencyEdge{
+			{Service: "bootstrap", Kind: manifest.DependencyKindStartBefore},
+		}},
+		{Name: "credential", DependencyEdges: []manifest.DependencyEdge{
+			{Service: "bootstrap", Kind: manifest.DependencyKindRequiresHealth},
+		}},
+		{Name: "telemetry", DependencyEdges: []manifest.DependencyEdge{
+			{Service: "bootstrap", Kind: manifest.DependencyKindSoftdep},
+		}},
+		{Name: "futuristic", DependencyEdges: []manifest.DependencyEdge{
+			{Service: "bootstrap", Kind: "some_future_kind"},
+		}},
+	}
+	got := recoveryDependents(services)
+	want := []string{"credential", "futuristic", "mcp-proxy"}
+	if strings.Join(got["bootstrap"], ",") != strings.Join(want, ",") {
+		t.Errorf("bootstrap dependents: want %v, got %v", want, got["bootstrap"])
+	}
+	if len(got["telemetry"]) != 0 {
+		t.Errorf("softdep target must not be pulled up: got %v", got["telemetry"])
+	}
+}
+
+// TestRecoveryDependents_SelfEdgeAndUnknownTarget guards the two graph
+// degeneracies. A self-edge would render a unit that pulls in itself; a
+// dependency naming a service absent from the module's set has no unit to
+// carry the directive (topoSort already tolerates it — service.go:626-632).
+func TestRecoveryDependents_SelfEdgeAndUnknownTarget(t *testing.T) {
+	services := []manifest.Service{
+		{Name: "loop", DependencyEdges: []manifest.DependencyEdge{
+			{Service: "loop", Kind: manifest.DependencyKindStartBefore},
+		}},
+		{Name: "orphan", DependencyEdges: []manifest.DependencyEdge{
+			{Service: "not-in-this-module", Kind: manifest.DependencyKindStartBefore},
+		}},
+	}
+	got := recoveryDependents(services)
+	if len(got["loop"]) != 0 {
+		t.Errorf("self-edge must not pull the service up by itself: got %v", got["loop"])
+	}
+	if len(got["not-in-this-module"]) != 0 {
+		t.Errorf("absent dependency target must not gain an entry: got %v", got)
+	}
+}
+
+// TestRenderUnitModeGraph_DependencyCarriesRecoveryWants is the rendering
+// half of the outage fix: the DEPENDENCY's unit names its dependents so a
+// dependency that fails and self-heals pulls them back up.
+func TestRenderUnitModeGraph_DependencyCarriesRecoveryWants(t *testing.T) {
+	got := RenderUnitModeGraph(
+		manifest.Service{Name: "bootstrap", StartCommand: "/bin/true"},
+		"mod-1", RootModeNative,
+		[]string{"mcp-proxy", "credential"},
+	)
+	want := "Wants=powernode-mod-1-credential.service powernode-mod-1-mcp-proxy.service\n"
+	if !strings.Contains(got, want) {
+		t.Errorf("dependency unit missing recovery Wants=.\nwant: %q\ngot:\n%s", want, got)
+	}
+}
+
+// TestRenderUnitModeGraph_MergesWithOutgoingSoftdep pins that a service
+// which is BOTH the target of a necessity edge and the source of a softdep
+// edge emits ONE sorted Wants= line carrying both.
+func TestRenderUnitModeGraph_MergesWithOutgoingSoftdep(t *testing.T) {
+	svc := manifest.Service{
+		Name: "middle", StartCommand: "/bin/true",
+		DependencyEdges: []manifest.DependencyEdge{
+			{Service: "telemetry", Kind: manifest.DependencyKindSoftdep},
+		},
+	}
+	got := RenderUnitModeGraph(svc, "m", RootModeNative, []string{"top"})
+	want := "Wants=powernode-m-telemetry.service powernode-m-top.service\n"
+	if !strings.Contains(got, want) {
+		t.Errorf("outgoing softdep and recovery dependents must merge into one Wants=.\nwant: %q\ngot:\n%s", want, got)
+	}
+	if strings.Count(got, "\nWants=") != 1 {
+		t.Errorf("expected exactly one Wants= line, got %d:\n%s", strings.Count(got, "\nWants="), got)
+	}
+}
+
+// TestRenderUnitModeGraph_UnitBodyDependencyCarriesRecoveryWants covers the
+// renderUnitBodyMode path (service.go:557). The dev-cell bootstrap/mcp-proxy
+// pair that stranded on 2026-08-31 are BOTH unit_body services, so a fix that
+// skipped this path would miss the actual outage.
+func TestRenderUnitModeGraph_UnitBodyDependencyCarriesRecoveryWants(t *testing.T) {
+	svc := manifest.Service{
+		Name:     "bootstrap",
+		UnitBody: "[Unit]\nDescription=x\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n",
+	}
+	got := RenderUnitModeGraph(svc, "mod-abc", RootModeNative, []string{"mcp-proxy"})
+	want := "Wants=powernode-mod-abc-mcp-proxy.service\n"
+	if !strings.Contains(got, want) {
+		t.Errorf("unit_body dependency unit missing recovery Wants=.\nwant: %q\ngot:\n%s", want, got)
+	}
+}
+
+// TestAttachServicesMode_DependencyUnitCarriesRecoveryWants proves the
+// inversion is actually WIRED into the live attach path, not merely
+// available on the renderer. A rendering helper nothing calls would leave
+// the fleet exactly as stranded as before.
+func TestAttachServicesMode_DependencyUnitCarriesRecoveryWants(t *testing.T) {
+	dir := setUnitDir(t)
+	services := []manifest.Service{
+		{Name: "bootstrap", StartCommand: "/bin/true"},
+		{Name: "mcp-proxy", StartCommand: "/bin/true", DependencyEdges: []manifest.DependencyEdge{
+			{Service: "bootstrap", Kind: manifest.DependencyKindStartBefore},
+		}},
+	}
+	if _, err := AttachServicesMode(context.Background(), &mount.RecorderRunner{}, "mod-1", services, RootModeNative); err != nil {
+		t.Fatalf("AttachServicesMode: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, UnitName("mod-1", "bootstrap")))
+	if err != nil {
+		t.Fatalf("read bootstrap unit: %v", err)
+	}
+	if !strings.Contains(string(body), "Wants=powernode-mod-1-mcp-proxy.service\n") {
+		t.Errorf("attached bootstrap unit missing recovery Wants=:\n%s", body)
+	}
+}
+
+// TestAttachServicesNative_DependencyUnitCarriesRecoveryWants is the same
+// wiring assertion for the offline-enable (pivot_root) path.
+func TestAttachServicesNative_DependencyUnitCarriesRecoveryWants(t *testing.T) {
+	sysroot := t.TempDir()
+	services := []manifest.Service{
+		{Name: "bootstrap", StartCommand: "/bin/true"},
+		{Name: "mcp-proxy", StartCommand: "/bin/true", DependencyEdges: []manifest.DependencyEdge{
+			{Service: "bootstrap", Kind: manifest.DependencyKindStartBefore},
+		}},
+	}
+	if _, err := AttachServicesNative(context.Background(), &mount.RecorderRunner{}, "mod-1", services, sysroot); err != nil {
+		t.Fatalf("AttachServicesNative: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(sysroot, "etc", "systemd", "system", UnitName("mod-1", "bootstrap")))
+	if err != nil {
+		t.Fatalf("read bootstrap unit: %v", err)
+	}
+	if !strings.Contains(string(body), "Wants=powernode-mod-1-mcp-proxy.service\n") {
+		t.Errorf("native-attached bootstrap unit missing recovery Wants=:\n%s", body)
 	}
 }

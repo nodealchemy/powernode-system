@@ -202,12 +202,25 @@ Two cautions when reaching for `softdep`:
   service will let this service start after the target **failed**. Do not use
   it for an edge that stages credentials or other material this service needs
   — that is what `start_before` is for.
-- **Neither kind expresses recovery.** `Requires=` cancels this service's
-  start job if the target fails, and systemd does not re-run the cancelled
-  job when the target later succeeds. A dependency that fails and then
-  self-heals leaves its hard dependents stopped until something restarts
-  them. Expressing that needs `Upholds=` on the *target*, which the agent
-  does not yet emit.
+- **Recovery is expressed on the TARGET, and only for the strict kinds.**
+  `Requires=` cancels this service's start job if the target fails, and
+  systemd does not re-run the cancelled job when the target later succeeds.
+  The agent closes that by inverting the graph: a service that is the target
+  of a `start_before` or `requires_health` edge gets `Wants=<dependent>` on
+  its own unit, so when it recovers via a start job it pulls its dependents
+  back up (`lifecycle.recoveryDependents`). A `softdep` target gets no such
+  line — an optional dependency must not drag its dependent up.
+
+  Two consequences worth knowing before you declare a strict edge:
+
+  - Starting the target now also starts its dependents, even if you only
+    asked for the target.
+  - Recovery is tied to the target's *start job*, not held continuously. If a
+    dependent dies on its own while the target stays up, nothing revives it;
+    that is the dependent's own `Restart=`/`StartLimit*` business. (The agent
+    deliberately does not use `Upholds=` here: it is a continuous want, which
+    makes the dependent un-stoppable on its own and re-tries a
+    `Condition*=`-gated dependent about twice a second forever.)
 
 ## Idempotency and Deletion
 
