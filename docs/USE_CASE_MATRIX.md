@@ -21,6 +21,46 @@ This matrix exists because the platform's auto-registration plumbing is **bimoda
 | 9 | Pod-to-pod traffic encrypted via SDWAN | `persistent` | `k3s-*` | ✅ Works (opt-in) | Set `pod_subnet_prefix` on the `Sdwan::Network`; flannel host-gw over WireGuard (shipped 2026-05-19). Default (null) = plain VXLAN on host NIC |
 | 10 | Workload-image CVE coverage | any | any | ❌ Not yet | CVE response covers NodeModules only; container images invisible |
 
+### How `lifecycle_class` is actually set
+
+The `lifecycle_class` column above is the class a use case *wants*. It is not a
+knob an operator turns. `system_nodes.lifecycle_class` defaults to `persistent`
+(NOT NULL, CHECK `persistent|ephemeral|spot`), and the only surface that makes a
+Node anything else is a `System::InstancePool`.
+
+| Withdrawn claim | What is actually true |
+|---|---|
+| "Set `Node.lifecycle_class` via the UI or MCP" | No API surface accepts it. `system_create_node` declares eight parameters and `system_update_node` nine (eight mutable attributes plus the `node_id` selector); `lifecycle_class` is not among either; REST `node_params` (`nodes_controller.rb:96`) permits `name, description, enabled, node_template_id, worker_id, public_address, allocate_public_ip, ssh_key, ssh_host_key, config`, and create and update share that ONE list — so "not settable at create" and "not changeable later" are the same fact. Undeclared MCP keys are dropped without an error, so the wrong call succeeds. |
+| "`Node.update!(lifecycle_class: ...)` from the Rails console" | Succeeds at the DB level and changes no observable anywhere. |
+| "Read it back to confirm" | Nothing emits it. `serialize_node` returns `id, name, template_id, worker_id, ssh_key_fingerprint, ssh_key_type, enabled, created_at`; `serialize_node_full` adds four more, none of them this. No serializer under `server/app/serializers/` mentions the column. |
+| "Filter a node listing by `lifecycle_class`" | `system_list_nodes` declares exactly one parameter, `template_id`, and `list_nodes` has exactly one where-clause. A filter key you pass is dropped silently and you get the unfiltered list back with no error. |
+| "It is unset until you set it" | It is `persistent` on every Node by DB default. |
+
+**The one path that sets it to anything else**:
+`System::InstancePoolService#provision_warming_member!`
+(`instance_pool_service.rb:1190-1196`) creates each pool member's Node with
+`lifecycle_class: pool.lifecycle_class`, and `System::InstancePool` is
+CHECK-constrained to `ephemeral|spot` — so a pool member is never `persistent`,
+and a Node that no pool created is never anything else. That path runs unattended:
+`System::InstancePoolReplenisherJob` is a 60s cron over every active/draining
+pool. (`PlatformDeploymentOrchestrator` also writes the column explicitly, but
+writes `"persistent"` — the default — so it moves nothing. The
+`example_multi_tenant` dev seed writes it directly too, and also defaults to
+`persistent`. Neither is an operator path.)
+
+**Nothing reads it.** No consumer of a *Node's* `lifecycle_class` exists in
+`server/`, `extensions/`, `worker/` or the Go agent; the agent bootstrap
+short-circuit it was added for is still unimplemented. The same-named columns on
+`system_instance_pools` (`ephemeral|spot`, default `ephemeral`) and
+`system_node_instances` (nullable, carries `task_scoped`) are DIFFERENT fields
+with different value sets — the code has already tripped over that.
+
+So: to get ephemeral or spot Nodes, create a `System::InstancePool` with that
+`lifecycle_class` (`system_create_instance_pool`) and take members from it
+(`system_acquire_pooled_instance`). There is no other route, and no route that
+changes an observable on a Node that already exists — a direct `update!` writes
+the column and nothing else.
+
 ## Detailed Walkthroughs
 
 ### Use Case 1 — Long-lived edge gateway / SaaS tenant ✅
@@ -36,7 +76,9 @@ platform.system_provision_instance({
   provider_instance_type_id: "<type>"
 })
 // Then via UI or MCP:
-// - Set Node.lifecycle_class = "persistent" (default)
+// - WITHDRAWN: "Set Node.lifecycle_class = persistent". There is no UI or MCP
+//   surface that accepts it, and persistent is already the DB default, so
+//   there is nothing to do. See "How lifecycle_class is actually set" above.
 // - Attach Sdwan::Peer
 // - Assign docker-engine module
 ```
@@ -59,7 +101,7 @@ platform.system_provision_instance({
 **Setup**:
 ```javascript
 // 1. Provision 1 NodeInstance for control plane
-//    - lifecycle_class: persistent (default)
+//    - lifecycle_class: persistent (DB default — not settable, nothing to do)
 //    - Attach SDWAN
 //    - Assign k3s-server module
 // 2. Wait ~90s for cluster bootstrap
@@ -138,8 +180,15 @@ platform.system_assign_module_to_template({
 
 **Setup**:
 ```javascript
-// Set lifecycle_class on the Node before provisioning
+// WITHDRAWN — "Set lifecycle_class on the Node before provisioning":
 //   Node.update!(lifecycle_class: "ephemeral")
+// succeeds at the DB level and changes nothing. No API surface accepts the
+// field, nothing reads a Node's copy of it, and no serializer returns it.
+// To get ephemeral Nodes: create an InstancePool with
+// lifecycle_class: "ephemeral" via system_create_instance_pool, then take
+// members with system_acquire_pooled_instance — which is the pre-warmed pool
+// this section already recommends below, and the only route there is.
+// See "How lifecycle_class is actually set" above.
 // Provision 50 instances; each takes ~90s to be ready
 // Run jobs across the fleet
 // Terminate via system_terminate_instance — DockerHost rows + TLS material
@@ -154,7 +203,7 @@ platform.system_assign_module_to_template({
 - 90s × 50 = 75 minutes of cumulative bootstrap latency. For short batches, this dominates total runtime.
 - **Workaround**: pre-bake a NodePlatform disk image with `docker-ce` already installed (Phase 1 disk image CI). Then bootstrap drops to ~30s.
 - **Mitigation shipped (slice 7)**: pre-warmed instance pool — `System::InstancePool` keeps N warming/ready instances ready for atomic acquisition. Operators acquire via `system_acquire_pooled_instance` MCP action in <30s instead of 5-10min cold provision. Reaper auto-replenishes as members are claimed. See `system_create_instance_pool`, `system_acquire_pooled_instance`, `system_drain_instance_pool`.
-- `lifecycle_class=ephemeral` is the right hint to the agent, but the agent reconciler short-circuit (skip expensive bootstrap) is **not yet implemented** — column exists, behavior change pending.
+- WITHDRAWN — "`lifecycle_class=ephemeral` is the right hint to the agent". It is not a hint to anything: `lifecycle_class` appears nowhere under `agent/` and no node-facing payload carries it, so the value never leaves the database. The agent reconciler short-circuit (skip expensive bootstrap) it was added for is **not yet implemented** — column exists, behavior change pending, and no channel to deliver it if it shipped.
 
 ### Use Case 5 — CI runner pool ⚠️
 
@@ -187,12 +236,17 @@ platform.system_assign_module_to_template({
 **Setup**:
 ```
 Server NodeInstance:
-  Node.lifecycle_class = "persistent"
+  Node.lifecycle_class = "persistent"   # DB default — nothing to set
   Module: k3s-server
 
 Worker NodeInstances (N varies):
+  # WITHDRAWN as an instruction — this is what a pool member ends up carrying,
+  # not something you assign. Only an InstancePool produces it; see "How
+  # lifecycle_class is actually set" above.
   Node.lifecycle_class = "ephemeral"
   Module: k3s-agent
+  # WITHDRAWN — stored, never delivered. Nothing on the agent reads it and the
+  # join always carries an empty target. See Use Case 3.
   metadata.target_cluster_id = "<the-cluster-id>"
 ```
 
@@ -262,6 +316,15 @@ Will this instance be alive for >24 hours?
             tmpfs_store: true
             Reapers prune bookkeeping aggressively
 ```
+
+**Reading the tree**: it maps a use case to a class, not a setting you apply.
+`persistent` is what a Node has by doing nothing; `ephemeral` and `spot` reach a
+Node only because a `System::InstancePool` with that `lifecycle_class` created
+it. `tmpfs_store` is in the SAME position and the tree should not be read as setting
+it either: no MCP verb or REST parameter accepts it, `System::Node#enable_tmpfs!`
+/ `#disable_tmpfs!` (`node.rb:81-87`) are called only from specs, and its one
+non-spec writer is a smoke seed writing the default `false`. See "How
+`lifecycle_class` is actually set" above.
 
 ## How the System Concierge Should Use This
 

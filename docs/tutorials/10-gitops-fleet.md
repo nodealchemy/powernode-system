@@ -161,8 +161,35 @@ sdwan:
           failover_holders: [edge-tokyo-02, edge-london-01]
 ```
 
-**Expected outcome:** YAML validates locally (run a YAML linter; full
-schema docs in [`../runbooks/gitops-reconciliation.md`](../runbooks/gitops-reconciliation.md)).
+> **Schema note — this example is illustrative and does NOT validate as
+> written.** `System::Gitops::DesiredStateValidator` allows exactly seven
+> top-level keys (templates, assignments, modules, provider_configs, pools,
+> platforms, fleet) and reports every other one as an "unknown top-level key".
+> Four of the five keys above are rejected: `version:`, `account:`, `nodes:`
+> and `sdwan:`. The `templates` section is also rejected, because the validator
+> requires a mapping of name → attributes rather than the list form shown here.
+> The validator collects every error, and `DesiredStateParser#parse!` then
+> returns `ok?: false`, so a sync of this file computes no diff and applies
+> NOTHING. The errors are loud, not silent — but they abort the whole sync
+> rather than skipping the unsupported sections.
+>
+> The `nodes` block in particular is not a thing GitOps can express: there is
+> no `node` kind. `ApplyService#apply_diff` dispatches template, module,
+> assignment, pool, platform and provider_config, and raises
+> `UnsupportedDiffError` for any other kind carrying a real change (a diff whose
+> `change` is `informational` is passed through regardless of kind, but
+> `DiffEngine` never emits one for `node`). `DiffEngine` computes diffs for only
+> templates, assignments, modules, pools, platforms and provider_configs.
+> A Node's `lifecycle_class` is not GitOps-declarable at all — nor settable
+> through any other API surface; it reaches a Node only via a
+> `System::InstancePool`, which GitOps DOES express as its `pools` kind. See
+> [`../USE_CASE_MATRIX.md`](../USE_CASE_MATRIX.md) §"How `lifecycle_class` is
+> actually set".
+
+**Expected outcome:** the file parses as YAML, but see the schema note above
+before syncing it — the platform's own schema is narrower than this example
+(full schema docs in
+[`../runbooks/gitops-reconciliation.md`](../runbooks/gitops-reconciliation.md)).
 
 ## Step 2 — Register the GitOps repo
 

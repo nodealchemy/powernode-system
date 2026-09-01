@@ -61,7 +61,7 @@ latency or cost matters more.
 
 | Requirement | How |
 |---|---|
-| A NodeTemplate configured for ephemeral instances (`lifecycle_class: ephemeral`) with a runtime module assigned (e.g. `docker-engine`) | Tutorial 02 + Tutorial 03 |
+| A NodeTemplate for the instances the pool will create (`lifecycle_class` is NOT a NodeTemplate field — it lives on the pool, and the pool stamps it onto each member Node) with a runtime module assigned (e.g. `docker-engine`) | Tutorial 02 + Tutorial 03 |
 | Provider quota for ≥10 instances of the chosen instance type | Check provider quota dashboard |
 | Operator permission `system.instance_pool_manage` | Default for admins |
 

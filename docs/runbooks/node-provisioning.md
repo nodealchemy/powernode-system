@@ -206,7 +206,7 @@ platform.system_get_instance({ instance_id: "<instance-id>" })
 // → { instance: { status: "provisioning", task_id, last_heartbeat_at: null, ... } }
 
 // To watch task progress, list current tasks for the instance and read the matching row:
-platform.system_list_tasks({ resource_type: "system_node_instance", resource_id: "<instance-id>" })
+platform.system_list_tasks({ instance_id: "<instance-id>" })
 // (or fetch a single row directly: platform.system_get_task({ id: "<task-id>" }))
 ```
 

@@ -12,10 +12,21 @@ module System
     SSH_KEY_TYPES = %w[ed25519 rsa].freeze
     RSA_KEY_BITS = 2048
 
-    # Phase 2.5 hardening — lifecycle_class disambiguates "long-lived
-    # vs ephemeral" so the platform + agent can short-circuit
-    # expensive bootstrap for short-lived instances. See migration
-    # 20260505000500_add_lifecycle_class_to_system_nodes.rb.
+    # Phase 2.5 hardening — lifecycle_class was added to disambiguate
+    # "long-lived vs ephemeral" so the platform + agent COULD short-circuit
+    # expensive bootstrap for short-lived instances. That short-circuit is
+    # still unimplemented: nothing in server/, extensions/, worker/ or the Go
+    # agent reads a Node's lifecycle_class, and no node-facing payload carries
+    # it. The column is written by InstancePoolService (each pool member gets
+    # pool.lifecycle_class) and by PlatformDeploymentOrchestrator (the default,
+    # "persistent"); no API surface accepts it. See docs/USE_CASE_MATRIX.md
+    # "How lifecycle_class is actually set".
+    #
+    # The column is created in db/migrate/20250101000009_system_baseline.rb
+    # (system_nodes). This comment previously cited
+    # 20260505000500_add_lifecycle_class_to_system_nodes.rb, which does not
+    # exist in db/migrate/ — the standalone migration was folded into the
+    # baseline.
     LIFECYCLE_CLASSES = %w[persistent ephemeral spot].freeze
     validates :lifecycle_class, inclusion: { in: LIFECYCLE_CLASSES }, allow_nil: false
 
