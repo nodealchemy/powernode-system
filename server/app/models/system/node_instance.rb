@@ -896,31 +896,35 @@ module System
     # "cloud_init" boots a full guest OS and composes the union under a
     # chrootable RootDirectory, which the on-node reconcile loop CAN
     # remount live. An unset boot_mode is not a third value — it means no
-    # one resolved it; see #pivot_boot? for why that is not benign.
+    # one resolved it; see #resolved_boot_mode for why that is not benign.
     PIVOT_BOOT_MODES = %w[direct_kernel uefi_disk].freeze
 
-    # True when this instance was provisioned with a pivot boot_mode.
+    # How the boot mode this instance was provisioned with is resolved —
+    # documenting both #resolved_boot_mode and the #pivot_boot? predicate over
+    # it, which share the one resolution below.
     #
     # The instance's OWN config["boot_mode"] is authoritative: ProvisioningService
     # resolves the effective boot mode at spawn (an explicit options[:boot_mode]
     # first, else the template's config["boot_mode"]) and stamps the value it
     # hands the provider onto this row. Re-deriving it from the template — as
-    # this did before IMP-831a81e02d25 — gets the override case backwards: an
+    # #pivot_boot? did before IMP-831a81e02d25 — gets the override case
+    # backwards: an
     # instance spawned direct_kernel by a spawn option on a template declaring
     # no boot_mode read back false.
     #
     # The template lookup is the FALLBACK, and it is not vestigial: rows
-    # provisioned before the stamp existed carry no key, and so do rows that
-    # never went through ProvisioningService at all (the bare-metal claim seed,
-    # a direct POST to NodeInstancesController#create). All of those keep
-    # exactly the answer they had. The stamp is also not durable against a
+    # provisioned before the stamp existed carry no key, and neither does a row
+    # that never went through ProvisioningService at all (the bare-metal claim
+    # seed builds one with no config; NodeInstancesController#create builds from
+    # a caller-supplied document, which MAY carry the key but is under no
+    # obligation to). All of those keep exactly the answer they had. The stamp is also not durable against a
     # caller-supplied whole `config` document — NodeInstancesController#update
     # permits `config: {}` and assigns it wholesale, so a PUT omitting the key
     # drops the stamp back to the fallback. That is the pre-existing
     # shared-document hazard System::ConfigDocument describes, not something
     # this predicate can fix.
     #
-    # Unset still resolves to false. That is NOT the "safe" default this comment
+    # Unset still answers false through #pivot_boot?. That is NOT the "safe" default this comment
     # used to call it — it is UNRESOLVED, and its error direction is the unsafe
     # one. When neither the options nor the template declare a boot mode, each
     # adapter applies its own (cloud_init for ProxmoxProvider, direct_kernel for
@@ -939,16 +943,33 @@ module System
     # RemediationValidator; this note only records the error direction, so the
     # unset default is not mistaken for a decision. Making the adapter defaults
     # observable is out of scope here.
-    def pivot_boot?
+    #
+    # IMP-b2e745dbdbbb — why the resolution above is a NAMED method rather than
+    # #pivot_boot?'s private business: System::Compliance::RcpInvariantScanner
+    # needs the resolved MODE STRING, not the boolean (it hands it to
+    # BootPathInvariantCheck and reports it in the finding), and was deriving
+    # it from the template alone — reintroducing, in the compliance verdict,
+    # the exact override bug IMP-831a81e02d25 fixed here. Two derivations of
+    # one answer is how the two answers drift, so the scanner calls this.
+    #
+    # #resolved_boot_mode returns nil (NOT "cloud_init") when neither source
+    # declares a mode. That case is UNRESOLVED, not cloud_init: per the note
+    # above, each adapter applies its own default and reports nothing back, so
+    # naming one here would assert a guess as fact. A caller that needs a displayable default
+    # applies its own, and is then visibly the one choosing it.
+    def resolved_boot_mode
       own_config = config
       boot_mode = own_config.is_a?(Hash) ? (own_config["boot_mode"] || own_config[:boot_mode]) : nil
+      return boot_mode if boot_mode.present?
 
-      if boot_mode.blank?
-        tmpl_config = node&.node_template&.config
-        boot_mode = tmpl_config.is_a?(Hash) ? (tmpl_config["boot_mode"] || tmpl_config[:boot_mode]) : nil
-      end
+      tmpl_config = node&.node_template&.config
+      tmpl_config.is_a?(Hash) ? (tmpl_config["boot_mode"] || tmpl_config[:boot_mode]) : nil
+    end
 
-      PIVOT_BOOT_MODES.include?(boot_mode.to_s)
+    # nil.to_s is "", which is not in PIVOT_BOOT_MODES — the unset case still
+    # answers false, exactly as before.
+    def pivot_boot?
+      PIVOT_BOOT_MODES.include?(resolved_boot_mode.to_s)
     end
 
     # Best-effort memory lookup. PUBLIC, like the gpu_* capacity readers above.

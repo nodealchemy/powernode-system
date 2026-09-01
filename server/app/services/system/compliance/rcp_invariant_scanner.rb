@@ -110,7 +110,7 @@ module System
         instances_with_adapter(account).filter_map do |instance, adapter|
           next unless adapter
 
-          boot_mode = boot_mode_for(instance.node)
+          boot_mode = boot_mode_for(instance)
           # A pivot-boot instance always needs SOME identity/enrollment
           # payload to come up at all (see ProxmoxProvider#apply_default_
           # federation_user_data) — conservatively treat payload as present
@@ -204,10 +204,37 @@ module System
         provider_cfg.is_a?(Hash) ? (provider_cfg["default_storage"] || provider_cfg[:default_storage]) : nil
       end
 
-      def boot_mode_for(node)
-        cfg = node&.node_template&.config
-        boot_mode = cfg.is_a?(Hash) ? (cfg["boot_mode"] || cfg[:boot_mode]) : nil
-        boot_mode.presence || "cloud_init"
+      # INV-2 is a PER-INSTANCE verdict, so the boot mode has to be the one
+      # THIS instance was provisioned with — not its template's declaration.
+      # IMP-b2e745dbdbbb: this read the template alone, so an instance spawned
+      # with an explicit options[:boot_mode] against a template declaring a
+      # different one (or none) was scored for a boot mode it never had, in
+      # both directions — a missed pivot-boot violation, or one reported
+      # against a cloud_init instance.
+      #
+      # Delegates to NodeInstance#resolved_boot_mode rather than re-deriving
+      # the precedence here: the model already resolves instance-stamp-first,
+      # template-fallback for #pivot_boot?, and a second copy of that shape is
+      # how the scan's answer and the fleet's answer drift apart — which is the
+      # original defect at one remove. (The template fallback is permanent, not
+      # transitional: a row that never went through ProvisioningService never
+      # receives a stamp from it — the bare-metal claim seed builds one with no
+      # config at all — so the fallback does not age out.)
+      #
+      # The "cloud_init" default is applied HERE, not in the model: an
+      # unresolved boot mode is unresolved (the adapters do not report the
+      # default they applied), and this scanner is the caller choosing how to
+      # score that. Naming cloud_init is both faithful and inert. Faithful:
+      # proxmox is the only provider_type BootPathInvariantCheck examines at
+      # all, and cloud_init is exactly what ProxmoxProvider#create_instance
+      # defaults a boot_mode-less VM-preset params hash to (its LXC preset has
+      # no boot_mode notion, and is out of this check's reach either way).
+      # Inert: the check keys on
+      # PIVOT_BOOT_MODES membership, so any non-pivot string — "cloud_init",
+      # or the "" a nil would produce — yields the same verdict. It is
+      # therefore never a violation reported on a guess.
+      def boot_mode_for(instance)
+        instance.resolved_boot_mode.presence || "cloud_init"
       end
     end
   end

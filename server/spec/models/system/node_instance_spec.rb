@@ -637,6 +637,11 @@ RSpec.describe System::NodeInstance, type: :model do
 
     it 'is false when the template has no boot_mode configured (cloud_init default)' do
       expect(instance.pivot_boot?).to be false
+      # Nothing declared a mode, so nothing is known: #resolved_boot_mode says
+      # nil rather than naming a default it cannot observe (IMP-b2e745dbdbbb).
+      # Pinned here because the scanner's own `|| "cloud_init"` would absorb a
+      # regression to a named default, leaving it invisible there.
+      expect(instance.resolved_boot_mode).to be_nil
     end
 
     it 'is false for an explicit cloud_init boot_mode' do
@@ -679,6 +684,19 @@ RSpec.describe System::NodeInstance, type: :model do
       instance.merge_config!('boot_mode' => 'cloud_init')
 
       expect(instance.pivot_boot?).to be false
+    end
+
+    # IMP-b2e745dbdbbb — the resolution is now the public #resolved_boot_mode,
+    # read by System::Compliance::RcpInvariantScanner as well, so its BLANK
+    # guard is load-bearing past this predicate: an empty stamp is not an
+    # answer and must fall through to the template, not be returned as "".
+    # (Truthiness alone does not do that, and nothing pinned it before.)
+    it 'falls back to the template when the instance recorded a BLANK boot_mode' do
+      node.node_template.update!(config: { 'boot_mode' => 'uefi_disk' })
+      instance.merge_config!('boot_mode' => '')
+
+      expect(instance.resolved_boot_mode).to eq('uefi_disk')
+      expect(instance.pivot_boot?).to be true
     end
 
     # Pre-existing rows carry no stamp and MUST keep the old answer.
