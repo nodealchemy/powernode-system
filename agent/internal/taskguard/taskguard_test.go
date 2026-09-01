@@ -2,6 +2,8 @@ package taskguard
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -73,45 +75,73 @@ func TestAbsPath(t *testing.T) {
 		"leading dotdot":   "/../etc",
 		"dot component":    "/srv/./data",
 		"double separator": "/srv//data",
-		"trailing slash":   "/srv/data/",
 		"newline":          "/srv/data\n/etc *(rw)",
+		// A space is the /etc/exports field separator, so this is two fields
+		// wearing one path's clothes.
+		"space": "/etc 0.0.0.0/0(rw,no_root_squash)",
 	} {
 		mustRefuse(t, name, AbsPath("p", v))
 	}
-	for _, v := range []string{"/srv/exports/data", "/mnt/data", "/var/lib/postgres", "/etc"} {
+	for _, v := range []string{
+		"/srv/exports/data", "/mnt/data", "/var/lib/postgres", "/etc",
+		// One trailing slash is legal under StorageAssignment#mount_path's own
+		// model-level format, so existing rows carry it.
+		"/srv/data/",
+	} {
 		mustAccept(t, v, AbsPath("p", v))
 	}
 }
 
-func TestTargetPathRefusesCriticalRoots(t *testing.T) {
+func TestNamePrefix(t *testing.T) {
+	mustRefuse(t, "no prefix", NamePrefix("unit_name", "persist.mount", "powernode-storage-"))
+	mustRefuse(t, "prefix only", NamePrefix("unit_name", "powernode-storage-", "powernode-storage-"))
+	mustRefuse(t, "empty", NamePrefix("unit_name", "", "powernode-storage-"))
+	mustAccept(t, "prefixed", NamePrefix("unit_name", "powernode-storage-mnt-data.mount", "powernode-storage-"))
+}
+
+func TestTargetPathRefusesHardRoots(t *testing.T) {
+	// hardRoots: refused at, under, and above.
 	for _, v := range []string{
-		"/",
-		"/etc",
-		"/etc/cron.d",
-		"/usr/local/bin",
-		"/sysroot",
-		"/persist/var",
-		"/var/lib/powernode",
-		"/root/.ssh",
-		"/run/sdwan",
+		"/", "/usr", "/usr/local/bin", "/sysroot", "/persist", "/persist/var",
+		"/root", "/root/.ssh", "/run", "/run/sdwan", "/bin/x", "/lib64/y",
 	} {
 		mustRefuse(t, v, TargetPath("mount_path", v))
 	}
+}
 
-	// Ancestor case: mounting here would MASK a critical root beneath it.
-	for _, v := range []string{"/var", "/var/lib"} {
-		mustRefuse(t, "ancestor "+v, TargetPath("mount_path", v))
+func TestTargetPathRefusesMaskingButNotNesting(t *testing.T) {
+	// maskRoots: the root ITSELF and any ancestor of it stay refused...
+	for _, v := range []string{"/", "/etc", "/boot", "/var/lib/powernode", "/var", "/var/lib"} {
+		mustRefuse(t, "masks "+v, TargetPath("mount_path", v))
 	}
-
+	// ...but the subtree is supported configuration and must work.
+	// System::Storage::MountPathInferenceService lists every one of these.
 	for _, v := range []string{
-		"/srv/exports/data",
-		"/mnt/data",
-		"/var/lib/postgres",
-		"/opt/app/data",
-		"/home/svc/share",
+		"/etc/nginx", "/etc/traefik", "/etc/someapp", "/boot/firmware",
+		"/var/lib/powernode/storage/smoke-gateway", "/var/lib/postgres",
+		"/var/www", "/var/log/nginx", "/home/pnadmin/share",
+		"/srv/exports/data", "/mnt/data", "/opt/app/data", "/tmp/scratch",
 	} {
 		mustAccept(t, v, TargetPath("mount_path", v))
 	}
+}
+
+// filepath.Clean does not resolve symlinks, so the textual denylist alone is
+// defeated by any pre-existing link. /var/run is a symlink to /run on every
+// systemd distro, and exportfs/mount both resolve.
+func TestTargetPathResolvesSymlinksBeforeCheckingRoots(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "innocuous")
+	if err := os.Symlink("/run", link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	mustRefuse(t, "symlink into /run", TargetPath("re_export_path", filepath.Join(link, "sdwan")))
+
+	safe := filepath.Join(dir, "real")
+	if err := os.MkdirAll(safe, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	mustAccept(t, "unlinked real dir", TargetPath("re_export_path", filepath.Join(safe, "data")))
 }
 
 func TestIdentifier(t *testing.T) {
@@ -149,6 +179,8 @@ func TestConfigToken(t *testing.T) {
 		"space":        "rw ZZ",
 		"nul":          "rw\x00",
 		"leading dash": "-o",
+		// systemd line continuation: swallows the next directive.
+		"backslash": `rw\`,
 	} {
 		mustRefuse(t, name, ConfigToken("options[0]", v))
 	}
@@ -170,6 +202,26 @@ func TestSecretRefusalNeverEchoesTheValue(t *testing.T) {
 		t.Fatal("Secret refusal echoed the value")
 	}
 	mustAccept(t, "ordinary password", Secret("password", "s3cret-pass"))
+}
+
+// PeerAddress is NOT IPAddress, and the difference is load-bearing:
+// Sdwan::PrefixAllocator.compose_address_128 stamps a /128 on every peer
+// address, so the CIDR form is the ONLY form a real storage.exports.apply task
+// ever carries.
+func TestPeerAddress(t *testing.T) {
+	for name, v := range map[string]string{
+		"empty":    "",
+		"wildcard": "*",
+		"comment":  "* # ",
+		"hostname": "peer.example",
+		"newline":  "fd00::1\n/ *(rw,no_root_squash)",
+		"garbage":  "fd00::1/notanumber",
+	} {
+		mustRefuse(t, name, PeerAddress("peer_ip", v))
+	}
+	for _, v := range []string{"fd00::abcd/128", "fd00::1", "10.125.0.227", "10.0.0.0/24", "::1"} {
+		mustAccept(t, v, PeerAddress("peer_ip", v))
+	}
 }
 
 func TestIPAddress(t *testing.T) {
@@ -207,12 +259,19 @@ func TestPlatformPath(t *testing.T) {
 	// transport.Client concatenates PlatformURL + path, so anything that does
 	// not begin with "/" lands in the authority component.
 	for name, v := range map[string]string{
-		"empty":             "",
-		"userinfo splice":   "@example.invalid/collect",
-		"scheme":            "https://example.invalid/collect",
+		"empty":           "",
+		"userinfo splice": "@example.invalid/collect",
+		"scheme":          "https://example.invalid/collect",
+		// "//" is refused by the canonical rule, which Clean collapses to a
+		// single slash — there is no separate protocol-relative guard.
 		"protocol relative": "//example.invalid/collect",
 		"bare relative":     "api/v1/x",
 		"newline":           "/api/v1/x\nHost: evil",
+		// Stays on the platform origin but reaches an endpoint no producer
+		// names.
+		"traversal": "/api/v1/../../x",
+		"query":     "/api/v1/x?y=1",
+		"fragment":  "/api/v1/x#z",
 	} {
 		mustRefuse(t, name, PlatformPath("callback_path", v))
 	}
@@ -228,13 +287,15 @@ func TestHTTPMethodAndEndpoint(t *testing.T) {
 	for name, v := range map[string]string{
 		"empty":   "",
 		"delete":  "DELETE",
-		"post":    "POST",
+		"patch":   "PATCH",
 		"unknown": "ZZDESTROY",
 		"lower":   "get",
 	} {
 		mustRefuse(t, name, HTTPMethod("method", v))
 	}
-	for _, v := range []string{"GET", "HEAD", "OPTIONS"} {
+	// Mirrors System::ModuleService::HEALTH_METHODS exactly — a manifest may
+	// legitimately declare a POST or PUT health check.
+	for _, v := range []string{"GET", "POST", "PUT"} {
 		mustAccept(t, v, HTTPMethod("method", v))
 	}
 
@@ -257,22 +318,48 @@ func TestHTTPMethodAndEndpoint(t *testing.T) {
 	}
 }
 
+// HealthEndpoint is the rule the probe actually uses, and it is wider than
+// HTTPEndpoint on purpose: every shipped manifest declares a RELATIVE path.
+func TestHealthEndpoint(t *testing.T) {
+	for name, v := range map[string]string{
+		"empty":        "",
+		"leading dash": "-ZZ-not-a-url",
+		"file scheme":  "file:///etc/shadow",
+		"gopher":       "gopher://127.0.0.1:11211/x",
+		"no scheme":    "127.0.0.1:8080/healthz",
+		"traversal":    "/../../etc/shadow",
+		"newline":      "/up\nZZ",
+	} {
+		mustRefuse(t, name, HealthEndpoint("endpoint", v))
+	}
+	// extensions/system/modules/*/manifest.yaml — the whole shipped set.
+	for _, v := range []string{
+		"/up", "/health", "/metrics", "/ping", "/",
+		"http://127.0.0.1:8080/healthz",
+	} {
+		mustAccept(t, v, HealthEndpoint("endpoint", v))
+	}
+}
+
 // The absent-field case, pinned separately: every rule fails CLOSED on an
 // empty value. A validator that silently accepts "" is how a crafted payload
 // reaches a default that was never reviewed.
 func TestEveryRuleRefusesTheEmptyValue(t *testing.T) {
 	rules := map[string]func(string, string) error{
-		"UnitName":     func(f, v string) error { return UnitName(f, v, ".mount") },
-		"AbsPath":      AbsPath,
-		"TargetPath":   TargetPath,
-		"Identifier":   Identifier,
-		"ConfigToken":  ConfigToken,
-		"Secret":       Secret,
-		"IPAddress":    IPAddress,
-		"Host":         Host,
-		"PlatformPath": PlatformPath,
-		"HTTPMethod":   HTTPMethod,
-		"HTTPEndpoint": HTTPEndpoint,
+		"UnitName":       func(f, v string) error { return UnitName(f, v, ".mount") },
+		"AbsPath":        AbsPath,
+		"TargetPath":     TargetPath,
+		"Identifier":     Identifier,
+		"ConfigToken":    ConfigToken,
+		"Secret":         Secret,
+		"IPAddress":      IPAddress,
+		"Host":           Host,
+		"PlatformPath":   PlatformPath,
+		"HTTPMethod":     HTTPMethod,
+		"HTTPEndpoint":   HTTPEndpoint,
+		"HealthEndpoint": HealthEndpoint,
+		"PeerAddress":    PeerAddress,
+		"NamePrefix":     func(f, v string) error { return NamePrefix(f, v, "powernode-storage-") },
 	}
 	for name, rule := range rules {
 		mustRefuse(t, name+" on empty", rule("field", ""))

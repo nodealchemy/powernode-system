@@ -44,7 +44,7 @@ func fscryptTask() *MountTask {
 func TestSetupEncryption_NoneIsNoOp(t *testing.T) {
 	r := &mount.RecorderRunner{}
 	task := &MountTask{Encryption: EncryptionSpec{Mode: "none"}}
-	if err := SetupEncryption(context.Background(), r, stubGetter{}, task); err != nil {
+	if err := setupEncryption(context.Background(), r, stubGetter{}, task); err != nil {
 		t.Fatalf("none mode should be a no-op, got %v", err)
 	}
 	if len(r.Invocations) != 0 {
@@ -57,7 +57,7 @@ func TestSetupFscrypt_AppliesPolicy(t *testing.T) {
 	r := &mount.RecorderRunner{}
 	getter := stubGetter{body: keyEnvelope("super-secret-key-material")}
 
-	if err := SetupEncryption(context.Background(), r, getter, fscryptTask()); err != nil {
+	if err := setupEncryption(context.Background(), r, getter, fscryptTask()); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestSetupFscrypt_AppliesPolicy(t *testing.T) {
 func TestSetupFscrypt_EmptyKeyFailsClosed(t *testing.T) {
 	r := &mount.RecorderRunner{}
 	getter := stubGetter{body: `{"success":true,"data":{"key_material":""}}`}
-	if err := SetupEncryption(context.Background(), r, getter, fscryptTask()); err == nil {
+	if err := setupEncryption(context.Background(), r, getter, fscryptTask()); err == nil {
 		t.Fatal("empty key must fail closed, got nil")
 	}
 }
@@ -96,7 +96,7 @@ func TestSetupFscrypt_MissingKeyURLFailsClosed(t *testing.T) {
 	r := &mount.RecorderRunner{}
 	task := fscryptTask()
 	task.Encryption.KeyURL = ""
-	if err := SetupEncryption(context.Background(), r, stubGetter{}, task); err == nil {
+	if err := setupEncryption(context.Background(), r, stubGetter{}, task); err == nil {
 		t.Fatal("missing key_url must fail closed, got nil")
 	}
 }
@@ -113,7 +113,7 @@ func TestSetupFscrypt_UnsupportedFilesystemFailsClosed(t *testing.T) {
 		},
 	}
 	getter := stubGetter{body: keyEnvelope("k")}
-	if err := SetupEncryption(context.Background(), r, getter, fscryptTask()); err == nil {
+	if err := setupEncryption(context.Background(), r, getter, fscryptTask()); err == nil {
 		t.Fatal("fscrypt on an unsupported filesystem must fail closed, got nil")
 	}
 }
@@ -126,7 +126,7 @@ func TestSetupFscrypt_AlreadyEncryptedIsIdempotent(t *testing.T) {
 		},
 	}
 	getter := stubGetter{body: keyEnvelope("k")}
-	if err := SetupEncryption(context.Background(), r, getter, fscryptTask()); err != nil {
+	if err := setupEncryption(context.Background(), r, getter, fscryptTask()); err != nil {
 		t.Fatalf("already-encrypted should be a no-op success, got %v", err)
 	}
 	for _, inv := range r.Invocations {
@@ -141,7 +141,7 @@ func TestSetupEncryption_UnimplementedModesFailClosed(t *testing.T) {
 	for _, mode := range []string{"luks", "client_side_aes", "bogus"} {
 		r := &mount.RecorderRunner{}
 		task := &MountTask{MountPath: "/mnt/data", Encryption: EncryptionSpec{Mode: mode}}
-		if err := SetupEncryption(context.Background(), r, stubGetter{}, task); err == nil {
+		if err := setupEncryption(context.Background(), r, stubGetter{}, task); err == nil {
 			t.Errorf("mode %q must return an error, got nil", mode)
 		}
 	}

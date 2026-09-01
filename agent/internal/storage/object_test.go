@@ -101,7 +101,7 @@ func TestObjectMountPlan_Unsupported(t *testing.T) {
 // object-storage material at the data level (see s3_storage#issue_node_credential).
 func TestFetchCredential_ParsesObjectFields(t *testing.T) {
 	body := `{"success":true,"data":{"kind":"sts_token","access_key_id":"AKIA","secret_access_key":"sk","session_token":"tok"}}`
-	payload, _, err := FetchCredential(stubGetter{body: body}, "/cred")
+	payload, _, err := fetchCredential(stubGetter{body: body}, "/cred")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

@@ -75,7 +75,11 @@ func legitExportsTask() *ExportsApplyTask {
 		ExportPath:      "/srv/exports/data",
 		DeploymentShape: "self_hosted",
 		Entries: []ExportsEntry{
-			{PeerIP: "fd00::1", UID: 100100, GID: 100100, Options: []string{"rw", "sync", "no_subtree_check"}},
+			// The REAL wire value. Sdwan::PrefixAllocator.compose_address_128
+			// stamps a /128 on every peer address, and it reaches the payload
+			// unmodified via Peer#assigned_address -> CredentialIssuer. A bare
+			// "fd00::1" here is a fixture no producer emits.
+			{PeerIP: "fd00::abcd/128", UID: 100100, GID: 100100, Options: []string{"rw", "sync", "no_subtree_check"}},
 		},
 	}
 }
@@ -128,7 +132,8 @@ func TestApplyRefusesUnitNameNamingAServiceUnit(t *testing.T) {
 	task := legitMountTask(t)
 	// A .service name is what turns unit-body injection into `systemctl start`
 	// of a caller-chosen command. The platform's only producer emits .mount.
-	task.UnitName = "powernode-019f7cb5-rails.service"
+	// The prefix is kept correct so this example isolates the SUFFIX rule.
+	task.UnitName = mountUnitPrefix + "rails.service"
 
 	rec := &mount.RecorderRunner{}
 	if err := Apply(context.Background(), rec, nil, task); err == nil {
@@ -146,6 +151,31 @@ func TestApplyRefusesUnitNameNamingAServiceUnit(t *testing.T) {
 // guard, filepath.Join(dir, "") yields the directory itself and os.WriteFile
 // fails with EISDIR — an incidental failure that looks exactly like a refusal.
 // This test passed before the validator existed for that reason.
+// The suffix rule alone leaves the sharpest case open: persist.mount and
+// sysroot.mount are REAL units on these nodes, they end in ".mount", and
+// storage.unmount would `systemctl stop` one and delete its unit file — taking
+// out the agent's own durable state. systemd.go's comment already claimed the
+// prefix invariant; only now is it enforced.
+func TestApplyRefusesUnitNameWithoutThePlatformPrefix(t *testing.T) {
+	unitDir, _ := redirectUnitDir(t)
+
+	for _, name := range []string{"persist.mount", "sysroot.mount", "var-lib-powernode.mount"} {
+		task := legitMountTask(t)
+		task.UnitName = name
+
+		rec := &mount.RecorderRunner{}
+		if err := Apply(context.Background(), rec, nil, task); !errors.Is(err, taskguard.ErrRefused) {
+			t.Fatalf("expected a refusal for unprefixed unit_name %q, got %v", name, err)
+		}
+		if entries, _ := os.ReadDir(unitDir); len(entries) != 0 {
+			t.Fatalf("expected no unit written for %q, got %d entries", name, len(entries))
+		}
+		if len(rec.Invocations) != 0 {
+			t.Fatalf("expected no actuation for %q, got %+v", name, rec.Invocations)
+		}
+	}
+}
+
 func TestApplyRefusesEmptyUnitName(t *testing.T) {
 	redirectUnitDir(t)
 
@@ -184,19 +214,144 @@ func TestApplyChownAcceptsRootOldUIDOnALegitimateTarget(t *testing.T) {
 	}
 }
 
-// The other absent-field trap in this payload: renderMountUnit silently drops
-// Requires=/After= when the hint is empty, so a mount that declares it needs
-// the SDWAN tunnel would otherwise fire before the tunnel exists.
-func TestApplyRefusesRequiresWGWithNoInterfaceHint(t *testing.T) {
-	redirectUnitDir(t)
+// The LAN-fallback shape, pinned as ACCEPTED. TaskPayloadBuilder#requires_wg?
+// returns true for every non-object recipe while #wg_interface_hint returns
+// nil whenever sdwan_network_id is nil, and that association is optional with
+// on_delete: :nullify — so this exact combination is what the platform sends
+// for an NFS assignment on a node with no SDWAN network.
+//
+// An earlier revision refused it. Because the reconciler re-dispatches
+// storage.mount on drift, that would not have failed at deploy: it would have
+// put every LAN-fallback assignment into permanent backoff at the next sweep,
+// with a clean-looking rollout.
+func TestApplyAcceptsRequiresWGWithNoInterfaceHint(t *testing.T) {
+	unitDir, _ := redirectUnitDir(t)
 
 	task := legitMountTask(t)
 	task.RequiresWGInterface = true
 	task.WGInterfaceHint = ""
 
 	rec := &mount.RecorderRunner{}
+	if err := Apply(context.Background(), rec, nil, task); err != nil {
+		t.Fatalf("the LAN-fallback mount shape was refused: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(unitDir, task.UnitName))
+	if err != nil {
+		t.Fatalf("expected the unit to be written: %v", err)
+	}
+	if strings.Contains(string(body), "Requires=") {
+		t.Fatalf("expected no tunnel dependency when the hint is absent:\n%s", body)
+	}
+}
+
+// A credential id is REQUIRED for the recipes that stage a credential file:
+// an empty one collapses every assignment onto the same predictable filename
+// under /run/sdwan/mount-creds, so one tenant's secret overwrites another's.
+func TestApplyRefusesCredentialFileRecipeWithNoCredentialID(t *testing.T) {
+	redirectUnitDir(t)
+
+	task := legitMountTask(t)
+	task.Recipe.Type = "cifs"
+	task.Credential.ID = ""
+
+	rec := &mount.RecorderRunner{}
 	if err := Apply(context.Background(), rec, nil, task); !errors.Is(err, taskguard.ErrRefused) {
-		t.Fatalf("expected a refusal when requires_wg_interface has no hint, got %v", err)
+		t.Fatalf("expected a refusal for a cifs mount with no credential id, got %v", err)
+	}
+	if len(rec.Invocations) != 0 {
+		t.Fatalf("expected no actuation after refusal, got %+v", rec.Invocations)
+	}
+}
+
+// ...and NOT required for nfs4, which uses a peer-IP ACL and legitimately
+// carries none.
+func TestApplyAcceptsNFSMountWithNoCredentialID(t *testing.T) {
+	redirectUnitDir(t)
+
+	task := legitMountTask(t)
+	task.Credential = CredentialRef{}
+
+	rec := &mount.RecorderRunner{}
+	if err := Apply(context.Background(), rec, nil, task); err != nil {
+		t.Fatalf("an nfs4 mount with no credential id was refused: %v", err)
+	}
+}
+
+func TestApplySambaUserRefusesCreateWithNoPassword(t *testing.T) {
+	rec := &mount.RecorderRunner{}
+	task := &SmbUserApplyTask{
+		StorageID: "019f7cb5-3858-7000-8000-000000000006",
+		AccountID: "019f7cb5-3858-7000-8000-000000000007",
+		Action:    "create",
+		Username:  "svc-share",
+		Password:  "",
+	}
+	// smb_user.go passes the password positionally, so an empty one
+	// provisions a share principal with no password at all.
+	if err := ApplySambaUser(context.Background(), rec, task); !errors.Is(err, taskguard.ErrRefused) {
+		t.Fatalf("expected a refusal for a create with no password, got %v", err)
+	}
+	if len(rec.Invocations) != 0 {
+		t.Fatalf("expected samba-tool never to run, got %+v", rec.Invocations)
+	}
+}
+
+// --- The producer-contract half of the oracle --------------------------------
+//
+// Validate() only, no filesystem: these are values the platform's own
+// producers emit, taken from System::Storage::MountPathInferenceService (the
+// table of supported StorageAssignment mount paths), the shipped gateway smoke
+// seed, and StorageAssignment's model-level format. Every one of them was
+// refused by an earlier revision of this file. A rule-level mutation oracle
+// cannot see a producer-contract mismatch; only fixtures taken FROM the
+// producer can.
+func TestValidateAcceptsSupportedMountPaths(t *testing.T) {
+	supported := []string{
+		"/var/lib/powernode/storage/smoke-gateway", // db/seeds/smoke_test_storage_assignment_gateway.rb
+		"/var/lib/postgres",                        // MountPathInferenceService, service_user
+		"/etc/nginx",                               // MountPathInferenceService, service_user "nginx"
+		"/etc/traefik",                             // MountPathInferenceService, service_user "traefik"
+		"/etc/someapp",                             // MountPathInferenceService, :root
+		"/boot/firmware",                           // MountPathInferenceService, :root
+		"/var/www",                                 // MountPathInferenceService, "www-data"
+		"/var/log/nginx",
+		"/home/pnadmin/share", // MountPathInferenceService, :operator
+		"/srv/exports/data",
+		"/tmp/scratch",
+		"/srv/data/", // a trailing slash is legal under the model's own format
+	}
+	for _, p := range supported {
+		task := &MountTask{
+			AssignmentID: "019f7cb5-3858-7000-8000-000000000001",
+			UnitName:     mountUnitPrefix + "x.mount",
+			MountPath:    p,
+			Recipe:       MountRecipe{Type: "nfs4", Source: "fd00::1:/srv/exports/data"},
+			Encryption:   EncryptionSpec{Mode: "none"},
+		}
+		if err := task.Validate(); err != nil {
+			t.Errorf("supported mount_path %q was refused: %v", p, err)
+		}
+	}
+}
+
+// The headline case must survive the carve-out above: the root ITSELF, and any
+// ancestor of it, is still refused even though its subtree is now usable.
+func TestValidateStillRefusesTheRootsThemselves(t *testing.T) {
+	for _, p := range []string{"/", "/etc", "/boot", "/var/lib/powernode", "/usr/local/bin", "/var", "/var/lib"} {
+		task := &ChownTask{MountPath: p, OldUID: 0, NewUID: 1000}
+		if err := task.Validate(); !errors.Is(err, taskguard.ErrRefused) {
+			t.Errorf("expected %q to stay refused, got %v", p, err)
+		}
+	}
+}
+
+func TestValidateAcceptsRealPeerAddresses(t *testing.T) {
+	task := legitExportsTask()
+	for _, addr := range []string{"fd00::abcd/128", "fd00::1", "10.125.0.227", "10.0.0.0/24"} {
+		task.Entries[0].PeerIP = addr
+		if err := task.Validate(); err != nil {
+			t.Errorf("peer_ip %q was refused: %v", addr, err)
+		}
 	}
 }
 
@@ -284,24 +439,6 @@ func TestApplyChownRefusesEtc(t *testing.T) {
 	}
 }
 
-func TestApplyChownRefusesCallbackPathLeavingThePlatformOrigin(t *testing.T) {
-	orig := runFind
-	runFind = func(_ context.Context, _ []string) error { return nil }
-	t.Cleanup(func() { runFind = orig })
-
-	// transport.Client builds its URL as PlatformURL + path, so a callback
-	// path that does not begin with "/" re-points the agent's mTLS POST.
-	task := &ChownTask{
-		MountPath:    "/srv/data",
-		OldUID:       1000,
-		NewUID:       1001,
-		CallbackPath: "@example.invalid/collect",
-	}
-	if err := ApplyChown(context.Background(), task); err == nil {
-		t.Fatal("expected ApplyChown to refuse a callback_path that is not platform-relative")
-	}
-}
-
 // --- RULE: exports file name must not escape the exports directory ----------
 
 func TestApplyExportsRefusesAccountIDEscapingExportsDir(t *testing.T) {
@@ -340,6 +477,32 @@ func TestApplyExportsRefusesRootExportPath(t *testing.T) {
 		t.Fatal("expected ApplyExports to refuse export_path /")
 	}
 	if entries, _ := os.ReadDir(exportsDir); len(entries) != 0 {
+		t.Fatalf("expected no exports file written, got %d entries", len(entries))
+	}
+}
+
+// A SPACE is the field separator in /etc/exports, so this "path" is really two
+// fields: the rendered line exports /etc to the world, rw, no_root_squash,
+// while every whole-string prefix comparison still sees one tidy path. The
+// critical-root denylist cannot catch it; only the no-space rule can.
+func TestApplyExportsRefusesExportPathContainingASpace(t *testing.T) {
+	exportsDir, _ := redirectExportsDir(t)
+
+	task := legitExportsTask()
+	task.ExportPath = "/etc 0.0.0.0/0(rw,no_root_squash,no_subtree_check)"
+
+	rec := &mount.RecorderRunner{}
+	if err := ApplyExports(context.Background(), rec, task); !errors.Is(err, taskguard.ErrRefused) {
+		t.Fatalf("expected a refusal for an export_path containing a space, got %v", err)
+	}
+	entries, _ := os.ReadDir(exportsDir)
+	for _, e := range entries {
+		body, _ := os.ReadFile(filepath.Join(exportsDir, e.Name()))
+		if strings.Contains(string(body), "no_root_squash") {
+			t.Fatalf("a world-writable export line was written:\n%s", body)
+		}
+	}
+	if len(entries) != 0 {
 		t.Fatalf("expected no exports file written, got %d entries", len(entries))
 	}
 }
@@ -409,16 +572,46 @@ func TestProvisionGatewayRefusesUnitNameEscapingUnitDir(t *testing.T) {
 
 func TestProvisionGatewayRefusesReExportPathMaskingEtc(t *testing.T) {
 	unitDir, _ := redirectUnitDir(t)
+	// Redirect /etc/exports as well. Without this the test leans on an
+	// incidental EACCES when the suite runs non-root — which reads exactly
+	// like a refusal — and, if the guard ever regressed under a root runner,
+	// it would splice a line into the node's REAL export table.
+	redirectEtcExports(t)
 
 	task := legitGatewayTask(t)
 	task.ReExportPath = "/etc"
 
 	rec := &mount.RecorderRunner{}
-	if err := ProvisionGateway(context.Background(), rec, task); err == nil {
-		t.Fatal("expected ProvisionGateway to refuse re_export_path /etc")
+	if err := ProvisionGateway(context.Background(), rec, task); !errors.Is(err, taskguard.ErrRefused) {
+		t.Fatalf("expected a refusal for re_export_path /etc, got %v", err)
 	}
 	if entries, _ := os.ReadDir(unitDir); len(entries) != 0 {
 		t.Fatalf("expected no unit written, got %d entries", len(entries))
+	}
+}
+
+// A symlinked target defeats every textual denylist: filepath.Clean does not
+// resolve links, and /var/run is a symlink to /run on every systemd distro.
+// exportfs and mount both resolve, so the node would export the real tree.
+func TestProvisionGatewayRefusesSymlinkedPathResolvingIntoACriticalRoot(t *testing.T) {
+	redirectUnitDir(t)
+	redirectEtcExports(t)
+
+	dir := t.TempDir()
+	link := filepath.Join(dir, "innocuous")
+	if err := os.Symlink("/run", link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	task := legitGatewayTask(t)
+	task.ReExportPath = filepath.Join(link, "sdwan")
+
+	rec := &mount.RecorderRunner{}
+	if err := ProvisionGateway(context.Background(), rec, task); !errors.Is(err, taskguard.ErrRefused) {
+		t.Fatalf("expected a refusal for a path resolving into /run, got %v", err)
+	}
+	if len(rec.Invocations) != 0 {
+		t.Fatalf("expected no actuation after refusal, got %+v", rec.Invocations)
 	}
 }
 
@@ -495,12 +688,18 @@ func TestApplyExportsAcceptsLegitimateTask(t *testing.T) {
 	}
 }
 
+func redirectEtcExports(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "exports")
+	orig := EtcExportsPath
+	EtcExportsPath = path
+	t.Cleanup(func() { EtcExportsPath = orig })
+	return path
+}
+
 func TestProvisionGatewayAcceptsLegitimateTask(t *testing.T) {
 	unitDir, _ := redirectUnitDir(t)
-	exportsParent := t.TempDir()
-	orig := EtcExportsPath
-	EtcExportsPath = filepath.Join(exportsParent, "exports")
-	t.Cleanup(func() { EtcExportsPath = orig })
+	redirectEtcExports(t)
 
 	task := legitGatewayTask(t)
 	rec := &mount.RecorderRunner{}
