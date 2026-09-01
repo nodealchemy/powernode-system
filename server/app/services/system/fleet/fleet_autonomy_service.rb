@@ -102,7 +102,8 @@ module System
         # F3-01: consume the approved lane BEFORE deciding anew — an operator
         # approval from a prior tick executes here (pull model), so the
         # require_approval gate is no longer a dead end.
-        approved_executed = execute_approved_actions!(engine)
+        approved_executed = execute_approved_actions!(engine, validator: validator,
+                                                              correlation_id: tick_correlation)
 
         decisions = engine.decide_all(signals)
         LearningExtractor.record_tick!(account: account, decisions: decisions)
@@ -371,7 +372,7 @@ module System
       # (execute_approved!), and stamps the result so a request executes
       # exactly once. Per-request rescue: one failure never starves the
       # rest, and a failed execution is stamped (not retried forever).
-      def execute_approved_actions!(engine)
+      def execute_approved_actions!(engine, validator: nil, correlation_id: nil)
         return [] unless defined?(::Ai::ApprovalRequest)
 
         executed = []
@@ -382,6 +383,9 @@ module System
           .find_each do |request|
             result = engine.execute_approved!(request)
             stamp_execution!(request, result)
+            # IMP-31f1e5f9b365 — the VALIDATE arm of this lane. Deliberately
+            # NOT in the rescue below: a raised replay actuated nothing.
+            record_approved_outcome!(validator, engine, request, result, correlation_id)
             executed << { request_id: request.id, applied: result[:applied] == true }
           rescue StandardError => e
             Rails.logger.error("[FleetAutonomy] approved execution failed for ApprovalRequest #{request.id}: #{e.class}: #{e.message}")
@@ -390,6 +394,12 @@ module System
           end
         executed
       end
+
+      # IMP-31f1e5f9b365: the `gate` stamped on a RemediationOutcome minted by
+      # the approved lane, distinguishing it on the row from a proceed-lane
+      # outcome (whose gate is the resolved policy). Provenance for a dashboard
+      # or an operator reading the validate arc; nothing branches on it.
+      GATE_APPROVED_EXECUTION = "require_approval_executed"
 
       # `advisory` marks a decision that surfaces a condition without ever
       # actuating (DecisionEngine bindings tagged advisory: true — no skill,
@@ -833,6 +843,147 @@ module System
           rescue StandardError => e
             Rails.logger.error("[FleetAutonomy] expiry sweep failed for ApprovalRequest #{request.id}: #{e.message}")
           end
+      end
+
+      # IMP-31f1e5f9b365 — score the require_approval lane.
+      #
+      # F3-01 gave this lane an ACT arm but no VALIDATE arm. #decide gates the
+      # decision at :pending, and RemediationValidator#record_proceeded! only
+      # ever saw #decide_all's decisions — so every remediation an operator
+      # approved and this poller then EXECUTED produced no RemediationOutcome:
+      # no effectiveness score, no ineffective_streak, no F3-11 escalation. The
+      # only lane in the loop that a human had explicitly authorised was the one
+      # lane nothing measured.
+      #
+      # THREE things this must get right, each of which is a defect if wrong:
+      #
+      # 1. REUSE record_proceeded!, do not re-derive. A second recorder would
+      #    share none of its guards — the pending-per-fingerprint dedup, the
+      #    NON_REMEDIATING_ACTION_CATEGORIES exemption, the :proposal skip, the
+      #    fingerprint_self_clearing skip, and the convergence_deferred
+      #    declaration. Every one of those exists because its absence
+      #    manufactured a false score. The decision hash below is synthesised
+      #    so that all five apply here unchanged.
+      #
+      # 2. The row is for an EXECUTION, not an approval. See
+      #    #executed_remediation? — an approval that never ran, or ran
+      #    applied:false, mints nothing, or the pending row scores ineffective
+      #    every settle window and the streak escalates a lane that never acted.
+      #
+      # 3. The fingerprint is the sensor's own, read from the STAMPED
+      #    signal_fingerprint. #validate_due! scores by matching this string
+      #    against the fingerprints of a later tick's sense pass, so any other
+      #    value — notably execute_approved!'s "approved:<request id>"
+      #    replay fallback — is absent from every pass and would score
+      #    EFFECTIVE unconditionally at the first due tick: a fabricated
+      #    success, worse than no row. A request without one mints nothing.
+      #
+      #    THE STAMPED VALUE IS NECESSARY, NOT SUFFICIENT, and the doc used to
+      #    overclaim here. "The sensor re-emits it" holds for the per-resource
+      #    fingerprints (module_drift:<instance_id>, instance_silent:<id>,
+      #    boot_image_drift:<id>); it does NOT hold for the event- and
+      #    bucket-scoped ones — honeypot_access:<event_id> (whose sensor has a
+      #    15-minute LOOKBACK, shorter than the 1h approval TTL),
+      #    trading_pressure:<minute bucket>, gitops_drift:...:<synced_revision>.
+      #    Those score `effective` on absence alone. That is not a FALSE
+      #    success — only applied:true mints, so the terminate/apply really did
+      #    land — but it is an uninformative 1.0 in the LEARN step's ground
+      #    truth. A fingerprint whose disappearance is caused by the APPLIER
+      #    rather than merely uncorrelated with it is a different and worse
+      #    problem, and is declared away: see fingerprint_self_clearing on
+      #    DecisionEngine#apply_template_closure_drift.
+      #
+      # Nothing is passed for acted_at/settle_until: record_proceeded! stamps
+      # Time.current, and calling it HERE — from the execution — is what makes
+      # the settle window run from the moment the work landed rather than from
+      # the decision an operator may have approved hours earlier.
+      #
+      # ORDERING NOTE. tick! runs validate_due! -> execute_approved_actions! ->
+      # decide_all -> record_proceeded!, so this call claims the
+      # one-pending-row-per-fingerprint slot BEFORE the proceed lane can. If
+      # the same fingerprint is both live in the sense pass and carried by an
+      # approved request, the row describes the APPROVED execution and the
+      # proceed lane's is deduped away. That is the right way round — the
+      # approved execution is the one a human authorised — but it is an
+      # ordering dependency, so do not reorder tick! without re-reading this.
+      def record_approved_outcome!(validator, engine, request, result, correlation_id)
+        return unless validator
+        return unless executed_remediation?(result)
+
+        data = request.request_data.is_a?(Hash) ? request.request_data : {}
+        fingerprint = data.dig("payload", "signal_fingerprint").to_s
+        return if fingerprint.blank?
+
+        signal = engine.signal_from_approval(request)
+        return unless signal
+
+        validator.record_proceeded!(
+          decisions: [ {
+            decision: :proceed,
+            gate: GATE_APPROVED_EXECUTION,
+            signal_kind: signal.kind,
+            fingerprint: fingerprint,
+            action_category: data["action_category"],
+            # The applier's own return hash, passed through verbatim so the
+            # :proposal and :convergence_deferred DECLARATIONS reach the
+            # validator exactly as they do on the proceed lane.
+            remediation: result
+          } ],
+          signals: [ signal ],
+          correlation_id: correlation_id
+        )
+      rescue StandardError => e
+        # Same best-effort contract as #safe_record: a validator hiccup must
+        # never break the approved-execution poller.
+        Rails.logger.error("[FleetAutonomy] approved outcome recording failed for " \
+                           "ApprovalRequest #{request.id}: #{e.class}: #{e.message}")
+      end
+
+      # Did the replay actually ACTUATE something worth scoring?
+      #
+      # applied:true is the ordinary yes. The second arm is the applier's
+      # DECLARED convergence_deferred (IMP-848c7e953e2d): it did the part it
+      # could and states the fleet cannot converge until the node reboots.
+      # That shape is applied:false yet is still an execution, and the proceed
+      # lane records it, so dropping it here would silently give the approved
+      # lane different semantics from the proceed lane for a byte-identical
+      # applier result.
+      #
+      # BE PRECISE ABOUT WHY THAT ARM IS SAFE — it is NOT that it reaches no
+      # escalation. #validate_due! settles the row `inconclusive`, which
+      # ineffective_streak's `status IN (effective, ineffective)` filter
+      # excludes, so it cannot feed the STREAK. It does feed
+      # RemediationOutcome.deferred_convergence?, which DecisionEngine#decide
+      # reads pre-gate and routes into escalate_stuck_remediation! — the SAME
+      # HIGH fleet.remediation_stuck event and the same forced
+      # require_approval. What makes it acceptable is that the escalation is
+      # then DECLARED rather than inferred (an applier said it could not
+      # converge), and that the block is time-bounded by
+      # RemediationOutcome::DEFERRED_BLOCK_WINDOW, which lapses on the clock
+      # and so does not need a fresh :proceed to lift — the thing that would
+      # otherwise strand a require_approval-only lane forever.
+      #
+      # Everything else is applied:false and mints NOTHING: "no applier for
+      # <kind>", a control-plane fence skip, apply_remediation!'s rescue, the
+      # unreplayable pre-F3-01 request, and the poller's own rescue above.
+      #
+      # KNOWN CONSERVATIVE GAP, stated rather than papered over. A binding
+      # whose skill IS the actuation and which has no REMEDIATION_APPLIERS
+      # entry — system.boot_image_drift is the live one; execute_approved!'s
+      # own comment names it — really does actuate on approval (the executor
+      # creates the upgrade_boot_image tasks) and then returns
+      # applied:false/"no applier", so it still mints nothing and is still
+      # unmeasured. Admitting it would mean INFERRING actuation from the
+      # presence of skill_data, which is exactly the inference this file
+      # refuses everywhere else; the declared fix is for those bindings to
+      # return an actuation marker of their own, which is not this change.
+      # Erring toward no row is the safe direction: a missing score is a gap,
+      # a wrong score is ground truth the LEARN step believes.
+      def executed_remediation?(result)
+        return false unless result.is_a?(Hash)
+        return true if result[:applied] == true
+
+        result[:convergence_deferred].present?
       end
 
       def stamp_execution!(request, result)
