@@ -208,7 +208,9 @@ module System
                  #{module_ids.map { |id| "    - `#{id}`" }.join("\n")}
 
               2. **Bless new versions** — once SBOMs ingest the patched packages,
-                 the next CVE matching tick will mark exposures as `remediating`.
+                 a CVE matching tick will mark exposures as `remediating` only
+                 once remediation is actually dispatched for the module; a tick
+                 that plans nothing now leaves them `open` (IMP-9b8d774298d5).
 
               3. **Rolling upgrade** — once new versions are blessed, dispatch
                  `system_promote_module_version` for each module, then trigger

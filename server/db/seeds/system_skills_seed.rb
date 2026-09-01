@@ -116,8 +116,11 @@ SKILLS_DATA = [
       (inline for critical-severity notify_and_proceed, or post-approval for require_approval).
       Inputs: cve_id (required), severity, affected_module_ids, exposure_ids (all optional).
       Triages via CveResponseExecutor, dispatches PackageModuleRefreshExecutor per linked module,
-      plans rolling upgrades for modules with a newer blessed version, and transitions named
-      CveExposure rows to remediating.
+      plans rolling upgrades for modules with a newer blessed version, and transitions the
+      CveExposure rows of the modules that actually got a dispatch to remediating.
+      Modules that produced no plan are reported in skipped_modules with a reason; when nothing
+      was dispatched and a module's fix is built but not promoted, the run returns failure naming
+      the module and the candidate version an operator must promote.
     PROMPT
   },
   {
