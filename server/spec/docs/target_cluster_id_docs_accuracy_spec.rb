@@ -683,6 +683,230 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
       expect(doc).not_to match(/New worker joins the wrong cluster/)
       expect(doc).to match(/Worker does not join at all/)
     end
+
+    # ── Phase 4 (HA control plane) — IMP-2a3ff83c1955 ─────────────────────
+    #
+    # The banner already suspected this and said so; verification at HEAD
+    # confirmed it, so the page must stop advertising Phase 4 as working.
+    # The mechanism: `ServerManager` never calls `JoinRequest` and the only
+    # writer of K3S_URL/K3S_TOKEN (`WriteJoinConfig`) is defined on
+    # `ShellAgentApplier`; `BootstrapConfig.InstallArgs` emits CNI args only
+    # and its `default:` arm returns `nil, false`, so no `--server`,
+    # `--token` or `--cluster-init` can reach the install. A second
+    # k3s-server therefore runs `bootstrap!`, whose idempotency check keys on
+    # `node_instance_id`, and a NEW cluster row is created.
+    #
+    # REGION ANCHOR is heading-to-heading (Phase 4 → Phase 5), deliberately
+    # NOT the `| Withdrawn claim |` table header. This file already carries
+    # one such table (Phase 3) and Phase 4 adds a second; IMP-35ad52dcfefd
+    # broke a sibling guard in exactly that way, by anchoring a region on a
+    # header that stopped being unique. A heading delimiter is unaffected by
+    # how many tables the section grows.
+    #
+    # WHAT THIS CAN SEE: every line of the document, exempting only two-cell
+    # withdrawal rows whose LINE NUMBER falls inside the Phase 4 heading range.
+    # So a byte-identical row pasted anywhere outside Phase 4 reddens it, as
+    # does a restored claim in the Anti-pattern section (the only other section
+    # that stated wording these four patterns match).
+    #
+    # WHAT THIS CANNOT SEE — corrected after review found the first draft of
+    # this comment overclaiming on both counts:
+    # (a) It does NOT give containment coverage to the Troubleshooting or
+    #     Concierge sections. Their falsehoods ("Token mismatch or etcd quorum
+    #     issue", "For HA, propose Phase 4") match none of LIVE_HA_CLAIMS and
+    #     are covered only by the plain `present_sites` ABSENCE tests below —
+    #     which deletion satisfies. An earlier draft of this comment claimed
+    #     all three sections were contained. They are not.
+    # (b) Whether the "what is actually true" cell is true. It pins wording,
+    #     not semantics; a confidently wrong correction passes.
+    # (c) An HA falsehood phrased in words none of these patterns match.
+    #     LIVE_HA_CLAIMS enumerates the claims this page actually made.
+    # (d) Anything outside this file, and the fabrication is in at least eight
+    #     others — `docs/USE_CASE_MATRIX.md` (which this spec DOES already have
+    #     a describe block for, just not for this claim, so the guard there is
+    #     a few lines rather than a new file), `docs/tutorials/04-k3s-cluster.md`,
+    #     `docs/CONTAINER_RUNTIMES.md`, `docs/runbooks/sdwan-network-setup.md`,
+    #     `docs/runbooks/k3s-smoke-full-lifecycle.md`, `docs/SMOKE_TEST.md`,
+    #     and — the operator-facing one — the `k3s-server` module description
+    #     in `server/db/seeds/k3s_modules.rb`. Tracked separately.
+    def self.phase4_region(doc)
+      doc[/^## Phase 4 .*?(?=^## Phase 5 )/m].to_s
+    end
+
+    LIVE_HA_CLAIMS = {
+      "wait-for-etcd-join step" => /Wait ~120s for the second server to join etcd/,
+      "VIP failover candidate" => /The second server is now a VIP failover candidate/,
+      "online HA addition" => /the second server joins etcd; the existing cluster keeps running/,
+      "replica growth" => /cluster goes from 1-replica to 3-replica/
+    }.freeze
+
+    it "no longer marks Phase 4 as supported in its heading" do
+      heading = doc[/^## Phase 4 .*$/].to_s
+      expect(heading).not_to be_empty, "Phase 4 heading not found"
+      expect(heading).not_to include("✅"), "Phase 4 still advertised as supported: #{heading}"
+      expect(heading).to include("NOT IMPLEMENTED"),
+                         "Phase 4 heading does not state the withdrawal: #{heading}"
+    end
+
+    it "states each withdrawn HA claim only inside the Phase 4 withdrawal table" do
+      region = self.class.phase4_region(doc)
+      LIVE_HA_CLAIMS.each do |label, pattern|
+        expect(self.class.claims_outside_withdrawal(doc, region, pattern))
+          .to be_empty, "#{label} still stated as instruction, not withdrawal"
+      end
+    end
+
+    # Containment is vacuous if the claim is simply deleted — the
+    # keep-it-visible idiom requires every withdrawn claim to survive as a row
+    # an operator who already ran it can recognise.
+    it "carries every withdrawn HA claim as a labelled row" do
+      LIVE_HA_CLAIMS.each do |label, pattern|
+        expect(doc).to match(pattern), "#{label} is not carried in the withdrawal table at all"
+      end
+    end
+
+    # Naming the missing piece is not enough. An operator who reads only "no
+    # join path" still runs Phase 4 and gets a second cluster, which is what
+    # refuses every later worker — so the CONSEQUENCE and the ordering hazard
+    # have to be on the page too.
+    it "names the mechanism and the second-cluster consequence" do
+      region = self.class.phase4_region(doc)
+      expect(region).not_to be_empty,
+                            "Phase 4 section not found — its delimiter is the Phase 5 heading"
+
+      { "the missing join writer" => /`WriteJoinConfig`/,
+        "where that writer lives" => /`ShellAgentApplier`/,
+        "the closed args seam" => /InstallArgs/,
+        "the etcd prerequisite" => /--cluster-init/,
+        "the second-cluster outcome" => /second cluster/i,
+        "the platform-side citation" => /kubernetes_cluster_provisioner_service\.rb/ }
+        .each do |label, pattern|
+          expect(region).to match(pattern), "Phase 4 does not state #{label}"
+        end
+    end
+
+    # The page orders Phase 3 (workers) before Phase 4 (HA); the causal
+    # dependency runs the other way, so an operator reading top to bottom
+    # manufactures the refusal Phase 3 warns about. Say so where they are.
+    it "warns that running Phase 4 is what breaks later worker joins" do
+      expect(self.class.phase4_region(doc)).to match(/Phase 3/)
+    end
+
+    # Operator ruling: K3s HA is PARKED with the docs honest, not queued. A
+    # withdrawal worded as "not yet" / "pending" / "planned" is the
+    # deferral-to-unbuilt-component shape — an open gap that reads as tracked
+    # work, so nobody designs around it. Phase 3 is genuinely queued (it names
+    # its producer improvement); Phase 4 must not borrow that framing.
+    #
+    # WHAT THIS CAN SEE: scheduling vocabulary inside the Phase 4 section, and
+    # that the terminal disposition plus its reason are stated there.
+    # WHAT IT CANNOT SEE: a deferral phrased in vocabulary not listed here
+    # ("once the datastore work lands", say). The list is the phrasings that
+    # actually invert this disposition, not a complete lexicon.
+    it "states Phase 4 as parked, never as scheduled work" do
+      region = self.class.phase4_region(doc)
+      expect(self.class.present_sites(region, [
+                                        /not yet implemented/i,
+                                        /\bcoming soon\b/i,
+                                        /\bwill be (implemented|supported|added)\b/i,
+                                        /\b(is|are) planned\b/i,
+                                        /\bon the roadmap\b/i,
+                                        /\bawaiting implementation\b/i
+                                      ])).to be_empty
+
+      expect(region).to match(/parked/i), "Phase 4 does not state its terminal disposition"
+      # Parked WITHOUT the reason is just an unexplained gap. The reason is the
+      # part an operator can act on: HA would change how every cluster already
+      # provisioned bootstraps.
+      expect(region).to match(/already[- ]provisioned/i),
+                        "Phase 4 states the disposition without the reason it is parked"
+    end
+
+    it "no longer describes the Phase 4 finding as unconfirmed" do
+      banner = doc.split("## When to use multi-cluster", 2).first
+      expect(self.class.present_sites(banner, [
+                                        /unchanged and unconfirmed/,
+                                        /should not be read as verified/,
+                                        /NOT covered by this correction/,
+                                        /filed and not yet remediated/
+                                      ])).to be_empty
+      expect(banner).to match(/Phase 4/), "the banner no longer mentions Phase 4 at all"
+    end
+
+    # A Concierge told to "propose Phase 4" proposes the thing that creates
+    # the second cluster. The runbook is its instruction sheet, so this line
+    # is an actuator, not prose.
+    it "no longer instructs the Concierge to propose Phase 4" do
+      expect(self.class.present_sites(doc, [/For HA, propose Phase 4/])).to be_empty
+    end
+
+    # Same root cause as the parked HA gap, surfacing as a PERSISTENCE claim
+    # rather than a join claim: with no `--cluster-init` anywhere in the tree,
+    # K3s runs SQLite via kine, so "etcd state survives reboot" and "take an
+    # etcd snapshot" are both false. This runbook does not currently make
+    # either claim; the sibling docs do (tracked separately), and the realistic
+    # regression is someone importing the wording here while "fixing" a gap.
+    #
+    # WHAT THIS CAN SEE: a positive etcd persistence/snapshot/quorum assertion
+    # anywhere in the file, plus the presence of the correcting fact so the
+    # check is not pure absence.
+    # WHAT IT CANNOT SEE: an etcd claim phrased without any of these nouns, and
+    # anything outside this file. It is deliberately NOT a ban on the word
+    # "etcd" — the withdrawal rows have to say it to withdraw it.
+    it "makes no positive etcd persistence, snapshot or quorum claim" do
+      expect(self.class.present_sites(doc, [
+                                        /etcd (state|data|database|db) (survives|persists)/i,
+                                        /etcd snapshot/i,
+                                        /etcd (needs|requires) (a )?majority/i,
+                                        /etcd quorum/i
+                                      ])).to be_empty
+
+      # Non-vacuity: the file must positively carry the fact that displaces
+      # them, so deleting the etcd discussion outright does not pass.
+      expect(doc).to match(/SQLite/),
+                     "the runbook no longer states what the datastore actually is"
+    end
+
+    # The troubleshooting row diagnosed "token mismatch or etcd quorum issue"
+    # — a diagnosis that sends the operator to `journalctl` on two servers
+    # that were never trying to join each other.
+    it "corrects the troubleshooting row that blamed etcd quorum" do
+      expect(self.class.present_sites(doc, [/Token mismatch or etcd quorum issue/])).to be_empty
+    end
+
+    # Found by independent review of the first draft of this withdrawal, which
+    # removed the capability and then offered a mitigation that does not exist.
+    # `tmpfs_store` is a column on `System::Node`, not `NodeInstance`
+    # (server/app/models/system/node.rb:67-98), and the /var -> /persist/var
+    # bind it depended on has no production caller: `mount.EnsurePersistentVar`
+    # is referenced only by its own definition and tests
+    # (agent/internal/mount/bind.go:16). Withdrawing a false claim and
+    # substituting a fresh one is the specific regression this file exists to
+    # stop, so it is pinned rather than left to review.
+    #
+    # WHAT THIS CAN SEE: these three wordings. WHAT IT CANNOT SEE: any other
+    # unsupported mitigation, and whether the replacement advice is sound.
+    it "offers no mitigation the code does not implement" do
+      expect(self.class.present_sites(doc, [
+                                        /NodeInstance's `tmpfs_store`/,
+                                        /`\/persist\/var\/lib\/rancher\/k3s\/` survives reboots/,
+                                        /current_holder_peer_id/
+                                      ])).to be_empty
+    end
+
+    # The "requires >=2 servers" framing is the exact wording the KB-seed
+    # correction calls out as the earlier bad one: it reads as a prerequisite an
+    # operator can satisfy by provisioning, when provisioning a second server is
+    # what breaks the account. It survived the first draft in the Anti-pattern
+    # heading, outside phase4_region and matching no LIVE_HA_CLAIMS pattern —
+    # which is why it needs its own check rather than more region coverage.
+    it "never frames HA as a prerequisite an operator can satisfy" do
+      expect(self.class.present_sites(doc, [
+                                        /HA requires \*\*.2 servers\*\*/,
+                                        /only one candidate remains/,
+                                        /one-shot multi-server cluster bootstrap/
+                                      ])).to be_empty
+    end
   end
 
   describe "server/db/seeds/system_kb_seed.rb (the seeded KB article)" do
@@ -697,6 +921,28 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     it "seeds the refusal instead" do
       expect(seed).to match(/system\.k3s_ambiguous_cluster_join_refused/)
       expect(seed).to match(/AmbiguousClusterError/)
+    end
+
+    # IMP-2a3ff83c1955. The Concierge reads this article, and the runbook's own
+    # "how the Concierge should use this" section now tells it not to propose
+    # HA. An article that still says HA "requires >=2 server NodeInstances"
+    # would put the two sources of truth in direct contradiction, with the
+    # article being the one the Concierge actually retrieves.
+    #
+    # WHAT THIS CAN SEE: the seed FILE's wording. WHAT IT CANNOT SEE: the
+    # already-seeded row in a live database, which this file does not re-run to
+    # correct (the file's own DOES-NOT-CORRECT warning covers that), nor
+    # whether the correction is semantically right.
+    it "no longer seeds an HA control plane as a supported flow" do
+      expect(self.class.present_sites(seed, [
+                                        /Requires .2 server NodeInstances/,
+                                        /Slice 3 enables VIP-backed HA/
+                                      ])).to be_empty
+      ha = seed[/^\s*## HA control plane.*?(?=^\s*## Source)/m].to_s
+      expect(ha).not_to be_empty, "HA section not found (its delimiter is the Source heading)"
+      expect(ha).to match(/NOT IMPLEMENTED/)
+      expect(ha).to match(/--cluster-init/)
+      expect(ha).to match(/second cluster/i)
     end
 
     # Every clause is pinned separately: the warning is only useful if it says
