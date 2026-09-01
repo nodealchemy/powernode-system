@@ -880,10 +880,23 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
 
   describe "docs/USE_CASE_MATRIX.md" do
     let(:doc) { self.class.read(ext_root, "docs/USE_CASE_MATRIX.md") }
-    # Bounded by the "What to watch" heading that follows the table. The
-    # document has an earlier "What to watch" (use case 2); the non-greedy
-    # match starts at the Withdrawn-claim header, so it cannot reach back.
-    let(:region) { doc[/^\| Withdrawn claim \| What is actually true \|.*?(?=^\*\*What to watch\*\*)/m].to_s }
+    # Scoped to Use Case 3's SECTION first, then to the withdrawal table inside
+    # it, and bounded by the "What to watch" heading that follows that table.
+    #
+    # The section scope is load-bearing, not tidiness. This was
+    # `doc[/^\| Withdrawn claim \| What is actually true \|.*?(?=^\*\*What to
+    # watch\*\*)/m]`, which silently assumed the document contained exactly ONE
+    # withdrawal table. IMP-35ad52dcfefd added a second one — for
+    # lifecycle_class, deliberately copying this idiom — EARLIER in the file.
+    # The non-greedy match then latched onto that table and ran to use case 1's
+    # "What to watch", so the region no longer contained a single
+    # target_cluster_id row and every one of them read as "stated outside the
+    # withdrawal table". The idiom is meant to be reused, so its anchor cannot
+    # assume uniqueness.
+    let(:region) do
+      section = doc[/^### Use Case 3 —.*?(?=^### Use Case 4 —)/m].to_s
+      section[/^\| Withdrawn claim \| What is actually true \|.*?(?=^\*\*What to watch\*\*)/m].to_s
+    end
 
     LIVE_UM = {
       "MUST-carry caveat" => /module assignment \*\*MUST\*\* carry `metadata\.target_cluster_id`/,
