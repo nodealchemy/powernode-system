@@ -10,7 +10,7 @@ import (
 // Apply dispatches the right per-mount-type driver based on the recipe, then
 // applies encryption. Ordering matters: fscrypt applies a policy to a
 // directory on an already-mounted, encryption-capable filesystem, so the
-// mount must succeed first. Encryption fails closed (see SetupEncryption) —
+// mount must succeed first. Encryption fails closed (see setupEncryption) —
 // if it errors, the whole assignment fails rather than serving plaintext
 // under an "encrypted" label.
 func Apply(ctx context.Context, runner mount.Runner, client httpGetter, task *MountTask) error {
@@ -24,11 +24,11 @@ func Apply(ctx context.Context, runner mount.Runner, client httpGetter, task *Mo
 	var mountErr error
 	switch task.Recipe.Type {
 	case "nfs4", "nfs":
-		mountErr = MountNFS(ctx, runner, task)
+		mountErr = mountNFS(ctx, runner, task)
 	case "cifs":
-		mountErr = MountCIFS(ctx, runner, client, task)
+		mountErr = mountCIFS(ctx, runner, client, task)
 	case "s3fs", "gcsfuse", "rclone":
-		mountErr = MountObject(ctx, runner, client, task)
+		mountErr = mountObject(ctx, runner, client, task)
 	default:
 		return fmt.Errorf("unsupported recipe type: %s", task.Recipe.Type)
 	}
@@ -36,7 +36,7 @@ func Apply(ctx context.Context, runner mount.Runner, client httpGetter, task *Mo
 		return mountErr
 	}
 
-	if err := SetupEncryption(ctx, runner, client, task); err != nil {
+	if err := setupEncryption(ctx, runner, client, task); err != nil {
 		return fmt.Errorf("encryption setup: %w", err)
 	}
 	return nil
@@ -46,7 +46,7 @@ func Apply(ctx context.Context, runner mount.Runner, client httpGetter, task *Mo
 // CredentialID is used to clean up the transient credential file for
 // CIFS mounts; empty for NFS / object.
 func Unapply(ctx context.Context, runner mount.Runner, task *UnmountTask, encryption EncryptionSpec, credentialID string) error {
-	// storage.unmount is NOT storage-scoped without this: StopAndRemoveMountUnit
+	// storage.unmount is NOT storage-scoped without this: stopAndRemoveMountUnit
 	// stops and deletes whatever unit the payload names. See validate.go.
 	if err := task.Validate(); err != nil {
 		return err
@@ -56,11 +56,11 @@ func Unapply(ctx context.Context, runner mount.Runner, task *UnmountTask, encryp
 	// the recipe.Type at unmount time (the platform sends an
 	// UnmountTask, not a MountTask), so we use a uniform path: stop
 	// the unit, then remove the credential file if any.
-	if err := StopAndRemoveMountUnit(ctx, runner, task.UnitName); err != nil {
+	if err := stopAndRemoveMountUnit(ctx, runner, task.UnitName); err != nil {
 		return err
 	}
 	if credentialID != "" {
-		_ = RemoveCredentialFile(credentialID)
+		_ = removeCredentialFile(credentialID)
 	}
-	return TeardownEncryption(ctx, runner, encryption)
+	return teardownEncryption(ctx, runner, encryption)
 }

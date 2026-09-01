@@ -14,11 +14,11 @@ import (
 // tmpfs so contents never hit persistent disk; mode 0600 per file.
 const MountCredsDir = "/run/sdwan/mount-creds"
 
-// FetchCredential calls the node_api credential endpoint and unpacks
+// fetchCredential calls the node_api credential endpoint and unpacks
 // the response envelope. Returns the decoded payload bytes (so the
 // caller can write them to a transient file with the right shape for
 // the mount type) and the typed payload for inspection.
-func FetchCredential(client httpGetter, url string) (*CredentialPayload, []byte, error) {
+func fetchCredential(client httpGetter, url string) (*CredentialPayload, []byte, error) {
 	resp, err := client.GetJSON(url)
 	if err != nil {
 		return nil, nil, fmt.Errorf("fetch credential %s: %w", url, err)
@@ -44,10 +44,10 @@ func FetchCredential(client httpGetter, url string) (*CredentialPayload, []byte,
 	return &envelope.Data, body, nil
 }
 
-// WriteCIFSCredentialFile writes a CIFS credentials= file at
+// writeCIFSCredentialFile writes a CIFS credentials= file at
 // /run/sdwan/mount-creds/<credID>.cred with mode 0600. Returns the
 // path the agent should pass to mount(8) via credentials=.
-func WriteCIFSCredentialFile(credID string, payload *CredentialPayload) (string, error) {
+func writeCIFSCredentialFile(credID string, payload *CredentialPayload) (string, error) {
 	if err := os.MkdirAll(MountCredsDir, 0o700); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", MountCredsDir, err)
 	}
@@ -63,11 +63,11 @@ func WriteCIFSCredentialFile(credID string, payload *CredentialPayload) (string,
 // object mount may have written (s3fs passwd, gcsfuse key, rclone config).
 var objectCredSuffixes = []string{".cred", ".passwd-s3fs", ".gcs.json", ".rclone.conf"}
 
-// RemoveCredentialFile cleans up the transient credential/config file(s) for a
+// removeCredentialFile cleans up the transient credential/config file(s) for a
 // credential on unmount. Best-effort across every shape an object mount may
 // have written so the uniform Unapply path (which doesn't know the recipe type)
 // leaves no secret material behind.
-func RemoveCredentialFile(credID string) error {
+func removeCredentialFile(credID string) error {
 	for _, suffix := range objectCredSuffixes {
 		path := filepath.Join(MountCredsDir, credID+suffix)
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

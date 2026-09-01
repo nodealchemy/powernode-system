@@ -66,6 +66,15 @@ func renderExports(task *ExportsApplyTask) string {
 		if e.UID > 0 {
 			opts += fmt.Sprintf(",anonuid=%d,anongid=%d", e.UID, e.GID)
 		}
+		// DEFECT, pre-existing and deliberately NOT fixed here: PeerIP already
+		// carries a prefix length. Sdwan::PrefixAllocator.compose_address_128
+		// composes "<addr>/128" and it reaches this payload unmodified via
+		// Peer#assigned_address -> System::Storage::CredentialIssuer, so this
+		// renders "<addr>/128/128". Every test fixture used a bare address no
+		// producer emits, which is why it has never been visible. Fixing it
+		// changes what is written to /etc/exports on every node and belongs in
+		// its own change with its own verification — see the peer_ip note on
+		// taskguard.PeerAddress, which is why that rule accepts the CIDR form.
 		lines = append(lines, fmt.Sprintf("%s %s/128(%s)", task.ExportPath, e.PeerIP, opts))
 	}
 	return strings.Join(lines, "\n") + "\n"

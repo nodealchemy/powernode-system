@@ -8,14 +8,24 @@ import (
 
 // Validation for every storage.* task payload lives HERE and nowhere else.
 //
-// Each payload type carries one Validate method, and each exported entry point
-// in this package (Apply, Unapply, ApplyExports, ApplySambaUser,
-// ProvisionGateway, DeprovisionGateway, ApplyChown, UnmountNFS, UnmountCIFS)
-// calls it once, first, before any side effect. The lower-level primitives
-// (WriteMountUnit, StartMountUnit, StopAndRemoveMountUnit,
-// writeGatewayMountUnit, writeReExportLine) deliberately do NOT re-check: a
-// second guard on the same field would make it impossible to tell, from a
-// failing test, which rule is actually doing the work.
+// Each payload type carries one Validate method, and each of the SEVEN task
+// entry points — Apply, Unapply, ApplyExports, ApplySambaUser,
+// ProvisionGateway, DeprovisionGateway, ApplyChown — calls it once, first,
+// before any side effect. Those seven are exactly the branches of
+// handlers.StorageHandler.Execute, and handlers is this package's only
+// importer.
+//
+// Everything else the drivers reach — mountNFS, mountCIFS, mountObject,
+// setupEncryption, writeMountUnit, startMountUnit, stopAndRemoveMountUnit —
+// is UNEXPORTED, so "the exported surface is exactly the validated entry
+// points" is enforced by the compiler rather than asserted by this comment. It
+// used to be asserted, and it was wrong: mountNFS and friends take a full
+// *MountTask and do not validate, and were only safe because Apply happened to
+// run first.
+//
+// The unexported primitives deliberately do NOT re-check: a second guard on
+// the same field would make it impossible to tell, from a failing test, which
+// rule is actually doing the work.
 //
 // See package taskguard for why this is enforced at the agent rather than only
 // at the control plane. In short: the agent performs the privileged operation,
@@ -28,6 +38,14 @@ import (
 // influenced from being started as one.
 const mountUnitSuffix = ".mount"
 
+// mountUnitPrefix mirrors System::Storage::TaskPayloadBuilder::MOUNT_UNIT_PREFIX.
+// Both producers stamp it — systemd_unit_for and the two gateway payloads —
+// so requiring it costs nothing and closes the case the suffix rule alone
+// leaves open: `persist.mount` and `sysroot.mount` are real units on these
+// nodes, they end in ".mount", and stopping or deleting one takes out the
+// agent's own durable state.
+const mountUnitPrefix = "powernode-storage-"
+
 // Validate checks every MountTask field that reaches a root actuator: the unit
 // filename, the mount target, and every value interpolated into the rendered
 // unit body.
@@ -39,6 +57,9 @@ func (t *MountTask) Validate() error {
 		return err
 	}
 	if err := taskguard.UnitName("unit_name", t.UnitName, mountUnitSuffix); err != nil {
+		return err
+	}
+	if err := taskguard.NamePrefix("unit_name", t.UnitName, mountUnitPrefix); err != nil {
 		return err
 	}
 	if err := taskguard.TargetPath("mount_path", t.MountPath); err != nil {
@@ -62,19 +83,29 @@ func (t *MountTask) Validate() error {
 	// Requires=/After= are only rendered when the flag is set, but validate
 	// the hint whenever it is present so a later render cannot pick up an
 	// unchecked value.
+	//
+	// An EMPTY hint with requires_wg_interface set is legal and must stay
+	// legal. TaskPayloadBuilder#requires_wg? returns true for every non-object
+	// recipe while #wg_interface_hint returns nil whenever sdwan_network_id is
+	// nil — which is the supported LAN-fallback shape, and the association is
+	// optional with on_delete: :nullify. renderMountUnit already omits the
+	// dependency in that case. An earlier revision of this file refused the
+	// combination on the theory that a mount needing the tunnel should not
+	// fire without it; that is a mount-ordering opinion, not a trust-boundary
+	// rule, and it would have put every LAN-fallback assignment into permanent
+	// reconcile backoff.
 	if t.WGInterfaceHint != "" {
 		if err := taskguard.ConfigToken("wg_interface_hint", t.WGInterfaceHint); err != nil {
 			return err
 		}
-	} else if t.RequiresWGInterface {
-		// Absent-field case, pinned deliberately: renderMountUnit silently
-		// drops the dependency when the hint is empty, so a mount that
-		// declares it needs the tunnel would fire before the tunnel exists.
-		return fmt.Errorf("storage.mount: %w: wg_interface_hint: required when requires_wg_interface is set", taskguard.ErrRefused)
 	}
 	// Credential.ID becomes a filename under /run/sdwan/mount-creds and, via
-	// credentials=/passwd_file=, a value inside the unit body.
-	if t.Credential.ID != "" {
+	// credentials=/passwd_file=, a value inside the unit body. For the recipes
+	// that stage a credential file it must be PRESENT, not merely well-formed:
+	// an empty id collapses every assignment onto the same predictable
+	// ".cred" / ".passwd-s3fs" / ".gcs.json" / ".rclone.conf" name, so one
+	// tenant's secret overwrites another's and the unit then mounts with it.
+	if credentialFileRecipes[t.Recipe.Type] || t.Credential.ID != "" {
 		if err := taskguard.Identifier("credential.id", t.Credential.ID); err != nil {
 			return err
 		}
@@ -92,7 +123,14 @@ func (t *MountTask) Validate() error {
 	return nil
 }
 
-// Validate checks the fields StopAndRemoveMountUnit acts on. mount_path is not
+// credentialFileRecipes are the recipe types whose driver stages a credential
+// or config file named after Credential.ID (cifs.go, s3fs.go). nfs4/nfs use a
+// peer-IP ACL and legitimately carry no credential id.
+var credentialFileRecipes = map[string]bool{
+	"cifs": true, "s3fs": true, "gcsfuse": true, "rclone": true,
+}
+
+// Validate checks the fields stopAndRemoveMountUnit acts on. mount_path is not
 // used by the unmount path today; it is validated anyway so the payload cannot
 // carry an unchecked value into a future consumer.
 func (t *UnmountTask) Validate() error {
@@ -103,6 +141,9 @@ func (t *UnmountTask) Validate() error {
 		return err
 	}
 	if err := taskguard.UnitName("unit_name", t.UnitName, mountUnitSuffix); err != nil {
+		return err
+	}
+	if err := taskguard.NamePrefix("unit_name", t.UnitName, mountUnitPrefix); err != nil {
 		return err
 	}
 	if t.MountPath != "" {
@@ -145,7 +186,7 @@ func (t *ExportsApplyTask) Validate() error {
 		return fmt.Errorf("storage.exports.apply: %w: action: unknown action %q", taskguard.ErrRefused, t.Action)
 	}
 	for i, e := range t.Entries {
-		if err := taskguard.IPAddress(fmt.Sprintf("entries[%d].peer_ip", i), e.PeerIP); err != nil {
+		if err := taskguard.PeerAddress(fmt.Sprintf("entries[%d].peer_ip", i), e.PeerIP); err != nil {
 			return err
 		}
 		if err := taskguard.ConfigTokens(fmt.Sprintf("entries[%d].options", i), e.Options); err != nil {
@@ -176,10 +217,16 @@ func (t *SmbUserApplyTask) Validate() error {
 	if err := taskguard.Identifier("username", t.Username); err != nil {
 		return err
 	}
-	if t.Password != "" {
+	// An empty password is not merely unvalidated, it is a live weak
+	// credential: smb_user.go passes it positionally, so `samba-tool user
+	// create <user> ""` provisions a share principal with no password.
+	if t.Action == "create" || t.Password != "" {
 		if err := taskguard.Secret("password", t.Password); err != nil {
 			return err
 		}
+	}
+	if t.Action == "set_password" && t.NewPassword == "" && t.Password == "" {
+		return fmt.Errorf("storage.smb_user.apply: %w: new_password: required for set_password", taskguard.ErrRefused)
 	}
 	if t.NewPassword != "" {
 		if err := taskguard.Secret("new_password", t.NewPassword); err != nil {
@@ -226,7 +273,10 @@ func (t *GatewayProvisionTask) Validate() error {
 	if err := taskguard.Identifier("fsid", t.FSID); err != nil {
 		return err
 	}
-	return taskguard.UnitName("gateway_unit_name", t.GatewayUnitName, mountUnitSuffix)
+	if err := taskguard.UnitName("gateway_unit_name", t.GatewayUnitName, mountUnitSuffix); err != nil {
+		return err
+	}
+	return taskguard.NamePrefix("gateway_unit_name", t.GatewayUnitName, mountUnitPrefix)
 }
 
 // Validate checks the gateway deprovision payload — the same unit-name and
@@ -241,7 +291,10 @@ func (t *GatewayDeprovisionTask) Validate() error {
 	if err := taskguard.TargetPath("re_export_path", t.ReExportPath); err != nil {
 		return err
 	}
-	return taskguard.UnitName("gateway_unit_name", t.GatewayUnitName, mountUnitSuffix)
+	if err := taskguard.UnitName("gateway_unit_name", t.GatewayUnitName, mountUnitSuffix); err != nil {
+		return err
+	}
+	return taskguard.NamePrefix("gateway_unit_name", t.GatewayUnitName, mountUnitPrefix)
 }
 
 // Validate checks the chown payload.
@@ -250,11 +303,12 @@ func (t *GatewayDeprovisionTask) Validate() error {
 // refused exactly "" and "/". "/etc" with old_uid 0 passed it and handed the
 // node's configuration tree to an unprivileged uid, as root, recursively.
 //
-// callback_path is included because the handler POSTs to it over the agent's
-// mTLS connection: see taskguard.PlatformPath for why a value that does not
-// start with "/" leaves the platform origin. An ABSENT callback_path is legal
-// — the handler substitutes the platform default — so it is only checked when
-// present.
+// callback_path is deliberately NOT checked here. ApplyChown cannot bind it:
+// the handler POSTs to it whether or not this function refuses (see
+// postChownCompletion), so a guard placed here would render a refusal and the
+// callback would still go out — to the caller-named host, carrying the
+// refusal text. The rule therefore lives at the function that performs the
+// POST, which is the only place that can actually withhold it.
 func (t *ChownTask) Validate() error {
 	if t == nil {
 		return fmt.Errorf("storage.chown: %w: nil task", taskguard.ErrRefused)
@@ -271,11 +325,6 @@ func (t *ChownTask) Validate() error {
 	}
 	if t.OldUID < 0 || t.OldGID < 0 || t.NewUID < 0 || t.NewGID < 0 {
 		return fmt.Errorf("storage.chown: %w: uid/gid must not be negative", taskguard.ErrRefused)
-	}
-	if t.CallbackPath != "" {
-		if err := taskguard.PlatformPath("callback_path", t.CallbackPath); err != nil {
-			return err
-		}
 	}
 	return nil
 }

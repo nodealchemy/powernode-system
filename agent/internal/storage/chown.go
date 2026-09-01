@@ -46,9 +46,12 @@ type ChownTask struct {
 // retry via system_storage_chown_retry once the underlying problem is
 // fixed (e.g., a file with the immutable attribute).
 //
-// Safety: refuses to chown when MountPath is empty or "/" to prevent
-// catastrophic mistakes. Refuses no-op tasks where OldUID == NewUID
-// AND OldGID == NewGID (caller should have skipped the dispatch).
+// Safety: the payload is validated first — see ChownTask.Validate in
+// validate.go. That supersedes the guard this comment used to describe, which
+// refused exactly "" and "/": "/etc" with old_uid 0 passed it and handed the
+// node's configuration tree to an unprivileged uid, recursively, as root.
+// Still refuses no-op tasks where OldUID == NewUID AND OldGID == NewGID
+// (caller should have skipped the dispatch).
 func ApplyChown(ctx context.Context, task *ChownTask) error {
 	// The single validation seam for storage.chown. This SUPERSEDES the guard
 	// that used to sit here, which refused exactly "" and "/" — "/etc" with

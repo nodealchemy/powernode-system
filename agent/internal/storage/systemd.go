@@ -20,10 +20,10 @@ import (
 // the same test-seam shape as `var runFind` in chown.go.
 var SystemdUnitDir = "/etc/systemd/system"
 
-// WriteMountUnit writes a systemd .mount unit for the assignment and
+// writeMountUnit writes a systemd .mount unit for the assignment and
 // reloads systemd. The unit chains After=<wg interface>.service so
 // the mount only fires after the SDWAN tunnel is healthy.
-func WriteMountUnit(ctx context.Context, runner mount.Runner, task *MountTask) error {
+func writeMountUnit(ctx context.Context, runner mount.Runner, task *MountTask) error {
 	unit := renderMountUnit(task)
 	path := filepath.Join(SystemdUnitDir, task.UnitName)
 	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
@@ -35,16 +35,16 @@ func WriteMountUnit(ctx context.Context, runner mount.Runner, task *MountTask) e
 	return nil
 }
 
-// StartMountUnit triggers the unit to actually mount.
-func StartMountUnit(ctx context.Context, runner mount.Runner, unitName string) error {
+// startMountUnit triggers the unit to actually mount.
+func startMountUnit(ctx context.Context, runner mount.Runner, unitName string) error {
 	if err := runner.Run(ctx, "systemctl", "start", unitName); err != nil {
 		return fmt.Errorf("systemctl start %s: %w", unitName, err)
 	}
 	return nil
 }
 
-// StopAndRemoveMountUnit stops the mount and removes the unit file.
-func StopAndRemoveMountUnit(ctx context.Context, runner mount.Runner, unitName string) error {
+// stopAndRemoveMountUnit stops the mount and removes the unit file.
+func stopAndRemoveMountUnit(ctx context.Context, runner mount.Runner, unitName string) error {
 	// Best-effort stop — ignore error if already inactive.
 	_ = runner.Run(ctx, "systemctl", "stop", unitName)
 	path := filepath.Join(SystemdUnitDir, unitName)

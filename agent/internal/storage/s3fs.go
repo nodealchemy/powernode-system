@@ -10,7 +10,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
-// MountObject covers the cloud object-storage recipes — s3fs, gcsfuse, and
+// mountObject covers the cloud object-storage recipes — s3fs, gcsfuse, and
 // rclone (Azure Blob). Egress uses the node's native interface, not SDWAN.
 //
 // It fetches the per-instance credential, writes the recipe-specific config
@@ -20,12 +20,12 @@ import (
 //
 // Schemas MUST stay in sync with the providers' node_mount_recipe +
 // issue_node_credential (s3_storage / gcs_storage / azure_storage).
-func MountObject(ctx context.Context, runner mount.Runner, client httpGetter, task *MountTask) error {
+func mountObject(ctx context.Context, runner mount.Runner, client httpGetter, task *MountTask) error {
 	if err := os.MkdirAll(task.MountPath, 0o755); err != nil {
 		return fmt.Errorf("mkdir mount path %s: %w", task.MountPath, err)
 	}
 
-	payload, _, err := FetchCredential(client, task.Credential.URL)
+	payload, _, err := fetchCredential(client, task.Credential.URL)
 	if err != nil {
 		return fmt.Errorf("fetch object credential: %w", err)
 	}
@@ -50,10 +50,10 @@ func MountObject(ctx context.Context, runner mount.Runner, client httpGetter, ta
 	task.SystemdType = plan.fsType
 	task.SystemdWhat = plan.what
 
-	if err := WriteMountUnit(ctx, runner, task); err != nil {
+	if err := writeMountUnit(ctx, runner, task); err != nil {
 		return err
 	}
-	return StartMountUnit(ctx, runner, task.UnitName)
+	return startMountUnit(ctx, runner, task.UnitName)
 }
 
 // objectFile is a transient credential/config file to stage on tmpfs (0600).

@@ -26,7 +26,7 @@ type MountTask struct {
 	// Agent-internal systemd overrides for FUSE object mounts, where the unit's
 	// fs-type / What differ from the recipe's dispatch type / source (e.g. recipe
 	// type "s3fs" → systemd Type "fuse.s3fs"; rclone What is "<remote>:<path>").
-	// Never sent by the platform (json:"-"); set by MountObject before WriteMountUnit.
+	// Never sent by the platform (json:"-"); set by mountObject before writeMountUnit.
 	SystemdType string `json:"-"`
 	SystemdWhat string `json:"-"`
 }

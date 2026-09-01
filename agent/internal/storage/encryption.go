@@ -19,7 +19,7 @@ import (
 // redirect it to a temp dir.
 var keyDir = "/run/powernode/storage/keys"
 
-// SetupEncryption configures the encryption layer for a mount. It runs
+// setupEncryption configures the encryption layer for a mount. It runs
 // AFTER the filesystem is mounted (see applier.Apply) because fscrypt
 // operates on a directory of an already-mounted, encryption-capable
 // filesystem.
@@ -45,7 +45,7 @@ var keyDir = "/run/powernode/storage/keys"
 // stacked mechanism (e.g. gocryptfs) or server-side at-rest encryption; until
 // one is wired, network assignments must NOT default to fscrypt (the server
 // default was corrected to "none" so honest plaintext mounts keep working).
-func SetupEncryption(ctx context.Context, runner mount.Runner, client httpGetter, task *MountTask) error {
+func setupEncryption(ctx context.Context, runner mount.Runner, client httpGetter, task *MountTask) error {
 	switch task.Encryption.Mode {
 	case "", "none":
 		return nil
@@ -60,8 +60,8 @@ func SetupEncryption(ctx context.Context, runner mount.Runner, client httpGetter
 	}
 }
 
-// TeardownEncryption reverses SetupEncryption on unmount.
-func TeardownEncryption(ctx context.Context, runner mount.Runner, encryption EncryptionSpec) error {
+// teardownEncryption reverses setupEncryption on unmount.
+func teardownEncryption(ctx context.Context, runner mount.Runner, encryption EncryptionSpec) error {
 	switch encryption.Mode {
 	case "", "none":
 		return nil
@@ -84,7 +84,7 @@ func setupFscrypt(ctx context.Context, runner mount.Runner, client httpGetter, t
 
 	// Idempotency: if the target already carries an fscrypt policy, the
 	// previous run succeeded — re-applying would error. Treat as done.
-	if encrypted, err := IsFscryptEncrypted(ctx, runner, task.MountPath); err == nil && encrypted {
+	if encrypted, err := isFscryptEncrypted(ctx, runner, task.MountPath); err == nil && encrypted {
 		return nil
 	}
 
@@ -122,10 +122,10 @@ func setupFscrypt(ctx context.Context, runner mount.Runner, client httpGetter, t
 	return nil
 }
 
-// IsFscryptEncrypted reports whether the target directory already has an
+// isFscryptEncrypted reports whether the target directory already has an
 // fscrypt policy applied. A non-nil error means the status could not be
 // determined (treated as "not encrypted" by callers so setup is attempted).
-func IsFscryptEncrypted(ctx context.Context, runner mount.Runner, path string) (bool, error) {
+func isFscryptEncrypted(ctx context.Context, runner mount.Runner, path string) (bool, error) {
 	out, err := runner.Output(ctx, "fscrypt", "status", path)
 	if err != nil {
 		return false, err
