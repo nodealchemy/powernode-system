@@ -38,7 +38,9 @@ func hasField(v any, name string) bool {
 // `cosign verify-blob --bundle <path>` cannot succeed against a path that does
 // not exist. Module signature enforcement is therefore blocked on a missing
 // TRANSPORT, not on a configuration flag and not on the population of signed
-// artifacts.
+// artifacts — and transport is only half of it: the platform signs modules with
+// `cosign sign` over an OCI ref, not `cosign sign-blob` over these bytes, so
+// there is no bundle to transport in the first place. See internal/verify/doc.go.
 //
 // The sibling TestPullStreamsAndVerifies asserts only that bundlePath has the
 // right SUFFIX, which holds whether or not the file was ever fetched — it reads
@@ -100,14 +102,18 @@ func TestPullFetchesNoCosignBundle(t *testing.T) {
 // even if the agent wanted to fetch a bundle, the platform's download envelope
 // gives it no reference to fetch.
 //
-// The node_api download action's own comment describes its `oci` block as
-// supplying "the `oci` block for cosign material"; the block it actually
-// renders is ref / digest / fsverity_root_hash / size_bytes. There is no
-// signature, bundle, bundle_url, or public-key field, and ModuleArtifactRef has
-// no field that could receive one. Note the contrast with fs-verity, which DOES
-// have a wire channel end to end (fsverity_root_hash, published by the build
-// handler and carried on the manifest) — that asymmetry is why fs-verity is a
-// config gap and cosign is a transport gap.
+// The node_api download action renders ref / digest / fsverity_root_hash /
+// size_bytes. There is no signature, bundle, bundle_url, or public-key field,
+// and ModuleArtifactRef has no field that could receive one. (That action's
+// comment used to claim its `oci` block supplied "cosign material"; it never
+// did, and the comment now says so.)
+//
+// Note the contrast with fs-verity, which has a wire channel that at least
+// EXISTS end to end (fsverity_root_hash, published by the build handler and
+// carried on the manifest) — though it is populated only on the native publish
+// path. Cosign has no such channel at all, and, more fundamentally, the
+// platform signs an OCI ref rather than the erofs blob this package's Verifier
+// knows how to check. See internal/verify/doc.go.
 //
 // This asserts the decoder's behaviour, not the server's: signature fields
 // present in the response are silently dropped, so a platform that started
