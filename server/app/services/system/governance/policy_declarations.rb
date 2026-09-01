@@ -109,34 +109,57 @@ module System
         # one — proceeds, but an operator should see that it happened.
         "a2a_call" => "notify_and_proceed",
 
-        # --- storage.* — READ THE AGENT HANDLERS, NOT THE NAMES. Five of these
-        # seven are unvalidated root primitives on the target node. They are
+        # --- storage.* — READ THE AGENT HANDLERS, NOT THE NAMES.
+        #
+        # STATUS as of IMP-671662bfd2dd: the agent now validates every one of
+        # these payloads at the actuator (agent/internal/taskguard +
+        # agent/internal/storage/validate.go). The unit name must be a bare
+        # `powernode-storage-*.mount`, every value interpolated into a unit body
+        # or an /etc/exports line is refused if it carries a control character
+        # or a space, and the chown/mount/export target is refused if it is, or
+        # would mask, a critical system path.
+        #
+        # THE VERBS BELOW DO NOT CHANGE, and the descriptions are kept in the
+        # past tense rather than deleted, because the guard ships in the AGENT
+        # BINARY. That binary rolls out as a module overlay, per node, with no
+        # coordination point — so an un-upgraded node still has every hole
+        # described here. Relaxing any of these verbs needs evidence that the
+        # fleet is fully upgraded, not just that this file was read.
+        #
+        # Five of these seven WERE unvalidated root primitives on the target
+        # node. They are
         # require_approval for the same reason `ssh_command` is, and in three
         # cases they are a STRICTLY STRONGER primitive than ssh_command because
         # they do not announce themselves as remote execution.
         #
-        # storage.mount is ARBITRARY ROOT CODE EXECUTION. agent/internal/
+        # storage.mount WAS ARBITRARY ROOT CODE EXECUTION. agent/internal/
         # storage/systemd.go: `filepath.Join(SystemdUnitDir, task.UnitName)` then
         # os.WriteFile, `systemctl daemon-reload`, `systemctl start <UnitName>`.
-        # UnitName is unsanitised, so the caller picks the filename under
+        # UnitName was unsanitised, so the caller picked the filename under
         # /etc/systemd/system (traversal and overwrite included), and
         # renderMountUnit interpolates `strings.Join(task.Options, ",")` raw into
-        # the unit body — a newline in one option injects arbitrary systemd
+        # the unit body — a newline in one option injected arbitrary systemd
         # directives. Name the unit `*.service` and the injected
-        # `[Service] ExecStart=` is what `systemctl start` then runs, as root.
+        # `[Service] ExecStart=` was what `systemctl start` then ran, as root.
         "storage.mount" => "require_approval",
-        # NOT storage-scoped. StopAndRemoveMountUnit runs `systemctl stop
-        # <UnitName>` and deletes the unit file, with the same unsanitised
-        # UnitName — `powernode-<uuid>-rails.service` stops the control plane and
-        # removes its unit. A denial-of-service primitive over any unit on the
-        # node, not an unmount.
+        # WAS NOT storage-scoped. stopAndRemoveMountUnit runs `systemctl stop
+        # <UnitName>` and deletes the unit file, and with an unsanitised
+        # UnitName `powernode-<uuid>-rails.service` stopped the control plane and
+        # removed its unit — a denial-of-service primitive over any unit on the
+        # node, not an unmount. The prefix rule is what bounds it now, and it
+        # matters more than the suffix rule: `persist.mount` and `sysroot.mount`
+        # are real units on these nodes and end in ".mount".
         "storage.unmount" => "require_approval",
-        # NOTHING BINDS THIS TO A SHARE. exports.go writes
+        # NOTHING BOUND THIS TO A SHARE. exports.go writes
         # `<ExportPath> <PeerIP>/128(<Options>)` into /etc/exports.d and runs
-        # `exportfs -ra`; ExportPath, PeerIP and Options are all unvalidated. So
-        # `export_path: "/"` with `no_root_squash` exports the node's root
-        # filesystem, writable as root, to whatever peer the caller names — host
-        # compromise, not an ACL edit. (NfsExportManager#grant! and #revoke!
+        # `exportfs -ra`; ExportPath, PeerIP and Options were all unvalidated, so
+        # `export_path: "/"` with `no_root_squash` exported the node's root
+        # filesystem, writable as root, to whatever peer the caller named — host
+        # compromise, not an ACL edit. The subtler half was that a SPACE in
+        # export_path made it two /etc/exports fields while still reading as one
+        # path to any prefix check; that is now refused too. Note what is still
+        # NOT bounded: the option list itself, so a caller who can issue this
+        # can still name `no_root_squash` for the peer it names. (NfsExportManager#grant! and #revoke!
         # also both ride this one command, so one verb would govern widening and
         # narrowing even if the arguments were bounded.)
         "storage.exports.apply" => "require_approval",
@@ -145,18 +168,25 @@ module System
         # rather than to arbitrary node state, which is why this one stays a
         # notify rather than joining its five siblings above.
         "storage.smb_user.apply" => "notify_and_proceed",
-        # Same unvalidated-unit-name class as storage.mount: ProvisionGateway
+        # WAS the same unvalidated-unit-name class as storage.mount (and is now
+        # bounded by the same rules): ProvisionGateway
         # writes and starts a systemd unit whose name and body the caller
         # supplies. Root code execution by the same mechanism.
+        # NOTE the asymmetry the rules preserve: re_export_path is a LOCAL path
+        # and gets the critical-root denylist, while upstream_export_path names
+        # a path on the remote NFS server and correctly does not.
         "storage.gateway.provision" => "require_approval",
         # Tears that gateway down, and every consumer mounted through it loses
         # its path at once — the widest blast radius of the seven even before
         # the unit-name problem.
         "storage.gateway.deprovision" => "require_approval",
-        # Recursive `find <MountPath> -uid OLD -exec chown NEW`. chown.go refuses
-        # ONLY "" and "/", so `mount_path: "/etc", old_uid: 0, new_uid: <any>`
-        # is permitted and hands the node's configuration tree to an
-        # unprivileged uid — privilege escalation, not a slow maintenance job.
+        # Recursive `find <MountPath> -uid OLD -exec chown NEW`. chown.go used to
+        # refuse ONLY "" and "/", so `mount_path: "/etc", old_uid: 0,
+        # new_uid: <any>` was permitted and handed the node's configuration tree
+        # to an unprivileged uid — privilege escalation, not a slow maintenance
+        # job. "/etc" itself is now refused; /etc/nginx is not, because
+        # System::Storage::MountPathInferenceService lists it as a supported
+        # storage path owned by a service user.
         # The reversibility that makes the MACHINE path safe does not exist for
         # a caller this verb governs: chown_previous_uid/gid is recorded on a
         # StorageAssignment, and a hand-issued or agent-issued task has no
@@ -178,8 +208,14 @@ module System
         "ci.package_build" => "notify_and_proceed",
 
         # --- probe.* — the CHECK NAMES are allow-listed
-        # (probeModuleSmokeChecks); their ARGUMENTS are not, so this is not the
-        # read-only observation its name promises. checkHealthEndpoint runs
+        # (probeModuleSmokeChecks). Their ARGUMENTS were not, and as of
+        # IMP-671662bfd2dd they are: the endpoint must be a relative path or an
+        # http(s) URL, the method must be one of ModuleService::HEALTH_METHODS,
+        # and the ldd candidate must be an absolute canonical path. A refused
+        # argument fails ITS check rather than the task, so the probe keeps
+        # reporting. What is still NOT bounded is the DESTINATION — the blind
+        # SSRF / port-scan oracle below is unchanged, and re-deriving this verb
+        # means deciding about that, not about the argument shapes. checkHealthEndpoint runs
         # `curl -X <method> <endpoint>` with both caller-supplied, from the
         # node's HOST network namespace, discarding the body and returning the
         # status code — an arbitrary-verb HTTP request plus a blind SSRF and

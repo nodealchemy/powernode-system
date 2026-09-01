@@ -320,11 +320,15 @@ RSpec.describe System::Governance::PolicyReconciler do
     # The named ones, pinned individually. The set-level counts above would
     # stay green if a root-equivalent handler traded places with a harmless
     # one, and these six are where that trade would be silent: five storage
-    # verbs whose agent handlers take an UNVALIDATED payload (an unsanitised
-    # systemd unit name written under /etc/systemd/system and started, an
-    # unbounded /etc/exports.d entry, a chown rooted at any path but "/"), plus
-    # the boot-image rewrite. See MANUAL_OPERATION_DEFAULT_VERBS for the
-    # per-command derivation.
+    # verbs plus the boot-image rewrite.
+    #
+    # Their agent handlers no longer take an unvalidated payload —
+    # IMP-671662bfd2dd added agent-side validation for the unit name, the
+    # rendered unit/exports bodies and the chown target. The verbs stay parked
+    # anyway, and this example stays as written, because that guard ships in the
+    # agent binary: it rolls out per node as a module overlay, so an
+    # un-upgraded node still has the original holes. See
+    # MANUAL_OPERATION_POLICIES for the per-command derivation.
     it "parks every command whose node-side handler takes an unvalidated payload" do
       %w[
         storage.mount storage.unmount storage.exports.apply
