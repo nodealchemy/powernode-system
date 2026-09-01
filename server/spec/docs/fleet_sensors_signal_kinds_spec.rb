@@ -190,20 +190,106 @@ RSpec.describe "FLEET_SENSORS.md signal kinds vs. the sensors that emit them" do
     File.read(path)
   end
 
-  # Extension source, MINUS the hand-run `example_*` seeds. Those are
-  # demonstration scripts no orchestrator invokes, and one of them
-  # (db/seeds/example_honeypot.rb) writes a FleetEvent with the fabricated kind
-  # `honeypot.access_attempted` — so including them would let a doc claim cite
-  # a seed that never runs as evidence the platform emits the kind.
-  let(:source) do
+  # Extension source, WHOLE. An earlier revision subtracted the hand-run
+  # `example_*` seeds, because db/seeds/example_honeypot.rb wrote a FleetEvent
+  # with the fabricated kind `honeypot.access_attempted` and would therefore
+  # have stood as "evidence" that the platform emits it. That exclusion was a
+  # workaround for a bug, not a property of the scan set: IMP-b5fabc7a9d7f
+  # made that seed emit through the real producer
+  # (System::Honeypot::CanaryModuleService), so no example seed contains a
+  # fabricated kind any more, and a blanket basename subtraction is a hole
+  # anyone can walk a new fabrication back through. The laundering route it
+  # guarded is closed directly instead — see the ratchet below.
+  let(:source_paths) do
     paths = Dir[
       File.join(ext_root, "server/app/**/*.rb"),
       File.join(ext_root, "server/lib/**/*.rb"),
       File.join(ext_root, "server/db/seeds/**/*.rb")
-    ].reject { |p| File.basename(p).start_with?("example_") }
-    raise "extension source scan set is empty — Oracle B would be vacuous" if paths.size < 100
+    ]
+    raise "extension source scan set is empty — every source oracle would be vacuous" if paths.size < 100
 
-    paths.map { |p| File.read(p) }.join("\n")
+    paths
+  end
+
+  let(:source) { source_paths.map { |p| File.read(p) }.join("\n") }
+
+  # The same corpus with the hand-run demos taken back out — used ONLY by the
+  # equality oracle below, never as the scan set.
+  let(:source_without_examples) do
+    kept = source_paths.reject { |p| File.basename(p).start_with?("example_") }
+    raise "no example_* seeds were subtracted — the equality oracle would be vacuous" if kept.size == source_paths.size
+
+    kept.map { |p| File.read(p) }.join("\n")
+  end
+
+  # Does `t` appear as a STRING LITERAL in the given corpus? A bare-code match
+  # would let `cert.expired` through on the strength of `cert.expired?` — a
+  # method call on an unrelated object — which is how a plausible-looking
+  # fabrication survives a weaker check. KNOWN LIMIT: the character class stops
+  # at a quote, so `foo("a", cert.expired, "b")` matches across two adjacent
+  # literals. That over-matches (a false "it is real"), which is why the
+  # equality oracle below, not this predicate alone, is what guards the
+  # example seeds.
+  #
+  # `define_method`, not `def`: `ext_root` is a local of this describe body, and
+  # a `def` body cannot see it (that was a NameError, caught by running this).
+  define_method(:literal?) do |corpus, token|
+    corpus.match?(/["'][^"'\n]*(?<![a-z0-9_.])#{Regexp.escape(token)}(?![a-z0-9_.?!])[^"'\n]*["']/)
+  end
+
+  # Oracle B's verdict over an arbitrary corpus, extracted so the equality
+  # oracle can run it twice rather than restate it.
+  define_method(:unknown_tokens) do |corpus|
+    doc.scan(/`([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)`/).flatten.uniq.sort.reject { |t|
+      next true if EMITTED.include?(t)
+      next true if (ATTRIBUTE_REFS + SETTING_KEYS + ACTION_KINDS).include?(t)
+      next true if WITHDRAWN_TOKENS.include?(t) # named BECAUSE it exists nowhere
+      # A source-file reference, e.g. `sdwan_drift_sensor.rb`. Required to
+      # exist, so a renamed file is a failure rather than a free pass.
+      next Dir[File.join(ext_root, "**", t)].any? if t.end_with?(".rb", ".md", ".yaml", ".yml", ".go")
+
+      literal?(corpus, t)
+    }
+  end
+
+  # The ratchet that replaces the `example_*` subtraction, stated as the
+  # property the subtraction was reaching for: no file in the scan set may
+  # contain a withdrawn kind as a string literal. A seed, a demo, or an
+  # ordinary service that spells one is a fabrication regardless of who runs
+  # it, and Oracle B would accept the doc's mention of it on that strength.
+  #
+  # Scoped to string literals for the same reason Oracle B is: a bare-code
+  # match would fire on unrelated method calls (`cert.expired?`).
+  it "contains no withdrawn kind as a string literal anywhere in extension source" do
+    # `source_paths` (not a fresh glob) so this inherits the < 100 floor: an
+    # ext_root that resolved wrong would otherwise make Dir[] empty and this
+    # assertion green for the worst possible reason.
+    offenders = source_paths.select { |path|
+      src = File.read(path)
+      WITHDRAWN_TOKENS.any? { |t| literal?(src, t) }
+    }.map { |path| path.delete_prefix("#{ext_root}/") }
+
+    expect(offenders).to eq([]),
+      -> { "withdrawn kinds are spelled as string literals in: #{offenders.inspect}" }
+  end
+
+  # The OTHER half of removing the reject, and the one the ratchet above does
+  # not cover. The ratchet only constrains the 28 already-named withdrawn
+  # tokens; a BRAND-NEW fabrication written into both the doc and a hand-run
+  # `example_*` seed would satisfy Oracle B on the seed's evidence alone, which
+  # the reject made impossible. Raised in review of this change.
+  #
+  # Stated as the equality that made the removal safe in the first place:
+  # subtracting the demo seeds from the corpus must change NO Oracle B verdict.
+  # An ordinary seed keeps vouching for ordinary identifiers; a token that only
+  # a demo seed vouches for is a failure with the offending token named.
+  it "reaches the same Oracle B verdict with the hand-run example seeds subtracted" do
+    with_examples = unknown_tokens(source)
+    without       = unknown_tokens(source_without_examples)
+
+    expect(without - with_examples).to eq([]),
+      -> { "tokens in FLEET_SENSORS.md vouched for ONLY by hand-run example_* seeds: #{(without - with_examples).inspect}" }
+    expect(without).to eq(with_examples)
   end
 
   # ── Oracle A: the **Signals:** declarations, file-wide ────────────────────
@@ -296,20 +382,7 @@ RSpec.describe "FLEET_SENSORS.md signal kinds vs. the sensors that emit them" do
     tokens = doc.scan(/`([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)`/).flatten.uniq.sort
     expect(tokens.size).to be > 100, "the token scan collapsed (#{tokens.size}) — this oracle would be vacuous"
 
-    unknown = tokens.reject { |t|
-      next true if EMITTED.include?(t)
-      next true if (ATTRIBUTE_REFS + SETTING_KEYS + ACTION_KINDS).include?(t)
-      next true if WITHDRAWN_TOKENS.include?(t) # named BECAUSE it exists nowhere
-      # A source-file reference, e.g. `sdwan_drift_sensor.rb`. Required to
-      # exist, so a renamed file is a failure rather than a free pass.
-      next Dir[File.join(ext_root, "**", t)].any? if t.end_with?(".rb", ".md", ".yaml", ".yml", ".go")
-
-      # Otherwise it must appear as a STRING LITERAL in extension source. A
-      # bare-code match would let `cert.expired` through on the strength of
-      # `cert.expired?` — a method call on an unrelated object — which is how
-      # a plausible-looking fabrication survives a weaker check.
-      source.match?(/["'][^"'\n]*(?<![a-z0-9_.])#{Regexp.escape(t)}(?![a-z0-9_.?!])[^"'\n]*["']/)
-    }
+    unknown = unknown_tokens(source)
 
     expect(unknown).to eq([]),
       -> { "tokens in FLEET_SENSORS.md that name nothing in the codebase: #{unknown.inspect}" }

@@ -40,13 +40,14 @@
 > what is missing is anything that would DETECT a canary access and call it.)
 > The only in-repo code that emits
 > `system.honeypot_triggered` today is
-> `System::Honeypot::CanaryModuleService.observe_access!`, called from one
-> place: the `after_commit` hook on `System::NodeModuleAssignment` (create).
-> So the real trigger is a canary *module being assigned to a node*, not a
-> file being read. Steps 1–2 and 4–5 (marking a canary, and reading the
-> resulting events) are accurate; the Step 3 simulation is not, and
-> `db/seeds/example_honeypot.rb` fabricates the event directly rather than
-> exercising a real path.
+> `System::Honeypot::CanaryModuleService.observe_access!`, called from the
+> `after_commit` hook on `System::NodeModuleAssignment` (create) and, for
+> drills, from `db/seeds/example_honeypot.rb`. So the real trigger is a canary
+> *module being assigned to a node*, not a file being read. Steps 1–2 and 4–5
+> (marking a canary, and reading the resulting events) are accurate; the Step 3
+> simulation is not. That seed hand-wrote a FleetEvent with a fabricated kind
+> until IMP-b5fabc7a9d7f; it now marks the canary, assigns it, calls the real
+> producer, and aborts non-zero unless the sensor observed the event.
 <!-- signal-kind-corrections:end -->
 
 ## What you're building
