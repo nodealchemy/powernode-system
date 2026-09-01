@@ -797,6 +797,37 @@ module System
         Array(signals).map { |s| decide(s) }
       end
 
+      # Reconstruct the signal an approved request was minted for, from the
+      # identity DecisionEngine#skill_metadata_payload stamped into
+      # request_data["payload"]. Returns nil for a pre-F3-01 request that
+      # carries no signal_kind and therefore cannot be replayed at all.
+      #
+      # Pure and deterministic — two callers reconstruct it independently
+      # (execute_approved! to replay the action, FleetAutonomyService to score
+      # the execution) rather than threading a Signal object through the
+      # execution RESULT, which stamp_execution! serializes into request_data.
+      #
+      # NOTE the fingerprint fallback. `signal_fingerprint` is the sensor's own
+      # per-resource key and is what a later sense pass re-emits; the
+      # "approved:<id>" substitute exists only so a pre-fingerprint request can
+      # still be replayed and logged. It matches NO sense pass, so nothing that
+      # SCORES by fingerprint disappearance may key on it — see
+      # FleetAutonomyService#record_approved_outcome!, which reads the stamped
+      # value directly and mints nothing when it is absent.
+      def signal_from_approval(request)
+        data = request.request_data.is_a?(Hash) ? request.request_data : {}
+        payload = data["payload"].is_a?(Hash) ? data["payload"] : {}
+        kind = payload["signal_kind"]
+        return nil if kind.blank?
+
+        ::System::Fleet::Signal.from_hash(
+          "kind" => kind,
+          "severity" => payload["signal_severity"].presence || "medium",
+          "payload" => payload.except("signal_kind", "signal_severity", "signal_fingerprint", "skill_plan"),
+          "fingerprint" => payload["signal_fingerprint"].presence || "approved:#{request.id}"
+        )
+      end
+
       # F3-01: the act arm of the require_approval lane. Reconstructs the
       # original signal from the approved request's stamped identity
       # (skill_metadata_payload) and replays it through the SAME execution
@@ -806,23 +837,11 @@ module System
       # REMEDIATION_APPLIERS. Always returns a result hash — never raises —
       # so the caller can stamp request_data even for unexecutable requests.
       def execute_approved!(request)
-        data = request.request_data.is_a?(Hash) ? request.request_data : {}
-        payload = data["payload"].is_a?(Hash) ? data["payload"] : {}
-        kind = payload["signal_kind"]
-        if kind.blank?
+        signal = signal_from_approval(request)
+        unless signal
           return { applied: false,
                    reason: "request_data missing signal_kind — pre-F3-01 request, cannot replay" }
         end
-
-        signal = ::System::Fleet::Signal.from_hash(
-          "kind" => kind,
-          "severity" => payload["signal_severity"].presence || "medium",
-          "payload" => payload.except("signal_kind", "signal_severity", "signal_fingerprint", "skill_plan"),
-          # Signal requires a fingerprint; replays of requests stamped before
-          # the fingerprint landed in skill_metadata_payload synthesize one
-          # from the request identity (only used for logging/dedup display).
-          "fingerprint" => payload["signal_fingerprint"].presence || "approved:#{request.id}"
-        )
 
         binding = SIGNAL_BINDINGS[signal.kind]
         skill_result = nil
@@ -1827,28 +1846,34 @@ module System
       #
       # IMP-848c7e953e2d — that declaration replaces the write-only
       # `requires_reprovision` flag this arm used to return (three writers, no
-      # readers), and it is DEFENCE IN DEPTH here rather than a live defect
-      # being closed. Say why, so nobody re-derives it: this signal kind never
-      # reaches the validate arc at all. #force_policy_for forces
-      # require_approval whenever the payload's requires_approval is set, and it
-      # is always set — the sensor filters instances by
-      # TemplateApprovalPolicy::LIVE_INSTANCE_SCOPE and the policy counts nodes
-      # over that SAME scope, so a firing sensor implies a non-zero
-      # provisioned_node_count. Forced require_approval means the decision is
-      # :pending, and RemediationValidator only records :proceed, so no outcome
-      # row exists to mis-score. (Nor does the approved replay create one:
-      # execute_approved_actions! stamps the request and never calls the
-      # validator, so NO gated lane is measured at all — filed as improvement
-      # 01a053c9-228f-7132-b98e-a2efb5c288cf, fingerprint "orchestration|
-      # .../fleet_autonomy_service.rb|approved-execution-mints-no-remediation-outcome".)
+      # readers).
       #
-      # What the declaration guards against is the day this lane does proceed.
+      # THIS LANE IS NOW MEASURED, and the reasoning that used to stand here no
+      # longer holds. It read: this signal kind never reaches the validate arc,
+      # because #force_policy_for forces require_approval whenever the payload's
+      # requires_approval is set (and it is always set — the sensor filters
+      # instances by TemplateApprovalPolicy::LIVE_INSTANCE_SCOPE and the policy
+      # counts nodes over that SAME scope, so a firing sensor implies a non-zero
+      # provisioned_node_count), forced require_approval decides :pending, and
+      # RemediationValidator only records :proceed. The first half is still
+      # true. The parenthetical was "nor does the approved replay create one —
+      # execute_approved_actions! stamps the request and never calls the
+      # validator", and IMP-31f1e5f9b365 closed exactly that gap: the approved
+      # replay now records. Forced require_approval is therefore this kind's
+      # ONLY route into the validate arc, not its exemption from one.
+      #
+      # What the declaration guards against is no longer hypothetical.
       # TemplateApplyService#apply! creates exactly the assignment rows
       # TemplateClosureDriftSensor subtracts, so after one apply the sensor's
       # difference is empty BY CONSTRUCTION and the fingerprint is absent from
-      # every later pass — and note that #apply! runs on BOTH arms, above this
-      # split, so the cloud_init arm is silenced the same way. The pivot arm is
-      # singled out only because it is the arm that also dispatches nothing.
+      # every later pass — and #apply! runs on BOTH arms, above the split
+      # below, so the cloud_init arm is silenced the same way. Scored by
+      # fingerprint disappearance, both arms would read EFFECTIVE every time,
+      # forever, whether or not a single node converged: a fabricated 1.0 in
+      # the ground truth the LEARN step consumes. Hence `fingerprint_self_
+      # clearing` below, declared on BOTH arms. The pivot arm ALSO declares
+      # convergence_deferred, and that one wins — its row is scored by the
+      # declaration rather than by the fingerprint, so it is still evidence.
       def apply_template_closure_drift(signal, skill_result)
         payload = signal.payload.is_a?(Hash) ? signal.payload : {}
         instance_id = payload["instance_id"] || payload[:instance_id]
@@ -1868,10 +1893,21 @@ module System
 
         created_module_ids = apply_result.created.map(&:node_module_id)
 
+        # IMP-31f1e5f9b365 — DECLARED here, at the one point where it becomes
+        # true, and on BOTH arms. #apply! has just created exactly the
+        # assignment rows TemplateClosureDriftSensor subtracts, so from this
+        # line on the fingerprint is absent from every later sense pass whether
+        # or not the node ever converged. Fingerprint disappearance is
+        # therefore not evidence for this result, and
+        # RemediationValidator#record_proceeded! must not mint a row that
+        # scores by it. The failing `apply_result.ok?` return above is
+        # deliberately outside this: nothing was created, so the sensor still
+        # sees the drift and the fingerprint means what it usually means.
         if instance.pivot_boot?
           return {
             applied: true, instance_id: instance.id, node_id: node.id,
             assignments_created: created_module_ids, convergence_deferred: true,
+            fingerprint_self_clearing: true,
             reason: "pivot-booted instance composes its module union at boot — assignments created; " \
                     "a rolling reprovision (reboot) is required for them to take effect"
           }
@@ -1882,7 +1918,7 @@ module System
         # dispatch_reconcile_task can itself return the reboot_pending
         # escalation, which DECLARES the deferral; merging a false over it
         # would erase the one fact this result exists to carry.
-        sync_result.merge(assignments_created: created_module_ids)
+        sync_result.merge(assignments_created: created_module_ids, fingerprint_self_clearing: true)
       end
 
       def dispatch_reconcile_task(signal, skill_result, command:)

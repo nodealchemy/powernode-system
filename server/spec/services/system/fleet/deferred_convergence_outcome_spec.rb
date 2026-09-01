@@ -278,19 +278,26 @@ RSpec.describe "deferred-convergence remediation scoring", type: :service do
     end
   end
 
-  # CONTROL. Without this the change could mark every outcome inconclusive and
-  # both examples above would still pass — the validate arc would score nothing
-  # at all, which is a worse defect than the one being fixed.
+  # IMP-31f1e5f9b365 ANSWERED THE "separate, larger question" THIS BLOCK USED
+  # TO PARK. It read: "NOT a claim that the cloud_init arm MEASURES anything.
+  # apply! runs on both arms before the pivot split, so this arm's fingerprint
+  # is silenced by construction too and its outcome settles 90s later
+  # regardless of whether the dispatched sync_modules ever converged. ...
+  # Whether template_closure_apply should be scorable by its own fingerprint at
+  # all is a separate, larger question."
   #
-  # NOT a claim that the cloud_init arm MEASURES anything. apply! runs on both
-  # arms before the pivot split, so this arm's fingerprint is silenced by
-  # construction too and its outcome settles 90s later regardless of whether
-  # the dispatched sync_modules ever converged. What these two examples pin is
-  # only that a NON-DECLARING applier still reaches the scoring branches at
-  # all — i.e. that the new branch is keyed on the declaration and not on the
-  # signal kind, the arm, or nothing. Whether template_closure_apply should be
-  # scorable by its own fingerprint at all is a separate, larger question.
-  describe "an applier that does NOT declare a deferral still reaches scoring" do
+  # It should not be, and now is not: the cloud_init arm declares
+  # `fingerprint_self_clearing` and mints no row at all. What forced the
+  # answer was giving the require_approval lane a validate arm — force_policy_for
+  # ALWAYS forces require_approval for this kind in production, so this lane's
+  # only real route into the validate arc was the one that did not exist yet,
+  # and opening it would have started writing a permanent, fabricated 1.0.
+  #
+  # The two examples below were using this arm only as a convenient
+  # NON-declaring applier, to pin that the deferral branch is keyed on the
+  # DECLARATION rather than on the signal kind or the arm. That claim still
+  # needs pinning, so they now use an applier that declares neither flag.
+  describe "the template-closure cloud_init arm (self-clearing, so unscorable)" do
     let(:template) { create(:system_node_template, account: account, node_platform: platform) }
 
     let(:signal) do
@@ -310,12 +317,55 @@ RSpec.describe "deferred-convergence remediation scoring", type: :service do
                                      policy: "notify_and_proceed", is_active: true)
     end
 
-    it "reaches the EFFECTIVE branch on absence when the applier did NOT defer (cloud_init arm)" do
+    it "dispatches the sync but mints NO outcome — its own apply! silenced the sensor" do
       expect(instance.pivot_boot?).to be(false), "fixture is on the pivot arm"
 
       decision = engine.decide(signal)
       expect(decision[:decision]).to eq(:proceed)
       expect(System::Task.find_by(account: account, command: "sync_modules", operable: instance)).to be_present
+      expect(decision.dig(:remediation, :fingerprint_self_clearing)).to be true
+
+      expect {
+        validator.record_proceeded!(decisions: [ decision ], signals: [ signal ])
+      }.not_to change { System::Fleet::RemediationOutcome.count }
+    end
+  end
+
+  # CONTROL. Without this the deferral change could mark every outcome
+  # inconclusive and the two examples at the top would still pass — the
+  # validate arc would score nothing at all, which is a worse defect than the
+  # one being fixed. It has to be an applier declaring NEITHER flag: the
+  # template-closure arms above declare one each and so prove nothing about the
+  # ordinary path.
+  describe "an applier that declares NEITHER flag still reaches scoring" do
+    let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+
+    # reboot_silent_instance declares neither convergence_deferred nor
+    # fingerprint_self_clearing, and InstanceStatusSensor keeps re-emitting
+    # instance_silent for as long as the instance stays silent — so for THIS
+    # applier the fingerprint means what the validate arc assumes it means.
+    let(:signal) do
+      System::Fleet::Signal.new(
+        kind: "system.instance_silent", severity: :high,
+        payload: { "instance_id" => instance.id, "_sensor" => "InstanceStatusSensor" },
+        fingerprint: "instance_silent:#{instance.id}"
+      )
+    end
+
+    before do
+      allow(System::InstanceControlService).to receive(:execute)
+        .and_return(System::Runtime::Result.ok(data: { action: "reboot" }))
+      Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                     action_category: "system.instance_reprovision",
+                                     policy: "notify_and_proceed", is_active: true)
+    end
+
+    it "reaches the EFFECTIVE branch on absence when the applier declared neither flag" do
+      decision = engine.decide(signal)
+      expect(decision[:decision]).to eq(:proceed)
+      expect(decision[:remediation]).to include(applied: true)
+      expect(decision[:remediation]).not_to have_key(:convergence_deferred)
+      expect(decision[:remediation]).not_to have_key(:fingerprint_self_clearing)
 
       validator.record_proceeded!(decisions: [ decision ], signals: [ signal ])
       outcome = score!(signal.fingerprint, current_signals: [])
@@ -323,7 +373,7 @@ RSpec.describe "deferred-convergence remediation scoring", type: :service do
       expect(outcome.status).to eq("effective")
     end
 
-    it "reaches the INEFFECTIVE branch on presence when the applier did NOT defer" do
+    it "reaches the INEFFECTIVE branch on presence when the applier declared neither flag" do
       decision = engine.decide(signal)
       validator.record_proceeded!(decisions: [ decision ], signals: [ signal ])
       outcome = score!(signal.fingerprint, current_signals: [ signal ])

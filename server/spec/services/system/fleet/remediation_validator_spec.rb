@@ -112,6 +112,58 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
   # isolate the validator's own halves, so a regression in branch placement or
   # in the metadata key does not have to be diagnosed through a whole engine
   # tick.
+  # IMP-31f1e5f9b365 — the third declared exemption. An applier whose OWN
+  # action removes the sensor's ability to observe the condition
+  # (DecisionEngine#apply_template_closure_drift creates exactly the
+  # assignment rows TemplateClosureDriftSensor subtracts) makes fingerprint
+  # disappearance meaningless. The mirror of the other two exemptions and
+  # worse for being silent: those score ineffective forever and raise a false
+  # alarm; this one scores EFFECTIVE forever and writes a fabricated 1.0 into
+  # the LEARN step's ground truth, which nothing complains about.
+  describe "fingerprint_self_clearing" do
+    def self_clearing(fingerprint, extra = {})
+      proceeded(fingerprint).merge(
+        remediation: { applied: true, task_id: "task-1" }.merge(extra)
+      )
+    end
+
+    it "records NOTHING when the applier declares it" do
+      expect {
+        validator.record_proceeded!(
+          decisions: [ self_clearing("fp-selfclear", fingerprint_self_clearing: true) ],
+          signals: [ sig("fp-selfclear") ]
+        )
+      }.not_to change { System::Fleet::RemediationOutcome.count }
+    end
+
+    it "still records an otherwise identical decision that does NOT declare it" do
+      expect {
+        validator.record_proceeded!(decisions: [ self_clearing("fp-plainclear") ],
+                                    signals: [ sig("fp-plainclear") ])
+      }.to change { System::Fleet::RemediationOutcome.count }.by(1)
+    end
+
+    it "does not suppress a DECLARED deferral carrying both flags" do
+      # The pivot arm of apply_template_closure_drift returns both. The
+      # deferral wins: #validate_due! settles that row from the declaration
+      # BEFORE it consults the signals, so self-clearing cannot corrupt it,
+      # and it is the only evidence an operator gets for a lane that said it
+      # could not converge.
+      expect {
+        validator.record_proceeded!(
+          decisions: [ self_clearing("fp-both", fingerprint_self_clearing: true,
+                                                convergence_deferred: true,
+                                                reason: "reboot required") ],
+          signals: [ sig("fp-both") ]
+        )
+      }.to change { System::Fleet::RemediationOutcome.count }.by(1)
+
+      o = System::Fleet::RemediationOutcome.find_by(fingerprint: "fp-both")
+      expect(o.metadata["convergence_deferred"]).to be true
+      expect(o.metadata["deferred_reason"]).to eq("reboot required")
+    end
+  end
+
   describe "deferred convergence" do
     def deferred(fingerprint, reason: "a reboot is required")
       proceeded(fingerprint).merge(

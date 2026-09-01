@@ -9,7 +9,13 @@ module System
     #
     #   record_proceeded!  after the loop ACTS, snapshot each PROCEEDED remediation
     #                      as a pending RemediationOutcome keyed by the triggering
-    #                      signal's fingerprint.
+    #                      signal's fingerprint. IMP-31f1e5f9b365: this is also
+    #                      the recorder for the require_approval lane —
+    #                      FleetAutonomyService#record_approved_outcome! calls it
+    #                      from the EXECUTION with a synthesised :proceed
+    #                      decision, so that lane inherits every guard below
+    #                      rather than growing a second recorder that shares
+    #                      none of them.
     #   validate_due!      on a LATER tick, reuse the fresh sense pass: a pending
     #                      outcome whose settle window elapsed is EFFECTIVE if its
     #                      fingerprint is gone from the current signals, else
@@ -184,6 +190,32 @@ module System
           # Keyed off the applier's own proposal flag, not the action_category, so
           # any future propose-only lane inherits the exemption by declaring it.
           next if decision.dig(:remediation, :proposal)
+          # IMP-31f1e5f9b365: the third exemption, and a third distinct reason.
+          # An applier DECLARES `fingerprint_self_clearing` when its own action
+          # removes the sensor's ability to observe the condition, whatever the
+          # fleet then does. #apply_template_closure_drift is the case: it
+          # creates exactly the assignment rows TemplateClosureDriftSensor
+          # subtracts, so the fingerprint is gone from the next pass BY
+          # CONSTRUCTION rather than by convergence.
+          #
+          # The failure mode is the MIRROR of the other two, and worse for
+          # being silent. :proposal and the non-remediating list exist because
+          # a fingerprint that never clears scores INEFFECTIVE forever and
+          # manufactures a false fleet.remediation_stuck escalation. This one
+          # scores EFFECTIVE forever: a fabricated 1.0 written into the ground
+          # truth the LEARN/ADAPT steps consume, for an on-node sync that may
+          # have failed outright. Nothing complains about a success, which is
+          # precisely why it has to be declared rather than discovered.
+          #
+          # A DECLARED deferral outranks it. #validate_due! settles a
+          # convergence_deferred row `inconclusive` BEFORE consulting the
+          # signals at all, so that row is scored by the declaration and never
+          # by fingerprint disappearance — self-clearing cannot corrupt it, and
+          # skipping it would throw away the one piece of evidence an operator
+          # reads for a lane that said it could not converge.
+          if decision.dig(:remediation, :fingerprint_self_clearing) && !deferred_convergence(decision)
+            next
+          end
 
           fingerprint = (decision[:fingerprint] || signals[i]&.fingerprint).to_s
           next if fingerprint.blank?
