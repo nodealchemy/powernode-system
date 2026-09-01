@@ -449,6 +449,26 @@ module System
         # because the fingerprint stands until a person fixes the janitor.
         "system.task_backlog_investigate" => "notify_and_proceed",
 
+        # ModulePromotionBacklogSensor — "a newer usable version exists and the
+        # fleet is still running the old one". Seeded HERE for the same
+        # mechanical reason as the categories above: the sensor fires from
+        # FleetAutonomyService::SENSORS and gates as THIS agent, so a policy
+        # declared on any other agent is invisible to the tick and every signal
+        # dies at the gate.
+        #
+        # notify_and_proceed, never auto_approve, and there is deliberately no
+        # applier — promoting the stalled version is precisely what a gate, a
+        # broken publish chain or a deliberate hold has already declined to do.
+        # What the notify verb actually buys is a SEPARATELY TUNABLE, operator-
+        # facing policy row (this constant is also what registers the category
+        # for the Autonomy modal) rather than folding the stall into the silent
+        # auto-approved bucket. Be precise about the rest: gate_action!'s extra
+        # step for this verb is FleetAutonomyService#notify_action, which today
+        # only writes a Rails.logger line — it is not an operator page. Also in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
+        # fingerprint stands until a person promotes, withdraws or fixes it.
+        "system.module_promotion_investigate" => "notify_and_proceed",
+
         # Read/notify
         "system.module_assign"           => "notify_and_proceed",
         "system.instance_reboot"         => "notify_and_proceed",

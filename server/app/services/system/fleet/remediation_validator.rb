@@ -139,6 +139,7 @@ module System
         system.module_verify_investigate
         system.task_backlog_investigate
         system.node_lkg_investigate
+        system.module_promotion_investigate
       ].freeze
 
       def initialize(account:, agent: nil)

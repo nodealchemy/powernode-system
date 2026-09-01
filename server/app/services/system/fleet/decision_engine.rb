@@ -169,6 +169,69 @@ module System
           skill: nil,
           action_category: "system.module_promote_to_live"
         },
+        # IMP-cd2ecc3a7a7a — ModulePromotionBacklogSensor, the STALL
+        # counterpart to the ready signal above. Notify-level with skill: nil
+        # under its own dedicated category, the StuckTaskBacklogSensor /
+        # SdwanOvnDeploymentHealthSensor shape.
+        #
+        # WHY NO APPLIER, AND WHY ONE MUST NOT BE ADDED. This kind means "a
+        # newer usable version exists and the fleet is still running the old
+        # one, past the lag budget". The remedy is to repoint
+        # NodeModule#current_version_id — which is exactly what some gate,
+        # some broken publish chain, or a deliberate operator hold has not
+        # done. An applier here would promote an artifact past whatever
+        # refused it, autonomously, on the strength of a timer. The sensor's
+        # own header records why the refusal cannot be read back: on
+        # 2026-08-25 the gate stopped emitting withheld events entirely and
+        # still never promoted. So this lane reports, and a person decides.
+        #
+        # DO NOT collapse to system.observation. The fleet seed maps that to
+        # auto_approve, which takes gate_action!'s bare :proceed arm; the
+        # dedicated category is seeded notify_and_proceed, which is a
+        # separately tunable operator-facing policy row (the Autonomy modal
+        # registry derives from PolicyDeclarations::FLEET_AUTONOMY_POLICIES, so
+        # the seeded category is what makes this lane retunable at all).
+        # Collapsing it would fold a standing stall into the same silent
+        # auto-approved bucket as routine observations while the binding and
+        # doc guards both went green — the precise failure mode this sensor was
+        # built to catch, reproduced one layer up. (Be accurate about the
+        # notify half: notify_and_proceed's extra step is
+        # FleetAutonomyService#notify_action, which today is a Rails.logger
+        # line, not an operator notification. The tunable policy row is the
+        # load-bearing difference, not a page.)
+        #
+        # Listed in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES:
+        # a stall stands until a person acts, so its fingerprint would
+        # otherwise score ineffective every settle window and trip a false
+        # fleet.remediation_stuck escalation for a lane that never acted.
+        #
+        # advisory: true — DECLARED, and load-bearing here in a way it is NOT
+        # for StuckTaskBacklogSensor / SdwanOvnDeploymentHealthSensor. Those
+        # put no module_id in their payloads, so gate_action!'s
+        # consent_module_id is blank and ConsentBudgetService#check_and_consume!
+        # short-circuits. (The engine states that explicitly, though on a
+        # third notify-only block rather than these two: the
+        # SdwanServiceHealthSensor pair below calls advisory "inert here at
+        # best" for exactly this reason. Cited where it actually lives — the
+        # StuckTaskBacklog and OVN bindings carry no such note.)
+        # This sensor DOES stamp module_id (the stalled module's own id), and
+        # skill_metadata_payload passes the payload straight through as gate
+        # metadata. Without the flag a standing stall would re-decide every
+        # DEDUP_TTL_SECONDS (600s → ~144×/day) and drain that module's
+        # operator-set 24h consent ceiling with a no-op, pushing the module's
+        # REAL remediations down the budget-exhausted branch. That is verbatim
+        # the live defect recorded on the capability_gap binding below, whose
+        # shape this shares: module-stamped, standing, and applier-less. The
+        # flag's other effect (a durable operator decision on the request) is
+        # inert on this lane: create_pending_approval is reached only from the
+        # require_approval arm and from the budget-exhausted arm (itself inside
+        # `unless advisory`), and force_policy_for escalates one kind only —
+        # system.template_closure_drift — so nothing can route this kind there.
+        "system.module_promotion_stalled" => {
+          skill: nil,
+          action_category: "system.module_promotion_investigate",
+          advisory: true
+        },
         "system.config_drift" => {
           skill: ::System::Ai::Skills::DriftRemediateExecutor,
           action_category: "system.module_assign",

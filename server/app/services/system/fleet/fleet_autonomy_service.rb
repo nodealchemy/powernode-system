@@ -237,7 +237,12 @@ module System
         # than from the absence of a withheld event — the 2026-08-25 stall
         # emitted refusals, stopped emitting them, and still never promoted, so
         # an event-absence detector would have stayed silent throughout.
-        # Advisory: emits system.module_promotion_stalled, binds to no action.
+        # Notify-level: emits system.module_promotion_stalled, bound to
+        # system.module_promotion_investigate (skill: nil) so the stall gets a
+        # separately tunable, operator-facing policy row rather than the silent
+        # auto-approved bucket. (notify_and_proceed's extra step is
+        # #notify_action below — a Rails.logger line, not an operator page.)
+        # No applier by design — see the binding's comment.
         ::System::Fleet::Sensors::ModulePromotionBacklogSensor,
         # `capability:<tag>` requirements no module on the account provides.
         # Advisory only — closing a gap means authoring a module, which must
