@@ -78,7 +78,10 @@ platform.system_create_instance_pool({
   max_size: 10,
   lifecycle_class: "ephemeral"                          // ephemeral|spot (default ephemeral)
 })
-// → { instance_pool: { id: "pool-ml-1", status: "active", ready_count: 0, ... } }
+// → { pool: { id: "pool-ml-1", name, status: "active", lifecycle_class,
+//             target_size: 5, min_size, max_size, ready_count: 0,
+//             warming_count: 0, claimed_count: 0, errored_count: 0,
+//             deficit, last_replenished_at } }
 ```
 
 **Expected outcome:** pool row created in `status: active` with zero ready
@@ -91,11 +94,12 @@ on its next tick and begins provisioning 5 members in parallel (each gets
 ```javascript
 platform.system_get_instance_pool({ id: "pool-ml-1" })
 // → {
-//      instance_pool: { ..., status: "active", warming_count: 5, ready_count: 0 },
-//      members: [
-//        { instance_id, pool_state: "warming", pool_warming_started_at, ... },
-//        ... 4 more
-//      ]
+//      pool: { ..., status: "active", warming_count: 5, ready_count: 0,
+//              members: [
+//                { id, name, pool_state: "warming", status,
+//                  pool_warming_started_at, pool_acquired_at },
+//                ... 4 more
+//              ] }
 //    }
 ```
 
@@ -103,13 +107,20 @@ After ~5 min (parallel bootstrap of 5 instances):
 
 ```javascript
 // → {
-//      instance_pool: { ..., status: "active", warming_count: 0, ready_count: 5 },
-//      members: [
-//        { instance_id, pool_state: "ready", ... },
-//        ... 4 more
-//      ]
+//      pool: { ..., status: "active", warming_count: 0, ready_count: 5,
+//              members: [
+//                { id, name, pool_state: "ready", status,
+//                  pool_warming_started_at, pool_acquired_at },
+//                ... 4 more
+//              ] }
 //    }
 ```
+
+`members` is nested **inside** `pool`, not beside it, and a member's own key is
+`id` — the `System::NodeInstance` id you pass to
+`system_get_instance({ instance_id: })`. The roster is capped at 50 members and
+ordered by `(pool_state, pool_warming_started_at)`; the counts beside it are
+not capped.
 
 **Expected outcome:** all 5 members `ready` and idle. Inspect any one
 member via `system_get_instance` — you'll see it's a fully bootstrapped
@@ -163,17 +174,19 @@ ssh ops@<instance-host-address>      # SDWAN /128 from system_get_instance
 
 ## Step 5 — Watch replenishment
 
-Pool membership changes surface through the member counts on the pool row
-(the underlying instance state transitions are emitted by
-`InstanceStatusSensor`, not a bespoke `pool.*` event stream). Poll the pool
-to watch the deficit close:
+Pool membership changes surface both through the member counts on the pool row
+and through `system.pool.*` FleetEvents — a member flipping to `ready` emits
+`system.pool.member_ready`, and the drain/recycle failure paths emit
+high-severity kinds worth alerting on. See the
+[pool tuning runbook](../runbooks/instance-pool-tuning.md) for the full event
+table. Poll the pool to watch the deficit close:
 
 ```javascript
 platform.system_get_instance_pool({ id: "pool-ml-1" })
 // right after the 3 claims:
-// → { instance_pool: { status: "active", claimed_count: 3, ready_count: 2, warming_count: 0 }, ... }
+// → { pool: { status: "active", claimed_count: 3, ready_count: 2, warming_count: 0, ... } }
 // then on the next reaper tick the 3 replacements appear as warming:
-// → { instance_pool: { status: "active", claimed_count: 3, ready_count: 2, warming_count: 3 }, ... }
+// → { pool: { status: "active", claimed_count: 3, ready_count: 2, warming_count: 3, ... } }
 ```
 
 **Expected outcome:** within ~5 min of claim, the replacements warm up and
@@ -196,8 +209,9 @@ the instance is single-use; the pool keeps replenishing fresh members.
 
 ```javascript
 platform.system_get_instance_pool({ id: "pool-ml-1" })
-// → { instance_pool: { status: "active", ready_count: 5, warming_count: 0, claimed_count: 0 }, ... }
-//   members[] roster shows each NodeInstance's pool_state
+// → { pool: { status: "active", ready_count: 5, warming_count: 0, claimed_count: 0,
+//             members: [...] } }
+//   pool.members[] shows each NodeInstance's id + pool_state
 ```
 
 ## Cleanup
@@ -208,7 +222,14 @@ Drain the pool when no longer needed:
 // Drain sets pool status="draining", halts replenishment, and terminates
 // ready members. Claimed members keep running until their workload ends.
 platform.system_drain_instance_pool({ id: "pool-ml-1" })
-// → { status: "draining", terminated_count: 5, ... }
+// → { pool: { ..., status: "draining" },
+//     drain_result: { drained: 5, terminate_failed: 0, claimed_remaining: 0 } }
+
+// Read `terminate_failed`: a non-zero count means the provider terminate did
+// NOT land for that many members. They park at pool_state "errored" (not
+// "draining"), a high-severity system.pool.terminate_failed event fires, and
+// their VMs may still be running and billing. `drained` alone does not tell
+// you the pool is gone.
 
 // Delete only succeeds once the pool has no members — drain first, then:
 platform.system_delete_instance_pool({ id: "pool-ml-1" })
