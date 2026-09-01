@@ -9,6 +9,7 @@ import (
 
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
+	"github.com/nodealchemy/powernode-system/agent/internal/taskguard"
 )
 
 // sysrootPath is where the agent's composed module union lives — see
@@ -101,6 +102,16 @@ type probeModuleSmokeOptions struct {
 // parseProbeModuleSmokeOptions validates task.Options. Pure (no I/O) so the
 // validation logic is unit-testable without a mount runner — mirrors
 // parseModuleBuildOptions / parsePackageBuildOptions.
+//
+// This is the SINGLE validation seam for probe.module_smoke, and it is where
+// the ARGUMENTS get bounded, not just the check names. The three checks are
+// allow-listed by name (probeModuleSmokeChecks) but each one shells out with a
+// payload-supplied argument: curl takes the endpoint and the method, chroot+ldd
+// takes the ELF path, systemctl takes a unit name built from module_id and a
+// service name. The verb is auto_approve precisely because those primitives are
+// read-only and cannot be extended by payload — which only holds while the
+// arguments are bounded. The rules come from package taskguard; see its doc for
+// why the agent, not the control plane, is where they have to be true.
 func parseProbeModuleSmokeOptions(task *tasks.Task) (probeModuleSmokeOptions, error) {
 	str := func(key string) string {
 		v, _ := task.Options[key].(string)
@@ -121,6 +132,31 @@ func parseProbeModuleSmokeOptions(task *tasks.Task) (probeModuleSmokeOptions, er
 	}
 	if opts.ModuleID == "" {
 		return probeModuleSmokeOptions{}, errors.New("probe.module_smoke: options.module_id is required")
+	}
+	// module_id and every service name are concatenated into the unit name
+	// handed to `systemctl is-active`; a value carrying a space or a leading
+	// dash stops being one argv element naming one unit.
+	if err := taskguard.Identifier("module_id", opts.ModuleID); err != nil {
+		return probeModuleSmokeOptions{}, err
+	}
+	for i, svc := range opts.Services {
+		if err := taskguard.Identifier(fmt.Sprintf("services[%d]", i), svc); err != nil {
+			return probeModuleSmokeOptions{}, err
+		}
+	}
+	// Each candidate becomes the argument of `chroot /sysroot ldd <path>`. It
+	// must be an absolute, canonical path inside the union — a leading dash
+	// would be read by ldd as an option instead.
+	for i, p := range opts.ElfCandidates {
+		if err := taskguard.AbsPath(fmt.Sprintf("elf_candidates[%d]", i), p); err != nil {
+			return probeModuleSmokeOptions{}, err
+		}
+	}
+	if opts.HealthCheckTimeoutSeconds <= 0 {
+		// Absent or zero would become `curl -m 0`, which disables the timeout
+		// and lets one hung endpoint stall the whole probe.
+		return probeModuleSmokeOptions{}, fmt.Errorf(
+			"probe.module_smoke: %w: health_check_timeout_seconds: must be positive", taskguard.ErrRefused)
 	}
 
 	checks := toStringSlice(task.Options["checks"])
@@ -376,8 +412,21 @@ func toHealthChecks(v any) ([]healthCheckOption, error) {
 		if endpoint == "" {
 			return nil, fmt.Errorf("probe.module_smoke: health_checks[%d].endpoint is required", i)
 		}
+		if err := taskguard.HTTPEndpoint(fmt.Sprintf("health_checks[%d].endpoint", i), endpoint); err != nil {
+			return nil, err
+		}
 		service, _ := e["service"].(string)
 		method, _ := e["method"].(string)
+		if method != "" {
+			if err := taskguard.HTTPMethod(fmt.Sprintf("health_checks[%d].method", i), method); err != nil {
+				return nil, err
+			}
+		}
+		if service != "" {
+			if err := taskguard.Identifier(fmt.Sprintf("health_checks[%d].service", i), service); err != nil {
+				return nil, err
+			}
+		}
 		out = append(out, healthCheckOption{Service: service, Endpoint: endpoint, Method: method})
 	}
 	return out, nil
