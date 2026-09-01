@@ -118,8 +118,21 @@ module Api
           #
           # Returns the erofs artifact metadata. The agent's
           # internal/oci.Puller consumes the `file` block for
-          # streaming + sha256 verify and the `oci` block for cosign
-          # material.
+          # streaming + sha256 verify, and reads oci.digest from the
+          # `oci` block.
+          #
+          # This envelope carries NO cosign material, and the agent has
+          # no other channel for it: no signature, bundle, bundle_url or
+          # public key is served here, oci.ModuleArtifactRef has no
+          # field that could receive one, and the agent has no OCI
+          # registry client to fetch the signature that does exist in
+          # the registry for natively-built modules. Consequently every
+          # module mount is wired with the no-op verify.AlwaysOK — see
+          # agent/internal/verify/doc.go for the enumerated
+          # prerequisites. Adding a signature field here is step 2 of
+          # those, and is a prerequisite for enforcement, not a
+          # cosmetic addition. (This comment previously claimed the
+          # `oci` block supplied "cosign material"; it never has.)
           def download
             artifact = @module.current_version&.artifact
             return render_error("Module has no published artifact") unless artifact
