@@ -12,6 +12,13 @@ import (
 // Shape 2: gateway). Idempotent: create on an existing user updates
 // the password; delete on a missing user is a no-op.
 func ApplySambaUser(ctx context.Context, runner mount.Runner, task *SmbUserApplyTask) error {
+	// The single validation seam for storage.smb_user.apply. samba-tool runs
+	// without a shell, so the exposure is argv: a leading dash on the username
+	// or password becomes an option. See validate.go.
+	if err := task.Validate(); err != nil {
+		return err
+	}
+
 	switch task.Action {
 	case "create":
 		return createSambaUser(ctx, runner, task)

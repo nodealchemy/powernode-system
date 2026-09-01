@@ -14,13 +14,22 @@ import (
 // ExportsDir is where we materialize per-account NFS exports. One file
 // per account keeps blast radius low — bad edit in one tenant doesn't
 // affect another's clients.
-const ExportsDir = "/etc/exports.d"
+//
+// A var rather than a const ONLY as a test seam (see SystemdUnitDir).
+var ExportsDir = "/etc/exports.d"
 
 // ApplyExports renders an exports file for one storage and re-runs
 // exportfs -ra so the kernel picks it up. Caller-side has already
 // taken the per-storage advisory lock — concurrent writes are safe
 // from the platform side but this function does not lock locally.
 func ApplyExports(ctx context.Context, runner mount.Runner, task *ExportsApplyTask) error {
+	// The single validation seam for storage.exports.apply. Nothing else binds
+	// this task to a share — the export path, the peer address and the options
+	// are all payload-chosen. See validate.go.
+	if err := task.Validate(); err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(ExportsDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", ExportsDir, err)
 	}

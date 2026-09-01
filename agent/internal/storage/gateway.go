@@ -22,6 +22,13 @@ import (
 // Per-client ACLs land separately via the storage.exports.apply task.
 // This task only owns the re-export base.
 func ProvisionGateway(ctx context.Context, runner mount.Runner, task *GatewayProvisionTask) error {
+	// The single validation seam for storage.gateway.provision — same
+	// unvalidated-unit-name class as storage.mount, plus a local path that is
+	// mkdir'd, mounted over and exported. See validate.go.
+	if err := task.Validate(); err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(task.ReExportPath, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", task.ReExportPath, err)
 	}
@@ -49,6 +56,11 @@ func ProvisionGateway(ctx context.Context, runner mount.Runner, task *GatewayPro
 
 // DeprovisionGateway reverses ProvisionGateway.
 func DeprovisionGateway(ctx context.Context, runner mount.Runner, task *GatewayDeprovisionTask) error {
+	// The single validation seam for storage.gateway.deprovision. See validate.go.
+	if err := task.Validate(); err != nil {
+		return err
+	}
+
 	if err := removeReExportLine(task.StorageID, task.ReExportPath); err != nil {
 		return err
 	}
@@ -87,6 +99,11 @@ WantedBy=multi-user.target
 	return nil
 }
 
+// EtcExportsPath is the system NFS export table the gateway re-export
+// line is spliced into. A var rather than a const ONLY as a test seam
+// (see SystemdUnitDir).
+var EtcExportsPath = "/etc/exports"
+
 // reExportMarker is what we grep for in /etc/exports to find our
 // managed line. Storage ID makes it unique per gateway.
 func reExportMarker(storageID string) string {
@@ -94,7 +111,7 @@ func reExportMarker(storageID string) string {
 }
 
 func writeReExportLine(task *GatewayProvisionTask) error {
-	exportsPath := "/etc/exports"
+	exportsPath := EtcExportsPath
 	contents, err := os.ReadFile(exportsPath)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read %s: %w", exportsPath, err)
@@ -111,7 +128,7 @@ func writeReExportLine(task *GatewayProvisionTask) error {
 }
 
 func removeReExportLine(storageID, _ string) error {
-	exportsPath := "/etc/exports"
+	exportsPath := EtcExportsPath
 	contents, err := os.ReadFile(exportsPath)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -13,7 +13,12 @@ import (
 // SystemdUnitDir is where we write the platform-managed .mount units.
 // Distinct prefix powernode-storage-* so we can audit + clean up safely
 // without touching unrelated operator units.
-const SystemdUnitDir = "/etc/systemd/system"
+//
+// A var rather than a const ONLY so the package's own tests can redirect
+// the write into t.TempDir() and assert, on real bytes, that a crafted
+// unit_name does not escape this directory. Production never reassigns it;
+// the same test-seam shape as `var runFind` in chown.go.
+var SystemdUnitDir = "/etc/systemd/system"
 
 // WriteMountUnit writes a systemd .mount unit for the assignment and
 // reloads systemd. The unit chains After=<wg interface>.service so

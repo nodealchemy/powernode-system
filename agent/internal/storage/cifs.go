@@ -37,6 +37,9 @@ func MountCIFS(ctx context.Context, runner mount.Runner, client httpGetter, task
 
 // UnmountCIFS stops the unit and cleans up the credential file.
 func UnmountCIFS(ctx context.Context, runner mount.Runner, task *UnmountTask, credID string) error {
+	if err := task.Validate(); err != nil {
+		return err
+	}
 	if err := StopAndRemoveMountUnit(ctx, runner, task.UnitName); err != nil {
 		return err
 	}

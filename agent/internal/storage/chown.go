@@ -50,11 +50,11 @@ type ChownTask struct {
 // catastrophic mistakes. Refuses no-op tasks where OldUID == NewUID
 // AND OldGID == NewGID (caller should have skipped the dispatch).
 func ApplyChown(ctx context.Context, task *ChownTask) error {
-	if task == nil {
-		return fmt.Errorf("storage.chown: nil task")
-	}
-	if task.MountPath == "" || task.MountPath == "/" {
-		return fmt.Errorf("storage.chown: refusing dangerous mount_path %q", task.MountPath)
+	// The single validation seam for storage.chown. This SUPERSEDES the guard
+	// that used to sit here, which refused exactly "" and "/" — "/etc" with
+	// old_uid 0 passed it. See validate.go.
+	if err := task.Validate(); err != nil {
+		return err
 	}
 	if task.OldUID == task.NewUID && task.OldGID == task.NewGID {
 		return nil // no-op

@@ -23,5 +23,8 @@ func MountNFS(ctx context.Context, runner mount.Runner, task *MountTask) error {
 
 // UnmountNFS reverses MountNFS — stops the systemd unit and removes it.
 func UnmountNFS(ctx context.Context, runner mount.Runner, task *UnmountTask) error {
+	if err := task.Validate(); err != nil {
+		return err
+	}
 	return StopAndRemoveMountUnit(ctx, runner, task.UnitName)
 }

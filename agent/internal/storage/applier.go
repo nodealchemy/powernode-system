@@ -14,6 +14,13 @@ import (
 // if it errors, the whole assignment fails rather than serving plaintext
 // under an "encrypted" label.
 func Apply(ctx context.Context, runner mount.Runner, client httpGetter, task *MountTask) error {
+	// The single validation seam for storage.mount. It runs before the recipe
+	// switch so no driver — and no os.MkdirAll on the caller-chosen mount
+	// path — happens for a payload the agent will refuse. See validate.go.
+	if err := task.Validate(); err != nil {
+		return err
+	}
+
 	var mountErr error
 	switch task.Recipe.Type {
 	case "nfs4", "nfs":
@@ -39,6 +46,12 @@ func Apply(ctx context.Context, runner mount.Runner, client httpGetter, task *Mo
 // CredentialID is used to clean up the transient credential file for
 // CIFS mounts; empty for NFS / object.
 func Unapply(ctx context.Context, runner mount.Runner, task *UnmountTask, encryption EncryptionSpec, credentialID string) error {
+	// storage.unmount is NOT storage-scoped without this: StopAndRemoveMountUnit
+	// stops and deletes whatever unit the payload names. See validate.go.
+	if err := task.Validate(); err != nil {
+		return err
+	}
+
 	// Stop the systemd unit and clean credential files. We don't know
 	// the recipe.Type at unmount time (the platform sends an
 	// UnmountTask, not a MountTask), so we use a uniform path: stop
