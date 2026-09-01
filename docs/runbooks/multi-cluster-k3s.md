@@ -2,7 +2,7 @@
 
 > Status: active
 
-Operator guide for running multiple K3s clusters in one account: bootstrap, HA control plane via slice 3 VIP failover, kubeconfig retrieval, and cross-cluster operator workflows.
+Operator guide for running multiple K3s clusters in one account: bootstrap, VIP-backed `api_endpoint`, kubeconfig retrieval, and cross-cluster operator workflows. An HA control plane (Phase 4) and placing workers in a chosen cluster (Phase 3) are **not implemented** — see the banner below.
 
 **Audience:** operators running multi-environment fleets (prod + staging, multi-region, multi-tenant); SREs managing K3s upgrades.
 
@@ -28,14 +28,29 @@ Operator guide for running multiple K3s clusters in one account: bootstrap, HA c
 > are unaffected. The producer is tracked separately (IMP-a5f236e8cc56 gap 3);
 > this page will be restored when it lands.
 >
-> **Phase 4 (HA control plane) is NOT covered by this correction and should not
-> be read as verified.** A review of this page found evidence that a second
-> `k3s-server` does not join the existing cluster's etcd at all — the k3s-server
-> installer writes no join material (`WriteJoinConfig` exists only on
-> `ShellAgentApplier`) — which would mean Phase 4 *creates a second cluster*
-> rather than extending the first, and is therefore the very thing that trips
-> the Phase 3 refusal for every later worker. That is a separate finding, filed
-> and not yet remediated; the Phase 4 text below is unchanged and unconfirmed.
+> **Phase 4 (HA control plane) is NOT IMPLEMENTED either — now confirmed.** An
+> earlier revision of this banner reported that as an unverified suspicion. It
+> has since been verified at HEAD: a second `k3s-server` has no join path
+> (`WriteJoinConfig` is defined only on `ShellAgentApplier`, and
+> `BootstrapConfig.InstallArgs` has no seam for `--server` / `--token`), so it
+> bootstraps a **second cluster** instead of extending the first — which is
+> exactly what trips the refusal above for every worker you add afterwards.
+> **An operator following this page in order manufactures the failure it warns
+> about.** Workers can only be added while the account holds exactly one
+> cluster, and both Phase 2 (bootstrap cluster B) and Phase 4 end that window
+> permanently. Add every worker you need first; the phase numbering is not a
+> safe execution order.
+>
+> Unlike Phase 3, Phase 4 is **not** queued behind IMP-a5f236e8cc56. K3s HA is
+> **parked**: the platform does not do this, and there is no work scheduled to
+> make it. The reason is the useful part — the first server bootstraps without
+> `--cluster-init`, so its datastore is not etcd and could not accept a second
+> control-plane member even if a join path existed. Supporting HA would mean
+> changing how *every already-provisioned cluster* bootstraps, which is why it
+> is parked rather than queued. Plan single-server clusters, not an HA
+> migration. The withdrawn steps are kept visible in
+> [Phase 4](#phase-4--ha-control-plane-2-servers--not-implemented), alongside
+> what each of them actually does.
 
 ## When to use multi-cluster
 
@@ -168,58 +183,103 @@ There is no operator-side workaround for the multi-cluster case. Bootstrapping
 the second cluster is what closes the single-cluster window, so if you need
 workers on cluster A, add them **before** cluster B exists.
 
-## Phase 4 — HA control plane (≥2 servers) ✅
+## Phase 4 — HA control plane (≥2 servers) ❌ NOT IMPLEMENTED
 
-Slice 3 enables VIP-backed HA: when the primary `k3s-server` goes silent, the VIP fails over to the next `k3s-server` holder. **Requires ≥2 server NodeInstances**.
+**A second `k3s-server` does not join the first cluster. It bootstraps a second
+cluster.** Assigning `k3s-server` to a second NodeInstance is not an HA
+operation — it is a second bootstrap. And because the Phase 3 refusal counts
+clusters, **running this phase is what makes every later worker join fail.**
+This page lists Phase 3 before Phase 4, but the causal dependency runs the
+other way: the phase numbering is not a safe execution order. Add every worker
+you need while the account still holds exactly one cluster.
+
+Three facts, each verified in code:
+
+1. **No join path exists.** `k3sd.ServerManager` never calls `JoinRequest` and
+   never references `TargetClusterID` — it calls `Bootstrap` and then reports
+   ready against its own `bootstrappedFor` cluster (`server_manager.go:193,
+   215`). The only writer of `K3S_URL` / `K3S_TOKEN` is `WriteJoinConfig`,
+   defined on `ShellAgentApplier` (`shell_applier.go:318`), the *worker*-side
+   applier. The `ServerApplier` interface (`applier.go:140`) has no equivalent
+   method at all.
+2. **The install has no seam for one.** `ShellServerApplier.InstallK3sServer`
+   runs `curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC=server sh -s -` plus
+   whatever `BootstrapConfig.InstallArgs()` returns (`applier.go:81`), and that
+   emits CNI / flannel-overlay flags only — its `default:` arm returns
+   `nil, false`. There is no path for `--server`, `--token`, or
+   `--cluster-init`.
+3. **The platform then creates a new cluster row.** `bootstrap!`'s idempotency
+   check keys on `node_instance_id`
+   (`kubernetes_cluster_provisioner_service.rb:135`), so a *different*
+   NodeInstance falls straight through and a second cluster is created —
+   `Devops::KubernetesCluster.create!(status: "bootstrapping")` with its own
+   VIP, a `KubernetesNode` with `role: "server"`, and `node_count: 1`
+   (`:227`, `:242`, `:252`).
+
+**K3s HA is parked, not pending.** Phase 3 is a missing write awaiting a
+producer (IMP-a5f236e8cc56); Phase 4 is not, and no work is scheduled to make
+it. Even with a join path wired up a second server could not join: the first
+server bootstraps **without `--cluster-init`**, so its datastore is SQLite, not
+embedded etcd, and there is no etcd cluster to accept a second control-plane
+member. (Two code comments — `applier.go:41` and `applier.go:148` — call the
+default install "embedded etcd". They are wrong about upstream k3s; the exec
+string in fact 2 is what runs.) Supporting HA would therefore change how
+**every already-provisioned cluster** bootstraps, which is why it is parked
+rather than queued. Design for single-server clusters; do not plan around a
+future migration to HA.
+
+The steps below are **withdrawn**, kept visible so you can recognise them if
+you have already run them:
 
 ```javascript
-// Provision a second k3s-server bound to the same cluster
+// WITHDRAWN — this does not add a server to cluster-prod-id. It bootstraps a
+// second, independent cluster, and that is what makes every later k3s-agent
+// join refuse. See Phase 3.
 platform.system_create_node({ hostname: "k3s-prod-server-2", ... })
 platform.system_provision_instance({ node_id: "<node-2-id>", ... })
 platform.system_sdwan_attach_peer({ network_id: "<sdwan-net>", node_instance_id: "<instance-id>" })
 
-// Assign k3s-server. NOTE: target_cluster_id is NOT delivered here either —
-// see the note below this block.
 platform.system_assign_module_to_template({
   template_id: "<k3s-server-template>",
   module_id: "<k3s-server-module-id>"
+  // config: { target_cluster_id } is stored and never delivered — the same
+  // missing channel as Phase 3 (`ModulesAPI` hands over module names only),
+  // and the k3s-server reconciler has no join path that could use it anyway.
 })
 
-// Wait ~120s for the second server to join etcd. Verify:
+// WITHDRAWN — this listing returns one node, not two. The new server is the
+// sole node of a different cluster; `kubernetes_list_clusters` is where it
+// shows up.
 platform.kubernetes_list_nodes({ cluster_id: "cluster-prod-id" })
-// → { nodes: [
-//      { instance_id: "...", role: "control-plane", status: "ready" },
-//      { instance_id: "...", role: "control-plane", status: "ready" }
-//    ] }
 ```
 
-> **`target_cluster_id` on a k3s-server assignment is withdrawn for the same
-> reason as Phase 3, and one more.** The delivery channel is the same missing
-> one (`ModulesAPI` hands over module names only), *and* the k3s-server
-> reconciler has no join path to use it: `k3sd.ServerManager` never calls
-> `JoinRequest` and never references `TargetClusterID` — it calls `Bootstrap`
-> and then reports ready against its own `bootstrappedFor` cluster
-> (`server_manager.go:193, 215`). What a second k3s-server's `Bootstrap` does
-> to an existing cluster was **not** verified by this correction; treat the HA
-> flow below as unchanged from what you have observed, and do not read the
-> removal of this field as a statement about it.
+| Withdrawn claim | What is actually true |
+|---|---|
+| "Wait ~120s for the second server to join etcd" | Nothing joins, at any timeout. `ServerManager` runs the same bootstrap path the first server ran, and `bootstrap!` creates a new `Devops::KubernetesCluster` because its idempotency check keys on `node_instance_id` (`kubernetes_cluster_provisioner_service.rb:135`). |
+| "The second server is now a VIP failover candidate" | Not for cluster A's VIP. `add_to_vip_failover_candidates!` (`kubernetes_cluster_provisioner_service.rb:628`) runs from `register_node_join!`, which resolves membership from the agent's own cached `bootstrappedFor` id — the *new* cluster, where this server is already the primary holder, so the call returns without adding anything. Cluster A's `failover_holder_peer_ids` is unchanged. |
+| "the second server joins etcd; the existing cluster keeps running" | The existing cluster does keep running, and is untouched. But adding HA mid-life is not an online operation, because it is not an HA operation. |
+| "cluster goes from 1-replica to 3-replica (etcd default)" | Neither cluster is an etcd cluster. Without `--cluster-init` the k3s server uses its SQLite datastore; there are no replicas to count. |
 
-The second server is now a VIP failover candidate. `Sdwan::VirtualIp.failover_holder_peer_ids` includes its peer ID.
+**What still works.** Single-server clusters are unaffected, and the VIP
+machinery itself is real — the api_endpoint is a VIP, `sdwan_vip_failover` and
+`system_sdwan_failover_virtual_ip` behave as documented, and
+`sdwan_vip_reachability_sensor` fires `system.sdwan_vip_unreachable` when the
+holder goes silent. What is missing is a second candidate to fail over *to*:
+with one server per cluster, `failover_holder_peer_ids` stays empty and
+promotion has nowhere to go.
 
-**Inspect failover candidates, then fail over:**
+**Inspect the VIP (still accurate, single-holder):**
 
 ```javascript
-// Who currently holds the VIP and who's queued to take over
 platform.system_sdwan_get_virtual_ip({ virtual_ip_id: "<cluster-vip-id>" })
-// → { virtual_ip: { id, current_holder_peer_id, failover_holder_peer_ids: [<peer-2>, ...], ... } }
+// → { virtual_ip: { id, holder_peer_ids: [<the one server>],
+//                   failover_holder_peer_ids: [], primary_holder_peer_id, ... } }
 
 // Manual failover promotes the head of failover_holder_peer_ids to holder.
-// Single required param: virtual_ip_id (no dry-run / scoring mode).
+// Single required param: virtual_ip_id (no dry-run / scoring mode). With an
+// empty candidate list there is nothing to promote.
 platform.system_sdwan_failover_virtual_ip({ virtual_ip_id: "<cluster-vip-id>" })
-// → { virtual_ip: { ...new holder... }, failed_over: true }
 ```
-
-`sdwan_vip_reachability_sensor` automatically fires `system.sdwan_vip_unreachable` when the primary is silent, and the `sdwan_vip_failover` skill (require_approval policy) handles promotion without operator intervention.
 
 ## Phase 5 — Get kubeconfig per cluster ✅
 
@@ -231,7 +291,7 @@ platform.kubernetes_get_kubeconfig({ cluster_id: "cluster-prod-id" })
 //    }
 ```
 
-The `api_endpoint` is the slice 3 VIP — kubectl traffic goes to this address regardless of which server is currently the holder.
+The `api_endpoint` is the slice 3 VIP. kubectl traffic goes to the VIP rather than the server's own address, so the address in your kubeconfig does not change if the cluster is ever rebuilt onto a new bootstrap node.
 
 **Save and use:**
 
@@ -300,24 +360,41 @@ input contract, scoped to one cluster's server template:
 
 ## Anti-pattern: single-server cluster
 
-`k3s-server` HA requires **≥2 servers** before VIP failover is meaningful. A single-server cluster:
+**This is not an anti-pattern you can avoid — it is the only shape available.**
+VIP failover would need ≥2 servers in one cluster, and [Phase 4](#phase-4--ha-control-plane-2-servers--not-implemented)
+cannot produce that, so every cluster is single-server:
 
 - ✅ Works for development / staging / small workloads
 - ❌ Cannot survive bootstrap-node loss — `kubectl` and worker `K3S_URL` connectivity break the moment the only server dies
-- ❌ Has the VIP allocated, but failover is no-op when only one candidate remains
+- ❌ Has the VIP allocated, but with an empty candidate list there is nothing to promote, so failover raises rather than switching
 
-**If you start with single-server,** plan to add a second `k3s-server` before going to production. Adding HA later is an online operation (the second server joins etcd; the existing cluster keeps running).
+**If you start with single-server, you stay single-server.** There is no
+supported way to add a second control-plane node — see
+[Phase 4](#phase-4--ha-control-plane-2-servers--not-implemented), where the
+mid-life "add HA" snippet below is withdrawn and each of its claims is set
+against what actually happens. Plan around the limitation: treat loss of the
+bootstrap node as a cluster rebuild, not a failover, and size the blast radius
+accordingly.
+
+Do **not** rely on the `/persist/var/lib/rancher/k3s/` durability story that
+other pages in this tree describe. `mount.EnsurePersistentVar` — the bind mount
+that story depends on — has no production caller (`agent/internal/mount/bind.go:16`;
+`agent/internal/runtime/softreboot.go:143-148` says so in as many words), so
+`/var` is not a bind mount on a current node. Whether k3s state actually
+survives a given reboot is unverified here; do not plan around it either way.
 
 ```javascript
-// Adding HA mid-life:
+// WITHDRAWN — "adding HA mid-life". This does not extend the existing
+// cluster; it bootstraps a second one. See the Phase 4 withdrawal table.
 platform.system_provision_instance({ node_id: "<new-server-node>", ... })
 platform.system_sdwan_attach_peer({ ... })
 platform.system_assign_module_to_template({
   template_id: "<existing-server-template>",
   module_id: "<k3s-server-module-id>"
-  // config: { target_cluster_id } withdrawn — not delivered; see Phase 4 note
+  // config: { target_cluster_id } withdrawn — not delivered; see Phase 4
 })
-// → second server joins etcd; cluster goes from 1-replica to 3-replica (etcd default)
+// → a second cluster, holding one node. The original cluster is unchanged,
+//   and every later k3s-agent join is now refused (Phase 3).
 ```
 
 ## Troubleshooting
@@ -327,8 +404,8 @@ platform.system_assign_module_to_template({
 | Worker does not join at all, `system.k3s_ambiguous_cluster_join_refused` (severity `high`) in the event stream | Two or more non-error clusters in the account. The join carries no `target_cluster_id` because nothing on the agent supplies one, and the platform refuses rather than guessing | Expected outcome, not a misconfiguration. There is no fix today — see [Phase 3](#phase-3--add-workers-to-a-specific-cluster--not-implemented). Do not go looking for a misplaced node; none was created |
 | Worker stuck in `join_request` phase | API endpoint VIP unreachable | Verify worker is on the same SDWAN network as the cluster's bootstrap server |
 | Worker stuck in `join_request`, "bad token" | Token rotated since last cache | Restart `powernode-agent` on the worker; or re-fetch via terminate + reprovision. **⚠️ In a multi-cluster account, do not terminate + reprovision.** Once joined, the worker keeps working because it re-reports readiness against its own cached `joinedClusterID` (`agent_manager.go:170, 191`), which the platform accepts as the target. Anything that clears that cache — cleanup, a stop, or a k3s reinstall (`agent_manager.go:146, 212, 221`) — sends the next `JoinRequest` with an empty target, which is then refused. A reprovision destroys a working worker you cannot rebuild while a second cluster exists |
-| Second server fails to join (HA setup) | Token mismatch or etcd quorum issue | Check `journalctl -u k3s.service` on both servers; etcd needs majority to write |
-| VIP doesn't fail over after primary loss | Single-server cluster, or `sdwan_vip_failover` blocked by `require_approval` | Add a second server; check approval queue |
+| Second `k3s-server` never shows up in `kubernetes_list_nodes` for the first cluster | It never tried to join. The k3s-server reconciler has no join path, so it bootstrapped a second cluster instead | Expected outcome, not a misconfiguration — see [Phase 4](#phase-4--ha-control-plane-2-servers--not-implemented). `kubernetes_list_clusters` will show the new server as the sole node of a new cluster. Nothing on the assignment changes this |
+| VIP doesn't fail over after primary loss | Every cluster is single-server (Phase 4 is not implemented), so `failover_holder_peer_ids` is empty and there is nothing to promote; or `sdwan_vip_failover` is blocked by `require_approval` | Check the approval queue. If the cluster genuinely has one server, this is expected, and adding another server will not fix it — it makes a second cluster |
 | `kubectl` works but pods can't reach external services | Pods using flannel/CNI default route | Verify worker Nodes have proper egress. This is a pod *egress* concern, distinct from the encrypted pod-to-pod overlay (flannel-over-SDWAN, which ships per "Per-tenant pod plane" above). |
 | Multiple clusters but `kubernetes_list_clusters` shows only one | Recent cluster decommissioning, or auth scope issue | Check `?include_decommissioned=true` filter; verify the account has access |
 
@@ -337,7 +414,7 @@ platform.system_assign_module_to_template({
 When an operator chats "set up prod and staging K3s" / "add a worker to staging cluster" / "decommission staging cluster":
 
 1. For multi-cluster bootstrap, surface the Phase 1 + 2 sequence. Do **not** offer to add workers to a chosen cluster — say plainly that Phase 3 is not implemented and that k3s-agent joins are refused once a second cluster exists (see the banner at the top of this page)
-2. For HA, propose Phase 4 (≥2 servers); use `request_confirmation` for the second-server provision
+2. Do **not** propose an HA control plane. Say plainly that Phase 4 is not implemented: a second `k3s-server` bootstraps a second cluster rather than joining the first, and doing so refuses every subsequent worker join. If the operator asks for HA anyway, say that K3s HA is parked — not a queued defect and not on a roadmap — and steer the design to single-server clusters
 3. For decommission, use `kubernetes_decommission_cluster` with `request_confirmation` (destructive)
 4. After each phase, surface the relevant cluster status from `kubernetes_get_cluster`
 
@@ -349,8 +426,8 @@ The Concierge filter includes `kubernetes_*` actions — this entire workflow is
 - [`CONTAINER_RUNTIMES.md`](../CONTAINER_RUNTIMES.md) — Phase 2 K3s lifecycle reference
 - [`runbooks/node-provisioning.md`](./node-provisioning.md) — Node + NodeInstance lifecycle (each cluster member is a NodeInstance)
 - [`runbooks/sdwan-network-setup.md`](./sdwan-network-setup.md) — SDWAN setup (required for cluster api_endpoint VIPs)
-- [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md) — `provision_cluster` for one-shot multi-server cluster bootstrap; `sdwan_vip_failover`
+- [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md) — `sdwan_vip_failover`. **Note:** `provision_cluster` provisions N instances of a template (up to 50); pointed at a `k3s-server` template that is N *clusters*, not one cluster of N servers — see [Phase 4](#phase-4--ha-control-plane-2-servers--not-implemented)
 
 ---
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-09-01 — Phases 3 and 4 re-verified against the agent and provisioner source; both withdrawn. Phases 1, 2, 5, 6 not re-verified in that pass._

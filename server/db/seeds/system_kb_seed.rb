@@ -149,7 +149,7 @@ articles = [
   {
     slug: "multi-cluster-k3s",
     title: "Multi-cluster K3s Patterns",
-    excerpt: "Operator guide for running multiple K3s clusters in one account: bootstrap, HA control plane via slice 3 VIP failover, and per-cluster kubeconfig retrieval. Adding workers to a chosen cluster is not implemented — k3s-agent joins are refused once a second cluster exists.",
+    excerpt: "Operator guide for running multiple K3s clusters in one account: bootstrap, VIP-backed api_endpoint, and per-cluster kubeconfig retrieval. Neither an HA control plane nor adding workers to a chosen cluster is implemented — a second k3s-server bootstraps a second cluster, and k3s-agent joins are refused once one exists.",
     content: <<~MD
       # Multi-cluster K3s
 
@@ -165,9 +165,11 @@ articles = [
 
       Single-cluster accounts are unaffected: with exactly one non-error cluster the worker joins it without a target.
 
-      ## HA control plane
+      ## HA control plane — NOT IMPLEMENTED
 
-      Slice 3 enables VIP-backed HA: when the primary k3s-server goes silent, `sdwan_vip_failover` skill promotes the next holder. Requires ≥2 server NodeInstances; single-server clusters cannot use VIP failover.
+      **A second `k3s-server` does not join the first cluster; it bootstraps a second one**, which then refuses every subsequent k3s-agent join for the reason above. `k3sd.ServerManager` never calls `JoinRequest`, the only writer of `K3S_URL`/`K3S_TOKEN` (`WriteJoinConfig`) is defined on `ShellAgentApplier`, and `BootstrapConfig.InstallArgs` has no seam for `--server`/`--token`/`--cluster-init`. An earlier revision of this article said HA "requires ≥2 server NodeInstances" as though provisioning them were sufficient — do not propose it.
+
+      The VIP machinery itself is real (`sdwan_vip_failover` promotes the head of `failover_holder_peer_ids`), but with one server per cluster that list is empty and there is nothing to promote. K3s HA is **parked**, not pending: the first server bootstraps without `--cluster-init`, so its datastore is SQLite and there is no etcd cluster to join, and supporting HA would change how every already-provisioned cluster bootstraps. Steer operators to single-server clusters rather than a future second cluster.
 
       ## Source
 
