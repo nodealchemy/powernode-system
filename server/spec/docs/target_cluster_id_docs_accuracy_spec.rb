@@ -698,6 +698,195 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
       expect(doc).to match(/Worker does not join at all/)
     end
 
+    # ── IMP-2a48c45fedce: the phantom `?include_decommissioned` filter ────
+    #
+    # The Troubleshooting row for "multiple clusters but the list shows one"
+    # sent an operator to `?include_decommissioned=true`. No such parameter
+    # exists on any surface, and nothing could back one: decommission is a HARD
+    # delete on both paths, so there is no hidden row for a filter to reveal.
+    #
+    # Getting the replacement wrong in the OTHER direction ("it is gone, there
+    # is nothing to look at") would be the worse error, because something DOES
+    # survive: `Devops::KubernetesCluster` includes `Auditable`, whose
+    # `before_destroy :log_record_deletion` writes an `AuditLog` row carrying
+    # the dead cluster's id and its attribute snapshot. Verified by execution,
+    # not by reading: destroying a cluster leaves exactly one AuditLog row with
+    # action "deleted" and resource_type "Devops::KubernetesCluster", while the
+    # cluster row itself is gone. The doc must therefore say WHERE TO LOOK, and
+    # both halves of that are pinned below.
+    #
+    # WITHDRAWAL SHAPE, per this file's established treatment: the false
+    # parameter stays VISIBLE in a marked ❌ NOT IMPLEMENTED region, so an
+    # operator who already tried it recognises what they ran. That makes
+    # absence the wrong assertion. What is pinned is CONTAINMENT (the token
+    # appears only as a two-cell withdrawal row inside that region's LINE
+    # RANGE) PLUS PRESENCE (the region exists, is marked, and still carries the
+    # token — so deleting the table fails too). The region is anchored
+    # heading-to-heading, never on a `| Withdrawn claim |` table header: this
+    # file already carries three such tables and IMP-35ad52dcfefd broke a
+    # sibling guard by anchoring on a header that stopped being unique.
+    #
+    # WHAT THIS CANNOT SEE: whether the "what is actually true" cell is TRUE.
+    # The code half below is what pins that — each premise the replacement row
+    # asserts is read out of the source rather than restated here.
+    WITHDRAWN_FILTER_PARAM = /include_decommissioned/
+
+    DECOMMISSION_WITHDRAWAL_HEADING = "### Withdrawn: the decommissioned-cluster filter"
+
+    def self.decommission_withdrawal_region(doc)
+      doc[/^#{Regexp.escape(DECOMMISSION_WITHDRAWAL_HEADING)}.*?(?=^## How the System Concierge)/m].to_s
+    end
+
+    it "keeps the phantom filter visible inside a marked NOT IMPLEMENTED region" do
+      region = self.class.decommission_withdrawal_region(doc)
+
+      expect(region).not_to be_empty,
+                            "no #{DECOMMISSION_WITHDRAWAL_HEADING.inspect} region — the containment check below would be vacuous"
+      expect(region).to match(/NOT IMPLEMENTED/),
+                        "the withdrawal region is not marked NOT IMPLEMENTED"
+      # PRESENCE. Containment alone is satisfied by deleting the row.
+      expect(region).to match(WITHDRAWN_FILTER_PARAM),
+                        "the withdrawal region no longer carries the phantom parameter"
+    end
+
+    it "states the phantom filter only as a withdrawal row, never as advice" do
+      offenders = self.class.claims_outside_withdrawal(
+        doc,
+        self.class.decommission_withdrawal_region(doc),
+        WITHDRAWN_FILTER_PARAM
+      )
+
+      expect(offenders).to be_empty,
+                           "`?include_decommissioned` stated outside the withdrawal row"
+    end
+
+    # The replacement row's DIAGNOSTIC half. Absence of the phantom is not the
+    # deliverable — an operator with a missing cluster needs to be told where
+    # the surviving record is, and the two identifiers they will filter on are
+    # the ones the code actually writes.
+    it "points at the audit row that survives the hard delete" do
+      troubleshooting = doc.split("## Troubleshooting", 2).last
+
+      expect(troubleshooting).to match(/AuditLog/)
+      expect(troubleshooting).to match(/`action: "deleted"`/)
+      expect(troubleshooting).to match(/Devops::KubernetesCluster/)
+      expect(troubleshooting).to match(%r{/api/v1/audit_logs})
+      # Hard delete, stated as such — not "hidden", not "archived".
+      expect(troubleshooting).to match(/destroy!/)
+    end
+
+    # --- code half: every premise the replacement row asserts ---------------
+
+    describe "the premises the decommission row is written to" do
+      def self.core_root
+        File.expand_path("../../../../../server", __dir__)
+      end
+
+      def self.core_read(rel)
+        path = File.join(core_root, rel)
+        raise "expected #{rel} to exist under #{core_root}" unless File.exist?(path)
+
+        File.read(path)
+      end
+
+      # (1) Both decommission paths hard-delete. A `destroy!` on either could be
+      # softened to `update!(status: ...)` and the doc would silently become a
+      # lie, in the direction that matters most.
+      it "decommission is destroy! on both the MCP-tool and the executor path" do
+        tool = self.class.core_read("app/services/ai/tools/kubernetes_provisioning_tool.rb")
+        body = tool[/^      def decommission_cluster\(params\).*?^      end$/m]
+        expect(body).not_to be_nil, "decommission_cluster did not slice — this guard would be vacuous"
+        expect(body).to match(/^\s*cluster\.destroy!$/)
+
+        executor = self.class.read(ext_root, "server/app/services/system/executors/runtime/decommission_k3s_cluster.rb")
+        perform = executor[/^        def perform.*?^        end$/m]
+        expect(perform).not_to be_nil, "DecommissionK3sCluster#perform did not slice"
+        expect(perform).to match(/^\s*cluster\.destroy!$/)
+      end
+
+      # (2) Nothing soft-deletes underneath that. Positive enumeration of the
+      # table's columns, not an absence assertion on one column name: a soft
+      # delete added as `archived_at` or `discarded_at` reddens this too.
+      it "devops_kubernetes_clusters has no soft-delete or archival column" do
+        schema = self.class.core_read("db/schema.rb")
+        table = schema[/create_table "devops_kubernetes_clusters".*?^  end$/m]
+        expect(table).not_to be_nil, "the clusters table did not slice out of schema.rb"
+
+        columns = table.scan(/^    t\.\w+ "(\w+)"/).flatten
+        expect(columns).to include("status"), "sliced the wrong table"
+        expect(columns.grep(/deleted|archiv|discard|retire|soft/)).to be_empty
+
+        model = self.class.core_read("app/models/devops/kubernetes_cluster.rb")
+        expect(model).not_to match(/acts_as_paranoid|include Discard/)
+      end
+
+      # (3) The audit row the doc sends the operator to is really written, and
+      # the two values they filter on come from here. `resource_type` is the
+      # model's own class name, so the doc is cross-checked against the class
+      # rather than against a restated literal.
+      it "Auditable writes a deleted row for the cluster on destroy" do
+        model = self.class.core_read("app/models/devops/kubernetes_cluster.rb")
+        expect(model).to match(/^    include Auditable$/)
+        # It must be able to resolve an account, or write_audit_log raises and
+        # the row the doc promises never exists.
+        expect(model).to match(/^    belongs_to :account$/)
+
+        auditable = self.class.core_read("app/models/concerns/auditable.rb")
+        expect(auditable).to match(/^    before_destroy :log_record_deletion$/)
+
+        deletion = auditable[/^  def log_record_deletion.*?^  end$/m]
+        expect(deletion).not_to be_nil, "log_record_deletion did not slice"
+        expect(deletion).to match(/write_audit_log\("deleted"/)
+
+        # resource_type is the class name, which is what the doc tells the
+        # operator to filter on.
+        log_action = self.class.core_read("app/models/audit_log.rb")[/def self\.log_action.*?^  end$/m]
+        expect(log_action).not_to be_nil
+        expect(log_action).to match(/resource_type: resource\.class\.name/)
+        expect(log_action).to match(/resource_id: resource\.id/)
+
+        # The class NAME, read out of the file's own nesting rather than from a
+        # loaded constant (this spec runs on spec_helper, with no Rails), and
+        # not restated as a literal the doc could drift away from.
+        namespace = model[/^module (\w+)$/, 1]
+        klass = model[/^  class (\w+) < ApplicationRecord$/, 1]
+        expect(namespace).not_to be_nil, "could not read the model's module from the file"
+        expect(klass).not_to be_nil, "could not read the model's class from the file"
+        expect(doc).to include("#{namespace}::#{klass}")
+      end
+
+      # (4) The read path the doc names. `resource_type` is a supported filter;
+      # `resource_id` deliberately is NOT, which is why the row tells the
+      # operator to filter on the type and read the id out of the payload.
+      it "the audit_logs index filters on resource_type but not resource_id" do
+        audit_log = self.class.core_read("app/models/audit_log.rb")
+        filters = audit_log[/scope :apply_filters.*?^  \}/m]
+        expect(filters).not_to be_nil, "apply_filters did not slice"
+        expect(filters).to match(/where\(resource_type: filters\[:resource_type\]\)/)
+        expect(filters).not_to match(/filters\[:resource_id\]/)
+
+        expect(self.class.core_read("config/routes.rb"))
+          .to match(/resources :audit_logs, only: \[ :index, :show, :create \]/)
+      end
+
+      # (5) The ambiguity claim the row closes with. The candidate set is a LIVE
+      # query with no soft-delete predicate, so a destroyed cluster cannot be a
+      # candidate. Read out of the service rather than asserted in prose.
+      it "the ambiguity candidate set is a live query a destroyed row cannot enter" do
+        service = self.class.read(ext_root, "server/app/services/system/kubernetes_cluster_provisioner_service.rb")
+        body = service[/^    def resolve_membership_cluster!\(.*?^    end$/m]
+        expect(body).not_to be_nil, "resolve_membership_cluster! did not slice"
+
+        candidates = body[/candidates = ::Devops::KubernetesCluster.*?\.to_a$/m]
+        expect(candidates).not_to be_nil, "the candidates query did not slice"
+        expect(candidates).to match(/\.where\(account_id: account\.id\)/)
+        expect(candidates).to match(/\.where\.not\(status: "error"\)/)
+        # No archival predicate to exclude — the absence of a row is the whole
+        # mechanism, and a predicate appearing here would mean rows DO survive.
+        expect(candidates).not_to match(/deleted_at|archived|discarded/)
+      end
+    end
+
     # ── Phase 4 (HA control plane) — IMP-2a3ff83c1955 ─────────────────────
     #
     # The banner already suspected this and said so; verification at HEAD

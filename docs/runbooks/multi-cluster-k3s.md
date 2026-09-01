@@ -407,7 +407,16 @@ platform.system_assign_module_to_template({
 | Second `k3s-server` never shows up in `kubernetes_list_nodes` for the first cluster | It never tried to join. The k3s-server reconciler has no join path, so it bootstrapped a second cluster instead | Expected outcome, not a misconfiguration — see [Phase 4](#phase-4--ha-control-plane-2-servers--not-implemented). `kubernetes_list_clusters` will show the new server as the sole node of a new cluster. Nothing on the assignment changes this |
 | VIP doesn't fail over after primary loss | Every cluster is single-server (Phase 4 is not implemented), so `failover_holder_peer_ids` is empty and there is nothing to promote; or `sdwan_vip_failover` is blocked by `require_approval` | Check the approval queue. If the cluster genuinely has one server, this is expected, and adding another server will not fix it — it makes a second cluster |
 | `kubectl` works but pods can't reach external services | Pods using flannel/CNI default route | Verify worker Nodes have proper egress. This is a pod *egress* concern, distinct from the encrypted pod-to-pod overlay (flannel-over-SDWAN, which ships per "Per-tenant pod plane" above). |
-| Multiple clusters but `kubernetes_list_clusters` shows only one | Recent cluster decommissioning, or auth scope issue | Check `?include_decommissioned=true` filter; verify the account has access |
+| Multiple clusters but `kubernetes_list_clusters` shows only one | A cluster was decommissioned — that is a HARD delete, not a hidden row — or the caller is scoped to a different account | Nothing can un-hide it. Both decommission paths call `cluster.destroy!` (`server/app/services/ai/tools/kubernetes_provisioning_tool.rb`, `server/app/services/system/executors/runtime/decommission_k3s_cluster.rb`), `devops_kubernetes_clusters` has no soft-delete or archival column, and the member `devops_kubernetes_nodes` rows cascade away with it. What survives is the audit row: `Devops::KubernetesCluster` includes `Auditable`, whose `before_destroy` writes an `AuditLog` with `action: "deleted"`, `resource_type: "Devops::KubernetesCluster"`, `resource_id` set to the dead cluster id, and `old_values` carrying its name, slug, status, environment and node_count. Read it at `GET /api/v1/audit_logs?resource_type=Devops::KubernetesCluster` — account-scoped unless the caller holds `admin.audit.read`, and `resource_id` is **not** a supported filter, so filter on the type and read the id out of the payload. If no such row exists, nothing was decommissioned and this is account scope — check which account the token resolves to. The same hard delete is why a decommissioned cluster stops counting toward `AmbiguousClusterError`: the candidate set is a live `where(account_id:).where.not(status: "error")` query (`kubernetes_cluster_provisioner_service.rb`), which a destroyed row cannot enter |
+
+### Withdrawn: the decommissioned-cluster filter ❌ NOT IMPLEMENTED
+
+Kept visible, per this page's treatment of the Phase 3 and Phase 4 withdrawals,
+so an operator who already tried it recognises what they ran.
+
+| Withdrawn claim | What is actually true |
+|---|---|
+| "Check `?include_decommissioned=true` filter" | No such parameter exists on any cluster-listing surface, and nothing could back one. Decommission is a hard delete on both paths and the clusters table has no `deleted_at`, so there is no retained row for a filter to reveal. The surviving record is the `AuditLog` row described in the Troubleshooting table above |
 
 ## How the System Concierge should use this
 
