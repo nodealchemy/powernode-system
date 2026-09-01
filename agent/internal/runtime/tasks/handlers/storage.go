@@ -7,6 +7,7 @@ import (
 
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 	"github.com/nodealchemy/powernode-system/agent/internal/storage"
+	"github.com/nodealchemy/powernode-system/agent/internal/taskguard"
 )
 
 // StorageHandler routes all storage.* task commands to the right
@@ -123,6 +124,36 @@ func (h *StorageHandler) Execute(ctx context.Context, task *tasks.Task) (tasks.R
 	}
 }
 
+// defaultChownCallbackPath is what System::Storage::ChownDispatchService emits
+// — the single literal any legitimate task carries.
+const defaultChownCallbackPath = "/api/v1/system/worker_api/storage/chown_complete"
+
+// chownCallbackPath resolves where the completion POST goes.
+//
+// THIS is the guard for callback_path, and it has to be here rather than in
+// ChownTask.Validate, because this function runs whether or not the task was
+// refused. transport.Client builds its URL as PlatformURL + path, so a value
+// that does not begin with "/" splices into the authority component: a task
+// whose ONLY defect is `callback_path: "@evil.example/x"` would otherwise be
+// "refused" by ApplyChown and then have that refusal — error text and all —
+// POSTed to the caller's host over the agent's mTLS identity.
+//
+// A caller-supplied path that fails the rule does not fail the task: the
+// completion still goes to the platform default, so the assignment's
+// chown_state transitions correctly and the operator sees the outcome.
+func chownCallbackPath(supplied string) string {
+	if supplied == "" {
+		return defaultChownCallbackPath
+	}
+	if err := taskguard.PlatformPath("callback_path", supplied); err != nil {
+		return defaultChownCallbackPath
+	}
+	if err := taskguard.NamePrefix("callback_path", supplied, "/api/v1/system/worker_api/"); err != nil {
+		return defaultChownCallbackPath
+	}
+	return supplied
+}
+
 // postChownCompletion POSTs the storage.chown task outcome to the
 // platform's worker_api callback. Called regardless of success — the
 // platform-side state machine flips to complete or failed based on
@@ -132,10 +163,7 @@ func postChownCompletion(client tasks.HTTPClient, ct *storage.ChownTask, runErr 
 	if client == nil || ct == nil {
 		return nil // no platform connection (e.g. dry-run / test)
 	}
-	path := ct.CallbackPath
-	if path == "" {
-		path = "/api/v1/system/worker_api/storage/chown_complete"
-	}
+	path := chownCallbackPath(ct.CallbackPath)
 	body := map[string]any{
 		"storage_assignment_id": ct.StorageAssignmentID,
 		"status":                "complete",

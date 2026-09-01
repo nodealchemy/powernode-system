@@ -133,28 +133,19 @@ func parseProbeModuleSmokeOptions(task *tasks.Task) (probeModuleSmokeOptions, er
 	if opts.ModuleID == "" {
 		return probeModuleSmokeOptions{}, errors.New("probe.module_smoke: options.module_id is required")
 	}
-	// module_id and every service name are concatenated into the unit name
-	// handed to `systemctl is-active`; a value carrying a space or a leading
-	// dash stops being one argv element naming one unit.
+	// module_id is concatenated into EVERY unit name this task builds, so a
+	// bad one makes the whole task malformed rather than one check fail. The
+	// per-check arguments (service names, endpoints, ELF paths) are validated
+	// inside their own check instead — see the note on Execute.
 	if err := taskguard.Identifier("module_id", opts.ModuleID); err != nil {
 		return probeModuleSmokeOptions{}, err
 	}
-	for i, svc := range opts.Services {
-		if err := taskguard.Identifier(fmt.Sprintf("services[%d]", i), svc); err != nil {
-			return probeModuleSmokeOptions{}, err
-		}
-	}
-	// Each candidate becomes the argument of `chroot /sysroot ldd <path>`. It
-	// must be an absolute, canonical path inside the union — a leading dash
-	// would be read by ldd as an option instead.
-	for i, p := range opts.ElfCandidates {
-		if err := taskguard.AbsPath(fmt.Sprintf("elf_candidates[%d]", i), p); err != nil {
-			return probeModuleSmokeOptions{}, err
-		}
-	}
+	// An EXPLICIT zero or negative becomes `curl -m 0`, which DISABLES the
+	// timeout rather than tightening it, so one hung endpoint stalls the whole
+	// probe. An ABSENT value is different and stays legal: toInt above
+	// substitutes defaultHealthCheckTimeoutSeconds, so it never reaches here
+	// as zero.
 	if opts.HealthCheckTimeoutSeconds <= 0 {
-		// Absent or zero would become `curl -m 0`, which disables the timeout
-		// and lets one hung endpoint stall the whole probe.
 		return probeModuleSmokeOptions{}, fmt.Errorf(
 			"probe.module_smoke: %w: health_check_timeout_seconds: must be positive", taskguard.ErrRefused)
 	}
@@ -179,6 +170,14 @@ func parseProbeModuleSmokeOptions(task *tasks.Task) (probeModuleSmokeOptions, er
 	return opts, nil
 }
 
+// Execute runs the allow-listed checks. Per-check ARGUMENT validation happens
+// inside each check, not at parse time, and that placement is deliberate: this
+// handler's contract is that a failing check is an HONEST RESULT, not a task
+// error (see the type doc above). Refusing a bad health endpoint at parse time
+// would abort unit_active and ldd_closure too, turning a partial-signal probe
+// into a no-signal one — which is what an earlier revision of this file did.
+// A refused argument now fails ITS check, with the refusal as the detail, and
+// the command is never executed.
 func (h *ProbeModuleSmokeHandler) Execute(ctx context.Context, task *tasks.Task) (tasks.Result, error) {
 	opts, err := parseProbeModuleSmokeOptions(task)
 	if err != nil {
@@ -233,7 +232,12 @@ func checkUnitActive(ctx context.Context, runner mount.Runner, moduleID string, 
 
 	ok := true
 	parts := make([]string, 0, len(services))
-	for _, svc := range services {
+	for i, svc := range services {
+		// The name is concatenated into the unit handed to systemctl; a space
+		// or a leading dash stops it being one argv element naming one unit.
+		if err := taskguard.Identifier(fmt.Sprintf("services[%d]", i), svc); err != nil {
+			return moduleSmokeCheckResult{Name: "unit_active", OK: false, Detail: err.Error()}
+		}
 		unit := "powernode-" + moduleID + "-" + svc + ".service"
 		out, err := runner.Output(ctx, "systemctl", "is-active", unit)
 		unitOK, detail := classifyUnitActive(out, err)
@@ -275,10 +279,20 @@ func checkHealthEndpoint(ctx context.Context, runner mount.Runner, checks []heal
 
 	ok := true
 	parts := make([]string, 0, len(checks))
-	for _, c := range checks {
+	for i, c := range checks {
 		method := c.Method
 		if method == "" {
 			method = "GET"
+		}
+		if err := taskguard.HealthEndpoint(fmt.Sprintf("health_checks[%d].endpoint", i), c.Endpoint); err != nil {
+			ok = false
+			parts = append(parts, labelFor(c)+"="+err.Error())
+			continue
+		}
+		if err := taskguard.HTTPMethod(fmt.Sprintf("health_checks[%d].method", i), method); err != nil {
+			ok = false
+			parts = append(parts, labelFor(c)+"="+err.Error())
+			continue
 		}
 		out, err := runner.Output(ctx, "curl",
 			"-sS", "-m", strconv.Itoa(timeoutSeconds), "-o", "/dev/null", "-w", "%{http_code}", "-X", method, c.Endpoint)
@@ -286,13 +300,16 @@ func checkHealthEndpoint(ctx context.Context, runner mount.Runner, checks []heal
 		if !checkOK {
 			ok = false
 		}
-		label := c.Service
-		if label == "" {
-			label = c.Endpoint
-		}
-		parts = append(parts, label+"="+detail)
+		parts = append(parts, labelFor(c)+"="+detail)
 	}
 	return moduleSmokeCheckResult{Name: "health_endpoint", OK: ok, Detail: strings.Join(parts, "; ")}
+}
+
+func labelFor(c healthCheckOption) string {
+	if c.Service != "" {
+		return c.Service
+	}
+	return c.Endpoint
 }
 
 func classifyHealthCheck(out []byte, err error) (ok bool, detail string) {
@@ -321,7 +338,14 @@ func checkLddClosure(ctx context.Context, runner mount.Runner, paths []string) m
 
 	ok := true
 	parts := make([]string, 0, len(paths))
-	for _, p := range paths {
+	for i, p := range paths {
+		// The candidate is the argument of `chroot /sysroot ldd <path>`; a
+		// leading dash would be read by ldd as an option instead.
+		if err := taskguard.AbsPath(fmt.Sprintf("elf_candidates[%d]", i), p); err != nil {
+			ok = false
+			parts = append(parts, p+"="+err.Error())
+			continue
+		}
 		out, err := runner.Output(ctx, "chroot", sysrootPath, "ldd", p)
 		pathOK, detail := classifyLdd(out, err)
 		if !pathOK {
@@ -412,21 +436,11 @@ func toHealthChecks(v any) ([]healthCheckOption, error) {
 		if endpoint == "" {
 			return nil, fmt.Errorf("probe.module_smoke: health_checks[%d].endpoint is required", i)
 		}
-		if err := taskguard.HTTPEndpoint(fmt.Sprintf("health_checks[%d].endpoint", i), endpoint); err != nil {
-			return nil, err
-		}
+		// Endpoint and method are checked inside checkHealthEndpoint so a bad
+		// one fails ITS check rather than the whole task. Only the structural
+		// requirement (an entry must name an endpoint) belongs here.
 		service, _ := e["service"].(string)
 		method, _ := e["method"].(string)
-		if method != "" {
-			if err := taskguard.HTTPMethod(fmt.Sprintf("health_checks[%d].method", i), method); err != nil {
-				return nil, err
-			}
-		}
-		if service != "" {
-			if err := taskguard.Identifier(fmt.Sprintf("health_checks[%d].service", i), service); err != nil {
-				return nil, err
-			}
-		}
 		out = append(out, healthCheckOption{Service: service, Endpoint: endpoint, Method: method})
 	}
 	return out, nil
