@@ -445,16 +445,18 @@ module System
     #   extra      — reported mounted, no longer assigned
     #   mismatched — reported mounted at a digest other than current
     #
-    # Intended as the one definition of module drift. It was copied into
+    # The one definition of module drift. It was copied into
     # SystemFleetTool#drift_report and ModuleDriftSensor, and a third caller
     # (PlatformMaintenanceExecutor's deployment-scoped drift_check) shipped as
     # a hardcoded `false` instead — IMP-0d106a152c47. Those three now call this.
     #
-    # NOT yet converged, and it disagrees: Compliance::ComplianceSnapshotService
-    # #collect_drift_summary carries a fourth copy that computes `missing` and
-    # `extra` but NO `mismatched`, so an instance running a stale digest of
-    # every module it is assigned counts as `reconciled` in the compliance
-    # evidence document. Reported under IMP-0d106a152c47, out of its scope.
+    # A fourth copy lived in Compliance::ComplianceSnapshotService
+    # #collect_drift_summary and compared KEY SETS only — `missing` and `extra`
+    # but no `mismatched` — so an instance running a stale digest of every
+    # module it was assigned counted as `reconciled` in the compliance evidence
+    # document. IMP-29b38f6f48b2 deleted that copy; the service now calls
+    # #module_drifted?. All four call sites are converged.
+    #
     # A new caller belongs here rather than in a fifth variant.
     #
     # Scope note: this measures the instance against its NODE's assignments,

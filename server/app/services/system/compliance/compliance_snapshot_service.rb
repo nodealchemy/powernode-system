@@ -154,22 +154,24 @@ module System
                     .where(system_nodes: { account_id: account.id })
                     .where(status: "running")
 
+        # Drift is decided by System::NodeInstance#module_drifted?, the one
+        # definition — NOT by a local copy. The copy that used to live here
+        # compared KEY SETS only (missing/extra), so an instance mounting a
+        # stale digest of every module it is assigned was counted
+        # `reconciled` and the evidence document reported 0% drift for a
+        # fleet that had entirely failed to converge (IMP-29b38f6f48b2).
+        # The shared method adds the `mismatched` limb that catches it.
+        #
+        # No added query cost: #module_drift issues the same
+        # `node.node_modules.includes(:current_version)` per instance that the
+        # local copy did.
         drifted = 0
         reconciled = 0
         instances.find_each do |i|
-          assigned = i.node.node_modules.includes(:current_version).each_with_object({}) do |m, acc|
-            d = m.current_version&.oci_digest
-            acc[m.id] = d if d
-          end
-          running = i.respond_to?(:running_module_digests) ? (i.running_module_digests || {}) : {}
-
-          missing = assigned.reject { |id, _| running.key?(id.to_s) || running.key?(id) }.size
-          extra   = running.reject { |id, _| assigned.key?(id) || assigned.key?(id.to_s) }.size
-
-          if missing.zero? && extra.zero?
-            reconciled += 1
-          else
+          if i.module_drifted?
             drifted += 1
+          else
+            reconciled += 1
           end
         end
 
