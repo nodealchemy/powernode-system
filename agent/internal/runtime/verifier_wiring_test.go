@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -92,6 +94,89 @@ func TestModuleMountVerifierWiringIsUnenforced(t *testing.T) {
 			t.Fatalf("internal/verify/doc.go no longer contains %q, but the wiring "+
 				"above is still unenforced. The warning was removed without the "+
 				"underlying gap being closed — restore it.", claim)
+		}
+	}
+}
+
+// TestNoFourthModuleMountVerifierSite is the equality oracle for the guard
+// above, which only ever inspects a hard-coded list and would therefore not
+// notice a FOURTH construction site being added.
+//
+// Every module mount funnels through exactly one gate — mount.MountModule has a
+// single production caller, Reconciler.mountModuleArtifact — so the verifier
+// that gate uses is decided entirely by which construction site built the
+// Reconciler. That makes "the set of sites" a security-relevant quantity, and a
+// claim about a sole chokepoint is worth exactly as much as the ratchet holding
+// it. Enumerate rather than sample.
+func TestNoFourthModuleMountVerifierSite(t *testing.T) {
+	want := map[string]bool{
+		"internal/runtime/service.go":                            true,
+		"internal/runtime/compose.go":                            true,
+		"cmd/powernode-agent/internal/cli/reconciler_factory.go": true,
+	}
+
+	// A file is a CHOOSING site when it (a) imports internal/verify, so its
+	// Verifier: refers to this package's interface and not, say, a2a.Verifier's
+	// unrelated capability-token type, and (b) assigns a value that is not simply
+	// forwarded from another config struct. NewReconcilerForCLI in reconcile.go
+	// satisfies (a) but only relays cfg.Verifier onward, so it decides nothing.
+	//
+	// The forwarding test is deliberately shape-based rather than a literal match
+	// on "verify.AlwaysOK{}": a site that built its verifier through a helper
+	// (Verifier: buildVerifier()) would be invisible to a literal grep while still
+	// choosing, which is exactly the case this oracle exists to catch.
+	const verifyImport = "powernode-system/agent/internal/verify"
+	forwarded := regexp.MustCompile(`^cfg\.\w+$`)
+
+	agentRoot := "../.."
+	got := map[string]bool{}
+	err := filepath.WalkDir(agentRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if name := d.Name(); name == "vendor" || name == "testdata" || name == ".git" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		b, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return rerr
+		}
+		if !strings.Contains(string(b), verifyImport) {
+			return nil
+		}
+		for _, m := range verifierAssignRe.FindAllStringSubmatch(string(b), -1) {
+			if forwarded.MatchString(strings.TrimSpace(m[1])) {
+				continue
+			}
+			rel, _ := filepath.Rel(agentRoot, p)
+			got[filepath.ToSlash(rel)] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", agentRoot, err)
+	}
+
+	for p := range got {
+		if !want[p] {
+			t.Errorf("NEW module-mount Verifier construction site: %s\n"+
+				"Every module mount funnels through Reconciler.mountModuleArtifact, so "+
+				"this site decides whether that mount is verified. Add it to "+
+				"moduleMountConstructionSites and account for it in "+
+				"internal/verify/doc.go.", p)
+		}
+	}
+	for p := range want {
+		if !got[p] {
+			t.Errorf("expected module-mount Verifier construction site %s is gone or "+
+				"no longer assigns Verifier: — the wiring moved; re-derive the set and "+
+				"refresh internal/verify/doc.go.", p)
 		}
 	}
 }
