@@ -39,11 +39,26 @@ module System
                    .find_by(id: package_module_link_id)
           return failure("link not found or not accessible") unless link
 
-          if defined?(SystemPackageModuleRefreshJob)
-            SystemPackageModuleRefreshJob.perform_async(link.id, !!force)
-          end
+          # IMP-9b8d774298d5 — `enqueued` used to be the literal `true`
+          # regardless of whether the guard above fired. It does not fire in
+          # the Rails server: SystemPackageModuleRefreshJob is defined only in
+          # `worker/app/jobs/`, which is not on the server's autoload path
+          # (`rails runner 'defined?(SystemPackageModuleRefreshJob)'` => nil),
+          # and this executor's autonomy caller (System::CveOps::
+          # CveResponderService#dispatch_inline) runs server-side. So the
+          # declared `enqueued: :boolean` output asserted a queued job on every
+          # call that never queued one, and a caller reading it as "remediation
+          # is in flight" would be wrong on the ONLY path that reaches it.
+          #
+          # Reporting the truth here does not by itself route the refresh to
+          # Sidekiq — that gap (this path predates ::System::WorkerJobEnqueuer
+          # and never adopted it) is a separate defect. This only stops the
+          # output from claiming otherwise.
+          enqueued = defined?(SystemPackageModuleRefreshJob) ? true : false
+          SystemPackageModuleRefreshJob.perform_async(link.id, !!force) if enqueued
+
           success(
-            enqueued:               true,
+            enqueued:               enqueued,
             package_module_link_id: link.id,
             requires_approval:      false
           )
