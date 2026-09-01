@@ -12,6 +12,14 @@ module Api
       #   - system.package_repositories.sync
       #   - system.package_repositories.manage_shared (required for shared repos)
       class PackageRepositoriesController < BaseController
+        # See #unsupported_credential_path? below for why this exists.
+        UNSUPPORTED_CREDENTIAL_PATH_MESSAGE = <<~MSG.squish
+          vault_credential_path is not supported for package repositories:
+          they are fetched anonymously and the value would not be consumed by
+          sync. Authenticated package repositories are not a supported
+          capability — remove the field from the request.
+        MSG
+
         before_action :set_account
         before_action :set_repository, only: %i[show update destroy sync stale_links clean_stale_links link_platform unlink_platform]
 
@@ -52,6 +60,9 @@ module Api
           else
             require_permission("system.package_repositories.create")
           end
+          if unsupported_credential_path?
+            return render_error(UNSUPPORTED_CREDENTIAL_PATH_MESSAGE, status: :unprocessable_content)
+          end
 
           attrs, platform_ids = repository_attrs_and_platform_ids
           repo = ::System::PackageRepository.new(attrs)
@@ -74,6 +85,9 @@ module Api
           else
             require_permission("system.package_repositories.update")
             return render_error("Forbidden", status: :forbidden) if @repository.account_id != @account.id
+          end
+          if unsupported_credential_path?
+            return render_error(UNSUPPORTED_CREDENTIAL_PATH_MESSAGE, status: :unprocessable_content)
           end
 
           attrs, platform_ids = repository_attrs_and_platform_ids
@@ -269,6 +283,45 @@ module Api
           render_not_found("Package Repository")
         end
 
+        # `vault_credential_path` was permitted and persisted here but read by
+        # NOTHING. Package repository sync has no authentication story at all
+        # by construction: every index fetch goes through
+        # System::PackageAdapters::Base#http_get, which builds a bare Faraday
+        # connection and calls `conn.get(url)` — no auth header, no credential
+        # parameter, no seam to pass one. The table carries no other auth
+        # field either (`signing_key_armor` is a PUBLIC key used for GPG
+        # verification, not authentication).
+        #
+        # The permit is now gone. Removing it ALONE would have left the
+        # operator's experience unchanged, though:
+        # `action_on_unpermitted_parameters` is unset across both config trees,
+        # so the framework default applies (actionpack railtie:
+        # `Rails.env.local? ? :log : false`) and production discards an
+        # unpermitted param SILENTLY. The operator would still send the field,
+        # still get a 200, and still believe authentication was configured. So
+        # we reject it explicitly rather than teach a lie by silence.
+        #
+        # Narrow by design: a NON-BLANK value is an operator supplying a path
+        # in the belief it authenticates something — the actual harm. A blank
+        # or nil value expresses "no auth", is a harmless no-op, and passes
+        # (persisting nothing, now that the permit is gone).
+        #
+        # `Rails.env.local?` is true for development AND test, so under test the
+        # setting is `:log`, not `:raise`. The spec that asserts a blank value
+        # persists nothing depends on that: setting `:raise` in the test env
+        # would turn it into an exception rather than a nil column.
+        #
+        # Scope: this closes the REST surface only. Ai::Tools::
+        # SystemPackageRepositoryTool still drops an unknown
+        # `vault_credential_path` silently — BaseTool#validate_params! checks
+        # required-presence and never rejects unknown keys, for every tool. The
+        # field is not in that tool's declared schema, and fixing it properly is
+        # a platform-wide question about unknown-key handling, so it is left
+        # deliberately out of scope here rather than papered over.
+        def unsupported_credential_path?
+          params.dig(:package_repository, :vault_credential_path).present?
+        end
+
         # Splits out node_platform_ids[] from the rest of the payload so
         # we can assign it AFTER save (the M:N association lives in a
         # join table; ActiveRecord can't set it from `new(attrs)` until
@@ -276,7 +329,7 @@ module Api
         def repository_attrs_and_platform_ids
           permitted = params.require(:package_repository).permit(
             :name, :description, :kind, :visibility, :base_url,
-            :signing_key_armor, :vault_credential_path,
+            :signing_key_armor,
             :priority, :enabled,
             architectures: [],
             apt_config: {},
