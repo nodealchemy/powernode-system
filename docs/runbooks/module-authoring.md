@@ -137,7 +137,7 @@ file belongs in a base-os build.
 | **protected_spec** | Files this module owns — overrides from higher-priority modules are forbidden | YAML field |
 | **dependency_spec** | Other modules this one requires (resolved by `DependencyResolutionService`) | YAML field |
 | **Containerfile** | Dockerfile-style recipe for the module's builder image (used by Gitea Actions to produce the rootfs) | Dockerfile syntax |
-| **erofs digest** | fs-verity hash committed to the OCI artifact; agent verifies before mounting | sha256 |
+| **erofs digest** | fs-verity hash committed to the OCI artifact. The agent does **not** verify it before mounting today — `ReconcilerConfig.Fsverity` is nil on every path, and the blob's sha256 is the only check. See `agent/internal/verify/doc.go` | sha256 |
 
 ## Phase 1 — Set up the module repo ✅
 

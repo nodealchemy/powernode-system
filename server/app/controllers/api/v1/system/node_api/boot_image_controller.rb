@@ -7,8 +7,10 @@ module Api
         # Serves the standalone UKI artifact for an in-place boot-image upgrade
         # (campaign 019f505f increment 2). The agent, executing an
         # upgrade_boot_image task, GETs this to fetch the exact bytes it writes
-        # to the ESP, then cosign-verifies them against the identity/issuer pins
-        # carried in the task options.
+        # to the ESP, then cosign-verifies them in STATIC-KEY mode against the
+        # cosign_public_key and cosign_bundle_b64 carried inline in the task
+        # options. (Not identity/issuer pins: those select cosign's KEYLESS mode,
+        # which this platform's CI cannot produce a signature for.)
         #
         # The blob is proxied by DIGEST through OciBlobProxyService: the pull is
         # content-addressed (/v2/<repo>/blobs/<uki_sha256>), so the registry

@@ -401,7 +401,7 @@ agent's heartbeat is reporting a different list than what's assigned. Two
 sub-cases:
 
 - Module dependency missing on the platform side (your `dependency_spec` references a module that's not in `staging`+)
-- Agent failed to verify fs-verity root hash on download (check agent logs via serial console; look for "fsverity verification failed")
+- Agent failed the blob **sha256** digest check on download (check agent logs via serial console; look for "digest mismatch"). Note fs-verity is **not** verified on mount today — `ReconcilerConfig.Fsverity` is nil on every path — so a "fsverity verification failed" line will not appear
 
 **`PoolEmptyError` on provision** — you're using an InstancePool template but
 the pool's empty. Either wait for replenishment (~5 min) or create a fresh

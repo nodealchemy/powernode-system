@@ -22,7 +22,7 @@ agent behavior on running nodes.
 flowchart TD
     Boot[powernode-agent boot] --> ID[internal/identity:<br/>discover NodeInstance UUID<br/>via fw-cfg / cloud metadata / DMI]
     ID --> Enroll[internal/enroll:<br/>POST /node_api/enroll<br/>bootstrap token → mTLS cert]
-    Enroll --> Mount[internal/mount + oci + verify:<br/>fetch + cosign-verify<br/>+ fs-verity + compose layers]
+    Enroll --> Mount[internal/mount + oci:<br/>fetch + sha256-verify<br/>+ compose layers<br/>cosign/fs-verity NOT enforced]
     Mount --> Svc[powernode-agent service]
     Svc --> Heart[internal/runtime + transport:<br/>30s heartbeat]
     Svc --> Task[internal/runtime + transport:<br/>task lease via FOR UPDATE<br/>SKIP LOCKED]
@@ -52,7 +52,7 @@ domain unit with focused responsibilities; no cross-package state.
 |---------|----------------|
 | `transport` | mTLS HTTP client for `/node_api/*`. The TLS handshake presents the agent's client cert (signed by the platform's internal CA at enrollment); the reverse proxy verifies it via `tls.options=mtls-optional@file` (VerifyClientCertIfGiven, on the single websecure entrypoint) and forwards the CN to Rails. No Bearer header — auth is purely cryptographic, bound to the connection. Certificate pinning, automatic CA chain refresh, exponential backoff on platform unreachable. |
 | `security` | Capability dropping, seccomp filter application to the agent process itself, per-module SELinux/AppArmor profile loading on attach, IMA/EVM integration. |
-| `verify` | Cosign signature verification (per-module trust policy: `cosign_identity_regexp` + `cosign_issuer_regexp`), fs-verity root hash verification against `NodeModuleVersion.fsverity_root_hash`. |
+| `verify` | Supplies the cosign + fs-verity primitives. **Neither is enforced on a module mount today** — all three reconciler construction sites wire the no-op `verify.AlwaysOK`, and `ReconcilerConfig.Fsverity` is nil. The real `CosignVerifier` is reached only from the boot/UKI upgrade path and the operator `powernode-agent verify` CLI. There is no per-module `cosign_identity_regexp`/`cosign_issuer_regexp` trust policy in the manifest; those columns exist on the DB row and feed the SERVER's ingest-time keyless fallback. See `agent/internal/verify/doc.go` for why enforcement is blocked and in what order. |
 
 ### Storage + mounting
 
@@ -213,7 +213,7 @@ sequenceDiagram
     Agent->>OCI: pull <registry>/<account>/<module>:<version>
     OCI->>OCI: resolve manifest<br/>fetch arch-specific blobs<br/>cache to digest-store
     OCI-->>Agent: local erofs blob
-    Agent->>Verify: cosign verify (identity + issuer regex)
+    Agent->>Verify: VerifyBlob (no-op AlwaysOK in production)
     Verify-->>Agent: signature OK
     Agent->>Sysfs: fs-verity enable
     Sysfs-->>Agent: root_hash
@@ -234,7 +234,7 @@ from the intersection of *desired* (platform-supplied assignments) and
 
 | Set | Trigger | What runs |
 |---|---|---|
-| `toAttach` | desired but not currently mounted (digest absent from current) | `attachModule`: pull OCI → cosign verify → fs-verity → mount erofs → policy.Apply → `lifecycle.AttachServices` |
+| `toAttach` | desired but not currently mounted (digest absent from current) | `attachModule`: pull OCI → sha256 digest check → cosign/fs-verity gate (wired to a no-op today) → mount erofs → policy.Apply → `lifecycle.AttachServices` |
 | `toDetach` | currently mounted but not in desired (digest absent from desired) | `detachModule`: `lifecycle.DetachServices` + `mount.UnmountModule` |
 | `toReattach` | currently mounted AND in desired AND manifest hash changed | `attachModule` again (pull/mount/policy short-circuit on cached state); `lifecycle.AttachServices` re-renders unit files via `writeIfChanged` |
 

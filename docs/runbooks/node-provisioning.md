@@ -221,7 +221,7 @@ The provider VM POSTs to `runtime/handshake` once the kernel boots:
 
 1. **Identity discovery** — agent reads from `cmdline` / `virtio-fw-cfg` / cloud metadata; selects the appropriate `IdentityStrategy`
 2. **Enrollment** — agent generates Ed25519 keypair, POSTs CSR to `/api/v1/system/node_api/enroll` with bootstrap token; receives signed mTLS cert
-3. **Module pull** — agent fetches OCI artifacts for assigned modules from `registry.example.com` registry; verifies `cosign` signatures + fs-verity digests
+3. **Module pull** — agent fetches each assigned module's erofs blob from the PLATFORM's digest-addressed proxy (`/api/v1/system/node_api/files/modules/:id`), not from a registry — the agent has no registry client — and verifies the sha256 digest. Cosign and fs-verity are NOT enforced on this path; see `agent/internal/verify/doc.go`
 4. **Mount union root** — erofs lower layer + tmpfs (or `/persist`) overlay; `pivot_root` into composed userspace
 5. **Service start** — `systemctl start powernode-agent.service`; agent posts `phase=ready` heartbeat
 
