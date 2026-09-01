@@ -804,6 +804,23 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
         expect(perform).to match(/^\s*cluster\.destroy!$/)
       end
 
+      # (1b) Every repo-relative source path the row cites must RESOLVE. The
+      # row's authority comes from naming the code it is derived from, so a
+      # path that does not exist is the same defect this task removed: an
+      # operator sent somewhere they cannot go. Extension paths are the trap —
+      # the executor lives under extensions/system/, not under server/.
+      it "every source path the decommission row cites resolves to a real file" do
+        repo_root = File.expand_path("..", self.class.core_root)
+        row = doc.split("## Troubleshooting", 2).last.split("### Withdrawn", 2).first
+
+        cited = row.scan(%r{`((?:server|extensions)/[\w./-]+\.rb)`}).flatten.uniq
+        expect(cited).not_to be_empty, "no source paths cited — this guard would be vacuous"
+
+        missing = cited.reject { |rel| File.exist?(File.join(repo_root, rel)) }
+        expect(missing).to be_empty,
+                           "the decommission row cites paths that do not exist: #{missing.inspect}"
+      end
+
       # (2) Nothing soft-deletes underneath that. Positive enumeration of the
       # table's columns, not an absence assertion on one column name: a soft
       # delete added as `archived_at` or `discarded_at` reddens this too.
