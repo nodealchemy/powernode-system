@@ -213,14 +213,27 @@ Two cautions when reaching for `softdep`:
 
   Two consequences worth knowing before you declare a strict edge:
 
-  - Starting the target now also starts its dependents, even if you only
-    asked for the target.
+  - **Pull-up is transitive.** Starting the target now also starts its
+    dependents, and each dependent drags in its own `Requires=` closure. On
+    dev-cell, `systemctl restart <mcp-proxy>` went from a one-unit operation
+    to a five-unit one — it pulls up `executor` and re-runs the `credential`
+    oneshot. The agent's `restart` task issues exactly that command. A
+    targeted restart of a *dependent* is unaffected.
+  - **An operator stop of a dependent is undone by the target's next start
+    job**, including a `Restart=on-failure` crash-restart. It is a bounded
+    window, not immunity. (It was never durable anyway: the agent runs
+    `systemctl start` over every unit on each reconcile.)
   - Recovery is tied to the target's *start job*, not held continuously. If a
     dependent dies on its own while the target stays up, nothing revives it;
-    that is the dependent's own `Restart=`/`StartLimit*` business. (The agent
+    that is the dependent's own `Restart=`/`StartLimit*` business. The agent
     deliberately does not use `Upholds=` here: it is a continuous want, which
     makes the dependent un-stoppable on its own and re-tries a
-    `Condition*=`-gated dependent about twice a second forever.)
+    `Condition*=`-gated dependent about twice a second forever.
+  - A target whose own `Condition*=` is unmet still pulls its dependents up —
+    `Wants=` is expanded when the job transaction is built, before conditions
+    are evaluated. And a target with no `Restart=` at all (e.g.
+    `reverse-proxy-traefik`'s `restore-dynamic`) never self-heals, so it gets
+    the pull-up without the recovery the edge is for.
 
 ## Idempotency and Deletion
 

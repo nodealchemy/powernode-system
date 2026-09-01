@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,7 +127,14 @@ func newSystemdHarness(t *testing.T) *systemdHarness {
 	if dockerCmd == "" {
 		dockerCmd = "docker"
 	}
-	h := &systemdHarness{t: t, container: "pn-lifecycle-harness", docker: strings.Fields(dockerCmd)}
+	// Unique per run: the name is torn down with `rm -f`, so a fixed name
+	// would let two concurrent runs (or a human debugging in that container)
+	// destroy each other.
+	h := &systemdHarness{
+		t:         t,
+		container: fmt.Sprintf("pn-lifecycle-harness-%d", os.Getpid()),
+		docker:    strings.Fields(dockerCmd),
+	}
 
 	ctxDir := t.TempDir()
 	dockerfile := `FROM ubuntu:24.04

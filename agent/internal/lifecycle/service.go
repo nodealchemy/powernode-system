@@ -520,16 +520,40 @@ func RenderUnitModeGraph(svc manifest.Service, moduleID string, mode RootMode, d
 // node. Measured on systemd 255 (255.4-1ubuntu8, the fleet's own version),
 // dependency active throughout:
 //
-//	property                              Wants=      Upholds=
-//	recovers a stranded dependent         yes         yes
-//	`systemctl stop <dependent>` sticks   yes         NO — undone in <2s
-//	skip-logs/30s, condition-gated dep    1           49
+//	property                                 Wants=        Upholds=
+//	recovers a stranded dependent            yes           yes
+//	`systemctl stop <dependent>` is undone   next start    <2s, always
+//	                                         job of the
+//	                                         dependency
+//	skip-logs/30s, condition-gated dependent 1             49
 //
-// The middle row is an operator regression: a unit systemd is upholding
-// cannot be stopped for maintenance on its own, and `systemctl mask` is
-// not the escape hatch it would be elsewhere — the agent writes a REAL
-// file at /etc/systemd/system/<unit>, so mask refuses ("File ... already
-// exists"). The only stop is to take the dependency down with it.
+// Read the middle row carefully — it is a DIFFERENCE OF DEGREE, not of
+// kind, and the earlier draft of this comment overstated it as "the stop
+// sticks". Under Upholds= a stop is reverted within two seconds,
+// unconditionally. Under Wants= the stop holds only while the dependency
+// issues no new start job — and every dependency unit in the shipped
+// manifests carries Restart=on-failure, so one crash-restart of the
+// dependency undoes an operator's stop of the dependent. What Wants= buys
+// is a bounded window, not immunity. (For scale: AttachServicesMode
+// already runs `systemctl start` over every unit on every reconcile —
+// see the loop below — so an operator stop never durably survived anyway.
+// This narrows the window from "next reconcile" to "next dependency
+// start job".)
+//
+// PULL-UP, AND IT IS TRANSITIVE. A start job for a dependency now also
+// starts its dependents, and each dependent drags in its OWN Requires=
+// closure. On dev-cell that turns `systemctl restart <mcp-proxy>` from a
+// one-unit operation into a five-unit one: it pulls up `executor` (which
+// burns API credits) and re-runs the `credential` oneshot (a live
+// credential fetch). The agent's own `restart` task issues exactly that
+// command. This is the main operational cost of the change and it is
+// accepted deliberately; a targeted restart of a DEPENDENT (the common
+// case) is unaffected.
+//
+// `systemctl mask` is not an escape hatch for either directive, by the
+// way — the agent writes a REAL file at /etc/systemd/system/<unit>, so
+// mask refuses ("File ... already exists"). Stopping a dependent for
+// maintenance means stopping it together with its dependency.
 //
 // The bottom row is worse, and it is what actually rules Upholds= out
 // here. An uphold-triggered start of a unit whose Condition*= is unmet is
@@ -633,12 +657,23 @@ func recoveryDependents(services []manifest.Service) map[string][]string {
 
 // writeUnitList writes "<directive><space-joined sorted units>\n", or
 // nothing at all when the list is empty. Omitting the line is what "this
-// service has no dependencies of that strength" means. It is not merely
-// cosmetic: systemd treats an empty assignment ("Requires=") as a
-// documented RESET of the list, so emitting one would be a no-op line
-// that reads like a constraint. (Checked with `systemd-analyze verify`
-// on systemd 255: an empty Requires= produces no diagnostic at all,
-// which is precisely why it should not be emitted — it would be silent.)
+// service has no dependencies of that strength" means.
+//
+// Do NOT reach for an empty assignment ("Requires=") to clear a list: for
+// the unit-dependency directives it is simply IGNORED, not a reset.
+// Measured on systemd 255.4, a unit declaring Wants=/Requires=/After= and
+// then the same directive empty keeps every entry:
+//
+//	Wants=a.service          then Wants=    -> Wants=a.service
+//	Requires=a.service       then Requires= -> Requires=a.service ...
+//
+// (An earlier version of this comment asserted the opposite — that the
+// empty form was a documented reset. It is not; the reset semantic
+// belongs to directives like ConditionPathExists= and Environment=.
+// Correcting it here because acting on the wrong version in this file
+// strands services fleet-wide.) `systemd-analyze verify` reports nothing
+// either way, so a stray empty line would be silently inert rather than
+// caught.
 func writeUnitList(b *strings.Builder, directive string, units []string) {
 	if len(units) == 0 {
 		return

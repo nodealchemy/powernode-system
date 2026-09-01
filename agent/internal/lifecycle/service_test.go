@@ -811,7 +811,7 @@ func TestRecoveryDependents_MirrorsRequires(t *testing.T) {
 // TestRecoveryDependents_SelfEdgeAndUnknownTarget guards the two graph
 // degeneracies. A self-edge would render a unit that pulls in itself; a
 // dependency naming a service absent from the module's set has no unit to
-// carry the directive (topoSort already tolerates it — service.go:626-632).
+// carry the directive (topoSort already tolerates the same case).
 func TestRecoveryDependents_SelfEdgeAndUnknownTarget(t *testing.T) {
 	services := []manifest.Service{
 		{Name: "loop", DependencyEdges: []manifest.DependencyEdge{
@@ -843,6 +843,53 @@ func TestRenderUnitModeGraph_DependencyCarriesRecoveryWants(t *testing.T) {
 	if !strings.Contains(got, want) {
 		t.Errorf("dependency unit missing recovery Wants=.\nwant: %q\ngot:\n%s", want, got)
 	}
+	// The inverse edge must add NO ordering. The dependent already carries
+	// After=<dependency>; an After=<dependent> here would close an ordering
+	// cycle on every strict edge in the fleet and systemd would break it by
+	// dropping an arbitrary one — the exact fleet-strand failure this change
+	// exists to prevent. writeDependencyDirectives builds After= only from
+	// OUTGOING edges; this pins that.
+	if strings.Contains(got, "After=") {
+		t.Errorf("recovery dependents must not emit any After= on the dependency:\n%s", got)
+	}
+	if strings.Contains(got, "Requires=") {
+		t.Errorf("recovery dependents must be best-effort, never Requires=:\n%s", got)
+	}
+}
+
+// TestRecoveryDependents_IsExactlyTheRequiresSet DERIVES the mirror instead
+// of restating it. TestRecoveryDependents_MirrorsRequires hand-writes the
+// expected set, so it would still pass if a future kind were bucketed into
+// Requires= in writeDependencyDirectives but not into the inverse (or vice
+// versa) — precisely the asymmetry that reintroduces the outage for that
+// kind. This asserts the two functions agree, per kind, by construction.
+func TestRecoveryDependents_IsExactlyTheRequiresSet(t *testing.T) {
+	kinds := []string{
+		manifest.DependencyKindStartBefore,
+		manifest.DependencyKindRequiresHealth,
+		manifest.DependencyKindSoftdep,
+		"some_future_kind",
+		"", // empty -> DefaultDependencyKind
+	}
+	for _, kind := range kinds {
+		services := []manifest.Service{
+			{Name: "dep"},
+			{Name: "src", DependencyEdges: []manifest.DependencyEdge{{Service: "dep", Kind: kind}}},
+		}
+		// Does the DEPENDENT render a hard Requires= on the dependency?
+		var b strings.Builder
+		writeDependencyDirectives(&b, "m", services[1].ResolvedDependencyEdges(), nil)
+		rendersRequires := strings.Contains(b.String(), "Requires=powernode-m-dep.service")
+
+		// Does the inversion give the dependency an inverse edge?
+		hasInverse := len(recoveryDependents(services)["dep"]) > 0
+
+		if rendersRequires != hasInverse {
+			t.Errorf("kind %q: Requires=%v but inverse=%v — every edge strong enough to "+
+				"cancel a start job must have an inverse to undo it, and no other edge may",
+				kind, rendersRequires, hasInverse)
+		}
+	}
 }
 
 // TestRenderUnitModeGraph_MergesWithOutgoingSoftdep pins that a service
@@ -866,7 +913,7 @@ func TestRenderUnitModeGraph_MergesWithOutgoingSoftdep(t *testing.T) {
 }
 
 // TestRenderUnitModeGraph_UnitBodyDependencyCarriesRecoveryWants covers the
-// renderUnitBodyMode path (service.go:557). The dev-cell bootstrap/mcp-proxy
+// renderUnitBodyMode path. The dev-cell bootstrap/mcp-proxy
 // pair that stranded on 2026-08-31 are BOTH unit_body services, so a fix that
 // skipped this path would miss the actual outage.
 func TestRenderUnitModeGraph_UnitBodyDependencyCarriesRecoveryWants(t *testing.T) {
@@ -875,9 +922,13 @@ func TestRenderUnitModeGraph_UnitBodyDependencyCarriesRecoveryWants(t *testing.T
 		UnitBody: "[Unit]\nDescription=x\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n",
 	}
 	got := RenderUnitModeGraph(svc, "mod-abc", RootModeNative, []string{"mcp-proxy"})
-	want := "Wants=powernode-mod-abc-mcp-proxy.service\n"
+	// Assert the SECTION HEADER too, not just the line: a Wants= appended
+	// into the body's trailing [Service] section parses without error and is
+	// silently ignored by systemd, which would look identical in a
+	// Contains-only test while delivering none of the fix.
+	want := "\n[Unit]\nWants=powernode-mod-abc-mcp-proxy.service\n"
 	if !strings.Contains(got, want) {
-		t.Errorf("unit_body dependency unit missing recovery Wants=.\nwant: %q\ngot:\n%s", want, got)
+		t.Errorf("unit_body dependency unit missing recovery Wants= under a [Unit] header.\nwant: %q\ngot:\n%s", want, got)
 	}
 }
 
@@ -924,5 +975,44 @@ func TestAttachServicesNative_DependencyUnitCarriesRecoveryWants(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "Wants=powernode-mod-1-mcp-proxy.service\n") {
 		t.Errorf("native-attached bootstrap unit missing recovery Wants=:\n%s", body)
+	}
+}
+
+// TestRecoveryDependents_DuplicateEdgeListedOnce guards the dedupe in
+// recoveryDependents: a manifest that names the same dependency twice must
+// not make its dependent appear twice in the dependency's Wants=.
+func TestRecoveryDependents_DuplicateEdgeListedOnce(t *testing.T) {
+	services := []manifest.Service{
+		{Name: "bootstrap"},
+		{Name: "mcp-proxy", DependencyEdges: []manifest.DependencyEdge{
+			{Service: "bootstrap", Kind: manifest.DependencyKindStartBefore},
+			{Service: "bootstrap", Kind: manifest.DependencyKindRequiresHealth},
+		}},
+	}
+	got := recoveryDependents(services)
+	if len(got["bootstrap"]) != 1 || got["bootstrap"][0] != "mcp-proxy" {
+		t.Errorf("duplicate edges must yield one dependent entry, got %v", got["bootstrap"])
+	}
+}
+
+// TestRenderUnitModeGraph_DedupesRecoveryAgainstOutgoingSoftdep guards the
+// dedupe in writeDependencyDirectives' merge: when a service both softdeps
+// ONTO a sibling and is depended on BY it, that sibling must appear once in
+// the merged Wants= list.
+func TestRenderUnitModeGraph_DedupesRecoveryAgainstOutgoingSoftdep(t *testing.T) {
+	svc := manifest.Service{
+		Name: "middle", StartCommand: "/bin/true",
+		DependencyEdges: []manifest.DependencyEdge{
+			{Service: "telemetry", Kind: manifest.DependencyKindSoftdep},
+		},
+	}
+	got := RenderUnitModeGraph(svc, "m", RootModeNative, []string{"telemetry"})
+	want := "Wants=powernode-m-telemetry.service\n"
+	if !strings.Contains(got, want) {
+		t.Errorf("want deduped %q, got:\n%s", want, got)
+	}
+	if n := strings.Count(got, "powernode-m-telemetry.service"); n != 2 {
+		// once in After=, once in Wants=.
+		t.Errorf("telemetry unit should appear exactly twice (After= and Wants=), got %d:\n%s", n, got)
 	}
 }
