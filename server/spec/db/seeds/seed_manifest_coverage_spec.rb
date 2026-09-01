@@ -102,6 +102,84 @@ module SeedManifestCoverage
       "partners/peers/grants), so the row has no consumer; never listed."
   }.freeze
 
+  # ── Declaration for assertion (iii) ─────────────────────────────────────
+  #
+  # Verbatim from db/seeds/gpu_nvidia_runtime_module.rb:76-79 — the seed's own
+  # description, LIFTED rather than restated. It is accurate and considered,
+  # and a paraphrase would have softened it; the example below pins it as a
+  # substring of the seed's actual bytes so the two cannot drift apart. Its
+  # "below" refers to the sharing-model paragraph in the SEED, not to anything
+  # in this file — that is what quoting rather than re-authoring costs.
+  GPU_NVIDIA_RUNTIME_LIFTED = <<~PROSE.strip
+    NOT YET IMPLEMENTED: registering an "nvidia" container runtime with dockerd.
+    No agent code does this, and there is no `modules/gpu-nvidia-runtime/`
+    artifact behind this row; assigning it today installs the package set and
+    nothing more. Do not read the sharing model below as a working capability.
+  PROSE
+
+  # ADVERTISED BUT NOT BUILDABLE. Each key is a module an operator-invocable
+  # seed creates as a catalog row with no `extensions/system/modules/<name>/`
+  # tree behind it, so System::ModuleBuildPlannerService excludes it as
+  # `no_manifest` and it can never be built or published — while an operator
+  # can still assign it.
+  #
+  # This is a DECLARATION of a known gap, not an exemption that makes it fine.
+  # The equality below deletes an entry the moment its manifest lands.
+  UNBUILDABLE_OPERATOR_MODULES = {
+    "gpu-nvidia-runtime" => GPU_NVIDIA_RUNTIME_LIFTED,
+
+    "inference-ollama" =>
+      "inference_runtime_module.rb — same AI/MCP workload-substrate family, and it requires " \
+      "gpu-nvidia-runtime on the same node (that seed's header, :14). No modules/inference-ollama/ " \
+      "tree exists, so the ollama runtime is catalog-only for the same reason its prerequisite is. " \
+      "System::InferenceDeploymentService#find_module! raises 'run its seed first' for both, which " \
+      "is what makes the pair reachable from system_deploy_inference_server.",
+
+    "docker-engine" =>
+      "docker_runtime_module.rb — the Docker Engine binary stack (docker-ce, containerd, buildx, " \
+      "compose). Its header (:7-8) models it on the `sdwan-overlay` precedent, and sdwan-overlay DOES " \
+      "have modules/sdwan-overlay/; this one does not. The seed makes no claim about the missing " \
+      "artifact, so unlike gpu-nvidia-runtime there is no authored statement to lift: the artifact is " \
+      "simply unauthored. OPEN QUESTION for the operator — author modules/docker-engine/, or say why " \
+      "the row is catalog-only.",
+
+    "docker-engine-config" =>
+      "docker_runtime_module.rb — the config-variety companion the same header (:8-11) says carries " \
+      "runtime config (/etc/docker/daemon.json, TLS material, listen address) per instance. Same " \
+      "missing artifact, same open question, same seed.",
+
+    "k3s-server" =>
+      "k3s_modules.rb — K3s control plane (kube-apiserver, controller-manager, scheduler, etcd). Its " \
+      "header (:6-8) says it mirrors docker_runtime_module.rb / sdwan_overlay_module.rb and ships the " \
+      "package install layer only. No modules/k3s-server/ tree. Same open question as docker-engine.",
+
+    "k3s-agent" =>
+      "k3s_modules.rb — K3s worker (kubelet, containerd, CNI). No modules/k3s-agent/ tree. Same seed, " \
+      "same open question as k3s-server.",
+
+    "sdwan-flow-exporter" =>
+      "sdwan_flow_exporter_module.rb — DECLARED PENDING by its own seed, not merely unauthored: the " \
+      "header's OPERATOR: BUILD + PUBLISH block (:51-65) states 'This seed lands the definition only' (:53) " \
+      "and makes authoring the module source (vector.toml + manifest.yaml) step 2 of a four-step " \
+      "operator procedure, deliberately separate because publishing AUTO-PROMOTES fleet-wide. So the " \
+      "missing tree here is the documented state between step 1 and step 2, not an oversight."
+  }.freeze
+
+  # Creation sites the scanner cannot resolve, each with why it is safe to
+  # leave unresolved. An entry is a declared BLIND SPOT in the advertised set,
+  # so it needs a reason the gap cannot hide behind it.
+  UNRESOLVED_MODULE_CREATION_SITES = {
+    "powernode_platform_modules.rb" =>
+      "Not a catalog seed but the platform-module LOADER: it iterates " \
+      "PLATFORM_MODULE_MANIFESTS_TO_SEED, read off POWERNODE_PLATFORM_MODULES_DISK_ROOT by " \
+      "System::PlatformModuleManifestLoader (:67, :69), so the name is a block parameter (:81, creation " \
+      "site :82-85) the " \
+      "scanner cannot see. Nothing is hidden by that: every module it creates comes FROM a " \
+      "modules/<name>/ manifest on disk, so by construction it can never contribute to the gap " \
+      "above. It also sets `public = false` (:93), which keeps its rows out of the catalog-advertised " \
+      "reading entirely."
+  }.freeze
+
   module_function
 
   def orchestrator_source
@@ -180,9 +258,10 @@ module SeedManifestCoverage
     Result = Struct.new(:names, :unresolved, :creation_sites, keyword_init: true)
 
     def initialize(source)
-      @root   = Prism.parse(source).value
-      @arrays = {}
-      collect_array_assignments(@root)
+      @root    = Prism.parse(source).value
+      @arrays  = {}
+      @strings = {}
+      collect_local_assignments(@root)
     end
 
     def scan
@@ -244,10 +323,33 @@ module SeedManifestCoverage
       assoc&.value
     end
 
-    # Literal, or `spec[:name]` inside `<local>.each` whose local is an array
-    # of spec hashes. Anything else returns nil (reported as UNRESOLVED).
+    # Literal, `name: <local>` where the local holds a string literal, or
+    # `spec[:name]` inside `<local>.each` whose local is an array of spec
+    # hashes. Anything else returns nil (reported as UNRESOLVED).
+    #
+    # The string-local form is not a convenience: `sdwan_flow_exporter_module.rb`
+    # writes `module_name = "sdwan-flow-exporter"` and then passes the local, so
+    # without it that seed's module is silently absent from every set derived
+    # here — an UNDER-report, which is the failure mode an equality oracle
+    # cannot see.
+    #
+    # LIMITATION, stated because it trades a loud UNRESOLVED for a possible
+    # wrong name: @strings is FILE-GLOBAL and last-write-wins, with no scope
+    # check. A local reassigned between creation sites, or a block parameter
+    # shadowing a same-named outer string assignment, would resolve to the
+    # wrong literal instead of reporting UNRESOLVED. Verified absent today —
+    # no seed assigns two different strings to one local, and the one real
+    # near-miss is cross-file (a `module_name` BLOCK PARAM in
+    # powernode_platform_modules.rb:81 vs a `module_name` string in
+    # sdwan_flow_exporter_module.rb:125), which a per-file table cannot
+    # conflate. The pre-existing @arrays path carries the same class of risk;
+    # this widens it rather than introducing it.
     def resolve(value, each_receiver)
       return value.unescaped if value.is_a?(Prism::StringNode)
+
+      if value.is_a?(Prism::LocalVariableReadNode) && @strings.key?(value.name)
+        return @strings[value.name]
+      end
 
       if value.is_a?(Prism::CallNode) && value.name == :[] &&
          value.receiver.is_a?(Prism::LocalVariableReadNode) && each_receiver
@@ -258,15 +360,19 @@ module SeedManifestCoverage
       nil
     end
 
-    def collect_array_assignments(node)
+    def collect_local_assignments(node)
       return unless node.is_a?(Prism::Node)
 
       if node.is_a?(Prism::LocalVariableWriteNode)
         array = unwrap_array(node.value)
-        @arrays[node.name] = hash_names(array) if array
+        if array
+          @arrays[node.name] = hash_names(array)
+        elsif node.value.is_a?(Prism::StringNode)
+          @strings[node.name] = node.value.unescaped
+        end
       end
 
-      node.compact_child_nodes.each { |child| collect_array_assignments(child) }
+      node.compact_child_nodes.each { |child| collect_local_assignments(child) }
     end
 
     def unwrap_array(node)
@@ -294,6 +400,67 @@ module SeedManifestCoverage
 
   def seeded_module_names
     scanned_running_seeds.values.flat_map(&:names).uniq.sort
+  end
+
+  # ── The OPERATOR-INVOCABLE region (assertion (iii)) ─────────────────────
+  #
+  # `rails db:seed` never runs these, but an operator legitimately does — and
+  # the platform tells them to. System::InferenceDeploymentService#find_module!
+  # raises "module '<name>' not in catalog — run its seed first"
+  # (app/services/system/inference_deployment_service.rb:101-103), which is an
+  # instruction to run exactly one of these files. So "never runs on db:seed"
+  # is NOT "never creates a catalog row"; assertion (i) does not reach here.
+  #
+  # DERIVED from the orchestrator, never listed: everything that is neither in
+  # SYSTEM_SEED_FILES nor matched by a pattern the orchestrator documents as a
+  # never-run playground (smoke_test_*, example_*). Those two patterns are the
+  # only files the orchestrator says must never run at all; everything else it
+  # excludes is excluded because it is operator-timed, not because it is dead.
+  def operator_invocable_seeds
+    @operator_invocable_seeds ||= seed_basenames.reject do |file|
+      listed_seed_files.include?(file) ||
+        DOCUMENTED_PATTERNS.any? { |_label, rx| file.match?(rx) }
+    end
+  end
+
+  # basename => Result, for the operator-invocable seeds that create modules.
+  def scanned_operator_seeds
+    @scanned_operator_seeds ||= operator_invocable_seeds.to_h { |file|
+      [ file, ModuleNameScanner.new(File.read(File.join(SEEDS_PATH, file))).scan ]
+    }.select { |_file, result| result.creation_sites.positive? }
+  end
+
+  # The ADVERTISED side of the equality: every module name an operator-invocable
+  # seed creates.
+  def operator_advertised_module_names
+    scanned_operator_seeds.values.flat_map(&:names).uniq.sort
+  end
+
+  # ADVERTISED minus BUILDABLE. Both INPUTS to this set are read off disk — the
+  # names by parsing the seed sources, the manifests by `Dir.children` on the
+  # modules tree — so neither input restates the other, and neither reads the
+  # declaration. The EQUALITY, though, is derived-vs-declared: this method is
+  # the derived side and UNBUILDABLE_OPERATOR_MODULES is a hand-written
+  # declaration, which is why it must be checked in both directions.
+  def unbuildable_operator_modules
+    operator_advertised_module_names.reject { |name| manifest_dirs.include?(name) }
+  end
+
+  # Creation sites in the operator region whose `name:` the scanner cannot
+  # resolve. Each such site is a hole in the advertised set, so it is declared
+  # rather than tolerated.
+  #
+  # Declared per FILE, which on its own would be too coarse: a file already
+  # named here could gain a SECOND unresolvable site and neither this set nor
+  # the gap would move. #operator_creation_site_counts closes that — it pins
+  # the site count per file, so a new creation site reddens whether or not its
+  # name resolves.
+  def unresolved_operator_sites
+    scanned_operator_seeds.reject { |_file, result| result.unresolved.empty? }.keys.sort
+  end
+
+  def operator_creation_site_counts
+    scanned_operator_seeds.transform_values(&:creation_sites).sort.to_h
   end
 end
 
@@ -395,6 +562,112 @@ RSpec.describe "seeded node-module manifest coverage (IMP-1634d69fafc8)" do
       end
 
       expect(stale).to be_empty, "ORPHANED_SEEDS has rotted into a permanent exemption:\n#{stale.join("\n")}"
+    end
+  end
+
+  # ── Assertion (iii) ───────────────────────────────────────────────────────
+  #
+  # IMP-3f9bf5594e9c. Assertion (i) reaches only seeds `db:seed` runs, so the
+  # operator-invocable seeds — the ones the platform's own error paths tell an
+  # operator to run — advertise catalog modules that no assertion here could
+  # see. `gpu-nvidia-runtime` is the case that surfaced it.
+  #
+  # This is an EQUALITY, not an existence check: the declared set must equal
+  # the derived gap. An existence check ("every declaration is valid") cannot
+  # see a MISSING declaration — an undeclared module just falls through — and
+  # cannot see a stale one either, so an entry would ossify into a permanent
+  # exemption once the real gap closed. One side is DERIVED (advertised names
+  # parsed out of the seed sources, minus the manifest dirs listed off disk);
+  # the other is the DECLARATION below, which is hand-written because that is
+  # where the reason lives. Symmetry is what makes derived-vs-declared sound:
+  # a MISSING entry and a STALE entry both redden.
+  describe "(iii) every module an operator-invocable seed advertises" do
+    it "has a modules/<name>/ manifest directory, or is a declared gap" do
+      expect(SeedManifestCoverage.unbuildable_operator_modules)
+        .to match_array(SeedManifestCoverage::UNBUILDABLE_OPERATOR_MODULES.keys),
+        "the set of modules advertised by an operator-invocable seed with no " \
+        "extensions/system/modules/<name>/ tree no longer equals its declaration. " \
+        "System::ModuleBuildPlannerService excludes each as `no_manifest`, so it can never be " \
+        "built or published while still appearing assignable.\n" \
+        "  derived gap: #{SeedManifestCoverage.unbuildable_operator_modules.inspect}\n" \
+        "  declared:    #{SeedManifestCoverage::UNBUILDABLE_OPERATOR_MODULES.keys.sort.inspect}\n" \
+        "Add the manifest directory (and DROP the declaration in the same commit), or add a " \
+        "UNBUILDABLE_OPERATOR_MODULES entry recording what is missing."
+    end
+
+    # ── Anti-vacuity ──────────────────────────────────────────────────────
+    # An equality between two derived sets passes trivially when both go
+    # empty for the wrong reason — a glob that matches nothing, a parse that
+    # extracts nothing. Each side is pinned to a value it can only have if it
+    # actually ran.
+    it "derives a non-empty operator-invocable seed set that includes a known member" do
+      expect(SeedManifestCoverage.operator_invocable_seeds)
+        .to include("gpu_nvidia_runtime_module.rb", "sdwan_flow_exporter_module.rb")
+      expect(SeedManifestCoverage.operator_invocable_seeds)
+        .not_to include("role_modules_seed.rb") # runs on db:seed — assertion (i)'s region
+    end
+
+    it "extracts module names from those seeds, including one that IS backed" do
+      advertised = SeedManifestCoverage.operator_advertised_module_names
+
+      # sdwan-overlay is advertised by an operator-invocable seed AND has
+      # modules/sdwan-overlay/. It can only be here if BOTH sides are live, so
+      # it is the pin that stops an empty gap from meaning "nothing was read".
+      expect(advertised).to include("sdwan-overlay")
+      expect(SeedManifestCoverage.manifest_dirs).to include("sdwan-overlay")
+      expect(SeedManifestCoverage.unbuildable_operator_modules).not_to include("sdwan-overlay")
+    end
+
+    it "resolves the string-local name form, so a seed using one is not silently missed" do
+      result = SeedManifestCoverage.scanned_operator_seeds.fetch("sdwan_flow_exporter_module.rb")
+
+      expect(result.names).to eq(%w[sdwan-flow-exporter])
+    end
+
+    # The gpu-nvidia-runtime declaration is a QUOTATION. Pin it to the bytes it
+    # quotes, both ways: the seed must still say it (so an edit that softens or
+    # deletes the admission reddens here rather than leaving this file asserting
+    # a claim its source withdrew), and this file must not have re-authored it.
+    it "quotes the gpu-nvidia-runtime admission out of the seed rather than restating it" do
+      seed = File.read(File.join(SeedManifestCoverage::SEEDS_PATH, "gpu_nvidia_runtime_module.rb"))
+      squish = ->(text) { text.gsub(/\s+/, " ").strip }
+
+      expect(squish.call(seed)).to include(squish.call(SeedManifestCoverage::GPU_NVIDIA_RUNTIME_LIFTED)),
+        "the declaration for gpu-nvidia-runtime is no longer a verbatim quotation of " \
+        "db/seeds/gpu_nvidia_runtime_module.rb. Either the seed's admission changed (re-lift it) or " \
+        "this file re-authored it (don't)."
+      expect(SeedManifestCoverage::UNBUILDABLE_OPERATOR_MODULES.fetch("gpu-nvidia-runtime"))
+        .to eq(SeedManifestCoverage::GPU_NVIDIA_RUNTIME_LIFTED)
+    end
+
+    # Reviewer finding: the unresolved-site declaration is FILE-granular, so a
+    # file already named there could gain a second unresolvable creation site
+    # and nothing would move. This pins the COUNT per file — the same guard the
+    # running-seed region already has ("pins which running seeds create
+    # NodeModules") — so a new creation site reddens whether its name resolves
+    # or not.
+    it "pins how many NodeModule creation sites each operator-invocable seed has" do
+      expect(SeedManifestCoverage.operator_creation_site_counts).to eq(
+        "docker_runtime_module.rb"        => 2,
+        "gpu_nvidia_runtime_module.rb"    => 1,
+        "inference_runtime_module.rb"     => 1,
+        "k3s_modules.rb"                  => 2,
+        "powernode_platform_modules.rb"   => 1,
+        "sdwan_flow_exporter_module.rb"   => 1,
+        "sdwan_overlay_module.rb"         => 1
+      ), "an operator-invocable seed gained or lost a System::NodeModule creation site. Confirm the " \
+         "scanner extracts its name (see the UNRESOLVED example) before updating this pin — an " \
+         "unresolvable new site would otherwise be invisible to the equality above."
+    end
+
+    it "declares every operator-region creation site whose name it cannot resolve" do
+      expect(SeedManifestCoverage.unresolved_operator_sites)
+        .to match_array(SeedManifestCoverage::UNRESOLVED_MODULE_CREATION_SITES.keys),
+        "an operator-invocable seed creates a System::NodeModule whose name: argument the scanner " \
+        "cannot resolve. Every such site is a hole in the advertised set above — the equality " \
+        "cannot fail for a module it never extracted.\n" \
+        "  derived: #{SeedManifestCoverage.unresolved_operator_sites.inspect}\n" \
+        "  declared: #{SeedManifestCoverage::UNRESOLVED_MODULE_CREATION_SITES.keys.sort.inspect}"
     end
   end
 end
