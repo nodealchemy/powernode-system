@@ -547,13 +547,27 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     # false claim placed in a Fix column would have been silently exempt.
     # The shape is pinned too — `| "<claim>" | <what is true> |`, two cells —
     # so a single-cell row cannot pose as a withdrawal.
+    # Keyed to the region's LINE RANGE, not `phase3.include?(line)`. The
+    # content-keyed form was the exact bug claims_outside_withdrawal was
+    # rewritten to fix — a byte-identical row pasted elsewhere was silently
+    # exempt — and it survived here only because this file had one withdrawal
+    # table. The Phase 4 withdrawal adds a second, so the collision it depends
+    # on is now materially more reachable, and the fix comes with the change
+    # that made it so.
     def self.only_in_withdrawal_rows(doc, pattern)
       phase3 = doc[/^## Phase 3 .*?(?=^## Phase 4 )/m].to_s
       raise "expected a Phase 3 section delimited by Phase 4" if phase3.empty?
 
+      start_char = doc.index(phase3)
+      raise "Phase 3 region is not a slice of this document" if start_char.nil?
+
+      first_line = doc[0...start_char].count("\n")
+      last_line = first_line + phase3.count("\n")
+
       doc.lines.each_with_index.filter_map do |line, i|
         next unless line.match?(pattern)
-        next if phase3.include?(line) && line.match?(/\A\| ["`].+["`] \| .+ \|\s*\z/)
+        next if i.between?(first_line, last_line) &&
+                line.match?(/\A\| ["`][^|]*\| [^|]*\|\s*\z/)
 
         "#{i + 1}: #{line.strip[0, 90]}"
       end
@@ -727,8 +741,25 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     #     a few lines rather than a new file), `docs/tutorials/04-k3s-cluster.md`,
     #     `docs/CONTAINER_RUNTIMES.md`, `docs/runbooks/sdwan-network-setup.md`,
     #     `docs/runbooks/k3s-smoke-full-lifecycle.md`, `docs/SMOKE_TEST.md`,
-    #     and — the operator-facing one — the `k3s-server` module description
-    #     in `server/db/seeds/k3s_modules.rb`. Tracked separately.
+    #     `docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md:512,535` (a k3s-server
+    #     manifest example describing etcd and passing `--cluster-init`; this
+    #     spec already has a describe block for that file), and — the
+    #     operator-facing one, retrievable through `system_get_module` —
+    #     the `k3s-server` module description in
+    #     `server/db/seeds/k3s_modules.rb:14,78-81`.
+    #
+    #     Also NOT a doc: `server/db/seeds/smoke_test_k3s_ha_control_plane.rb`
+    #     is why this survived. At the db tier it calls `register_node_join!`
+    #     directly with no target on a single-cluster account (:98-107),
+    #     synthesizing the call ServerManager never makes, and then asserts two
+    #     failover candidates (:114-123) — a green synthetic proof of a
+    #     capability that does not exist. At the site tier it waits 600s for
+    #     `node_count >= 3` (:91-96), which cannot happen.
+    #
+    #     NOTHING IS FILED for any of these as of this commit. Stated plainly
+    #     because the Phase 3 deferral above names IMP-a5f236e8cc56, and an
+    #     unnamed "tracked separately" beside a named one reads as tracked
+    #     when it is not.
     def self.phase4_region(doc)
       doc[/^## Phase 4 .*?(?=^## Phase 5 )/m].to_s
     end
@@ -841,9 +872,17 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     end
 
     # Same root cause as the parked HA gap, surfacing as a PERSISTENCE claim
-    # rather than a join claim: with no `--cluster-init` anywhere in the tree,
-    # K3s runs SQLite via kine, so "etcd state survives reboot" and "take an
-    # etcd snapshot" are both false. This runbook does not currently make
+    # rather than a join claim: no Go or Ruby SOURCE supplies `--cluster-init`,
+    # so K3s runs SQLite via kine and "etcd state survives reboot" and "take an
+    # etcd snapshot" are both false.
+    #
+    # NOT "nowhere in the tree" — an earlier draft of this comment said that and
+    # was wrong. The string occurs exactly once, in a k3s-server manifest
+    # example at docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md:535. It is inert (that
+    # file documents manifest schema; the k3s-server module is a NodeModule
+    # catalog row installed by the k3sd reconciler, not a composed module with a
+    # services: block), but the absolute was false and this file's whole purpose
+    # is not making absolutes it has not checked. This runbook does not currently make
     # either claim; the sibling docs do (tracked separately), and the realistic
     # regression is someone importing the wording here while "fixing" a gap.
     #
