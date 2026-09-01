@@ -722,6 +722,94 @@ RSpec.describe System::KubernetesClusterProvisionerService do
         )
       }.not_to raise_error
     end
+
+    # IMP-e5de023ab9fa — ORDERING. `register_node_join!` resolves cluster
+    # membership (`resolve_membership_cluster!`) BEFORE it runs
+    # `enforce_cni_profile_compatibility!`. So the CNI gate is only reachable
+    # once resolution has already succeeded: with a second non-error cluster in
+    # the account and no `target_cluster_id`, the call is refused with
+    # `AmbiguousClusterError` and the profile is never looked at.
+    #
+    # This is the exact shape of the K3s smoke drill's CNI negative test
+    # (db/seeds/smoke_test_k3s_agent_join.rb): it creates a stub
+    # `ovn_kubernetes` cluster alongside the site cluster and then called
+    # `register_node_join!` untargeted, rescuing `CniProfileMismatchError` only
+    # — a rescue that cannot catch what actually escapes. Pinned here so the
+    # ordering cannot be reversed without a red example, and so the drill's
+    # premise is checked by execution rather than by reading.
+    context "when a second non-error cluster exists (the smoke drill's shape)" do
+      let!(:stub_cluster) do
+        ::Devops::KubernetesCluster.create!(
+          account:      account,
+          name:         "ovn-stub-#{SecureRandom.hex(4)}",
+          flavor:       "k3s",
+          environment:  "production",
+          status:       "active",
+          cni_plugin:   "ovn_kubernetes",
+          api_endpoint: "https://[::1]:6443",
+          k8s_version:  "v1.30.5+k3s1",
+          encrypted_kubeconfig: "stub",
+          encrypted_server_token: "stub",
+          encrypted_agent_token: "stub",
+          metadata: {}
+        )
+      end
+
+      before do
+        agent_instance.update!(network_profile: "lightweight")
+        agent_peer
+      end
+
+      it "refuses on ambiguity before the CNI gate can run" do
+        expect {
+          described_class.register_node_join!(
+            node_instance: agent_instance, role: "agent"
+          )
+        }.to raise_error(described_class::AmbiguousClusterError, /pass target_cluster_id/)
+      end
+
+      # The counterfactual the drill depended on: a rescue naming only
+      # CniProfileMismatchError does NOT catch the untargeted call. Written as a
+      # real rescue chain rather than `raise_error`, because what is under test
+      # is which handler runs, not merely which class is raised.
+      it "escapes a rescue that names CniProfileMismatchError alone" do
+        reached = begin
+          described_class.register_node_join!(
+            node_instance: agent_instance, role: "agent"
+          )
+          :no_raise
+        rescue described_class::CniProfileMismatchError
+          :cni_gate
+        rescue described_class::AmbiguousClusterError
+          :ambiguity_refusal
+        end
+
+        expect(reached).to eq(:ambiguity_refusal)
+      end
+
+      # ...and naming the stub explicitly is what makes the gate reachable,
+      # which is the drill's actual intent.
+      it "reaches the CNI gate once target_cluster_id names the stub" do
+        expect {
+          described_class.register_node_join!(
+            node_instance: agent_instance, role: "agent",
+            target_cluster_id: stub_cluster.id
+          )
+        }.to raise_error(described_class::CniProfileMismatchError, /Mixed-profile/)
+      end
+
+      it "creates no KubernetesNode on either refusal path" do
+        expect {
+          begin
+            described_class.register_node_join!(
+              node_instance: agent_instance, role: "agent"
+            )
+          rescue described_class::AmbiguousClusterError
+            nil
+          end
+        }.not_to change { ::Devops::KubernetesNode.where(node_instance_id: agent_instance.id).count }
+      end
+    end
   end
 
   # K3s overlay (2026-05-19) — when the bootstrap peer's SDWAN network

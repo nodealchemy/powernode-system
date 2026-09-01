@@ -1544,6 +1544,54 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
                                  /::System::KubernetesClusterProvisionerService\.join_request!\( node_instance: inst, target_cluster_id: cluster\.id \)/
                                ])).to be_empty
     end
+
+    # IMP-e5de023ab9fa. The drill's CNI negative test carried the fabrication a
+    # SEVENTH time, in a code comment rather than prose: it said the stub "IS in
+    # the account, it'll be picked as most-recent" and that `order(:created_at)
+    # .last` would find it. It never could. `register_node_join!` resolves
+    # membership BEFORE it runs `enforce_cni_profile_compatibility!`, and the
+    # account already holds the site cluster from phase 1/2, so an untargeted
+    # call raised `AmbiguousClusterError` — which the drill's narrow
+    # `rescue CniProfileMismatchError` could not catch. The negative test never
+    # reached the gate it names. Text-pinned here for the same reason the KB seed
+    # is: a seed is not executed by any spec, so its wording regresses silently.
+    #
+    # WHAT THIS CAN SEE: the seed FILE's wording and the explicit target. WHAT IT
+    # CANNOT SEE: whether the drill run actually exercises the gate — that is
+    # covered behaviourally in
+    # spec/services/system/kubernetes_cluster_provisioner_service_spec.rb
+    # (".register_node_join! cni profile compatibility (Phase O4)").
+    it "no longer claims a most-recent fallback in the CNI negative test" do
+      seed = self.class.read(ext_root, "server/db/seeds/smoke_test_k3s_agent_join.rb")
+      expect(self.class.present_sites(seed, [
+                                        /it'll be picked as/,
+                                        /it IS the most recent/,
+                                        /removing all OTHER/
+                                      ])).to be_empty
+    end
+
+    it "names the stub cluster explicitly instead of relying on auto-select" do
+      seed = self.class.read(ext_root, "server/db/seeds/smoke_test_k3s_agent_join.rb")
+      expect(self.class.absent(seed, [
+                                 /target_cluster_id: stub_cluster\.id/,
+                                 /no most-recent-active fallback/,
+                                 /exactly one candidate/,
+                                 /AmbiguousClusterError/
+                               ])).to be_empty
+    end
+
+    # The abort this fix removes was not inert: it skipped the profile restore
+    # and `stub_cluster.destroy`, leaving a second non-error cluster in the
+    # account, which makes every LATER untargeted join in the smoke run
+    # ambiguous too. The cleanup must run on any exit, not just the rescued one.
+    it "cleans up the stub cluster and the borrowed profile on every exit" do
+      seed = self.class.read(ext_root, "server/db/seeds/smoke_test_k3s_agent_join.rb")
+      negative = seed[/^raised = false$.*?^h\.assert\(raised/m]
+      expect(negative).not_to be_nil, "negative-test block not found in the seed"
+      expect(negative).to match(/^ensure$/)
+      expect(negative[/^ensure$.*/m]).to match(/stub_cluster\.destroy/)
+      expect(negative[/^ensure$.*/m]).to match(/network_profile: prior_profile/)
+    end
   end
 
 end

@@ -145,33 +145,36 @@ end
 
 raised = false
 begin
-  # Internally calls enforce_cni_profile_compatibility!, but the
-  # provisioner's class-level join requires a cluster lookup by account.
-  # Since the stub cluster IS in the account, it'll be picked as
-  # most-recent. To target the stub deterministically, we instantiate
-  # the service directly with the role set.
+  # Name the stub explicitly. There is no most-recent-active fallback:
+  # register_node_join! resolves membership (resolve_membership_cluster!)
+  # BEFORE it runs enforce_cni_profile_compatibility!, and resolution
+  # auto-selects only when there is exactly one candidate ("candidate" =
+  # where.not(status: "error"), so pending/bootstrapping/degraded count
+  # too). This account already holds the site cluster, so the stub above
+  # makes two: an untargeted call would raise AmbiguousClusterError and
+  # never reach the CNI gate — and the rescue below, which names
+  # CniProfileMismatchError alone, would not catch it. Passing
+  # target_cluster_id is what makes the gate reachable.
   service = ::System::KubernetesClusterProvisionerService.new(
-    node_instance: lightweight_inst, role: "agent", k8s_version: "v1.30"
+    node_instance: lightweight_inst, role: "agent", k8s_version: "v1.30",
+    target_cluster_id: stub_cluster.id
   )
-  # Force the cluster lookup to find our stub by removing all OTHER
-  # active clusters from contention via order(:created_at).last
-  # → since stub_cluster was just created, it IS the most recent.
   service.register_node_join!
 rescue ::System::KubernetesClusterProvisionerService::CniProfileMismatchError => e
   raised = true
   h.ok("CniProfileMismatchError raised: #{e.message[0, 100]}...")
+ensure
+  # Restore the agent's profile (so it stays usable for subsequent phases)
+  # and drop the stub — on ANY exit, not just the rescued one. An escaping
+  # error used to skip both, leaving a second non-error cluster in the
+  # account, which makes every later untargeted join ambiguous as well.
+  if prior_profile.nil? && lightweight_inst.respond_to?(:network_profile=)
+    lightweight_inst.update!(network_profile: nil)
+  elsif lightweight_inst.respond_to?(:network_profile=)
+    lightweight_inst.update!(network_profile: prior_profile)
+  end
+  stub_cluster.destroy
 end
-
-# Restore the agent's profile before asserting (so it stays usable for
-# subsequent phases)
-if prior_profile.nil? && lightweight_inst.respond_to?(:network_profile=)
-  lightweight_inst.update!(network_profile: nil)
-elsif lightweight_inst.respond_to?(:network_profile=)
-  lightweight_inst.update!(network_profile: prior_profile)
-end
-
-# Cleanup stub cluster
-stub_cluster.destroy
 
 h.assert(raised, "lightweight host rejected from ovn_kubernetes cluster (CniProfileMismatchError)")
 
