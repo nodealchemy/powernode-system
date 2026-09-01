@@ -250,7 +250,7 @@ Three read-only bash scripts under `docs/.verify/` check link correctness
 ```bash
 bash docs/.verify/check-links.sh        # every [text](path) resolves
 bash docs/.verify/check-code-refs.sh    # every cited code path exists
-bash docs/.verify/check-mcp-actions.sh  # every MCP action exists in registry
+bash docs/.verify/check-mcp-actions.sh  # every MCP action is registered, or catalogued
 ```
 
 See [`docs/.verify/README.md`](./docs/.verify/README.md) for output format

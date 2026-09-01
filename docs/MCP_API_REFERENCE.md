@@ -663,7 +663,9 @@ Backed by 7 tool classes: `DockerContainerTool`, `DockerServiceTool`, `DockerSta
 
 ## Aspirational backlog
 
-The aspirational backlog is currently **empty** — the three previously-listed wrappers (`system_get_task`, `system_revert_disk_image`, `system_update_module_assignment`) were implemented on 2026-06-04 and are now registered in `platform_api_tool_registry.rb`. If a runbook or tutorial later references an action that isn't yet registered, append a row to [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md) (with a REST workaround at the call site) so the doc-verification harness output stays interpretable; remove the row when the wrapper ships.
+[`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md) is the catalog of documented actions that are **not** registered — verbs a runbook or tutorial names on purpose, with the REST/console workaround at the call site. The count is deliberately **not restated here**: that catalog is derived from `ASPIRATIONAL_VERBS` in `server/spec/docs/module_docs_mcp_call_signatures_spec.rb` and pinned to it by an equality oracle, and a hand-kept second copy of the number is exactly what went wrong before (this paragraph asserted the backlog was empty from 2026-06-04 until 2026-09-01, while two entries sat in `FLEET_SENSORS.md`). Read the catalog for the current set.
+
+Three wrappers did leave the backlog on 2026-06-04 — `system_get_task`, `system_revert_disk_image` and `system_update_module_assignment` are implemented and registered in `platform_api_tool_registry.rb`. To add a new aspirational reference, comment the example out, say so in the prose, then add the entry to `ASPIRATIONAL_VERBS` and the row to the catalog; remove both when the wrapper ships.
 
 Operator runbooks under `docs/runbooks/` should reference current registry actions only; cross-validate against this doc + the aspirational catalog before adding a new runbook step.
 
@@ -685,7 +687,7 @@ Operator runbooks under `docs/runbooks/` should reference current registry actio
 | `system_sdwan_*` | 73 | `SdwanTool` (incl. OVN + IPFIX + host-bridge + federation accept/compose subsections) |
 | `kubernetes_*` | 5 | `KubernetesClusterTool` + `KubernetesProvisioningTool` |
 | `docker_*` | 52 | 7 tool classes (Container, Service, Stack, Cluster, Host, Image, NetworkVolume) |
-| **Total** | code-derived from `platform_api_tool_registry.rb` — regenerate the machine catalog (`rails mcp:generate_tool_catalog`) for the authoritative count; the aspirational backlog ([`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md)) is now empty | |
+| **Total** | code-derived from `platform_api_tool_registry.rb` — regenerate the machine catalog (`rails mcp:generate_tool_catalog`) for the authoritative count. For actions documented but NOT registered, read [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md) rather than a count restated here | |
 
 > Counts are code-derived from `platform_api_tool_registry.rb` on 2026-06-03. The parent platform's full machine-generated catalog (with parameter schemas) is the authoritative cross-check — regenerate it with `cd server && bundle exec rails mcp:generate_tool_catalog`.
 

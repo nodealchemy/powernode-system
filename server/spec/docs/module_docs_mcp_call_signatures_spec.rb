@@ -433,21 +433,30 @@ module ModuleDocsMcpCallSignatures
   # entry for a live call site does not silence the sweep — it adds a second
   # failure. See aspirational_exemption?.
   #
-  # Not the same register as docs/.verify/ASPIRATIONAL_MCP.md, and deliberately
-  # not merged with it. That catalog serves check-mcp-actions.sh, which greps
-  # only `system_`/`kubernetes_`/`docker_`-prefixed verbs and SKIPS any line
-  # starting `//`, `#` or `>` — so it cannot see a commented-out call at all,
-  # and reports "0 unknown" on both of the sites this list exempts.
+  # docs/.verify/ASPIRATIONAL_MCP.md is the operator-facing view of this list,
+  # DERIVED from it and pinned by the equality oracle below — no longer a
+  # second hand-maintained register, and no longer kept in step by hand.
   #
-  # Neither checker contains the other, so do not treat one green as covering
-  # the other's ground. This sweep reads bare verbs the script's prefix filter
-  # drops (recent_events, execute_agent, list_agents) and does not accept a
-  # comment marker as an exemption; the script in turn matches a call the same
-  # way wherever it appears, so it is not bounded by this parser's brace
-  # balancing. Keep both in step by hand when adding an entry to either — but
-  # note that ASPIRATIONAL_MCP.md legitimately stays EMPTY while both entries
-  # here are `//`-framed, because the script's comment filter cannot see them.
-  # An entry there is owed only for a site the script CAN see, i.e. a live one.
+  # It used to be. The paragraph that stood here argued the catalog
+  # "legitimately stays EMPTY while both entries here are `//`-framed, because
+  # the script's comment filter cannot see them", and that an entry was owed
+  # only for a site the script CAN see. The reasoning was sound about the
+  # script as it then behaved and wrong about what the catalog is for: the
+  # script skipped `//`, `#` and `>` lines, so its silence was a property of
+  # its own filter, not evidence about the corpus — and ASPIRATIONAL_MCP.md
+  # went on to cite that silence as proof it was empty. IMP-2b09c9f22bae
+  # removed the filter (measured: the dropped lines carried 9 prefixed verbs,
+  # only 4 of them invisible anywhere else, of which 2 are registered and 2 are
+  # this pair — no new unknowns) and gave the script a catalogued-vs-unknown
+  # split, so it now SEES both sites and resolves them through the catalog.
+  #
+  # The two checkers still do not contain one another, so do not treat one
+  # green as covering the other's ground. This sweep reads bare verbs the
+  # script's prefix filter drops (recent_events, execute_agent, list_agents);
+  # the script in turn matches a reference wherever it appears, so it is not
+  # bounded by this parser's brace balancing. What has changed is that the
+  # aspirational REGISTER is now single-sourced here: add an entry to this
+  # hash, and the oracle below tells you what the markdown must say.
   ASPIRATIONAL_VERBS = {
     # IMP-2a5a9a0fed0a. FLEET_SENSORS.md's "Configuring Sensor Thresholds"
     # section shows a sensor-config read/write pair that no MCP verb provides.
@@ -465,9 +474,17 @@ module ModuleDocsMcpCallSignatures
     # two resolve in neither Ai::Tools::PlatformApiToolRegistry::TOOLS nor
     # Ai::Introspection::McpToolRegistrar::INTROSPECTION_TOOLS — and both are
     # this one pair, in this one section.
+    #
+    # That is a claim about CALL SITES this parser extracts, not a census of
+    # every unimplemented verb the docs name. A verb mentioned only in prose is
+    # outside every extractor here, and one exists:
+    # system_gitops_unregister_repository, docs/tutorials/10-gitops-fleet.md:385,
+    # labelled aspirational with a REST workaround exactly like this pair but
+    # written as a bare name in a shell comment. It is deliberately NOT listed
+    # below — an entry must match a call site or the staleness guard reddens it.
     [ "docs/FLEET_SENSORS.md", "system_get_sensor_config" ] =>
       "no MCP read verb for Fleet::SensorConfig; the doc says so and names the Rails/REST path",
-    # Its write sibling (FLEET_SENSORS.md:527), under the same ⚠️ line and the
+    # Its write sibling (FLEET_SENSORS.md:542), under the same ⚠️ line and the
     # same "Until those MCP wrappers ship" prose.
     #
     # It was NOT listed here until IMP-f97c629e59d7, and not because anyone
@@ -480,6 +497,84 @@ module ModuleDocsMcpCallSignatures
     [ "docs/FLEET_SENSORS.md", "system_update_sensor_config" ] =>
       "no MCP write verb for Fleet::SensorConfig; same section, same ⚠️ line, same Rails/REST path"
   }.freeze
+
+  # ── ASPIRATIONAL_MCP.md is DERIVED from this list, not restated beside it ──
+  #
+  # IMP-2b09c9f22bae. docs/.verify/ASPIRATIONAL_MCP.md is the operator-facing
+  # register of the same fact ASPIRATIONAL_VERBS holds: which documented verbs
+  # the platform does not implement. Until now it was a hand-maintained second
+  # copy, and it had drifted to the worst possible value — it declared the
+  # catalog EMPTY and cited a clean check-mcp-actions.sh run as the proof,
+  # while the harness it cited filters out `//` lines and so cannot see either
+  # of the two entries below. A control whose own report suppressed the audit
+  # that would have found the gap.
+  #
+  # The fix is a single source of truth with the other copies PINNED to it, not
+  # three artefacts agreeing by convention. ASPIRATIONAL_VERBS is that source
+  # because it is the only one already staleness-guarded from BOTH sides:
+  # "is still unimplemented, as its exemption claims" retires an entry the day
+  # the verb is registered, and "exercises every ASPIRATIONAL_VERBS exemption"
+  # retires one whose call site is deleted. Neither guard reads the markdown
+  # file or the shell script, so this oracle does not close a loop: the
+  # markdown derives from the constant, and the constant answers to the
+  # registry and the docs corpus.
+  #
+  # Deliberately NOT the reverse direction. Deriving the constant from the
+  # markdown would put the policy record in a file nothing type-checks, and
+  # deriving the markdown from the SHELL SCRIPT'S OUTPUT — the tempting
+  # shortcut — would reproduce the original defect exactly: the script cannot
+  # see a commented-out site, so a catalog built from its output is empty by
+  # construction and agrees with the script no matter how wrong both are.
+  #
+  # ANTI-VACUITY. An equality oracle between two sets is vacuous when both go
+  # empty, which is precisely the state this task found. Three separate pins,
+  # because the failure mode here is a parser that silently returns nothing:
+  #
+  #   1. the BEGIN/END markers must EXIST in the file — a renamed or deleted
+  #      region is a failure, not an empty catalog;
+  #   2. the delimited region must contain at least one table ROW whenever
+  #      ASPIRATIONAL_VERBS is non-empty — a marker pair around prose parses
+  #      to nothing and would otherwise pass the moment the constant emptied;
+  #   3. equality is asserted on [doc, verb] PAIRS both ways, so a row naming
+  #      the right verb against the wrong doc fails.
+  #
+  # When the fiction is finally implemented and ASPIRATIONAL_VERBS empties for
+  # real, pin 2 relaxes with it and the markdown is expected to carry no rows.
+  # That end state is reached by DELETING entries here, which reddens their
+  # own self-retiring guards first — it cannot be reached by the catalog
+  # quietly going blank, which is the way it went wrong before.
+  ASPIRATIONAL_CATALOG_PATH = "docs/.verify/ASPIRATIONAL_MCP.md"
+  ASPIRATIONAL_CATALOG_BEGIN = "<!-- ASPIRATIONAL-CATALOG:BEGIN -->"
+  ASPIRATIONAL_CATALOG_END = "<!-- ASPIRATIONAL-CATALOG:END -->"
+
+  # Parses the delimited catalog region into [[doc, verb], ...].
+  #
+  # Rows are read as `| `verb` | `doc` | ... |` with both cells BACKTICKED, and
+  # the header/separator rows are dropped by requiring backticks rather than by
+  # counting lines. Backticks are load-bearing twice over: they are what makes
+  # a row distinguishable from the surrounding prose, and writing the verb bare
+  # (no `platform.` prefix) is what keeps this catalog from being read as a
+  # CALL SITE by the tree-wide sweep above and by check-mcp-actions.sh, both of
+  # which glob docs/.verify/ along with everything else. A catalog that
+  # registered as a call site would flag its own rows as unknown verbs.
+  def self.parse_aspirational_catalog(text)
+    region = text[/#{Regexp.escape(ASPIRATIONAL_CATALOG_BEGIN)}(.*?)#{Regexp.escape(ASPIRATIONAL_CATALOG_END)}/m, 1]
+    return nil if region.nil?
+
+    rows = region.lines.filter_map do |line|
+      # lstrip so an indented row is read the way the shell's
+      # `^[[:space:]]*\|` reads it; otherwise an indented row would be
+      # invisible here and visible there, and the two readers would disagree.
+      next unless line.lstrip.start_with?("|")
+
+      cells = line.split("|").map(&:strip)
+      verb = cells[1].to_s[/\A`([a-z][a-z0-9_]+)`\z/, 1]
+      doc = cells[2].to_s[/\A`([^`]+)`\z/, 1]
+      [ doc, verb ] if verb && doc
+    end
+
+    rows
+  end
 end
 
 RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" do
@@ -1759,7 +1854,7 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   # is deliberately loose — it asks only whether the line opens with `//`, so a
   # line opening with a protocol-relative path would read as commented. No such
   # site exists: swept 2026-08-31, 351 call sites tree-wide, exactly 3 report
-  # commented and all 3 are genuine (FLEET_SENSORS.md:526 and :527,
+  # commented and all 3 are genuine (FLEET_SENSORS.md:541 and :542,
   # node-provisioning.md:210).
   #
   # It also names the situation outright, because the failure the gate produces
@@ -1793,6 +1888,67 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
       "#{(aspirational_verbs.keys - exercised_aspirational.uniq).inspect}. The example was " \
       "probably removed or reworded — delete the entry."
     )
+  end
+
+  # The derivation oracle. See ASPIRATIONAL_CATALOG_PATH above for why this
+  # direction and not the other, and for the three anti-vacuity pins these
+  # four examples implement.
+  describe "docs/.verify/ASPIRATIONAL_MCP.md (derived from ASPIRATIONAL_VERBS)" do
+    catalog_path = File.join(ext_root, ModuleDocsMcpCallSignatures::ASPIRATIONAL_CATALOG_PATH)
+    catalog_text = File.exist?(catalog_path) ? File.read(catalog_path) : nil
+    catalog_rows = catalog_text && ModuleDocsMcpCallSignatures.parse_aspirational_catalog(catalog_text)
+
+    it "exists on disk" do
+      expect(catalog_text).not_to(
+        be_nil,
+        "#{ModuleDocsMcpCallSignatures::ASPIRATIONAL_CATALOG_PATH} is gone. It is the " \
+        "operator-facing view of ASPIRATIONAL_VERBS and check-mcp-actions.sh reads it to " \
+        "tell a catalogued aspirational reference from real drift. Restore it or retire " \
+        "both consumers together."
+      )
+    end
+
+    # Pin 1: the machine-readable region must be present. Without this, renaming
+    # or dropping the markers turns the parse into `nil`, the row set into
+    # nothing, and — on the day ASPIRATIONAL_VERBS empties — the equality
+    # example below into a green that proves nothing.
+    it "carries the machine-readable catalog markers" do
+      expect(catalog_rows).not_to(
+        be_nil,
+        "#{ModuleDocsMcpCallSignatures::ASPIRATIONAL_CATALOG_BEGIN} / " \
+        "#{ModuleDocsMcpCallSignatures::ASPIRATIONAL_CATALOG_END} not found in " \
+        "#{ModuleDocsMcpCallSignatures::ASPIRATIONAL_CATALOG_PATH}. The table between them " \
+        "is parsed by this spec and by check-mcp-actions.sh — the markers are not " \
+        "decoration, and a catalog without them reads as empty to both."
+      )
+    end
+
+    # Pin 2: a non-empty source must yield a non-empty parse. Equality alone
+    # cannot catch a parser that matches nothing once the source also empties.
+    it "parses at least one row while ASPIRATIONAL_VERBS is non-empty" do
+      skip "ASPIRATIONAL_VERBS is empty — nothing to derive" if aspirational_verbs.empty?
+
+      expect(catalog_rows).not_to(
+        be_empty,
+        "The catalog region exists but parsed to zero rows while ASPIRATIONAL_VERBS holds " \
+        "#{aspirational_verbs.size}. Rows must be `| `verb` | `doc/path.md` | workaround |` " \
+        "with the verb and doc BACKTICKED and the verb written bare (no platform. prefix)."
+      )
+    end
+
+    # Pin 3: equality on [doc, verb] pairs, both directions.
+    it "lists exactly the ASPIRATIONAL_VERBS entries, no more and no fewer" do
+      expect(catalog_rows || []).to(
+        match_array(aspirational_verbs.keys),
+        "docs/.verify/ASPIRATIONAL_MCP.md has drifted from ASPIRATIONAL_VERBS.\n" \
+        "  missing from the catalog: #{(aspirational_verbs.keys - (catalog_rows || [])).inspect}\n" \
+        "  in the catalog but not the list: #{((catalog_rows || []) - aspirational_verbs.keys).inspect}\n" \
+        "ASPIRATIONAL_VERBS is the source of truth; edit the markdown to match it. Do NOT " \
+        "edit the list to match the markdown, and do NOT take the count from a " \
+        "check-mcp-actions.sh run — that script cannot see a commented-out call site, which " \
+        "is what every entry here is."
+      )
+    end
   end
 
   # Without this, a KNOWN_BROKEN entry can rot silently. Deleting the offending

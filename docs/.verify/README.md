@@ -12,7 +12,7 @@ action names.
 |--------|----------------|------------|
 | `check-links.sh` | Every `[text](path)` in every `.md` resolves on disk | 0=clean, 1=broken links, 2=invocation error |
 | `check-code-refs.sh` | Every cited code path (e.g. `extensions/system/server/app/services/...`) exists | 0=clean, 1=missing references, 2=invocation error |
-| `check-mcp-actions.sh` | Every referenced MCP action (`system_*`, `docker_*`, `kubernetes_*`) is defined in the parent platform's tool registry | 0=clean (or registry unreachable), 1=unknown actions, 2=invocation error |
+| `check-mcp-actions.sh` | Every referenced MCP action (`system_*`, `docker_*`, `kubernetes_*`) is defined in the parent platform's tool registry, or catalogued in [`ASPIRATIONAL_MCP.md`](./ASPIRATIONAL_MCP.md) | 0=clean (or registry unreachable), 1=unknown/uncatalogued actions or dispatcher drift, 2=invocation error |
 
 ## Running locally
 
@@ -40,8 +40,8 @@ echo "All checks passed."
 - **Before pushing doc changes** — catch broken links + dead code refs
   before review
 - **As part of doc PR review** — reviewers run before approving
-- **In CI** (future) — wire each script into `.gitea/workflows/docs.yml`
-  as a gating job. See "Wiring into CI" below.
+- **In CI** — already wired; see "Wiring into CI" below for what gates and
+  what only reports.
 
 ## Output format
 
@@ -63,7 +63,7 @@ docs/agent-internals.md:45: MISSING → agent/internal/old_package/
 Example `check-mcp-actions.sh` finding:
 
 ```
-UNKNOWN actions (in docs but not in registry):
+UNKNOWN actions (referenced via platform.X, not in registry, not catalogued):
   system_old_action
     referenced in: docs/runbooks/legacy.md
 ```
@@ -98,62 +98,94 @@ It does NOT check parent-platform paths (`server/app/...` without `extensions/sy
 extension is checked out standalone (no parent platform around), the
 script warns and exits 0 — it's a best-effort gate, not a hard requirement.
 
-The script extracts ONLY call-site invocations matching `platform.<action>(`
-to minimize false positives from prose mentions, table names, or class
-names that happen to match the `system_*` pattern.
+The script requires the `platform.` prefix, which is what keeps prose
+mentions, table names and class names that happen to match the bare
+`system_*` pattern out of the results.
 
-Lines that are commented out (`//`, `#`) or inside markdown blockquotes
-(`> `) are skipped — they're aspirational annotations / future-action
-callouts, not real call sites.
+**Comment-framed lines are scanned, not skipped** (changed 2026-09-01,
+IMP-2b09c9f22bae). Until then the script dropped every line opening with
+`//`, `#` or `>` before matching, on the ground that those are "aspirational
+annotations, not real call sites". That is backwards: an aspirational
+annotation is precisely what `ASPIRATIONAL_MCP.md` exists to catalogue, so
+the filter deleted the only evidence the catalog is about — and the catalog
+then declared itself empty citing the script's clean run as proof, while two
+`//`-framed unregistered verbs sat in `docs/FLEET_SENSORS.md`. Removing the
+filter introduced no new unknowns: measured over all `.md` under `docs/`, the
+dropped lines carried 9 distinct prefixed verbs, but only 4 were invisible
+anywhere else (the other 5 also appeared on live lines) — and of those 4, two
+are registered and two are the genuine aspirational pair.
 
-A small set of actions ARE referenced via real `platform.X(...)` syntax
-in tutorials + runbooks but aren't yet in the registry — these are the
-MCP wrappers planned but not yet shipped. See
-[`ASPIRATIONAL_MCP.md`](./ASPIRATIONAL_MCP.md) for the full catalog with
-REST workarounds.
+Comment framing is now recorded rather than used to discard, and it decides
+how a reference is classified:
+
+| Reference | Registered? | Verdict |
+|---|---|---|
+| live or comment-framed | yes | clean |
+| comment-framed, in the catalog | no | **aspirational** — expected, does not fail |
+| comment-framed, not in the catalog | no | **unknown** — exit 1 |
+| live, in the catalog | no | **live call to a catalogued verb** — exit 1 |
+| live, not in the catalog | no | **unknown** — exit 1 |
+
+"Comment-framed" here means the line opens with `//`, `#` **or** `>`, so it
+lumps commented-out code together with blockquoted prose — as it happens, 5
+of the 9 currently classed comment-framed are blockquotes, not comments.
+
+A live call to an unimplemented verb prescribes the fiction rather than
+describing it, and an operator copying it cannot run it at all — so the
+catalog never excuses one. That is the same **principle** as
+`ASPIRATIONAL_VERBS` in
+`server/spec/docs/module_docs_mcp_call_signatures_spec.rb`, but **not the
+same framing test**: `comment_framed?` there accepts `//` only. This script
+is the looser of the two, so a site reframed from `//` to `#` or `>` still
+reads as aspirational here while that sweep calls it live and fails it. The
+spec is the stricter authority and runs in `scripts/validate.sh`; this script
+is advisory in CI. Never read a green run here as agreement with it.
+
+The catalog is **derived** from that spec constant and pinned to it by an
+equality oracle there; this script only reads the derived table, and reads
+it fail-closed — a missing file, missing `ASPIRATIONAL-CATALOG:BEGIN`/`END`
+markers, or an unparseable table all yield an empty exemption set, which
+reports every aspirational reference as UNKNOWN rather than silently
+excusing it.
+
+The summary footer prints `aspirational (catalogued)`, `live call to
+catalogued` and `unknown (uncatalogued)` separately, and states whether a
+zero comment-framed count means "the docs contain none" or would have meant
+"the scan skipped them". Read both numbers: `0 unknown` alone does not
+distinguish a corpus that was checked from one that was not.
 
 When the harness reports unknowns, cross-reference against
-`ASPIRATIONAL_MCP.md`. New entries not in that catalog indicate real
-drift — either fix the doc or update the registry.
+`ASPIRATIONAL_MCP.md` — and remember that file is derived: fix
+`ASPIRATIONAL_VERBS` first, never the markdown alone, and never take the
+catalog's contents from this script's output.
 
 ## Wiring into CI
 
-These scripts are intentionally NOT wired into `.gitea/workflows/` yet —
-the harness shape is still settling and CI flake from
-overaggressive checks is worse than a missed link.
+All three run on doc-touching pull requests via
+[`.gitea/workflows/docs.yml`](../../.gitea/workflows/docs.yml). (This
+section previously said they were "intentionally NOT wired into
+`.gitea/workflows/` yet"; the workflow has existed since it was added and
+the claim was simply stale.)
 
-When wiring (recommended as a follow-up after this harness is exercised
-for a release cycle):
+Gating policy, as the workflow declares it:
 
-1. Create `.gitea/workflows/docs.yml`:
+| Step | Gates the job? |
+|---|---|
+| `check-links.sh` | **yes** — broken markdown links fail the build |
+| `check-code-refs.sh` | no — `continue-on-error: true` |
+| `check-mcp-actions.sh` | no — `continue-on-error: true` |
 
-   ```yaml
-   name: Docs checks
-   on:
-     pull_request:
-       paths:
-         - 'docs/**'
-         - 'agent/README.md'
-         - 'CONTRIBUTING.md'
-         - 'README.md'
+So `check-mcp-actions.sh` exiting 1 **reports** but does not turn the job
+red today. Read the exit code as a finding to triage, not as a build break —
+and do not assume a green Docs-checks job means the MCP pass was clean.
 
-   jobs:
-     verify:
-       runs-on: [self-hosted, ubuntu-24.04]
-       steps:
-         - uses: actions/checkout@v4
-         - name: check-links
-           run: bash docs/.verify/check-links.sh
-         - name: check-code-refs
-           run: bash docs/.verify/check-code-refs.sh
-         - name: check-mcp-actions
-           run: bash docs/.verify/check-mcp-actions.sh
-   ```
+Operator override: include `[docs-skip-verify]` in the head commit message
+and the guard step skips every verify step (e.g. during a documented
+breaking doc refactor).
 
-2. Test on a draft PR before promoting to required-check status.
-3. Allow operator override via a `[docs-skip-verify]` commit message
-   marker for genuine exceptions (e.g., during a documented breaking
-   refactor).
+The parent platform has its own copy of this harness at
+`docs/.verify/` with the same gating split, plus `check-counts.sh` and
+`check-auto-gen-headers.sh`.
 
 ## Related
 
