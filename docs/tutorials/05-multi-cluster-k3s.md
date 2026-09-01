@@ -117,12 +117,16 @@ today nothing supplies it.** Two corrections to what this page used to say:
   `where.not(status: "error")`, so a cluster in `pending`, `bootstrapping`,
   `degraded` or `disconnected` counts toward the ambiguity, not just an
   `active` one.
-- **The agent has no way to send it.** The server reads it from the handshake
-  (`runtime_handshake_handlers.rb:164`); the agent sources it from
-  `k3sd.AgentManager.TargetClusterID`, whose doc comment says it is "read from
-  the k3s-agent module assignment's `metadata.target_cluster_id` at agent boot."
-  Nothing reads it: the field is declared (`agent_manager.go:46`) and consumed
-  (`agent_manager.go:151`), but the only non-test writer in the tree is the
+- **The agent has no way to send it on `phase=join_request`.** Scope matters
+  here: on `phase=ready` the agent *does* send `target_cluster_id`, from
+  `ReportReady(..., m.state.joinedClusterID)` (`agent_manager.go:198`, read at
+  `runtime_handshake_handlers.rb:195`) — but that names the cluster it has
+  already joined, it does not choose one. For the join itself there is no
+  producer. The server reads it from the handshake
+  (`runtime_handshake_handlers.rb:164`); the agent would source it from
+  `k3sd.AgentManager.TargetClusterID`, and nothing ever assigns that field.
+  It is declared (`agent_manager.go:53`) and consumed
+  (`agent_manager.go:158`), but the only non-test writer in the tree is the
   handshake struct literal it feeds — there is no writer at all, in production
   or in tests. `NewAgentManager` never sets it (`runtime/service.go:265` passes
   five arguments, none of them a cluster), and

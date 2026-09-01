@@ -84,7 +84,7 @@ require "rack/utils"
 #     or from assignment config; the only source consumed is the handshake
 #     request parameter.
 #   * docs/SMOKE_TEST.md carries a different defect in kind, not this
-#     fabrication: db/seeds/smoke_test_k3s_agent_join.rb:90 really does pass
+#     fabrication: db/seeds/smoke_test_k3s_agent_join.rb:100 really does pass
 #     target_cluster_id — at the SERVICE layer, bypassing the agent — so a green
 #     run evidences the wired platform half only. Pinned as a scope clarifier.
 #
@@ -358,6 +358,291 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
       # It bootstraps and reports ready against its OWN bootstrapped cluster.
       expect(server_manager).to match(/m\.Client\.Bootstrap\(ctx/)
       expect(server_manager).to match(/RuntimeK3sServer, RoleServer, version, m\.state\.bootstrappedFor/)
+    end
+  end
+
+  # --- the SEVENTH surface: the agent's own Go prose ------------------------
+  #
+  # Seven Markdown documents, a seeded KB article, an operator-facing 422 body
+  # and a smoke seed's header have all had the "omit target_cluster_id and the
+  # platform picks the most recent cluster" fabrication withdrawn. Nothing
+  # pinned the Go comments those documents DESCRIBE, so a corrected document
+  # could regress back into agreeing with them and stay green — tutorial 05
+  # quoted one of these comments verbatim as its evidence. These checks read
+  # the k3sd comments as text, the same way the Markdown checks read prose.
+  #
+  # Comment BLOCKS, not whole files: joining every comment in a file into one
+  # blob lets a pattern span two unrelated blocks and report a claim nobody
+  # wrote. Blocks are squished, so a claim split across a hard wrap is still
+  # seen — Go comments wrap at 72 columns and every one of these claims does.
+  # `marker` is the comment introducer, so the same treatment reaches the Ruby
+  # comment in the provisioner (an eighth surface, below) without a second copy
+  # of this loop for one character's difference.
+  #
+  # doc.go is the honest exception: its whole package comment is a single `//`
+  # run, so block scoping buys nothing there and the patterns have to carry the
+  # specificity themselves — which is why the doc.go presence check below pins
+  # the CLAIM (`module names only`) rather than the identifier `ModulesAPI`,
+  # whose `# Key types` list sits 15 lines away in the same block.
+  def self.go_comment_blocks(src, marker: %r{//})
+    blocks = []
+    current = nil
+    src.lines.each_with_index do |line, i|
+      text = line.chomp[/\A\s*#{marker.source}\s?(.*)\z/, 1]
+      if text.nil?
+        current = nil
+        next
+      end
+
+      if current.nil?
+        current = { line: i + 1, text: +text }
+        blocks << current
+      else
+        current[:text] << " " << text
+      end
+    end
+    blocks.each { |b| b[:text] = b[:text].gsub(/\s+/, " ").strip }
+  end
+
+  # ABSENCE, reported by block so a failure names the comment and not the file.
+  def self.go_prose_sites(src, patterns, marker: %r{//})
+    go_comment_blocks(src, marker: marker).flat_map do |block|
+      patterns.select { |pattern| block[:text].match?(pattern) }
+              .map { |pattern| "#{block[:line]}: #{pattern.inspect} :: #{block[:text][0, 110]}" }
+    end
+  end
+
+  # PRESENCE, REGION-SCOPED — `anchor` picks the comment block(s) the claim has
+  # to live in, and every pattern must be satisfied inside those blocks. The
+  # file-wide first draft of this let 2 of the 5 patterns in the
+  # HandshakeRequest example be satisfied by the JoinRequest func doc 130 lines
+  # away: the document-wide exemption this file's header forbids, wearing a
+  # different costume. Raises rather than passing when the anchor matches
+  # nothing, so a renamed field cannot make the whole check vacuous.
+  def self.go_prose_absent_in(src, anchor, patterns, marker: %r{//})
+    blocks = go_comment_blocks(src, marker: marker).select { |b| b[:text].match?(anchor) }
+    raise "no comment block matches #{anchor.inspect} — this check would be vacuous" if blocks.empty?
+
+    blob = blocks.map { |b| b[:text] }.join(" ")
+    patterns.reject { |pattern| blob.match?(pattern) }.map(&:inspect)
+  end
+
+  # PRESENCE, file-wide. Only for doc.go, whose package comment is one block
+  # anyway, and where the anchor and the claim are the same text.
+  def self.go_prose_absent(src, patterns, marker: %r{//})
+    blob = go_comment_blocks(src, marker: marker).map { |b| b[:text] }.join(" ")
+    patterns.reject { |pattern| blob.match?(pattern) }.map(&:inspect)
+  end
+
+  # A line citation is the least-audited part of a justification: it rots on
+  # the next insertion above it, nothing notices, and the comment then points
+  # an operator at whatever moved into that slot. Every
+  # `kubernetes_cluster_provisioner_service.rb:N` these comments cite must
+  # still land on the resolver they are cited for.
+  def self.cited_service_lines(src)
+    go_comment_blocks(src)
+      .flat_map { |b| b[:text].scan(/kubernetes_cluster_provisioner_service\.rb:(\d+)/).flatten }
+      .map(&:to_i).uniq
+  end
+
+  # ext_root-relative, NOT __dir__-relative: this service lives in the SYSTEM
+  # EXTENSION, one tree over from the core `server/` that `cluster_statuses`
+  # reaches for. A copied five-dot path resolved to a core file that does not
+  # exist and reddened the guard with ENOENT.
+  def self.provisioner_lines(ext_root)
+    read(ext_root, "server/app/services/system/kubernetes_cluster_provisioner_service.rb").lines
+  end
+
+  describe "agent/internal/k3sd Go prose (the seventh surface)" do
+    let(:agent_manager) { self.class.read(ext_root, "agent/internal/k3sd/agent_manager.go") }
+    let(:handshake) { self.class.read(ext_root, "agent/internal/k3sd/handshake.go") }
+    let(:package_doc) { self.class.read(ext_root, "agent/internal/k3sd/doc.go") }
+
+    # The absence patterns are deliberately looser than the exact bytes that
+    # were withdrawn. Pinned verbatim, the two files disagreed on the verb
+    # ("auto-select" vs "auto-selects") and each one's pattern missed the
+    # other's form and any inserted article, so `Empty = auto-selects the most
+    # recent active cluster` would have reinstated the fabrication under both.
+    # Verb forms are enumerated because a mutation run caught the first draft:
+    # `auto-selects?` missed "auto-selecting", and "rather than auto-selecting
+    # the most-recent cluster" reinstated the fabrication with the whole guard
+    # green. Every inflection this claim has ever been written in, plus the
+    # space-separated spelling.
+    MOST_RECENT_FALLBACK = /auto[-\s]?select(?:s|ing|ed)?\s+(?:the\s+)?most.recent/i
+    ASSIGNMENT_PRODUCER =
+      /(?:reads?|sources?|sourced|suppl(?:y|ied)|carries|passes)\b.{0,50}k3s-agent module assignment/i
+
+    it "AgentManager.TargetClusterID claims neither a most-recent fallback nor a producer" do
+      expect(self.class.go_prose_sites(agent_manager, [
+                                         MOST_RECENT_FALLBACK,
+                                         ASSIGNMENT_PRODUCER
+                                       ])).to be_empty
+    end
+
+    it "AgentManager.TargetClusterID states the refusal and the missing producer" do
+      expect(self.class.go_prose_absent_in(agent_manager, /TargetClusterID is the cluster UUID/, [
+                                             /AmbiguousClusterError/,
+                                             /exactly one non-error/,
+                                             /nothing assigns this field/
+                                           ])).to be_empty
+    end
+
+    # Doubly wrong before the withdrawal: there is no most-recent fallback, AND
+    # the failure mode is refusal, not a silent join onto the wrong cluster.
+    # The "MUST supply this via the module assignment" half was false a third
+    # time over, since nothing carries it.
+    it "HandshakeRequest.TargetClusterID claims neither the fallback nor the wrong-cluster outcome" do
+      expect(self.class.go_prose_sites(handshake, [
+                                         MOST_RECENT_FALLBACK,
+                                         ASSIGNMENT_PRODUCER,
+                                         /joining the wrong cluster/
+                                       ])).to be_empty
+    end
+
+    # All three arms, because stating only the 409 one is its own inaccuracy:
+    # with NO non-error cluster the join falls through to `candidates.first ==
+    # nil` and fails 422, not 409. A review caught the first draft of the
+    # JoinRequest func doc asserting "refuses (409) otherwise".
+    it "HandshakeRequest.TargetClusterID names the refusal, its event and its severity" do
+      expect(self.class.go_prose_absent_in(handshake, /Join request field/, [
+                                             /AmbiguousClusterError/,
+                                             /system\.k3s_ambiguous_cluster_join_refused/,
+                                             /severity high/,
+                                             /409/,
+                                             /exactly one non-error/
+                                           ])).to be_empty
+    end
+
+    it "the JoinRequest doc states the zero-cluster arm as 422, not 409" do
+      expect(self.class.go_prose_absent_in(handshake, /targetClusterID is optional/, [
+                                             /exactly one non-error/,
+                                             /409/,
+                                             /422/,
+                                             /no producer/
+                                           ])).to be_empty
+    end
+
+    # Pinning the ACCURATE prose too. Both of these already carried the
+    # correction before this iteration; a later "cleanup" that drops the
+    # hedge would silently restore the fabrication, and the absence checks
+    # above cannot see a deletion. Anchored to their own blocks so one
+    # cannot stand in for the other.
+    it "keeps the two hedges that were already accurate" do
+      expect(self.class.go_prose_absent_in(handshake, /ClusterID is the cluster this node already knows/, [
+                                             /guessing "most recent cluster in the account"/
+                                           ])).to be_empty
+      expect(self.class.go_prose_absent_in(handshake, /ReportReady \(both server \+ agent\)/, [
+                                             /\(refusable\) auto-select/
+                                           ])).to be_empty
+    end
+
+    it "the package doc no longer claims the agent reads assignment metadata" do
+      expect(self.class.go_prose_sites(package_doc, [
+                                         MOST_RECENT_FALLBACK,
+                                         /reads metadata\.target_cluster_id from the module assignment/,
+                                         /phase=join_request with metadata\.target_cluster_id/
+                                       ])).to be_empty
+    end
+
+    # File-wide by necessity (one block), so these pin CLAIMS, not identifiers:
+    # a bare /ModulesAPI/ would be satisfied by the `# Key types` list 15 lines
+    # up while the Multi-cluster paragraph regressed underneath it.
+    it "the package doc states the discriminator is unwired on the agent side" do
+      expect(self.class.go_prose_absent(package_doc, [
+                                          /no producer/,
+                                          /AmbiguousClusterError/,
+                                          /module names only/,
+                                          /exactly one non-error cluster resolves/
+                                        ])).to be_empty
+    end
+
+    # The mirror of the check above, pointed the other way. Rewriting these
+    # comments shifted every line below the TargetClusterID field doc by +7,
+    # and two documents cite those lines by number — the withdrawal itself
+    # rotted four citations in the runbook and two in tutorial 05. A line
+    # citation into a file this spec already governs is cheap to pin, so pin it.
+    #
+    # Membership-agnostic on purpose: every cited line must NAME one of the two
+    # identifiers the citations exist to point at. That survives a reflow of the
+    # surrounding code and still bites on an off-by-one, because the neighbours
+    # of all six sites are braces, blanks and unrelated statements.
+    #
+    # The loose arm alone is not enough, though: `m.state.joinedClusterID = ""`
+    # occurs VERBATIM at 153, 219 and 228, so a shift that slid one citation
+    # onto another of the three would pass it. The four distinctive lines are
+    # therefore also pinned by content, and the two cache-clearing citations are
+    # pinned as a SET, which is the strongest thing true of interchangeable
+    # lines. The scan is anchored on digits and commas only — `[\d,\s]*` let a
+    # run span a newline and swallow an unrelated number from the next line.
+    it "every agent_manager.go line these docs cite still names the field it is cited for" do
+      docs = [ "docs/tutorials/05-multi-cluster-k3s.md", "docs/runbooks/multi-cluster-k3s.md" ]
+      source = self.class.read(ext_root, "agent/internal/k3sd/agent_manager.go").lines
+
+      cited = docs.flat_map do |rel|
+        self.class.read(ext_root, rel)
+            .scan(/agent_manager\.go:(\d+(?:, *\d+)*)/)
+            .flatten.flat_map { |run| run.split(",").map { |n| n.strip.to_i } }
+      end.uniq.sort
+
+      expect(cited.size).to be >= 6, "expected the docs to still carry their line citations, got #{cited.inspect}"
+
+      stale = cited.reject { |n| source[n - 1].to_s.match?(/TargetClusterID|joinedClusterID/) }
+      expect(stale.to_h { |n| [ n, source[n - 1].to_s.strip ] }).to eq({})
+
+      # Declaration, call, and the two "re-reports readiness against its own
+      # cached joinedClusterID" sites, each pinned to the line it is cited for.
+      expect(source[52].to_s.strip).to eq("TargetClusterID string")
+      expect(source[157].to_s.strip).to eq("payload, err := m.Client.JoinRequest(ctx, m.TargetClusterID)")
+      expect(source[176].to_s.strip).to eq("m.state.joinedClusterID = payload.ClusterID")
+      expect(source[197].to_s).to include("ReportReady(ctx, RuntimeK3sAgent, RoleAgent, version, m.state.joinedClusterID)")
+
+      # The three interchangeable cache-clearing sites: pinned as a set, so a
+      # shift onto a different one of the three is still caught.
+      clearing = source.each_index.select { |i| source[i].strip == 'm.state.joinedClusterID = ""' }.map { |i| i + 1 }
+      expect(clearing).to eq([ 153, 219, 228 ])
+    end
+
+    # An EIGHTH surface, found by sweeping for the fabrication's other copies
+    # rather than working the filed list: the service's OWN comment, four lines
+    # above the call to the resolver that refuses, still described the fallback
+    # as "single-cluster behavior (most recent active cluster in the account)".
+    # Self-contradictory in place, and the last copy is never in a document.
+    # Same block-and-squish treatment, with `#` as the marker.
+    it "the provisioner's own comment does not describe the fallback as most-recent" do
+      service = self.class.read(ext_root, "server/app/services/system/kubernetes_cluster_provisioner_service.rb")
+
+      expect(self.class.go_prose_sites(service, [
+                                         /fall back to single-cluster behavior/,
+                                         /single-cluster behavior \(most recent/
+                                       ], marker: /#/)).to be_empty
+
+      expect(self.class.go_prose_absent_in(service, /Multi-cluster awareness \(Phase 2\.5\)/, [
+                                             /No most-recent fallback/,
+                                             /resolves ONLY with exactly one non-error cluster/
+                                           ], marker: /#/)).to be_empty
+
+      # Review-found sibling: the handler comment stated the canonical table
+      # row "required by the platform" WITHOUT its "and impossible to supply
+      # from the agent" half — the operators-can-set-it reading, in code, in
+      # the handler these Go comments describe.
+      handler = self.class.read(ext_root, "server/app/controllers/concerns/system/runtime_handshake_handlers.rb")
+      expect(self.class.go_prose_sites(handler, [
+                                         /the agent must include target_cluster_id/
+                                       ], marker: /#/)).to be_empty
+      expect(self.class.go_prose_absent_in(handler, /Multi-cluster awareness/, [
+                                             /no agent supplies/,
+                                             /none fails 422/
+                                           ], marker: /#/)).to be_empty
+    end
+
+    it "every provisioner line these comments cite still lands on the membership resolver" do
+      cited = [ agent_manager, handshake, package_doc ]
+                .flat_map { |src| self.class.cited_service_lines(src) }.uniq
+      expect(cited).not_to be_empty, "no citation to check — this guard would be vacuous"
+
+      lines = self.class.provisioner_lines(ext_root)
+      expect(cited.to_h { |n| [ n, lines[n - 1].to_s.strip ] })
+        .to eq(cited.to_h { |n| [ n, "def resolve_membership_cluster!(account)" ] })
     end
   end
 
@@ -1526,7 +1811,7 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
 
     it "cites the service-layer call site and what a green run does not prove" do
       expect(self.class.absent(doc, [
-                                 /smoke_test_k3s_agent_join\.rb:90/,
+                                 /smoke_test_k3s_agent_join\.rb:100/,
                                  /not the operator path/,
                                  # The run-order table names the same drill and
                                  # was reached by no pattern until a review

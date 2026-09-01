@@ -294,9 +294,9 @@ module System
       account = @node_instance.account
 
       # Multi-cluster awareness (Phase 2.5): when target_cluster_id is
-      # provided, resolve to that specific cluster. Otherwise fall
-      # back to single-cluster behavior (most recent active cluster
-      # in the account) — refusing to auto-select among several.
+      # provided, resolve to that specific cluster. Otherwise fall back to
+      # single-cluster auto-select — which resolves ONLY with exactly one
+      # non-error cluster, and refuses among several. No most-recent fallback.
       # Shared with register_node_join! so a ready re-fire can never
       # resolve a different cluster than the join it followed.
       cluster = resolve_membership_cluster!(account)

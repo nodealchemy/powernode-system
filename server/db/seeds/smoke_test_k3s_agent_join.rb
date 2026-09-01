@@ -15,7 +15,17 @@
 #   db (default): operator-driven register_node_join! + mark_node_ready!
 #                 for each agent. Negative test runs always.
 #   single+:      agent-driven — VMs boot, agents POST phase=join_request
-#                 with target_cluster_id, platform reconciles.
+#                 with an EMPTY target_cluster_id: the agent has no
+#                 producer for the field (k3sd.AgentManager.TargetClusterID
+#                 is never assigned), so the platform resolves membership
+#                 by single-cluster auto-select. That resolves only while
+#                 the account has exactly one non-error cluster; with a
+#                 second one the join is refused as ambiguous
+#                 (AmbiguousClusterError -> 409), not auto-selected.
+#                 All sites share one Account (`::Account.first`,
+#                 _smoke_k3s_helpers.rb:263), so run this phase BEFORE
+#                 bootstrapping a second site's cluster or the join is
+#                 refused and wait_until just burns its 600s.
 #
 # Asserts:
 #   - 2 new KubernetesNode rows with role=agent, status=active

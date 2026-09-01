@@ -154,10 +154,10 @@ module System
     # cluster's api_endpoint + agent_token so it can run
     # `k3s agent --server <api> --token <token>`.
     #
-    # Multi-cluster awareness: the agent must include target_cluster_id
-    # when the account has more than one active cluster. A single active
-    # cluster is resolved without one; with several, the request is
-    # refused (409) rather than auto-selecting the wrong cluster.
+    # Multi-cluster awareness: target_cluster_id is required once the
+    # account has more than one non-error cluster — and no agent supplies
+    # it, so those joins are refused (409) rather than auto-selected. One
+    # non-error cluster resolves without it; none fails 422, not 409.
     def handle_join_request(_runtime)
       payload = ::System::KubernetesClusterProvisionerService.join_request!(
         node_instance: current_instance,

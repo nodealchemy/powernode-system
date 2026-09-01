@@ -90,11 +90,20 @@ type HandshakeRequest struct {
 	K8sVersion  string `json:"k8s_version,omitempty"`
 
 	// Join request field (k3s_agent, phase=join_request)
-	// Optional — when omitted, platform auto-selects most recent
-	// active cluster. Operators with multi-cluster setups MUST
-	// supply this via the k3s-agent module assignment's
-	// `metadata.target_cluster_id` to avoid the join_request
-	// footgun (joining the wrong cluster).
+	// Optional on the wire, but the platform resolves an omitted
+	// value only when the account has exactly one non-error cluster.
+	// With more than one candidate the join is REFUSED —
+	// AmbiguousClusterError -> 409, event
+	// system.k3s_ambiguous_cluster_join_refused at severity high —
+	// rather than landing on the most recent cluster
+	// (kubernetes_cluster_provisioner_service.rb:351).
+	//
+	// NOT WIRED on the agent side: AgentManager.TargetClusterID has
+	// no producer, so this is always "" here, and there is nothing
+	// an operator can set on the module assignment to change that.
+	// An account with more than one non-error cluster therefore
+	// cannot currently join a worker at all. (phase=ready differs:
+	// ClusterID below IS sent, from the cached join ack.)
 	TargetClusterID string `json:"target_cluster_id,omitempty"`
 
 	// Ready fields (both, phase=ready)
@@ -220,8 +229,12 @@ func (c *Client) Bootstrap(ctx context.Context, kubeconfig, serverToken, agentTo
 //
 // targetClusterID is optional — pass empty for single-cluster
 // auto-select; pass a specific cluster UUID for multi-cluster
-// disambiguation. The agent normally reads this from the k3s-agent
-// module assignment's metadata.target_cluster_id.
+// disambiguation. "Single-cluster" is exact: the platform resolves
+// an empty value only when the account has exactly one non-error
+// cluster. More than one is refused as ambiguous (409); none at all
+// fails 422 (NoClusterAvailableError), not 409. No production caller
+// supplies a value today — AgentManager.TargetClusterID has no
+// producer — so this is always "".
 func (c *Client) JoinRequest(ctx context.Context, targetClusterID string) (*JoinRequestPayload, error) {
 	req := HandshakeRequest{
 		Runtime:         RuntimeK3sAgent,

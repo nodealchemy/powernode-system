@@ -39,10 +39,17 @@ type AgentManager struct {
 	StatePath string // JSON state cache; defaults to DefaultAgentStatePath
 
 	// TargetClusterID is the cluster UUID to join when the account has
-	// multiple clusters. Read from the k3s-agent module assignment's
-	// metadata.target_cluster_id at agent boot. Empty = auto-select
-	// most recent (single-cluster v1 contract; safe for accounts
-	// with one cluster).
+	// more than one non-error cluster. NOT WIRED: nothing assigns this
+	// field. NewAgentManager does not set it, and ModulesAPI hands the
+	// reconcilers module NAMES only (applier.go), so no assignment
+	// metadata reaches here — it is always "" on phase=join_request.
+	//
+	// Empty resolves only when the account has exactly one non-error
+	// candidate. With more than one the platform refuses the join
+	// (AmbiguousClusterError -> 409, event
+	// system.k3s_ambiguous_cluster_join_refused at severity high); it
+	// does not fall back to the most recent cluster. See
+	// kubernetes_cluster_provisioner_service.rb:351.
 	TargetClusterID string
 
 	OnError func(stage string, err error)
