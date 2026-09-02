@@ -124,17 +124,23 @@ module InstancePoolReplenishGatingGuard
     "UpdatePool" => %w[system.instance_pool_ceiling_raise system.instance_pool_archive]
   }.freeze
 
-  # The instance-pool categories that have a POLICY ROW an operator can edit
-  # and NO gate site that reads it. ReplenishPool is the one this task is
-  # about; the other three are named because a census that lists only the
-  # finding's own subject re-confirms the belief that opened it.
+  # The declared instance-pool categories with NO gate site that reads them.
+  # ReplenishPool is the one this task is about; the other three are named
+  # because a census that lists only the finding's own subject re-confirms the
+  # belief that opened it.
   #
   # system.instance_pool_update is still here after IMP-24daa05e7a22: the two
-  # gated PATCH transitions resolve their OWN categories, so the _update row
-  # remains an operator control nothing reads. That is deliberate — the
-  # transitions it would have covered are applied inline by operator direction
-  # — but it is still the RUNTIME_OPERATOR_GATED_KEYS shape, so it stays
-  # censused rather than quietly dropped.
+  # gated PATCH transitions resolve their OWN categories, so nothing reads the
+  # _update row. That is deliberate — the transitions it would have covered are
+  # applied inline by operator direction.
+  #
+  # IMP-5a2b801f3386 took the second half of the defect off these four: they
+  # are no longer SEEDED onto the operator path, so they are no longer controls
+  # an operator can edit that change nothing (see
+  # PolicyDeclarations::INSTANCE_POOL_OPERATOR_GATED_KEYS and
+  # spec/db/seeds/system_instance_pool_operator_policies_spec.rb). They remain
+  # declared, remain on Fleet Autonomy's agent-scoped set, and remain ungated —
+  # which is what this census is about.
   UNGATED_CATEGORIES = %w[
     system.instance_pool_acquire
     system.instance_pool_drain
@@ -477,15 +483,23 @@ RSpec.describe "instance-pool replenish gating asymmetry", type: :lint do
     ungated  = declared - guard.controller_categories
 
     expect(ungated.sort).to eq(guard::UNGATED_CATEGORIES.sort), <<~MSG
-      The set of instance-pool action categories that have a seeded policy row
-      and NO gate site has changed.
+      The set of DECLARED instance-pool action categories with NO gate site has
+      changed.
 
-      Each of these is a control an operator can edit in the autonomy UI that
-      no code path reads — the same shape
-      PolicyDeclarations::RUNTIME_OPERATOR_GATED_KEYS was introduced to avoid
-      (IMP-9b9653e6514e). For replenish that is a recorded, deliberate state;
-      for the others it is tracked separately. Either way, changing the set is
-      a governance decision that has to move the prose with it.
+      These four carry no operator-path policy row: IMP-5a2b801f3386 withdrew
+      them from PolicyDeclarations::INSTANCE_POOL_OPERATOR_POLICIES, because a
+      row for a category no gate site passes is a control an operator can edit
+      that no code path reads — the same shape RUNTIME_OPERATOR_GATED_KEYS was
+      introduced to avoid (IMP-9b9653e6514e). They remain declared and remain
+      on Fleet Autonomy's agent-scoped set.
+
+      So moving a verb INTO this list means withdrawing its operator row, and
+      moving one OUT (giving it a gate site) means adding it back to
+      INSTANCE_POOL_OPERATOR_GATED_KEYS in the same change — pinned by
+      spec/db/seeds/system_instance_pool_operator_policies_spec.rb. For
+      replenish, staying ungated is a recorded, deliberate state; for the
+      others it is tracked separately. Either way, changing the set is a
+      governance decision that has to move the prose with it.
     MSG
   end
 

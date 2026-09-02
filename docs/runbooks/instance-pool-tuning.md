@@ -345,6 +345,28 @@ Two qualifications on the word "ungated", both of which shrink it further:
   false. That is a known, tracked gap in the governance registry rollout, not
   a per-pool decision — see the SCOPE note in `system_fleet_tool.rb`.
 
+A third qualification, on where you can *retune* any of this. The Autonomy
+modal edits `Ai::InterventionPolicy` rows, and since IMP-5a2b801f3386 the
+operator-path (account-wide, agent-less) rows are seeded for the **gated four
+only** — `system.instance_pool_create`, `_delete`, `_ceiling_raise`,
+`_archive`. The four with no gate site (`_update`, `_replenish`, `_drain`,
+`_acquire`) get no operator row, because editing one changed nothing: the
+control rendered, saved, and was read by no code path — `_drain` most
+misleadingly of all, since it declares `require_approval` and nothing enforces
+it. They are still declared, still carried on the **Fleet Autonomy agent's**
+policy set (which is what the agent-dispatch path resolves), and an
+operator-authored row for one still validates and saves. Gaining a gate site is
+what puts a verb back on the operator set.
+
+That change is **forward-only**: `db:seed` runs on first boot only and
+`PolicyReconciler` never deletes, so an install seeded before it keeps the four
+stale rows and still renders them. No existing sweep collects that row shape —
+the deregistered-category pass does not apply, because all eight categories stay
+registered via the agent set. So on an established fleet you will still see the
+four; deactivating one by hand is harmless and equally inert, and whether the
+platform should collect them for you is filed as improvement
+`01a063db-c869-7117-b7f6-f88b7061ab4a`.
+
 Note which way round the REST split runs. The two verbs that *are* gated are
 pool creation and teardown; **the verb that actually spends money is not** —
 replenish is what provisions VMs and mints `ephemeral`/`spot` members, and it

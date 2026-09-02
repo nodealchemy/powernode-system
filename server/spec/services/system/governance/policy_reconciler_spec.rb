@@ -46,7 +46,7 @@ RSpec.describe System::Governance::PolicyReconciler do
     # because the query's lack of an is_active filter is easy to "tidy up".
     # A skipped set contributes no MISSING rows precisely because it was never
     # examined, so counting only `missing` reported the extension-enabled-after-
-    # first-boot install — 119 of the 191 declared rows absent, every one of
+    # first-boot install — 136 of the 207 declared rows absent, every one of
     # them in a skipped agent set — as perfectly clean.
     it "reports DRIFT when a set is skipped, even with nothing missing" do
       # Reconcile FIRST so every agent-less set is satisfied. What remains is

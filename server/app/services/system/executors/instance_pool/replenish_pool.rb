@@ -78,15 +78,20 @@ module System
       # replenishment for every active pool — an availability decision wearing
       # a control's clothes, not a control.
       #
-      # WHAT IS NOT SETTLED, filed as offer 01a0615d-e07e-7010-8f07-8f0aace56ea6.
-      # "system.instance_pool_replenish" is seeded onto the OPERATOR path too
-      # (POLICY_SETS "instance-pool-operator", scope global), together with
-      # _acquire, _drain and _update — four categories with a policy row an
-      # operator can edit and no gate site that reads it. That is the shape
-      # RUNTIME_OPERATOR_GATED_KEYS was introduced to avoid (IMP-9b9653e6514e,
-      # which restricted the runtime operator row to its gated subset for
-      # exactly this reason). Fixing it changes seeded operator rows for four
-      # verbs, not replenish alone, so it is filed rather than folded in here.
+      # WHAT WAS ALSO WRONG, and is now SETTLED (IMP-5a2b801f3386).
+      # "system.instance_pool_replenish" used to be seeded onto the OPERATOR
+      # path as well (POLICY_SETS "instance-pool-operator", scope global),
+      # together with _acquire, _drain and _update — four categories with a
+      # policy row an operator can edit and no gate site that reads it. That is
+      # the shape RUNTIME_OPERATOR_GATED_KEYS was introduced to avoid
+      # (IMP-9b9653e6514e, which restricted the runtime operator row to its
+      # gated subset for exactly this reason). The operator set is now the
+      # gated subset — INSTANCE_POOL_OPERATOR_POLICIES — so an operator is no
+      # longer shown a replenish control that governs nothing. That changes
+      # NOTHING about this executor or about the decision above: replenish is
+      # still ungated, still by decision, and Fleet Autonomy's AGENT-scoped row
+      # for it is untouched. Pinned by
+      # spec/db/seeds/system_instance_pool_operator_policies_spec.rb.
       class ReplenishPool < ::System::Executors::Base
         protected
 

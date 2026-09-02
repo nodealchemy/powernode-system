@@ -74,13 +74,16 @@ module System
         # A SKIPPED set is drift, not a neutral outcome. An install that enables
         # this extension AFTER its first boot never seeds the agents (db:seed is
         # first-boot only — the whole argument this class exists for), so every
-        # agent set skips — 119 declared rows across 8 of the 11 sets, out of
-        # 191 declared in total. Counting only `missing` reported that install
+        # agent set skips — 136 declared rows across 8 of the 13 sets, out of
+        # 207 declared in total. Counting only `missing` reported that install
         # as CLEAN: the skipped set contributes no missing rows precisely
         # because it was never examined. (Both figures are sums over
-        # PolicyDeclarations and move with it; the prose they replace said
-        # "~168 of 195", which did not match the constants even before
-        # IMP-944567d41689 shrank the manual set from 27 rows to 20.)
+        # PolicyDeclarations and move with it — they were "119 of 191" until
+        # APO-3b added platform-scaling and IMP-5a2b801f3386 trimmed the
+        # instance-pool OPERATOR set to its gated four; the prose those
+        # replaced said "~168 of 195", which did not match the constants even
+        # before IMP-944567d41689 shrank the manual set from 27 rows to 20.
+        # Recount, do not adjust: nothing asserts these.)
         #
         # That is the flagship scenario the reconciler was built for, and it was
         # the one it stayed silent about.
@@ -90,8 +93,8 @@ module System
       # One declared row that the database lacks. `to_s` is what the rake task
       # and the boot summary print, so it names the SET as well as the category
       # — the same category is declared by more than one set (instance-pool
-      # declares six at both the operator and agent shapes) and "which one is
-      # missing" is the whole question.
+      # declares eight at the agent shape and its gated four at the operator
+      # shape) and "which one is missing" is the whole question.
       MissingRow = Struct.new(:set_key, :action_category, :policy, keyword_init: true) do
         def to_s = "#{set_key}/#{action_category}"
       end
