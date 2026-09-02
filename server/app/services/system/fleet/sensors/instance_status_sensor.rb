@@ -27,6 +27,20 @@ module System
         # they are stating a platform-wide default, not sensing one account.
         SILENT_THRESHOLD = 3.minutes
 
+        # The statuses in which a heartbeat is EXPECTED, and therefore the only
+        # ones whose silence means anything. Deliberately narrower than
+        # NodeInstance::LIVE_REPLICA_STATUSES: `stopped`/`stopping`/`rebooting`
+        # /`pending`/`provisioning` replicas are live for CAPACITY purposes but
+        # are not running an agent that should be reporting, so reading their
+        # silence as a fault turns every routine reboot into an incident.
+        #
+        # Declared here, not inlined, because this sensor OWNS the definition of
+        # a silent instance and IMP-ff9043758d8b gave it a second reader
+        # (ProjectMetricsCollector#sample_availability_pct). Two copies of the
+        # list would let the availability metric and the silence signals
+        # disagree about which nodes were even supposed to answer.
+        HEARTBEAT_EXPECTED_STATUSES = %w[running starting].freeze
+
         # IMP-ca485128072e (APO-2e) — the operator-tunable surface.
         # Seconds, not minutes: every threshold on every sensor is stored in
         # seconds so one MCP verb can describe them all without a per-key unit.
@@ -46,7 +60,7 @@ module System
           silent = ::System::NodeInstance
             .joins(:node)
             .where(system_nodes: { account_id: account.id })
-            .where(status: %w[running starting])
+            .where(status: HEARTBEAT_EXPECTED_STATUSES)
             .where("last_heartbeat_at < ? OR last_heartbeat_at IS NULL", cutoff)
 
           fence_to_control_plane(silent)
@@ -110,7 +124,7 @@ module System
         end
 
         def live?(instance, cutoff)
-          %w[running starting].include?(instance.status) &&
+          HEARTBEAT_EXPECTED_STATUSES.include?(instance.status) &&
             instance.last_heartbeat_at.present? &&
             instance.last_heartbeat_at >= cutoff
         end

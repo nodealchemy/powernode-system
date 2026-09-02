@@ -891,20 +891,82 @@ RSpec.describe System::ProjectMetricsCollector do
       end
     end
 
-    # cpu_pct stays deliberately unavailable: the producer ships load_average
-    # as a free-text /proc/loadavg-style STRING, not a percentage, and turning
-    # it into one needs a reliable per-instance core count (unavailable for
-    # physical/pivot nodes with no provider_instance_type) — and even where a
-    # core count exists, load average folds in I/O-wait run-queue length, so
-    # it is not the same measurement as CPU percent-busy. A wrong number is
-    # worse than none, so this metric is not derived from load_average here.
+    # APO-2a (IMP-ff9043758d8b) — cpu_pct is still NOT derived from
+    # load_average (IMP-938ee27f4921 stands: a /proc/loadavg string folds in
+    # I/O-wait run-queue length and needs a core count the platform does not
+    # reliably have). What changed is the PRODUCER: the node agent now measures
+    # percent-busy from /proc/stat deltas itself and ships it as `cpu_pct`, so
+    # the collector reads a measurement instead of inventing one.
     describe "cpu_pct" do
-      it "always reports unavailable (observed nil), never derived from load_average" do
+      def stamp_runtime_metrics(instance, doc)
+        instance.update_columns(
+          config: instance.config.merge(
+            "runtime_metrics" => { "observed_at" => Time.current.utc.iso8601 }.merge(doc)
+          )
+        )
+      end
+
+      it "is never derived from load_average alone" do
+        node = create(:system_node, account: account)
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        stamp_runtime_metrics(inst, "load_average" => "0.15 0.20 0.10")
+
+        mission, = seed_provisioned_mission([ inst.id ])
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "cpu_pct").first
+        expect(row.value).to include("observed" => nil, "source" => "unavailable")
+      end
+
+      it "reports unavailable when the mission has no resolvable instances" do
+        mission = build_active_infrastructure_mission
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "cpu_pct").first
+        expect(row.value).to include("observed" => nil, "source" => "unavailable")
+      end
+
+      it "reports the measured percent-busy the agent shipped" do
+        node = create(:system_node, account: account)
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        stamp_runtime_metrics(inst, "cpu_pct" => 42.5)
+
+        mission, = seed_provisioned_mission([ inst.id ])
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "cpu_pct").first
+        expect(row.value["observed"]).to eq(42.5)
+        expect(row.value["source"]).to eq("live")
+        expect(row.value["unit"]).to eq("percent")
+      end
+
+      it "averages across measured instances and reports coverage" do
+        node   = create(:system_node, account: account)
+        region = create(:system_provider_region)
+        inst_a = create(:system_node_instance, :running, node: node, provider_region: region)
+        inst_b = create(:system_node_instance, :running, node: node, provider_region: region)
+        inst_c = create(:system_node_instance, :running, node: node, provider_region: region)
+        stamp_runtime_metrics(inst_a, "cpu_pct" => 10.0)
+        stamp_runtime_metrics(inst_b, "cpu_pct" => 30.0)
+        # inst_c reports nothing: excluded from the mean, visible in coverage.
+
+        mission, = seed_provisioned_mission([ inst_a.id, inst_b.id, inst_c.id ])
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "cpu_pct").first
+        expect(row.value["observed"]).to eq(20.0)
+        expect(row.value["measured_instance_count"]).to eq(2)
+        expect(row.value["instance_count"]).to eq(3)
+      end
+
+      # A node that stopped reporting is not evidence of its old utilization —
+      # the same exclusion memory_pct makes.
+      it "excludes a stale observation and reports unavailable when it is the only one" do
         node = create(:system_node, account: account)
         inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
         inst.update_columns(
           config: inst.config.merge(
-            "runtime_metrics" => { "observed_at" => Time.current.utc.iso8601, "load_average" => "0.15 0.20 0.10" }
+            "runtime_metrics" => { "observed_at" => 2.hours.ago.utc.iso8601, "cpu_pct" => 99.0 }
           )
         )
 
@@ -913,6 +975,269 @@ RSpec.describe System::ProjectMetricsCollector do
 
         row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "cpu_pct").first
         expect(row.value).to include("observed" => nil, "source" => "unavailable")
+      end
+
+      # 0.0 is a REAL reading (an idle node) and must survive as one. This is
+      # the mutation target: a `.present?`/truthiness filter would silently
+      # drop it and turn an idle fleet into "we don't know".
+      it "keeps a measured 0.0 as a live observation" do
+        node = create(:system_node, account: account)
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        stamp_runtime_metrics(inst, "cpu_pct" => 0.0)
+
+        mission, = seed_provisioned_mission([ inst.id ])
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "cpu_pct").first
+        expect(row.value["source"]).to eq("live")
+        expect(row.value["observed"]).to eq(0.0)
+      end
+
+      it "rejects an out-of-range reading rather than publishing it" do
+        node   = create(:system_node, account: account)
+        region = create(:system_provider_region)
+        inst   = create(:system_node_instance, :running, node: node, provider_region: region)
+        stamp_runtime_metrics(inst, "cpu_pct" => 250.0)
+
+        mission, = seed_provisioned_mission([ inst.id ])
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "cpu_pct").first
+        expect(row.value).to include("observed" => nil, "source" => "unavailable")
+      end
+
+      it "never returns a fabricated 0.0 when nothing has reported" do
+        mission = build_active_infrastructure_mission
+        described_class.collect!(mission: mission)
+
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "cpu_pct").first
+        expect(row.value["observed"]).to be_nil
+        expect(row.value["observed"]).not_to eq(0.0)
+      end
+    end
+
+    # APO-2a (IMP-ff9043758d8b) — the utilization staleness window is
+    # operator-tunable, and nothing pinned it: reverting #sample_freshness to
+    # the bare constant left the suite green. These examples pin BOTH arms —
+    # a configured window that actually narrows, and a garbage value that
+    # falls back to the constant rather than to zero seconds (which would
+    # make every observation stale and silence utilization fleet-wide).
+    describe "utilization sample freshness window" do
+      def stamp_cpu(instance, observed_at:)
+        instance.update_columns(
+          config: instance.config.merge(
+            "runtime_metrics" => { "observed_at" => observed_at.utc.iso8601, "cpu_pct" => 42.5 }
+          )
+        )
+      end
+
+      def cpu_row(mission)
+        System::ProjectMetric
+          .where(mission_id: mission.id, metric_name: "cpu_pct")
+          .order(sampled_at: :desc, id: :desc)
+          .first
+      end
+
+      def mission_with_cpu_observed(ago)
+        node = create(:system_node, account: account)
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        stamp_cpu(inst, observed_at: ago)
+        seed_provisioned_mission([ inst.id ]).first
+      end
+
+      it "honors an operator-narrowed window, dropping an observation the default would accept" do
+        mission = mission_with_cpu_observed(5.minutes.ago)
+
+        described_class.collect!(mission: mission)
+        expect(cpu_row(mission).value["observed"]).to eq(42.5) # inside the 10m default
+
+        SiteSetting.set("#{described_class::SETTING_PREFIX}.sample_freshness_seconds", 60, setting_type: "integer")
+        described_class.collect!(mission: mission)
+
+        expect(cpu_row(mission).value).to include("observed" => nil, "source" => "unavailable")
+      end
+
+      it "falls back to the constant — not to zero seconds — when the setting is not a positive integer" do
+        mission = mission_with_cpu_observed(5.minutes.ago)
+        SiteSetting.set("#{described_class::SETTING_PREFIX}.sample_freshness_seconds", "not-a-number")
+
+        described_class.collect!(mission: mission)
+
+        expect(cpu_row(mission).value["observed"]).to eq(42.5)
+      end
+    end
+
+    # APO-2a (IMP-ff9043758d8b) — availability_pct. Until this landed, NOTHING
+    # produced it, so ProjectSloSensor's availability branch — the one that
+    # tells "down" apart from "slow" — could never fire on live telemetry.
+    #
+    # The measurement is heartbeat liveness over the replicas that are
+    # EXPECTED to heartbeat, on InstanceStatusSensor's own population
+    # (HEARTBEAT_EXPECTED_STATUSES) and its own silence window, so the two
+    # cannot drift apart about which nodes should be answering or how long
+    # silence is tolerated. The one deliberate difference — never-heartbeat
+    # instances, which the sensor signals and this metric excludes — is pinned
+    # by its own example below.
+    describe "availability_pct" do
+      # NEWEST row: the threshold example collects twice, and an unordered
+      # .first hands back the tick before the operator's change.
+      def metric_row(mission)
+        System::ProjectMetric
+          .where(mission_id: mission.id, metric_name: "availability_pct")
+          .order(sampled_at: :desc, id: :desc)
+          .first
+      end
+
+      it "reports unavailable when the mission has no resolvable instances" do
+        mission = build_active_infrastructure_mission
+        described_class.collect!(mission: mission)
+
+        expect(metric_row(mission).value).to include("observed" => nil, "source" => "unavailable")
+      end
+
+      # An instance that has NEVER heartbeat may be mid-bootstrap or may carry
+      # no agent at all. Calling that 0% available would fabricate an outage;
+      # it is excluded from the ratio and reported as coverage instead.
+      it "reports unavailable when no instance has ever heartbeat" do
+        node = create(:system_node, account: account)
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        expect(inst.last_heartbeat_at).to be_nil
+
+        mission, = seed_provisioned_mission([ inst.id ])
+        described_class.collect!(mission: mission)
+
+        row = metric_row(mission)
+        expect(row.value).to include("observed" => nil, "source" => "unavailable")
+        expect(row.value["observed"]).not_to eq(0.0)
+      end
+
+      it "reports 100.0 when every reporting replica is fresh" do
+        node   = create(:system_node, account: account)
+        region = create(:system_provider_region)
+        a = create(:system_node_instance, :running, node: node, provider_region: region)
+        b = create(:system_node_instance, :running, node: node, provider_region: region)
+        [ a, b ].each { |i| i.update_columns(last_heartbeat_at: Time.current) }
+
+        mission, = seed_provisioned_mission([ a.id, b.id ])
+        described_class.collect!(mission: mission)
+
+        row = metric_row(mission)
+        expect(row.value["observed"]).to eq(100.0)
+        expect(row.value["source"]).to eq("live")
+        expect(row.value["unit"]).to eq("percent")
+        expect(row.value["available_instance_count"]).to eq(2)
+        expect(row.value["measured_instance_count"]).to eq(2)
+        expect(row.value["instance_count"]).to eq(2)
+      end
+
+      # THE POINT OF THE METRIC: a silent replica is DOWN, and no utilization
+      # metric can say so — a node that stops heartbeating just goes stale.
+      it "reports a real 50.0 when half the reporting replicas have gone silent" do
+        node   = create(:system_node, account: account)
+        region = create(:system_provider_region)
+        up   = create(:system_node_instance, :running, node: node, provider_region: region)
+        down = create(:system_node_instance, :running, node: node, provider_region: region)
+        up.update_columns(last_heartbeat_at: Time.current)
+        down.update_columns(last_heartbeat_at: 2.hours.ago)
+
+        mission, = seed_provisioned_mission([ up.id, down.id ])
+        described_class.collect!(mission: mission)
+
+        row = metric_row(mission)
+        expect(row.value["observed"]).to eq(50.0)
+        expect(row.value["source"]).to eq("live")
+      end
+
+      # Every reporting replica silent is a REAL 0.0 — a total outage — and
+      # must be published, not swallowed as "unknown".
+      it "publishes a measured 0.0 when every reporting replica has gone silent" do
+        node = create(:system_node, account: account)
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst.update_columns(last_heartbeat_at: 2.hours.ago)
+
+        mission, = seed_provisioned_mission([ inst.id ])
+        described_class.collect!(mission: mission)
+
+        row = metric_row(mission)
+        expect(row.value["source"]).to eq("live")
+        expect(row.value["observed"]).to eq(0.0)
+      end
+
+      it "excludes never-reported instances from the ratio and shows the coverage gap" do
+        node    = create(:system_node, account: account)
+        region  = create(:system_provider_region)
+        up      = create(:system_node_instance, :running, node: node, provider_region: region)
+        unknown = create(:system_node_instance, :running, node: node, provider_region: region)
+        up.update_columns(last_heartbeat_at: Time.current)
+
+        mission, = seed_provisioned_mission([ up.id, unknown.id ])
+        described_class.collect!(mission: mission)
+
+        row = metric_row(mission)
+        expect(row.value["observed"]).to eq(100.0)
+        expect(row.value["measured_instance_count"]).to eq(1)
+        expect(row.value["instance_count"]).to eq(2)
+      end
+
+      # A REBOOT IS NOT AN OUTAGE. `stopped`/`rebooting`/`stopping` replicas
+      # are live for capacity purposes but are not expected to heartbeat, so
+      # counting their silence as unavailability would manufacture a breach
+      # out of a routine reboot — the exact false positive sample_replica_count
+      # refuses. They leave the ratio entirely and are reported as their own
+      # count.
+      it "excludes a rebooting replica rather than reading a routine reboot as an outage" do
+        node    = create(:system_node, account: account)
+        region  = create(:system_provider_region)
+        up      = create(:system_node_instance, :running, node: node, provider_region: region)
+        booting = create(:system_node_instance, node: node, provider_region: region, status: "rebooting")
+        up.update_columns(last_heartbeat_at: Time.current)
+        booting.update_columns(last_heartbeat_at: 2.hours.ago)
+
+        mission, = seed_provisioned_mission([ up.id, booting.id ])
+        described_class.collect!(mission: mission)
+
+        row = metric_row(mission)
+        expect(row.value["observed"]).to eq(100.0)
+        expect(row.value["source"]).to eq("live")
+        expect(row.value["measured_instance_count"]).to eq(1)
+        expect(row.value["not_expected_to_report_count"]).to eq(1)
+        expect(row.value["instance_count"]).to eq(2)
+      end
+
+      # An operator who has stopped every replica has not suffered an outage;
+      # there is simply nothing whose liveness this metric can describe.
+      it "reports unavailable when no replica is in a state where a heartbeat is expected" do
+        node = create(:system_node, account: account)
+        inst = create(:system_node_instance, :stopped, node: node, provider_region: create(:system_provider_region))
+        inst.update_columns(last_heartbeat_at: 2.hours.ago)
+
+        mission, = seed_provisioned_mission([ inst.id ])
+        described_class.collect!(mission: mission)
+
+        row = metric_row(mission)
+        expect(row.value).to include("observed" => nil, "source" => "unavailable")
+        expect(row.value["observed"]).not_to eq(0.0)
+        expect(row.value["not_expected_to_report_count"]).to eq(1)
+      end
+
+      # The silence window is operator-tunable through the ONE seam that
+      # already owns it (System::Fleet::SensorConfig for instance_status), so
+      # the window in force here can never drift from the sensor's.
+      it "honors the operator's instance_status silent threshold" do
+        node = create(:system_node, account: account)
+        inst = create(:system_node_instance, :running, node: node, provider_region: create(:system_provider_region))
+        inst.update_columns(last_heartbeat_at: 10.minutes.ago) # silent at the 3m default
+
+        mission, = seed_provisioned_mission([ inst.id ])
+        described_class.collect!(mission: mission)
+        expect(metric_row(mission).value["observed"]).to eq(0.0)
+
+        System::Fleet::SensorConfig.create!(
+          account: account, sensor: "instance_status", config: { "silent_threshold_seconds" => 3_600 }
+        )
+        described_class.collect!(mission: mission)
+
+        expect(metric_row(mission).value["observed"]).to eq(100.0)
       end
     end
   end

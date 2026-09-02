@@ -19,21 +19,47 @@ module System
   #   System::ProjectMetricsCollector.collect!(mission: mission)
   #   System::ProjectMetricsCollector.collect!(mission: mission, correlation_id: tick_correlation)
   class ProjectMetricsCollector
-    # Mapping of metric_name → metric_type. Keeps the vocabulary in one
-    # place; the sensor/collector contract relies on these being stable.
-    # A heartbeat lands every ~30s, so 10 minutes tolerates 20 consecutive
-    # misses before an instance stops contributing to the mean. Past that the
-    # reading describes a node we have not heard from, which is not evidence
-    # of its current utilization.
-    MEMORY_SAMPLE_FRESHNESS = 10.minutes
-    # Deliberately does NOT say "the instances are not reporting". The agent
-    # DECLARES memory_free_kb (heartbeat.go:32) but assigns it nowhere, so a
-    # heartbeat carries mount_state + uptime_seconds and no memory reading at
-    # all — a fresh runtime_metrics document exists on every tick and still
-    # yields no sample. Blaming heartbeat delivery would send an operator to
-    # debug a subsystem that is working. See the agent-side gap filed alongside.
-    MEMORY_UNREPORTED_NOTE = "no memory_free_kb in any fresh runtime_metrics observation " \
-                             "(the node agent does not yet populate this field)"
+    # How recent a runtime_metrics observation must be to describe the node's
+    # CURRENT utilization. A heartbeat lands every ~30s, so 10 minutes
+    # tolerates 20 consecutive misses before an instance stops contributing to
+    # the mean. Past that the reading describes a node we have not heard from.
+    #
+    # Governs BOTH utilization samplers (memory_pct and, since APO-2a,
+    # cpu_pct): they read the same document written by the same heartbeat, and
+    # two windows over one observation would let the collector call the same
+    # node fresh for one metric and stale for the other in a single tick.
+    # Constant FALLBACK only — the effective value resolves from
+    # SiteSetting first (see #sample_freshness).
+    RUNTIME_SAMPLE_FRESHNESS = 10.minutes
+
+    # Deployment-wide SiteSetting keys are "<SETTING_PREFIX>.<name>".
+    SETTING_PREFIX = "system.project_metrics"
+
+    # Deliberately does NOT say "the instances are not reporting": a fresh
+    # runtime_metrics document can exist on every tick and still carry no
+    # reading for this particular field (a pre-APO-2a agent for cpu_pct, an
+    # unreadable /proc for either). Blaming heartbeat delivery would send an
+    # operator to debug a subsystem that is working.
+    MEMORY_UNREPORTED_NOTE = "no usable memory_pct in any fresh runtime_metrics observation " \
+                             "(either the node reported no memory_free_kb, or the platform has no " \
+                             "provisioned memory total to divide by \u2014 see NodeInstance#available_memory_mb)"
+    CPU_UNREPORTED_NOTE = "no cpu_pct in any fresh runtime_metrics observation " \
+                          "(the node agent measures it from /proc/stat; a pre-APO-2a " \
+                          "agent, or one that could not read it, reports none)"
+
+    # availability_pct measures HEARTBEAT LIVENESS, and an instance that has
+    # never heartbeat at all is not evidence of an outage — it may be
+    # mid-bootstrap, or carry no agent. It is excluded from the ratio and
+    # surfaced as a coverage gap instead of being counted as unavailable.
+    AVAILABILITY_UNREPORTED_NOTE = "none of this mission's instances that should be heartbeating has " \
+                                   "ever done so (never-enrolled instances are not evidence of an outage)"
+    AVAILABILITY_NO_LIVE_NOTE = "the mission has no live replicas to measure availability across " \
+                                "(replica_count carries that fact)"
+    # Live for capacity, but not running an agent that owes us a heartbeat.
+    # Their silence is expected, so they leave the ratio rather than dragging
+    # it down; `not_expected_to_report_count` keeps them visible.
+    AVAILABILITY_NOT_EXPECTED_NOTE = "no replica of this mission is in a state where a heartbeat is " \
+                                     "expected (stopped/rebooting replicas are silent by design)"
 
     METRIC_TYPE_MAP = {
       "p99_latency_ms"   => "latency",
@@ -118,16 +144,21 @@ module System
     # backend hasn't landed yet return an honest `unavailable` sample
     # (observed: nil) — never a fabricated zero (see `unavailable_sample`).
     # Intended sources for the still-unwired metrics:
-    #   - p99_latency_ms / availability_pct: SDWAN edge probes (the
-    #     Slo::TelemetryAdapter `metric.latency_ms` FleetEvent transport)
-    #   - cpu_pct: deliberately NOT derived. The agent ships load_average as a
-    #     /proc/loadavg-style STRING, not a percentage; converting needs a
-    #     per-instance core count (absent on physical/pivot nodes with no
-    #     provider_instance_type), and load average folds in I/O-wait run-queue
-    #     length, so it is not percent-busy even where a core count exists. A
-    #     wrong number here is worse than none (IMP-938ee27f4921).
+    #   - p99_latency_ms: SDWAN edge probes (the Slo::TelemetryAdapter
+    #     `metric.latency_ms` FleetEvent transport)
+    #   - cpu_pct: WIRED (APO-2a), from the heartbeat's `cpu_pct` — which the
+    #     agent MEASURES from /proc/stat deltas. Still NOT derived from
+    #     load_average, here or anywhere: that is a /proc/loadavg-style STRING,
+    #     converting it needs a per-instance core count (absent on
+    #     physical/pivot nodes with no provider_instance_type), and load
+    #     average folds in I/O-wait run-queue length, so it is not percent-busy
+    #     even where a core count exists (IMP-938ee27f4921).
     #   - memory_pct: WIRED, from the heartbeat's memory_free_kb — see
     #     #sample_memory_pct and System::RuntimeMetricsWriter.
+    #   - availability_pct: WIRED (APO-2a), from heartbeat liveness across the
+    #     mission's live replicas — see #sample_availability_pct. This is the
+    #     only sample that can tell DOWN from SLOW: a utilization metric of a
+    #     node that stopped reporting merely goes stale.
     #   - cost_usd_mtd: billing engine MTD aggregation
     def sample_all
       instance_ids = resolvable_instance_ids
@@ -146,6 +177,8 @@ module System
       when "region_count"  then sample_region_count(instance_ids)
       when THROUGHPUT_METRIC then sample_sdwan_throughput(instance_ids)
       when "memory_pct"      then sample_memory_pct(instance_ids)
+      when "cpu_pct"         then sample_cpu_pct(instance_ids)
+      when "availability_pct" then sample_availability_pct(instance_ids)
       else unavailable_sample(metric_name)
       end
     end
@@ -437,20 +470,10 @@ module System
     # `instance_count` exposes that gap so a reader can see the sample covers
     # only part of the fleet instead of inferring full coverage.
     def sample_memory_pct(instance_ids)
-      return unavailable_sample("memory_pct") if instance_ids.empty?
+      return unavailable_sample("memory_pct", "mission has no resolvable instances") if instance_ids.empty?
 
-      # .live_replicas for the SAME reason sample_region_count shares it: a
-      # memory_pct that averaged in an errored row while replica_count did not
-      # would describe two different fleets in the same breath — and an
-      # out-of-memory node's last reading is exactly the one that would skew it.
-      # .includes to keep available_memory_mb's provider_instance_type lookup
-      # off the 60s tick's N+1 path.
-      instances = ::System::NodeInstance
-                  .where(id: instance_ids)
-                  .live_replicas
-                  .includes(:provider_instance_type)
-                  .to_a
-      cutoff = MEMORY_SAMPLE_FRESHNESS.ago
+      instances = live_mission_instances(instance_ids)
+      cutoff = sample_freshness.ago
 
       percents = instances.filter_map { |instance| memory_used_percent(instance, cutoff) }
       return unavailable_sample("memory_pct", MEMORY_UNREPORTED_NOTE) if percents.empty?
@@ -461,11 +484,171 @@ module System
       )
     end
 
-    # nil (not 0.0) whenever this instance cannot contribute a real reading:
-    # no document, unparseable/stale timestamp, no memory_free_kb, or no known
-    # provisioned total to divide by. Each of those is "unknown", and coercing
-    # any of them to a number would put a fabricated value into the mean.
-    def memory_used_percent(instance, cutoff)
+    # APO-2a — cpu_pct, the load signal that is not memory. Mean percent-busy
+    # across the mission instances with a FRESH runtime_metrics observation
+    # carrying a `cpu_pct`, on exactly the memory_pct rules: stale excluded
+    # (a node that stopped reporting is not evidence of its old utilization),
+    # `unavailable` — never a fabricated 0.0 — when nothing reported, and the
+    # measured-vs-total counts published so a reader sees the coverage.
+    #
+    # NOT derived from load_average. The agent measures the busy/idle split
+    # itself (agent/internal/runtime/cpustat.go) precisely because the
+    # conversion the server would have to do is the one IMP-938ee27f4921
+    # refused: a load average is a run-queue length that folds in I/O wait, and
+    # turning it into a percentage needs a core count the platform does not
+    # reliably have. So an instance whose document carries only load_average
+    # contributes NOTHING here — the honest outcome, not a fallback.
+    def sample_cpu_pct(instance_ids)
+      return unavailable_sample("cpu_pct", "mission has no resolvable instances") if instance_ids.empty?
+
+      instances = live_mission_instances(instance_ids)
+      cutoff = sample_freshness.ago
+
+      percents = instances.filter_map { |instance| reported_cpu_percent(instance, cutoff) }
+      return unavailable_sample("cpu_pct", CPU_UNREPORTED_NOTE) if percents.empty?
+
+      live_sample("cpu_pct", (percents.sum / percents.size).round(2)).merge(
+        "measured_instance_count" => percents.size,
+        "instance_count" => instances.size
+      )
+    end
+
+    # APO-2a — availability_pct: the fraction of this mission's live replicas
+    # that are STILL REPORTING, which is the only sample here that can tell
+    # "down" from "slow". A node that stops heartbeating does not make its
+    # utilization metrics alarming; they simply go stale and drop out of the
+    # mean, so a fleet that has half died reads as a healthy half fleet.
+    #
+    # WHAT THE NUMBER MEANS: 100 * (replicas expected to heartbeat whose
+    # last_heartbeat_at is within the silence window) / (replicas expected to
+    # heartbeat that have EVER heartbeat).
+    #
+    # THE DENOMINATOR IS THE EVER-REPORTED SET, not every live replica. An
+    # instance that has never heartbeat is not evidence of an outage — it may
+    # be mid-bootstrap, or a provider VM carrying no agent at all — and
+    # counting it as unavailable would manufacture a breach on every mission
+    # that provisions faster than its nodes enrol. It is excluded and shown as
+    # the gap between `measured_instance_count` and `instance_count`. When
+    # NOTHING has ever reported the sample is `unavailable`, never 0.
+    #
+    # A measured 0.0 (every reporting replica silent) IS published: that is a
+    # total outage, the single most important reading this metric can carry.
+    #
+    # ONLY REPLICAS THAT OWE US A HEARTBEAT ARE MEASURED. .live_replicas is
+    # the CAPACITY population — it includes stopped/stopping/rebooting/pending
+    # /provisioning — and those are silent BY DESIGN. Counting them as
+    # unavailable would make a routine reboot read as a 50% outage and, with
+    # ProjectSloSensor's 99.5% default target, fire a breach and a scale-out
+    # proposal off an operator's own `stop`. That is precisely the false
+    # positive sample_replica_count refuses above, and it does not become
+    # acceptable on a different scope. They are partitioned out and published
+    # as `not_expected_to_report_count`.
+    #
+    # BOTH THE POPULATION AND THE WINDOW ARE InstanceStatusSensor'S, resolved
+    # through the one operator seam that already owns them
+    # (HEARTBEAT_EXPECTED_STATUSES / silent_threshold_seconds), so this
+    # collector and that sensor cannot drift apart about WHICH nodes should be
+    # answering or HOW LONG silence is tolerated — the same invariant
+    # IMP-ca485128072e preserved between InstanceStatusSensor and
+    # InstanceUnrecoverableSensor.
+    #
+    # ONE DELIBERATE DIFFERENCE REMAINS: the sensor signals a never-heartbeat
+    # `running` instance as silent (a failed enrolment is worth an operator's
+    # attention); this metric excludes it, because a mission that provisions
+    # faster than its nodes enrol has not suffered an outage. The gap is
+    # visible as measured_instance_count vs instance_count rather than hidden
+    # in the ratio.
+    def sample_availability_pct(instance_ids)
+      return unavailable_sample("availability_pct", "mission has no resolvable instances") if instance_ids.empty?
+
+      instances = live_mission_instances(instance_ids)
+      return unavailable_sample("availability_pct", AVAILABILITY_NO_LIVE_NOTE) if instances.empty?
+
+      expected, silent_by_design = instances.partition do |instance|
+        ::System::Fleet::Sensors::InstanceStatusSensor::HEARTBEAT_EXPECTED_STATUSES.include?(instance.status)
+      end
+
+      coverage = {
+        "available_instance_count" => 0,
+        "measured_instance_count" => 0,
+        "not_expected_to_report_count" => silent_by_design.size,
+        "instance_count" => instances.size
+      }
+
+      if expected.empty?
+        return unavailable_sample("availability_pct", AVAILABILITY_NOT_EXPECTED_NOTE).merge(coverage)
+      end
+
+      reporting = expected.select { |instance| instance.last_heartbeat_at.present? }
+      if reporting.empty?
+        return unavailable_sample("availability_pct", AVAILABILITY_UNREPORTED_NOTE).merge(coverage)
+      end
+
+      window = silent_threshold_seconds
+      cutoff = Time.current - window.seconds
+      available = reporting.count { |instance| instance.last_heartbeat_at >= cutoff }
+
+      live_sample("availability_pct", ((available.to_f / reporting.size) * 100).round(2)).merge(
+        coverage.merge(
+          "available_instance_count" => available,
+          "measured_instance_count" => reporting.size,
+          "silent_threshold_seconds" => window
+        )
+      )
+    end
+
+    # The mission's live replicas, loaded ONCE per collect!.
+    #
+    # .live_replicas for the SAME reason sample_region_count shares it: a
+    # utilization or availability figure that counted an errored row while
+    # replica_count did not would describe two different fleets in the same
+    # breath — and an out-of-memory node's last reading is exactly the one that
+    # would skew a mean. .includes keeps available_memory_mb's
+    # provider_instance_type lookup off the 60s tick's N+1 path.
+    #
+    # Memoized because three samplers now ask for the same set in one tick;
+    # re-querying would also let them disagree about the fleet mid-tick. Keyed
+    # by the id set rather than a bare ivar so the memo can never answer a
+    # question it was not asked.
+    def live_mission_instances(instance_ids)
+      @live_mission_instances ||= {}
+      @live_mission_instances[instance_ids] ||= ::System::NodeInstance
+                                               .where(id: instance_ids)
+                                               .live_replicas
+                                               .includes(:provider_instance_type)
+                                               .to_a
+    end
+
+    # The effective staleness window for a runtime_metrics observation:
+    # operator SiteSetting first, the constant as the fallback. Memoized for
+    # one collect! so a mid-tick change cannot make two samplers disagree
+    # about which observations are fresh.
+    def sample_freshness
+      return @sample_freshness if defined?(@sample_freshness)
+
+      raw = ::SiteSetting.get("#{SETTING_PREFIX}.sample_freshness_seconds")
+      seconds = raw.to_s.strip.match?(/\A\d+\z/) ? raw.to_i : 0
+      @sample_freshness = seconds.positive? ? seconds.seconds : RUNTIME_SAMPLE_FRESHNESS
+    rescue StandardError => e
+      Rails.logger.warn("[ProjectMetricsCollector] sample freshness fell back to its default: #{e.class}: #{e.message}")
+      @sample_freshness = RUNTIME_SAMPLE_FRESHNESS
+    end
+
+    # Resolved through InstanceStatusSensor rather than re-declared here: that
+    # sensor OWNS the definition of a silent instance, and a second constant
+    # would be a second opinion about which nodes are down.
+    def silent_threshold_seconds
+      @silent_threshold_seconds ||= ::System::Fleet::Sensors::InstanceStatusSensor
+                                    .resolved_threshold("silent_threshold_seconds", account: @mission.account)
+    rescue StandardError => e
+      Rails.logger.warn("[ProjectMetricsCollector] silent threshold fell back to its default: #{e.class}: #{e.message}")
+      ::System::Fleet::Sensors::InstanceStatusSensor::SILENT_THRESHOLD.to_i
+    end
+
+    # The instance's runtime_metrics document, or nil when it is absent or
+    # too old to describe the node's current state. ONE definition of
+    # freshness for every field the document carries.
+    def fresh_runtime_metrics(instance, cutoff)
       doc = instance.config&.dig(::System::RuntimeMetricsWriter::CONFIG_KEY)
       return nil unless doc.is_a?(Hash)
 
@@ -475,6 +658,35 @@ module System
         nil
       end
       return nil if observed_at.nil? || observed_at < cutoff
+
+      doc
+    end
+
+    # nil (not 0.0) unless this instance shipped a real percentage. 0.0 is a
+    # genuinely idle node and MUST survive as a reading, so the guard is an
+    # explicit type+range test rather than a truthiness check — which would
+    # silently drop the idle case and turn a quiet fleet into "we don't know".
+    # Out of 0..100 is a broken producer, not a reading (the ingest writer
+    # already refuses those; this is the reader's own defence against a
+    # document written before it did).
+    def reported_cpu_percent(instance, cutoff)
+      doc = fresh_runtime_metrics(instance, cutoff)
+      return nil unless doc
+
+      value = doc["cpu_pct"]
+      return nil unless value.is_a?(Numeric)
+      return nil unless value >= 0 && value <= 100
+
+      value.to_f
+    end
+
+    # nil (not 0.0) whenever this instance cannot contribute a real reading:
+    # no document, unparseable/stale timestamp, no memory_free_kb, or no known
+    # provisioned total to divide by. Each of those is "unknown", and coercing
+    # any of them to a number would put a fabricated value into the mean.
+    def memory_used_percent(instance, cutoff)
+      doc = fresh_runtime_metrics(instance, cutoff)
+      return nil unless doc
 
       free_kb = doc["memory_free_kb"]
       return nil unless free_kb.is_a?(Integer) && free_kb >= 0
