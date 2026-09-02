@@ -41,11 +41,13 @@ require "rails_helper"
 #          What clients actually receive for `outputSchema`, on BOTH transports,
 #          is verb-independent by construction:
 #            * streamable HTTP — the transport real MCP clients use — never
-#              calls `build_manifest`. `decorate_tool_entry` sets a literal
-#              `{"type" => "object"}` for protocol >= 2025-06-18 and NOTHING
-#              at all for older revisions (streamable_http_controller.rb:971-976).
-#              Its own comment calls the generic object schema "the truthful
-#              contract", which is the same finding stated from the other side.
+#              calls `build_manifest`. `decorate_tool_entry` takes an
+#              `output_schema:` keyword from its caller — the platform family
+#              passes `McpPlatformToolRegistrar.default_output_schema`, the
+#              introspection family passes `GENERIC_OBJECT_SCHEMA` — for
+#              protocol >= 2025-06-18 and NOTHING at all for older revisions
+#              (since IMP-b92421fb7c59). Either way the value is chosen per
+#              FAMILY, never per verb.
 #            * ActionCable `describe_tool` — serves the registered manifest,
 #              whose `outputSchema` is `default_output_schema`
 #              (mcp_platform_tool_registrar.rb `default_output_schema`, from
@@ -58,8 +60,9 @@ require "rails_helper"
 #          This is not a parsing problem — the thing being compared against
 #          does not exist. The tripwire below pins the declaration side and the
 #          ActionCable manifest. It deliberately does NOT pin
-#          `decorate_tool_entry`: that literal takes no tool argument, so it is
-#          verb-independent by construction rather than by coincidence, and
+#          `decorate_tool_entry`: its `output_schema:` is chosen per family by
+#          the caller, not derived from the tool, so it is verb-independent by
+#          construction rather than by coincidence, and
 #          pinning three lines that would have to be rewritten to do damage
 #          buys less than it costs. Named here so the omission reads as a
 #          decision.
