@@ -58,7 +58,8 @@ module Ai
           name: "system_acme",
           description: "System extension ACME TLS lifecycle: read/renew/revoke certificates, create DNS-01 provider credentials",
           parameters: {
-            action: { type: "string", required: true, description: "Action to perform" },
+            action: { type: "string", required: true, enum: action_definitions.keys,
+                      description: "Action to perform" },
             certificate_id: { type: "string", required: false },
             reason: { type: "string", required: false },
             name: { type: "string", required: false },
@@ -98,7 +99,8 @@ module Ai
                          "returned. The result serializes only the public index (name, provider, status).",
             parameters: {
               name: { type: "string", required: true, description: "Human-readable name for the DNS-01 credential record" },
-              provider: { type: "string", required: true, description: "DNS provider slug (cloudflare|route53|gcloud|digitalocean|hetzner|porkbun|ovh)" },
+              provider: { type: "string", required: true, enum: ::System::AcmeDnsCredential::SUPPORTED_PROVIDERS,
+                          description: "DNS provider slug — the set System::AcmeDnsCredential validates on (inclusion: SUPPORTED_PROVIDERS)" },
               credentials: { type: "object", required: true, description: "Provider-specific secret token fields (SENSITIVE — stored in Vault only)" },
               metadata: { type: "object", required: false, description: "Optional non-secret metadata stored on the credential record" }
             }
