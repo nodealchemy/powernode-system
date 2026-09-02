@@ -416,10 +416,14 @@ module Ai
       # makes gated_action? false and #execute takes the same `return
       # call(params)` path an undeclared action takes; the difference is that
       # the surface is now governed and no undeclared-action audit sighting is
-      # recorded for it. The five older gitops verbs sit in the snapshot
+      # recorded for it. The five older gitops verbs sat in the snapshot
       # (server/spec/fixtures/governance/undeclared_actions.txt), whose header
       # says that list MAY ONLY SHRINK — adding two more would have been the
       # reviewed decision it warns about, for no gain over declaring them.
+      # SUPERSEDED by APO-1a (IMP-1e58753b3b6c): those five are now declared
+      # below (:500-504) and the snapshot is EMPTY, so the shrink-only rule
+      # has nothing left to acknowledge; the ratchet remains as the brake on
+      # regrowth.
       declare_action "system_gitops_get_repository", mutating: false
       declare_action "system_gitops_list_repositories", mutating: false
 
@@ -433,6 +437,144 @@ module Ai
                      executor_class: "System::Executors::TerminateInstance",
                      gate_context: :terminate_instance_gate_context,
                      on_proceed: :terminate_instance_terminated_result
+
+      # APO-1a (IMP-1e58753b3b6c) — governance declarations for every action
+      # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
+      # BaseTool#gated_action? false, so #execute still routes to #call and
+      # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
+      declare_action "system_abort_task", mutating: true
+      declare_action "system_acquire_pooled_instance", mutating: true
+      declare_action "system_agent_fleet_status", mutating: false
+      declare_action "system_approve_storage_migration", mutating: true
+      declare_action "system_assign_module_to_template", mutating: true
+      declare_action "system_attach_volume", mutating: true
+      declare_action "system_attribute_failure", mutating: false
+      declare_action "system_authorize_peer_call", mutating: false
+      declare_action "system_cancel_module_build_batch", mutating: true
+      declare_action "system_cancel_storage_migration", mutating: true
+      declare_action "system_cancel_task", mutating: true
+      declare_action "system_cleanup_storage_migration", mutating: true
+      declare_action "system_clone_template", mutating: true
+      declare_action "system_compliance_snapshot", mutating: false
+      declare_action "system_compose_preview_template", mutating: false
+      declare_action "system_create_cve", mutating: true
+      declare_action "system_create_instance_pool", mutating: true
+      declare_action "system_create_module", mutating: true
+      declare_action "system_create_node", mutating: true
+      declare_action "system_create_provider", mutating: true
+      declare_action "system_create_provider_connection", mutating: true
+      declare_action "system_create_provider_instance_type", mutating: true
+      declare_action "system_create_provider_region", mutating: true
+      declare_action "system_create_template", mutating: true
+      declare_action "system_create_volume", mutating: true
+      declare_action "system_cve_runbook_generate", mutating: true
+      declare_action "system_cve_triage", mutating: true
+      declare_action "system_delete_cve", mutating: true
+      declare_action "system_delete_instance_pool", mutating: true
+      declare_action "system_delete_module", mutating: true
+      declare_action "system_delete_node", mutating: true
+      declare_action "system_delete_provider", mutating: true
+      declare_action "system_delete_template", mutating: true
+      declare_action "system_delete_volume", mutating: true
+      declare_action "system_deploy_inference_server", mutating: true
+      declare_action "system_deploy_platform", mutating: true
+      declare_action "system_destroy_instance", mutating: true
+      declare_action "system_detach_volume", mutating: true
+      declare_action "system_discover_modules", mutating: false
+      declare_action "system_discover_peers", mutating: false
+      declare_action "system_discover_templates", mutating: false
+      declare_action "system_dispatch_module_build_batch", mutating: true
+      declare_action "system_drain_instance", mutating: true
+      declare_action "system_drain_instance_pool", mutating: true
+      declare_action "system_drift_report", mutating: false
+      declare_action "system_find_node_with_gpu", mutating: false
+      declare_action "system_get_cve", mutating: false
+      declare_action "system_get_cve_exposure", mutating: false
+      declare_action "system_get_instance", mutating: false
+      declare_action "system_get_instance_pool", mutating: false
+      declare_action "system_get_module", mutating: false
+      declare_action "system_get_node", mutating: false
+      declare_action "system_get_provider", mutating: false
+      declare_action "system_get_silent_instances", mutating: false
+      declare_action "system_get_storage_migration", mutating: false
+      declare_action "system_get_storage_recommendations", mutating: false
+      declare_action "system_get_task", mutating: false
+      declare_action "system_get_template", mutating: false
+      declare_action "system_get_volume", mutating: false
+      declare_action "system_gitops_apply_proposal", mutating: true
+      declare_action "system_gitops_get_drift_report", mutating: false
+      declare_action "system_gitops_get_sync_run", mutating: false
+      declare_action "system_gitops_register_repository", mutating: true
+      declare_action "system_gitops_sync_repository", mutating: true
+      declare_action "system_grant_instance_mcp_tools", mutating: true
+      declare_action "system_grant_instance_peer_skills", mutating: true
+      declare_action "system_inspect_correlation", mutating: false
+      declare_action "system_instance_hold", mutating: true
+      declare_action "system_instance_hold_status", mutating: false
+      declare_action "system_instance_release_hold", mutating: true
+      declare_action "system_launch_agent_fleet", mutating: true
+      declare_action "system_lease_ci_runner", mutating: true
+      declare_action "system_list_ci_runner_leases", mutating: false
+      declare_action "system_list_ci_workers", mutating: false
+      declare_action "system_list_disk_image_publications", mutating: false
+      declare_action "system_list_disk_image_webhooks", mutating: false
+      declare_action "system_list_instance_pools", mutating: false
+      declare_action "system_list_instance_types_by_gpu", mutating: false
+      declare_action "system_list_instances", mutating: false
+      declare_action "system_list_isolation_tiers", mutating: false
+      declare_action "system_list_module_versions", mutating: false
+      declare_action "system_list_modules", mutating: false
+      declare_action "system_list_nodes", mutating: false
+      declare_action "system_list_providers", mutating: false
+      declare_action "system_list_storage_migrations", mutating: false
+      declare_action "system_list_tasks", mutating: false
+      declare_action "system_list_templates", mutating: false
+      declare_action "system_list_volumes", mutating: false
+      declare_action "system_migrate_storage_component", mutating: true
+      declare_action "system_mint_peer_capability_token", mutating: true
+      declare_action "system_module_diff", mutating: false
+      declare_action "system_module_mark_canary", mutating: true
+      declare_action "system_module_publication_integrity", mutating: false
+      declare_action "system_module_publish_target", mutating: false
+      declare_action "system_platform_maintenance", mutating: true
+      declare_action "system_platform_resilience", mutating: true
+      declare_action "system_promote_module_version", mutating: true
+      declare_action "system_provision_ci_worker", mutating: true
+      declare_action "system_provision_instance", mutating: true
+      declare_action "system_reap_agent_fleet", mutating: true
+      declare_action "system_reboot_instance", mutating: true
+      declare_action "system_recent_signals", mutating: false
+      declare_action "system_recycle_pool", mutating: true
+      declare_action "system_refresh_instance_modules", mutating: true
+      declare_action "system_release_ci_runner", mutating: true
+      declare_action "system_replenish_instance_pool", mutating: true
+      declare_action "system_report_storage_migration_progress", mutating: true
+      declare_action "system_return_pooled_instance", mutating: true
+      declare_action "system_revert_disk_image", mutating: true
+      declare_action "system_revert_storage_migration_binding", mutating: true
+      declare_action "system_rollback_module_version", mutating: true
+      declare_action "system_rotate_vault_transit_pepper", mutating: true
+      declare_action "system_runbook_generate", mutating: true
+      declare_action "system_set_default_disk_image_publication", mutating: true
+      declare_action "system_set_disk_image_retention", mutating: true
+      declare_action "system_start_instance", mutating: true
+      declare_action "system_stop_instance", mutating: true
+      declare_action "system_terminate_ci_worker", mutating: true
+      declare_action "system_test_nfs_export", mutating: false
+      declare_action "system_unassign_module_from_template", mutating: true
+      declare_action "system_unmark_module_canary", mutating: true
+      declare_action "system_update_instance", mutating: true
+      declare_action "system_update_instance_pool", mutating: true
+      declare_action "system_update_module", mutating: true
+      declare_action "system_update_module_assignment", mutating: true
+      declare_action "system_update_node", mutating: true
+      declare_action "system_update_provider", mutating: true
+      declare_action "system_update_storage_recommendations", mutating: true
+      declare_action "system_update_template", mutating: true
+      declare_action "system_update_template_module", mutating: true
+      declare_action "system_update_volume", mutating: true
+      declare_action "system_upgrade_boot_image", mutating: true
+      declare_action "system_validate_module_manifest", mutating: false
 
       def self.definition
         {

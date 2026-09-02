@@ -26,6 +26,17 @@ module Ai
         "system_propose_architecture"  => "system.architectures.propose"
       }.freeze
 
+      # APO-1a (IMP-1e58753b3b6c) — governance declarations for every action
+      # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
+      # BaseTool#gated_action? false, so #execute still routes to #call and
+      # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
+      declare_action "system_create_architecture", mutating: true
+      declare_action "system_delete_architecture", mutating: true
+      declare_action "system_get_architecture", mutating: false
+      declare_action "system_list_architectures", mutating: false
+      declare_action "system_propose_architecture", mutating: true
+      declare_action "system_update_architecture", mutating: true
+
       # Generic top-level definition used by BaseTool#validate_params!.
       # Per-action schemas are in #action_definitions below.
       def self.definition

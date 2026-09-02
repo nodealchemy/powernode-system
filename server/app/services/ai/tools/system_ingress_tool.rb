@@ -81,6 +81,23 @@ module Ai
         "system_unexpose_service_local" => :unexpose_service_local
       }.freeze
 
+      # APO-1a (IMP-1e58753b3b6c) — governance declarations for every action
+      # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
+      # BaseTool#gated_action? false, so #execute still routes to #call and
+      # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
+      declare_action "system_acme_provision_certificate", mutating: true
+      declare_action "system_create_service", mutating: true
+      declare_action "system_delete_service", mutating: true
+      declare_action "system_expose_service_local", mutating: true
+      declare_action "system_expose_service_public_tcp", mutating: true
+      declare_action "system_expose_service_publicly", mutating: true
+      declare_action "system_get_service", mutating: false
+      declare_action "system_list_services", mutating: false
+      declare_action "system_reverse_proxy_compose", mutating: true
+      declare_action "system_unexpose_service_local", mutating: true
+      declare_action "system_unexpose_service_public_tcp", mutating: true
+      declare_action "system_update_service", mutating: true
+
       def self.definition
         {
           name: "system_ingress",

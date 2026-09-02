@@ -44,6 +44,15 @@ module Ai
         "system_acme_create_dns_credential" => "system.acme_dns.manage"
       }.freeze
 
+      # APO-1a (IMP-1e58753b3b6c) — governance declarations for every action
+      # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
+      # BaseTool#gated_action? false, so #execute still routes to #call and
+      # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
+      declare_action "system_acme_create_dns_credential", mutating: true
+      declare_action "system_acme_get_certificate", mutating: false
+      declare_action "system_acme_renew_certificate", mutating: true
+      declare_action "system_acme_revoke_certificate", mutating: true
+
       def self.definition
         {
           name: "system_acme",

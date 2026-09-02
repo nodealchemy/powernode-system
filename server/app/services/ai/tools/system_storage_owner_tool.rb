@@ -25,6 +25,15 @@ module Ai
         "system_storage_chown_retry"                => "system.storage.assignments.update"
       }.freeze
 
+      # APO-1a (IMP-1e58753b3b6c) — governance declarations for every action
+      # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
+      # BaseTool#gated_action? false, so #execute still routes to #call and
+      # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
+      declare_action "system_assign_storage_owner", mutating: true
+      declare_action "system_list_storage_assignments_by_owner", mutating: false
+      declare_action "system_storage_chown_retry", mutating: true
+      declare_action "system_storage_chown_status", mutating: false
+
       def self.definition
         {
           name: "system_storage_owner",

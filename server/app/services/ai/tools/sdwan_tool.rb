@@ -191,6 +191,97 @@ module Ai
         "system_sdwan_delete_ovn_logical_switch_port" => "system.sdwan.ovn.manage"
       }.freeze
 
+      # APO-1a (IMP-1e58753b3b6c) — governance declarations for every action
+      # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
+      # BaseTool#gated_action? false, so #execute still routes to #call and
+      # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
+      declare_action "system_multi_tenant_isolation", mutating: true
+      declare_action "system_sdwan_accept_federation_peer", mutating: true
+      declare_action "system_sdwan_activate_host_bridge", mutating: true
+      declare_action "system_sdwan_activate_ovn_logical_switch", mutating: true
+      declare_action "system_sdwan_activate_ovn_logical_switch_port", mutating: true
+      declare_action "system_sdwan_attach_peer", mutating: true
+      declare_action "system_sdwan_compile_ovn_plan", mutating: false
+      declare_action "system_sdwan_compile_route_policy", mutating: false
+      declare_action "system_sdwan_create_access_grant", mutating: true
+      declare_action "system_sdwan_create_firewall_rule", mutating: true
+      declare_action "system_sdwan_create_host_bridge", mutating: true
+      declare_action "system_sdwan_create_ipfix_collector", mutating: true
+      declare_action "system_sdwan_create_network", mutating: true
+      declare_action "system_sdwan_create_ovn_acl", mutating: true
+      declare_action "system_sdwan_create_ovn_deployment", mutating: true
+      declare_action "system_sdwan_create_ovn_logical_switch", mutating: true
+      declare_action "system_sdwan_create_ovn_logical_switch_port", mutating: true
+      declare_action "system_sdwan_create_port_mapping", mutating: true
+      declare_action "system_sdwan_create_route_policy", mutating: true
+      declare_action "system_sdwan_create_virtual_ip", mutating: true
+      declare_action "system_sdwan_delete_firewall_rule", mutating: true
+      declare_action "system_sdwan_delete_ipfix_collector", mutating: true
+      declare_action "system_sdwan_delete_network", mutating: true
+      declare_action "system_sdwan_delete_ovn_acl", mutating: true
+      declare_action "system_sdwan_delete_ovn_deployment", mutating: true
+      declare_action "system_sdwan_delete_ovn_logical_switch", mutating: true
+      declare_action "system_sdwan_delete_ovn_logical_switch_port", mutating: true
+      declare_action "system_sdwan_delete_port_mapping", mutating: true
+      declare_action "system_sdwan_delete_route_policy", mutating: true
+      declare_action "system_sdwan_delete_virtual_ip", mutating: true
+      declare_action "system_sdwan_detach_peer", mutating: true
+      declare_action "system_sdwan_failover_virtual_ip", mutating: true
+      declare_action "system_sdwan_federation_compose", mutating: true
+      declare_action "system_sdwan_federation_scan", mutating: false
+      declare_action "system_sdwan_get_account_bgp", mutating: false
+      declare_action "system_sdwan_get_audit_log", mutating: false
+      declare_action "system_sdwan_get_bgp_config_for_peer", mutating: false
+      declare_action "system_sdwan_get_bgp_sessions", mutating: false
+      declare_action "system_sdwan_get_federation_peer", mutating: false
+      declare_action "system_sdwan_get_firewall_rule", mutating: false
+      declare_action "system_sdwan_get_host_bridge", mutating: false
+      declare_action "system_sdwan_get_ipfix_collector", mutating: false
+      declare_action "system_sdwan_get_network", mutating: false
+      declare_action "system_sdwan_get_ovn_deployment", mutating: false
+      declare_action "system_sdwan_get_peer", mutating: false
+      declare_action "system_sdwan_get_port_mapping", mutating: false
+      declare_action "system_sdwan_get_route_policy", mutating: false
+      declare_action "system_sdwan_get_routing_summary", mutating: false
+      declare_action "system_sdwan_get_topology", mutating: false
+      declare_action "system_sdwan_get_virtual_ip", mutating: false
+      declare_action "system_sdwan_issue_user_device", mutating: true
+      declare_action "system_sdwan_list_access_grants", mutating: false
+      declare_action "system_sdwan_list_federation_peers", mutating: false
+      declare_action "system_sdwan_list_firewall_rules", mutating: false
+      declare_action "system_sdwan_list_host_bridges", mutating: false
+      declare_action "system_sdwan_list_ipfix_collectors", mutating: false
+      declare_action "system_sdwan_list_networks", mutating: false
+      declare_action "system_sdwan_list_ovn_acls", mutating: false
+      declare_action "system_sdwan_list_ovn_deployments", mutating: false
+      declare_action "system_sdwan_list_ovn_logical_switches", mutating: false
+      declare_action "system_sdwan_list_peers", mutating: false
+      declare_action "system_sdwan_list_port_mappings", mutating: false
+      declare_action "system_sdwan_list_route_policies", mutating: false
+      declare_action "system_sdwan_list_subnet_advertisements", mutating: false
+      declare_action "system_sdwan_list_user_devices", mutating: false
+      declare_action "system_sdwan_list_vip_assignments", mutating: false
+      declare_action "system_sdwan_list_virtual_ips", mutating: false
+      declare_action "system_sdwan_propose_federation_peer", mutating: true
+      declare_action "system_sdwan_release_host_bridge", mutating: true
+      declare_action "system_sdwan_revoke_access_grant", mutating: true
+      declare_action "system_sdwan_revoke_federation_peer", mutating: true
+      declare_action "system_sdwan_revoke_user_device", mutating: true
+      declare_action "system_sdwan_set_data_residency", mutating: true
+      declare_action "system_sdwan_set_peer_tags", mutating: true
+      declare_action "system_sdwan_update_account_as_number", mutating: true
+      declare_action "system_sdwan_update_federation_peer", mutating: true
+      declare_action "system_sdwan_update_firewall_rule", mutating: true
+      declare_action "system_sdwan_update_ipfix_collector", mutating: true
+      declare_action "system_sdwan_update_network", mutating: true
+      declare_action "system_sdwan_update_network_routing_mode", mutating: true
+      declare_action "system_sdwan_update_peer", mutating: true
+      declare_action "system_sdwan_update_peer_lan_subnets", mutating: true
+      declare_action "system_sdwan_update_port_mapping", mutating: true
+      declare_action "system_sdwan_update_route_policy", mutating: true
+      declare_action "system_sdwan_update_virtual_ip", mutating: true
+      declare_action "system_service_discovery_compose", mutating: true
+
       def self.definition
         {
           name: "sdwan",

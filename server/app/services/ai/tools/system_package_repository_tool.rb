@@ -38,6 +38,27 @@ module Ai
         "system_suggest_architectures_for_fleet" => "system.packages.view"
       }.freeze
 
+      # APO-1a (IMP-1e58753b3b6c) — governance declarations for every action
+      # this tool advertises. NON-ENFORCING: `mutating:` alone leaves
+      # BaseTool#gated_action? false, so #execute still routes to #call and
+      # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
+      declare_action "system_create_module_from_package", mutating: true
+      declare_action "system_create_package_repository", mutating: true
+      declare_action "system_delete_package_repository", mutating: true
+      declare_action "system_discover_packages", mutating: false
+      declare_action "system_get_package", mutating: false
+      declare_action "system_get_package_repository", mutating: false
+      declare_action "system_link_repository_platform", mutating: true
+      declare_action "system_list_package_module_links", mutating: false
+      declare_action "system_list_package_repositories", mutating: false
+      declare_action "system_refresh_package_module", mutating: true
+      declare_action "system_resolve_package_dependencies", mutating: false
+      declare_action "system_search_packages", mutating: false
+      declare_action "system_suggest_architectures_for_fleet", mutating: false
+      declare_action "system_sync_package_repository", mutating: true
+      declare_action "system_unlink_repository_platform", mutating: true
+      declare_action "system_update_package_repository", mutating: true
+
       # Generic top-level definition consumed by BaseTool#validate_params!.
       # Per-action schemas live in #action_definitions; this advertises the
       # `action` discriminator + a free-form params surface.
