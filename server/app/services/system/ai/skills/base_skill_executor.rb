@@ -227,6 +227,38 @@ module System
         # gates agree on what counts as automatic.
         AUTO_EXECUTE_POLICIES = %w[auto_approve notify_and_proceed].freeze
 
+        # APO-2d (IMP-25949cfd28fd). #audit_log_start/#audit_log_finish/
+        # #audit_log_error wrote Rails.logger and nothing else, so a skill
+        # driven DIRECTLY — an MCP call, DecisionEngine#invoke_skill, an
+        # approved request replayed through Ai::DeferredOperation — left no
+        # durable record anywhere an operator or a compliance read can see.
+        # (#gate_action!'s own docstring already notes that an auto-executed run
+        # deliberately does NOT mint a deferred-operations row and that "the
+        # audit for an auto-approved skill run is the executor's own
+        # #audit_log_start / #audit_log_finish pair" — which made that pair the
+        # only audit there was, and it was stdout.)
+        #
+        # Three events, not one, and joined by a per-execution correlation_id:
+        # a start with no terminal event is the ONLY evidence left when the
+        # process dies inside #perform, which #audit_log_error cannot catch.
+        EVENT_SOURCE        = "skill_executor"
+        EVENT_KIND_STARTED  = "skill.execute_started"
+        EVENT_KIND_FINISHED = "skill.execute_finished"
+        EVENT_KIND_FAILED   = "skill.execute_failed"
+
+        # Free-form text (an exception message, a provider's error string) is
+        # now PERSISTED to a jsonb column and BROADCAST on the account channel,
+        # where it was previously a server-local log line. Two reasons to bound
+        # it, both learned from the same class of incident: an unbounded
+        # provider error can be megabytes, and error text routinely carries the
+        # very operator material the input redaction above exists to keep out
+        # (ActiveRecord::StatementInvalid carries bound SQL values; an HTTP
+        # client error carries the URL). Truncation is a bound, not a redaction
+        # — the untruncated text stays on the Rails.logger line beside it.
+        # 500 matches the platform's existing bound for exception text on an
+        # event payload (System::NodeModuleAssignment#emit_registration_failure).
+        AUDIT_TEXT_LIMIT = 500
+
         attr_reader :account, :agent, :user
 
         # The MCP INSTANCE provenance, injected post-construction by whatever
@@ -254,6 +286,14 @@ module System
         # hard "no" holds on the composed door as well as the direct one.
         attr_writer :nested
 
+        # APO-2d. The correlation chain the CALLER is already writing into, so
+        # this run's audit events join it instead of opening one of their own.
+        # A writer for the same reason as the pair above: the executor is built
+        # by 54 call sites and a new constructor keyword would touch all of
+        # them. Left nil by the direct doors (an MCP call is its own chain);
+        # set it wherever a signal fingerprint or a tick id is in hand.
+        attr_writer :caller_correlation_id
+
         def initialize(account:, agent: nil, user: nil)
           raise ArgumentError, "account is required" if account.nil?
 
@@ -261,6 +301,7 @@ module System
           @agent   = agent
           @user    = user
           @instance_authorized = false
+          @caller_correlation_id = nil
           @node_instance = nil
           @nested = false
         end
@@ -281,6 +322,11 @@ module System
         # it false. Bound as an explicit keyword so it never reaches
         # #validate_inputs! or #perform.
         def execute(gated: false, **inputs)
+          # One audit chain per CALL, not per object: see
+          # #execution_correlation_id. Cleared before #validate_inputs! because
+          # a validation raise reaches #audit_log_error, which mints the id.
+          @execution_correlation_id = nil
+
           # Validation FIRST: a call that could only ever fail must not park an
           # approval an operator then has to dispose of.
           validate_inputs!(inputs)
@@ -552,6 +598,11 @@ module System
           # anyway would widen what every composer's collaborators must accept
           # for no behavioural gain.
           built.nested = true if gate_declaring?(executor_class)
+          # APO-2d: a nested peer's audit belongs to the composition an operator
+          # actually asked for, so the child inherits this run's chain. Assigned
+          # unconditionally — every executor answers this writer (it is defined
+          # on this class), unlike the gate-declaring guard above.
+          built.caller_correlation_id = execution_correlation_id
           mark_instance_provenance(built)
         end
 
@@ -579,18 +630,102 @@ module System
           Rails.logger.tagged(self.class.name) do
             Rails.logger.info("execute_start agent=#{@agent&.id} input_keys=#{inputs.keys.inspect}")
           end
+          # KEYS only, never values: an executor's inputs carry operator-supplied
+          # material (tokens, connection strings), and the log line this mirrors
+          # deliberately recorded keys alone.
+          emit_audit_event!(EVENT_KIND_STARTED, :low, "input_keys" => inputs.keys.map(&:to_s))
         end
 
         def audit_log_finish(result)
           Rails.logger.tagged(self.class.name) do
             Rails.logger.info("execute_finish success=#{result[:success]}")
           end
+          ok = result[:success] == true
+          emit_audit_event!(
+            EVENT_KIND_FINISHED,
+            # A returned failure is not routine telemetry — an operator filtering
+            # the low band would never see the run that did not work.
+            ok ? :low : :medium,
+            "success" => ok, "error" => audit_text(result[:error])
+          )
         end
 
         def audit_log_error(exc)
           Rails.logger.tagged(self.class.name) do
             Rails.logger.error("execute_error #{exc.class}: #{exc.message}")
           end
+          emit_audit_event!(EVENT_KIND_FAILED, :high,
+                            "error_class" => exc.class.name, "error" => audit_text(exc.message))
+        end
+
+        # Bounds one free-form string on its way into a persisted, broadcast
+        # payload. nil in, nil out, so the .compact in #emit_audit_event! still
+        # drops the key entirely rather than storing an empty string.
+        def audit_text(value)
+          return nil if value.nil?
+
+          value.to_s.truncate(AUDIT_TEXT_LIMIT)
+        end
+
+        # Groups the start/finish|failed pair of ONE #execute call. Lazily
+        # built because #audit_log_error can fire before #audit_log_start ever
+        # ran (a #validate_inputs! rejection raises straight into the rescue),
+        # and cleared at the top of #execute so an executor object driven twice
+        # files two chains rather than merging both runs into one.
+        #
+        # Falls back to a fresh id ONLY when the caller supplied none. A skill
+        # dispatched from a fleet tick belongs in the tick's own correlation
+        # walk — EventBroadcaster#emit_decision! keys its decision events off
+        # the signal fingerprint, and system_inspect_correlation matches
+        # correlation_id exactly — so a caller that has a chain assigns it via
+        # #caller_correlation_id= and the audit lands beside the decision that
+        # ordered it instead of in a chain of its own.
+        def execution_correlation_id
+          @execution_correlation_id ||= @caller_correlation_id.presence || "skill:#{SecureRandom.hex(8)}"
+        end
+
+        # Best-effort by construction. Observability must never be the reason a
+        # fleet operation fails: EventBroadcaster.emit! already swallows its own
+        # persistence/broadcast errors and returns nil, and this rescue keeps a
+        # constant-resolution or serialization surprise here from turning a
+        # successful #perform into a failure result.
+        def emit_audit_event!(kind, severity, extra = {})
+          ::System::Fleet::EventBroadcaster.emit!(
+            account: @account,
+            kind: kind,
+            severity: severity,
+            source: EVENT_SOURCE,
+            correlation_id: execution_correlation_id,
+            payload: {
+              "skill" => audit_skill_name,
+              "executor_class" => self.class.name,
+              "action_category" => audit_action_category,
+              "agent_id" => @agent&.id,
+              "user_id" => @user&.id,
+              "instance_authorized" => @instance_authorized,
+              "nested" => @nested
+            }.merge(extra).compact,
+            **{ node_instance_id: @node_instance&.id }.compact
+          )
+        rescue StandardError => e
+          Rails.logger.debug("[#{self.class.name}] audit event skipped: #{e.class}: #{e.message}")
+          nil
+        end
+
+        # Both read the descriptor, which RAISES on a subclass that never
+        # declared one. An undeclared descriptor is a real defect, but it is not
+        # this method's to report: the field is dropped by the .compact above
+        # and the record still identifies the run by `executor_class`.
+        def audit_skill_name
+          self.class.descriptor[:name]
+        rescue StandardError, NotImplementedError
+          nil
+        end
+
+        def audit_action_category
+          self.class.action_category
+        rescue StandardError, NotImplementedError
+          nil
         end
       end
     end

@@ -36,6 +36,28 @@ module System
 
       SOURCE_TYPE = "system_fleet"
 
+      # APO-2d (IMP-25949cfd28fd). The "notify" half of notify_and_proceed —
+      # and the ten *_investigate notify-only lanes, where the notification IS
+      # the whole remediation — used to be one Rails.logger line on the
+      # reconciler host. That reaches no operator: not the approval UI, not
+      # system_recent_signals, not system_inspect_correlation, not a compliance
+      # read. The durable record THIS SERVICE's notify step leaves is a
+      # FleetEvent, persisted and broadcast on the account's SystemFleetChannel
+      # by EventBroadcaster.
+      #
+      # Scope, precisely: every lane routed through #gate_action! below. It is
+      # NOT a platform-wide statement — System::CveOps::CveResponderService
+      # carries its own `notify_and_proceed` arm and its own #notify_action,
+      # which is still a log line only (tracked separately).
+      #
+      # The log line stays: it is the only record left when the events table is
+      # the thing that is broken.
+      NOTIFY_EVENT_KIND = "autonomy.notified"
+
+      # Bound for the free-form summary on that payload — same rationale and
+      # same value as System::Ai::Skills::BaseSkillExecutor::AUDIT_TEXT_LIMIT.
+      NOTIFY_SUMMARY_LIMIT = 500
+
       def initialize(account:, agent:, role: nil)
         @account = account
         @agent = agent
@@ -248,7 +270,10 @@ module System
         # system.module_promotion_investigate (skill: nil) so the stall gets a
         # separately tunable, operator-facing policy row rather than the silent
         # auto-approved bucket. (notify_and_proceed's extra step is
-        # #notify_action below — a Rails.logger line, not an operator page.)
+        # #notify_action below. Since APO-2d it writes a durable
+        # NOTIFY_EVENT_KIND FleetEvent, broadcast on the account's fleet
+        # channel, alongside the log line — still not a page, but no longer
+        # stdout-only.)
         # No applier by design — see the binding's comment.
         ::System::Fleet::Sensors::ModulePromotionBacklogSensor,
         # `capability:<tag>` requirements no module on the account provides.
@@ -591,6 +616,43 @@ module System
 
       def notify_action(action_category, metadata:, reasoning:)
         Rails.logger.info("[FleetAutonomy] Auto-execute: #{action_category} — #{reasoning[:summary]&.truncate(120)}")
+
+        md = metadata.is_a?(Hash) ? metadata.deep_stringify_keys : {}
+
+        # Correlate on the signal fingerprint when the caller carried one
+        # (DecisionEngine#skill_metadata_payload stamps it, and
+        # EventBroadcaster#emit_decision! keys its decision events off the same
+        # value), so the notification lands in the SAME correlation walk as the
+        # decision it belongs to rather than in a chain of its own.
+        correlation = md["signal_fingerprint"].presence || "notify:#{SecureRandom.hex(8)}"
+
+        # Resource refs ride in the payload: EventBroadcaster maps these keys
+        # onto the FleetEvent ref columns, which is what makes the notification
+        # filterable per instance/module in the same views the sensors feed.
+        refs = md.slice("node_id", "instance_id", "module_id", "module_version_id",
+                        "certificate_id", "cve_id").compact
+
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: account,
+          kind: NOTIFY_EVENT_KIND,
+          # medium, not low: an operator chose notify_and_proceed BECAUSE they
+          # want to be told. Low severity is the routine-telemetry band.
+          severity: :medium,
+          source: "fleet_autonomy",
+          correlation_id: correlation,
+          payload: refs.merge(
+            "action_category" => action_category,
+            "gate" => "notify_and_proceed",
+            # Bounded on the way into a persisted, broadcast payload for the
+            # same reason BaseSkillExecutor bounds its error text: a summary is
+            # free-form, caller-supplied, and now leaves the reconciler host.
+            # The untruncated value stays on the log line above.
+            "summary" => reasoning[:summary]&.to_s&.truncate(NOTIFY_SUMMARY_LIMIT),
+            "signal_kind" => md["signal_kind"],
+            "signal_fingerprint" => md["signal_fingerprint"],
+            "agent_id" => agent&.id
+          ).compact
+        )
       end
 
       def decision_ttl_for(action_category)
