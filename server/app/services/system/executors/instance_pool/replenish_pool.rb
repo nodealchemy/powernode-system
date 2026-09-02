@@ -3,6 +3,77 @@
 module System
   module Executors
     module InstancePool
+      # IMP-714ab7da6b9c — NO PRODUCER, AND THAT IS THE DECISION. Nothing
+      # constructs an Ai::DeferredOperation naming this class: no site assigns
+      # `executor_class` to it, and no site composes the name either. Both
+      # halves are pinned continuously by
+      # spec/lint/instance_pool_replenish_gating_spec.rb, which scans
+      # server/, worker/ and every extensions/*/server tree it can find — so a
+      # producer added ANYWHERE in this checkout reds that guard. Do NOT delete
+      # this file as tidy-up: it is the record of the intent, and re-wiring it
+      # is the whole fix if the decision below is ever revisited.
+      #
+      # THE ASYMMETRY. Of the five instance-pool executors only CreatePool and
+      # DeletePool have producers (InstancePoolsController#create and
+      # #destroy, via Ai::GatedActions). Replenish — the verb that actually
+      # spends money, provisioning VMs and minting `ephemeral`/`spot` Nodes
+      # through InstancePoolService#provision_warming_member! — reaches
+      # ::System::InstancePoolService.replenish! directly from its operator
+      # surfaces: InstancePoolsController#replenish and the MCP verb
+      # system_replenish_instance_pool. A third path,
+      # System::InstancePoolReplenisherJob
+      # (worker/app/jobs/system/instance_pool_replenisher_job.rb), reaches the
+      # first of those over HTTP on a 60 s Sidekiq cron
+      # (worker/config/sidekiq.yml), POSTing for every pool it lists with
+      # status=active,draining. (db/seeds/example_instance_pool.rb calls the
+      # service too, on a seeded pool.) Note which way round that runs: the
+      # two verbs that ARE gated are pool creation and teardown, while the
+      # verb with the spend attached is not. (_update, _drain and _acquire are
+      # ungated too — replenish is simply the one this note is about.)
+      #
+      # WHY UNGATED IS DELIBERATE. The policy for the verb already exists and
+      # already says so: PolicyDeclarations::INSTANCE_POOL_POLICIES maps
+      # "system.instance_pool_replenish" => "auto_approve" ("tops up to target
+      # — routine"), beside "system.instance_pool_create" =>
+      # "require_approval". That pairing IS the argument. A replenish tick is
+      # idempotent and doubly bounded — by `target_size` (InstancePool#deficit)
+      # and again by `max_size` headroom, the P2.5 gap-#6 cap in
+      # InstancePoolService#replenish! — so a tick can never exceed the
+      # capacity ceiling standing on the pool.
+      #
+      # THE LIMITS OF THAT ARGUMENT, stated rather than glossed. "The spend was
+      # approved at pool-create time" is the weak half, twice over:
+      #   * The ceiling is not immutable behind a gated verb.
+      #     InstancePoolsController#update is ungated and its update_params
+      #     permit :target_size and :max_size, so the ceiling can be raised
+      #     without an approval and the next tick spends up to the new one.
+      #     (They also permit :status, so #update reaches "archived" — what the
+      #     gated destroy does — and "draining".)
+      #   * #create is gated on the REST route ONLY. The MCP verb
+      #     system_create_instance_pool calls System::InstancePool.create!
+      #     directly; SystemFleetTool's only declaration carrying
+      #     action_category/executor_class/gate_context/on_proceed is
+      #     system_terminate_instance, so BaseTool#gated_action? is false for
+      #     every pool verb and a pool minted over MCP never had an approved
+      #     ceiling. That is a tracked gap in the governance-registry rollout,
+      #     not a per-pool decision.
+      # If instance-pool spend is to be gated at all, #update is the verb worth
+      # gating — gating replenish catches the actuator and misses the decision.
+      #
+      # WHAT A GATE HERE WOULD COST. A require_approval gate on an unattended
+      # 60 s cron would park one approval per pool per minute and stall
+      # replenishment for every active pool — an availability decision wearing
+      # a control's clothes, not a control.
+      #
+      # WHAT IS NOT SETTLED, filed as offer 01a0615d-e07e-7010-8f07-8f0aace56ea6.
+      # "system.instance_pool_replenish" is seeded onto the OPERATOR path too
+      # (POLICY_SETS "instance-pool-operator", scope global), together with
+      # _acquire, _drain and _update — four categories with a policy row an
+      # operator can edit and no gate site that reads it. That is the shape
+      # RUNTIME_OPERATOR_GATED_KEYS was introduced to avoid (IMP-9b9653e6514e,
+      # which restricted the runtime operator row to its gated subset for
+      # exactly this reason). Fixing it changes seeded operator rows for four
+      # verbs, not replenish alone, so it is filed rather than folded in here.
       class ReplenishPool < ::System::Executors::Base
         protected
 

@@ -268,7 +268,10 @@ as standalone" mode; drain always terminates the ready members.
 - Drain runs in a single transaction (synchronous) — by the time the call
   returns, ready members have had `terminate_instance` issued
 - A `draining` pool stops being replenished (the reaper skips replenish for
-  draining pools, though it still recycles)
+  draining pools, though it still recycles) — **this is disputed by the code**;
+  see "Do not rely on drain to stop it" under
+  [Governance](#governance--which-pool-verbs-are-gated-and-which-are-not)
+  before you rely on it
 - **`terminate_failed` is not cosmetic.** A member whose provider terminate did
   not land is parked at `pool_state: "errored"` (not `draining`), and a
   high-severity `system.pool.terminate_failed` FleetEvent is emitted carrying
@@ -307,6 +310,97 @@ for any claimed members to finish their normal terminate, then delete.
 | `target_size` increase doesn't replenish | Reaper job not running | Check `sudo systemctl status 'powernode-*-sidekiq.service'`; confirm the `instance_pool_replenisher` cron (`System::InstancePoolReplenisherJob`) is firing every 60 s — or force it with `system_replenish_instance_pool` |
 | Members continuously cycle (warm → claim → terminate → repeat) | Claim rate exceeds replenish rate | Increase `target_size`; reduce W (pre-bake image) |
 | Pool's claim metric oscillates | Sizing too tight; reaper can't keep up after bursts | Add more headroom: `target_size += 2 × max_burst_size` |
+
+## Governance — which pool verbs are gated, and which are not
+
+Pool verbs are **not** uniformly approval-gated, the split does not follow
+cost, and — the part that catches people — **the one gate that exists sits on
+the REST route, not on the MCP verb this runbook tells you to use.** Know
+which is which before you assume an approval will stop something.
+
+| Verb | Autonomy gate | Declared policy | What actually runs it |
+|---|---|---|---|
+| Create pool | **Gated on the REST route ONLY** — `Ai::GatedActions#gate_create!` | `system.instance_pool_create` → `require_approval` | `POST /api/v1/system/instance_pools` → `System::Executors::InstancePool::CreatePool`. The MCP verb `system_create_instance_pool` — the one Phase 1 above prescribes — is **ungated**: it calls `System::InstancePool.create!` directly |
+| Delete pool | **Gated on the REST route ONLY** — `gate!` | `system.instance_pool_delete` → `require_approval` | `DELETE /api/v1/system/instance_pools/:id` → `DeletePool`, whose `on_proceed` only sets `status: "archived"`. The MCP verb `system_delete_instance_pool` (Phase 5 above) is **ungated and strictly more destructive** — it calls `pool.destroy!` |
+| Update pool | **Ungated** | `system.instance_pool_update` → `notify_and_proceed` | `PATCH /api/v1/system/instance_pools/:id` → `@pool.update!`, and `system_update_instance_pool`. `update_params` permit `target_size`, `max_size` **and `status`** |
+| Replenish | **Ungated** | `system.instance_pool_replenish` → `auto_approve` | `POST .../:id/replenish` and `system_replenish_instance_pool`, both on `System::InstancePoolService.replenish!` |
+| Drain | **Ungated** | `system.instance_pool_drain` → `require_approval` | `POST .../:id/drain` and `system_drain_instance_pool`, both on `InstancePoolService.drain!` — the declared `require_approval` has no gate site to enforce it |
+| Recycle stale | **Ungated** | *(no declared category at all)* | `POST .../:id/recycle_stale` and `system_recycle_pool`, both on `InstancePoolService.recycle_stale_members!` — this one **terminates members** |
+| Acquire | **Ungated** | `system.instance_pool_acquire` → `auto_approve` | `system_acquire_pooled_instance`, plus four internal callers, on `InstancePoolService.acquire!` |
+
+Two qualifications on the word "ungated", both of which shrink it further:
+
+- **"Ungated" means permission-checked, not unchecked — except for the reaper.**
+  `InstancePoolsController#authorize_write!` opens with
+  `return if worker_authenticated?`, so the worker-JWT caller described below
+  passes with neither a gate nor a permission check. That short-circuit is
+  deliberate and load-bearing (the cron has no user), but it means the 60 s
+  path clears *both* controls, not just the gate.
+- **On MCP, only one fleet verb is gated at all.** `SystemFleetTool`'s single
+  `declare_action` carrying `action_category`/`executor_class`/`gate_context`/
+  `on_proceed` is `system_terminate_instance`; every pool verb is declared
+  `mutating: true` and nothing else, which leaves `BaseTool#gated_action?`
+  false. That is a known, tracked gap in the governance registry rollout, not
+  a per-pool decision — see the SCOPE note in `system_fleet_tool.rb`.
+
+Note which way round the REST split runs. The two verbs that *are* gated are
+pool creation and teardown; **the verb that actually spends money is not** —
+replenish is what provisions VMs and mints `ephemeral`/`spot` members, and it
+is the one an unattended cron drives. For replenish that is intentional, for
+two reasons:
+
+1. **The spend is bounded by a ceiling somebody already set.** A replenish
+   tick is idempotent and bounded twice — by `target_size` (the pool's
+   `deficit`) and again by the `max_size` headroom cap — so it can never
+   exceed the ceiling standing on the pool.
+
+   **But know the limits of that.** The ceiling is not itself locked behind
+   the gated verb. `PATCH /api/v1/system/instance_pools/:id` is ungated and
+   permits `target_size` and `max_size`, so the ceiling can be raised with no
+   approval and the next tick will spend up to the new one — and `create` is
+   only gated on the REST route, so a pool minted through
+   `system_create_instance_pool` never had an approved ceiling to begin with.
+   The same `update_params` also permit `status`, so
+   `PATCH {pool: {status: "archived"}}` reproduces exactly what the *gated*
+   destroy's `on_proceed` does, and `status: "draining"` sidesteps the drain
+   policy row. If you want an approval standing between a person and pool
+   spend or pool teardown, it belongs on **update**, not on replenish:
+   replenish is the actuator, update is the decision.
+2. **It runs unattended.** `System::InstancePoolReplenisherJob` POSTs the
+   replenish route every 60 s for every pool it lists, which it fetches with
+   `status=active,draining`. A `require_approval` gate there would park one
+   approval per pool per minute and stall replenishment fleet-wide — an
+   availability decision, not a control.
+
+**To actually stop replenishment**, do not look for an approval to withhold —
+there isn't one. Use `target_size = 0`, or `status: "paused"` — `paused` is the
+only status `replenish!` refuses (`PoolNotActiveError`).
+
+> **Do not rely on drain to stop it, whatever the rest of this document says.**
+> The Phase 4 note above ("a `draining` pool stops being replenished") is one
+> of eight places that claim drain halts replenishment; the code disagrees on
+> all eight. `InstancePoolReplenisherJob#list_active_pools` fetches
+> `status=active,draining` and replenishes every pool it gets back,
+> `replenish!` refuses only `paused?`, and `drain!` never zeroes
+> `target_size` — so a drained pool still shows a deficit for the next tick to
+> fill. Which side is wrong (the code, or eight descriptions of it including
+> the approval-card impact strings) is a behavioural decision, filed as offer
+> `01a0615e-40ed-70c9-a61e-7732f219b180` rather than settled here. Until it
+> is: pause the pool or zero `target_size`; do not assume drain is sufficient.
+
+`System::Executors::InstancePool::ReplenishPool` exists and is the executor
+that *would* gate replenish, but nothing constructs a deferred operation
+naming it. It is kept as the record of that decision — see the rationale in
+`server/app/services/system/executors/instance_pool/replenish_pool.rb`. Both
+halves (no producer; no gate site) are pinned by
+`server/spec/lint/instance_pool_replenish_gating_spec.rb`, so wiring a gate
+reds that guard and forces this table to be updated in the same change.
+
+> **Known gap, filed as offer `01a0615d-e07e-7010-8f07-8f0aace56ea6`.**
+> `system.instance_pool_replenish` — along with `_acquire`, `_drain` and
+> `_update` — is also seeded onto the *operator* policy path, so it appears in
+> the autonomy UI as a control you can edit while no gate site reads it.
+> Changing those rows will not change what any of those verbs does.
 
 ## Observing pool health
 

@@ -115,6 +115,60 @@ module Api
         end
 
         # POST /api/v1/system/instance_pools/:id/replenish
+        #
+        # DELIBERATELY UNGATED — IMP-714ab7da6b9c. #create and #destroy above
+        # route through gate_create!/gate!; this does not, and that asymmetry
+        # is the recorded decision rather than an omission. Note which way
+        # round it runs: the two verbs that ARE gated are pool creation and
+        # teardown, while the verb that actually provisions VMs is not.
+        # (#update, #drain, #recycle_stale and the acquire path are ungated
+        # too; replenish is the one this note is about.)
+        #
+        # The reason is in PolicyDeclarations::INSTANCE_POOL_POLICIES, which
+        # already declares "system.instance_pool_replenish" => "auto_approve"
+        # ("tops up to target — routine") next to
+        # "system.instance_pool_create" => "require_approval". A tick is
+        # idempotent and bounded twice over (target_size, then the max_size
+        # headroom cap in InstancePoolService#replenish!), so it cannot exceed
+        # the capacity ceiling standing on the pool.
+        #
+        # STATE THE LIMITS OF THAT ARGUMENT rather than glossing them — the
+        # "spend was already approved when the pool was created" half is the
+        # weakest part of it, in two separate ways:
+        #
+        #   1. The ceiling is not immutable behind the gated verb. #update
+        #      above is ungated too and its update_params permit :target_size
+        #      and :max_size, so anyone holding system.instances.control can
+        #      raise the ceiling with no approval and the next tick spends up
+        #      to it. (Those same params permit :status, so #update also
+        #      reaches "archived" — what the GATED destroy's on_proceed does —
+        #      and "draining".) The gate that matters for instance-pool spend
+        #      and teardown is therefore the one on #update, not one here.
+        #   2. #create is gated on THIS route only. The MCP verb
+        #      system_create_instance_pool calls System::InstancePool.create!
+        #      directly: SystemFleetTool's only declaration carrying
+        #      action_category/executor_class/gate_context/on_proceed is
+        #      system_terminate_instance, so BaseTool#gated_action? is false
+        #      for every pool verb. A pool minted over MCP never had an
+        #      approved ceiling at all. That is a tracked gap in the
+        #      governance-registry rollout, not a per-pool decision.
+        #
+        # WHAT A GATE HERE WOULD COST. This is the route
+        # System::InstancePoolReplenisherJob
+        # (worker/app/jobs/system/instance_pool_replenisher_job.rb) POSTs on a
+        # 60 s Sidekiq cron for every pool it lists (status=active,draining): a
+        # require_approval gate here would park one approval per pool per
+        # minute and stall replenishment fleet-wide, which is an availability
+        # decision, not a control. Note also that authorize_write! below
+        # short-circuits on worker_authenticated?, so that cron clears the
+        # permission check as well as the (absent) gate.
+        #
+        # System::Executors::InstancePool::ReplenishPool is the executor that
+        # WOULD gate this. It is complete and tested but has no producer, on
+        # purpose — see the rationale in that file before wiring or deleting
+        # it. Both halves are pinned by
+        # spec/lint/instance_pool_replenish_gating_spec.rb, so gating this
+        # action reds that guard and forces the prose to move with the code.
         def replenish
           authorize_write!
           result = ::System::InstancePoolService.replenish!(pool: @pool)
