@@ -553,6 +553,7 @@ module System
         # routed set — the row exists so the terminate is an operator-visible,
         # separately tunable control rather than an unrowed default.
         "system.instance_reap"           => "require_approval",
+        "system.replica_promote"         => "require_approval",
         "system.cert_revoke"             => "require_approval",
         "system.module_promote_to_live"  => "require_approval",
         "system.fleet_rolling_upgrade"   => "require_approval",
