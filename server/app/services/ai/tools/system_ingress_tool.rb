@@ -103,10 +103,11 @@ module Ai
           name: "system_ingress",
           description: "Ingress + service exposure (public + local /svc) + ACME certificate provisioning. Regenerates the reverse-proxy (Traefik) config for an issued certificate, exposes a service publicly end-to-end (VIP -> port mapping -> cert -> reverse proxy) or locally at /svc/<slug> with ForwardAuth, manages Sdwan::Service records (create/list/get/update/delete), and provisions ACME certificates. Parameters are the union of the per-action inputs (see action_definitions).",
           parameters: {
-            action:             { type: "string",  required: true, description: "Action to perform" },
+            action:             { type: "string",  required: true, enum: action_definitions.keys,
+                                  description: "Action to perform" },
             certificate_id:     { type: "string",  required: false },
             service_hostname:   { type: "string",  required: false },
-            service_protocol:   { type: "string",  required: false },
+            service_protocol:   { type: "string",  required: false, enum: ::Sdwan::Service::HTTP_PROTOCOLS },
             sdwan_network_id:   { type: "string",  required: false },
             sdwan_hub_peer_id:  { type: "string",  required: false },
             vip_cidr:           { type: "string",  required: false },
@@ -114,9 +115,9 @@ module Ai
             target_instance_id: { type: "string",  required: false },
             backend_port:       { type: "integer", required: false },
             common_name:        { type: "string",  required: false },
-            sans:               { type: "array",   required: false },
-            issuer:             { type: "string",  required: false },
-            challenge_type:     { type: "string",  required: false },
+            sans:               { type: "array",   required: false, items: { type: "string" } },
+            issuer:             { type: "string",  required: false, enum: ::System::AcmeCertificate::ISSUERS },
+            challenge_type:     { type: "string",  required: false, enum: ::System::AcmeCertificate::CHALLENGE_TYPES },
             dns_credential_id:  { type: "string",  required: false },
             acme_email:         { type: "string",  required: false },
             tls_issuer:         { type: "string",  required: false },
@@ -124,11 +125,11 @@ module Ai
             service_id:          { type: "string",  required: false },
             slug:                { type: "string",  required: false },
             name:                { type: "string",  required: false },
-            protocol:            { type: "string",  required: false },
+            protocol:            { type: "string",  required: false, enum: ::Sdwan::Service::PROTOCOLS },
             backend_vip_id:      { type: "string",  required: false },
             backend_host:        { type: "string",  required: false },
-            status:              { type: "string",  required: false },
-            auth_mode:           { type: "string",  required: false },
+            status:              { type: "string",  required: false, enum: ::Sdwan::Service::STATUSES },
+            auth_mode:           { type: "string",  required: false, enum: ::Sdwan::Service::AUTH_MODES },
             required_permission: { type: "string",  required: false },
             required_group:      { type: "string",  required: false },
             strip_prefix:        { type: "boolean", required: false },
@@ -141,8 +142,8 @@ module Ai
             # system_expose_service_public_tcp / system_unexpose_service_public_tcp
             # (ExposeServicePublicTcpExecutor), never this CRUD surface; see
             # system_update_service's action_definitions entry below.
-            edge_mode:           { type: "string",  required: false },
-            client_auth:         { type: "string",  required: false },
+            edge_mode:           { type: "string",  required: false, enum: ::Sdwan::Service::EDGE_MODES },
+            client_auth:         { type: "string",  required: false, enum: ::Sdwan::Service::CLIENT_AUTH_MODES },
             public_enabled:      { type: "boolean", required: false },
             enabled:             { type: "boolean", required: false }
           }
@@ -161,15 +162,18 @@ module Ai
             description: "Expose a service to the public internet end-to-end: create/reuse an SDWAN VIP, port-map it on the hub, provision a TLS certificate for the hostname, and regenerate the reverse proxy.",
             parameters: {
               service_hostname:   { type: "string",  required: true,  description: "Public FQDN to serve the service on (certificate CN)" },
-              service_protocol:   { type: "string",  required: true,  description: "http | https" },
+              service_protocol:   { type: "string",  required: true,  enum: ::Sdwan::Service::HTTP_PROTOCOLS,
+                                                     description: "http | https" },
               sdwan_network_id:   { type: "string",  required: true,  description: "Sdwan::Network to host the VIP" },
               sdwan_hub_peer_id:  { type: "string",  required: true,  description: "Sdwan::Peer acting as the DNAT hub" },
               vip_cidr:           { type: "string",  required: true,  description: "Operator-supplied host CIDR for the VIP (typically /128 v6 or /32 v4) within the network's /64" },
               backend_port:       { type: "integer", required: true,  description: "Backend service port to route public traffic to" },
               target_peer_id:     { type: "string",  required: false, description: "Sdwan::Peer hosting the backend (mutually exclusive with target_instance_id)" },
               target_instance_id: { type: "string",  required: false, description: "System::NodeInstance hosting the backend (mutually exclusive with target_peer_id)" },
-              tls_issuer:         { type: "string",  required: false, description: "ACME issuer (default letsencrypt-prod)" },
-              challenge_type:     { type: "string",  required: false, description: "ACME challenge (default dns-01)" },
+              tls_issuer:         { type: "string",  required: false, enum: ::System::AcmeCertificate::ISSUERS,
+                                                     description: "ACME issuer (default letsencrypt-prod)" },
+              challenge_type:     { type: "string",  required: false, enum: ::System::AcmeCertificate::CHALLENGE_TYPES,
+                                                     description: "ACME challenge (default dns-01)" },
               dns_credential_id:  { type: "string",  required: false, description: "System::AcmeDnsCredential id (for dns-01)" }
             }
           },
@@ -177,9 +181,12 @@ module Ai
             description: "Provision (issue) an ACME TLS certificate for a hostname; the issued cert is stored as a System::AcmeCertificate.",
             parameters: {
               common_name:       { type: "string", required: true,  description: "Primary CN / FQDN for the certificate" },
-              issuer:            { type: "string", required: true,  description: "letsencrypt-prod | letsencrypt-staging | internal-ca" },
-              challenge_type:    { type: "string", required: true,  description: "dns-01 | http-01 | tls-alpn-01" },
-              sans:              { type: "array",  required: false, description: "Additional Subject Alternative Names (FQDNs)" },
+              issuer:            { type: "string", required: true,  enum: ::System::AcmeCertificate::ISSUERS,
+                                                    description: "letsencrypt-prod | letsencrypt-staging | internal-ca" },
+              challenge_type:    { type: "string", required: true,  enum: ::System::AcmeCertificate::CHALLENGE_TYPES,
+                                                    description: "dns-01 | http-01 | tls-alpn-01" },
+              sans:              { type: "array",  required: false, items: { type: "string" },
+                                                    description: "Additional Subject Alternative Names (FQDNs)" },
               dns_credential_id: { type: "string", required: false, description: "System::AcmeDnsCredential id (required for dns-01)" },
               acme_email:        { type: "string", required: false, description: "ACME registration contact email" }
             }
@@ -190,11 +197,13 @@ module Ai
               service_id:          { type: "string",  required: false, description: "Existing Sdwan::Service id to expose (omit to create from the fields below)" },
               slug:                { type: "string",  required: false, description: "URL slug for /svc/<slug> (required when creating)" },
               name:                { type: "string",  required: false, description: "Service display name (required when creating)" },
-              protocol:            { type: "string",  required: false, description: "Backend protocol: https | http (default https)" },
+              protocol:            { type: "string",  required: false, enum: ::Sdwan::Service::HTTP_PROTOCOLS,
+                                                        description: "Backend protocol: https | http (default https)" },
               backend_vip_id:      { type: "string",  required: false, description: "Sdwan::VirtualIp id of the overlay backend (this or backend_host when creating)" },
               backend_host:        { type: "string",  required: false, description: "Static backend host/IP (this or backend_vip_id when creating)" },
               backend_port:        { type: "integer", required: false, description: "Backend port (required when creating)" },
-              auth_mode:           { type: "string",  required: false, description: "public | authenticated | scoped (default authenticated)" },
+              auth_mode:           { type: "string",  required: false, enum: ::Sdwan::Service::AUTH_MODES,
+                                                        description: "public | authenticated | scoped (default authenticated)" },
               required_permission: { type: "string",  required: false, description: "Permission required for scoped mode" },
               required_group:      { type: "string",  required: false, description: "Group/role required for scoped mode" },
               strip_prefix:        { type: "boolean", required: false, description: "Strip /svc/<slug> before proxying (default true)" },
@@ -219,18 +228,23 @@ module Ai
               slug:           { type: "string",  required: true,  description: "URL slug (lowercase alnum + hyphen, <=64, not a reserved platform path)" },
               name:           { type: "string",  required: true,  description: "Service display name" },
               backend_port:   { type: "integer", required: true,  description: "Backend service port (1-65535)" },
-              protocol:       { type: "string",  required: false, description: "https | http | tcp | tls (default https)" },
+              protocol:       { type: "string",  required: false, enum: ::Sdwan::Service::PROTOCOLS,
+                                                   description: "https | http | tcp | tls (default https)" },
               backend_vip_id: { type: "string",  required: false, description: "Sdwan::VirtualIp id of the overlay backend (this or backend_host)" },
               backend_host:   { type: "string",  required: false, description: "Static backend host/IP (this or backend_vip_id)" },
-              status:         { type: "string",  required: false, description: "active | disabled (default active)" },
-              edge_mode:      { type: "string",  required: false, description: "Path B TLS-carrying TCP: passthrough | terminate (default passthrough; inert until public_enabled)" },
-              client_auth:    { type: "string",  required: false, description: "Path B mTLS enforcement: none | required (default none; required needs edge_mode terminate)" }
+              status:         { type: "string",  required: false, enum: ::Sdwan::Service::STATUSES,
+                                                   description: "active | disabled (default active)" },
+              edge_mode:      { type: "string",  required: false, enum: ::Sdwan::Service::EDGE_MODES,
+                                                   description: "Path B TLS-carrying TCP: passthrough | terminate (default passthrough; inert until public_enabled)" },
+              client_auth:    { type: "string",  required: false, enum: ::Sdwan::Service::CLIENT_AUTH_MODES,
+                                                   description: "Path B mTLS enforcement: none | required (default none; required needs edge_mode terminate)" }
             }
           },
           "system_list_services" => {
             description: "List this account's Sdwan::Service records, newest first.",
             parameters: {
-              status:         { type: "string",  required: false, description: "Filter by status (active | disabled)" },
+              status:         { type: "string",  required: false, enum: ::Sdwan::Service::STATUSES,
+                                                   description: "Filter by status (active | disabled)" },
               local_enabled:  { type: "boolean", required: false, description: "Filter by local-exposure state" },
               public_enabled: { type: "boolean", required: false, description: "Filter by public (Path B) exposure state" }
             }
@@ -246,13 +260,17 @@ module Ai
             parameters: {
               service_id:     { type: "string",  required: true,  description: "Sdwan::Service id" },
               name:           { type: "string",  required: false, description: "New display name" },
-              protocol:       { type: "string",  required: false, description: "https | http | tcp | tls" },
-              status:         { type: "string",  required: false, description: "active | disabled" },
+              protocol:       { type: "string",  required: false, enum: ::Sdwan::Service::PROTOCOLS,
+                                                   description: "https | http | tcp | tls" },
+              status:         { type: "string",  required: false, enum: ::Sdwan::Service::STATUSES,
+                                                   description: "active | disabled" },
               backend_vip_id: { type: "string",  required: false, description: "New overlay backend VIP id" },
               backend_host:   { type: "string",  required: false, description: "New static backend host/IP" },
               backend_port:   { type: "integer", required: false, description: "New backend port" },
-              edge_mode:      { type: "string",  required: false, description: "Path B TLS-carrying TCP: passthrough | terminate" },
-              client_auth:    { type: "string",  required: false, description: "Path B mTLS enforcement: none | required (required needs edge_mode terminate)" }
+              edge_mode:      { type: "string",  required: false, enum: ::Sdwan::Service::EDGE_MODES,
+                                                   description: "Path B TLS-carrying TCP: passthrough | terminate" },
+              client_auth:    { type: "string",  required: false, enum: ::Sdwan::Service::CLIENT_AUTH_MODES,
+                                                   description: "Path B mTLS enforcement: none | required (required needs edge_mode terminate)" }
             }
           },
           "system_delete_service" => {
