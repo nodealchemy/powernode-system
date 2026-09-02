@@ -311,19 +311,32 @@ is touched. The tool's own description says so:
 relocation completes" (`system_fleet_tool.rb:1319`).
 
 **And nothing consumes the markers.** `drain_initiated_at`,
-`drain_timeout_seconds` and `drain_initiated_by_user_id` are *written* in
-exactly two places — `system_fleet_tool.rb:5228-5231` and
-`server/app/services/system/ai/skills/platform_resilience_executor.rb:113-117`
-(the `platform_resilience` skill's `drain_instance` branch). **The two writers
-are not interchangeable**: the skill writes a third key
-(`drain_initiated_by_user_id`) and emits a *different* event — kind
-`platform.resilience.drain_started`, severity `info`, wrapped in a bare
-`rescue StandardError` that silently swallows a failed emit
-(`platform_resilience_executor.rb:119-124`, `:280-291`) — where the MCP verb
-emits `system.instance.drain_initiated`, severity `low`, unrescued. Filter on
-the wrong kind and you will find nothing; on the skill path there may be nothing
-to find — and read in none, across `server/`, `extensions/`,
-`worker/`, `frontend/` and the Go agent. The whole `NodeInstance#config` blob
+`drain_timeout_seconds` and `drain_initiated_by_user_id` are *written* by this
+MCP verb (`system_fleet_tool.rb:5228-5231`) and read in none, across `server/`,
+`extensions/`, `worker/`, `frontend/` and the Go agent.
+
+**The `platform_resilience` skill no longer shares this behaviour.** It used to
+be the second writer of the same markers, with a third key and a *different*
+event kind, so filtering on the wrong kind found nothing. IMP-8c0f0fe9a8cf
+(APO-3b) made its `drain_instance` branch real: it cordons a **ready** pool
+member (`pool_state="draining"`, which `InstancePoolService#acquire!` reads) and
+then stops the instance through `System::InstanceControlService` — the same
+choke point `system_stop_instance` uses, so an operator ops hold still applies,
+and it requires the same `system.instances.control` grant. A **claimed** member
+is deliberately left alone: it is already un-acquirable, and both release paths
+guard on `pool_state == "claimed"`, so flipping it would make it permanently
+unreturnable. A cordon write that raises aborts the drain *before* the stop. It
+writes no `drain_*` config markers, dropped the `timeout_seconds` input that
+enforced nothing, and returns a FAILURE when the cordon or the stop is
+refused. Its event
+(`platform.resilience.drain_started`, now severity `low`) had never actually
+persisted: `severity: "info"` is not in `System::FleetEvent::SEVERITIES`, so
+every `create!` raised into the rescue that swallows it. **So the two verbs are
+no longer equivalent in the other direction: the MCP verb below still only
+records intent; the skill actually stops the instance.** The MCP verb also still
+advertises and forwards `timeout_seconds` even though the skill no longer
+accepts it — accepted, ignored, reported as success, exactly the `cordon_only`
+footgun tabulated below. The whole `NodeInstance#config` blob
 *is* shipped to the node by `GET /api/v1/system/node_api/config`
 (`server/app/controllers/api/v1/system/node_api/config_controller.rb:783-793`),
 so the markers physically reach the agent — but the only agent caller of that
@@ -346,9 +359,18 @@ Treat the markers as nothing more than that.
 | `timeout_seconds` | optional, default 600 | Stored in `config` and in the event payload. **Enforces nothing**: no timer runs, nothing auto-terminates, nothing reads it back. It is a note to the next human, not a relocation window. |
 | `cordon_only` | **does not exist** | Earlier revisions of this runbook showed `cordon_only: false` with the comment "false → also stop services after cordon". There has never been such a parameter, and there is no cordon path to opt out of. `BaseTool#validate_params!` (`server/app/services/ai/tools/base_tool.rb:443-453`) only checks that *required* keys are present — it does not reject extra ones — so the key was accepted, ignored and dropped, and the call returned `success` having done nothing extra. |
 
-**There is no cordon-only capability today.** No MCP verb marks a NodeInstance
-unschedulable while leaving it up. Depending on what you actually wanted:
+**There is no cordon-only MCP verb today.** No MCP verb marks a NodeInstance
+unschedulable while leaving it up — the `platform_resilience` skill cordons a
+*pool member* out of the allocator, but it stops the instance in the same call,
+so it is not a leave-it-running cordon either. Depending on what you actually
+wanted:
 
+- **Cordon *and* stop a pool member**: the `platform_resilience` skill's
+  `drain_instance` action. **After deploying IMP-8c0f0fe9a8cf you must re-run
+  `db:seed`**: the `Ai::Skill` row's `system_prompt` is what the model actually
+  reads, seeds never re-run automatically on an existing install, and the stale
+  text still says the branch "cordons nothing and stops nothing" — an actively
+  dangerous instruction now that it stops instances.
 - **Stop the workloads on the node**: `system_stop_instance` really does stop
   the instance (disk and registry row retained, restart with
   `system_start_instance`). That is the blunt version of "also stop services",
