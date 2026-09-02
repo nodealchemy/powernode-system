@@ -190,21 +190,12 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
     # and none is seeded, because these skills reach an operator through the
     # MCP / REST / Concierge doors rather than through an agent's seed. The
     # engine's second `concat` names the executor behind each one.
+    # The fourteen gated-executor categories are seeded on Fleet Autonomy
+    # since the branch-health pass of 2026-09-02 (require_approval, the same
+    # verdict the resolver defaulted to); only the registered-but-ungated
+    # composer category remains unseeded.
     deliberately_unseeded = %w[
-      system.acme_certificate_provision
-      system.architecture_create
-      system.architecture_delete
-      system.architecture_update
-      system.expose_service_local
-      system.expose_service_public_tcp
-      system.expose_service_publicly
-      system.federation_acceptance
-      system.fulfill_capability_request
-      system.multi_tenant_isolation
-      system.package_module_create
-      system.relocate_workload
       system.sdwan_federation_compose
-      system.service_discovery_compose
     ].sort
 
     extension_registered = Ai::InterventionPolicy.registered_categories

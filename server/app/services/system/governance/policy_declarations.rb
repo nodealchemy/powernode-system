@@ -632,7 +632,7 @@ module System
         "system.architecture.propose" => "auto_approve",
         "system.architecture.create"  => "require_approval",
         "system.architecture.update"  => "require_approval",
-        "system.architecture.delete"  => "require_approval"
+        "system.architecture.delete"  => "require_approval",
 
         # NOTE: Operator-initiated SDWAN CRUD policies (sdwan.*) live on
         # system_sdwan_manager_agent.rb (2026-05-10) — they gate via Ai::AutonomyGate
@@ -644,6 +644,30 @@ module System
         # The 5-agent split keeps per-domain approval queues independent and lets
         # operators pause one domain (e.g. SDWAN during a maintenance window)
         # without halting fleet ops.
+
+        # === Gated skill executors (APO-1c, IMP-7e2bdc1774e4) ==================
+        # Every executor declaring `requires_approval: true` resolves one of
+        # these before #perform, on MCP, REST and Concierge alike. Seeded at
+        # the SAME verdict the resolver would default to for an unseeded
+        # category (require_approval), so landing these rows changes no
+        # behaviour: it makes the verdict VISIBLE in the Autonomy modal and
+        # TUNABLE through PATCH /api/v1/system/autonomy, and satisfies
+        # routed_lane_policy_coherence_spec — BaseSkillExecutor is a declared
+        # ActionCategoryRouter, so its categories are routed categories.
+        "system.acme_certificate_provision" => "require_approval",
+        "system.architecture_create"        => "require_approval",
+        "system.architecture_delete"        => "require_approval",
+        "system.architecture_update"        => "require_approval",
+        "system.expose_service_local"       => "require_approval",
+        "system.expose_service_public_tcp"  => "require_approval",
+        "system.expose_service_publicly"    => "require_approval",
+        "system.federation_acceptance"      => "require_approval",
+        "system.fulfill_capability_request" => "require_approval",
+        "system.multi_tenant_isolation"     => "require_approval",
+        "system.package_module_create"      => "require_approval",
+        "system.relocate_workload"          => "require_approval",
+        "system.service_discovery_compose"  => "require_approval",
+        "system.restore_volume"             => "require_approval",
       }.freeze
 
       SDWAN_MANAGER_POLICIES = {
