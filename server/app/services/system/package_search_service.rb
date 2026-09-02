@@ -14,6 +14,16 @@ module System
   #              q is blank (no semantic anchor) and to lexical-only when the
   #              embedding service fails to produce a vector.
   #
+  # Sort (orthogonal to mode — mode decides RETRIEVAL, sort decides
+  # PRESENTATION of what was retrieved):
+  #   relevance — (default) the mode's own ranking (lexical rank / cosine /
+  #               hybrid score); name order when there is no q to rank against.
+  #   name      — package name ASC, tie-broken by architecture then id.
+  #   updated   — updated_at DESC, tie-broken by name then id.
+  #
+  # Under semantic/hybrid the candidate set is still gathered by relevance
+  # (top-k retrieval is what a vector index does); `sort` reorders that set.
+  #
   # Back-compat: singular params (repository_id, architecture, section) remain
   # accepted alongside the new array forms (repository_ids, architectures,
   # sections).
@@ -31,6 +41,10 @@ module System
     # normalizer below is the only thing that decides which values are honoured.
     MODES            = %w[lexical semantic hybrid].freeze
     DEFAULT_MODE     = "hybrid"
+    # The accepted `sort` set, named for the same reason as MODES — the tool
+    # surface can DECLARE it instead of restating it in prose, and
+    # `normalize_sort` below is the only thing that decides what is honoured.
+    SORTS            = %w[relevance name updated].freeze
     DEFAULT_SORT     = "relevance"
     DEFAULT_PER_PAGE = 50
     MAX_PER_PAGE     = 200
@@ -51,7 +65,7 @@ module System
       @per_page   = clamp_per_page(@raw_params[:per_page])
       @q          = @raw_params[:q].to_s.strip
       @mode       = normalize_mode(@raw_params[:mode], q: @q)
-      @sort       = (@raw_params[:sort] || DEFAULT_SORT).to_s
+      @sort       = normalize_sort(@raw_params[:sort])
     end
 
     def call
@@ -91,6 +105,14 @@ module System
       return "lexical" if mode == "hybrid"   && q.blank?
 
       MODES.include?(mode) ? mode : DEFAULT_MODE
+    end
+
+    # An unrecognized value falls back to relevance AND is echoed as relevance
+    # — echoing the caller's word back while ordering by something else is how
+    # this parameter came to look supported while doing nothing.
+    def normalize_sort(value)
+      sort = value.to_s
+      SORTS.include?(sort) ? sort : DEFAULT_SORT
     end
 
     def repository_ids
@@ -167,10 +189,11 @@ module System
     # === Modes =========================================================
 
     def run_lexical(scope)
-      ordered = if @q.present?
-                  apply_lexical_ranking(scope, @q)
+      filtered = @q.present? ? apply_lexical_filter(scope, @q) : scope
+      ordered  = if @sort == "relevance" && @q.present?
+                   apply_lexical_ranking(filtered, @q)
       else
-                  scope.order(name: :asc, architecture: :asc)
+                   apply_sql_sort(filtered)
       end
       paginate_with_count(ordered)
     end
@@ -190,13 +213,14 @@ module System
                         .nearest_neighbors(:embedding, embedding, distance: "cosine")
                         .first(@per_page * SEMANTIC_OVERSCORE_FACTOR)
 
-      paginated = candidates.drop((@page - 1) * @per_page).first(@per_page)
+      paginated = apply_ruby_sort(candidates).drop((@page - 1) * @per_page).first(@per_page)
       [ paginated, nil ] # total: nil — exact count prohibitive on vector-filtered sets
     end
 
     def run_hybrid(scope)
       embedding = generate_embedding(@q)
-      lex_candidates = apply_lexical_ranking(scope, @q).limit(@per_page * SEMANTIC_OVERSCORE_FACTOR).to_a
+      lex_candidates = apply_lexical_ranking(apply_lexical_filter(scope, @q), @q)
+                       .limit(@per_page * SEMANTIC_OVERSCORE_FACTOR).to_a
       sem_candidates =
         if embedding.present?
           scope.with_embedding
@@ -206,31 +230,64 @@ module System
           []
         end
 
-      merged = merge_and_rerank(lex_candidates, sem_candidates, @q)
+      merged = apply_ruby_sort(merge_and_rerank(lex_candidates, sem_candidates, @q))
       paginated = merged.drop((@page - 1) * @per_page).first(@per_page)
       [ paginated, nil ] # total: nil — see run_semantic
     end
 
     # === Lexical ranking ===============================================
 
-    def apply_lexical_ranking(scope, query)
+    # Membership only — which rows the query matches. Kept separate from the
+    # ranking so `sort=name`/`sort=updated` can replace the ORDER BY without
+    # dropping the WHERE.
+    def apply_lexical_filter(scope, query)
       sanitized = ActiveRecord::Base.sanitize_sql_like(query.to_s)
       ilike = "%#{sanitized}%"
+      scope.where("system_packages.name ILIKE :ilike OR system_packages.description ILIKE :ilike", ilike: ilike)
+    end
+
+    # Ordering only — the caller passes a scope already narrowed by
+    # #apply_lexical_filter. Terminates in system_packages.id so the ordering is
+    # total: run_lexical paginates this with LIMIT/OFFSET, and a name tie (same
+    # name, different architecture) straddling a page boundary would otherwise
+    # let Postgres drop or repeat a row.
+    def apply_lexical_ranking(scope, query)
+      sanitized = ActiveRecord::Base.sanitize_sql_like(query.to_s)
       prefix = "#{sanitized}%"
       # Trigram similarity (pg_trgm) yields a stable 0..1 rank; ILIKE fallback
       # keeps non-trigram matches in the result set. exact > prefix > sim.
       scope
-        .where("system_packages.name ILIKE :ilike OR system_packages.description ILIKE :ilike", ilike: ilike)
         .reorder(
           Arel.sql(ActiveRecord::Base.sanitize_sql_array([
             "(CASE WHEN LOWER(system_packages.name) = LOWER(?) THEN 0 " \
             "      WHEN system_packages.name ILIKE ? THEN 1 " \
             "      ELSE 2 END) ASC, " \
             "similarity(system_packages.name, ?) DESC, " \
-            "system_packages.name ASC",
+            "system_packages.name ASC, system_packages.id ASC",
             query, prefix, query
           ]))
         )
+    end
+
+    # === Sorting =======================================================
+
+    # SQL ordering for the lexical leg. Every branch ends in a unique column so
+    # pagination cannot drop or repeat a row across pages.
+    def apply_sql_sort(scope)
+      case @sort
+      when "updated" then scope.reorder(updated_at: :desc, name: :asc, id: :asc)
+      else                scope.reorder(name: :asc, architecture: :asc, id: :asc)
+      end
+    end
+
+    # In-memory ordering for the semantic/hybrid legs, whose candidate rows are
+    # already materialized. `relevance` keeps the order the mode produced.
+    def apply_ruby_sort(rows)
+      case @sort
+      when "name"    then rows.sort_by { |p| [ p.name.to_s, p.architecture.to_s, p.id.to_s ] }
+      when "updated" then rows.sort_by { |p| [ -p.updated_at.to_f, p.name.to_s, p.id.to_s ] }
+      else                rows
+      end
     end
 
     # === Hybrid scoring ================================================
