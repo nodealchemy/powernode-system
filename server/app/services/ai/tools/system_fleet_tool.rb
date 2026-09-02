@@ -1855,6 +1855,79 @@ module Ai
         error_result(e.record.errors.full_messages.join("; "))
       rescue ArgumentError, ::System::NodeModuleVersion::InvalidTransition => e
         error_result(e.message)
+      # === REFUSALS, not faults (IMP-a00997333d8f) ===
+      #
+      # Both classes below are REFUSALS: the platform will not do what was
+      # asked, and repeating the call cannot change that. Without these clauses
+      # they escaped #call to the core controller's generic handler
+      # (StreamableHttpController's `rescue StandardError` in #handle_message,
+      # streamable_http_controller.rb:137-139) and surfaced as JSON-RPC -32603
+      # "Internal error: <message>" — a JSON-RPC ERROR object, with no `result`
+      # at all and therefore no isError. An agent reads -32603 as a TRANSPORT
+      # fault and retries; the retry raises identically, so a permanent,
+      # operator-correctable condition produced repeated provisioning attempts
+      # against the fleet with no explanation surfaced.
+      #
+      # What fixes that is returning a RESULT instead of an error object: the
+      # same controller sets isError from #handle_tools_call's
+      #   response_payload[:isError] = true if result.is_a?(Hash) && result[:success] == false
+      # (streamable_http_controller.rb:693), and error_result's symbol-keyed
+      # { success: false, error: } satisfies it. Same envelope defect the
+      # sibling ::Ai::Introspection::RateLimiter::RateLimitExceeded clause in
+      # that controller (:656-667) was added to fix, in the opposite DIRECTION:
+      # rate limiting is genuinely retryable and was presented as fatal; these
+      # are genuinely NOT retryable and were presented as a transient transport
+      # fault. What the two share is only error_result's { success:, error: }
+      # envelope — the discriminator KEYS differ (that clause uses
+      # rate_limited:/retry_after:), so this is a parallel, not a shared
+      # contract.
+      #
+      # refusal_code:/retryable: are ADVISORY: they name the condition for a
+      # caller that chooses to read them. Nothing consumes either key today
+      # (`command grep '\[:retryable\]'` finds no producer-side reader), so do
+      # not credit them with stopping the loop — the result-vs-error-object
+      # switch above is what does that. refusal_code:, not refusal:, because
+      # Sdwan::FlowExporterDeployer already uses a `refusal:` key in this same
+      # extension for a human-prose sentence or nil
+      # (flow_exporter_deployer.rb:59-79, 100); one key with two value
+      # contracts is exactly the ambiguity a machine-readable discriminator
+      # exists to remove.
+      #
+      # Deliberately NOT a rescue of StandardError, and deliberately per-class: a
+      # genuine internal fault (a NoMethodError in an action body, a provider
+      # library blowing up) must keep reaching -32603, because it IS one. These
+      # arms are global to #call's whole action `case`, so the narrowness is the
+      # safety property: ProvisioningService funnels its own non-refusal failures
+      # into a Runtime::Result (provisioning_service.rb:236-258) and re-raises
+      # only these two plus ArgumentError past that rescue on purpose (:248-249).
+      #
+      # SCOPE — the PROVISION call site only. #assert_not_self_managed! has a
+      # second call site, provisioning_service.rb:270 (terminate), which these
+      # arms do NOT cover: system_terminate_instance is declare_action'd
+      # mutating: true with an executor_class/gate_context (see :426 below), so
+      # BaseTool#execute routes it through Ai::AutonomyGate and it never reaches
+      # #call. Its violation is caught by AutonomyGate's own rescue and reaches
+      # the caller as "Gate evaluation failed: <message>" — an application-level
+      # result, so not the -32603 bug, but still labelled as a gate malfunction
+      # rather than a refusal. Tracked separately; do not read these two arms as
+      # covering the fence everywhere.
+      #
+      # ProvisioningError has exactly ONE raise site as of this commit —
+      # ProvisioningService#validate_node!, provisioning_service.rb:359, "Node is
+      # disabled" — so the class covers refusals only and this clause cannot
+      # misclassify a fault. The NAME is generic enough that a future
+      # fault-shaped raise would land here wrongly; if one is added, split it out
+      # rather than widening this arm.
+      rescue ::System::ProvisioningService::ProvisioningError => e
+        error_result(e.message).merge(refusal_code: "provisioning_refused", retryable: false)
+      # A hard architectural gate (RCP v2 INV-1): the control plane refusing to
+      # act on its own hosting node. SelfManagementViolation's own declaration
+      # (self_management_fence.rb:61-64) documents it as "a distinct, more severe
+      # class of refusal" and made it a StandardError precisely so an
+      # ArgumentError rescue would not swallow it — which is also why the clause
+      # above does not cover it.
+      rescue ::System::Autonomy::SelfManagementFence::SelfManagementViolation => e
+        error_result(e.message).merge(refusal_code: "self_management_violation", retryable: false)
       end
 
       private
