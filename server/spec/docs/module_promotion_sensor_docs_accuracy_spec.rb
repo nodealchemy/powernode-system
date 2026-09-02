@@ -27,9 +27,12 @@ require "spec_helper"
 #     They cannot tell a correct explanation from a plausible one; they exist
 #     so deleting the explanation is not a silent pass.
 #
-# What this does NOT decide: whether the promotion ladder should be wired to
-# an automated stager at all. That is IMP-c7d618b0b72f's question. This file
-# asserts what the code does today, and requires the doc to say so.
+# What this file does NOT decide: whether the promotion ladder should be wired
+# to an automated stager. IMP-c7d618b0b72f has since ANSWERED that (no — see
+# docs/design/promotion-ladder-semantics.md), so the last example below no
+# longer pins a deferral; it pins the answer and the prohibition that follows
+# from it. This file still only asserts what the code does today, and requires
+# the doc to say so.
 RSpec.describe "FLEET_SENSORS.md module_promotion_sensor block vs. the sensor source" do
   ext_root = File.expand_path("../../..", __dir__)
 
@@ -250,8 +253,30 @@ RSpec.describe "FLEET_SENSORS.md module_promotion_sensor block vs. the sensor so
       expect(block).to match(/inert/i)
     end
 
-    it "defers the should-it-be-wired question to the task that owns it" do
+    it "points at the decision that answered the should-it-be-wired question" do
+      # This example used to be named "defers ... to the task that owns it",
+      # and asserted only that the task id appeared. The task has since landed
+      # its answer, so the name and the rationale above it went false while the
+      # bare id check stayed green -- a guard outliving the claim it guarded.
+      #
+      # CONTAINMENT + PRESENCE, not a bare id: the id alone is satisfied by the
+      # old deferral wording, which is exactly the text that must not come back.
       expect(block).to include("IMP-c7d618b0b72f")
+      expect(block).to include("design/promotion-ladder-semantics.md")
+      # `[^A-Za-z]{1,4}` rather than `\s+`: the doc writes "is *not* wired",
+      # and a whitespace-only gap misses the markdown emphasis markers.
+      expect(block).to match(/not[^A-Za-z]{1,4}wired to an automated stager/i)
+
+      # The decision's one (c)-specific prohibition, and the reason the oracles
+      # above exist at all. If the doc stops saying a pipeline must not write
+      # this rung, those scans are guarding a rule nothing states.
+      expect(block).to match(/asserts that a build was deliberately nominated/i)
+
+      # The emptiness claim must stay scoped to `staging`. `blessed` is empty
+      # too, and that emptiness is the OPEN defect -- a doc that blesses it
+      # wholesale would close a question the decision left open.
+      expect(block).to match(/not about `blessed`/i)
+      expect(block).not_to match(/^\s*the rung resting empty is the correct state/i)
     end
   end
 end

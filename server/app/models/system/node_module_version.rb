@@ -85,6 +85,14 @@ module System
     # === Promotion lifecycle (Golden Eclipse M0.M) ===
     # Column-only state machine for now. Full AASM with PromotionCriteria
     # gates lands in M1 (the platform's standard promotion-criteria pattern).
+    #
+    # That M1 intent -- the ladder GATING the fleet pointer -- was NOT adopted.
+    # See docs/design/promotion-ladder-semantics.md (IMP-c7d618b0b72f): the
+    # rungs are eligibility labels, `live`/`retired` are historical stamps, and
+    # NodeModule#current_version_id remains the sole actuator. Gating the
+    # pointer on this ladder is still an open option there, but it changes
+    # every deployment and needs operator sign-off -- do not read the paragraph
+    # above as a mandate to build it.
 
     PROMOTION_STATES.each do |state|
       define_method(:"#{state}?") { promotion_state == state }

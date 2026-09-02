@@ -3700,11 +3700,19 @@ module Ai
       #
       # This verb deliberately does NOT call NodeModule#promote_to_version!:
       # RestartAfterUpdate.arm! fires there, so making promotion move the
-      # pointer would restart services fleet-wide. Whether it SHOULD, and
-      # whether publish should stop auto-promoting past the ladder
-      # (ModulePublicationProcessor defaults auto_promote? to true, so a
-      # never-staged version can become current), are open lifecycle-gating
-      # questions filed separately — not decided here.
+      # pointer would restart services fleet-wide.
+      #
+      # Whether it SHOULD is now DECIDED — no. See
+      # docs/design/promotion-ladder-semantics.md (IMP-c7d618b0b72f): the
+      # rungs are eligibility labels, `live`/`retired` are historical stamps,
+      # and current_version_id stays the sole actuator. So advancing a version
+      # to `live` here is a record that it was promoted, NOT a claim about what
+      # the fleet serves — which is why the fields below are read back from the
+      # row. The second question in that pair — whether publish should stop
+      # auto-promoting past the ladder (ModulePublicationProcessor defaults
+      # auto_promote? to true, so a never-staged version can become current) —
+      # is still open in that note's section 6; it changes every deployment and
+      # needs operator sign-off.
       #
       # promote_to_version! is the SANCTIONED writer of current_version_id and
       # the only one that arms a restart — not the only writer:

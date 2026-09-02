@@ -247,7 +247,7 @@ module System
           seen_ids = []
           ::System::NodeModule
             .where(account: @account, id: module_ids)
-            .includes(versions: :module_artifacts)
+            .includes(:current_version, versions: :module_artifacts)
             .find_each do |mod|
               seen_ids << mod.id
               blessed = newer_blessed_version_for(mod)
@@ -396,13 +396,39 @@ module System
             "#{detail}. Exposures left open."
         end
 
+        # The rollout gate: "is there a fix I may ship?" Bounded to versions
+        # created AFTER the served one, per the promotion-ladder decision in
+        # docs/design/promotion-ladder-semantics.md — `live` is a HISTORICAL
+        # stamp recording that a version was once promoted, not a statement
+        # that it is fit to ship now. Without the bound, `where.not(id:
+        # current_version_id)` excludes only the served row, so any older
+        # `live` row falls straight through and is returned as "the fix".
+        #
+        # That is not hypothetical. Read from the live control plane
+        # 2026-09-01, the unbounded query would have offered
+        # powernode-hub-frontend v20 and reverse-proxy-traefik v13 — both
+        # `live`, both `oci_digest: nil`, i.e. unmountable — as the remediation
+        # for their v26/v16 current versions, and powernode-hub-backend v79 as
+        # the fix for v87. Those stale `live` rows are OBSERVED; what wrote
+        # them is not established (no writer enumerated in the design note's
+        # section 1.2 produces that shape), which is filed there rather than
+        # guessed at here. The bound does not depend on their provenance: any
+        # `live` row older than what is served is a downgrade.
+        #
+        # This mirrors the bound #unpromoted_candidate_for already carries; the
+        # comment there recorded that it left "the blessed/live filter
+        # untouched", and this is that half. The filter itself is unchanged and
+        # deliberately so: restricting rollout to blessed/live material is the
+        # conservatism, not the bug.
         def newer_blessed_version_for(mod)
-          return nil unless mod.current_version_id
+          current = mod.current_version
+          return nil unless current
 
           mod.versions
              .where(promotion_state: %w[blessed live])
-             .where.not(id: mod.current_version_id)
-             .order(created_at: :desc)
+             .where.not(id: current.id)
+             .where("system_node_module_versions.created_at > ?", current.created_at)
+             .order(created_at: :desc, id: :desc)
              .first
         end
 
