@@ -93,6 +93,28 @@ module System
       env exposed_ports capabilities health dependencies metadata unit_body
     ].freeze
 
+    # Name tokens that mark a service as staging credential or identity
+    # material for its dependents. Enumerated rather than keyed off one
+    # service name: the property is not modelled on ModuleService, so the
+    # validator infers it from the service's own `name`, matching whole
+    # tokens (split on non-alphanumerics) and never substrings — `stage-certs`
+    # is a stager, `tokenizer` is not. An author whose stager the enumeration
+    # misses declares it explicitly with `metadata.stages_credentials: true`
+    # (services[].capabilities is Linux capabilities, so it is NOT the place
+    # for this). See credential_staging_service? for what the property costs
+    # an edge.
+    CREDENTIAL_STAGING_TOKENS = %w[
+      credential credentials secret secrets token tokens
+      identity identities pki mtls tls enroll enrollment
+      cert certs certificate certificates key keys keyring vault
+      bootstrap
+    ].freeze
+
+    # Per-service metadata key by which a manifest declares the staging
+    # property outright — `true` for a stager CREDENTIAL_STAGING_TOKENS
+    # doesn't name, `false` to clear a name that only looks like one.
+    CREDENTIAL_STAGING_METADATA_KEY = "stages_credentials"
+
     USER_KNOWN_KEYS    = %w[name shell home gecos primary_group supplementary_groups].freeze
     GROUP_KNOWN_KEYS   = %w[name].freeze
     SUDOERS_KNOWN_KEYS = %w[id user runas commands flags].freeze
@@ -555,6 +577,12 @@ module System
       end
 
       seen_names = Set.new
+      # Indexed up front so a dependency edge can be judged against the
+      # TARGET's own declaration, not just the name it references.
+      services_by_name = services.each_with_object({}) do |svc, index|
+        index[svc["name"]] = svc if svc.is_a?(Hash) && svc["name"].is_a?(String)
+      end
+
       services.each_with_index do |svc, i|
         prefix = "services[#{i}]"
         unless svc.is_a?(Hash)
@@ -615,13 +643,46 @@ module System
                 next
               end
               errors << "#{dep_prefix}.service is required" if dep["service"].blank?
-              if (k = dep["kind"]) && !::System::ModuleServiceDependency::KINDS.include?(k)
+              k = dep["kind"]
+              # nil target => the edge names a service this manifest does not
+              # declare; that is its own (clearer) error, raised by
+              # apply_services, so the softdep rule stays out of its way.
+              target_svc = services_by_name[dep["service"]]
+              if k && !::System::ModuleServiceDependency::KINDS.include?(k)
                 errors << "#{dep_prefix}.kind must be one of #{::System::ModuleServiceDependency::KINDS.inspect}"
+              elsif k == "softdep" && target_svc && credential_staging_service?(target_svc)
+                errors << "#{dep_prefix}.kind must not be \"softdep\" on #{dep['service'].inspect}, which stages " \
+                          "credential or identity material: softdep renders as After= + Wants=, and After= orders " \
+                          "against the target's job FINISHING, not succeeding — the dependent would start after a " \
+                          "FAILED staging run with nothing staged. Use start_before (or requires_health), which " \
+                          "renders Requires= and cancels the dependent."
               end
             end
           end
         end
       end
+    end
+
+    # True when the edge's target stages credential or identity material.
+    # Such a service's dependents cannot tolerate a soft edge; see the error
+    # text in validate_services and the softdep cautions in
+    # docs/federation/MODULE_MANIFEST_SCHEMA.md.
+    #
+    # The declaration is TRI-STATE and wins over the name enumeration in BOTH
+    # directions: `metadata.stages_credentials: true` marks a stager the
+    # tokens miss, and `false` clears a service whose name merely looks like
+    # one (`vault-metrics`, `token-exchange`, `tls-terminator`) — without
+    # that, the broad token list would be a refusal with no override. Only an
+    # absent (or null) declaration falls through to the name.
+    def credential_staging_service?(svc)
+      declared = svc["metadata"][CREDENTIAL_STAGING_METADATA_KEY] if svc["metadata"].is_a?(Hash)
+      return ::ActiveModel::Type::Boolean.new.cast(declared).present? unless declared.nil?
+
+      name_tokens(svc["name"]).intersect?(CREDENTIAL_STAGING_TOKENS)
+    end
+
+    def name_tokens(value)
+      value.to_s.downcase.split(/[^a-z0-9]+/).reject(&:empty?)
     end
 
     def apply_to_module(mod, manifest, raw_yaml:)

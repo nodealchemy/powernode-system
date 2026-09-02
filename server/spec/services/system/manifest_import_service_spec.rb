@@ -619,6 +619,118 @@ RSpec.describe System::ManifestImportService, type: :service do
         expect(result.ok?).to be false
         expect(result.error).to include("references unknown service")
       end
+
+      # `softdep` renders as After= + Wants= (agent
+      # internal/lifecycle/service.go writeDependencyDirectives). After=
+      # orders against the target's job FINISHING, not succeeding, and
+      # Wants= declines to cancel the dependent — so a softdep edge onto a
+      # oneshot that stages credential or identity material starts the
+      # dependent after the staging run FAILED, with nothing staged and
+      # nothing surfacing the failure. Refused at import so a manifest that
+      # writes that edge never ships. (IMP-63fac35886ce)
+      context "softdep onto a credential-/identity-staging service" do
+        def edge_yaml(target:, kind:, target_metadata: nil)
+          meta = target_metadata ? "    metadata: #{target_metadata}\n" : ""
+          manifest_yaml + <<~YAML + meta
+            services:
+              - name: executor
+                start_command: "x"
+                user: powernode
+                dependencies:
+                  - { service: #{target}, kind: #{kind} }
+              - name: #{target}
+                start_command: "y"
+                user: postgres
+          YAML
+        end
+
+        %w[credential credentials secret token identity pki bootstrap mtls vault stage-certs].each do |target|
+          it "rejects kind: softdep on #{target.inspect}" do
+            result = described_class.import!(node_module: mod, yaml: edge_yaml(target: target, kind: "softdep"))
+            expect(result.ok?).to be false
+            expect(result.validation_errors.join).to include('kind must not be "softdep"')
+            expect(result.validation_errors.join).to include(target)
+          end
+        end
+
+        it "rejects kind: softdep when the target only DECLARES the property via metadata" do
+          result = described_class.import!(
+            node_module: mod,
+            yaml: edge_yaml(target: "stager", kind: "softdep",
+                            target_metadata: "{ stages_credentials: true }")
+          )
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include('kind must not be "softdep"')
+        end
+
+        # The opt-out has to reach a target the NAME enumeration already
+        # matches, or it pins nothing: `vault-metrics` carries the `vault`
+        # token, so this example goes red the moment the metadata branch
+        # stops overriding the name.
+        it "honours metadata declaring the property false on a name that matches a token" do
+          result = described_class.import!(
+            node_module: mod,
+            yaml: edge_yaml(target: "vault-metrics", kind: "softdep",
+                            target_metadata: "{ stages_credentials: false }")
+          )
+          expect(result.ok?).to be true
+        end
+
+        it "reads the string \"false\" as false, not as a declaration" do
+          result = described_class.import!(
+            node_module: mod,
+            yaml: edge_yaml(target: "vault-metrics", kind: "softdep",
+                            target_metadata: '{ stages_credentials: "false" }')
+          )
+          expect(result.ok?).to be true
+        end
+
+        it "still refuses a name-matched target when metadata omits the key" do
+          result = described_class.import!(
+            node_module: mod,
+            yaml: edge_yaml(target: "vault-metrics", kind: "softdep",
+                            target_metadata: "{ owner: platform }")
+          )
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include('kind must not be "softdep"')
+        end
+
+        # An edge naming a service the manifest never declares is its own,
+        # clearer error — the softdep rule must not pre-empt it.
+        it "reports an undeclared target as an unknown service, not as a staging refusal" do
+          bad = manifest_yaml + <<~YAML
+            services:
+              - name: executor
+                start_command: "x"
+                user: powernode
+                dependencies:
+                  - { service: vault, kind: softdep }
+          YAML
+          result = described_class.import!(node_module: mod, yaml: bad)
+          expect(result.ok?).to be false
+          expect(result.error).to include("references unknown service")
+          expect(result.validation_errors.join).not_to include("softdep")
+        end
+
+        it "leaves the shipped shape alone: start_before onto a credential service imports" do
+          result = described_class.import!(node_module: mod, yaml: edge_yaml(target: "credential", kind: "start_before"))
+          expect(result.ok?).to be true
+          expect(mod.reload.module_services.find_by(name: "executor").outgoing_dependencies.first.kind)
+            .to eq("start_before")
+        end
+
+        it "allows kind: softdep onto an ordinary service" do
+          result = described_class.import!(node_module: mod, yaml: edge_yaml(target: "telemetry", kind: "softdep"))
+          expect(result.ok?).to be true
+          expect(mod.reload.module_services.find_by(name: "executor").outgoing_dependencies.first.kind)
+            .to eq("softdep")
+        end
+
+        it "matches whole name tokens, not substrings" do
+          result = described_class.import!(node_module: mod, yaml: edge_yaml(target: "tokenizer", kind: "softdep"))
+          expect(result.ok?).to be true
+        end
+      end
     end
 
     context "identity parsing (users / groups / sudoers)" do
