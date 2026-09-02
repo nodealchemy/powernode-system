@@ -364,6 +364,62 @@ dispatched by `app/services/ai/tools/system_fleet_tool.rb` (volumes + migrations
 | `system_detach_volume` | Detach from a NodeInstance | `volume_id`, `node_instance_id` |
 | `system_test_nfs_export` | Probe an NFS server/export (no mount) | `server`, `export_path` |
 
+### Snapshots + restore (data protection)
+
+Added by APO-5 / DR-2. Before it, the platform's only backup was its **own**
+database (the worker's `Maintenance::ScheduledBackupJob`); a project's volumes
+had no snapshot and no restore at any surface, so the DR story was
+re-provision-only. `POST /provider_volumes/:id/snapshot` existed but never
+reached a provider — it inserted a `pending` row and returned 201, so the row
+an operator read as a restore point was evidence of nothing.
+
+Everything below runs through `System::VolumeManagementService`, which keeps
+one rule: **the snapshot row never claims more than the provider did.** A
+provider with no snapshot primitive leaves *no* row; a provider whose call
+fails leaves an `error` row; only a provider that reports success yields
+`completed`, and only `completed` is a restore point (`#can_restore?`).
+
+Provider support is declared by `System::Providers::BaseProvider
+#supports_volume_snapshots?` (default **false**). **Azure** implements the seam
+over `Microsoft.Compute/snapshots`. **Proxmox reports false**: PVE snapshots are
+VM-scoped, so a "volume" rollback would take every disk on the VM (and its RAM
+state) with it — an instance-level verb, not this one.
+
+| Action | Purpose | Key params |
+|--------|---------|------------|
+| `system_snapshot_volume` | Snapshot a volume via its provider | `volume_id`, `name`, `description` |
+| `system_list_volume_snapshots` | List a volume's snapshots, newest first | `volume_id` |
+| `system_delete_volume_snapshot` | **DESTROYS a restore point** — provider delete then row drop | `id` |
+| `system_restore_volume_snapshot` | Restore a volume from a completed snapshot — read `restored_in_place` | `id` |
+
+**Restore is not one thing**, and every surface reports which it got.
+`BaseProvider#volume_snapshot_restore_mode` declares it:
+
+- `:in_place` — the volume itself is rolled back. **DESTRUCTIVE**: every write
+  since the snapshot is discarded.
+- `:copy` — the provider creates a **new** volume from the snapshot and leaves
+  the source untouched. This is **Azure's** shape (`createOption: "Copy"`), so
+  it is what the one supporting provider actually does. The service records the
+  copy as a `ProviderVolume` row and returns it as `restored_volume`; without
+  that row the restored disk would be unattachable and undeletable through the
+  platform — an untracked, billable orphan — while the surfaces above reported
+  the source volume as restored.
+- `:none` (the default) — no restore primitive; `restore_snapshot` refuses.
+
+REST twins: `POST /provider_volumes/:id/snapshot`, `GET
+/provider_volumes/:id/snapshots`, `POST /provider_volumes/:id/restore`
+(`snapshot_id`). The skill surface is
+`System::Ai::Skills::RestoreVolumeExecutor` (`system-restore-volume`), which is
+`requires_approval: true`, declares **no** rollback (a restore has no inverse)
+and takes a pre-restore snapshot first by default.
+
+Snapshot **delete** is not approval-gated yet: the MCP verbs carry the APO-1a
+declaration shape (`mutating:` only), so the only control on a delete is the
+`system.volumes.delete` permission. The gate needs an intervention-policy row
+plus an executor to replay — see the declaration comment in
+`app/services/ai/tools/system_fleet_tool.rb` (improvement
+`01a06378-12ff-74c6-a8ba-430cc1b50f45`).
+
 ### Migration lifecycle
 
 | Action | Purpose | Key params |
@@ -394,7 +450,9 @@ dispatched by `app/services/ai/tools/system_fleet_tool.rb` (volumes + migrations
 | `system_update_storage_recommendations` | Partial-merge override | `recommendations` |
 
 Permissions: ownership/chown actions gate on `system.storage.read` and
-`system.storage.assignments.update`; volume actions on `system.volumes.*`;
+`system.storage.assignments.update`; volume actions on `system.volumes.*`
+(snapshot create on `system.volumes.snapshot`, snapshot delete on
+`system.volumes.delete`, restore on `system.volumes.manage`);
 migration + recommendations on `system.platform.read` / `system.platform.scale`.
 For the curated MCP reference see [MCP_API_REFERENCE.md](./MCP_API_REFERENCE.md).
 

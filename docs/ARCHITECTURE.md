@@ -529,9 +529,9 @@ agent-auth mTLS conversion.
 
 ### 4. MCP (`mcp__powernode__platform_system_*`)
 
-201 system tool actions exposed via the platform's MCP server, callable
+205 system tool actions exposed via the platform's MCP server, callable
 from any AI agent or Claude Code MCP client — the substrate's primary
-agent-facing surface. The catalog is split into `system_*` (128 actions)
+agent-facing surface. The catalog is split into `system_*` (132 actions)
 + `system_sdwan_*` (73). Alongside these the extension also drives
 `kubernetes_*` (5) + `docker_*` (52) container-runtime actions. The
 auto-generated tool catalog lives at

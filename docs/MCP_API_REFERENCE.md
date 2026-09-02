@@ -60,7 +60,7 @@ Every action requires a permission grant on the calling user/agent. Permissions 
 
 ## Action catalog
 
-### `system_*` — Fleet, lifecycle, modules, storage, architecture, GitOps, CI workers, disk image CI, providers, topology, ingress, GPU/inference, agent-fleet, A2A (128 actions)
+### `system_*` — Fleet, lifecycle, modules, storage, architecture, GitOps, CI workers, disk image CI, providers, topology, ingress, GPU/inference, agent-fleet, A2A (132 actions)
 
 Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented) plus the managed-Docker, package-repository, architecture-catalog, disk-image, ingress, storage-owner, and agent-fleet tool classes. The registry routing lives in the parent (`platform_api_tool_registry.rb`); the tool-class implementations live in the extension under `server/app/services/ai/tools/`.
 
@@ -223,6 +223,26 @@ See [`DISK_IMAGE_CI.md`](./DISK_IMAGE_CI.md) for the operator-facing workflow th
 | `system_attach_volume` | Attach a Volume to a NodeInstance | operator, agent |
 | `system_detach_volume` | Detach without destroying | operator, agent |
 | `system_test_nfs_export` | Probe an external NFS export's reachability + auth before creating an assignment | operator, agent |
+
+**Volume snapshots + restore (project data protection, APO-5 / DR-2):**
+
+The platform's only backup used to be its **own** database; a project's volumes
+had no snapshot and no restore. Provider support is optional and declined
+rather than faked — a provider with no snapshot primitive refuses instead of
+recording a restore point that does not exist. See
+[STORAGE_SUBSYSTEM.md](./STORAGE_SUBSYSTEM.md#snapshots--restore-data-protection).
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_snapshot_volume` | Snapshot a ProviderVolume through its provider; refuses where unsupported | operator, agent |
+| `system_list_volume_snapshots` | List a volume's snapshots, newest first (`reconcile:true` checks each against the provider) | operator, agent |
+| `system_delete_volume_snapshot` | **DESTROYS a restore point** — provider delete first, row dropped only on confirmation | operator |
+| `system_restore_volume_snapshot` | Restore from a completed snapshot; read `restored_in_place` (false ⇒ a **new** volume holds the data) | operator |
+
+**Permissions:** `system.volumes.snapshot` (create), `system.volumes.read`
+(list), `system.volumes.delete` (delete), `system.volumes.manage` (restore).
+Delete is **not** approval-gated yet — see the declaration comment in
+`system_fleet_tool.rb` (improvement `01a06378-12ff-74c6-a8ba-430cc1b50f45`).
 
 **Storage migration (zero-downtime data moves between providers):**
 
