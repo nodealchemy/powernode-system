@@ -130,6 +130,13 @@ RSpec.describe System::Ai::Skills::FederationPeerRemediateExecutor do
       # The active → degraded transition fires FederationPeer#broadcast_peer_state!
       # — the single canonical state-change event (severity is the string "medium"
       # to match broadcast_peer_state!); the executor no longer emits a duplicate.
+      #
+      # The permissive stub first: since APO-2d every BaseSkillExecutor#execute
+      # also emits its own skill.execute_started/_finished audit through this
+      # same door, and a bare constrained expectation would raise
+      # RSpec::Mocks::MockExpectationError on the FIRST of those. This example
+      # is about the degrade event, not about being the only emit.
+      allow(::System::Fleet::EventBroadcaster).to receive(:emit!).and_call_original
       expect(::System::Fleet::EventBroadcaster).to receive(:emit!).with(
         hash_including(account: account, kind: "federation.peer.degraded", severity: "medium")
       ).and_call_original
@@ -174,6 +181,9 @@ RSpec.describe System::Ai::Skills::FederationPeerRemediateExecutor do
 
     it "emits a high-severity FleetEvent on cert_expired" do
       peer = create(:system_federation_peer, :active, account: account, outbound_certificate: cert)
+      # See the degrade example: the executor's own APO-2d audit events reach
+      # this same collaborator and must not fail the constrained expectation.
+      allow(::System::Fleet::EventBroadcaster).to receive(:emit!).and_call_original
       expect(::System::Fleet::EventBroadcaster).to receive(:emit!).with(
         hash_including(kind: "federation.peer.cert_rotation_required", severity: :high)
       ).and_call_original

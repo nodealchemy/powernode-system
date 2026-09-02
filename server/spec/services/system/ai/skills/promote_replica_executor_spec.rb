@@ -116,6 +116,14 @@ RSpec.describe System::Ai::Skills::PromoteReplicaExecutor, type: :service do
                             operation_id: operation_id, **extra)
   end
 
+  # The promote LEDGER only — every FleetEvent this executor itself writes,
+  # excluding the BaseSkillExecutor skill.execute_* audit trail that APO-2d
+  # added around every invocation.
+  def ledger_events
+    System::FleetEvent.where(account_id: account.id)
+                      .where("kind LIKE ?", "#{described_class::EVENT_PREFIX}.%")
+  end
+
   describe "the promote path that did not exist" do
     it "cuts the DB VIP over to the replica's peer and dispatches the declared promote command" do
       result = run
@@ -329,7 +337,11 @@ RSpec.describe System::Ai::Skills::PromoteReplicaExecutor, type: :service do
       expect(vip.reload.holder_peer_ids).to eq([ primary_peer.id ])
       expect(peer.reload.metadata["cluster_pg"]["state"]).to eq("ready")
       expect(System::Task.where(command: "ssh_command")).to be_empty
-      expect(System::FleetEvent.where(account_id: account.id)).to be_empty
+      # Scoped to the executor's OWN ledger prefix. BaseSkillExecutor emits a
+      # skill.execute_* audit trail for every invocation (APO-2d), so an
+      # account-wide emptiness check would now assert the absence of the
+      # audit rather than the absence of a promote.
+      expect(ledger_events).to be_empty
     end
   end
 
@@ -411,7 +423,11 @@ RSpec.describe System::Ai::Skills::PromoteReplicaExecutor, type: :service do
       expect(result[:success]).to be(false)
       expect(vip.reload.holder_peer_ids).to eq([ primary_peer.id ])
       expect(peer.reload.metadata["cluster_pg"]["state"]).to eq("ready")
-      expect(System::FleetEvent.where(account_id: account.id)).to be_empty
+      # Scoped to the executor's OWN ledger prefix. BaseSkillExecutor emits a
+      # skill.execute_* audit trail for every invocation (APO-2d), so an
+      # account-wide emptiness check would now assert the absence of the
+      # audit rather than the absence of a promote.
+      expect(ledger_events).to be_empty
     end
 
     it "records the ledger event in the same transaction as the cutover" do
