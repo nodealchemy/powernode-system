@@ -2691,42 +2691,37 @@ end
     end
   end
 
+  # IMP-f4fe1ed1ec1e — this verb no longer writes drain_* config markers. It
+  # delegates to System::Ai::Skills::PlatformResilienceExecutor, which cordons
+  # the pool member and stops the instance. The behavioural detail lives in
+  # spec/services/ai/tools/system_fleet_drain_actuation_spec.rb; what is pinned
+  # here is that the MCP door reaches the actuator at all and reports its
+  # refusals rather than a marker write.
   describe "Gap remediation slice 1 — system_drain_instance" do
     let(:node)     { create(:system_node, account: account, node_template: template, name: "drain") }
     let(:instance) { create(:system_node_instance, :running, node: node) }
 
-    it "records drain intent on config + emits FleetEvent" do
-      r = call("system_drain_instance", instance_id: instance.id, timeout_seconds: 300)
+    it "cordons and stops through the lifecycle choke point" do
+      expect(::System::InstanceControlService).to receive(:execute)
+        .with(instance: an_object_having_attributes(id: instance.id), action: :stop)
+        .and_return(::System::Runtime::Result.ok(data: { status: "stopped" }))
+
+      r = call("system_drain_instance", instance_id: instance.id)
+
       expect(r[:success]).to be true
       expect(r[:data][:drained]).to be true
-      expect(r[:data][:drain_initiated_at]).to be_present
-      expect(r[:data][:drain_timeout_seconds]).to eq(300)
-
-      instance.reload
-      expect(instance.config["drain_initiated_at"]).to be_present
-      expect(instance.config["drain_timeout_seconds"]).to eq(300)
+      expect(r[:data][:stopped]).to be true
+      expect(instance.reload.config).not_to have_key("drain_initiated_at")
     end
 
-    it "defaults timeout_seconds to 600 when omitted" do
+    it "surfaces a refused stop as an error, not a drain" do
+      allow(::System::InstanceControlService).to receive(:execute)
+        .and_return(::System::Runtime::Result.err(error: "instance is under an operator ops hold"))
+
       r = call("system_drain_instance", instance_id: instance.id)
-      expect(r[:data][:drain_timeout_seconds]).to eq(600)
-    end
 
-    it "emits a system.instance.drain_initiated FleetEvent if model present" do
-      skip "FleetEvent model not loaded" unless defined?(::System::FleetEvent)
-
-      expect {
-        call("system_drain_instance", instance_id: instance.id)
-      }.to change { ::System::FleetEvent.where(kind: "system.instance.drain_initiated", node_instance_id: instance.id).count }.by(1)
-    end
-
-    it "is idempotent — calling twice updates drain_initiated_at" do
-      call("system_drain_instance", instance_id: instance.id)
-      first_at = instance.reload.config["drain_initiated_at"]
-      sleep 1
-      call("system_drain_instance", instance_id: instance.id)
-      second_at = instance.reload.config["drain_initiated_at"]
-      expect(second_at).not_to eq(first_at)
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("ops hold")
     end
 
     it "scopes to current account — refuses to drain other-account instances" do

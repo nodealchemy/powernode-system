@@ -43,7 +43,7 @@ module System
 
         skill_descriptor(
           name: "platform_resilience",
-          description: "Platform incident response — cordon and stop an instance, scale a deployment up/down (THIS action reconciles the live replica count after writing target_replicas; the Scaling panel and the GitOps bridge still only record it), or triage peer/instance health. Use this skill when the operator describes a stress event (instance misbehaving, capacity pressure, peer heartbeats stale) or asks 'what should I do about X'.",
+          description: "Platform incident response — cordon and stop an instance, scale a deployment up/down (this action and the Scaling panel's PATCH both reconcile the live replica count after writing target_replicas; the GitOps bridge still only records it), or triage peer/instance health. Use this skill when the operator describes a stress event (instance misbehaving, capacity pressure, peer heartbeats stale) or asks 'what should I do about X'.",
           category: "devops",
           inputs: {
             action: { type: "string", required: true,

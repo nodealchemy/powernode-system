@@ -644,7 +644,7 @@ SKILLS_DATA = [
   {
     name: "Platform Resilience",
     slug: "system-platform-resilience",
-    description: "Incident response — cordon and stop a misbehaving instance, scale a deployment up or down (THIS skill reconciles the live replica count after writing target_replicas; the Scaling panel and the GitOps bridge still only record it), or triage cross-platform stress (stale peers, errored instances). Action-discriminated.",
+    description: "Incident response — cordon and stop a misbehaving instance, scale a deployment up or down (this skill and the Scaling panel's PATCH both reconcile the live replica count after writing target_replicas; the GitOps bridge still only records it), or triage cross-platform stress (stale peers, errored instances). Action-discriminated.",
     category: "devops",
     subdomain: "platform-deployment",
     executor: "System::Ai::Skills::PlatformResilienceExecutor",
@@ -673,8 +673,9 @@ SKILLS_DATA = [
           system.task.terminate and system.platform.scale_in policies
           auto-execute, and otherwise names the excess instances instead.
           REFUSED for the deployment hosting this control plane itself. NOTE:
-          only THIS path reconciles — the Scaling panel PATCH and the GitOps
-          bridge still write target_replicas without converging anything.
+          the Scaling panel's PATCH now reconciles through the same actuator
+          (IMP-f4fe1ed1ec1e); the GitOps bridge is the one remaining writer
+          that moves target_replicas without converging anything.
         - failover_check  → read-only triage of stress signals
 
       Prefer failover_check first for vague problems — it's the safe diagnostic call.

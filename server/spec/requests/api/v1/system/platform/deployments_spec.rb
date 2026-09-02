@@ -35,11 +35,15 @@ RSpec.describe "Api::V1::System::Platform::Deployments", type: :request do
   describe "PATCH /deployments/:id" do
     let!(:dep) { create(:system_platform_deployment, account: account, name: "api-tier", target_replicas: 1) }
 
-    it "updates target_replicas" do
+    it "updates target_replicas and reports the reconcile outcome (IMP-f4fe1ed1ec1e)" do
       patch "#{base}/#{dep.id}", params: { target_replicas: 3 },
                                   headers: auth_headers_for(scaler), as: :json
       expect(response).to have_http_status(:ok)
       expect(json_response_data["deployment"]["target_replicas"]).to eq(3)
+      # The write is no longer the whole story: the panel's PATCH drives
+      # System::Platform::ReplicaReconciler and says what converged. Full
+      # coverage in deployments_scale_reconcile_spec.rb.
+      expect(json_response_data).to have_key("reconciled")
     end
 
     it "rejects negative target_replicas" do

@@ -211,7 +211,12 @@ describe('platformDeploymentsApi', () => {
       });
     });
 
-    it('returns the updated DeploymentSummary from the response', async () => {
+    // IMP-f4fe1ed1ec1e: update() returns the WHOLE envelope, not the flattened
+    // row. A target_replicas patch now drives System::Platform::ReplicaReconciler
+    // server-side and the outcome rides back alongside the row under
+    // `reconciled`; a caller that unwrapped to the row dropped it and reported
+    // every save as a scale.
+    it('returns the whole update envelope, with the row under `deployment`', async () => {
       const patch: DeploymentUpdateRequest = { target_replicas: 5 };
       const updated = { ...DEPLOYMENT_A, target_replicas: 5 };
       mockPatch.mockResolvedValue(
@@ -220,8 +225,35 @@ describe('platformDeploymentsApi', () => {
 
       const result = await platformDeploymentsApi.update('dep-a', patch);
 
-      expect(result.target_replicas).toBe(5);
-      expect(result.id).toBe('dep-a');
+      expect(result.deployment.target_replicas).toBe(5);
+      expect(result.deployment.id).toBe('dep-a');
+    });
+
+    it('surfaces the reconcile outcome the PATCH returns alongside the row', async () => {
+      const updated = { ...DEPLOYMENT_A, target_replicas: 5 };
+      mockPatch.mockResolvedValue(
+        envelope({
+          deployment: updated,
+          reconciled: {
+            ok: false,
+            refused_reason: 'insufficient_permission',
+            message: 'Reconcile requires system.instances.create',
+            actual_before: 2,
+            actual_after: 2,
+            target_replicas: 5,
+            provisioned_instance_ids: [],
+            terminated_instance_ids: [],
+            pending_removal_instance_ids: [],
+            failures: [],
+          },
+        }),
+      );
+
+      const result = await platformDeploymentsApi.update('dep-a', { target_replicas: 5 });
+
+      expect(result.reconciled?.ok).toBe(false);
+      expect(result.reconciled?.refused_reason).toBe('insufficient_permission');
+      expect(result.reconciled?.actual_after).toBe(2);
     });
 
     it('sends a patch with public_dns_hostname when provided', async () => {
@@ -236,7 +268,7 @@ describe('platformDeploymentsApi', () => {
       expect(mockPatch).toHaveBeenCalledWith('/system/platform/deployments/dep-a', {
         public_dns_hostname: 'new.example.com',
       });
-      expect(result.public_dns_hostname).toBe('new.example.com');
+      expect(result.deployment.public_dns_hostname).toBe('new.example.com');
     });
 
     it('sends a patch with null public_dns_hostname (to clear it)', async () => {
@@ -251,7 +283,7 @@ describe('platformDeploymentsApi', () => {
       expect(mockPatch).toHaveBeenCalledWith('/system/platform/deployments/dep-a', {
         public_dns_hostname: null,
       });
-      expect(result.public_dns_hostname).toBeNull();
+      expect(result.deployment.public_dns_hostname).toBeNull();
     });
 
     it('sends a combined patch with both fields', async () => {
@@ -281,7 +313,7 @@ describe('platformDeploymentsApi', () => {
       const result = await platformDeploymentsApi.update('dep-a', patch);
 
       expect(mockPatch).toHaveBeenCalledWith('/system/platform/deployments/dep-a', {});
-      expect(result.id).toBe('dep-a');
+      expect(result.deployment.id).toBe('dep-a');
     });
 
     it('propagates a rejected promise when apiClient.patch rejects', async () => {

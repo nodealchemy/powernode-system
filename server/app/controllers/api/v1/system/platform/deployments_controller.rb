@@ -15,11 +15,12 @@ module Api
         #     Lists deployments with computed actual_replicas.
         #
         #   PATCH  /api/v1/system/platform/deployments/:id
-        #     Updates target_replicas and/or public_dns_hostname. Does
-        #     NOT trigger provisioning — that orchestration is queued
-        #     for a follow-up slice. For now the panel records intent,
-        #     emits a FleetEvent, and the operator follows up manually
-        #     via the existing provisioning surfaces.
+        #     Updates target_replicas and/or public_dns_hostname, and
+        #     RECONCILES the live replica count to the new target through
+        #     System::Platform::ReplicaReconciler — the same actuator the
+        #     platform_resilience skill's `scale` branch drives. The
+        #     reconcile outcome rides back in the response so the panel can
+        #     say what actually converged. (IMP-f4fe1ed1ec1e.)
         #
         # Permissions:
         #   system.platform.read  — index
@@ -108,6 +109,45 @@ module Api
             render_success(deployment: serialize(@deployment))
           end
 
+          # IMP-f4fe1ed1ec1e. This was the last OPERATOR-FACING
+          # target_replicas writer with no actuator behind it (the GitOps
+          # bridge, System::Gitops::ApplyService, still writes the column
+          # without converging anything — filed separately). APO-3b built
+          # System::Platform::ReplicaReconciler and wired the skill door
+          # (platform_resilience `scale`) to it; the Scaling panel kept moving
+          # the column and telling the operator nothing, so the number on the
+          # panel and the fleet behind it were free to disagree indefinitely.
+          #
+          # RECONCILE IS UNCONDITIONAL on a patch that names target_replicas —
+          # it is NOT gated on the value CHANGING, and the skill door says why
+          # in the same words (platform_resilience_executor.rb, `scale`):
+          # target == stored is the state every deployment last written by the
+          # Scaling panel or the GitOps bridge is already in, and the state the
+          # reconciler's own per-pass clamp leaves behind. Skipping the actuator
+          # there would report a matching COLUMN as a matching FLEET — this
+          # task's defect, one layer up. Only the WRITE and the scale-intent
+          # event are conditional on a real change; the convergence never is.
+          #
+          # Two things are deliberately asymmetric here:
+          #
+          #   HUB REFUSAL is checked BEFORE the write. The reconciler refuses
+          #   the deployment that hosts this control plane outright (INV-1 —
+          #   management authority must come from the consensus group, never
+          #   the node being managed), so accepting the write would leave a
+          #   target_replicas nothing will EVER converge: the exact defect this
+          #   endpoint is being fixed for, one row over. The skill door
+          #   pre-checks it for the same reason.
+          #
+          #   EVERY OTHER OUTCOME writes the intent and reports what happened.
+          #   A clamped pass, a policy that will not auto-execute a scale-in, a
+          #   caller holding system.platform.scale but not system.instances
+          #   .create — all of those are legitimate states in which the operator
+          #   IS allowed to declare the target and the convergence is partial or
+          #   deferred. Those are reported in `reconciled` (ok / refused_reason
+          #   / message / actual_before / actual_after / the id lists), not
+          #   hidden behind a bare 200 carrying only the new column. The panel
+          #   surfaces a non-ok or short reconcile rather than reporting the
+          #   save as a scale.
           def update
             return forbidden unless current_user&.has_permission?("system.platform.scale")
 
@@ -130,13 +170,29 @@ module Api
             end
 
             previous_target = @deployment.target_replicas
-            if @deployment.update(attrs)
-              emit_scale_event!(@deployment, previous_target: previous_target)
-              render_success(deployment: serialize(@deployment.reload))
-            else
-              render_error("Update failed: #{@deployment.errors.full_messages.join(', ')}",
-                          status: :unprocessable_content)
+            target_requested = attrs.key?(:target_replicas)
+
+            if target_requested && replica_reconciler.hub_deployment?(@deployment)
+              return render_error(
+                format(::System::Platform::ReplicaReconciler::HUB_REFUSAL_MESSAGE,
+                       name: @deployment.name),
+                status: :unprocessable_content,
+                code: "control_plane_self_remediation"
+              )
             end
+
+            unless @deployment.update(attrs)
+              return render_error("Update failed: #{@deployment.errors.full_messages.join(', ')}",
+                                  status: :unprocessable_content)
+            end
+
+            emit_scale_event!(@deployment, previous_target: previous_target)
+
+            payload = { deployment: serialize(@deployment.reload) }
+            if target_requested
+              payload[:reconciled] = serialize_reconcile(replica_reconciler.reconcile!(@deployment))
+            end
+            render_success(payload)
           end
 
           private
@@ -226,14 +282,45 @@ module Api
             [ 0, {} ]
           end
 
-          def emit_scale_event!(deployment, previous_target:)
-            return unless defined?(::FleetEvent)
-            return if previous_target == deployment.target_replicas
+          # `internal:` is FALSE by construction here: this is an operator
+          # request with a real User, and the reconciler checks
+          # system.instances.create / .control against that user. Handing it
+          # `internal: true` would turn the panel into a way to provision and
+          # terminate on the strength of system.platform.scale alone.
+          def replica_reconciler
+            @replica_reconciler ||= ::System::Platform::ReplicaReconciler.new(
+              account: current_account, user: current_user
+            )
+          end
 
-            ::FleetEvent.create!(
+          def serialize_reconcile(outcome)
+            {
+              ok: outcome.ok?,
+              refused_reason: outcome.refused_reason,
+              message: outcome.message,
+              actual_before: outcome.actual_before,
+              actual_after: outcome.actual_after,
+              target_replicas: outcome.target_replicas,
+              provisioned_instance_ids: Array(outcome.provisioned_instance_ids),
+              terminated_instance_ids: Array(outcome.terminated_instance_ids),
+              pending_removal_instance_ids: Array(outcome.pending_removal_instance_ids),
+              failures: Array(outcome.failures)
+            }
+          end
+
+          # IMP-f4fe1ed1ec1e: this guarded on `::FleetEvent` — a constant that
+          # does not exist (the model is System::FleetEvent) — and named
+          # severity "info", which is not in System::FleetEvent::SEVERITIES.
+          # Either alone made the emit a no-op, the second one silently via the
+          # rescue below, so the endpoint's own docstring claim to "emit a
+          # FleetEvent" had been false for as long as it had been made.
+          def emit_scale_event!(deployment, previous_target:)
+            return if previous_target.to_i == deployment.target_replicas.to_i
+
+            ::System::FleetEvent.create!(
               account_id: current_account.id,
               kind: "platform.scale.intent",
-              severity: "info",
+              severity: "low",
               payload: {
                 deployment_id: deployment.id,
                 service_role: deployment.service_role,
@@ -242,8 +329,13 @@ module Api
               },
               correlation_id: deployment.id
             )
-          rescue StandardError
-            # Event emission is opportunistic — never block the response
+          rescue StandardError => e
+            # Event emission is opportunistic — never block the response. It is
+            # LOGGED, though: the previous silent rescue is how two dead
+            # arguments survived in a method whose whole job is to be observed.
+            Rails.logger.warn(
+              "[Platform::DeploymentsController] scale-intent event emit failed: #{e.class}: #{e.message}"
+            )
           end
         end
       end

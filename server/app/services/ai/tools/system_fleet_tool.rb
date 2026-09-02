@@ -260,9 +260,11 @@ module Ai
         "system_recycle_pool"            => "system.instances.control",
 
         # === Gap remediation slice 1 (Phase 4 — operator-runbook-driven actions) ===
-        # system_drain_instance: graceful drain marker — operator opts into a
-        #   workload-relocation window before terminate. v1 records intent +
-        #   emits FleetEvent; future cordon/stop logic on the same handle.
+        # system_drain_instance: cordon + stop, delegated to
+        #   System::Ai::Skills::PlatformResilienceExecutor. The permission has
+        #   to be the one that governs the PRIMITIVE — the executor re-checks
+        #   `system.instances.control`, the same grant system_stop_instance
+        #   requires — so this mapping is load-bearing, not decorative.
         # system_get_silent_instances: read-only view aligned with InstanceStatusSensor.
         # system_validate_module_manifest: pure validation; no DB writes.
         "system_drain_instance"           => "system.instances.control",
@@ -1437,8 +1439,7 @@ module Ai
               deployment_id: { type: "string", required: false, description: "UUID of the deployment to scale or check failover for" },
               direction: { type: "string", required: false, enum: ::System::Ai::Skills::PlatformResilienceExecutor::SCALE_DIRECTIONS,
                           description: "set | increment | decrement (for op=scale)" },
-              target_replicas: { type: "integer", required: false, description: "Replica count for op=scale (used when direction=set)" },
-              timeout_seconds: { type: "integer", required: false, description: "Timeout in seconds for the resilience operation" }
+              target_replicas: { type: "integer", required: false, description: "Replica count for op=scale (used when direction=set)" }
             }
           },
 
@@ -1579,10 +1580,9 @@ module Ai
 
           # === Gap remediation slice 1 (Phase 4) ===
           "system_drain_instance" => {
-            description: "Initiate graceful drain on a NodeInstance: records drain intent + emits FleetEvent so observability tooling (and future autonomy reconcilers) can act. Workloads remain running; operator should call system_terminate_instance after relocation completes. Idempotent — calling twice updates drain_initiated_at.",
+            description: "Drain a NodeInstance: cordon it out of its instance pool (pool_state=draining, which the allocator reads) and then stop it through the instance lifecycle service. Refuses an instance on this control plane's own hosting node, and reports a refused or failed stop as an error rather than a drain. Disk and registry row are retained — system_start_instance brings it back; system_terminate_instance reclaims the cloud resource. Nothing relocates in-flight work first.",
             parameters: {
-              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to mark for graceful drain" },
-              timeout_seconds: { type: "integer", required: false, description: "Suggested workload-relocation window (default 600 = 10 min). Stored in metadata for observability; does not auto-terminate." }
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to cordon and stop" }
             }
           },
           "system_get_silent_instances" => {
@@ -1953,9 +1953,15 @@ module Ai
       # Both are names DESTRUCTIVE_TOOL_PATTERNS refuses unconditionally, and
       # neither executor nests a tool — PlatformResilienceExecutor and
       # PlatformMaintenanceExecutor mutate models/services directly — so the
-      # nested-depth re-arm can never reach them. A FIRST-HOP gap, and the
-      # unattributed destroy the overlay exists to stop: drain_instance stamps
-      # config["drain_initiated_by_user_id"] = @user&.id, nil for an instance.
+      # nested-depth re-arm can never reach them. A FIRST-HOP gap.
+      #
+      # IMP-f4fe1ed1ec1e: this comment used to justify itself with
+      # "drain_instance stamps config['drain_initiated_by_user_id']", a
+      # marker no code has written since APO-3b removed it — a rationale
+      # naming an observable that no longer exists. The overlay's actual stake
+      # is larger now: `op: "drain_instance"` CORDONS AND STOPS a fleet node
+      # and `op: "scale"` provisions or terminates replicas, so an
+      # unattributed inner op is a fleet mutation, not a config write.
       #
       # Extension-local by construction. Core must never learn an extension's
       # param names (core NEVER depends on an extension), so the tool that
@@ -4964,8 +4970,7 @@ module Ai
           instance_id: params[:instance_id],
           deployment_id: params[:deployment_id],
           direction: params[:direction],
-          target_replicas: params[:target_replicas],
-          timeout_seconds: params[:timeout_seconds]
+          target_replicas: params[:target_replicas]
         )
         return error_result(result[:error]) unless result[:success]
         success_result(result[:data])
@@ -5726,49 +5731,73 @@ module Ai
 
       # === Gap remediation slice 1 (Phase 4 — operator-runbook-driven actions) ===
 
-      # Records drain intent on a NodeInstance — emits a FleetEvent so
-      # observability tooling and (eventually) autonomy reconcilers can
-      # coordinate workload relocation. v1 is observation-only: workloads
-      # keep running; operator must call system_terminate_instance after
-      # relocation completes. Future versions will integrate K8s cordon
-      # + Docker container stop into this same handle.
+      # Drains a NodeInstance: CORDON the pool member, then STOP it.
+      #
+      # IMP-f4fe1ed1ec1e. This body used to be the decoy half of a pair.
+      # APO-3b (IMP-8c0f0fe9a8cf) made System::Ai::Skills::
+      # PlatformResilienceExecutor#drain_instance a real cordon + stop, but its
+      # finalizer was barred from this directory, so the MCP verb kept merging
+      # `drain_initiated_at` / `drain_timeout_seconds` into the instance config
+      # and emitting `system.instance.drain_initiated` while stopping nothing.
+      # Two doors onto one capability, one of them transitioning no state — and
+      # the inert one is the door an agent reaches for by name.
+      #
+      # It now DELEGATES rather than reimplementing, so no BEHAVIOUR of the
+      # drain can drift between the doors — only the answer SHAPE, which this
+      # verb flattens (see the note on the body below, and the pending
+      # passthrough that keeps the flattening from inventing a success).
+      # Everything the skill door enforces comes with it:
+      #
+      #   - the account scope (the executor joins :node and filters on
+      #     system_nodes.account_id, the same fence account_instances applied),
+      #   - the actuation permission — `system.instances.control`, which is
+      #     also what PERMISSION_MAP already required of this verb, so no
+      #     caller loses or gains reach,
+      #   - the self-management fence (INV-1: never stop an instance on this
+      #     control plane's own hosting node),
+      #   - the tri-state cordon, whose :cordon_failed arm aborts BEFORE the
+      #     stop rather than leaving a stopped VM the allocator calls ready,
+      #   - a refused or failed stop surfaced as an error_result, not as a
+      #     drain that reports success having done nothing.
+      #
+      # `timeout_seconds` is gone from the definition with the markers: it
+      # named an in-flight-work grace period no code ever enforced, and the
+      # stop path has no knob to map it onto (see the executor's own note).
+      # build_skill_executor carries this call's instance provenance into the
+      # executor, so an MCP instance principal is checked there, not waved
+      # through on a nil user.
+      #
+      # The SUCCESS result is flattened rather than passed through as the
+      # skill's {action:, data:, recommendations:} envelope: this verb has
+      # always answered flat, and `drained: true` is kept so an existing
+      # caller's top-level check still reads. The keys under it are now the
+      # drain's real observables (cordoned / cordon_state / stopped / status),
+      # not the two markers nothing consumed.
+      #
+      # A PENDING envelope is passed through UNTOUCHED. BaseSkillExecutor
+      # #pending_result answers {success: true, pending: true, data: <pending
+      # payload>} — a payload with no `:data` sub-key — so flattening it would
+      # drop `pending` and the approval/deferred-operation ids and report
+      # `drained: true` for an operation that ran nothing: the same false
+      # success this rewrite exists to remove, and the shape the sibling
+      # platform_resilience wrapper already forwards intact. The gate cannot
+      # fire today (PlatformResilienceExecutor declares no requires_approval),
+      # but this verb now cordons and STOPS a fleet node, which is exactly the
+      # kind of action that later gets gated — and the guard is on the SHAPE,
+      # not on the descriptor, so a gate added there needs no edit here.
       def drain_instance(params)
-        instance = account_instances.find(params[:instance_id])
-        timeout = (params[:timeout_seconds] || 600).to_i
-        initiated_at = Time.current.iso8601
+        executor = build_skill_executor(::System::Ai::Skills::PlatformResilienceExecutor)
+        result = executor.execute(action: "drain_instance", instance_id: params[:instance_id])
+        return error_result(result[:error]) unless result[:success]
 
-        # NodeInstance has `config` (JSONB) but no dedicated `metadata` column.
-        # Drain state lives under `config["drain_*"]` keys. Future migration
-        # may promote these to a typed column when drain logic gains
-        # cordon/stop integration.
-        # Two keys only — see System::ConfigDocument. Mutating the loaded
-        # document and calling save! writes the WHOLE jsonb back, erasing every
-        # heartbeat telemetry key the node wrote since this object was found.
-        instance.merge_config!(
-          "drain_initiated_at" => initiated_at,
-          "drain_timeout_seconds" => timeout
-        )
-
-        if defined?(::System::FleetEvent)
-          ::System::FleetEvent.create!(
-            account: @account,
-            kind: "system.instance.drain_initiated",
-            severity: "low",
-            node_instance_id: instance.id,
-            payload: {
-              "drain_timeout_seconds" => timeout,
-              "initiated_by" => @user&.id || "system"
-            },
-            correlation_id: SecureRandom.uuid
-          )
-        end
+        payload = result[:data] || {}
+        return success_result(payload) if result[:pending] || !payload.key?(:data)
 
         success_result(
-          drained: true,
-          instance: serialize_instance(instance.reload),
-          drain_initiated_at: initiated_at,
-          drain_timeout_seconds: timeout,
-          next_step: "operator should call system_terminate_instance after workloads relocate"
+          (payload[:data] || {}).merge(
+            drained: true,
+            recommendations: Array(payload[:recommendations])
+          )
         )
       end
 

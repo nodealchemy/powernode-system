@@ -379,15 +379,20 @@ module ModuleDocsMcpCallSignatures
     # execute_agent, ...) are the rename family and stay uncovered for now.
     # IMP-b4d9d7908c48 — the Phase 5 drain example passed `cordon_only: false`
     # under the comment "false → also stop services after cordon".
-    # system_drain_instance declares exactly instance_id and timeout_seconds
-    # (system_fleet_tool.rb:1318-1324); `cordon_only` is undeclared, and
-    # BaseTool#validate_params! only checks that REQUIRED keys are present
-    # (base_tool.rb:443-453) — it never rejects an extra one, so the key was
-    # silently dropped. There is no cordon-only mode to opt out of and no
-    # service stop to opt into: the handler merges two config keys and emits a
-    # FleetEvent (system_fleet_tool.rb:5216-5254). The pin is on the verb, not
-    # the key, so a future doc edit that reintroduces any undeclared parameter
-    # on this call reddens.
+    # system_drain_instance declares exactly `instance_id`; `cordon_only` is
+    # undeclared, and BaseTool#validate_params! only checks that REQUIRED keys
+    # are present — it never rejects an extra one, so the key was silently
+    # dropped. The pin is on the verb, not the key, so a future doc edit that
+    # reintroduces any undeclared parameter on this call reddens.
+    #
+    # IMP-f4fe1ed1ec1e — this rationale used to add "and timeout_seconds" and
+    # to describe the handler as merging two config keys and emitting a
+    # FleetEvent, citing line ranges. Both halves are now false: the timeout
+    # was dropped with the markers it belonged to, and the handler delegates
+    # to System::Ai::Skills::PlatformResilienceExecutor, which cordons the pool
+    # member and stops the instance. Line numbers are deliberately gone from
+    # this note — a citation that rots silently is how the stale claim above
+    # survived a rewrite of the code it described.
     "docs/runbooks/node-provisioning.md" => %w[system_create_node system_drain_instance]
   }.freeze
 

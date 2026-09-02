@@ -12,20 +12,52 @@ import {
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { platformDeploymentsApi } from '../../services/api/platformDeploymentsApi';
 import type {
+  DeploymentReconcileOutcome,
   DeploymentSummary,
+  DeploymentUpdateResponse,
   ServiceRole,
 } from '../../types/deployment.types';
 
 /**
  * Scaling panel — operator surface for adjusting platform-component
  * replica counts. Lists PlatformDeployment rows with target vs actual
- * replicas; supports inline target_replicas editing. Actual provisioning
- * orchestration (when target > actual) is queued for a follow-up slice
- * — for now the panel records intent + emits a FleetEvent the operator
- * follows up on via existing provisioning surfaces.
+ * replicas; supports inline target_replicas editing.
+ *
+ * IMP-f4fe1ed1ec1e: writing target_replicas now RECONCILES. The PATCH drives
+ * System::Platform::ReplicaReconciler server-side — the same actuator the
+ * platform_resilience skill's `scale` branch uses — and returns what it did
+ * under `reconciled`. This comment used to say provisioning was "queued for a
+ * follow-up slice"; nothing was ever queued, and the panel reported every
+ * save as a success regardless of whether a single replica moved.
+ *
+ * The notification is therefore keyed on the RECONCILE, not on the HTTP
+ * status: a refusal, a clamped pass, or a scale-in the intervention policy
+ * declined to auto-execute all land as a warning naming what happened.
  *
  * Plan reference: Decentralized Federation §G + §I + P7.3.
  */
+
+/**
+ * Turns a reconcile outcome into the toast the operator actually needs.
+ * Returns null when the target converged exactly — the ordinary success case.
+ */
+const reconcileWarning = (
+  outcome: DeploymentReconcileOutcome | undefined,
+  target: number,
+): string | null => {
+  if (!outcome) return null;
+  if (!outcome.ok) {
+    return outcome.message ?? 'The replica reconcile was refused; nothing was provisioned.';
+  }
+  if (outcome.actual_after !== null && outcome.actual_after !== target) {
+    return outcome.message ?? `Live replicas are at ${outcome.actual_after}, not ${target}.`;
+  }
+  if (outcome.failures.length > 0) {
+    return outcome.message ?? `${outcome.failures.length} replica operation(s) failed.`;
+  }
+  return null;
+};
+
 export const ScalingPanel: React.FC = () => {
   const { addNotification } = useNotifications();
   const [deployments, setDeployments] = useState<DeploymentSummary[]>([]);
@@ -61,24 +93,44 @@ export const ScalingPanel: React.FC = () => {
     setPendingValue('');
   };
 
+  // One place both write paths report through, so the nudge buttons cannot
+  // drift back to claiming a scale the reconciler refused.
+  const notifyScaleOutcome = useCallback(
+    (name: string, target: number, result: DeploymentUpdateResponse) => {
+      const warning = reconcileWarning(result.reconciled, target);
+      const plural = target === 1 ? '' : 's';
+      if (warning) {
+        addNotification({
+          type: 'warning',
+          message: `${name} target set to ${target} replica${plural}, but the fleet did not converge: ${warning}`,
+        });
+        return;
+      }
+      addNotification({
+        type: 'success',
+        message: `${name} target set to ${target} replica${plural}.`,
+      });
+    },
+    [addNotification],
+  );
+
   const handleSave = async (deployment: DeploymentSummary) => {
     const next = parseInt(pendingValue, 10);
     if (!Number.isFinite(next) || next < 0) {
       setError('target_replicas must be a non-negative integer');
       return;
     }
-    if (next === deployment.target_replicas) {
-      handleCancelEdit();
-      return;
-    }
+    // NOT short-circuited on `next === deployment.target_replicas`. The PATCH
+    // reconciles on every patch that names target_replicas, and target ==
+    // stored with actual < target is exactly the state a clamped reconciler
+    // pass (or the GitOps bridge) leaves behind — re-saving the same number is
+    // the operator's way to resume it. Skipping the request here would put the
+    // "matching column, unmatched fleet" read back on the panel side.
     setSavingId(deployment.id);
     setError(null);
     try {
-      await platformDeploymentsApi.update(deployment.id, { target_replicas: next });
-      addNotification({
-        type: 'success',
-        message: `${deployment.name} target set to ${next} replica${next === 1 ? '' : 's'}.`,
-      });
+      const result = await platformDeploymentsApi.update(deployment.id, { target_replicas: next });
+      notifyScaleOutcome(deployment.name, next, result);
       await fetchDeployments();
       handleCancelEdit();
     } catch (err: unknown) {
@@ -96,11 +148,8 @@ export const ScalingPanel: React.FC = () => {
     if (next === deployment.target_replicas) return;
     setSavingId(deployment.id);
     try {
-      await platformDeploymentsApi.update(deployment.id, { target_replicas: next });
-      addNotification({
-        type: 'success',
-        message: `${deployment.name} target set to ${next} replica${next === 1 ? '' : 's'}.`,
-      });
+      const result = await platformDeploymentsApi.update(deployment.id, { target_replicas: next });
+      notifyScaleOutcome(deployment.name, next, result);
       await fetchDeployments();
     } catch (err: unknown) {
       addNotification({

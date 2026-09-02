@@ -32,7 +32,10 @@ jest.mock('@/shared/hooks/useNotifications', () => ({
 // Fixtures
 // =============================================================================
 
-import type { DeploymentSummary } from '../../types/deployment.types';
+import type {
+  DeploymentReconcileOutcome,
+  DeploymentSummary,
+} from '../../types/deployment.types';
 
 const DEPLOY_API: DeploymentSummary = {
   id: 'dep-api-1',
@@ -98,16 +101,38 @@ function listEnvelope(deployments: DeploymentSummary[]) {
 
 /**
  * Build an AxiosResponse-shaped mock for the update (PATCH) endpoint.
- * `platformDeploymentsApi.update` calls extractData → response.data.data.deployment
+ * `platformDeploymentsApi.update` calls extractData → response.data.data,
+ * which carries the row under `deployment` and — for a patch naming
+ * target_replicas — the reconciler's outcome under `reconciled`.
  */
-function updateEnvelope(deployment: DeploymentSummary) {
+function updateEnvelope(
+  deployment: DeploymentSummary,
+  reconciled?: Partial<DeploymentReconcileOutcome>,
+) {
   return {
     data: {
       success: true,
-      data: { deployment },
+      data: {
+        deployment,
+        ...(reconciled ? { reconciled: { ...RECONCILE_OK, ...reconciled } } : {}),
+      },
     },
   };
 }
+
+/** A fully-converged reconcile — the ordinary success case. */
+const RECONCILE_OK: DeploymentReconcileOutcome = {
+  ok: true,
+  refused_reason: null,
+  message: null,
+  actual_before: 2,
+  actual_after: 3,
+  target_replicas: 3,
+  provisioned_instance_ids: ['inst-1'],
+  terminated_instance_ids: [],
+  pending_removal_instance_ids: [],
+  failures: [],
+};
 
 // =============================================================================
 // Helpers
@@ -427,8 +452,16 @@ describe('ScalingPanel', () => {
     expect(mockGet).toHaveBeenCalledTimes(2);
   });
 
-  it('does NOT call PATCH when Save is clicked with the same value as current target', async () => {
-    mockGet.mockResolvedValue(listEnvelope([DEPLOY_API]));
+  // IMP-f4fe1ed1ec1e: re-saving the SAME target now PATCHes. The endpoint
+  // reconciles on every patch naming target_replicas, and target == stored
+  // with actual < target is exactly the state a clamped reconciler pass (or
+  // the GitOps bridge) leaves behind — re-saving is how the operator resumes
+  // it. Short-circuiting here would put "matching column, unmatched fleet"
+  // back on the panel side.
+  it('DOES call PATCH when Save is clicked with the same value, to re-drive convergence', async () => {
+    const clamped = { ...DEPLOY_API, actual_replicas: 1 };
+    mockGet.mockResolvedValue(listEnvelope([clamped]));
+    mockPatch.mockResolvedValue(updateEnvelope(clamped, { actual_after: 2, target_replicas: 2 }));
     renderPanel();
     await waitFor(() => expect(screen.getByText('powernode-hub-api')).toBeInTheDocument());
 
@@ -436,9 +469,89 @@ describe('ScalingPanel', () => {
     // value already pre-populated to '2' — click Save without changing
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
 
-    // Should cancel silently — no PATCH, back to view mode
+    await waitFor(() =>
+      expect(mockPatch).toHaveBeenCalledWith('/system/platform/deployments/dep-api-1', {
+        target_replicas: 2,
+      }),
+    );
     await waitFor(() => expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument());
-    expect(mockPatch).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Reconcile reporting (IMP-f4fe1ed1ec1e)
+  //
+  // The toast is keyed on the RECONCILE, not on the HTTP status. Before this,
+  // every 200 produced an unqualified "target set to N replicas" success —
+  // including the refusals and clamped passes in which nothing moved.
+  // ---------------------------------------------------------------------------
+
+  it('warns instead of reporting success when the reconcile was REFUSED', async () => {
+    mockGet.mockResolvedValue(listEnvelope([DEPLOY_API]));
+    mockPatch.mockResolvedValue(
+      updateEnvelope({ ...DEPLOY_API, target_replicas: 3 }, {
+        ok: false,
+        refused_reason: 'insufficient_permission',
+        message: 'Reconcile requires system.instances.create',
+        actual_after: 2,
+        provisioned_instance_ids: [],
+      }),
+    );
+
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('powernode-hub-api')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Increment target'));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'warning',
+        message: expect.stringContaining('Reconcile requires system.instances.create'),
+      }),
+    );
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' }),
+    );
+  });
+
+  it('warns when the reconcile succeeded but the pass was CLAMPED short of the target', async () => {
+    mockGet.mockResolvedValue(listEnvelope([DEPLOY_API]));
+    mockPatch.mockResolvedValue(
+      updateEnvelope({ ...DEPLOY_API, target_replicas: 3 }, {
+        ok: true,
+        message: null,
+        actual_before: 1,
+        actual_after: 2,
+        target_replicas: 3,
+      }),
+    );
+
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('powernode-hub-api')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Increment target'));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'warning',
+        message: expect.stringContaining('Live replicas are at 2, not 3'),
+      }),
+    );
+  });
+
+  it('reports plain success when the reconcile converged exactly on the target', async () => {
+    mockGet.mockResolvedValue(listEnvelope([DEPLOY_API]));
+    mockPatch.mockResolvedValue(
+      updateEnvelope({ ...DEPLOY_API, target_replicas: 3 }, { actual_after: 3, target_replicas: 3 }),
+    );
+
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('powernode-hub-api')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Increment target'));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'success',
+        message: 'powernode-hub-api target set to 3 replicas.',
+      }),
+    );
   });
 
   // ---------------------------------------------------------------------------
