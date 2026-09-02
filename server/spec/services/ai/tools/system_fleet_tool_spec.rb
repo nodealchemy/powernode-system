@@ -4376,15 +4376,18 @@ end
       expect(cleanup_result[:error]).to include("permission denied")
     end
 
-    # Pins CURRENT (gap) behavior, not desired behavior — see improvement
-    # 019f34a3 ("requires_approval is unenforced on the MCP tools/call
-    # dispatch path"). The action_definitions entry declares
-    # requires_approval: true, but calling .execute directly runs the
-    # destructive op immediately — there is no approval gate in the
-    # dispatch path today. If 019f34a3 is ever closed by wiring an actual
-    # gate in here (or in the shared dispatcher), THIS spec should start
-    # failing and needs to be updated to assert the gate instead.
-    it "documents that requires_approval is declared but NOT enforced by direct .execute (019f34a3)" do
+    # Pins CURRENT (gap) behavior, not desired behavior — the remainder of
+    # improvement 019f34a3. Its other half is CLOSED: APO-1c
+    # (IMP-7e2bdc1774e4) made `requires_approval` real for
+    # BaseSkillExecutor-based skills, which is why this comment no longer says
+    # the flag is unenforced across the whole dispatch path. What is still
+    # unenforced is a RAW SystemFleetTool action like this one — it has no
+    # executor for Ai::AutonomyGate to replay, so the action_definitions entry
+    # declares requires_approval: true while calling .execute runs the
+    # destructive op immediately. If that is ever closed by wiring a gate in
+    # here (or in the shared dispatcher), THIS spec should start failing and
+    # needs to be updated to assert the gate instead.
+    it "documents that requires_approval is declared but NOT enforced by direct .execute on a RAW action (019f34a3)" do
       defn = described_class.action_definitions.fetch("system_cleanup_storage_migration")
       expect(defn[:requires_approval]).to be true
 

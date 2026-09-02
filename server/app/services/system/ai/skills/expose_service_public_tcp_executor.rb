@@ -54,18 +54,20 @@ module System
       # a Traefik restart.
       #
       # `requires_approval: true`, matching the family
-      # (ExposeServicePubliclyExecutor, ExposeServiceLocalExecutor) — but
-      # improvement `019f34a3` documents that this flag is NOT enforced
-      # anywhere on the MCP tools/call dispatch path
-      # (SystemIngressTool#call -> BaseSkillExecutor#execute never checks it,
-      # creates an Ai::ApprovalRequest, or defers execution; the only runtime
-      # consumer is Ai::ConciergeToolBridge#auto_emit_confirmation, which only
-      # fires inside the LLM conversational loop, not tools/call). This
-      # executor deliberately does NOT invent a bespoke approval check to
-      # paper over that gap — consistency with the family matters more than a
-      # one-off fix, and the gap is pinned by spec (the request spec's
-      # "system_expose_service_public_tcp / system_unexpose_service_public_tcp"
-      # approval-gating block).
+      # (ExposeServicePubliclyExecutor, ExposeServiceLocalExecutor), and the
+      # flag is ENFORCED as of APO-1c (IMP-7e2bdc1774e4): BaseSkillExecutor
+      # #execute resolves Ai::InterventionPolicy before #perform, so
+      # SystemIngressTool#call -> #run_executor now parks an
+      # Ai::ApprovalRequest for this action unless an operator policy says
+      # otherwise. Until then improvement `019f34a3` recorded the opposite —
+      # the flag was declared here and read by nobody — and this executor
+      # deliberately did NOT invent a bespoke check to paper over it, because
+      # consistency with the family mattered more than a one-off fix. The base
+      # class was the right altitude, and that is where the gate landed.
+      #
+      # Pinned by the request spec's approval-gating blocks
+      # (spec/requests/api/v1/mcp/system_ingress_tool_spec.rb), which were
+      # inverted from pinning the gap to pinning the gate.
       class ExposeServicePublicTcpExecutor < BaseSkillExecutor
         skill_descriptor(
           name: "expose_service_public_tcp",
