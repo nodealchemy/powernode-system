@@ -657,6 +657,26 @@ module System
         build_error_response("PVE get_volume failed: #{e.message}")
       end
 
+      # --- BaseProvider volume-snapshot seam (APO-5 / DR-2) ---
+      #
+      # FALSE, deliberately, and this override exists so nobody reads it off
+      # #get_metadata. That features list advertises "snapshots" and it is not
+      # wrong — but PVE snapshots are VM-SCOPED
+      # (/nodes/{node}/{kind}/{vmid}/snapshot, the endpoints #create_image and
+      # #delete_image below already use). There is no per-volume snapshot verb
+      # in the PVE API: a rollback takes every disk on the VM — and its RAM
+      # state when one was captured — back with it. Answering true here would
+      # give System::VolumeManagementService a volume snapshot that silently
+      # means "the whole VM", which is the fake-success shape this increment
+      # exists to remove.
+      #
+      # The honest Proxmox story is an INSTANCE-scoped snapshot verb; that is a
+      # separate contract from this one, so this adapter reports the volume
+      # surface unavailable until it ships.
+      def supports_volume_snapshots?
+        false
+      end
+
       # ----------------------------------------------------------------
       # Images / templates
       # ----------------------------------------------------------------

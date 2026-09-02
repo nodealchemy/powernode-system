@@ -4,7 +4,7 @@ module Api
   module V1
     module System
       class ProviderVolumesController < BaseController
-        before_action :set_volume, only: [ :show, :update, :destroy, :attach, :detach, :snapshot ]
+        before_action :set_volume, only: [ :show, :update, :destroy, :attach, :detach, :snapshot, :snapshots, :restore ]
 
         # GET /api/v1/system/provider_volumes
         def index
@@ -93,6 +93,13 @@ module Api
         end
 
         # POST /api/v1/system/provider_volumes/:id/snapshot
+        #
+        # APO-5 / DR-2. This used to INSERT a "pending" row and return 201
+        # without asking any provider anything — so the row an operator read
+        # as a restore point was evidence of nothing. It now goes through
+        # System::VolumeManagementService, which refuses on a provider with no
+        # snapshot primitive and records "error" (never "completed") when the
+        # provider call fails.
         def snapshot
           require_permission("system.volumes.snapshot")
 
@@ -100,16 +107,63 @@ module Api
             return render_error("Cannot create snapshot in current state", status: :unprocessable_content)
           end
 
-          snap = current_account.system_provider_volume_snapshots.create!(
-            name: params[:name] || "#{@volume.name}-snapshot-#{Time.current.strftime('%Y%m%d%H%M%S')}",
-            description: params[:description],
-            volume: @volume,
-            size_gb: @volume.size_gb,
-            encrypted: @volume.encrypted,
-            status: "pending"
+          result = ::System::VolumeManagementService.snapshot(
+            volume: @volume, name: params[:name].presence, description: params[:description].presence
           )
 
-          render_success(snapshot: ::System::ProviderVolumeSnapshotSerializer.new(snap).as_json, status: :created)
+          unless result.success?
+            return render_error(result.error, status: :unprocessable_content)
+          end
+
+          render_success(
+            snapshot: ::System::ProviderVolumeSnapshotSerializer.new(result.data[:snapshot]).as_json,
+            status: :created
+          )
+        end
+
+        # GET /api/v1/system/provider_volumes/:id/snapshots
+        def snapshots
+          require_permission("system.volumes.read")
+
+          snaps = paginate(@volume.snapshots.recent)
+          render_success(
+            snapshots: snaps.map { |s| ::System::ProviderVolumeSnapshotSerializer.new(s).as_json },
+            meta: pagination_meta
+          )
+        end
+
+        # POST /api/v1/system/provider_volumes/:id/restore
+        #
+        # system.volumes.manage rather than .update — it is the broadest volume
+        # grant, and this is the broadest thing that can be done to a volume's
+        # contents.
+        #
+        # `restored_in_place` is the field a caller must read. TRUE: this volume
+        # was rolled back and every write since the snapshot is DISCARDED.
+        # FALSE: the provider copied the snapshot into a NEW volume (returned as
+        # `restored_volume`) and THIS VOLUME IS UNCHANGED — rendering 200 with
+        # only the source volume would tell an operator their data was restored
+        # when it is sitting in a different disk.
+        def restore
+          require_permission("system.volumes.manage")
+
+          snap = current_account.system_provider_volume_snapshots
+                                .find_by(id: params[:snapshot_id], volume_id: @volume.id)
+          return render_error("Snapshot not found for this volume", status: :not_found) unless snap
+
+          result = ::System::VolumeManagementService.restore_snapshot(snapshot: snap)
+
+          unless result.success?
+            return render_error(result.error, status: :unprocessable_content)
+          end
+
+          restored = result.data[:restored_volume]
+          render_success(
+            volume: ::System::ProviderVolumeSerializer.new(@volume.reload).as_json,
+            restored_in_place: result.data[:restored_in_place],
+            restored_volume: restored ? ::System::ProviderVolumeSerializer.new(restored).as_json : nil,
+            restored_from: ::System::ProviderVolumeSnapshotSerializer.new(snap).as_json
+          )
         end
 
         private

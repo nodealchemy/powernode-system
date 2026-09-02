@@ -617,6 +617,62 @@ module System
       # Snapshots
       # ===========================================
 
+      # --- BaseProvider volume-snapshot seam (APO-5 / DR-2) ---
+      #
+      # Azure is the one adapter in the tree with real disk-snapshot calls
+      # (Microsoft.Compute/snapshots), so it is the one that answers true. The
+      # three methods below it were already here and are UNCHANGED; these four
+      # only normalise them onto the seam's envelope so
+      # System::VolumeManagementService can drive every provider identically.
+      def supports_volume_snapshots?
+        true
+      end
+
+      def create_volume_snapshot(volume_id, name:, description: nil)
+        create_snapshot(volume_id, { name: name, description: description }.compact)
+      rescue ProviderError => e
+        build_error_response("Azure create_volume_snapshot failed: #{e.message}")
+      end
+
+      # #list_snapshots returns a BARE ARRAY (and [] on an API failure), which
+      # a caller cannot tell from "no snapshots". Wrapped, not rewritten: the
+      # existing callers of #list_snapshots keep their shape.
+      def list_volume_snapshots(volume_id = nil)
+        snapshots = list_snapshots
+        snapshots = snapshots.select { |s| s[:source].to_s.end_with?("/#{volume_id}") } if volume_id.present?
+        { success: true, snapshots: snapshots }
+      rescue ProviderError => e
+        build_error_response("Azure list_volume_snapshots failed: #{e.message}")
+      end
+
+      def delete_volume_snapshot(snapshot_id)
+        rg = resource_group
+        response = arm_delete(
+          "/subscriptions/#{subscription_id}/resourceGroups/#{rg}/providers/Microsoft.Compute/snapshots/#{snapshot_id}",
+          api_version: ARM_API_VERSION
+        )
+        return build_error_response("Azure delete_volume_snapshot failed: #{response.status}") unless response.success?
+
+        { success: true, snapshot_id: snapshot_id }
+      rescue ProviderError => e
+        build_error_response("Azure delete_volume_snapshot failed: #{e.message}")
+      end
+
+      # Azure restore creates a NEW disk from the snapshot rather than rolling
+      # the source disk back in place; :volume_id in the result names it, and
+      # the caller is responsible for recording and re-attaching it. Declared
+      # rather than left implicit — VolumeManagementService branches on this,
+      # and without it a copy would be reported as an in-place restore.
+      def volume_snapshot_restore_mode
+        :copy
+      end
+
+      def restore_volume_snapshot(snapshot_id, params = {})
+        restore_snapshot(snapshot_id, params)
+      rescue ProviderError => e
+        build_error_response("Azure restore_volume_snapshot failed: #{e.message}")
+      end
+
       def create_snapshot(volume_id, params = {})
         rg   = resource_group
         name = params[:name] || "snap-#{volume_id}-#{Time.now.to_i}"

@@ -311,6 +311,10 @@ Rails.application.routes.draw do
             post :attach
             post :detach
             post :snapshot
+            # APO-5 / DR-2 — snapshots are a sub-resource, not a volume verb:
+            # list them, and restore the volume FROM one of them.
+            get :snapshots
+            post :restore
           end
         end
 

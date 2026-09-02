@@ -211,6 +211,77 @@ module System
         nil
       end
 
+      # === Volume snapshots (optional provider capability) — APO-5 / DR-2 ===
+      #
+      # Project data protection. The platform's only backup story was the
+      # PLATFORM database (worker's Maintenance::ScheduledBackupJob); a
+      # project's own volumes had no snapshot and no restore at any surface.
+      #
+      # OPTIONAL, and declined rather than faked. A provider that cannot
+      # snapshot a volume must say so — the caller then knows the data is
+      # unprotected. The failure mode this shape exists to prevent is the one
+      # the REST twin had: record a snapshot row, return 201, never ask a
+      # provider anything. An operator reading that row believes they have a
+      # restore point they do not have.
+      #
+      # NOT NotImplementedError, for the same reason ops_hold is not: a DR
+      # sweep across a mixed fleet must be able to ask every provider and get
+      # an answer, not an exception mid-mission.
+      def supports_volume_snapshots?
+        false
+      end
+
+      # @param volume_id [String] provider-side volume id (ProviderVolume#external_id)
+      # @param name [String] snapshot name
+      # @param description [String, nil]
+      # @return [Hash] :success, and on success :snapshot_id naming the provider-side snapshot
+      def create_volume_snapshot(_volume_id, name:, description: nil)
+        unsupported_volume_snapshot_result
+      end
+
+      # @param volume_id [String, nil] restrict to one volume, or nil for all
+      # @return [Hash] :success, and on success :snapshots (array of {snapshot_id:, ...})
+      def list_volume_snapshots(_volume_id = nil)
+        unsupported_volume_snapshot_result
+      end
+
+      # @param snapshot_id [String] provider-side snapshot id
+      # @return [Hash] :success
+      def delete_volume_snapshot(_snapshot_id)
+        unsupported_volume_snapshot_result
+      end
+
+      # What a restore on THIS provider actually does. The caller cannot report
+      # honestly without knowing, because "restored" is not one thing:
+      #
+      #   :in_place — the SOURCE volume itself is rolled back; every write
+      #               since the snapshot is discarded.
+      #   :copy     — a NEW provider-side volume is created from the snapshot
+      #               and THE SOURCE IS UNTOUCHED. Nothing is discarded, and
+      #               the restored data is only reachable once the copy is
+      #               recorded and attached. Azure is this shape
+      #               (Microsoft.Compute disks, createOption "Copy").
+      #   :none     — no restore primitive at all (the default).
+      #
+      # Declared separately from #supports_volume_snapshots? on purpose: a
+      # provider can create and delete snapshots without being able to restore
+      # from them, and reporting a copy-restore as an in-place one tells an
+      # operator their volume is back when it is not.
+      def volume_snapshot_restore_mode
+        :none
+      end
+
+      # Restore from the snapshot, per #volume_snapshot_restore_mode. Callers
+      # gate it: on an :in_place provider every write since the snapshot is
+      # discarded.
+      #
+      # @param snapshot_id [String] provider-side snapshot id
+      # @return [Hash] :success, and on a :copy provider :volume_id naming the
+      #                NEW provider-side volume the restore created
+      def restore_volume_snapshot(_snapshot_id, params = {})
+        unsupported_volume_snapshot_result
+      end
+
       # Stop a running instance
       #
       # @param instance_id [String] Cloud instance ID
@@ -552,6 +623,15 @@ module System
       # @param message [String] Error message
       # @param code [String, nil] Error code
       # @return [Hash] Error response
+      # The single shape every declined snapshot verb returns. `unsupported`
+      # is the discriminator callers branch on: it separates "this provider
+      # has no snapshot primitive" (data is unprotected — tell the operator)
+      # from "the snapshot attempt failed" (retryable).
+      def unsupported_volume_snapshot_result
+        { success: false, unsupported: true,
+          error: "#{self.class} does not support volume snapshots" }
+      end
+
       def build_error_response(message, code: nil)
         {
           success: false,

@@ -191,6 +191,15 @@ module Ai
         "system_attach_volume"          => "system.volumes.update",
         "system_detach_volume"          => "system.volumes.update",
         "system_test_nfs_export"        => "system.volumes.read",
+        # APO-5 / DR-2 — project data protection. Snapshot CREATE is additive
+        # (system.volumes.snapshot, the same grant the REST twin demands);
+        # DELETE destroys a restore point, so it takes system.volumes.delete;
+        # RESTORE discards every write since the snapshot, so it takes the
+        # broadest volume grant there is (system.volumes.manage).
+        "system_snapshot_volume"         => "system.volumes.snapshot",
+        "system_list_volume_snapshots"   => "system.volumes.read",
+        "system_delete_volume_snapshot"  => "system.volumes.delete",
+        "system_restore_volume_snapshot" => "system.volumes.manage",
         "system_get_storage_recommendations"    => "system.platform.read",
         "system_update_storage_recommendations" => "system.platform.scale",
         "system_migrate_storage_component"      => "system.platform.scale",
@@ -498,6 +507,29 @@ module Ai
       declare_action "system_deploy_platform", mutating: true
       declare_action "system_destroy_instance", mutating: true
       declare_action "system_detach_volume", mutating: true
+      # APO-5 / DR-2 (IMP-4b4bed6967ed). APO-1a declaration shape: `mutating:`
+      # only, so BaseTool#gated_action? stays false, #execute still routes to
+      # #call, and the per-action permission check above still runs. The only
+      # control on these verbs today is that permission.
+      #
+      # NOT YET GATED, stated plainly rather than implied: the operator
+      # direction settles that snapshot creation may auto_approve and snapshot
+      # DELETE must be approval-gated. Arming that needs BOTH an
+      # Ai::InterventionPolicy row (System::Governance::PolicyDeclarations) and
+      # the action_category/executor_class/gate_context/on_proceed quartet
+      # BaseTool#gated_action? reads, and neither exists yet — no change in
+      # this batch adds a volume-snapshot policy row. `system_delete_volume_snapshot`
+      # therefore destroys a restore point behind `system.volumes.delete` alone.
+      # Deferred deliberately: a guessed action_category is not inert (an
+      # unmatched category resolves to the default "require_approval" policy),
+      # and the gate replays an EXECUTOR, which delete does not yet have.
+      # The restore half IS gated where it matters — the skill surface,
+      # System::Ai::Skills::RestoreVolumeExecutor, declares requires_approval.
+      # Filed as improvement 01a06378-12ff-74c6-a8ba-430cc1b50f45.
+      declare_action "system_snapshot_volume", mutating: true
+      declare_action "system_list_volume_snapshots", mutating: false
+      declare_action "system_delete_volume_snapshot", mutating: true
+      declare_action "system_restore_volume_snapshot", mutating: true
       declare_action "system_discover_modules", mutating: false
       declare_action "system_discover_peers", mutating: false
       declare_action "system_discover_templates", mutating: false
@@ -1261,6 +1293,31 @@ module Ai
               node_instance_id: { type: "string", required: false, description: "Required for NFS volumes to identify which consumer binding to clear" }
             }
           },
+          # === Volume snapshots / restore (APO-5 / DR-2) ===
+          "system_snapshot_volume" => {
+            description: "Take a point-in-time snapshot of a ProviderVolume through its provider. Refuses on a provider with no snapshot primitive rather than recording a snapshot that does not exist — check the error before treating the volume as protected.",
+            parameters: {
+              volume_id: { type: "string", required: true, description: "UUID of the ProviderVolume to snapshot (account-scoped)" },
+              name: { type: "string", required: false, description: "Snapshot name; defaults to <volume>-snapshot-<timestamp>. Must be unique within the account" },
+              description: { type: "string", required: false, description: "Free-text description recorded on the snapshot" }
+            }
+          },
+          "system_list_volume_snapshots" => {
+            description: "List the snapshots recorded for one ProviderVolume, newest first. Status 'completed' is the only status that is a usable restore point. Pass reconcile:true to check each recorded snapshot against the provider — rows then carry present_at_provider (null when the provider could not be asked).",
+            parameters: {
+              volume_id: { type: "string", required: true, description: "UUID of the ProviderVolume whose snapshots to list" },
+              reconcile: { type: "boolean", required: false, description: "Ask the provider whether each recorded snapshot still exists (one provider round-trip). Off by default" },
+              **PAGINATION_PARAMETERS
+            }
+          },
+          "system_delete_volume_snapshot" => {
+            description: "Delete a volume snapshot at the provider and drop its row. DESTROYS a restore point. Refuses when the provider cannot confirm the delete, so the row is never dropped while the provider-side snapshot may survive.",
+            parameters: { id: { type: "string", required: true, description: "UUID of the ProviderVolumeSnapshot to delete (account-scoped)" } }
+          },
+          "system_restore_volume_snapshot" => {
+            description: "Restore a volume from one of its snapshots. Read restored_in_place in the result: true means the source volume was rolled back and every write since the snapshot is DISCARDED; false means the provider copied the snapshot into a NEW volume (returned as restored_volume) and the source volume is UNCHANGED — attach the copy to finish the restore. Only a 'completed' snapshot can be restored; a provider with no restore primitive refuses.",
+            parameters: { id: { type: "string", required: true, description: "UUID of the ProviderVolumeSnapshot to restore from (account-scoped)" } }
+          },
           "system_test_nfs_export" => {
             description: "Probe an NFS server + export to verify reachability before recording a ProviderVolume. Runs DNS lookup + TCP probe on 111/2049 + showmount -e. Does NOT actually mount — that's safer when called from chat.",
             parameters: {
@@ -1999,6 +2056,10 @@ module Ai
         when "system_delete_volume"            then delete_volume(params)
         when "system_attach_volume"            then attach_volume(params)
         when "system_detach_volume"            then detach_volume(params)
+        when "system_snapshot_volume"          then snapshot_volume(params)
+        when "system_list_volume_snapshots"    then list_volume_snapshots(params)
+        when "system_delete_volume_snapshot"   then delete_volume_snapshot(params)
+        when "system_restore_volume_snapshot"  then restore_volume_snapshot(params)
         when "system_test_nfs_export"          then test_nfs_export(params)
         when "system_get_storage_recommendations"    then get_storage_recommendations
         when "system_update_storage_recommendations" then update_storage_recommendations(params)
@@ -4911,6 +4972,95 @@ module Ai
       end
 
       # === Volume helpers ===
+
+      # === Volume snapshots / restore (APO-5 / DR-2) ===
+      #
+      # Every one of these delegates to System::VolumeManagementService, which
+      # owns the rule that the snapshot ROW never claims more than the PROVIDER
+      # did. The tool deliberately does not INSERT a snapshot row of its own —
+      # that is exactly what provider_volumes#snapshot used to do, and it is
+      # how a "pending" row came to stand in for a restore point nobody had.
+      def snapshot_volume(params)
+        volume = ::System::ProviderVolume.find_by(id: params[:volume_id], account: @account)
+        return error_result("Volume not found") unless volume
+        return error_result("Cannot snapshot volume in status #{volume.status}") unless volume.can_snapshot?
+
+        result = ::System::VolumeManagementService.snapshot(
+          volume: volume, name: params[:name].presence, description: params[:description].presence
+        )
+        return error_result(result.error) unless result.success?
+
+        success_result(snapshot: serialize_volume_snapshot(result.data[:snapshot]))
+      end
+
+      # `reconcile` asks the PROVIDER whether each recorded snapshot still
+      # exists. Off by default because it costs a provider round-trip; on, each
+      # row carries present_at_provider (nil when the provider could not be
+      # asked — never a guess).
+      def list_volume_snapshots(params)
+        volume = ::System::ProviderVolume.find_by(id: params[:volume_id], account: @account)
+        return error_result("Volume not found") unless volume
+
+        presence = snapshot_provider_presence(volume, params[:reconcile])
+
+        paginated_result(:snapshots, volume.snapshots, params, sort: :created_at, direction: :desc) do |snap|
+          serialize_volume_snapshot(snap, presence: presence)
+        end
+      end
+
+      def snapshot_provider_presence(volume, reconcile)
+        return nil unless ActiveModel::Type::Boolean.new.cast(reconcile)
+
+        result = ::System::VolumeManagementService.list_snapshots(volume: volume, reconcile: true)
+        return nil unless result.success? && result.data[:reconciled]
+
+        result.data[:present_at_provider]
+      end
+
+      def delete_volume_snapshot(params)
+        snapshot = find_volume_snapshot(params[:id])
+        return error_result("Snapshot not found") unless snapshot
+
+        result = ::System::VolumeManagementService.delete_snapshot(snapshot: snapshot)
+        return error_result(result.error) unless result.success?
+
+        success_result(deleted: true, id: params[:id],
+                       provider_deleted: result.data[:provider_deleted])
+      end
+
+      def restore_volume_snapshot(params)
+        snapshot = find_volume_snapshot(params[:id])
+        return error_result("Snapshot not found") unless snapshot
+
+        result = ::System::VolumeManagementService.restore_snapshot(snapshot: snapshot)
+        return error_result(result.error) unless result.success?
+
+        # restored_in_place is the load-bearing field: false means the SOURCE
+        # volume was not touched and the restored data lives in restored_volume.
+        restored = result.data[:restored_volume]
+        success_result(restored: true, snapshot_id: snapshot.id,
+                       restored_in_place: result.data[:restored_in_place],
+                       volume: serialize_volume(result.data[:volume], full: true),
+                       restored_volume: restored ? serialize_volume(restored, full: true) : nil,
+                       restored_volume_id: result.data[:restored_volume_id])
+      end
+
+      def find_volume_snapshot(id)
+        ::System::ProviderVolumeSnapshot.includes(:volume).find_by(id: id, account: @account)
+      end
+
+      def serialize_volume_snapshot(snap, presence: nil)
+        row = {
+          id: snap.id, name: snap.name, description: snap.description,
+          status: snap.status, progress: snap.progress, size_gb: snap.size_gb,
+          encrypted: snap.encrypted, external_id: snap.external_id,
+          volume_id: snap.volume_id, restorable: snap.can_restore?,
+          created_at: snap.created_at.iso8601
+        }
+        return row if presence.nil?
+
+        row.merge(present_at_provider: presence[snap.id])
+      end
 
       def serialize_volume(v, full: false)
         base = {
