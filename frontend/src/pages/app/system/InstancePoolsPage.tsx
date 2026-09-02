@@ -24,8 +24,12 @@ import { useInfiniteResourceList } from '@system/features/system/hooks/useResour
 import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
 import {
   extractData,
+  extractGated,
+  isPendingApproval,
   defaultMeta,
 } from '@system/features/system/services/api/helpers';
+import type { Gated } from '@system/features/system/services/api/helpers';
+import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import type {
   ApiEnvelope,
   PaginationMeta,
@@ -138,14 +142,21 @@ const instancePoolsApi = {
     return extractData(response).pool;
   },
 
+  // Gated since IMP-24daa05e7a22: a target_size/max_size INCREASE and the
+  // transition to `archived` route through Ai::AutonomyGate, so this PATCH
+  // can answer 202 `{pending: true, ...}` with NO `pool` key. Axios resolves
+  // 2xx normally, so the pre-gate `extractData(response).pool` returned
+  // `undefined` on that branch and the caller's upsert threw — an operation
+  // that successfully parked an approval rendered as "Failed to update pool".
+  // `extractGated` is the same seam every gated SDWAN mutation uses.
   update: async (
     id: string,
     data: UpdatePoolPayload,
-  ): Promise<InstancePoolSummary> => {
+  ): Promise<Gated<InstancePoolSummary>> => {
     const response = await apiClient.patch<
       ApiEnvelope<{ pool: InstancePoolSummary }>
     >(`/system/instance_pools/${id}`, { pool: data });
-    return extractData(response).pool;
+    return extractGated(response, (d) => d.pool);
   },
 
   replenish: async (id: string): Promise<InstancePoolSummary> => {
@@ -1511,6 +1522,17 @@ const EditPoolModal: React.FC<EditPoolModalProps> = ({
           max_size: form.max_size,
           status: form.status,
         });
+        // The form always sends target_size, max_size AND status, so both
+        // gated transitions are reachable from this one submit. Nothing has
+        // been written on the pending branch — never a success toast, and
+        // never an upsert of a body that carries no pool.
+        if (isPendingApproval(updated)) {
+          addNotification(
+            pendingApprovalNotice(`updating pool "${pool.name}"`, updated),
+          );
+          onClose();
+          return;
+        }
         onUpdated(updated);
       } catch (err) {
         addNotification({
@@ -1522,7 +1544,7 @@ const EditPoolModal: React.FC<EditPoolModalProps> = ({
         setSubmitting(false);
       }
     },
-    [pool, form, validate, onUpdated, addNotification],
+    [pool, form, validate, onUpdated, onClose, addNotification],
   );
 
   return (

@@ -14,12 +14,14 @@ import InstancePoolsPage from './InstancePoolsPage';
 
 const mockGet = jest.fn();
 const mockPost = jest.fn();
+const mockPatch = jest.fn();
 const mockDelete = jest.fn();
 
 jest.mock('@/shared/services/apiClient', () => ({
   apiClient: {
     get: (...args: unknown[]) => mockGet(...args),
     post: (...args: unknown[]) => mockPost(...args),
+    patch: (...args: unknown[]) => mockPatch(...args),
     delete: (...args: unknown[]) => mockDelete(...args),
   },
 }));
@@ -115,6 +117,7 @@ describe('InstancePoolsPage', () => {
   beforeEach(() => {
     mockGet.mockReset();
     mockPost.mockReset();
+    mockPatch.mockReset();
     mockDelete.mockReset();
     mockAddNotification.mockReset();
     mockGetTemplates.mockReset();
@@ -212,6 +215,79 @@ describe('InstancePoolsPage', () => {
         '/system/instance_pools/pool-a/drain',
       ),
     );
+  });
+
+  // IMP-24daa05e7a22 — a target_size/max_size raise and the archive
+  // transition now gate, so this PATCH can answer 202 `{pending: true, ...}`
+  // with NO `pool` key. The edit form always sends target_size, max_size AND
+  // status, so both gated transitions are reachable from this one submit.
+  // Before the fix `extractData(response).pool` returned undefined here and
+  // the upsert threw, which the catch rendered as a red "Failed to update
+  // pool" toast for an operation that had successfully parked an approval.
+  describe('a gated PATCH parked for approval', () => {
+    const PENDING = {
+      pending: true,
+      deferred_operation_id: 'dop-1',
+      action_category: 'system.instance_pool_ceiling_raise',
+      approval_request_id: 'ar-1',
+      message: 'Awaiting approval',
+    };
+
+    const openEditAndSave = async () => {
+      mockGet.mockResolvedValueOnce(listResponse([POOL_A]));
+      renderPage();
+
+      const row = await waitFor(() => screen.getByTestId('pool-row-pool-a'));
+      fireEvent.click(within(row).getByLabelText(/edit web-warm/i));
+
+      await waitFor(() =>
+        expect(screen.getByText('Adjust sizing, status, and description')).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    };
+
+    it('surfaces an approval-required notice instead of a failure', async () => {
+      mockPatch.mockResolvedValueOnce(envelope(PENDING));
+
+      await openEditAndSave();
+
+      await waitFor(() => expect(mockPatch).toHaveBeenCalled());
+      await waitFor(() => expect(mockAddNotification).toHaveBeenCalled());
+
+      const notice = mockAddNotification.mock.calls[0][0];
+      expect(notice.type).toBe('info');
+      expect(notice.message).toMatch(/approval required/i);
+      expect(notice.details).toMatchObject({
+        action: 'system.instance_pool_ceiling_raise',
+        approval_request_id: 'ar-1',
+        deferred_operation_id: 'dop-1',
+      });
+    });
+
+    it('never reports the parked change as saved or failed', async () => {
+      mockPatch.mockResolvedValueOnce(envelope(PENDING));
+
+      await openEditAndSave();
+
+      await waitFor(() => expect(mockAddNotification).toHaveBeenCalled());
+      const types = mockAddNotification.mock.calls.map((c) => c[0].type);
+      expect(types).not.toContain('error');
+      expect(types).not.toContain('success');
+    });
+
+    // Control: the ungated branch still returns the pool and toasts success.
+    it('still upserts and toasts success on the inline 200', async () => {
+      mockPatch.mockResolvedValueOnce(
+        envelope({ pool: { ...POOL_A, target_size: 1 } }),
+      );
+
+      await openEditAndSave();
+
+      await waitFor(() => expect(mockAddNotification).toHaveBeenCalled());
+      const notice = mockAddNotification.mock.calls[0][0];
+      expect(notice.type).toBe('success');
+      expect(notice.message).toMatch(/updated successfully/i);
+    });
   });
 
   it('archives a pool via DELETE after confirmation', async () => {
