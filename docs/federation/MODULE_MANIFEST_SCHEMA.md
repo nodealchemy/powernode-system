@@ -176,6 +176,32 @@ line governs — the row is saved with no `service_user`/`system_user`
   same manifest (cross-module service dependencies are NOT supported — modules
   depend on modules, services depend on services within a module).
 - `dependencies[*].kind` (if present) must be one of `start_before | requires_health | softdep`.
+- `dependencies[*].kind` may NOT be `softdep` when the target service stages
+  credential or identity material — see the first caution under
+  [What each dependency `kind` renders to](#what-each-dependency-kind-renders-to)
+  for why. A service counts as credential-/identity-staging when its `name`
+  carries one of `System::ManifestImportService::CREDENTIAL_STAGING_TOKENS` as
+  a whole word-token — the list is exactly `credential`, `credentials`,
+  `secret`, `secrets`, `token`, `tokens`, `identity`, `identities`, `pki`,
+  `mtls`, `tls`, `enroll`, `enrollment`, `cert`, `certs`, `certificate`,
+  `certificates`, `key`, `keys`, `keyring`, `vault`, `bootstrap` (no other
+  form is matched, so `keyrings` and `vaults` are NOT) — so `stage-certs`
+  matches and `tokenizer` does not.
+  The target's own `metadata: { stages_credentials: <bool> }` overrides that
+  name match in BOTH directions: `true` marks a stager the enumeration does
+  not name, `false` clears a service whose name only looks like one
+  (`vault-metrics`, `token-exchange`, `tls-terminator`). Only an absent
+  declaration falls through to the name. The property is not otherwise
+  modelled on `ModuleService`, and `capabilities:` is Linux capabilities, not
+  this.
+  Where the refusal is hard: the REST publish endpoint and the operator
+  manifest-import endpoint both return 422, and `system_validate_module_manifest`
+  reports it as a lint error. On the Gitea-webhook publish path the re-import
+  is non-fatal by design (`ModulePublicationProcessor#refresh_manifest!` logs a
+  warning and returns), so there the offending manifest is simply not applied
+  — the previous service graph stays in place and the soft edge never reaches
+  the fleet, but the version still publishes. An edge naming a service the
+  manifest does not declare is reported as an unknown-service error instead.
 
 ### What each dependency `kind` renders to
 
@@ -201,7 +227,10 @@ Two cautions when reaching for `softdep`:
   target's job *finishing*, not succeeding. A `softdep` onto a `Type=oneshot`
   service will let this service start after the target **failed**. Do not use
   it for an edge that stages credentials or other material this service needs
-  — that is what `start_before` is for.
+  — that is what `start_before` is for. For the credential/identity case this
+  is not advice but a rule: `ManifestImportService` refuses such an edge at
+  import (see the validation list above), because a dependent that starts with
+  nothing staged surfaces no failure of its own.
 - **Recovery is expressed on the TARGET, and only for the strict kinds.**
   `Requires=` cancels this service's start job if the target fails, and
   systemd does not re-run the cancelled job when the target later succeeds.

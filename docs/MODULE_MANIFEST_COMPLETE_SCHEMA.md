@@ -241,6 +241,12 @@ init:
 
 **`services:` (preferred)** — Structured service definitions that map to `system_module_services` rows. Supports per-service env, restart policy, health checks, dependencies between services, exposed ports. New modules should use this.
 
+> `services[].dependencies` has its own normative rules — the `kind` enumeration
+> (`start_before | requires_health | softdep`), what each renders to on the unit,
+> and the refusal of `softdep` onto a credential-/identity-staging target — in
+> [docs/federation/MODULE_MANIFEST_SCHEMA.md](federation/MODULE_MANIFEST_SCHEMA.md#validation-rules).
+> That document is normative for this field.
+
 ```yaml
 services:
   - name: nginx
