@@ -81,6 +81,7 @@ RSpec.describe "FLEET_SENSORS.md signal kinds vs. the sensors that emit them" do
   SETTING_KEYS = %w[
     system.sdwan.ovn.probe_denied_cidrs
     system.sdwan.ovn.stall_after_seconds
+    system.project_metrics.sample_freshness_seconds
   ].freeze
 
   # Action categories the DecisionEngine dispatches — NOT signals. A

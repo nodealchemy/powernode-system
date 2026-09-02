@@ -366,8 +366,13 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
     it "has one seed writer, defaulted to persistent, with no caller overriding it" do
       files = Dir.glob(File.join(ext_root, "server/db/seeds/**/*.rb")).select do |f|
         src = File.read(f)
-        src.match?(/System::Node\.(create!|new|find_or_create_by!?|find_or_initialize_by)/) &&
-          src.include?("lifecycle_class")
+        # An InstancePool creation carries ITS OWN lifecycle_class (the pool
+        # column, a different value space) — strip those argument blocks so a
+        # seed that builds a pool beside a Node (smoke_test_instance_replace.rb)
+        # is not mistaken for a Node writer.
+        without_pool_args = src.gsub(/System::InstancePool\.(?:create!|new|find_or_create_by!?|find_or_initialize_by)\(([^)]*)\)/m, "")
+        without_pool_args.match?(/System::Node\.(create!|new|find_or_create_by!?|find_or_initialize_by)/) &&
+          without_pool_args.include?("lifecycle_class")
       end
       expect(files.map { |f| f.sub("#{ext_root}/", "") }).to eq(%w[server/db/seeds/example_multi_tenant.rb])
 

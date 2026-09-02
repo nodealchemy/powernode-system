@@ -386,8 +386,11 @@ RSpec.describe "MCP tools/call — system_ingress_tool (expose_service_publicly 
         end.to change { ::Ai::ApprovalRequest.count }.by(1)
 
         payload = tool_payload(json_response)
-        expect(payload["success"]).to be false
-        expect(payload["error"]).to match(/approval required/i)
+        # APO-1f: a parked call answers the pending ENVELOPE (success:true,
+        # data.pending:true) — done-vs-parked is machine-readable, never a failure.
+        expect(payload["success"]).to be true
+        expect(payload.dig("data", "pending")).to be true
+        expect(payload.dig("data", "approval_request_id")).to be_present
         # The ROW, not the status: a gate that answers 202 while the write
         # lands is the failure mode this asserts against.
         expect(svc.reload.public_enabled).to be false
@@ -400,7 +403,9 @@ RSpec.describe "MCP tools/call — system_ingress_tool (expose_service_publicly 
           call_tool("system_unexpose_service_public_tcp", { "service_id" => svc.id }, headers: headers_for(manager))
         end.to change { ::Ai::ApprovalRequest.count }.by(1)
 
-        expect(tool_payload(json_response)["success"]).to be false
+        parked = tool_payload(json_response)
+        expect(parked["success"]).to be true
+        expect(parked.dig("data", "pending")).to be true
         expect(svc.reload.public_enabled).to be true
       end
     end
@@ -452,8 +457,9 @@ RSpec.describe "MCP tools/call — system_ingress_tool (expose_service_publicly 
       end.to change { ::Ai::ApprovalRequest.count }.by(1)
 
       payload = tool_payload(json_response)
-      expect(payload["success"]).to be false
-      expect(payload["error"]).to match(/approval required/i)
+      # APO-1f: a parked call answers the pending ENVELOPE, never a failure.
+      expect(payload["success"]).to be true
+      expect(payload.dig("data", "pending")).to be true
     end
 
     it "parks an approval for system_expose_service_local instead of exposing" do
@@ -468,7 +474,9 @@ RSpec.describe "MCP tools/call — system_ingress_tool (expose_service_publicly 
         }, headers: headers_for(manager))
       end.to change { ::Ai::ApprovalRequest.count }.by(1)
 
-      expect(tool_payload(json_response)["success"]).to be false
+      parked = tool_payload(json_response)
+      expect(parked["success"]).to be true
+      expect(parked.dig("data", "pending")).to be true
       # The write is what the gate exists to hold back — assert the ROW.
       expect(::Sdwan::Service.where(account_id: account.id, slug: "immediate-svc")).to be_empty
     end
