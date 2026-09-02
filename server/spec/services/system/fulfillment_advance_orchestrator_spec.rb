@@ -125,7 +125,7 @@ RSpec.describe System::FulfillmentAdvanceOrchestrator do
       expect(::System::Task.where(operable: instance, command: "sync_modules")).to exist
 
       # FIRST-CLASS task-scoped lease (the reified P0-A decorative lease).
-      expect(instance.lifecycle_class).to eq("task_scoped")
+      expect(instance.lease_class).to eq("task_scoped")
       expect(instance.lease_expires_at).to be_present
       expect(instance.config.dig("fulfillment_lease", "task_scoped")).to be true
       expect(fr.expires_at).to be_present
@@ -144,7 +144,7 @@ RSpec.describe System::FulfillmentAdvanceOrchestrator do
       fr.node_instance_ids.each do |iid|
         inst = ::System::NodeInstance.find(iid)
         expect(inst.config["fulfillment_lease"]).to be_present
-        expect(inst.lifecycle_class).to eq("task_scoped")
+        expect(inst.lease_class).to eq("task_scoped")
       end
     end
   end

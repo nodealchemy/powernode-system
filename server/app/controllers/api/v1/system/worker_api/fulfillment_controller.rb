@@ -60,7 +60,7 @@ module Api
             # CiRunnerLeasesController's orphan-runner scoping).
             account_ids = (
               ::System::FulfillmentRequest.open.distinct.pluck(:account_id) +
-              ::System::NodeInstance.where(lifecycle_class: "task_scoped")
+              ::System::NodeInstance.where(lease_class: "task_scoped")
                                     .where.not(status: "terminated")
                                     .distinct.pluck(:account_id)
             ).compact.uniq

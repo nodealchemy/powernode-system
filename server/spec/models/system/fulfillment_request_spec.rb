@@ -160,14 +160,14 @@ RSpec.describe System::FulfillmentRequest, type: :model do
       node = create(:system_node, account: account, node_template: template)
       inst = create(:system_node_instance, :running, node: node)
       inst.update!(config: { "fulfillment_lease" => { "task_scoped" => true, "ttl_seconds" => 3600 } },
-                   lifecycle_class: "task_scoped", lease_expires_at: 1.hour.from_now)
+                   lease_class: "task_scoped", lease_expires_at: 1.hour.from_now)
 
       fr = composed
       fr.record_instances!([ inst.id ])
       summary = fr.lease_summaries.first
       expect(summary["instance_id"]).to eq(inst.id)
       expect(summary["task_scoped"]).to be true
-      expect(summary["lifecycle_class"]).to eq("task_scoped")
+      expect(summary["lease_class"]).to eq("task_scoped")
     end
   end
 end

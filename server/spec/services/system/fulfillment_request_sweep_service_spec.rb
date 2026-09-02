@@ -80,7 +80,7 @@ RSpec.describe System::FulfillmentRequestSweepService do
 
     it "terminates a stray task_scoped instance past its own lease_expires_at (backstop)" do
       inst = running_instance
-      inst.update!(lifecycle_class: "task_scoped", lease_expires_at: 1.minute.ago)
+      inst.update!(lease_class: "task_scoped", lease_expires_at: 1.minute.ago)
       allow(::System::ProvisioningService).to receive(:terminate_instance)
         .and_return(instance_double("Result", success?: true))
 
@@ -91,7 +91,7 @@ RSpec.describe System::FulfillmentRequestSweepService do
 
     it "leaves a task_scoped instance whose lease has NOT elapsed alone" do
       inst = running_instance
-      inst.update!(lifecycle_class: "task_scoped", lease_expires_at: 1.hour.from_now)
+      inst.update!(lease_class: "task_scoped", lease_expires_at: 1.hour.from_now)
       allow(::System::ProvisioningService).to receive(:terminate_instance)
 
       described_class.run!(account: account)

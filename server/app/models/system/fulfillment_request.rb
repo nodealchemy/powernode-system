@@ -255,7 +255,7 @@ module System
         lease.merge(
           "instance_id" => inst.id,
           "pool_state" => inst.try(:pool_state),
-          "lifecycle_class" => inst.try(:lifecycle_class),
+          "lease_class" => inst.try(:lease_class),
           "lease_expires_at" => inst.try(:lease_expires_at)&.iso8601
         )
       end

@@ -28,18 +28,22 @@ module System
     # exist in db/migrate/ — the standalone migration was folded into the
     # baseline.
     #
-    # THREE TABLES CARRY A `lifecycle_class`, AND THEY DO NOT SHARE A VALUE
+    # TWO TABLES CARRY A `lifecycle_class`, AND THEY DO NOT SHARE A VALUE
     # SPACE. system_nodes is persistent|ephemeral|spot (below);
     # system_instance_pools is ephemeral|spot ONLY — a pool of machines you
     # intend to keep is a contradiction, so its set is a deliberate STRICT
     # subset of this one, which is what makes InstancePoolService's
-    # pool.lifecycle_class -> Node copy safe; and system_node_instances is a
-    # DIFFERENT AXIS wearing the same name — it records lease provenance
-    # ("task_scoped": leased for one fulfillment), is nullable, and has no
-    # check constraint, so it holds a value BOTH of the other two tables
-    # would reject. Reading `lifecycle_class` in a diff tells you nothing
-    # until you know which table it belongs to. Pinned by
+    # pool.lifecycle_class -> Node copy safe. That is LAYERING, not a
+    # collision: reading `lifecycle_class` in a diff still requires knowing
+    # which of the two tables it belongs to. Pinned by
     # spec/models/system/lifecycle_class_value_space_spec.rb.
+    #
+    # A THIRD table carried the name by ACCIDENT until IMP-1e2e7b43b083.
+    # system_node_instances records lease provenance — leased for one
+    # fulfillment, value "task_scoped" — which is a different axis entirely,
+    # nullable, check-constraint-free, and a value BOTH tables above would
+    # reject. It is now `system_node_instances.lease_class`; the old spelling
+    # is kept out by spec/models/system/node_instance_lease_class_spec.rb.
     #
     # WHERE THIS COLUMN IS NON-DEFAULT IT IS A SNAPSHOT, NOT A VIEW. The
     # only non-default writer copies pool.lifecycle_class at member-create

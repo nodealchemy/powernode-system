@@ -322,7 +322,8 @@ fi
 # private-extension migrations (timestamped below the core schema version) as
 # applied WITHOUT running their DDL → a "stamped-without-DDL" drift db:migrate
 # then skips forever (this is exactly what historically drifted ops-hub's
-# system_node_instances.lifecycle_class). If a schema:load path is ever needed
+# system_node_instances.lifecycle_class — renamed to .lease_class by
+# IMP-1e2e7b43b083, so grep for the new name). If a schema:load path is ever needed
 # here, it MUST be followed by the un-assume-private-versions + db:migrate step
 # from scripts/prepare-extension-test-db.sh. The check below is the backstop.
 

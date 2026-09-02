@@ -46,7 +46,7 @@ RSpec.describe "Api::V1::System::WorkerApi::Fulfillment", type: :request do
       template = create(:system_node_template, account: account, node_platform: platform)
       node = create(:system_node, account: account, node_template: template)
       inst = create(:system_node_instance, :running, node: node)
-      inst.update!(lifecycle_class: "task_scoped", lease_expires_at: 1.minute.ago)
+      inst.update!(lease_class: "task_scoped", lease_expires_at: 1.minute.ago)
 
       expect(::System::FulfillmentRequestSweepService).to receive(:run!).with(account: account).and_return(summary)
 

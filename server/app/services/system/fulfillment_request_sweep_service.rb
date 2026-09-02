@@ -116,7 +116,7 @@ module System
       # (2) Instance-level backstop: any task_scoped instance past its own
       # lease_expires_at that is still active (e.g. its owning request was already
       # archived, or step (1) partially failed) → terminate directly.
-      ::System::NodeInstance.where(account_id: @account.id, lifecycle_class: "task_scoped")
+      ::System::NodeInstance.where(account_id: @account.id, lease_class: "task_scoped")
                             .where("lease_expires_at IS NOT NULL AND lease_expires_at < ?", now)
                             .where.not(status: "terminated")
                             .find_each do |instance|

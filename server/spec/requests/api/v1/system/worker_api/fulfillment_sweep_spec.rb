@@ -17,7 +17,7 @@ RSpec.describe "POST /api/v1/system/worker_api/fulfillment/sweep", type: :reques
   def make_sweepable!(acct)
     node = create(:system_node, account: acct)
     create(:system_node_instance, node: node, name: "ts-#{SecureRandom.hex(3)}",
-           variety: "cloud", status: "running", lifecycle_class: "task_scoped")
+           variety: "cloud", status: "running", lease_class: "task_scoped")
   end
 
   it "sweeps a normal account and reports the aggregate (pins the previously unspecced happy path)" do

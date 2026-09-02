@@ -537,7 +537,7 @@ module System
     end
 
     # Task-scoped lease. FRESH (non-pool) instances get a FIRST-CLASS
-    # lifecycle_class + lease_expires_at the fulfillment reaper governs; re-used
+    # lease_class + lease_expires_at the fulfillment reaper governs; re-used
     # pool members stay governed by the pool reaper's claimed_ttl (never
     # double-governed). The config blob is retained for operator-visible detail.
     def apply_lease!(instance)
@@ -558,23 +558,22 @@ module System
       # acquired, erasing every heartbeat since.
       attrs = {}
       unless instance.in_pool?
-        # system_node_instances.lifecycle_class is NOT the system_nodes /
-        # system_instance_pools column of the same name: it records why this
-        # instance was leased, not how long-lived the machine is. "task_scoped"
-        # is in neither of those value spaces: it would violate the CHECK
-        # constraint standing on either table. That is why this column is
-        # nullable and carries no check constraint of its own. See
-        # spec/models/system/lifecycle_class_value_space_spec.rb.
+        # system_node_instances.lease_class is a DIFFERENT AXIS from the
+        # system_nodes / system_instance_pools `lifecycle_class` columns: it
+        # records why this instance was leased, not how long-lived the machine
+        # is. Its one value is in neither of those value spaces — it would
+        # violate the CHECK constraint standing on either table. That is why
+        # this column is nullable and carries no check constraint of its own.
+        # See spec/models/system/lifecycle_class_value_space_spec.rb.
         #
-        # THE NAME IS THE DEFECT HERE, and this is the table that is wrong.
-        # node-vs-pool is deliberate layering (the pool set is a correct strict
-        # subset); this column is a different axis that borrowed the name, and
-        # it should be `lease_class`/`lease_kind`. The rename is a migration on
-        # a live table plus its partial index and three call sites, so it is
-        # tracked separately as offer 01a0619a-6cff-72a1-9695-0cb34de3907d
-        # ("system_node_instances.lifecycle_class is misnamed") rather than
-        # done here; this note is the interim guard.
-        attrs[:lifecycle_class]  = "task_scoped"
+        # THE NAME WAS THE DEFECT: this column was itself called
+        # `lifecycle_class` until IMP-1e2e7b43b083 renamed it (column, partial
+        # index, one writer, two readers, serializer key). node-vs-pool is
+        # deliberate layering — the pool set is a correct strict subset of the
+        # node set — and this was the odd one out, a third axis that borrowed
+        # the name. spec/models/system/node_instance_lease_class_spec.rb keeps
+        # the old spelling from coming back.
+        attrs[:lease_class]      = "task_scoped"
         attrs[:lease_expires_at] = now + ttl
       end
       instance.transaction do

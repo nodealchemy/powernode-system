@@ -18,12 +18,16 @@ module System
   #   object EXISTS in the live DB. A stamped migration whose declared
   #   column/index is absent is exactly the drift signature.
   #
-  # Why loaded-migrations (not schema.rb): the committed core schema.rb is
-  # core-only and lags private-extension tables/columns (that lag is what caused
-  # the drift), so it can't even see system_node_instances.lifecycle_class. The
-  # node's loaded migration paths, by contrast, include every extension actually
-  # installed here — and NONE that isn't. So an uninstalled extension's tables
-  # (business_*, marketing_*, …) are never even scanned: no false positives.
+  # Why loaded-migrations (not schema.rb): the committed core schema.rb records
+  # only what was installed on the machine that dumped it. It is dumped in core
+  # mode, so it carries no object belonging to a non-public extension at all —
+  # that lag is what caused the drift, and it is why schema.rb cannot be the
+  # oracle for any table this node holds beyond the public set. (It DOES carry
+  # every system_* column, this file's own subject included, so do not read the
+  # lag as "schema.rb is always behind"; it is behind exactly on what was not
+  # installed at dump time.) The node's loaded migration paths, by contrast,
+  # include every extension actually installed here — and NONE that isn't. So an
+  # uninstalled extension's tables are never even scanned: no false positives.
   #
   # Design constraints (deliberate):
   #   * NEVER raises / never fails boot. A false positive that bricks a sole

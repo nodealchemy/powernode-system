@@ -2,8 +2,8 @@
 
 require "rails_helper"
 
-# IMP-2fc66d5b7e00 — three tables carry a column called `lifecycle_class` and
-# the three do NOT share a value space:
+# IMP-2fc66d5b7e00 — three tables carried a column called `lifecycle_class` and
+# the three did NOT share a value space:
 #
 #   system_nodes           persistent|ephemeral|spot   NOT NULL, default persistent, CHECK
 #   system_instance_pools  ephemeral|spot              NOT NULL, default ephemeral,  CHECK
@@ -20,12 +20,18 @@ require "rails_helper"
 #     and replenish a machine you intend to keep), so the pool set being a
 #     STRICT subset is correct; the missing part was the guard.
 #
-# (2) NODE_INSTANCE is a DIFFERENT AXIS wearing the same name. `task_scoped`
+# (2) NODE_INSTANCE was a DIFFERENT AXIS wearing the same name. `task_scoped`
 #     answers "why was this instance leased" (fulfillment reaper provenance),
 #     not "how long-lived is this machine". It would violate the check
-#     constraint on either of the other two tables. That is the collision worth
-#     naming: reading `lifecycle_class` in a diff tells you nothing about which
-#     value set applies until you know which table you are looking at.
+#     constraint on either of the other two tables. That was the collision
+#     worth naming, and IMP-1e2e7b43b083 resolved it by RENAMING the column to
+#     `system_node_instances.lease_class` — column, partial index, one writer,
+#     two readers and the serializer key. This file keeps its third-table
+#     examples because they are what makes the node/pool layering legible, and
+#     because the renamed column must go on being rejected by both siblings;
+#     the rename itself is guarded by
+#     spec/models/system/node_instance_lease_class_spec.rb, which must move
+#     with this file.
 #
 # THE NODE COLUMN IS A SNAPSHOT, NOT A VIEW — pinned below by execution. A
 # pool's `lifecycle_class` is rotatable after members exist (GitOps
@@ -42,7 +48,7 @@ require "rails_helper"
 #   - the layering invariant breaking in either direction — a pool value the
 #     Node model or the Node CHECK constraint would reject;
 #   - a check constraint being widened, narrowed, or added to
-#     system_node_instances;
+#     system_node_instances.lease_class;
 #   - `task_scoped` becoming acceptable to Node or InstancePool;
 #   - the pool→node copy silently becoming live: the snapshot example drives
 #     the REAL rotation arm, System::Gitops::ApplyService#apply_pool "update",
@@ -92,7 +98,7 @@ module LifecycleClassValueSpace
       tokens: [ "System::Node::LIFECYCLE_CLASSES", "not refreshed" ]
     },
     "app/services/system/fulfillment_advance_orchestrator.rb" => {
-      anchor: 'attrs[:lifecycle_class]  = "task_scoped"',
+      anchor: "attrs[:lease_class]",
       tokens: [ "system_nodes", "system_instance_pools", "check constraint" ]
     }
   }.freeze
@@ -150,10 +156,11 @@ RSpec.describe "lifecycle_class value spaces across system_nodes / system_instan
     end
 
     it "System::NodeInstance declares NO value space of its own" do
-      # The third column is validated by nothing — no constant, no inclusion
-      # validation, no CHECK. That is why `task_scoped` can live there.
-      expect(::System::NodeInstance.const_defined?(:LIFECYCLE_CLASSES, false)).to be(false)
-      expect(::System::NodeInstance.validators_on(:lifecycle_class)).to be_empty
+      # The renamed third column is validated by nothing — no constant, no
+      # inclusion validation, no CHECK. That is why `task_scoped` can live
+      # there, and it is also why it never belonged under the shared name.
+      expect(::System::NodeInstance.const_defined?(:LEASE_CLASSES, false)).to be(false)
+      expect(::System::NodeInstance.validators_on(:lease_class)).to be_empty
     end
   end
 
@@ -178,7 +185,9 @@ RSpec.describe "lifecycle_class value spaces across system_nodes / system_instan
       expect(check.expression).not_to include("'persistent'")
     end
 
-    it "leaves system_node_instances unconstrained" do
+    it "leaves system_node_instances.lease_class unconstrained" do
+      checks = ActiveRecord::Base.connection.check_constraints("system_node_instances")
+      expect(checks.select { |c| c.expression.to_s.include?("lease_class") }).to be_empty
       expect(lifecycle_check("system_node_instances")).to be_nil
     end
   end
@@ -224,10 +233,11 @@ RSpec.describe "lifecycle_class value spaces across system_nodes / system_instan
       expect { pool!(lifecycle_class: "task_scoped") }.to raise_error(ActiveRecord::RecordInvalid)
     end
 
-    it "is accepted by System::NodeInstance" do
+    it "is accepted by System::NodeInstance — on `lease_class`, not `lifecycle_class`" do
       instance = create(:system_node_instance, account: account)
-      instance.update!(lifecycle_class: "task_scoped")
-      expect(instance.reload.lifecycle_class).to eq("task_scoped")
+      instance.update!(lease_class: "task_scoped")
+      expect(instance.reload.lease_class).to eq("task_scoped")
+      expect(instance).not_to respond_to(:lifecycle_class)
     end
   end
 

@@ -303,7 +303,7 @@ RSpec.describe System::Ai::Skills::FulfillCapabilityRequestExecutor do
       instance = ::System::NodeInstance.find(data[:instance_id])
       assigned = instance.node.node_module_assignments.map { |a| a.node_module.name }
       expect(assigned).to include(base_os.name, "memcached")
-      expect(instance.lifecycle_class).to eq("task_scoped")
+      expect(instance.lease_class).to eq("task_scoped")
       expect(data[:lease]["task_scoped"]).to be true
       expect(data[:smoke]["ok"]).to be true
     end
