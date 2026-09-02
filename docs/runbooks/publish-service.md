@@ -47,6 +47,84 @@ service:     loadBalancer → <protocol>://<vip-or-host>:<port>   (passHostHeade
 Rule-length auto-priority makes `PathPrefix(/svc/<slug>)` win over the frontend
 catch-all on the same host — no manual `priority:` needed.
 
+### Load balancing across replicas (APO-3c)
+
+A service's `backend_vip`/`backend_host` + `backend_port` columns describe **one**
+backend. Scaling a project out does not, on its own, spread traffic: the exposed
+service keeps pointing at that one address. The fan-out is an explicit
+**backend set** — `Sdwan::ServiceBackend` rows hanging off the service:
+
+| Column | Meaning |
+|---|---|
+| `backend_vip_id` / `backend_host` + `backend_port` | this member's address, same shape as the service's own columns (a set may mix ports) |
+| `weight` | 1..1000, weighted round robin. Uniform weights *are* round robin |
+| `status` | `active` \| `draining` — a draining member keeps its row and its history but leaves the emitted server list |
+
+What the writer emits changes only once a service has **two or more active
+members**:
+
+```
+service: loadBalancer
+  servers:     one entry per active member, in (created_at, id) order
+  weight:      per server, only when the members' weights DIFFER
+  healthCheck: { path, interval, timeout }   (http/https facet only)
+```
+
+- **A service with no backend set renders exactly as before, byte for byte** —
+  no weights, no health check, one server. Nothing backfills a row for the
+  legacy columns, so no existing service changes shape until someone adds one.
+- **Draining every member is NOT how you take a service out of rotation.** The
+  active set is then empty and the writer falls back to the service's *legacy*
+  `backend_host`/`backend_vip` columns — which, after a replace-instance cycle,
+  may name a host that no longer answers. To stop routing, clear
+  `local_enabled`/`public_enabled`; the writer skips a disabled service.
+- **The public TCP (Path B) facet fans out too**, but round robin only: Traefik's
+  TCP servers load balancer has no per-server weight (WRR there is a
+  service-level construct) and no health check on the vendored build.
+
+> **No API or MCP verb writes the backend set or a service's `metadata` yet.**
+> This increment (APO-3c) ships the load-balancing *capability*; the producer —
+> replace-instance and scale-out maintaining the set — is APO-4. Until then a
+> backend set and the per-service overrides below are **rails-console only**.
+> The account and SiteSetting tiers *are* reachable today.
+
+Health-check defaults resolve through `Sdwan::ServiceLoadBalancing`, in order:
+the service's own `metadata["load_balancer"][<key>]`, then the account's
+`settings["system.sdwan.service_load_balancing.<key>"]`, then the SiteSetting of
+that key, then the constant.
+
+| Key | Default |
+|---|---|
+| `health_check_enabled` | `false` (opt-in) |
+| `health_check_path` | `/` |
+| `health_check_interval` | `10s` |
+| `health_check_timeout` | `3s` |
+
+**Health checking is opt-in, on purpose.** Traefik drops a check-failing server
+from the pool and answers `503` once none are left, so a health check pointed at
+the wrong path does not degrade a scaled service — it takes the whole service
+dark, which is worse than the single unchecked backend it replaced. A
+health-check path is also not a deployment-wide fact: Grafana answers
+`/api/health`, Rails `/up`, a bare exporter `/`. So turn it on where you know the
+path, e.g. per service:
+
+```ruby
+svc.update!(metadata: svc.metadata.merge(
+  "load_balancer" => { "health_check_enabled" => true, "health_check_path" => "/-/ready" }
+))
+```
+
+or deployment-wide once every scaled backend agrees on one:
+
+```ruby
+SiteSetting.set("system.sdwan.service_load_balancing.health_check_enabled", true)
+SiteSetting.set("system.sdwan.service_load_balancing.health_check_path", "/healthz")
+```
+
+A lower tier always beats a higher one, and `false` counts as a value — a
+per-service `health_check_enabled: false` switches the check off under a
+deployment-wide `true` without giving up the fan-out.
+
 ### Auth modes (the ForwardAuth gate)
 
 `GET /api/v1/system/ingress/forward_auth?service=<id>` is called by Traefik with the
