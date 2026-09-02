@@ -49,6 +49,10 @@ module Sdwan
                foreign_key: :backend_vip_id, optional: true
     belongs_to :local_certificate, class_name: "System::AcmeCertificate",
                foreign_key: :local_certificate_id, optional: true
+    # APO-3c load-balanced backend set. Empty for every service nobody has
+    # scaled — see #load_balanced_backends for why that stays the norm.
+    has_many :backends, class_name: "::Sdwan::ServiceBackend",
+             foreign_key: :sdwan_service_id, inverse_of: :service, dependent: :destroy
 
     validates :slug, presence: true, length: { maximum: 64 },
                      format: { with: SLUG_FORMAT,
@@ -105,6 +109,56 @@ module Sdwan
       return backend_vip.cidr.to_s.split("/").first if backend_vip
 
       backend_host
+    end
+
+    # The effective backend set Sdwan::ServiceExposureWriter load-balances
+    # across (APO-3c). Always at least one member.
+    #
+    # A service with no ACTIVE Sdwan::ServiceBackend row — which is every
+    # service that predates the backend set, and every service nobody has
+    # scaled — resolves to its legacy backend_vip/backend_host + backend_port
+    # columns wrapped in LegacyBackend, so the writer has exactly one code path
+    # and the degenerate output stays byte-identical to what it emitted before
+    # any of this existed.
+    #
+    # Emission order is (created_at, id): Traefik file-watches the dynamic dir
+    # and reloads on every write, so a set whose order churns between writes
+    # rewrites the file (and reshuffles the round-robin ring) for no reason.
+    # created_at first so the set reads in the order it was scaled up; id as the
+    # tiebreak because two replicas provisioned in one batch can share a
+    # timestamp.
+    #
+    # Filtering and ordering happen in Ruby, not SQL, on purpose: the writer
+    # eager-loads `:backends`, and a scoped/ordered association call would issue
+    # a fresh query per service and defeat that (N+1 across every exposed
+    # service in the account).
+    def load_balanced_backends
+      explicit = backends.select { |backend| backend.status == "active" }
+                         .sort_by { |backend| [ backend.created_at || Time.at(0), backend.id.to_s ] }
+      return explicit if explicit.any?
+
+      [ LegacyBackend.new(self) ]
+    end
+
+    # Gives the pre-backend-set columns the same interface as an
+    # Sdwan::ServiceBackend row (#address / #backend_port / #weight / #url) so
+    # no consumer has to branch on "does this service have a backend set".
+    LegacyBackend = Struct.new(:service) do
+      def address
+        service.backend_address
+      end
+
+      def backend_port
+        service.backend_port
+      end
+
+      def weight
+        ::Sdwan::ServiceBackend::DEFAULT_WEIGHT
+      end
+
+      def url(scheme:)
+        service.backend_url(scheme: scheme)
+      end
     end
 
     private

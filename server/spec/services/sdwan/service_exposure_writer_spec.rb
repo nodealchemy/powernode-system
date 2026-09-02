@@ -192,4 +192,206 @@ RSpec.describe Sdwan::ServiceExposureWriter, type: :service do
       expect(result[:skipped_service_ids]).to eq([ svc.id ])
     end
   end
+
+  # APO-3c — load balancing across a scaled project's backend set. Before this
+  # increment a Sdwan::Service had exactly ONE backend and the writer emitted a
+  # single `servers` entry with no weights and no health check, so scaling a
+  # project out produced replicas that received no traffic at all.
+  describe "#render_yaml — multi-backend load balancing (APO-3c)" do
+    def add_backend(svc, host, port: 8080, **attrs)
+      Sdwan::ServiceBackend.create!({ service: svc, backend_host: host, backend_port: port }.merge(attrs))
+    end
+
+    # EQUALITY oracle, not a `include`/`dig` oracle: the whole point of the
+    # degenerate case is that NOTHING new appears in it, which a subset
+    # assertion cannot see. Same hash, same key order, therefore same YAML bytes.
+    it "leaves a single-backend service byte-identical to the pre-load-balancing output" do
+      svc = create_service(slug: "solo", backend_host: "10.20.0.5", backend_port: 3000)
+
+      lb = parse([ svc ]).dig("http", "services", "localsvc-#{svc.id}", "loadBalancer")
+
+      expect(lb).to eq("servers" => [ { "url" => "https://10.20.0.5:3000" } ],
+                       "passHostHeader" => true)
+      expect(lb.keys).to eq(%w[servers passHostHeader])
+    end
+
+    it "leaves a single-backend service byte-identical even when ONE explicit backend row exists" do
+      svc = create_service(slug: "solo-explicit")
+      add_backend(svc, "10.20.0.11", port: 3000)
+
+      lb = parse([ svc.reload ]).dig("http", "services", "localsvc-#{svc.id}", "loadBalancer")
+
+      expect(lb).to eq("servers" => [ { "url" => "https://10.20.0.11:3000" } ],
+                       "passHostHeader" => true)
+    end
+
+    it "fans the http loadBalancer out to one server per backend, in a deterministic order" do
+      svc = create_service(slug: "scaled")
+      add_backend(svc, "10.20.0.11")
+      add_backend(svc, "10.20.0.12")
+      add_backend(svc, "10.20.0.13")
+
+      lb = parse([ svc.reload ]).dig("http", "services", "localsvc-#{svc.id}", "loadBalancer")
+
+      expect(lb["servers"].map { |s| s["url"] }).to eq(
+        [ "https://10.20.0.11:8080", "https://10.20.0.12:8080", "https://10.20.0.13:8080" ]
+      )
+      expect(lb["passHostHeader"]).to be(true)
+    end
+
+    it "omits per-server weight while the set is uniform" do
+      svc = create_service(slug: "uniform")
+      add_backend(svc, "10.20.0.11")
+      add_backend(svc, "10.20.0.12")
+
+      servers = parse([ svc.reload ]).dig("http", "services", "localsvc-#{svc.id}",
+                                          "loadBalancer", "servers")
+
+      expect(servers.map(&:keys).flatten.uniq).to eq([ "url" ])
+    end
+
+    it "emits weighted round robin once the operator differentiates the weights" do
+      svc = create_service(slug: "weighted")
+      add_backend(svc, "10.20.0.11", weight: 3)
+      add_backend(svc, "10.20.0.12", weight: 1)
+
+      servers = parse([ svc.reload ]).dig("http", "services", "localsvc-#{svc.id}",
+                                          "loadBalancer", "servers")
+
+      expect(servers).to eq([
+        { "url" => "https://10.20.0.11:8080", "weight" => 3 },
+        { "url" => "https://10.20.0.12:8080", "weight" => 1 }
+      ])
+    end
+
+    # Health checking is OPT-IN: a check aimed at the wrong path takes the WHOLE
+    # pool out (Traefik 503s once every server has failed), which is worse than
+    # the single unchecked backend it replaced. So a fanned-out service gets no
+    # healthCheck until somebody who knows the path asks for one.
+    it "attaches NO health check to a multi-backend http service by default" do
+      svc = create_service(slug: "checked")
+      add_backend(svc, "10.20.0.11")
+      add_backend(svc, "10.20.0.12")
+
+      lb = parse([ svc.reload ]).dig("http", "services", "localsvc-#{svc.id}", "loadBalancer")
+
+      expect(Sdwan::ServiceLoadBalancing::DEFAULT_HEALTH_CHECK_ENABLED).to be(false)
+      expect(lb.key?("healthCheck")).to be(false)
+      expect(lb["servers"].size).to eq(2)
+    end
+
+    it "attaches the health check once a service opts in" do
+      svc = create_service(slug: "opted-in",
+                           metadata: { "load_balancer" => { "health_check_enabled" => true } })
+      add_backend(svc, "10.20.0.11")
+      add_backend(svc, "10.20.0.12")
+
+      health = parse([ svc.reload ]).dig("http", "services", "localsvc-#{svc.id}",
+                                         "loadBalancer", "healthCheck")
+
+      expect(health).to eq(
+        "path"     => Sdwan::ServiceLoadBalancing::DEFAULT_HEALTH_CHECK_PATH,
+        "interval" => Sdwan::ServiceLoadBalancing::DEFAULT_HEALTH_CHECK_INTERVAL,
+        "timeout"  => Sdwan::ServiceLoadBalancing::DEFAULT_HEALTH_CHECK_TIMEOUT
+      )
+    end
+
+    it "resolves the health-check settings from SiteSetting, not from the constants" do
+      SiteSetting.set("system.sdwan.service_load_balancing.health_check_enabled", true)
+      SiteSetting.set("system.sdwan.service_load_balancing.health_check_path", "/healthz")
+      SiteSetting.set("system.sdwan.service_load_balancing.health_check_interval", "45s")
+      SiteSetting.set("system.sdwan.service_load_balancing.health_check_timeout", "9s")
+
+      svc = create_service(slug: "sitesetting")
+      add_backend(svc, "10.20.0.11")
+      add_backend(svc, "10.20.0.12")
+
+      health = parse([ svc.reload ]).dig("http", "services", "localsvc-#{svc.id}",
+                                         "loadBalancer", "healthCheck")
+
+      expect(health).to eq("path" => "/healthz", "interval" => "45s", "timeout" => "9s")
+    end
+
+    it "lets a single service override the health-check path without moving the deployment default" do
+      SiteSetting.set("system.sdwan.service_load_balancing.health_check_enabled", true)
+      svc = create_service(slug: "per-service",
+                           metadata: { "load_balancer" => { "health_check_path" => "/-/ready" } })
+      add_backend(svc, "10.20.0.11")
+      add_backend(svc, "10.20.0.12")
+
+      health = parse([ svc.reload ]).dig("http", "services", "localsvc-#{svc.id}",
+                                         "loadBalancer", "healthCheck")
+
+      expect(health["path"]).to eq("/-/ready")
+    end
+
+    # `false` is a VALUE, not an absence: the per-service switch must beat a
+    # deployment-wide `true`, which a `.presence ||` chain would drop.
+    it "lets a service switch the health check off under a deployment-wide default of on" do
+      SiteSetting.set("system.sdwan.service_load_balancing.health_check_enabled", true)
+      svc = create_service(slug: "unchecked",
+                           metadata: { "load_balancer" => { "health_check_enabled" => false } })
+      add_backend(svc, "10.20.0.11")
+      add_backend(svc, "10.20.0.12")
+
+      lb = parse([ svc.reload ]).dig("http", "services", "localsvc-#{svc.id}", "loadBalancer")
+
+      expect(lb.key?("healthCheck")).to be(false)
+      expect(lb["servers"].size).to eq(2)
+    end
+
+    it "never emits a health check for a single-backend service, however it is configured" do
+      SiteSetting.set("system.sdwan.service_load_balancing.health_check_enabled", true)
+      SiteSetting.set("system.sdwan.service_load_balancing.health_check_path", "/healthz")
+      svc = create_service(slug: "solo-nocheck")
+
+      lb = parse([ svc ]).dig("http", "services", "localsvc-#{svc.id}", "loadBalancer")
+
+      expect(lb.key?("healthCheck")).to be(false)
+    end
+
+    it "fans the public tcp loadBalancer out to every backend (address form, no weight/health)" do
+      svc = Sdwan::Service.create!(
+        account: account, slug: "tls-scaled", name: "TLS Service", protocol: "tls",
+        backend_host: "10.30.0.7", backend_port: 5432, public_enabled: true,
+        local_certificate: cert
+      )
+      add_backend(svc, "10.30.0.8", port: 5432)
+      add_backend(svc, "10.30.0.9", port: 5432, weight: 5)
+
+      lb = parse([ svc.reload ]).dig("tcp", "services", "pubsvc-#{svc.id}", "loadBalancer")
+
+      expect(lb).to eq("servers" => [ { "address" => "10.30.0.8:5432" },
+                                      { "address" => "10.30.0.9:5432" } ])
+    end
+
+    # Sdwan::Service#load_balanced_backends filters and orders in RUBY rather
+    # than in SQL for exactly one reason: a scoped/ordered association call
+    # would issue a fresh query per service and defeat the writer's
+    # `includes(backends: :backend_vip)`. Nothing else in the suite goes
+    # through #write! (the `parse` helper hand-builds its service array), so
+    # without this a "tidy-up" to `backends.active.order(:created_at)` would
+    # reintroduce the N+1 and stay green.
+    it "loads every service's backend set in ONE query, not one per service" do
+      2.times do |i|
+        svc = create_service(slug: "eager-#{i}")
+        add_backend(svc, "10.20.1.#{i}0")
+        add_backend(svc, "10.20.1.#{i}1")
+      end
+
+      backend_queries = []
+      subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+        sql = payload[:sql].to_s
+        backend_queries << sql if sql.include?("system_sdwan_service_backends") && sql.start_with?("SELECT")
+      end
+
+      begin
+        described_class.new(account: account, dynamic_dir: tmp_dir).write!
+      ensure
+        ActiveSupport::Notifications.unsubscribe(subscriber)
+      end
+
+      expect(backend_queries.size).to eq(1), "expected one eager-load, got:\n#{backend_queries.join("\n")}"
+    end
+  end
 end

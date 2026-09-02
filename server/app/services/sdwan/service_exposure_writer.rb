@@ -32,6 +32,12 @@ module Sdwan
   #       localsvc-<id>-forwardauth: { forwardAuth: { address:…?service=<id>, authResponseHeaders:…, trustForwardHeader:false } }
   #       localsvc-<id>-stripprefix: { stripPrefix: { prefixes: [/svc/<slug>] } }
   #       localsvc-<id>-headers:     { headers: { customRequestHeaders: { X-Forwarded-Prefix: /svc/<slug> } } }
+  #
+  # A service with a multi-member Sdwan::ServiceBackend set (APO-3c) renders one
+  # `servers` entry per member, plus `weight` when the members' weights differ
+  # and a `healthCheck` block (Sdwan::ServiceLoadBalancing). A service with no
+  # backend set — the norm — renders exactly the single-server shape above,
+  # byte for byte.
   class ServiceExposureWriter
     class WriteError < StandardError; end
 
@@ -143,7 +149,7 @@ module Sdwan
       ::Sdwan::Service.active
                       .where(account_id: @account.id)
                       .where("local_enabled OR public_enabled")
-                      .includes(:local_certificate, :backend_vip)
+                      .includes(:local_certificate, :backend_vip, backends: :backend_vip)
                       .to_a
     end
 
@@ -161,12 +167,61 @@ module Sdwan
       router["middlewares"] = chain if chain.any?
       routers[key] = router
 
-      backends[key] = {
-        "loadBalancer" => {
-          "servers" => [ { "url" => svc.backend_url } ],
-          "passHostHeader" => true
-        }
+      backends[key] = { "loadBalancer" => http_load_balancer(svc) }
+    end
+
+    # The HTTP servers load balancer for the service's effective backend set
+    # (APO-3c). Before the set existed this emitted one hardcoded server built
+    # from the service's own backend columns, so scaling a project out produced
+    # replicas that received no traffic.
+    #
+    # DEGENERATE CASE IS BYTE-IDENTICAL, and that is load-bearing: a service
+    # with one backend (i.e. every service with no Sdwan::ServiceBackend rows)
+    # renders `{"servers" => [{"url" => …}], "passHostHeader" => true}` — same
+    # keys, same order, no weight, no healthCheck — so YAML.dump produces the
+    # same bytes it always did and Traefik does not reload a single existing
+    # account's dynamic file on deploy.
+    def http_load_balancer(svc)
+      targets = svc.load_balanced_backends
+
+      lb = {
+        "servers" => targets.map { |target| http_server_entry(svc, target, targets) },
+        "passHostHeader" => true
       }
+      health = health_check_for(svc, targets)
+      lb["healthCheck"] = health if health
+      lb
+    end
+
+    def http_server_entry(svc, target, targets)
+      entry = { "url" => target.url(scheme: svc.protocol) }
+      entry["weight"] = target.weight if weighted?(targets)
+      entry
+    end
+
+    # Per-server `weight` rides the servers load balancer only once the operator
+    # has actually differentiated the members. A uniform set IS round robin, so
+    # emitting `weight: 1` on every server changes nothing about how traffic is
+    # spread — it only widens the schema of every file this writer produces for
+    # no behavioural gain. Emitting the key exactly when it MEANS something
+    # keeps the generated config the smallest thing that expresses the intent.
+    # (`weight` is documented on http.services.<x>.loadBalancer.servers for the
+    # Traefik the reverse-proxy-traefik module installs — 3.7.1 per
+    # scripts/module-build/stage15.sh, whose static config is the only thing in
+    # the tree pointing at /etc/traefik/dynamic.)
+    def weighted?(targets)
+      targets.size > 1 && targets.map(&:weight).uniq.size > 1
+    end
+
+    # Health checks are for pools. A single-backend service has nowhere to fail
+    # over TO, so a check there can only take the one backend out — never emit
+    # one. Defaults (path/interval/timeout, and the off switch) resolve through
+    # Sdwan::ServiceLoadBalancing: service metadata, then account settings, then
+    # SiteSetting, then its constants.
+    def health_check_for(svc, targets)
+      return nil unless targets.size > 1
+
+      ::Sdwan::ServiceLoadBalancing.health_check_for(svc, account: @account)
     end
 
     # Path B — public TLS-carrying TCP via Traefik SNI (campaign 019f3458
@@ -206,11 +261,27 @@ module Sdwan
         end
       routers[key] = router
 
-      backends[key] = {
-        "loadBalancer" => {
-          "servers" => [ { "address" => "#{svc.backend_address}:#{svc.backend_port}" } ]
-        }
-      }
+      backends[key] = { "loadBalancer" => { "servers" => tcp_server_entries(svc) } }
+    end
+
+    # The TCP facet fans out to one server per backend and stops there.
+    #
+    # Traefik's TCP servers load balancer takes a bare address per server and
+    # supports NEITHER a per-server weight (WRR is a service-level construct
+    # there — `tcp.services.<x>.weighted` over child services, not over the
+    # servers of one load balancer) nor a healthCheck on the vendored build. So
+    # weights and health checks stay HTTP-only; a scaled TLS service gets plain
+    # round robin, which is still the difference between N replicas serving and
+    # one.
+    #
+    # "#{address}:#{port}" rather than Sdwan::HostPort.join, deliberately: this
+    # writer and Federation::ServiceRouteWriter emit the unbracketed form (see
+    # the divergence documented in Sdwan::HostPort's header), and the degenerate
+    # single-backend output must not change bytes here either.
+    def tcp_server_entries(svc)
+      svc.load_balanced_backends.map do |target|
+        { "address" => "#{target.address}:#{target.backend_port}" }
+      end
     end
 
     # Chain order: ForwardAuth → StripPrefix → X-Forwarded-Prefix. Authenticate on
