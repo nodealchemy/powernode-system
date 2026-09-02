@@ -37,7 +37,14 @@ RSpec.describe System::CredentialValidationService do
         }
       end
 
+      # IMP-0ddfd8a60032 — the service now refuses a registered type whose
+      # adapter SDK gem is not bundled, BEFORE the credential probe. These
+      # examples are about the probe, so they declare the gem present. Not an
+      # environment assumption either way: stub_const holds both on the core
+      # bundle and in the `provider-specs` CI lane that layers the gem on.
+      # The refusal itself is covered in credential_validation_sdk_guard_spec.rb.
       before do
+        stub_const("Aws::EC2::Client", Class.new { def initialize(*, **); end })
         allow(::Aws::STS::Client).to receive(:new).and_return(sts_client)
       end
 
@@ -155,6 +162,17 @@ RSpec.describe System::CredentialValidationService do
       end
       let(:service_account_json) { service_account_payload.to_json }
 
+      # IMP-0ddfd8a60032 — the service now refuses a registered type whose
+      # adapter SDK gem is not bundled, BEFORE the credential probe. These
+      # examples are about the probe, so they declare the gem present. Not an
+      # environment assumption either way: stub_const holds both on the core
+      # bundle and in the `provider-specs` CI lane that layers the gem on.
+      # The refusal itself is covered in credential_validation_sdk_guard_spec.rb.
+      before do
+        stub_const("Google::Cloud::Compute::V1::Instances::Rest::Client",
+                   Class.new { def initialize(*, **); end })
+      end
+
       it "returns [true, ...] when GCP returns an access_token" do
         stub_request(:post, "https://oauth2.googleapis.com/token")
           .to_return(
@@ -239,6 +257,16 @@ RSpec.describe System::CredentialValidationService do
           "project_name" => "admin",
           "domain_name"  => "Default"
         }
+      end
+
+      # IMP-0ddfd8a60032 — the service now refuses a registered type whose
+      # adapter SDK gem is not bundled, BEFORE the credential probe. These
+      # examples are about the probe, so they declare the gem present. Not an
+      # environment assumption either way: stub_const holds both on the core
+      # bundle and in the `provider-specs` CI lane that layers the gem on.
+      # The refusal itself is covered in credential_validation_sdk_guard_spec.rb.
+      before do
+        stub_const("Fog::OpenStack::Compute", Class.new { def initialize(*, **); end })
       end
 
       it "returns [true, ...] when Keystone returns 201 Created" do

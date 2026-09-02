@@ -30,6 +30,23 @@ module System
         return [ false, "no adapter for provider_type=#{provider_type_label}" ]
       end
 
+      # APO-7 SDK guard (IMP-0ddfd8a60032) — the same predicate the row
+      # writers apply, here because a credential verdict is a WRITE decision:
+      # a green "credentials valid" is what makes the operator persist a
+      # System::ProviderCredential for a type this build cannot operate.
+      #
+      # This is not defence against a crash. #authenticate? on these adapters
+      # reaches the AUTH SDK (Aws::STS::Client, from the bundled aws-sdk-core)
+      # and never touches the constant that proves the COMPUTE gem is present,
+      # so before this guard the probe answered [true, "credentials valid"]
+      # for an aws provider on a build with no aws-sdk-ec2. Until now the
+      # service was reachable only behind callers that hide inoperable types
+      # upstream — a neighbour's guard, which expires the moment a caller
+      # arrives carrying its own provider_type.
+      if (refusal = sdk_refusal)
+        return [ false, refusal ]
+      end
+
       # Merge persisted Provider.config (endpoint_url, verify_ssl, region,
       # etc.) UNDER the form's credentials. Form-supplied keys win; provider
       # config fills config-scope fields that the UI Credentials tab excludes
@@ -49,6 +66,31 @@ module System
     end
 
     private
+
+    # WHAT KEEPS UNREGISTERED TYPES OUT is the call ORDER, not the
+    # `supported?` line below. #test returns early when
+    # Registry.adapter_for is nil, and adapter_for is nil on exactly the keys
+    # `supported?` is false on — both read PROVIDER_CLASSES with the same
+    # normalisation — so digitalocean/linode/vultr/custom keep the "no
+    # adapter" verdict above without this helper ever running. That first
+    # line therefore cannot fire from this call site: it is defence-in-depth
+    # for a future caller that reaches the helper without the early return,
+    # and deleting it does NOT red the suite. The controller's copy of the
+    # same clause (ProvidersController#refuse_inoperable_provider_type) has
+    # no such early return in front of it and IS reachable — do not reason
+    # from one to the other.
+    #
+    # @return [String, nil] refusal text naming the missing gem, or nil when
+    #   the adapter is operable here
+    def sdk_refusal
+      registry = ::System::Providers::Registry
+      provider_type = provider_type_label
+
+      return nil unless registry.supported?(provider_type)
+      return nil if registry.sdk_available?(provider_type)
+
+      registry.sdk_missing_message(provider_type)
+    end
 
     def effective_credentials
       provider_config_hash.merge(stringified_credentials)

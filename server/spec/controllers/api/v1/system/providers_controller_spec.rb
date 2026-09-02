@@ -58,8 +58,13 @@ RSpec.describe "Api::V1::System::Providers", type: :request do
   end
 
   describe "POST /api/v1/system/providers" do
+    # provider_type is "proxmox", not "aws": since IMP-0ddfd8a60032 #create
+    # refuses a registered type whose adapter SDK gem is not bundled here, and
+    # aws-sdk-ec2 is not in the core bundle. This example is about account
+    # scoping and the permission gate — the refusal and its mirror direction
+    # are covered in requests/api/v1/system/providers_sdk_guard_spec.rb.
     let(:create_params) do
-      { provider: { name: "New Provider #{SecureRandom.hex(3)}", provider_type: "aws", enabled: true, config: {} } }
+      { provider: { name: "New Provider #{SecureRandom.hex(3)}", provider_type: "proxmox", enabled: true, config: {} } }
     end
 
     it "returns 403 without create perm" do
