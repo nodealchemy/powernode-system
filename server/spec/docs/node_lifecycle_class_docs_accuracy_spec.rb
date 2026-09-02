@@ -401,7 +401,7 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
       expect(self.class.absent(doc, [
         /defaults to `persistent`/,
         /`System::InstancePool`/,
-        /instance_pool_service\.rb:1190-1196/,
+        /instance_pool_service\.rb:1190-1206/,
         /InstancePoolReplenisherJob/,
         /Nothing reads it/
       ])).to be_empty

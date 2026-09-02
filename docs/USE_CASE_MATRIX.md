@@ -38,7 +38,7 @@ Node anything else is a `System::InstancePool`.
 
 **The one path that sets it to anything else**:
 `System::InstancePoolService#provision_warming_member!`
-(`instance_pool_service.rb:1190-1196`) creates each pool member's Node with
+(`instance_pool_service.rb:1190-1206`) creates each pool member's Node with
 `lifecycle_class: pool.lifecycle_class`, and `System::InstancePool` is
 CHECK-constrained to `ephemeral|spot` — so a pool member is never `persistent`,
 and a Node that no pool created is never anything else. That path runs unattended:
