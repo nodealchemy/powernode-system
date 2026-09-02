@@ -51,6 +51,14 @@ module System
     # bounded by the target it converges on) rather than a silently inflated
     # count (invisible — the exact defect IMP-797a87dbd0bd fixed).
     LIVE_REPLICA_STATUSES = %w[pending provisioning starting running stopping stopped rebooting].freeze
+
+    # The `active` scope's membership, named so consumers can report on its
+    # COMPLEMENT rather than silently dropping it. drift_check
+    # (PlatformMaintenanceExecutor#drift_summary_for) answers drift only for
+    # these, and discloses the rest in a third bucket — an instance in
+    # `starting`/`stopping`/`rebooting`/`error` used to land in neither of its
+    # counts with nothing in the payload saying so (IMP-351be1c674e0).
+    ACTIVE_STATUSES = %w[pending provisioning running stopped].freeze
     MAC_ADDRESS_REGEX = /\A([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})\z/
 
     # Slice 7 — pre-warmed instance pool membership.
@@ -321,7 +329,7 @@ module System
     scope :stopped, -> { where(status: "stopped") }
     scope :terminated, -> { where(status: "terminated") }
     scope :errored, -> { where(status: "error") }
-    scope :active, -> { where(status: %w[pending provisioning running stopped]) }
+    scope :active, -> { where(status: ACTIVE_STATUSES) }
     # Capacity-metric liveness — see LIVE_REPLICA_STATUSES for why this is a
     # second definition rather than a reuse of `active` (which omits the
     # transitional states).

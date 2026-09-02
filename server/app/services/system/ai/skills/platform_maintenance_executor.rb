@@ -156,13 +156,22 @@ module System
 
           summaries = deployments.map { |d| drift_summary_for(d) }
           drifted_total = summaries.sum { |s| s[:drift_count] }
-          silent_total  = summaries.sum { |s| s[:not_reporting_count] }
+          silent_total = summaries.sum { |s| s[:not_reporting_count] }
+          unassessed = summaries.flat_map { |s| s[:not_assessed_instances] }
+          unassessed_total = unassessed.size
 
           recs = []
           recs << "No deployments declared — drift check is a no-op." if deployments.empty?
           recs << "#{drifted_total} instance(s) drifted from their assigned modules — call system_refresh_instance_modules per instance to remediate." if drifted_total.positive?
           recs << "#{silent_total} instance(s) have never heartbeated — drift is UNKNOWN for them, not clear." if silent_total.positive?
-          recs << "All reporting instances match their assigned modules — nothing to remediate." if deployments.any? && drifted_total.zero? && silent_total.zero?
+          if unassessed_total.positive?
+            breakdown = unassessed.group_by { |i| i[:status] }.transform_values(&:size)
+                                  .sort.map { |status, n| "#{status}: #{n}" }.join(", ")
+            recs << "#{unassessed_total} instance(s) are mid-lifecycle or errored (#{breakdown}) — drift was NOT assessed for them; re-run once they settle."
+          end
+          if deployments.any? && drifted_total.zero? && silent_total.zero? && unassessed_total.zero?
+            recs << "All reporting instances match their assigned modules — nothing to remediate."
+          end
 
           success(action: "drift_check", data: { deployments: summaries }, recommendations: recs)
         end
@@ -174,12 +183,22 @@ module System
           # Find instances tied to this deployment's template (mirrors
           # the Scaling panel's compute_actual_replicas logic — uses the
           # actual table_name, not the association alias).
+          #
+          # Scoped to every NON-TERMINATED instance, not `NodeInstance.active`.
+          # `active` omits `starting`/`stopping`/`rebooting`/`error`, and those
+          # instances used to reach neither count with nothing in the payload
+          # disclosing the filter — a deployment with one instance wedged in
+          # `error` and one mid-`rebooting` rendered as "0 drifted, 0 unknown"
+          # (IMP-351be1c674e0). Two of those states are what the platform's own
+          # remediation produces (FleetDecisionEngine#reboot_silent_instance
+          # issues reboot/start), so they are not rare. `terminated` stays out:
+          # that replica is gone, not unassessed.
           instances = ::System::NodeInstance
                         .joins(:node)
                         .includes(node: { node_modules: :current_version })
                         .where(system_nodes: { node_template_id: deployment.node_template_id,
                                                account_id: @account.id })
-                        .active
+                        .where.not(status: "terminated")
 
           # An instance that has never heartbeated has not drifted — it has not
           # ANSWERED yet. Counting "everything assigned is missing" as drift
@@ -193,21 +212,41 @@ module System
           # (spec/services/system/fleet/sensors_spec.rb) and drift_report calls
           # it drift — and keying off emptiness here would have made this verb
           # the one consumer that reported it clean.
-          reporting, silent = instances.partition { |inst| inst.last_heartbeat_at.present? }
+          #
+          # The widened scope is partitioned BEFORE the drift question is asked:
+          # a mid-reboot digest map is not evidence of anything, so an instance
+          # outside `active` gets its own disclosed bucket rather than an answer
+          # the operator would have to discount. Same reasoning as the
+          # not_reporting bucket above — a state that cannot be answered is
+          # named, never folded into the yes/no and never dropped.
+          all_instances = instances.to_a
+          assessable, unassessed =
+            all_instances.partition { |inst| ::System::NodeInstance::ACTIVE_STATUSES.include?(inst.status) }
+          reporting, silent = assessable.partition { |inst| inst.last_heartbeat_at.present? }
           drifted = reporting.select(&:module_drifted?)
 
-          base_drift_row(deployment, drifted, silent)
+          base_drift_row(deployment, all_instances.size, drifted, silent, unassessed)
         end
 
-        def base_drift_row(deployment, drifted, silent)
+        # `instance_count` is the DENOMINATOR the three buckets are read
+        # against: without it a reader cannot tell "every instance was assessed
+        # and none needed remediation" from "a whole status class was filtered
+        # out of the question", which is precisely how IMP-351be1c674e0 hid.
+        # The buckets name only the instances that need attention, so the
+        # identity is drift + not_reporting + not_assessed + converged =
+        # instance_count — the converged remainder is not enumerated.
+        def base_drift_row(deployment, instance_count, drifted, silent, unassessed)
           {
             deployment_id: deployment.id,
             deployment_name: deployment.name,
             template: deployment.node_template&.name,
+            instance_count: instance_count,
             drift_count: drifted.size,
             drifted_instances: drifted.map { |i| instance_row(i).merge(drift: i.module_drift) },
             not_reporting_count: silent.size,
-            not_reporting_instances: silent.map { |i| instance_row(i) }
+            not_reporting_instances: silent.map { |i| instance_row(i) },
+            not_assessed_count: unassessed.size,
+            not_assessed_instances: unassessed.map { |i| instance_row(i) }
           }
         end
 

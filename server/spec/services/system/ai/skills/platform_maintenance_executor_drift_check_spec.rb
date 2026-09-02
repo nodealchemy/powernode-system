@@ -104,6 +104,11 @@ RSpec.describe System::Ai::Skills::PlatformMaintenanceExecutor do
       # Guards the converse of the not_reporting bucket: a healthy REPORTING
       # instance must not be parked there either.
       expect(row[:not_reporting_count]).to eq(0)
+      # ...and the converged instance is in NO bucket, which is why all-zero
+      # counts need `instance_count` to be readable: 0/0/0 with a denominator
+      # of 1 is "assessed and clean", not "the template has no instances".
+      expect(row[:not_assessed_count]).to eq(0)
+      expect(row[:instance_count]).to eq(1)
     end
 
     # The regression this bucket must never become: #record_heartbeat! writes
@@ -150,6 +155,102 @@ RSpec.describe System::Ai::Skills::PlatformMaintenanceExecutor do
       drifted.update!(running_module_digests: { drifted.node.node_modules.first.id.to_s => "sha256:want" })
 
       expect(drift_check[:data][:recommendations].join(" ")).to include("nothing to remediate")
+    end
+
+    # IMP-351be1c674e0 — the sweep scoped with `NodeInstance.active`
+    # (pending/provisioning/running/stopped), so an instance in `starting`,
+    # `stopping`, `rebooting` or `error` reached NEITHER count and nothing in
+    # the payload said so: a deployment with one instance wedged in `error` and
+    # one mid-`rebooting` rendered as "0 drifted, 0 unknown".
+    #
+    # The discriminating oracle is CONSERVATION, not the drifted count — a
+    # disappearance is invisible to an example that only counts drift. Every
+    # non-terminated instance of the template must land in exactly one bucket.
+    describe "instances in a lifecycle state where drift cannot be answered" do
+      # Deliberately NOT `active`: these are the states the platform's own
+      # remediation produces (FleetDecisionEngine#reboot_silent_instance issues
+      # reboot/start), which is why they must be disclosed rather than dropped.
+      excluded = System::NodeInstance::STATUSES -
+                 System::NodeInstance::ACTIVE_STATUSES - [ "terminated" ]
+
+      def instance_in(status, heartbeated: true)
+        node = create(:system_node, account: account, node_template: template)
+        assign_module(node, want_digest: "sha256:want")
+        create(:system_node_instance, node: node, status: status,
+               running_module_digests: {},
+               last_heartbeat_at: heartbeated ? 1.minute.ago : nil)
+      end
+
+      it "covers every status `active` omits except terminated" do
+        expect(excluded).to match_array(%w[starting stopping rebooting error])
+      end
+
+      excluded.each do |status|
+        it "discloses a #{status} instance in its own bucket instead of dropping it" do
+          instance = instance_in(status)
+
+          row = deployment_row(drift_check)
+
+          expect(row[:not_assessed_count]).to eq(1)
+          expect(row[:not_assessed_instances].map { |i| i[:id] }).to eq([ instance.id ])
+          expect(row[:drift_count]).to eq(0)
+          expect(row[:not_reporting_count]).to eq(0)
+        end
+      end
+
+      it "accounts for EVERY non-terminated instance of the template in exactly one bucket" do
+        drifted = instance_on_template(want_digest: "sha256:want", running: :matching)
+        drifted.update!(running_module_digests: { drifted.node.node_modules.first.id.to_s => "sha256:stale" })
+        healthy = instance_on_template(want_digest: "sha256:want", running: :matching)
+        silent  = instance_in("provisioning", heartbeated: false)
+        wedged  = excluded.map { |status| instance_in(status) }
+        gone    = instance_in("running")
+        gone.update_columns(status: "terminated")
+
+        row = deployment_row(drift_check)
+        counted = row[:drifted_instances].map { |i| i[:id] } +
+                  row[:not_reporting_instances].map { |i| i[:id] } +
+                  row[:not_assessed_instances].map { |i| i[:id] }
+
+        expect(counted).to match_array([ drifted.id, silent.id ] + wedged.map(&:id))
+        expect(counted.uniq.size).to eq(counted.size)
+        expect(counted).not_to include(gone.id)
+        expect(counted).not_to include(healthy.id)
+        expect(row[:drift_count] + row[:not_reporting_count] + row[:not_assessed_count])
+          .to eq(counted.size)
+        # The buckets alone cannot see a disappearance: a converged instance is
+        # in NONE of them, so a regression that dropped a whole status class of
+        # converged instances would leave the three counts unchanged. The
+        # denominator is what makes the conservation check answerable against
+        # the deployment rather than against the buckets themselves.
+        expect(row[:instance_count]).to eq(counted.size + 1)
+        expect(row[:instance_count]).to eq(
+          System::NodeInstance.joins(:node)
+                              .where(system_nodes: { node_template_id: template.id })
+                              .where.not(status: "terminated").count
+        )
+      end
+
+      it "withholds the all-clear reassurance while an instance is unassessed" do
+        instance_in("error")
+
+        recs = drift_check[:data][:recommendations].join(" ")
+
+        expect(recs).not_to include("nothing to remediate")
+        # The WIRE value, not a substring of the boilerplate: the template's own
+        # word "errored" contains "error", so asserting that alone would leave
+        # the whole per-status breakdown unpinned.
+        expect(recs).to include("error: 1")
+      end
+
+      it "breaks the unassessed bucket down per status, sorted and joined" do
+        instance_in("rebooting")
+        2.times { instance_in("starting") }
+
+        recs = drift_check[:data][:recommendations].join(" ")
+
+        expect(recs).to include("3 instance(s) are mid-lifecycle or errored (rebooting: 1, starting: 2)")
+      end
     end
   end
 end
