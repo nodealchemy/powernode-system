@@ -26,6 +26,10 @@ module System
   #     applied_filters:  Hash               # echo of normalized filters
   #   )
   class PackageSearchService
+    # The accepted `mode` set, named so the MCP tool surface can DECLARE it
+    # (IMP-40548751c199) instead of restating it in description prose — the
+    # normalizer below is the only thing that decides which values are honoured.
+    MODES            = %w[lexical semantic hybrid].freeze
     DEFAULT_MODE     = "hybrid"
     DEFAULT_SORT     = "relevance"
     DEFAULT_PER_PAGE = 50
@@ -86,7 +90,7 @@ module System
       return "lexical" if mode == "semantic" && q.blank?
       return "lexical" if mode == "hybrid"   && q.blank?
 
-      %w[lexical semantic hybrid].include?(mode) ? mode : DEFAULT_MODE
+      MODES.include?(mode) ? mode : DEFAULT_MODE
     end
 
     def repository_ids

@@ -67,16 +67,16 @@ module Ai
           name: "system_package_repository",
           description: "Manage apt/rpm package repositories — sync, search, materialize, link platforms, suggest archs",
           parameters: {
-            action:                 { type: "string",  required: true,
+            action:                 { type: "string",  required: true, enum: action_definitions.keys,
                                        description: "One of: #{ACTION_PERMISSIONS.keys.join(', ')}" },
             repository_id:          { type: "string",  required: false },
             package_id:             { type: "string",  required: false },
             package_module_link_id: { type: "string",  required: false },
             node_platform_id:       { type: "string",  required: false },
             attributes:             { type: "object",  required: false },
-            architectures:          { type: "array",   required: false },
-            node_platform_ids:      { type: "array",   required: false },
-            recommends_selected:    { type: "array",   required: false },
+            architectures:          { type: "array",   required: false, items: { type: "string" } },
+            node_platform_ids:      { type: "array",   required: false, items: { type: "string" } },
+            recommends_selected:    { type: "array",   required: false, items: { type: "string" } },
             max_suggestions:        { type: "integer", required: false }
           }
         }
@@ -87,8 +87,9 @@ module Ai
           "system_list_package_repositories" => {
             description: "List accessible apt/rpm package repositories (account-scoped + shared). Filter by platform via node_platform_ids — repos linked to any of the supplied platforms are returned.",
             parameters: {
-              kind: { type: "string", required: false, description: "Filter by repository kind: apt, rpm, or dnf" },
-              node_platform_ids: { type: "array", required: false, description: "Array of NodePlatform UUIDs; repos linked to ANY are returned" }
+              kind: { type: "string", required: false, enum: ::System::PackageRepository::KINDS,
+                                      description: "Filter by repository kind: apt, rpm, or dnf" },
+              node_platform_ids: { type: "array", required: false, items: { type: "string" }, description: "Array of NodePlatform UUIDs; repos linked to ANY are returned" }
             }
           },
           "system_get_package_repository" => {
@@ -99,14 +100,15 @@ module Ai
             description: "Register a new apt/rpm package repository. Set visibility='shared' for system-wide (requires manage_shared permission). Optionally pre-link NodePlatforms via node_platform_ids.",
             parameters: {
               name: { type: "string", required: true, description: "Human-readable repository name" },
-              kind: { type: "string", required: true, description: "Repository kind: apt, rpm, or dnf" },           # apt|rpm|dnf
+              kind: { type: "string", required: true, enum: ::System::PackageRepository::KINDS,
+                                      description: "Repository kind: apt, rpm, or dnf" },
               base_url: { type: "string", required: true, description: "Upstream repository base URL to sync from" },
               visibility: { type: "string", required: false, description: "'account' (default, account-scoped) or 'shared' (system-wide; requires manage_shared)" },     # account|shared
-              architectures: { type: "array", required: false, description: "Canonical arch names this repo serves (defaults to ['amd64'])" },
+              architectures: { type: "array", required: false, items: { type: "string" }, description: "Canonical arch names this repo serves (defaults to ['amd64'])" },
               apt_config: { type: "object", required: false, description: "APT-specific config: { suite, components: [] }" },    # { suite, components: [] }
               rpm_config: { type: "object", required: false, description: "RPM/DNF-specific config: { releasever, gpgcheck, metalink }" },    # { releasever, gpgcheck, metalink }
               signing_key_armor: { type: "string", required: false, description: "ASCII-armored GPG public key used to verify the repository signature" },
-              node_platform_ids: { type: "array", required: false, description: "NodePlatform UUIDs to link on create" },
+              node_platform_ids: { type: "array", required: false, items: { type: "string" }, description: "NodePlatform UUIDs to link on create" },
               description: { type: "string", required: false, description: "Optional free-text description of the repository" }
             }
           },
@@ -146,15 +148,17 @@ module Ai
             description: "Search the synced apt/rpm package catalog. Supports name+description trigram + semantic embedding ranking (mode: lexical|semantic|hybrid, default hybrid). Filters: kind (apt/rpm/dnf), repository_ids[], architectures[] (canonical, cross-kind expanded), sections[], license, provides (capability lookup).",
             parameters: {
               q:              { type: "string",  required: false, description: "Search query matched against package name + description" },
-              mode:           { type: "string",  required: false, description: "lexical | semantic | hybrid (default hybrid; blank q forces lexical)" },
+              mode:           { type: "string",  required: false, enum: ::System::PackageSearchService::MODES,
+                                                   description: "lexical | semantic | hybrid (default hybrid; blank q forces lexical)" },
               sort:           { type: "string",  required: false, description: "relevance | name | updated (default relevance)" },
               repository_id:  { type: "string",  required: false, description: "Back-compat: singular form of repository_ids" },
-              repository_ids: { type: "array",   required: false, description: "Restrict search to these PackageRepository UUIDs" },
-              kind:           { type: "string",  required: false, description: "apt | rpm | dnf" },
+              repository_ids: { type: "array",   required: false, items: { type: "string" }, description: "Restrict search to these PackageRepository UUIDs" },
+              kind:           { type: "string",  required: false, enum: ::System::PackageRepository::KINDS,
+                                                   description: "apt | rpm | dnf" },
               architecture:   { type: "string",  required: false, description: "Back-compat: singular form of architectures" },
-              architectures:  { type: "array",   required: false, description: "Canonical arch names (amd64, arm64) — cross-kind expanded" },
+              architectures:  { type: "array",   required: false, items: { type: "string" }, description: "Canonical arch names (amd64, arm64) — cross-kind expanded" },
               section:        { type: "string",  required: false, description: "Back-compat: singular form of sections" },
-              sections:       { type: "array",   required: false, description: "Filter by package section/group names" },
+              sections:       { type: "array",   required: false, items: { type: "string" }, description: "Filter by package section/group names" },
               license:        { type: "string",  required: false, description: "Filter by package license identifier" },
               provides:       { type: "string",  required: false, description: "Capability name — finds packages whose name=capability OR provides @> [{name: capability}]" },
               page:           { type: "integer", required: false, description: "1-based page number for paginated results" },
@@ -165,9 +169,10 @@ module Ai
             description: "Intent-based package discovery — describe a capability ('reverse proxy', 'distributed cache') and get ranked packages from accessible repositories. Pure semantic ranking via pgvector cosine distance. Use system_search_packages instead when you already know the package name.",
             parameters: {
               intent:         { type: "string",  required: true,  description: "Free-text capability description — what the package should do" },
-              repository_ids: { type: "array",   required: false, description: "Restrict discovery to these PackageRepository UUIDs" },
-              kind:           { type: "string",  required: false, description: "apt | rpm | dnf" },
-              architectures:  { type: "array",   required: false, description: "Canonical arch names — cross-kind expanded" },
+              repository_ids: { type: "array",   required: false, items: { type: "string" }, description: "Restrict discovery to these PackageRepository UUIDs" },
+              kind:           { type: "string",  required: false, enum: ::System::PackageRepository::KINDS,
+                                                   description: "apt | rpm | dnf" },
+              architectures:  { type: "array",   required: false, items: { type: "string" }, description: "Canonical arch names — cross-kind expanded" },
               license:        { type: "string",  required: false, description: "Filter by package license identifier" },
               top_k:          { type: "integer", required: false, description: "Max results (1-50, default 10)" }
             }
@@ -189,8 +194,8 @@ module Ai
             parameters: {
               repository_id:       { type: "string", required: true, description: "UUID of the source package repository" },
               package_name:        { type: "string", required: true, description: "Name of the package to materialize into a NodeModule" },
-              architectures:       { type: "array",  required: true, description: "Canonical arch names to build the module for" },
-              recommends_selected: { type: "array",  required: false, description: "Recommended package names (from resolve_dependencies preview) to opt into" },
+              architectures:       { type: "array",  required: true, items: { type: "string" }, description: "Canonical arch names to build the module for" },
+              recommends_selected: { type: "array",  required: false, items: { type: "string" }, description: "Recommended package names (from resolve_dependencies preview) to opt into" },
               category_id:         { type: "string", required: false, description: "UUID of the NodeModuleCategory to assign the new module to" },
               dispatch_build:      { type: "boolean", required: false, description: "Whether to dispatch a CI build after materialization (default true)" }
             }
