@@ -14,7 +14,7 @@ Step-by-step operator guide for the full Node + NodeInstance lifecycle: from "I 
 | 2. Provision instance | Provider boots a VM with the netboot image | 30 s – 10 min | `system_provision_instance` |
 | 3. Bootstrap | Agent installs, mTLS handshake, module reconcile | ~90 s cold (5-10 min on slow providers) | none — agent-driven |
 | 4. Run | Heartbeats, reconcile loop, task lease | indefinite | `system_get_instance` |
-| 5. Drain | **Marker + FleetEvent only** — workloads keep running; relocation is manual | seconds (the call itself) | `system_drain_instance` |
+| 5. Drain | **Cordon + STOP** — pool member fenced out of the allocator, then the VM is stopped; workload relocation is still manual and must happen FIRST | seconds (the call itself) | `system_drain_instance` |
 | 6. Decommission | Provider VM destroyed, FK cascades fire | <1 min | `system_terminate_instance` |
 
 ## Lifecycle diagram
@@ -22,9 +22,10 @@ Step-by-step operator guide for the full Node + NodeInstance lifecycle: from "I 
 The `NodeInstance` AASM has **9 states**: `pending`, `provisioning`, `starting`,
 `running`, `stopping`, `stopped`, `rebooting`, `terminated`, `error`. There is
 **no `draining` state**, and `system_drain_instance` does not drive the instance
-toward one: it records intent and changes no state at all (Phase 5 below).
-`draining` is a `pool_state` on pooled instances — a different column, unrelated
-to the `config["drain_*"]` markers — not an instance AASM state. There is also
+toward one: it walks `running → stopping → stopped`, the same walk
+`system_stop_instance` drives (Phase 5 below). `draining` is a `pool_state` on
+pooled instances — a different column, and what the drain's CORDON half writes —
+not an instance AASM state. There is also
 **no `failed` state** — the terminal
 failure state is `error`. The "bootstrapping" box below is the agent-driven boot
 window *within* the `provisioning` state, not a separate AASM state.
@@ -48,9 +49,9 @@ window *within* the `provisioning` state, not a separate AASM state.
   └──────┬───────┘  task lease ready      └────┬─────┘ (no orphaned row)
          │                                      │ terminate
          │ system_terminate_instance (hard).    │ (allowed from error)
-         │   stop/reboot also leave running.    │
-         │   system_drain_instance does NOT —   │
-         │   it records intent, changes nothing.│
+         │   system_stop_instance and            │
+         │   system_drain_instance both stop it  │
+         │   (→ stopped, row + disk retained).   │
          ▼                                       ▼
   ┌──────────────────────────────────────────────────┐
   │              terminated                          │
@@ -274,113 +275,89 @@ platform.system_drift_report({ instance_id: "<instance-id>" })
 
 If `drift: true`, the `module_drift_sensor` will emit `system.module_drift`; Fleet Autonomy auto-runs `drift_remediate` (notify_and_proceed policy) on next tick.
 
-## Phase 5 — Drain (records intent only) ⚠️
+## Phase 5 — Drain (cordon + stop) ⚠️
 
-**`system_drain_instance` does not drain anything.** It writes two marker keys
-and emits one `FleetEvent`. Workloads keep running, no service is stopped, and
-nothing reads the markers back. Read this section before you use it — the verb
-name is the most misleading thing about it.
+**`system_drain_instance` stops the instance.** It is no longer the
+marker-writing decoy this section used to document: IMP-f4fe1ed1ec1e routed the
+MCP verb onto the same actuator as the `platform_resilience` skill's
+`drain_instance` action, so there is now ONE drain behaviour reachable through
+two doors instead of two doors that disagreed.
 
 ```javascript
 platform.system_drain_instance({
-  instance_id: "<instance-id>",
-  timeout_seconds: 600            // metadata only — enforces nothing
+  instance_id: "<instance-id>"    // the only parameter
 })
-// → { drained: true, instance: {...}, drain_initiated_at, drain_timeout_seconds,
-//     next_step: "operator should call system_terminate_instance after workloads relocate" }
+// → { drained: true, instance_id, instance_name, cordoned, cordon_state,
+//     stopped: true, status: "stopped", recommendations: [...] }
 ```
 
 **What the call does**, in full
-(`server/app/services/ai/tools/system_fleet_tool.rb:5216-5254`):
+(`server/app/services/ai/tools/system_fleet_tool.rb#drain_instance` →
+`server/app/services/system/ai/skills/platform_resilience_executor.rb#drain_instance`):
 
-1. Merges two keys into `NodeInstance#config` — `drain_initiated_at` (now,
-   ISO8601) and `drain_timeout_seconds` (`:5228-5231`).
-2. Creates one `System::FleetEvent` — `kind: "system.instance.drain_initiated"`,
-   `severity: "low"`, payload `{ drain_timeout_seconds, initiated_by }` — behind
-   an `if defined?(::System::FleetEvent)` guard, so even this is conditional
-   (`:5233-5245`).
-3. Returns. `drained: true` means *the marker was written* — not that anything
-   drained.
+1. Scopes the instance to the caller's account and re-checks
+   `system.instances.control` — the grant `system_stop_instance` requires, not
+   the coarser one the skill's own MCP entry point maps to.
+2. Refuses outright if the instance runs on this control plane's own hosting
+   node (INV-1: no self-management).
+3. **Cordons** a *ready* pool member: `pool_state = "draining"`, which
+   `InstancePoolService#acquire!` reads, so the allocator stops handing it out.
+   A **claimed** member is deliberately left alone — it is already
+   un-acquirable, and both release paths guard on `pool_state == "claimed"`, so
+   flipping it would make it permanently unreturnable. A non-pool instance has
+   no allocator to cordon against. A cordon write that RAISES aborts the drain
+   *before* the stop: a stopped VM the allocator still calls ready is worse than
+   a refused drain.
+4. **Stops** the instance through `System::InstanceControlService`, the single
+   lifecycle choke point — so an operator ops hold still applies, the AASM
+   transition is driven, and the provider adapter (or `shutdown -h now` over SSH
+   for a physical node) is dispatched.
+5. Emits `platform.resilience.drain_started` (or `platform.resilience.drain_failed`),
+   readable back through `system_recent_signals`.
 
-**What it does not do.** There is no AASM transition in the handler, so the
-instance stays `running`; there is no `draining` instance state and no
-`running → stopping → stopped` walk. No container is stopped, no Kubernetes
-node is cordoned or drained, no VIP is failed over, no systemd unit on the node
-is touched. The tool's own description says so:
-"Workloads remain running; operator should call system_terminate_instance after
-relocation completes" (`system_fleet_tool.rb:1319`).
+A refused or failed cordon/stop comes back as an ERROR, not as
+`drained: true`. Disk and the registry row are retained —
+`system_start_instance` brings it back.
 
-**And nothing consumes the markers.** `drain_initiated_at`,
-`drain_timeout_seconds` and `drain_initiated_by_user_id` are *written* by this
-MCP verb (`system_fleet_tool.rb:5228-5231`) and read in none, across `server/`,
-`extensions/`, `worker/`, `frontend/` and the Go agent.
+**What it still does not do.** Nothing relocates in-flight work first. No
+Kubernetes node is cordoned or drained, no container is stopped individually, no
+VIP is failed over. The stop is a whole-VM stop; re-check anything that was
+mid-flight.
 
-**The `platform_resilience` skill no longer shares this behaviour.** It used to
-be the second writer of the same markers, with a third key and a *different*
-event kind, so filtering on the wrong kind found nothing. IMP-8c0f0fe9a8cf
-(APO-3b) made its `drain_instance` branch real: it cordons a **ready** pool
-member (`pool_state="draining"`, which `InstancePoolService#acquire!` reads) and
-then stops the instance through `System::InstanceControlService` — the same
-choke point `system_stop_instance` uses, so an operator ops hold still applies,
-and it requires the same `system.instances.control` grant. A **claimed** member
-is deliberately left alone: it is already un-acquirable, and both release paths
-guard on `pool_state == "claimed"`, so flipping it would make it permanently
-unreturnable. A cordon write that raises aborts the drain *before* the stop. It
-writes no `drain_*` config markers, dropped the `timeout_seconds` input that
-enforced nothing, and returns a FAILURE when the cordon or the stop is
-refused. Its event
-(`platform.resilience.drain_started`, now severity `low`) had never actually
-persisted: `severity: "info"` is not in `System::FleetEvent::SEVERITIES`, so
-every `create!` raised into the rescue that swallows it. **So the two verbs are
-no longer equivalent in the other direction: the MCP verb below still only
-records intent; the skill actually stops the instance.** The MCP verb also still
-advertises and forwards `timeout_seconds` even though the skill no longer
-accepts it — accepted, ignored, reported as success, exactly the `cordon_only`
-footgun tabulated below. The whole `NodeInstance#config` blob
-*is* shipped to the node by `GET /api/v1/system/node_api/config`
-(`server/app/controllers/api/v1/system/node_api/config_controller.rb:783-793`),
-so the markers physically reach the agent — but the only agent caller of that
-endpoint, `agent/cmd/powernode-agent/internal/cli/volume_setup_cmd.go:188-215`,
-unmarshals into a typed struct reaching just `data.node.disk_policy` and never
-looks at the instance config. So the markers, and the event, are an audit trail
-for humans — the event is readable back through `system_recent_signals`, which
-queries `System::FleetEvent` and takes a `kind` filter
-(`system_fleet_tool.rb:1228-1235`, handler `:4738-4752`). Note it is
-`system_recent_signals`, not `recent_events`: the latter reads
-`Ai::ExecutionEvent` and never sees a FleetEvent
-(`server/app/services/ai/introspection/platform_introspection_service.rb:88-106`).
-Treat the markers as nothing more than that.
-
-**Parameters — and one that never existed** (`system_fleet_tool.rb:1318-1324`):
+**Parameters** (`system_fleet_tool.rb`, `system_drain_instance` definition):
 
 | Key | Status | Effect |
 |---|---|---|
-| `instance_id` | required | The NodeInstance to mark. |
-| `timeout_seconds` | optional, default 600 | Stored in `config` and in the event payload. **Enforces nothing**: no timer runs, nothing auto-terminates, nothing reads it back. It is a note to the next human, not a relocation window. |
-| `cordon_only` | **does not exist** | Earlier revisions of this runbook showed `cordon_only: false` with the comment "false → also stop services after cordon". There has never been such a parameter, and there is no cordon path to opt out of. `BaseTool#validate_params!` (`server/app/services/ai/tools/base_tool.rb:443-453`) only checks that *required* keys are present — it does not reject extra ones — so the key was accepted, ignored and dropped, and the call returned `success` having done nothing extra. |
+| `instance_id` | required | The NodeInstance to cordon and stop. |
+| `timeout_seconds` | **removed** | Accepted until IMP-f4fe1ed1ec1e, stored in `config` and the event payload, and enforcing nothing: no timer ran, nothing auto-terminated, nothing read it back. The skill dropped it with the markers in APO-3b; the MCP verb kept advertising and forwarding it into an executor that ignored it. It is gone from both — the stop path has no knob to map it onto. |
+| `cordon_only` | **does not exist** | Earlier revisions of this runbook showed `cordon_only: false` with the comment "false → also stop services after cordon". There has never been such a parameter. `BaseTool#validate_params!` (`server/app/services/ai/tools/base_tool.rb:443-453`) only checks that *required* keys are present — it does not reject extra ones — so the key was accepted, ignored and dropped, and the call returned `success` having done nothing extra. |
 
-**There is no cordon-only MCP verb today.** No MCP verb marks a NodeInstance
-unschedulable while leaving it up — the `platform_resilience` skill cordons a
-*pool member* out of the allocator, but it stops the instance in the same call,
-so it is not a leave-it-running cordon either. Depending on what you actually
-wanted:
+**The `drain_*` config markers are gone.** `drain_initiated_at`,
+`drain_timeout_seconds` and `drain_initiated_by_user_id` were written by the MCP
+verb and read by nothing, across `server/`, `extensions/`, `worker/`,
+`frontend/` and the Go agent. No writer remains. If you have instances carrying
+them from before this change, they are inert history on the `config` blob.
 
-- **Cordon *and* stop a pool member**: the `platform_resilience` skill's
-  `drain_instance` action. **After deploying IMP-8c0f0fe9a8cf you must re-run
-  `db:seed`**: the `Ai::Skill` row's `system_prompt` is what the model actually
-  reads, seeds never re-run automatically on an existing install, and the stale
-  text still says the branch "cordons nothing and stops nothing" — an actively
-  dangerous instruction now that it stops instances.
-- **Stop the workloads on the node**: `system_stop_instance` really does stop
-  the instance (disk and registry row retained, restart with
-  `system_start_instance`). That is the blunt version of "also stop services",
-  and it is a whole-VM stop, not a per-service one.
+**There is still no cordon-only MCP verb.** No verb marks a NodeInstance
+unschedulable while leaving it up — `system_drain_instance` cordons the pool
+member and stops the instance in the same call. Depending on what you wanted:
+
+- **Cordon *and* stop a pool member**: `system_drain_instance`, or the
+  `platform_resilience` skill's `drain_instance` action — the same code.
+  **After deploying IMP-8c0f0fe9a8cf you must re-run `db:seed`**: the
+  `Ai::Skill` row's `system_prompt` is what the model actually reads, seeds
+  never re-run automatically on an existing install, and the stale text still
+  says the branch "cordons nothing and stops nothing" — an actively dangerous
+  instruction now that it stops instances.
+- **Stop the workloads on the node without touching the pool**:
+  `system_stop_instance`. Same choke point, no cordon.
 - **Keep it from being started or terminated while you work**:
   `system_instance_hold` places an operator ops hold. Every caller reaching
   `System::InstanceControlService` is refused for `start`/`reboot`/`terminate`
   while it is set, and `force` does not override it
   (`server/app/services/system/instance_control_service.rb:32, 95-103`); `stop`
-  is deliberately still allowed.
+  is deliberately still allowed — which is why a drain still works against a
+  held instance.
 - **Cordon a Kubernetes node**: do it at the Kubernetes layer.
   `kubectl cordon <node>`, then `kubectl drain --ignore-daemonsets`, using the
   cluster's own kubeconfig from `platform.kubernetes_get_kubeconfig`. Nothing in
@@ -390,12 +367,16 @@ wanted:
 
 **The sequence that actually retires a running instance:**
 
-1. `system_drain_instance` — optional. Take it for the marker and the event if
-   you want the audit trail; it buys nothing else.
-2. **Relocate the workloads yourself.** This step is manual and unverified:
-   drain the Kubernetes node with `kubectl`, stop or migrate containers, move
-   the VIP. Nothing on the platform side reports progress, because nothing on
-   the platform side knows the relocation started.
+1. **Relocate the workloads yourself, first.** This step is manual and
+   unverified: drain the Kubernetes node with `kubectl`, stop or migrate
+   containers, move the VIP. Nothing on the platform side reports progress,
+   because nothing on the platform side knows the relocation started — and the
+   drain below will NOT wait for it.
+2. `system_drain_instance` — cordons the pool member and stops the VM. Read the
+   result: a refusal comes back as an error, and `cordon_state` tells you
+   whether the allocator was actually fenced (`cordoned`), whether there was
+   nothing to fence (`not_pooled`), or whether the member is `claimed` and must
+   be returned with `system_return_pooled_instance`.
 3. Confirm by your own means that the node is idle.
 4. `system_terminate_instance` — which really does destroy the provider VM:
    it routes through `System::ProvisioningService#terminate_instance`, which
@@ -405,16 +386,14 @@ wanted:
    `system_fleet_tool.rb:426-435`): where policy requires approval the call
    returns `{ pending: true }` with an `approval_request_id` and the instance is
    **not** terminated until an operator approves (`:766-770`). Do not read that
-   response as a completed termination — the same mistake this whole section is
-   about, one verb along.
+   response as a completed termination.
 
-> **The failure this ordering exists to prevent.** The response's `next_step`
-> tells you to "call system_terminate_instance after workloads relocate", which
-> reads as though the drain started the relocation. It did not. Terminating on
-> the strength of a drain that only wrote a timestamp destroys the VM with its
-> workloads still on it.
+> **The ordering changed with the behaviour.** While the drain only wrote a
+> timestamp, it was safe to call first and relocate afterwards. It now STOPS the
+> instance, so relocation has to come first — a drain issued before the workload
+> moves takes the workload down with the VM.
 
-**What to watch when you do step 2 by hand** (these are properties of `kubectl
+**What to watch when you do step 1 by hand** (these are properties of `kubectl
 drain` and of your cluster, not of `system_drain_instance`):
 
 - Pod relocation needs capacity on the remaining nodes — a drain stalls if the

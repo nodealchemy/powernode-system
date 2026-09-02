@@ -114,7 +114,7 @@ Passing both is not an error and `pool_name` is simply ignored — so pass one.
 > `pool_warming_started_at`; `instance_pool_id` and `pool_warming_started_at`
 > were both set when the member was provisioned, not by your claim. No
 > `FleetEvent` is emitted (unlike `system_drain_instance`, which emits
-> `system.instance.drain_initiated` with an `initiated_by`). The only trace of
+> `platform.resilience.drain_started` carrying `by_user`). The only trace of
 > who acquired is a `Rails.logger.info` line carrying `pool_id` and `member_id`
 > — no caller identity at all.
 >

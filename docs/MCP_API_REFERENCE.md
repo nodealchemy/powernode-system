@@ -377,7 +377,7 @@ fetching the wizard payload.
 | Action | What it does | Audience |
 |---|---|---|
 | `system_destroy_instance` | Tear down a NodeInstance immediately (skips drain — operator must accept blast radius) | operator |
-| `system_drain_instance` | **Records drain intent only** — writes `drain_initiated_at`/`drain_timeout_seconds` onto the instance config and emits a `system.instance.drain_initiated` FleetEvent. Nothing is cordoned or stopped, the instance stays `running`, and nothing reads the markers back. Relocate workloads by hand, then `system_terminate_instance` — see [node-provisioning.md](./runbooks/node-provisioning.md) Phase 5 | operator |
+| `system_drain_instance` | **Cordons and STOPS the instance** — flips a ready pool member to `pool_state=draining` (which the allocator reads), then stops the VM through `System::InstanceControlService`, the same choke point `system_stop_instance` uses. Requires `system.instances.control`; refuses an instance on this plane's own hosting node; a refused or failed stop comes back as an error, not as a drain. Nothing relocates in-flight work first — do that BEFORE calling it. The `drain_*` config markers and `timeout_seconds` are gone (IMP-f4fe1ed1ec1e) — see [node-provisioning.md](./runbooks/node-provisioning.md) Phase 5 | operator |
 | `system_get_silent_instances` | Audit query — list NodeInstances whose `last_heartbeat_at` exceeds the silent threshold | operator, agent |
 | `system_refresh_instance_modules` | Force the agent to re-reconcile its module set against the platform's view | operator, agent |
 | `system_module_mark_canary` | Mark a module as a honeypot canary (any access emits a high-severity FleetEvent) | operator |

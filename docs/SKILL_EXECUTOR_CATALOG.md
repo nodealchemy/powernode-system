@@ -35,7 +35,7 @@ For architecture context (agent bindings, plan vs. execute pattern, invocation s
 - [`package_module_refresh`](#package_module_refresh) — Re-materialize a NodeModule's source package when upstream drifts (replays persisted recommends_chosen for determinism)
 - [`package_repository_sync`](#package_repository_sync) — Enqueue a background sync of upstream apt/rpm metadata for one package repository (account-scoped or shared); returns once queued, the sync runs out-of-process
 - [`platform_maintenance`](#platform_maintenance) — Routine platform maintenance — certificate renewal, drift checks, health snapshots. Use this skill when the operator asks about (a) which certs are expiring soon, (b) whether they should rotate something, (c) the current platform health, or (d) whether any instances have drifted from the modules their node is assigned.
-- [`platform_resilience`](#platform_resilience) — Platform incident response — cordon and stop an instance, scale a deployment up/down (THIS action reconciles the live replica count after writing target_replicas; the Scaling panel and the GitOps bridge still only record it), or triage peer/instance health. Use this skill when the operator describes a stress event (instance misbehaving, capacity pressure, peer heartbeats stale) or asks 'what should I do about X'.
+- [`platform_resilience`](#platform_resilience) — Platform incident response — cordon and stop an instance, scale a deployment up/down (this action and the Scaling panel's PATCH both reconcile the live replica count after writing target_replicas; the GitOps bridge still only records it), or triage peer/instance health. Use this skill when the operator describes a stress event (instance misbehaving, capacity pressure, peer heartbeats stale) or asks 'what should I do about X'.
 - [`provision_cluster`](#provision_cluster) — Provision N instances of a Template in a region — composes create_node + provision_instance for each
 - [`provision_full_stack`](#provision_full_stack) — Provision a full compute+network+storage stack from a template — composes provision_instance + optional storage volume + optional SDWAN peer enrollment
 - [`relocate_workload`](#relocate_workload) — Relocate a project's compute workload from one region to another via blue/green or drain cutover. Composes ProvisionFullStackExecutor (target) + ProvisioningService.terminate_instance (source).
@@ -667,7 +667,7 @@ Routine platform maintenance — certificate renewal, drift checks, health snaps
 
 ### `platform_resilience`
 
-Platform incident response — cordon and stop an instance, scale a deployment up/down (THIS action reconciles the live replica count after writing target_replicas; the Scaling panel and the GitOps bridge still only record it), or triage peer/instance health. Use this skill when the operator describes a stress event (instance misbehaving, capacity pressure, peer heartbeats stale) or asks 'what should I do about X'.
+Platform incident response — cordon and stop an instance, scale a deployment up/down (this action and the Scaling panel's PATCH both reconcile the live replica count after writing target_replicas; the GitOps bridge still only records it), or triage peer/instance health. Use this skill when the operator describes a stress event (instance misbehaving, capacity pressure, peer heartbeats stale) or asks 'what should I do about X'.
 
 - **Class:** `System::Ai::Skills::PlatformResilienceExecutor`
 - **Source:** `extensions/system/server/app/services/system/ai/skills/platform_resilience_executor.rb`
