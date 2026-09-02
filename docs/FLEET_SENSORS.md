@@ -180,7 +180,7 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 **Watches:** `NodeCertificate.not_after` (mTLS instance certs from `InternalCaService`)
 **Threshold:** Cert expires within `ADVISORY_WINDOW` (**7 days**) → `system.cert_expiring` signal. Severity carries the urgency (`:high` inside `URGENT_WINDOW`, else `:medium`); there is no separate already-expired kind, and no post-rotation kind — the rotation is an ACTION (`system.cert_rotate`), not a signal.
 **Signals:** `system.cert_expiring` — the only kind this sensor emits.
-**Recommended remediation:** Auto-rotate via `system.cert_rotate` action (Fleet Autonomy `auto_approve` policy). 90-day default lifetime.
+**Recommended remediation:** `system.cert_rotate` (Fleet Autonomy **`require_approval`** policy — `PolicyDeclarations::FLEET_AUTONOMY_POLICIES`; this doc claimed `auto_approve` in three places until IMP-43e94c9d46d4). The platform does NOT re-issue the cert: a node's private key never leaves the node, so only the agent's own CertRotator can present a CSR (`node_api/enroll/refresh`) — it renews at 75% of the 90-day lifetime. What this lane does, **once an operator approves the request**, is close the loop that rotator leaves open: a refresh leaves the superseded `NodeCertificate` row un-revoked, so the sensor keeps firing on a cert the node stopped using. `DecisionEngine#rotate_node_certificate` revokes a cert an active newer one supersedes, and otherwise reports `applied: false` saying it cannot converge. A signal that persists therefore means ONE OF THREE things, and they are not distinguishable from the signal alone: nobody approved the `system.cert_rotate` request, the cert has no active successor yet, or the agent's rotator is not running.
 
 ### `cert_expiry_sensor` — Platform ACME cert expiration
 
@@ -512,7 +512,7 @@ flowchart TD
     Emit --> Eval[DecisionEngine.evaluate event]
     Eval --> Lookup{Lookup<br/>InterventionPolicy<br/>action_category}
 
-    Lookup -->|auto_approve| AutoExec[Execute immediately<br/>e.g. cert_rotate]
+    Lookup -->|auto_approve| AutoExec[Execute immediately<br/>e.g. package_repository.sync]
     Lookup -->|notify_and_proceed| NotifyExec[Execute + push notification<br/>e.g. drift_remediate]
     Lookup -->|require_approval| Queue[Queue ApprovalRequest<br/>e.g. cve_remediate]
     Lookup -->|blocked| Drop[Drop — refuse to execute]
@@ -609,7 +609,7 @@ Source: `db/seeds/fleet_autonomy_agent.rb`. Approval chain: `Fleet Autonomy Acti
 
 | Action category | Default policy | Why |
 |---|---|---|
-| `system.cert_rotate` | `auto_approve` | Routine + reversible (90-day mTLS rotation) |
+| `system.cert_rotate` | `require_approval` | NOT autonomous, and cannot be: the private key never leaves the node, so only the agent's own CSR renews a cert. The lane's one server-side action is revoking a cert an active newer one supersedes, and revoking the wrong row cuts a live mTLS session |
 | `system.module_assign` | `notify_and_proceed` | Operator already opted-in by configuring template |
 | `system.instance_reboot` | `notify_and_proceed` | Reversible — instance returns within ~60 s |
 | `system.instance_reprovision` | `require_approval` | Destructive — wipes ephemeral state |

@@ -180,9 +180,21 @@ module System
 
             ### Certificate near expiry
 
-            FleetAutonomyService auto-rotates at 75% lifetime via `system.cert_rotate`
-            (default `auto_approve`). If rotation has been failing, escalate via
-            `escalate` MCP action with severity=high.
+            The node's agent renews its own mTLS certificate (its CertRotator
+            posts a CSR to `node_api/enroll/refresh`) — the platform cannot
+            rotate for it, because the private key never leaves the node.
+            Nothing here is automatic: `system.cert_rotate` is a
+            `require_approval` lane, and its ONE server-side action is
+            revoking a certificate that an active newer one already
+            supersedes. So when the agent has already replaced the cert,
+            approve the queued `system.cert_rotate` request and the stale
+            signal clears; when it has not, the lane reports
+            `applied: false` and approving it changes nothing.
+
+            A signal that persists is therefore ambiguous — no operator
+            approved the request, the cert has no successor, or the rotator
+            is not running. Check the agent is alive and enrolled before
+            escalating via the `escalate` MCP action with severity=high.
           MD
         end
 

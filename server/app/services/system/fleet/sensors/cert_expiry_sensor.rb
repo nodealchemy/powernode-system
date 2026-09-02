@@ -12,7 +12,13 @@ module System
       # Both emit a rotation signal, but they target different stores and
       # different remediation paths, so they carry different signal kinds:
       #
-      #   - CertificateExpirySensor  → system.cert_expiring     → NodeCertificate#rotate
+      #   - CertificateExpirySensor  → system.cert_expiring     → DecisionEngine
+      #       #rotate_node_certificate. IMP-43e94c9d46d4: this line used to name
+      #       a rotate method on NodeCertificate. None has ever existed, and the
+      #       asymmetry is real rather than an oversight — a NODE cert can only
+      #       be re-issued from a CSR the agent generates, because its private
+      #       key never leaves the node, so that applier revokes a superseded
+      #       cert and otherwise reports that it cannot converge.
       #   - CertExpirySensor (this)  → system.acme_cert_expiring → platform_maintenance cert_rotate
       #
       # Two thresholds, matching the model's RENEWAL_WINDOW:

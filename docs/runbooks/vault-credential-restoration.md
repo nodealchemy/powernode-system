@@ -205,7 +205,7 @@ SELECT account_id, transit_key_version FROM accounts WHERE transit_key_version !
 | `VaultUnreachableError` after restore | Vault snapshot restore complete but service didn't fully come up | `vault status` → confirm unsealed; `systemctl status vault` |
 | `DecryptionFailedError` on account secret access | Vault transit key version mismatch (DB has v1, Vault has v2) | Run `system_rotate_vault_transit_pepper` to align |
 | Some accounts decrypt; others fail | Per-account namespacing — incremental partial restore | Check `accounts.transit_key_version` for the failing account vs Vault state |
-| mTLS handshakes fail after restore | Private keys expired during the outage | Run `system.cert_rotate` autonomy action (auto_approve policy) — re-issues all certs from current InternalCaService |
+| mTLS handshakes fail after restore | Private keys expired during the outage | No autonomy action re-issues certs — the private key lives on each node, so the agent must present a CSR to `node_api/enroll/refresh`. Confirm each agent's CertRotator is running; a node whose cert already expired cannot authenticate and must be re-enrolled with a fresh bootstrap token |
 | Audit log gap covers the restoration window | Expected — no audit during downtime | Document the DR window explicitly in the restoration learning |
 | Bootstrap tokens all expired | Expected — they're short-lived by design | Re-issue per-instance via `system_provision_instance` with `regenerate_bootstrap: true` |
 

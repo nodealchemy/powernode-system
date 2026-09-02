@@ -371,10 +371,18 @@ module System
         # fleet.remediation_stuck HIGH escalation and forces require_approval on a
         # lane that never acted. That is why the category is also listed in
         # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES. Membership there is
-        # DECLARED, never inferred: "skill-less and applier-less" does NOT imply
-        # non-remediating (system.cert_rotate and the SLO categories are both and
-        # still actuate elsewhere), so a new notify-only category must be added by
+        # DECLARED, never inferred, so a new notify-only category must be added by
         # hand or it ships this failure mode.
+        #
+        # IMP-43e94c9d46d4: the parenthetical here used to offer system.cert_rotate
+        # and the SLO categories as lanes that actuated somewhere else. They did
+        # not — both were proceed lanes that actuated NOTHING, and this sentence
+        # was one of three copies telling readers not to check. cert_rotate now has
+        # a REMEDIATION_APPLIERS entry and system.slo_violation is declared in
+        # RemediationValidator::NON_REMEDIATING_SIGNAL_KINDS. Add a category here
+        # ONLY when its lane genuinely proceeds without actuating; the equality
+        # oracle in spec/services/system/fleet/proceed_lane_actuation_spec.rb is
+        # what refuses a silent lane in either direction.
         "system.sdwan_service_health_investigate" => "notify_and_proceed",
 
         # IMP-57e9a90598ee — SdwanOvnDeploymentHealthSensor (ovn deployment
