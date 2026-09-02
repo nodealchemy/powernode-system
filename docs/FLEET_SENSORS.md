@@ -334,7 +334,8 @@ Two properties are deliberate and worth knowing before you rely on it:
 | `cpu_pct` | heartbeat `cpu_pct` — percent-busy the agent MEASURES from `/proc/stat` deltas | never derived from `load_average` |
 | `availability_pct` | heartbeat liveness across the replicas EXPECTED to heartbeat (`running`/`starting`) | the only sample that tells DOWN from SLOW |
 | `sdwan_throughput_bytes_per_s` | per-peer WireGuard counters | see above |
-| `p99_latency_ms` / `cost_usd_mtd` | not wired | always `unavailable` |
+| `cost_usd_mtd` | provider pricing catalog (`ProviderInstanceType#pricing_row_for`) x this month's accrued hours over the replicas in a BILLED state (`running`/`starting`/`stopping`/`rebooting` — the capacity scope is wider) | FULL COVERAGE OR NOTHING — one unpriced ACCRUING replica takes the whole sample to `unavailable`; a local-hypervisor replica is a real `0`; an ESTIMATE, not a bound: with no state-transition history a torn-down replica is under-counted and a replica that spent part of the month stopped is over-counted (`COST_ACCRUAL_NOTE` rides every live sample) |
+| `p99_latency_ms` | not wired | always `unavailable` |
 
 `cpu_pct` is measured on the node, never inferred on the server. `load_average` is shipped and stored too, but it is a `/proc/loadavg` run-queue length that folds in I/O wait, and converting it to a percentage needs a per-instance core count the platform does not reliably have for physical/pivot nodes — so the agent computes the busy/idle split itself (`agent/internal/runtime/cpustat.go`, counting `iowait` as idle) and the platform ingests a measurement. An agent that ships no `cpu_pct` — a pre-APO-2a build, or one whose `/proc/stat` was unreadable — leaves the metric `unavailable`; an instance whose observation carries only `load_average` contributes nothing.
 
