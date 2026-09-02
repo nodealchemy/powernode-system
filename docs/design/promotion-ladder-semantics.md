@@ -291,13 +291,16 @@ the lane load-bearing:
    reason:, running_count:, required_count:, dwell_time_minutes:}` without emitting a
    signal or promoting anything.
 2. Confirm the thresholds are satisfiable on this fleet at all. They probably are not
-   today: `REQUIRED_COUNT` defaults to 3 (`promotion_criteria.rb:28`) against a fleet of
-   1-2 instances, and the dwell anchor is `min(last_heartbeat_at)`
-   (`promotion_criteria.rb:56`), so clearing the 30-minute default needs the stalest
-   qualifying instance to have been quiet for 30 minutes *while still* `status: "running"`
-   — ten times the 3-minute age at which `InstanceStatusSensor` already raises
-   `system.instance_silent`. Both are overridable per-module → per-account → per-site
-   (`promotion_criteria.rb:31-32`).
+   today: `REQUIRED_COUNT` defaults to 3 (`promotion_criteria.rb:45`) against a fleet of
+   1-2 instances. The dwell anchor is `NodeInstance#first_seen_running_at_for` — when the
+   instance first reported the candidate digest while `running` — taken across the
+   qualifying set at its most recent stamp, so all of them must have been running the
+   candidate for the full window; a qualifying instance with a stale heartbeat makes the
+   version ineligible outright. (Before IMP-249aa98969bd the anchor was
+   `min(last_heartbeat_at)`, which measured SILENCE: a healthy fleet could never clear the
+   30-minute default, and one that did cleared it on instances the platform was
+   concurrently calling faulty.) Both thresholds are overridable per-module → per-account
+   → per-site (`promotion_criteria.rb:48-49`).
 3. Only then consider the lane trustworthy.
 
 **Explicitly forbidden**, and forbidden by this decision rather than merely by the task
