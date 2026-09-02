@@ -27,6 +27,37 @@ module System
     # 20260505000500_add_lifecycle_class_to_system_nodes.rb, which does not
     # exist in db/migrate/ — the standalone migration was folded into the
     # baseline.
+    #
+    # THREE TABLES CARRY A `lifecycle_class`, AND THEY DO NOT SHARE A VALUE
+    # SPACE. system_nodes is persistent|ephemeral|spot (below);
+    # system_instance_pools is ephemeral|spot ONLY — a pool of machines you
+    # intend to keep is a contradiction, so its set is a deliberate STRICT
+    # subset of this one, which is what makes InstancePoolService's
+    # pool.lifecycle_class -> Node copy safe; and system_node_instances is a
+    # DIFFERENT AXIS wearing the same name — it records lease provenance
+    # ("task_scoped": leased for one fulfillment), is nullable, and has no
+    # check constraint, so it holds a value BOTH of the other two tables
+    # would reject. Reading `lifecycle_class` in a diff tells you nothing
+    # until you know which table it belongs to. Pinned by
+    # spec/models/system/lifecycle_class_value_space_spec.rb.
+    #
+    # WHERE THIS COLUMN IS NON-DEFAULT IT IS A SNAPSHOT, NOT A VIEW. The
+    # only non-default writer copies pool.lifecycle_class at member-create
+    # time, and a pool's value is rotatable afterwards (GitOps apply_pool
+    # "update" carries it) without touching the copies. So this column can
+    # already disagree with the row it came from; the pool is authoritative,
+    # and a future short-circuit should read the pool, not the Node.
+    #
+    # WIRE-IT-OR-RETIRE-IT IS STILL OPEN, AND IT IS A PRODUCT DECISION, not an
+    # implementation detail: no REST or MCP surface permits lifecycle_class on
+    # node create/update, so the column records no intent anybody chose. Both
+    # branches are costed in offer 01a0619a-431e-7d93-bca4-9b9de2117399
+    # ("Decide the wire-or-retire fork for system_nodes.lifecycle_class").
+    # Short version: WIRING must read the pool (see the snapshot note above),
+    # and RETIRING cannot just drop the writes — an unwritten row falls back to
+    # the NOT NULL default "persistent", which is actively wrong for an
+    # ephemeral/spot pool member, so the default has to become NULL in the same
+    # change. Do not delete the column while two live paths populate it.
     LIFECYCLE_CLASSES = %w[persistent ephemeral spot].freeze
     validates :lifecycle_class, inclusion: { in: LIFECYCLE_CLASSES }, allow_nil: false
 

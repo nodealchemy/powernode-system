@@ -40,6 +40,17 @@ module System
   class InstancePool < BaseRecord
     include System::Base
 
+    # No `persistent` — deliberately. A pool exists to be warmed, claimed and
+    # replenished; a machine you intend to keep forever is not pool stock.
+    #
+    # This set MUST stay a subset of System::Node::LIFECYCLE_CLASSES
+    # (persistent|ephemeral|spot on system_nodes):
+    # InstancePoolService#provision_warming_member! copies pool.lifecycle_class
+    # onto each member's Node, so a value admitted here that the Node model or
+    # the system_nodes check constraint rejects would break replenishment for
+    # every pool of that class. The invariant is enforced by
+    # spec/models/system/lifecycle_class_value_space_spec.rb, not by these two
+    # literals happening to nest.
     LIFECYCLE_CLASSES = %w[ephemeral spot].freeze
     STATUSES = %w[active paused draining archived].freeze
 
