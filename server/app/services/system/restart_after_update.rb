@@ -129,10 +129,21 @@ module System
       # instances materialize it. Idempotent; a no-op for a module that
       # declares nothing. update_columns deliberately: NodeModule/Version
       # callbacks must not fire on what is a bookkeeping stamp.
-      # Called from NodeModule#promote_to_version! — the platform's single
-      # choke point for "this version is now what the fleet runs" — which
-      # returns false (and so never reaches here) when the version is already
-      # current. That placement is what makes the three cases all correct:
+      # Called from NodeModule#promote_to_version! — its ONLY call site in the
+      # tree — which returns false (and so never reaches here) when the version
+      # is already current. That placement is what makes the three cases all
+      # correct:
+      #
+      # It is NOT reached on every move of current_version_id, and the comment
+      # here used to imply it was ("the platform's single choke point for 'this
+      # version is now what the fleet runs'"). FIVE other sites write that
+      # column directly and arm nothing — including the operator rollback route,
+      # which goes through ModuleVersionService rather than promote_to_version!.
+      # The executable census is
+      # spec/lint/node_module_current_version_write_seam_spec.rb. So the
+      # "ROLLBACK -> fires" row below holds for the MCP rollback verb
+      # (system_fleet_tool.rb:5865), not for POST
+      # /api/v1/system/node_modules/:id/rollback.
       #
       #   new publish     -> current_version moves -> fresh stamp -> fires
       #   republished tag -> already current, no move -> no re-stamp -> quiet

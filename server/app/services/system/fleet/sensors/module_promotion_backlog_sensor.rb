@@ -22,8 +22,13 @@ module System
       #
       # WHAT "RUNS" MEANS. `NodeModuleVersion#promotion_state` is NOT read here
       # and must not be. Actuation is `NodeModule#current_version_id`, whose
-      # sole writer is `NodeModule#promote_to_version!` ("the platform's ONLY
-      # choke point for 'this version is now what the fleet runs'"). The
+      # SANCTIONED writer is `NodeModule#promote_to_version!` — sanctioned, not
+      # sole: this comment used to quote that method's own "the platform's ONLY
+      # choke point" claim, which was false. Six sites write the column; see
+      # spec/lint/node_module_current_version_write_seam_spec.rb. That does not
+      # weaken this sensor — it reads the COLUMN, so it sees every writer — but
+      # it does mean a backlog can be cleared by something that ran no promotion
+      # guard at all. The
       # built -> staging -> blessed -> live ladder is a separate track that
       # writes nothing the agents materialize; a version can sit at ladder-live
       # while the fleet runs something else entirely, and several versions of

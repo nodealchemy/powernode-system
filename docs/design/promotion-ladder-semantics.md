@@ -203,9 +203,14 @@ meaning and one owner:
 | `live` | *was* promoted, once, at `live_at` | history — **not** a fitness claim |
 | `retired` | withdrawn | a human |
 
-And it leaves the actuator untouched: `NodeModule#promote_to_version!`
-(`node_module.rb:556-576`) stays the sole writer of `current_version_id` and the only
-thing that arms a restart. `FLEET_SENSORS.md`'s `module_promotion_backlog_sensor` block
+And it leaves the actuator untouched: `NodeModule#promote_to_version!` stays the
+**sanctioned** writer of `current_version_id` and the only thing that arms a restart.
+Sanctioned, *not* sole — this sentence used to say "sole writer", and that was wrong.
+Six sites write the column; five reach it without passing `promote_to_version!` at all,
+so they arm nothing. The executable census is
+`server/spec/lint/node_module_current_version_write_seam_spec.rb`, and it is the thing
+to trust over any prose count including this one.
+`FLEET_SENSORS.md`'s `module_promotion_backlog_sensor` block
 already states this invariant from the other side — *"It does not read `promotion_state`,
 and must not"* — and (c) is what makes that consistent with the rest of the system rather
 than a local exception.

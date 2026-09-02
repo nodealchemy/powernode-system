@@ -3715,10 +3715,16 @@ module Ai
       # needs operator sign-off.
       #
       # promote_to_version! is the SANCTIONED writer of current_version_id and
-      # the only one that arms a restart — not the only writer:
-      # PackageBuildWebhookService:140 and AccountBootstrapService:284 both
-      # update! the column directly. That is why the fields below are read back
-      # from the row rather than inferred from which method ran.
+      # the only one that arms a restart — not the only writer. This comment
+      # previously named TWO others; re-deriving the set from the COLUMN rather
+      # than from this list found SIX in total, the widest being
+      # ModuleVersionService#create_version, which NodeModule's
+      # `after_update :auto_create_version` callback invokes on any save
+      # touching VERSIONED_ATTRIBUTES. The executable census that now fails on a
+      # seventh is spec/lint/node_module_current_version_write_seam_spec.rb —
+      # read it rather than this sentence, which is the kind that goes stale.
+      # That is why the fields below are read back from the row rather than
+      # inferred from which method ran.
       #
       # What this reports, modelled on the REST publish path's
       # promoted_to_current (ModulePublicationsController#create):
@@ -5837,7 +5843,11 @@ module Ai
       # Processor withholds it on three conditions (auto_promote disabled, the
       # non-empty artifact floor, core-provenance refusal) — each of which emits
       # system.module_promotion_withheld. Nothing here is limited to moving
-      # BACKWARDS: promote_to_version! is the single writer either way.
+      # BACKWARDS: THIS verb reaches promote_to_version! either way, so it arms
+      # a restart in both directions. That is a property of this verb, not of
+      # the column — the REST rollback route (node_modules#rollback) moves
+      # current_version_id through ModuleVersionService and arms nothing. See
+      # spec/lint/node_module_current_version_write_seam_spec.rb.
       def rollback_module_version(params)
         module_id = params[:module_id].to_s
         return error_result("module_id is required") if module_id.blank?

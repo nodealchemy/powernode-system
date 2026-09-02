@@ -247,7 +247,9 @@ RSpec.describe System::RestartAfterUpdate do
       described_class.reconcile!(instance: instance)
       instance.tasks.where(command: "restart").each { |t| t.update_columns(status: "complete") }
 
-      # Roll back to v1 through the platform's single promotion choke point.
+      # Roll back to v1 through promote_to_version! — arm!'s only call site.
+      # NOT "the single choke point": five other writers move current_version_id
+      # without passing it (spec/lint/node_module_current_version_write_seam_spec.rb).
       extension.promote_to_version!(v1)
       instance.update!(running_module_digests: { extension.id => digest })
 

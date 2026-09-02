@@ -115,8 +115,11 @@ module System
           end
         end
         # restart_after_update: promotion ARMS the version (inside
-        # NodeModule#promote_to_version!, the single choke point — so a
-        # rollback arms too), and deliberately does NOT enqueue anything here.
+        # NodeModule#promote_to_version!, the sanctioned writer and arm!'s only
+        # call site — so the MCP rollback verb arms too; the REST rollback route
+        # does NOT, because it moves the pointer through ModuleVersionService
+        # instead: see spec/lint/node_module_current_version_write_seam_spec.rb),
+        # and deliberately does NOT enqueue anything here.
         # At this point no instance has materialized the new artifact yet, so
         # enqueueing a restart would restart into the OLD files — the same
         # ordering bug behind the two outages of 2026-08-16. The restart is

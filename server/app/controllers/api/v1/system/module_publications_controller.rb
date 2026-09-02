@@ -162,9 +162,12 @@ module Api
           # a live node. The empty branch below already knew the artifacts hash
           # was empty and promoted anyway.
           #
-          # Promote via the model's single-writer so current_version_number is
+          # Promote via the model's SANCTIONED writer so current_version_number is
           # written alongside current_version_id (idempotent) — an id-only flip
           # drifts the denormalized number the fleet/agent/UI read.
+          # Sanctioned, not sole: five other sites write that column without
+          # passing #promote_to_version! at all. See
+          # spec/lint/node_module_current_version_write_seam_spec.rb.
           deferring_batch = ::System::ModulePublicationProcessor.deferring_batch_for(node_module)
 
           if !::System::ModulePublicationProcessor.auto_promote?(node_module)

@@ -545,15 +545,34 @@ module System
         .rollback_to_previous(allow_confinement_removal: allow_confinement_removal)
     end
 
-    # Sanctioned single-writer for current-version promotion. Writes BOTH the
-    # current_version_id FK and the denormalized current_version_number in ONE
-    # atomic update_columns so the two can never drift (the drift sensor, fleet
-    # reconciler, and UI all read the denormalized number). update_columns is
-    # deliberate — promotion is a post-publish bookkeeping flip that must not
-    # fire validations/versioning callbacks mid-publish, matching the inline
-    # update_columns writes it replaces. Idempotent: a no-op (returns false)
-    # when handed nil or the version is already current.
-    def promote_to_version!(version)
+    # Which current_version transitions arm restart_after_update.
+    #   :initial  nil -> X, the module's first promotion
+    #   :move     X   -> Y, a live fleet move
+    # (X -> X never reaches the decision: #set_current_version! returns false
+    # without writing.) See #promote_to_version! for why :initial is in here.
+    ARM_ON_TRANSITIONS = %i[initial move].freeze
+
+    # SET the pointer. Mechanism only — no policy, no side effects.
+    #
+    # Writes BOTH the current_version_id FK and the denormalized
+    # current_version_number in ONE atomic update_columns so the two can never
+    # drift (the drift sensor, fleet reconciler, and UI all read the
+    # denormalized number). update_columns is deliberate: this is a post-publish
+    # bookkeeping flip that must not fire validations or the auto_create_version
+    # callback mid-publish. Idempotent — returns false, having written nothing,
+    # when handed nil or a version that is already current.
+    #
+    # Extracted from #promote_to_version! (IMP-9a5e40a21d70 increment 2) because
+    # that method CONFLATED two different operations: setting the pointer, which
+    # is mechanical, and MOVING it on a live fleet, which is policy. The
+    # conflation is why every writer that needed only the mechanical half — see
+    # the census in spec/lint/node_module_current_version_write_seam_spec.rb —
+    # hand-rolled its own `update!` instead, and so silently opted out of the
+    # policy half as well.
+    #
+    # A caller that reaches for THIS method is asserting it has already made the
+    # promotion decision itself. If it has not, it wants #promote_to_version!.
+    def set_current_version!(version)
       return false if version.nil? || current_version_id == version.id
 
       update_columns(
@@ -561,17 +580,63 @@ module System
         current_version_number: version.version_number,
         updated_at: Time.current
       )
-      # restart_after_update: this is the platform's ONLY choke point for
-      # "this version is now what the fleet runs", and the guard above means
-      # we reach here only when current_version actually MOVED. Arming here
-      # rather than at the publish site is what makes a ROLLBACK re-arm (and
-      # therefore restart) while a republished tag stays quiet. Non-fatal:
-      # promotion must never fail because of a bookkeeping stamp.
-      begin
-        ::System::RestartAfterUpdate.arm!(node_module: self, version: version)
-      rescue StandardError => e
-        Rails.logger.warn("[NodeModule##{id}] restart_after_update arm failed: #{e.class}: #{e.message}")
-      end
+      true
+    end
+
+    # MOVE the pointer: #set_current_version! plus the one piece of policy this
+    # model owns — arming restart_after_update.
+    #
+    # WHAT THIS IS AND IS NOT. It is the sanctioned writer, and the only
+    # PRODUCTION caller of RestartAfterUpdate.arm! — indirectly, via the private
+    # #arm_restart_after_update! below, which is arm!'s single call site outside
+    # spec/. It is NOT, and never was, "the platform's only
+    # choke point for 'this version is now what the fleet runs'" — the comment
+    # that stood here said exactly that, and it was false when written. SIX
+    # sites write current_version_id; FIVE of them reach the column without
+    # passing this method, the most reachable being ModuleVersionService
+    # #create_version, which the `after_update :auto_create_version` callback
+    # above (line 265) invokes on ANY save touching VERSIONED_ATTRIBUTES.
+    # spec/lint/node_module_current_version_write_seam_spec.rb is the executable
+    # census, and it fails if a seventh appears.
+    #
+    # The four POLICY guards are NOT here and must not be assumed to have run:
+    # the auto_promote opt-out, the non-empty artifact floor, the
+    # core-provenance verdict and the batch-atomic hold all live in
+    # System::ModulePublicationProcessor, i.e. in this method's CALLER. Reaching
+    # this method proves nothing about them.
+    #
+    # ARMING IS KEYED TO THE TRANSITION, not to the call site — that is what
+    # makes a ROLLBACK re-arm (and therefore restart) while a republished tag
+    # stays quiet, since #set_current_version! returns false without writing
+    # when the version is already current.
+    #
+    #   nil -> X  first promotion. ARMS TODAY, deliberately: the armed stamp
+    #             lives on the VERSION and persists, so it is what fires the
+    #             restart when an instance first materializes the module
+    #             (RestartAfterUpdate#fire!, restart_after_update.rb:248 armed?
+    #             gate + :256 materialization gate). For a `services: []` module
+    #             — the shape this whole feature exists for — that first
+    #             materialization is precisely when the declared target needs
+    #             restarting, so NOT arming here would reintroduce the inert
+    #             deploy of 2026-08-16 for first installs.
+    #   X   -> Y  a live move. Arms.
+    #   X   -> X  no move, no write, no arm.
+    #
+    # ARM_ON_TRANSITIONS holds BOTH move transitions today, so the guard below
+    # does not currently exclude anything — that is the honest state of the
+    # policy, not an oversight. It is written as a named set rather than an
+    # unconditional call so the policy is a VALUE a future change edits, and so
+    # that reviewing such a change means reviewing a transition being removed
+    # from a list. `:initial` in particular has been argued both ways; the
+    # reasoning for keeping it is above, and the spec pins it.
+    #
+    # Non-fatal: promotion must never fail because of a bookkeeping stamp.
+    def promote_to_version!(version)
+      previous_version_id = current_version_id
+      return false unless set_current_version!(version)
+
+      transition = previous_version_id.nil? ? :initial : :move
+      arm_restart_after_update!(version) if ARM_ON_TRANSITIONS.include?(transition)
       true
     end
 
@@ -745,6 +810,17 @@ module System
 
       errors.add(:base, "Module is locked and cannot be modified")
       throw(:abort)
+    end
+
+    # The single call site of RestartAfterUpdate.arm! outside spec/. Kept private
+    # and separate from the pointer write so that "what moved" and "what that
+    # move arms" can be changed independently — the two were welded together in
+    # one method, which is what made "route the other writers through the choke
+    # point" read as "and over-arm restarts on all of them".
+    def arm_restart_after_update!(version)
+      ::System::RestartAfterUpdate.arm!(node_module: self, version: version)
+    rescue StandardError => e
+      Rails.logger.warn("[NodeModule##{id}] restart_after_update arm failed: #{e.class}: #{e.message}")
     end
 
     def auto_create_version

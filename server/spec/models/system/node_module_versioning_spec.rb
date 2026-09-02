@@ -321,4 +321,130 @@ RSpec.describe 'System::NodeModule versioning', type: :model do
       end
     end
   end
+
+  # IMP-9a5e40a21d70 increment 2 — SET the pointer vs MOVE it on a live fleet.
+  #
+  # #promote_to_version! used to be one method doing both: the mechanical
+  # dual-column write, and the one piece of policy this model owns (arming
+  # restart_after_update). Everything that needed only the mechanical half
+  # hand-rolled its own `update!` and so opted out of the policy half too — the
+  # census of six such writers is in
+  # spec/lint/node_module_current_version_write_seam_spec.rb.
+  #
+  # These examples are the EXECUTED evidence that splitting them changed nothing
+  # observable. Each pins a transition, not a call site.
+  describe 'pointer write vs promotion (IMP-9a5e40a21d70)' do
+    let(:v1) { create(:system_node_module_version, node_module: node_module, version_number: 1) }
+    let(:v2) { create(:system_node_module_version, node_module: node_module, version_number: 2) }
+
+    # A module that DECLARES restart_after_update. Without a declaration
+    # RestartAfterUpdate.arm! returns false before touching anything (its
+    # `return false if declarations(node_module).empty?` guard), so an arming
+    # assertion on an undeclared module passes no matter which branch ran — it
+    # would be a vacuous oracle.
+    let(:declaring) do
+      create(:system_node_module, account: account, config: {
+               'restart_after_update' => [
+                 { 'module' => 'powernode-hub-backend', 'services' => [ 'rails' ] }
+               ]
+             })
+    end
+    let(:d1) { create(:system_node_module_version, node_module: declaring, version_number: 1) }
+    let(:d2) { create(:system_node_module_version, node_module: declaring, version_number: 2) }
+
+    describe '#set_current_version!' do
+      it 'writes both columns atomically and returns true' do
+        expect(node_module.set_current_version!(v1)).to be true
+
+        node_module.reload
+        expect(node_module.current_version_id).to eq(v1.id)
+        expect(node_module.current_version_number).to eq(1)
+      end
+
+      it 'returns false and writes nothing for nil or an already-current version' do
+        expect(node_module.set_current_version!(nil)).to be false
+        expect(node_module.reload.current_version_id).to be_nil
+
+        node_module.set_current_version!(v1)
+        expect(node_module.set_current_version!(v1)).to be false
+      end
+
+      # THE POINT OF THE EXTRACTION. Same write, no policy — on a module that
+      # DOES declare, so a false pass is not available.
+      it 'arms nothing, even on a module that declares restart_after_update' do
+        expect(::System::RestartAfterUpdate).not_to receive(:arm!)
+
+        expect(declaring.set_current_version!(d1)).to be true
+        expect(::System::RestartAfterUpdate.armed?(d1.reload)).to be false
+      end
+
+      it 'does not fire the auto_create_version callback (update_columns)' do
+        # Both versions must exist BEFORE the block: they are lazy `let`s, and
+        # referencing v2 inside `expect { }` would create it there and read as
+        # the callback having fired. (It did, on the first run of this example.)
+        v1
+        v2
+        node_module.set_current_version!(v1)
+
+        expect { node_module.set_current_version!(v2) }
+          .not_to change { node_module.versions.count }
+      end
+    end
+
+    describe '#promote_to_version! — arming keyed to the transition' do
+      # nil -> X. ARMS, and that is deliberate rather than incidental: the stamp
+      # lives on the VERSION and persists, so it is what fires the restart when
+      # an instance FIRST materializes a `services: []` module (the `armed?` and
+      # running-digest gates in RestartAfterUpdate#fire!). Not arming here would
+      # reintroduce the 2026-08-16 inert deploy for first installs. Pinned so a
+      # future change to this rule has to be deliberate — flipping
+      # NodeModule::ARM_ON_TRANSITIONS to %i[move] fails this example.
+      it 'arms on the FIRST promotion (nil -> X)' do
+        expect(declaring.current_version_id).to be_nil
+
+        expect(declaring.promote_to_version!(d1)).to be true
+        expect(::System::RestartAfterUpdate.armed?(d1.reload)).to be true
+      end
+
+      it 'arms on a live move (X -> Y)' do
+        declaring.promote_to_version!(d1)
+
+        expect(declaring.promote_to_version!(d2)).to be true
+        expect(::System::RestartAfterUpdate.armed?(d2.reload)).to be true
+      end
+
+      # X -> X. The republished-tag case: no move, no write, no re-stamp.
+      #
+      # The oracle is that arm! is NOT CALLED. An earlier draft asserted the
+      # stamp value was unchanged, which looks stronger and is weaker:
+      # RestartAfterUpdate#armed_at stores Time.current.iso8601, so its
+      # resolution is one second and a genuine re-arm inside the same second
+      # would compare equal. Assert the call, not its timestamp.
+      it 'neither writes nor re-arms when the version is already current (X -> X)' do
+        declaring.promote_to_version!(d1)
+        expect(::System::RestartAfterUpdate.armed?(d1.reload)).to be true
+        pointer_before = declaring.reload.current_version_id
+
+        expect(::System::RestartAfterUpdate).not_to receive(:arm!)
+        expect(declaring.promote_to_version!(d1)).to be false
+        expect(declaring.reload.current_version_id).to eq(pointer_before)
+      end
+
+      it 'returns false for nil without arming' do
+        expect(::System::RestartAfterUpdate).not_to receive(:arm!)
+        expect(declaring.promote_to_version!(nil)).to be false
+      end
+
+      # The arm is a bookkeeping stamp; a promotion must never fail on it. The
+      # POINTER is the assertion — the promotion has to have LANDED, not merely
+      # not raised.
+      it 'still moves the pointer when arming raises' do
+        allow(::System::RestartAfterUpdate)
+          .to receive(:arm!).and_raise(StandardError, 'vault down')
+
+        expect(declaring.promote_to_version!(d1)).to be true
+        expect(declaring.reload.current_version_id).to eq(d1.id)
+      end
+    end
+  end
 end
