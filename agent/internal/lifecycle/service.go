@@ -799,6 +799,16 @@ func restartDirective(policy string) string {
 // topoSort returns services in start order: a service appears after
 // all its declared dependencies. Stable on ties (sort by name).
 // Returns an error if a cycle exists.
+//
+// The graph is read through manifest.Service.ResolvedDependencyEdges() —
+// the SAME accessor the unit renderer walks (RenderUnitMode /
+// renderUnitBodyMode) — so ordering, cycle detection and the rendered
+// After=/Requires= directives can never disagree about which edges exist.
+// Reading the legacy names-only Dependencies field here instead would make
+// both ordering and cycle detection blind to a producer that emits only
+// `dependency_edges` (a cached /persist manifest.json, a hand-written
+// manifest, or a future server that drops the legacy field): an edges-only
+// cycle would pass silently and reach systemd as a cyclic After=.
 func topoSort(services []manifest.Service) ([]manifest.Service, error) {
 	if len(services) == 0 {
 		return nil, nil
@@ -807,14 +817,20 @@ func topoSort(services []manifest.Service) ([]manifest.Service, error) {
 	for _, s := range services {
 		byName[s.Name] = s
 	}
+	// Resolve each service's edges once; both loops below must see the
+	// identical graph.
+	edgesOf := make(map[string][]manifest.DependencyEdge, len(services))
+	for _, s := range services {
+		edgesOf[s.Name] = s.ResolvedDependencyEdges()
+	}
 
 	inDegree := make(map[string]int, len(services))
 	for _, s := range services {
 		if _, ok := inDegree[s.Name]; !ok {
 			inDegree[s.Name] = 0
 		}
-		for _, dep := range s.Dependencies {
-			if _, present := byName[dep]; !present {
+		for _, edge := range edgesOf[s.Name] {
+			if _, present := byName[edge.Service]; !present {
 				// Dependency on a service that doesn't exist in this
 				// module's service set — treat as unmet but don't fail
 				// the topo (the agent operator can see this in logs).
@@ -843,8 +859,8 @@ func topoSort(services []manifest.Service) ([]manifest.Service, error) {
 		// Decrement neighbors. The graph is "depended-by", so we walk
 		// every service whose dependency list includes `current`.
 		for _, s := range services {
-			for _, d := range s.Dependencies {
-				if d == current {
+			for _, edge := range edgesOf[s.Name] {
+				if edge.Service == current {
 					inDegree[s.Name]--
 					if inDegree[s.Name] == 0 {
 						ready = append(ready, s.Name)

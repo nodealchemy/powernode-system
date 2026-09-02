@@ -113,7 +113,8 @@ type ManifestSudoer struct {
 //   - attachModule writes /etc/systemd/system/powernode-<mod>-<name>.service
 //     from these fields, runs systemctl daemon-reload + start
 //   - detachModule stops + removes the unit + daemon-reload
-//   - Services are started in topological order over Dependencies;
+//   - Services are started in topological order over
+//     ResolvedDependencyEdges() (the same graph the unit renderer walks);
 //     stopped in reverse order
 type Service struct {
 	Name         string `json:"name"`

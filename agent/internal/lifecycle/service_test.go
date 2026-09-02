@@ -326,6 +326,86 @@ func TestTopoSort_UnknownDependencyIgnored(t *testing.T) {
 	}
 }
 
+// The tests below pin topoSort to the SAME graph the unit renderer walks:
+// manifest.Service.ResolvedDependencyEdges(). A producer that emits only the
+// kind-carrying `dependency_edges` field (a cached /persist manifest.json, a
+// hand-written manifest, or a future server that drops the legacy names array)
+// must still get correct start ordering AND cycle detection. Building these
+// from serializer output cannot reproduce the defect: the serializer populates
+// `dependencies` and `dependency_edges` from the same association, so the two
+// fields can never disagree over the API.
+
+func TestTopoSort_EdgesOnly_OrdersDependencyFirst(t *testing.T) {
+	// No Dependencies names at all — the edge lives only in DependencyEdges.
+	// Names are chosen so the lexicographic tiebreak would put the DEPENDENT
+	// first if the edge were invisible to topoSort.
+	services := []manifest.Service{
+		{Name: "aaa-proxy", StartCommand: "/bin/true", DependencyEdges: []manifest.DependencyEdge{
+			{Service: "zzz-bootstrap", Kind: manifest.DependencyKindStartBefore},
+		}},
+		{Name: "zzz-bootstrap", StartCommand: "/bin/true"},
+	}
+	ordered, err := topoSort(services)
+	if err != nil {
+		t.Fatalf("topoSort: %v", err)
+	}
+	got := []string{ordered[0].Name, ordered[1].Name}
+	want := []string{"zzz-bootstrap", "aaa-proxy"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order[%d]: got %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestTopoSort_EdgesOnly_CycleDetected(t *testing.T) {
+	// An edges-only cycle must fail the topo. If topoSort walks the legacy
+	// names field instead, both in-degrees are 0, the cycle passes silently
+	// and reaches systemd as a cyclic After=, which systemd breaks arbitrarily.
+	services := []manifest.Service{
+		{Name: "a", StartCommand: "/bin/true", DependencyEdges: []manifest.DependencyEdge{
+			{Service: "b", Kind: manifest.DependencyKindRequiresHealth},
+		}},
+		{Name: "b", StartCommand: "/bin/true", DependencyEdges: []manifest.DependencyEdge{
+			{Service: "a", Kind: manifest.DependencyKindRequiresHealth},
+		}},
+	}
+	_, err := topoSort(services)
+	if err == nil {
+		t.Fatal("expected cycle error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("expected error to mention cycle, got %v", err)
+	}
+}
+
+func TestTopoSort_EdgesAuthoritativeOverStaleNames(t *testing.T) {
+	// ResolvedDependencyEdges treats DependencyEdges as authoritative when
+	// present — a name left behind in `dependencies` must NOT resurrect an
+	// edge the producer dropped. topoSort must apply the same rule, or the
+	// renderer and the ordering disagree about the same graph.
+	services := []manifest.Service{
+		// Stale name says it depends on "b"; the authoritative edge list is empty.
+		{Name: "a", StartCommand: "/bin/true",
+			Dependencies:    []string{"b"},
+			DependencyEdges: []manifest.DependencyEdge{{Service: "c", Kind: manifest.DependencyKindStartBefore}}},
+		{Name: "b", StartCommand: "/bin/true", Dependencies: []string{"a"}},
+		{Name: "c", StartCommand: "/bin/true"},
+	}
+	ordered, err := topoSort(services)
+	if err != nil {
+		// Walking the stale names would see an a<->b cycle and fail here.
+		t.Fatalf("topoSort: %v", err)
+	}
+	pos := map[string]int{}
+	for i, s := range ordered {
+		pos[s.Name] = i
+	}
+	if pos["c"] > pos["a"] {
+		t.Fatalf("expected c before a, got %v", []string{ordered[0].Name, ordered[1].Name, ordered[2].Name})
+	}
+}
+
 func TestAttachServices_WritesUnits_RunsReloadAndStart(t *testing.T) {
 	dir := setUnitDir(t)
 	r := &mount.RecorderRunner{}
