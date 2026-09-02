@@ -290,7 +290,8 @@ overflow. Don't bypass the limit; it's the cost-protection.
   full reference: sizing patterns, reaping behavior, drain procedures.
 - **[`USE_CASE_MATRIX.md`](../USE_CASE_MATRIX.md)** — use cases 4 (bursty
   batch) + 5 (CI runner pool).
-- **[Tutorial 06 — Rolling upgrade](./06-rolling-upgrade.md)** — for the
-  stateful counterpart (in-place upgrade vs pool replacement).
+- **[Tutorial 06 — Fleet-atomic module upgrade](./06-rolling-upgrade.md)** —
+  for the stateful counterpart. Note that pool replacement is the blast-radius
+  bound an in-place module upgrade cannot give you.
 
 _Last verified: 2026-06-03_

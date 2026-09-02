@@ -5,23 +5,44 @@
 # Validates the rolling_module_upgrade skill executor's plan computation.
 #
 # IMP-e8dc40813adb — the executor returns a plan and nothing executes it, at
-# EVERY tier. There is no autonomy reconciler stepping through batches and no
-# circuit-breaker gating anywhere in the platform for module upgrades; the
-# "site+ tier executes" note this header used to carry described a runtime that
-# was never built. The plan structure asserted below is the whole contract.
+# EVERY tier. There is no reconciler and no circuit-breaker gating anywhere in
+# the platform for module upgrades; the "site+ tier executes" note this header
+# used to carry described a runtime that was never built.
+#
+# IMP-a699af087f5d — and there are no batches for such a reconciler to step
+# through: the upgrade is FLEET-ATOMIC (operator decision 2026-08-30), so the
+# plan is one atomic affected set. Denying only the ADVANCER concedes that
+# batches exist and implies that building one would finish the story.
+# The plan structure asserted below is the whole contract.
 #
 # Tier semantics:
 #   db (default): synthesize NodeModuleVersion + invoke executor + assert
-#                 plan structure (total_instances, batch_count, batches
-#                 with canary first). No actual upgrade.
+#                 plan structure (total_instances, affected_instance_ids)
+#                 WHEN the executor succeeds. No actual upgrade.
 #   site+:        identical — there is no execution path to exercise. The
 #                 ApprovalRequest gate is real, but nothing acts on an approval.
 #
-# Asserts:
+# Asserts UNCONDITIONALLY (descriptor contract, :74-83):
 #   - RollingModuleUpgradeExecutor descriptor registered with the right slug
-#   - Executor produces a plan when invoked with valid inputs
-#   - Plan has batch_count >= 1
-#   - First batch is the canary (smallest size)
+#   - Descriptor declares :affected_instance_ids and does NOT declare :batch_pct
+#
+# Asserts ONLY IF the executor returns success (:134-148) — a failure is
+# tolerated with a warning at db tier (:150-152), so these do NOT run on
+# every green run and their absence from a run's output is not a failure:
+#   - affected_instance_ids covers the WHOLE eligible population (:144-146)
+#   - The plan exposes no batch structure (no :batches, no :batch_count) (:147-148)
+#
+# IMP-a699af087f5d — the two lists above described the canary/batch_count
+# assertions this seed used to make. IMP-b948ea7fa382 replaced those
+# assertions with their opposites (:147-148) when module upgrades were
+# accepted as FLEET-ATOMIC, but left this header advertising the deleted
+# checks. A reader trusting the header believed the seed verified a canary
+# batch that the body explicitly asserts is absent.
+#
+# The unconditional/conditional split above is part of the same correction:
+# the old list said flatly "Executor produces a plan when invoked with valid
+# inputs", which the seed has never asserted — :134 is `if result[:success]`
+# and the else arm only warns.
 #
 # Invoke:
 #   cd server && SMOKE_K3S_LEVEL=db bundle exec rails runner \

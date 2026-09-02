@@ -1,4 +1,4 @@
-# Tutorial 06 — Rolling module upgrade with canary
+# Tutorial 06 — Fleet-atomic module upgrade (`rolling_module_upgrade`)
 
 > Status: active
 
@@ -26,10 +26,10 @@
 > NOT IMPLEMENTED below. For the procedure that actually moves a fleet
 > today, jump to [What to do instead](#what-to-do-instead).
 
-> **What you'll learn:** How to compute a batched upgrade plan, what the
-> platform does and does not do with it, and the manual procedure that
-> actually moves a module version across a fleet — including why that
-> procedure cannot be batched either.
+> **What you'll learn:** How to size an upgrade with the
+> `rolling_module_upgrade` plan, what the platform does and does not do with
+> it, and the manual procedure that actually moves a module version across a
+> fleet — including why neither the plan nor that procedure can be staged.
 >
 > **Time:** ~10 min
 >
@@ -83,7 +83,7 @@ Then it returns. That is the whole executor
 
 | Promised | Reality |
 |---|---|
-| Walks batches one at a time after approval | Nothing advances the batches. There is no reconciler that reads the plan; the plan is returned to the caller and discarded |
+| Walks batches one at a time after approval | There are no batches to walk — the plan is a single atomic set. Nor does anything read the plan: there is no reconciler behind the approval; the plan is returned to the caller and discarded |
 | Per-batch health checks against `running_module_digests` | The executor never reads `running_module_digests`. No health check exists |
 | Circuit breaker trips at `max_consecutive_failures` | No breaker exists. The argument is echoed into the returned `circuit_breaker` hash (now `status: "not_implemented"`) and read by nothing |
 | `health_timeout_sec` bounds a health window | Echoed into the same hash. Read by nothing |
@@ -115,9 +115,33 @@ is missing is anything that acts on the approval.
 **Where this shape *is* implemented:** `boot_image_drift_rollout` does the
 equivalent for **boot images** — it dispatches each batch through
 `UpgradeDispatcher` and converges tick-by-tick by re-planning off its own
-drift sensor, canary-first and halting on the first failed batch. It needs no
-batch advancer because convergence is tick-driven. No equivalent lane exists
-for modules.
+drift sensor, canary-first and halting on the first failed batch
+([`boot_image_drift_rollout_executor.rb`](../../server/app/services/system/ai/skills/boot_image_drift_rollout_executor.rb):21
+`DEFAULT_MAX_CONSECUTIVE_FAILS = 1`, :87 tags the first batch `status:
+"canary"`, :78 halts on a recent failed upgrade). It needs no batch advancer
+because convergence is tick-driven.
+
+**Why batching is possible there and not here** — and the reason is *not* that
+a boot image is chosen per instance; it is not. A boot image's target is
+`NodePlatform#disk_image_git_sha`, read through
+`NodeInstance#promoted_image_git_sha`
+([`node_instance.rb`](../../server/app/models/system/node_instance.rb):807-808),
+which is a pointer on a shared parent exactly as `NodeModule#current_version_id`
+is. The difference is the **actuation**: a drifted instance converges only when
+an explicit per-instance `upgrade_boot_image` `System::Task` is dispatched to it
+([`boot_image/upgrade_dispatcher.rb`](../../server/app/services/system/boot_image/upgrade_dispatcher.rb):190-192),
+and — decisively — that task **pins the target it must reach** in its own
+options (`"target_git_sha" => target_sha`, same file :190-196). The rollout
+therefore decides both *who* moves and *what* they move to.
+
+Modules have a per-instance task too — `system_refresh_instance_modules` queues
+a `sync_modules` task
+([`system_fleet_tool.rb`](../../server/app/services/ai/tools/system_fleet_tool.rb):2641-2646)
+— but it carries **no version**. It can only hasten an instance toward the
+single global pointer, never hold it at a different one, which is why
+[§4 below](#4-understand-what-you-just-did) says it changes *when* an instance
+converges and never *what* it converges to. That missing target field is the
+whole difference. No equivalent lane exists for modules.
 
 ## Prerequisites
 
@@ -445,10 +469,10 @@ platform.agent_introspect({ agent_id: "<fleet-autonomy-uuid>" })
 // Look for "intervention_policies" containing system.fleet_rolling_upgrade
 ```
 
-**Batch never starts after approval** — **this is expected and is not a
-fault.** Nothing advances the batches; there is no reconciler to be paused and
-no tick to be broken. Do not debug sidekiq for this. Use the manual procedure
-in [What to do instead](#what-to-do-instead).
+**The upgrade never starts after approval** — **this is expected and is not a
+fault.** There are no batches, and nothing reads the plan: no reconciler to be
+paused, no tick to be broken. Do not debug sidekiq for this. Use the manual
+procedure in [What to do instead](#what-to-do-instead).
 
 **Nothing happened after I approved the plan** — same cause as above. The
 approval gate is real; the thing it gates was never built.

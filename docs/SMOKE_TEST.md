@@ -87,7 +87,7 @@ listed in [Pass 1](#pass-1--single-node-qemu).
 | `smoke_test_k3s_agent_join.rb` | 9 | K3s lifecycle ph.3 | 2 k3s-agents join via target_cluster_id + CniProfileMismatch negative test. **At the default db tier the drill passes `target_cluster_id` into `join_request!` at the service layer (`smoke_test_k3s_agent_join.rb:100`), bypassing the agent** — a green run evidences the wired platform half only, not the operator path, which is [NOT IMPLEMENTED](./USE_CASE_MATRIX.md#use-case-3--multi-cluster-k3s--not-implemented) | site+ (db tier: synth) |
 | `smoke_test_k3s_pod_plane.rb` | 9 | K3s lifecycle ph.4 | runtime bootstrap_config payload + (site+) nginx deploy + tcpdump on wg-sdwan-* | site+ (db tier: contract only) |
 | `smoke_test_k3s_federation.rb` | 9 | K3s lifecycle ph.5 | System::FederationPeer propose/accept incl. the single-use acceptance-token round-trip (Site A ↔ Site B) + cross-site API plane | full (below full: skip-clean) |
-| `smoke_test_k3s_rolling_upgrade.rb` | 9 | K3s lifecycle ph.6 | rolling_module_upgrade executor descriptor + plan synthesis (canary-first batch sequencing) | site+ (db tier: plan only) |
+| `smoke_test_k3s_rolling_upgrade.rb` | 9 | K3s lifecycle ph.6 | rolling_module_upgrade executor descriptor + plan synthesis (one atomic affected set; asserts no staging structure) | site+ (db tier: plan only) |
 | `smoke_test_k3s_cve_drill.rb` | 9 | K3s lifecycle ph.7 | Synthetic CVE → CveResponseExecutor triage + CveRunbookGenerateExecutor runbook | no |
 | `smoke_test_k3s_drain_reprovision.rb` | 9 | K3s lifecycle ph.8 | drain (mark_node_stopped) → terminate → reprovision → re-join → node_count restored | site+ (db tier: synth) |
 
@@ -405,7 +405,7 @@ mode at db tier (no VMs, ~5 min) and agent-driven mode at single+ tiers
 | 3 | `smoke_test_k3s_agent_join.rb` | db | target_cluster_id join (service-layer, agent bypassed) + CniProfileMismatch negative |
 | 4 | `smoke_test_k3s_pod_plane.rb` | site | bootstrap_config contract; full kubectl/tcpdump at site+ |
 | 5 | `smoke_test_k3s_federation.rb` | full | (skipped at db; requires both sites + federation) |
-| 6 | `smoke_test_k3s_rolling_upgrade.rb` | db | executor descriptor + plan synthesis (canary-first) |
+| 6 | `smoke_test_k3s_rolling_upgrade.rb` | db | executor descriptor + plan synthesis (one atomic affected set) |
 | 7 | `smoke_test_k3s_cve_drill.rb` | db | synthetic CVE → triage + runbook generation |
 | 8 | `smoke_test_k3s_drain_reprovision.rb` | db | drain → terminate → reprovision → node_count restored |
 

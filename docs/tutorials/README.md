@@ -19,8 +19,8 @@ decision tree that maps your goal to a starting tutorial.
 | [03](./03-docker-runtime.md) | Container runtime — Docker | 01 + 02 | Assigning `docker-engine`, runtime handshake, mTLS provisioning, SDWAN binding |
 | [04](./04-k3s-cluster.md) | Container runtime — K3s cluster | 03 | `k3s-server` + `k3s-agent`, VIP-backed `api_endpoint`, multi-node join, kubeconfig |
 | [05](./05-multi-cluster-k3s.md) | Multi-cluster K3s with SDWAN isolation | 04 | `target_cluster_id`, per-tenant SDWAN network, cross-tenant trust boundary |
-| [06](./06-rolling-upgrade.md) | Rolling module upgrade with canary | 02 + 03 | `rolling_module_upgrade` skill, circuit breaker, attribution feedback |
-| [07](./07-cve-response.md) | CVE response end-to-end | 06 | Synthetic CVE → ExposureCalculator → CveResponseExecutor → orchestrated rebuild |
+| [06](./06-rolling-upgrade.md) | Fleet-atomic module upgrade | 02 + 03 | `rolling_module_upgrade` skill (plan only), why the upgrade cannot be staged, the manual pointer-flip procedure |
+| [07](./07-cve-response.md) | CVE response end-to-end | 06 | Synthetic CVE → ExposureCalculator → CveResponseExecutor → remediation plan (the remediation step is NOT IMPLEMENTED) |
 | [08](./08-instance-pool.md) | Instance pools for bursty batch | 03 | `System::InstancePool`, atomic acquire, reaper auto-replenishment |
 | [09](./09-honeypot-canary.md) | Honeypot canaries | 01 | `mark_canary`, HoneypotAccessSensor, dashboard tile, intervention policy |
 | [10](./10-gitops-fleet.md) | GitOps-managed fleet | 02 + 06 | `fleet.yaml`, repo register, sync cycle, proposal review, auto-apply trade-off |

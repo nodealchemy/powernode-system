@@ -61,9 +61,9 @@
 > cluster. This tutorial provisions a second one in a parallel network
 > and verifies isolation.
 >
-> **Sets you up for:** [Tutorial 06 — Rolling module upgrade](./06-rolling-upgrade.md) —
-> rolling upgrades become more interesting when you have multiple production
-> clusters to coordinate across.
+> **Sets you up for:** [Tutorial 06 — Fleet-atomic module upgrade](./06-rolling-upgrade.md) —
+> and the first thing it will tell you is that multiple clusters do *not* give
+> you a way to stage a module upgrade across them.
 
 ## What you're building
 
@@ -483,9 +483,12 @@ SDWAN network is supported — each cluster's pod CIDR is independent.
 
 ## What's next
 
-- **[Tutorial 06 — Rolling module upgrade with canary](./06-rolling-upgrade.md)** —
-  now that you have multiple clusters, rolling upgrades become non-trivial:
-  upgrade one cluster as a canary before rolling out to the other.
+- **[Tutorial 06 — Fleet-atomic module upgrade](./06-rolling-upgrade.md)** —
+  multiple clusters do **not** by themselves let you stage an upgrade. A
+  module's version is a per-module pointer, so if both clusters carry the same
+  `NodeModule` row they converge together and there is no cluster to hold back.
+  Staging requires separating the *scope* — see
+  [§ If you need a real blast-radius bound](./06-rolling-upgrade.md#if-you-need-a-real-blast-radius-bound).
 - **[`runbooks/sdwan-network-setup.md`](../runbooks/sdwan-network-setup.md)** —
   full SDWAN reference: route policies, virtual IPs, firewall rules,
   multi-VRF.

@@ -11,8 +11,8 @@
 >
 > **Builds on:** [Tutorial 02](./02-first-module.md) (you've authored a module
 > and understand the lifecycle promotion model) and
-> [Tutorial 06](./06-rolling-upgrade.md) (you understand how the platform applies
-> changes in batches with approval gates).
+> [Tutorial 06](./06-rolling-upgrade.md) (you understand the approval gate on a
+> fleet change, and that a module upgrade is fleet-atomic once applied).
 >
 > **Sets you up for:** [Tutorial 11 — Multi-region federation](./11-federation.md) —
 > federation peers can be declared in `fleet.yaml` alongside everything

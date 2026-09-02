@@ -179,8 +179,8 @@ See [`docs/runbooks/README.md`](./docs/runbooks/README.md) for the full index wi
 | 03 | [Container runtime — Docker](./docs/tutorials/03-docker-runtime.md) | docker-engine module, mTLS handshake, SDWAN binding |
 | 04 | [Container runtime — K3s cluster](./docs/tutorials/04-k3s-cluster.md) | k3s-server/agent, VIP-backed api_endpoint, multi-node join |
 | 05 | [Multi-cluster K3s + SDWAN isolation](./docs/tutorials/05-multi-cluster-k3s.md) | target_cluster_id, per-tenant SDWAN, trust boundary |
-| 06 | [Rolling module upgrade with canary](./docs/tutorials/06-rolling-upgrade.md) | rolling_module_upgrade, circuit breaker, attribution feedback |
-| 07 | [CVE response end-to-end](./docs/tutorials/07-cve-response.md) | ExposureCalculator, CveResponseExecutor, orchestrated rebuild |
+| 06 | [Fleet-atomic module upgrade](./docs/tutorials/06-rolling-upgrade.md) | rolling_module_upgrade (plan only), why the upgrade cannot be staged, the manual pointer-flip procedure |
+| 07 | [CVE response end-to-end](./docs/tutorials/07-cve-response.md) | ExposureCalculator, CveResponseExecutor, remediation plan (the remediation step is NOT IMPLEMENTED) |
 | 08 | [Instance pools for bursty batch](./docs/tutorials/08-instance-pool.md) | InstancePool, atomic acquire, reaper auto-replenishment |
 | 09 | [Honeypot canaries](./docs/tutorials/09-honeypot-canary.md) | mark_canary, HoneypotAccessSensor, intervention policy |
 | 10 | [GitOps-managed fleet](./docs/tutorials/10-gitops-fleet.md) | fleet.yaml, sync cycle, proposal review |
