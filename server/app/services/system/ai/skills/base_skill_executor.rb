@@ -127,12 +127,17 @@ module System
           # Declarable per-executor — `skill_descriptor(action_category: "...")`
           # flows through `**extras`. DECLARE IT whenever the operator control
           # for this action already exists under another name, so the gate and
-          # the modal resolve one row rather than two spellings of it. Two do:
-          # ServiceDiscoveryComposerExecutor (registered as
-          # system.service_discovery_compose, not ...composer) and
+          # the modal resolve one row rather than two spellings of it. Several
+          # do (`command grep -l "action_category:" app/services/system/ai/skills/*_executor.rb`
+          # is the roster; no count is kept here because it drifted twice):
+          # e.g. ServiceDiscoveryComposerExecutor (registered as
+          # system.service_discovery_compose, not ...composer),
           # BootImageDriftRolloutExecutor (the tick loop already gates it as
-          # system.node_boot_image_drift). Adding a second spelling instead is
-          # the exact defect IMP-eb60db901f5f cleaned up.
+          # system.node_boot_image_drift) and the architecture CRUD executors
+          # (seeded as the dotted system.architecture.<verb>). Adding a second
+          # spelling instead is the exact defect IMP-eb60db901f5f and
+          # IMP-51e5c6184ae4 cleaned up; spec/lib/powernode_system/
+          # autonomy_category_spelling_uniqueness_spec.rb now reds it.
           #
           # Otherwise "<domain>.<skill name>". That derivation matches an
           # existing registered category only where the descriptor name and the
