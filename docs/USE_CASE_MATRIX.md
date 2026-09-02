@@ -24,9 +24,11 @@ This matrix exists because the platform's auto-registration plumbing is **bimoda
 ### How `lifecycle_class` is actually set
 
 The `lifecycle_class` column above is the class a use case *wants*. It is not a
-knob an operator turns. `system_nodes.lifecycle_class` defaults to `persistent`
-(NOT NULL, CHECK `persistent|ephemeral|spot`), and the only surface that makes a
-Node anything else is a `System::InstancePool`.
+knob an operator turns — and since IMP-19843220ac68 it is not a column the
+platform fills in either. `system_nodes.lifecycle_class` is being **retired**:
+it is now nullable with no default, and both application paths that used to
+write it have stopped, so a Node created today carries `NULL`. The class of a
+machine lives on the `System::InstancePool` that produced it.
 
 | Withdrawn claim | What is actually true |
 |---|---|
@@ -34,23 +36,30 @@ Node anything else is a `System::InstancePool`.
 | "`Node.update!(lifecycle_class: ...)` from the Rails console" | Succeeds at the DB level and changes no observable anywhere. |
 | "Read it back to confirm" | Nothing emits it. `serialize_node` returns `id, name, template_id, worker_id, ssh_key_fingerprint, ssh_key_type, enabled, created_at`; `serialize_node_full` adds four more, none of them this. No serializer under `server/app/serializers/` mentions the column. |
 | "Filter a node listing by `lifecycle_class`" | `system_list_nodes` declares exactly one parameter, `template_id`, and `list_nodes` has exactly one where-clause. A filter key you pass is dropped silently and you get the unfiltered list back with no error. |
-| "It is unset until you set it" | It is `persistent` on every Node by DB default. |
+| "It is unset until you set it" | It is unset on every new Node — the DB default was removed rather than made settable. Before the retirement it was `persistent` on every Node by DB default, which is the opposite mistake and was the one the docs used to make. |
 
-**The one path that sets it to anything else**:
-`System::InstancePoolService#provision_warming_member!`
-(`instance_pool_service.rb:1190-1206`) creates each pool member's Node with
-`lifecycle_class: pool.lifecycle_class`, and `System::InstancePool` is
-CHECK-constrained to `ephemeral|spot` — so a pool member is never `persistent`,
-and a Node that no pool created is never anything else. That path runs unattended:
-`System::InstancePoolReplenisherJob` is a 60s cron over every active/draining
-pool. (`PlatformDeploymentOrchestrator` also writes the column explicitly, but
-writes `"persistent"` — the default — so it moves nothing. The
-`example_multi_tenant` dev seed writes it directly too, and also defaults to
-`persistent`. Neither is an operator path.)
+**No path sets it any more.** Until the retirement,
+`System::InstancePoolService#provision_warming_member!` created each pool
+member's Node with `lifecycle_class: pool.lifecycle_class` — unattended, on a
+60s cron (`System::InstancePoolReplenisherJob`) over every active/draining pool
+— and `PlatformDeploymentOrchestrator` wrote the literal `"persistent"`, which
+was the DB default and so moved nothing. Both writes are gone. Stopping them
+required removing the default in the same change: a pool member is `ephemeral`
+or `spot` by construction (`System::InstancePool` is CHECK-constrained to those
+two), so leaving a NOT NULL `persistent` default behind would have turned an
+unread column into a confidently wrong one. The `example_multi_tenant` dev seed
+still writes the column directly, defaulted to `persistent`; it is not an
+operator path and goes when the column is dropped.
 
-**Nothing reads it.** No consumer of a *Node's* `lifecycle_class` exists in
-`server/`, `extensions/`, `worker/` or the Go agent; the agent bootstrap
-short-circuit it was added for is still unimplemented. One same-named column
+**Nothing reads it** — which is why it was retired rather than wired. No
+consumer of a *Node's* `lifecycle_class` exists in `server/`, `extensions/`,
+`worker/` or the Go agent; the agent bootstrap short-circuit it was added for
+was never implemented, and if one is ever built it must read the pool, not the
+Node: the copy was a snapshot taken at member-create time, and rotating a pool's
+class afterwards (GitOps `apply_pool` "update" carries it) never refreshed it.
+A member Node reaches its pool through `config["instance_pool_id"]`. The column,
+its CHECK constraint and its index survive one deploy window and are then
+dropped. One same-named column
 survives elsewhere: `system_instance_pools.lifecycle_class` (`ephemeral|spot`,
 default `ephemeral`) is a DIFFERENT field with a different value set — the code
 has already tripped over that. A third column on `system_node_instances` used to
@@ -58,11 +67,11 @@ share the name and no longer does: IMP-1e2e7b43b083 renamed it to `lease_class`,
 because `task_scoped` answers "why was this instance leased", a different axis
 rather than a narrower value set.
 
-So: to get ephemeral or spot Nodes, create a `System::InstancePool` with that
-`lifecycle_class` (`system_create_instance_pool`) and take members from it
-(`system_acquire_pooled_instance`). There is no other route, and no route that
-changes an observable on a Node that already exists — a direct `update!` writes
-the column and nothing else.
+So: the class of a machine is a property of the `System::InstancePool` you
+create it from (`system_create_instance_pool`, then
+`system_acquire_pooled_instance`) — that column is settable, readable and
+rotatable. On a Node there is no route, and no route that changes an observable:
+a direct `update!` writes a column nothing reads and that is on its way out.
 
 ## Detailed Walkthroughs
 
@@ -80,8 +89,9 @@ platform.system_provision_instance({
 })
 // Then via UI or MCP:
 // - WITHDRAWN: "Set Node.lifecycle_class = persistent". There is no UI or MCP
-//   surface that accepts it, and persistent is already the DB default, so
-//   there is nothing to do. See "How lifecycle_class is actually set" above.
+//   surface that accepts it, and the column is retired — nullable, no default,
+//   no writer — so there is nothing to do and nothing to record. See "How
+//   lifecycle_class is actually set" above.
 // - Attach Sdwan::Peer
 // - Assign docker-engine module
 ```
@@ -104,7 +114,7 @@ platform.system_provision_instance({
 **Setup**:
 ```javascript
 // 1. Provision 1 NodeInstance for control plane
-//    - lifecycle_class: persistent (DB default — not settable, nothing to do)
+//    - lifecycle_class: persistent (retired column — not settable, nothing to do)
 //    - Attach SDWAN
 //    - Assign k3s-server module
 // 2. Wait ~90s for cluster bootstrap
@@ -239,13 +249,13 @@ platform.system_assign_module_to_template({
 **Setup**:
 ```
 Server NodeInstance:
-  Node.lifecycle_class = "persistent"   # DB default — nothing to set
+  Node.lifecycle_class = "persistent"   # retired column — nothing to set
   Module: k3s-server
 
 Worker NodeInstances (N varies):
-  # WITHDRAWN as an instruction — this is what a pool member ends up carrying,
-  # not something you assign. Only an InstancePool produces it; see "How
-  # lifecycle_class is actually set" above.
+  # WITHDRAWN as an instruction — never something you assign, and since the
+  # column's retirement not something a pool member carries either: the class
+  # lives on the InstancePool. See "How lifecycle_class is actually set" above.
   Node.lifecycle_class = "ephemeral"
   Module: k3s-agent
   # WITHDRAWN — stored, never delivered. Nothing on the agent reads it and the
@@ -300,12 +310,14 @@ Worker NodeInstances (N varies):
 ```
 Will this instance be alive for >24 hours?
 ├── Yes, with state I care about
-│       └── lifecycle_class: persistent (default)
+│       └── lifecycle_class: persistent (the do-nothing case; the column is
+│           retired, so nothing records it)
 │           tmpfs_store: false (default)
 │           Use cases: 1, 2, 3, 6, 7-server
 │
 ├── Yes, but state can be wiped on reboot
-│       └── lifecycle_class: persistent
+│       └── lifecycle_class: persistent (also the do-nothing case; the column
+│           is retired, so nothing records it)
 │           tmpfs_store: true
 │           Edge use case: long-lived appliance with no local state
 │
@@ -321,13 +333,18 @@ Will this instance be alive for >24 hours?
 ```
 
 **Reading the tree**: it maps a use case to a class, not a setting you apply.
-`persistent` is what a Node has by doing nothing; `ephemeral` and `spot` reach a
-Node only because a `System::InstancePool` with that `lifecycle_class` created
-it. `tmpfs_store` is in the SAME position and the tree should not be read as setting
+`persistent` is the do-nothing CASE, not a do-nothing VALUE — nothing records
+it any more, so a machine you simply create carries no class at all.
+`ephemeral` and `spot` come from creating the machine out of a
+`System::InstancePool` with that `lifecycle_class` — on the pool, which is the
+row that carries the class. The Node column that used to mirror it is retired
+(nullable, no default, no writer).
+`tmpfs_store` is in the SAME position and the tree should not be read as setting
 it either: no MCP verb or REST parameter accepts it, `System::Node#enable_tmpfs!`
-/ `#disable_tmpfs!` (`node.rb:81-87`) are called only from specs, and its one
-non-spec writer is a smoke seed writing the default `false`. See "How
-`lifecycle_class` is actually set" above.
+/ `#disable_tmpfs!` (`server/app/models/system/node.rb` — named, not
+line-cited, because the previous `node.rb:81-87` citation had drifted ~46 lines)
+are called only from specs, and its one non-spec writer is a smoke seed writing
+the default `false`. See "How `lifecycle_class` is actually set" above.
 
 ## How the System Concierge Should Use This
 

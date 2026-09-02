@@ -110,19 +110,23 @@ platform.system_create_node({
 > | `lifecycle_class` | **NOT IMPLEMENTED as an argument** — see below. |
 > | `metadata` | No such column. `config` (JSONB) is the free-form field, on both surfaces. |
 
-**`lifecycle_class` — you do not set it on a Node; the pool that creates the
-Node sets it**
+**`lifecycle_class` — you never set it on a Node, and the column is being
+retired**
 
-`system_nodes.lifecycle_class` is a real column (`default: "persistent"`,
-`NOT NULL`, check constraint `persistent|ephemeral|spot`, mirrored by
-`System::Node::LIFECYCLE_CLASSES` and an inclusion validation). Where its value
-comes from is not what this runbook used to say:
+`system_nodes.lifecycle_class` is a real column (nullable, **no default**, check
+constraint `persistent|ephemeral|spot`, mirrored by
+`System::Node::LIFECYCLE_CLASSES` and an inclusion validation that now permits
+nil). IMP-19843220ac68 settled it as RETIRED: no surface ever accepted it,
+nothing ever read it, and as of that change nothing writes it. The column, its
+CHECK constraint and its index are dropped one deploy window later. Where its
+value used to come from is not what this runbook used to say either:
 
 - **You cannot set it on a node you create.** `system_create_node`'s executor
   slices only `description, enabled, worker_id, public_address,
   allocate_public_ip, config` (`system_fleet_tool.rb`), and REST's `node_params`
-  does not permit it (`nodes_controller.rb`). A node created either way takes
-  the column default, `persistent`.
+  does not permit it (`nodes_controller.rb`). A node created either way now
+  carries `NULL`; before the retirement it took the column default,
+  `persistent`.
 - **You cannot change it afterwards.** REST create and update share one
   `node_params` permit list, and `system_update_node` takes the MCP create
   surface with `template_id` renamed to `node_template_id`. None of them
@@ -132,29 +136,32 @@ comes from is not what this runbook used to say:
 - **You cannot read it back.** Neither `System::NodeSerializer` (REST) nor the
   MCP node serializer emits `lifecycle_class`, so no API response tells you a
   node's class. To see it you need the DB or the Rails console.
-- **The one path that produces a non-default value is an InstancePool.**
-  `System::InstancePoolService#provision_warming_member!` creates each pool
-  member's Node with `lifecycle_class: pool.lifecycle_class` — and a pool's
-  class is constrained to `ephemeral|spot`, so **every pool-member node is
-  `ephemeral` or `spot`, never `persistent`**. Mostly this happens without you:
-  `System::InstancePoolReplenisherJob` is a 60-second Sidekiq cron that POSTs
-  replenish for every `active` or `draining` pool, so an active pool with
-  `target_size >= 1` mints `ephemeral`/`spot` nodes unattended. The manual
-  triggers for the same path are `platform.system_replenish_instance_pool` and
-  REST `POST /api/v1/system/instance_pools/:id/replenish`. This is the *only*
-  way to influence a Node's class, and it is indirect: you choose it on the pool
-  (`platform.system_create_instance_pool`), not on the node — and the reaper
-  applies it on its own schedule.
-- Every other application writer sets `persistent` or nothing:
-  `System::PlatformDeploymentOrchestrator` hardcodes `"persistent"` (the same
-  as the default); the `provision_full_stack` skill executor and the
-  fulfillment orchestrator omit it entirely. Seed scripts
-  (`db/seeds/example_multi_tenant.rb`) write the model directly — not an
-  operator path.
-- **Nothing reads it.** A tree-wide search of `server/`, `extensions/`,
-  `worker/` and the Go agent finds no consumer of a *Node's* `lifecycle_class`;
-  the model comment's "short-circuit expensive bootstrap for short-lived
-  instances" is aspirational. It records intent today; it changes no behaviour.
+- **The class of a machine lives on the InstancePool, not on the Node.**
+  `System::InstancePoolService#provision_warming_member!` used to copy
+  `pool.lifecycle_class` onto each member's Node; that copy is gone. A pool's
+  class is still constrained to `ephemeral|spot` and is still settable,
+  readable and rotatable — a member Node reaches its pool through
+  `config["instance_pool_id"]`, which is where anything that ever wants to
+  branch on a machine's lifetime must look. Pool members mostly appear without
+  you: `System::InstancePoolReplenisherJob` is a 60-second Sidekiq cron that
+  POSTs replenish for every `active` or `draining` pool, so an active pool with
+  `target_size >= 1` mints members unattended; the manual triggers for the same
+  path are `platform.system_replenish_instance_pool` and REST
+  `POST /api/v1/system/instance_pools/:id/replenish`. You choose the class on
+  the pool (`platform.system_create_instance_pool`), never on the node.
+- Both former writers are gone: `System::PlatformDeploymentOrchestrator`
+  hardcoded `"persistent"` (the old default, so it moved nothing) and the pool
+  service copied the pool's value; the `provision_full_stack` skill executor
+  and the fulfillment orchestrator never set it at all. One writer is left, and
+  it is not an operator path: the `db/seeds/example_multi_tenant.rb` dev seed
+  writes the model directly, and goes when the column is dropped.
+- **Nothing reads it, and nothing ever did.** A tree-wide search of `server/`,
+  `extensions/`, `worker/` and the Go agent finds no consumer of a *Node's*
+  `lifecycle_class`; the model comment's "short-circuit expensive bootstrap for
+  short-lived instances" was never built. That, not any single defect, is why
+  the column is being retired rather than wired: stopping the writes without
+  also removing the `NOT NULL DEFAULT 'persistent'` would have left every pool
+  member claiming to be persistent, which is worse than unread.
 
 One other table carries a same-named column with a **different value set** — do
 not transfer conclusions between them. A third column used to share the name and
@@ -163,14 +170,14 @@ different axis, not a narrower value set:
 
 | Column | Values | Set by |
 |---|---|---|
-| `system_nodes.lifecycle_class` | `persistent\|ephemeral\|spot` | not settable directly. `persistent` by default; `ephemeral`/`spot` only on nodes an InstancePool mints (usually via the 60s replenisher cron) |
+| `system_nodes.lifecycle_class` (**retired**) | `persistent\|ephemeral\|spot`, and now `NULL` | nothing. Never settable through any surface, never read; both writers were removed and the column is nullable with no default pending its drop |
 | `system_instance_pools.lifecycle_class` | `ephemeral\|spot` only — **no `persistent`** | `platform.system_create_instance_pool`, the Instance Pools UI, and GitOps `fleet.yaml` |
 | `system_node_instances.lease_class` (**not** a lifecycle class) | nullable, no constraint; carries `task_scoped`, which is invalid on both columns above | the fulfillment orchestrator, for leased task-scoped instances |
 
-So if you want `ephemeral` or `spot` nodes, create an **InstancePool** with that
-class and let it provision its members — see
-[instance-pool-tuning.md](./instance-pool-tuning.md). The Phase 1 call above
-always builds a `persistent` node.
+So if you want `ephemeral` or `spot` machines, create an **InstancePool** with
+that class and let it provision its members — see
+[instance-pool-tuning.md](./instance-pool-tuning.md). The class is a property of
+the pool; the Phase 1 call above builds a node that records no class at all.
 
 **What else to watch:**
 - `template_id` determines which modules will be assigned at bootstrap. To reuse an existing fleet template, query first: `platform.system_list_templates`.
@@ -487,7 +494,7 @@ cd server && \
     "load Rails.root.join('../extensions/system/server/db/seeds/smoke_test_provision.rb')"
 ```
 
-The seed creates: 1 Account → 1 Node (lifecycle_class=persistent) → 1 NodeInstance via LocalQemuProvider, watches the AASM Task progression, and reports the kernel boot pipeline through to multi-user.target. Total runtime: ~15 min on cold boot (TCG without `/dev/kvm`); ~3 min with KVM.
+The seed creates: 1 Account → 1 Node (no lifecycle_class — the column is retired) → 1 NodeInstance via LocalQemuProvider, watches the AASM Task progression, and reports the kernel boot pipeline through to multi-user.target. Total runtime: ~15 min on cold boot (TCG without `/dev/kvm`); ~3 min with KVM.
 
 LocalQemuProvider modes (the `POWERNODE_LIBVIRT_MODE` value → runner class):
 - `real` — `LibvirtRunner`: actual libvirt domain creation + QEMU/KVM boot (default for smoke)

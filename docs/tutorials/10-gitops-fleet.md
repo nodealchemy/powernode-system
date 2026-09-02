@@ -181,8 +181,9 @@ sdwan:
 > `DiffEngine` never emits one for `node`). `DiffEngine` computes diffs for only
 > templates, assignments, modules, pools, platforms and provider_configs.
 > A Node's `lifecycle_class` is not GitOps-declarable at all — nor settable
-> through any other API surface; it reaches a Node only via a
-> `System::InstancePool`, which GitOps DOES express as its `pools` kind. See
+> through any other API surface, and the column is now retired (nullable, no
+> default, no writer). The class lives on the `System::InstancePool`, which
+> GitOps DOES express as its `pools` kind. See
 > [`../USE_CASE_MATRIX.md`](../USE_CASE_MATRIX.md) §"How `lifecycle_class` is
 > actually set".
 
