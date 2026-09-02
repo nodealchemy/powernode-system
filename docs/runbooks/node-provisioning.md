@@ -156,14 +156,16 @@ comes from is not what this runbook used to say:
   the model comment's "short-circuit expensive bootstrap for short-lived
   instances" is aspirational. It records intent today; it changes no behaviour.
 
-Two other tables carry a same-named column with a **different value set** — do
-not transfer conclusions between them:
+One other table carries a same-named column with a **different value set** — do
+not transfer conclusions between them. A third column used to share the name and
+no longer does (IMP-1e2e7b43b083 renamed it to `lease_class`), because it was a
+different axis, not a narrower value set:
 
 | Column | Values | Set by |
 |---|---|---|
 | `system_nodes.lifecycle_class` | `persistent\|ephemeral\|spot` | not settable directly. `persistent` by default; `ephemeral`/`spot` only on nodes an InstancePool mints (usually via the 60s replenisher cron) |
 | `system_instance_pools.lifecycle_class` | `ephemeral\|spot` only — **no `persistent`** | `platform.system_create_instance_pool`, the Instance Pools UI, and GitOps `fleet.yaml` |
-| `system_node_instances.lifecycle_class` | nullable, no constraint; carries `task_scoped`, which is invalid on the other two | the fulfillment orchestrator, for leased task-scoped instances |
+| `system_node_instances.lease_class` (**not** a lifecycle class) | nullable, no constraint; carries `task_scoped`, which is invalid on both columns above | the fulfillment orchestrator, for leased task-scoped instances |
 
 So if you want `ephemeral` or `spot` nodes, create an **InstancePool** with that
 class and let it provision its members — see

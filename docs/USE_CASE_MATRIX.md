@@ -50,10 +50,13 @@ writes `"persistent"` — the default — so it moves nothing. The
 
 **Nothing reads it.** No consumer of a *Node's* `lifecycle_class` exists in
 `server/`, `extensions/`, `worker/` or the Go agent; the agent bootstrap
-short-circuit it was added for is still unimplemented. The same-named columns on
-`system_instance_pools` (`ephemeral|spot`, default `ephemeral`) and
-`system_node_instances` (nullable, carries `task_scoped`) are DIFFERENT fields
-with different value sets — the code has already tripped over that.
+short-circuit it was added for is still unimplemented. One same-named column
+survives elsewhere: `system_instance_pools.lifecycle_class` (`ephemeral|spot`,
+default `ephemeral`) is a DIFFERENT field with a different value set — the code
+has already tripped over that. A third column on `system_node_instances` used to
+share the name and no longer does: IMP-1e2e7b43b083 renamed it to `lease_class`,
+because `task_scoped` answers "why was this instance leased", a different axis
+rather than a narrower value set.
 
 So: to get ephemeral or spot Nodes, create a `System::InstancePool` with that
 `lifecycle_class` (`system_create_instance_pool`) and take members from it
