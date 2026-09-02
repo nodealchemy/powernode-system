@@ -133,26 +133,32 @@ RSpec.describe "System::Ai::Skills::BaseSkillExecutor policy gate" do
 
       expect(ZzGatedFixtureExecutor.performed_on).to be_empty,
         "requires_approval is descriptive only — #perform ran before any policy was consulted"
-      expect(result[:success]).to be false
-      expect(result[:error]).to match(/Approval required: system\.zz_gated_fixture/)
-      expect(result[:error]).to include(Ai::ApprovalRequest.last.id)
+      # APO-1f (IMP-117b34656921): the PLATFORM'S pending envelope, not a
+      # failure. The full shape is pinned in
+      # base_skill_executor_pending_envelope_spec.rb.
+      expect(result[:pending]).to be true
+      expect(result.dig(:data, :message)).to match(/Approval required: system\.zz_gated_fixture/)
+      expect(result.dig(:data, :message)).to include(Ai::ApprovalRequest.last.id)
     end
 
-    # THE ROLLBACK-FAKING ORACLE. Ai::Provisioning::SkillCompositionRunner reads
-    # every non-control key on a failure envelope as a resource this run created
-    # (#failure_outputs_from strips only success/error/message/errors/failures/
-    # partial) and hands what survives to the step's rollback hook before
-    # stamping it compensated. A parked approval created nothing, so the refusal
-    # envelope must carry NOTHING beyond the control keys — a `pending: true`
-    # here would compensate a step that never ran.
-    it "returns an envelope with no non-control keys, so a composed step is not faked as rolled back" do
+    # THE ROLLBACK-FAKING ORACLE, restated for APO-1f.
+    #
+    # Ai::Provisioning::SkillCompositionRunner reads every non-control key on a
+    # FAILURE envelope as a resource this run created (#failure_outputs_from
+    # strips only success/error/message/errors/failures/partial) and hands what
+    # survives to the step's rollback hook before stamping it compensated. A
+    # parked approval created nothing, so the ids this envelope now carries must
+    # never reach that path — which they cannot, because a parked envelope is no
+    # longer a failure at all. The runner's own half (park, do not roll back) is
+    # pinned in spec/services/ai/provisioning/skill_composition_runner_parked_approval_spec.rb.
+    it "is not a failure envelope, so the runner's rollback path is unreachable for it" do
       policy!("require_approval")
 
       result = ZzGatedFixtureExecutor.new(account: account, user: user)
                                      .execute(widget_id: "w-1")
 
-      control = %w[success error message errors failures partial]
-      expect(result.keys.map(&:to_s) - control).to be_empty
+      expect(result[:success]).to be true
+      expect(result[:error]).to be_nil
     end
 
     it "parks a DeferredOperation naming this executor, so the approval can be replayed" do
@@ -183,7 +189,7 @@ RSpec.describe "System::Ai::Skills::BaseSkillExecutor policy gate" do
                                      .execute(widget_id: "w-1")
 
       expect(ZzGatedFixtureExecutor.performed_on).to be_empty
-      expect(result[:success]).to be false
+      expect(result[:pending]).to be true
     end
 
     it "runs IN-PROCESS on the caller's own instance under an auto-execute policy" do

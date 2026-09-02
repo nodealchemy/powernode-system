@@ -1141,13 +1141,19 @@ module Ai
         when :proceed
           success_result(**yield(result))
         when :pending
+          # THE SHARED BUILDER, not a second spelling of the same body. Two
+          # spellings of the pending envelope are what let one parked category
+          # answer "pending" through this door and "failed" through the skill
+          # executors' (APO-1f, IMP-117b34656921), and only a shared builder
+          # keeps a key added to Ai::Tools::BaseTool::PENDING_RESULT_PROPERTIES
+          # from silently missing here. `pending_extra` still rides alongside —
+          # this is the floor, not the ceiling.
           success_result(
-            pending: true,
-            action_category: action_category,
-            deferred_operation_id: result.deferred_operation&.id,
-            approval_request_id: result.approval_request&.id,
-            **pending_extra,
-            message: "Approval required: #{action_category}"
+            ::Ai::Tools::BaseTool.pending_payload(
+              action_category: action_category,
+              deferred_operation: result.deferred_operation,
+              approval_request: result.approval_request
+            ).merge(pending_extra || {})
           )
         else
           error_result(gate_failure_message(result, action_category))

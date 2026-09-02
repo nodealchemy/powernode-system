@@ -157,8 +157,47 @@ module System
             # posture the ORIGINAL call had.
             built.instance_authorized = true if requested_by.nil?
 
-            built.execute(gated: true, **(params || {}).to_h.symbolize_keys)
+            outcome = built.execute(gated: true, **(params || {}).to_h.symbolize_keys)
+            resume_composed_plan(deferred_operation, outcome)
+            outcome
           end
+
+          # COMPOSED-PLAN RESUME (APO-1f, IMP-117b34656921) — the open question
+          # IMP-7e2bdc1774e4 left behind.
+          #
+          # A provisioning step whose executor parked is sitting in
+          # Ai::Provisioning::SkillCompositionRunner::PARKED_STATUS waiting on
+          # exactly this replay. #execute_now! runs us BEFORE it stamps its own
+          # row, so the runner is handed the outcome directly rather than
+          # re-reading a row that still says `executing`.
+          #
+          # Best-effort by construction: the replay itself has already applied
+          # (or refused) the operation, and a resume that raises must not turn a
+          # completed approval into a failed one. A parked STEP that misses its
+          # resume is recoverable — re-dispatching it lands on
+          # #execute_step!, which reads the released operation off the row.
+          #
+          # Extension → core is the allowed direction; the runner is core, and
+          # its class method is a no-op for the common case where the parked
+          # operation belongs to no plan at all (a direct MCP or REST call).
+          def resume_composed_plan(deferred_operation, outcome)
+            return if deferred_operation.nil?
+            return unless defined?(::Ai::Provisioning::SkillCompositionRunner)
+
+            ::Ai::Provisioning::SkillCompositionRunner.resume_parked_step(
+              deferred_operation: deferred_operation, result: outcome
+            )
+          rescue StandardError => e
+            ::Rails.logger.error(
+              "[#{name}] composed-plan resume failed for deferred_operation " \
+              "#{deferred_operation&.id}: #{e.class}: #{e.message}"
+            )
+            nil
+          end
+          # `private`, not `private_class_method`: inside `class << self` these
+          # ARE the singleton's instance methods, and private_class_method would
+          # look for the method one level further up.
+          private :resume_composed_plan
         end
 
         # Policy verdicts that mean "run it now". Same pair
@@ -312,44 +351,52 @@ module System
             result.result.is_a?(Hash) ? result.result
                                       : failure("Gate proceeded for #{category} but returned no executor result")
           when :pending
-            failure(pending_message(category, result))
+            pending_result(category, result)
           else
             failure(result.error || "Action #{category} is blocked by policy")
           end
         end
 
-        # A MINIMAL envelope, and the identifiers in the message rather than
-        # beside it — deliberately, not for brevity.
+        # THE PLATFORM'S THIRD OUTCOME, not a failure (APO-1f,
+        # IMP-117b34656921).
         #
-        # Ai::Provisioning::SkillCompositionRunner reads every NON-CONTROL key
-        # on a failure envelope as a resource this run created:
-        # #failure_outputs_from strips only success/error/message/errors/
-        # failures/partial, records whatever survives as the step's failure
-        # outputs, and #rollback_step! then hands those to the executor's
-        # rollback hook as kwargs before #mark_rolled_back stamps the step
-        # compensated. A parked approval created NOTHING, so surfacing
-        # `pending:` / `requires_approval:` / the two ids up here would fake
-        # compensation for a step that never ran — the exact hazard #failure's
-        # own docstring warns about ("Pass ONLY keys that actually hold ids").
+        # APO-1c returned `failure(...)` here. That was deliberate at the time —
+        # Ai::Provisioning::SkillCompositionRunner keys on `success: false` to
+        # STOP, so a truthful `success: true` would have let a composed plan
+        # continue past a step nothing applied — but it made the SAME parked
+        # category answer two different things depending on the door: SdwanTool
+        # (and every BaseTool declared gate) already returned
+        # `success: true` + `data.pending`, the shape the MCP outputSchema
+        # advertises (Ai::Tools::BaseTool::PENDING_RESULT_PROPERTIES), while the
+        # ingress tool and the REST controllers handed the caller a FAILURE for
+        # an action an operator was still deciding. An agent reads that as
+        # "didn't work" and retries.
         #
-        # Extending core's ENVELOPE_CONTROL_KEYS would let the metadata ride
-        # structurally; until it does, the message is the channel every caller
-        # already renders.
+        # Both halves landed together: this envelope, and consumers that key on
+        # `pending` — SkillCompositionRunner now PARKS the step
+        # (PARKED_STATUS) rather than completing or failing it, and resumes it
+        # from .execute below when the approval releases.
         #
-        # What this does NOT fix, stated so it is not mistaken for handled: a
-        # composed step that parks an approval is still recorded FAILED by
-        # SkillCompositionRunner and its plan settles as failed. The empty
-        # envelope keeps the compensation itself harmless — #rollback_step!
-        # finds no outputs, so a rollback hook with defaulted kwargs no-ops and
-        # the step is stamped `rolled_back(noop: true)`; siblings are never
-        # touched (#handle_failure compensates the failed step only). The
-        # missing piece is a SUSPENDED step state so approving the parked
-        # request resumes the plan instead of leaving a dead one behind. That is
-        # a core change to Ai::Provisioning::SkillCompositionRunner, not to this
-        # gate. RelocateWorkloadExecutor is the one gated skill an adaptation
-        # plan can name today (AdaptationProposerService::ADAPTATION_SKILLS, LLM
-        # path only — the deterministic composer cannot supply its eight
-        # inputs).
+        # `pending: true` rides at the TOP LEVEL as well as inside `data`. The
+        # data body is the wire contract every MCP door passes through
+        # unchanged; the top-level copy is for in-process consumers that never
+        # see a tool envelope, so keying on it needs no dig into a payload
+        # whose shape a subclass could legitimately vary.
+        def pending_result(category, result)
+          {
+            success: true,
+            pending: true,
+            data: ::Ai::Tools::BaseTool.pending_payload(
+              action_category: category,
+              deferred_operation: result.deferred_operation,
+              approval_request: result.approval_request,
+              message: pending_message(category, result)
+            )
+          }
+        end
+
+        # The human-readable half of the envelope above: the identifiers ride in
+        # `data` structurally, and this sentence is what a chat surface renders.
         def pending_message(category, result)
           id = result.approval_request&.id || result.deferred_operation&.id
           base = "Approval required: #{category}"
