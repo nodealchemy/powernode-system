@@ -321,6 +321,30 @@ Two properties are deliberate and worth knowing before you rely on it:
 - **It is declared-only.** With no `min_throughput_bytes_per_s` the check never runs, so adding the metric changed no existing mission's behaviour.
 - **It goes dark rather than guess.** The counters are nullable, and NULL (never measured) is kept distinct from a measured 0 (tunnel up, idle) at every step. If any peer of the mission's instances fails to yield a measurable interval in a tick — never reported, stalled heartbeat, no baseline yet — the sample is published as `unavailable` (`observed: nil`) with `peer_count` / `rated_peer_count` recorded, rather than as a partial sum. A partial sum can only understate, and a floor fires on `observed < target`, so publishing one could only ever fabricate a breach.
 
+**Where the samples come from.** `System::ProjectMetricsCollector` writes one `System::ProjectMetric` row per metric per tick. A metric whose producer is not wired is written as an honest `unavailable` sample (`observed: nil`) — never a zero — so the sensor skips it instead of reading a fabrication as a measurement.
+
+| Metric | Producer | Notes |
+|---|---|---|
+| `replica_count` / `region_count` | `NodeInstance.live_replicas` over the instances the mission provisioned | a resolvable mission with zero live instances reports a real `0` |
+| `memory_pct` | heartbeat `memory_free_kb` against `NodeInstance#available_memory_mb` | mean over the instances with a FRESH `runtime_metrics` observation |
+| `cpu_pct` | heartbeat `cpu_pct` — percent-busy the agent MEASURES from `/proc/stat` deltas | never derived from `load_average` |
+| `availability_pct` | heartbeat liveness across the replicas EXPECTED to heartbeat (`running`/`starting`) | the only sample that tells DOWN from SLOW |
+| `sdwan_throughput_bytes_per_s` | per-peer WireGuard counters | see above |
+| `p99_latency_ms` / `cost_usd_mtd` | not wired | always `unavailable` |
+
+`cpu_pct` is measured on the node, never inferred on the server. `load_average` is shipped and stored too, but it is a `/proc/loadavg` run-queue length that folds in I/O wait, and converting it to a percentage needs a per-instance core count the platform does not reliably have for physical/pivot nodes — so the agent computes the busy/idle split itself (`agent/internal/runtime/cpustat.go`, counting `iowait` as idle) and the platform ingests a measurement. An agent that ships no `cpu_pct` — a pre-APO-2a build, or one whose `/proc/stat` was unreadable — leaves the metric `unavailable`; an instance whose observation carries only `load_average` contributes nothing.
+
+`availability_pct` = 100 × (replicas expected to heartbeat whose last heartbeat is inside the silence window) ÷ (replicas expected to heartbeat that have EVER heartbeat). Four properties matter before you rely on it:
+
+- **The denominator is the ever-reported set.** An instance that has never heartbeat may be mid-bootstrap or carry no agent at all, so counting it as unavailable would manufacture a breach on every mission that provisions faster than its nodes enrol. Such instances are excluded and surfaced as the gap between `measured_instance_count` and `instance_count`. When nothing has ever reported, the sample is `unavailable` — never `0`.
+- **Only replicas that owe a heartbeat are measured.** `live_replicas` is the CAPACITY population and includes `stopped`, `stopping`, `rebooting`, `pending` and `provisioning` — all silent by design. Measuring their silence would turn an operator's own `stop`, or a routine reboot, into a 50% outage and a scale-out proposal, so the population is `InstanceStatusSensor::HEARTBEAT_EXPECTED_STATUSES` (`running`/`starting`) and the remainder is published as `not_expected_to_report_count`.
+- **A measured `0.0` IS published.** Every reporting replica silent is a total outage: the most important reading this metric can carry, and the one a null would hide.
+- **The population and the silence window are both `instance_status`'s**, the window resolved through `System::Fleet::SensorConfig` (`silent_threshold_seconds`, default 3 minutes), so this collector and `instance_status_sensor` cannot drift apart about which nodes should be answering or how long silence is tolerated. The window in force is stamped on each sample as `silent_threshold_seconds`. One deliberate difference remains: the sensor signals a never-heartbeat `running` instance as silent, while this metric excludes it (see the first bullet).
+
+Unlike `min_throughput_bytes_per_s`, `availability_pct` has a DEFAULT target (99.5), so wiring its producer made the check live for every active infrastructure mission: with two reporting replicas, one going silent reads as 50% and fires `system.project_slo_violation`. For missions whose nodes legitimately go quiet, raise the silence window or declare a lower `availability_pct` target.
+
+The utilization samplers' staleness window — how recent a `runtime_metrics` observation must be to describe the node's current state — governs `memory_pct` and `cpu_pct` together and defaults to 10 minutes (20 consecutive missed heartbeats). Tune it deployment-wide with the `system.project_metrics.sample_freshness_seconds` SiteSetting.
+
 ### `sdwan_credential_expiry_sensor` — SDWAN material expiry watch
 
 **Source:** `sdwan_credential_expiry_sensor.rb`
