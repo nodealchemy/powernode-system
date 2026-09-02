@@ -68,7 +68,7 @@ Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented
 
 | Action | What it does | Audience |
 |---|---|---|
-| `system_list_nodes` | List Node rows. `template_id` is the only filter it declares — there is no status or `lifecycle_class` filter, and an undeclared key is dropped silently, so filtering by one returns the UNFILTERED list with no error | operator, agent |
+| `system_list_nodes` | List Node rows, one page at a time (`limit` / `cursor`). `template_id` is the only FILTER it declares — there is no status or `lifecycle_class` filter, and an undeclared key is dropped silently, so filtering by one returns the unfiltered list with no error | operator, agent |
 | `system_get_node` | Fetch a Node by id | operator, agent |
 | `system_create_node` | Create a Node row (no provider VM yet) | operator, agent |
 | `system_list_instances` | List NodeInstance rows | operator, agent |
@@ -96,7 +96,7 @@ Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented
 
 | Action | What it does |
 |---|---|
-| `system_list_tasks` | List Tasks (filter by `node_id`, `instance_id`) — newest 100; there is no status or type filter |
+| `system_list_tasks` | List Tasks (filter by `node_id`, `instance_id`) — newest first, one page at a time (`limit` / `cursor`, with `count` the uncapped total); there is no status or type filter |
 | `system_cancel_task` | Cancel a pending or in-flight Task |
 
 #### Instance pools (slice 7)
