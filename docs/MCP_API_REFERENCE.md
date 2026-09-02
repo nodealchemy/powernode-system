@@ -369,6 +369,21 @@ fetching the wizard payload.
 
 **Permissions:** the action verb on the matching resource (`system.{node_instances,node_modules,instance_pools,…}.{view,destroy,delete,recycle,refresh,mark_canary,drain}`).
 
+#### Fleet autonomy configuration
+
+Backed by `Ai::Tools::SystemFleetTool`. Sensor thresholds are per-account
+configuration resolved from `System::Fleet::SensorConfig` with each sensor's
+class constant as the fallback — see
+[FLEET_SENSORS.md](./FLEET_SENSORS.md#configuring-sensor-thresholds) for the
+tunable keys and their defaults.
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_get_sensor_config` | Read a sensor's defaults, stored overrides and effective thresholds (omit `sensor` to list every configurable sensor) | operator, agent |
+| `system_update_sensor_config` | Merge threshold overrides for one sensor; a `null` value drops an override. Rejects undeclared keys and non-positive values | operator |
+
+**Permissions:** `system.fleet.read` (read), `system.fleet.manage` (write).
+
 #### CVE management
 
 | Action | What it does | Audience |

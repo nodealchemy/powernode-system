@@ -44,14 +44,25 @@ so a bare table cell would not register there either way.)
 
 | Verb | Doc | Operator workaround today |
 |------|-----|---------------------------|
-| `system_get_sensor_config` | `docs/FLEET_SENSORS.md` | Read `Fleet::SensorConfig` via Rails console or REST; with no record, the sensor class constants are the effective values |
-| `system_update_sensor_config` | `docs/FLEET_SENSORS.md` | `Fleet::SensorConfig.upsert_for(account:, sensor:, config:)` via Rails console, as the section itself shows |
 
 <!-- ASPIRATIONAL-CATALOG:END -->
 
-**Scope of that count.** Two verbs, both in the "Configuring Sensor
-Thresholds" section of `docs/FLEET_SENSORS.md`, both commented out under a
-⚠️ line naming the real path. This is **not** a census of every
+**The catalog is currently EMPTY, and that is a real result, not a parser
+returning nothing.** It held exactly two verbs — `system_get_sensor_config`
+and `system_update_sensor_config`, both in the "Configuring Sensor Thresholds"
+section of `docs/FLEET_SENSORS.md` — and IMP-ca485128072e implemented both:
+they are registered in `platform_api_tool_registry.rb`, backed by
+`System::Fleet::SensorConfig`, and their examples in that section are now LIVE
+calls checked like any other. The entries were deleted from
+`ASPIRATIONAL_VERBS` (which reddened their self-retiring guards first), and
+this table follows from that deletion.
+
+Read the emptiness against the three anti-vacuity pins named above, not on its
+own: the BEGIN/END markers must still exist, and the `[doc, verb]` equality
+oracle still runs both ways — it now asserts the empty set against the empty
+set, which is why pin 1 exists.
+
+**Scope of that count.** It is **not** a census of every
 unimplemented verb the docs mention — it is every one written in
 `platform.<verb>(...)` **call syntax**, which is all either checker can see.
 A verb named only in prose is outside both, and at least one exists:

@@ -129,7 +129,7 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 
 **Source:** `instance_status_sensor.rb`
 **Watches:** `System::NodeInstance.last_heartbeat_at`
-**Threshold:** Configurable per-template; `SILENT_THRESHOLD` default **3 minutes** silent → `system.instance_silent` signal
+**Threshold:** Configurable per **account** via `system_update_sensor_config` (`instance_status` / `silent_threshold_seconds`); `SILENT_THRESHOLD` default **180s** is the fallback. Heartbeat older than that → `system.instance_silent` signal. See [Configuring Sensor Thresholds](#configuring-sensor-thresholds).
 **Signals:** `system.instance_silent` — the only kind this sensor emits. No recovery counterpart exists; recovery is the fingerprint's absence on a later tick.
 **Recommended remediation:** `attribute_failure` (skill) for diagnostics, then operator-initiated reprovision.
 
@@ -137,7 +137,7 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 
 **Source:** `instance_unrecoverable_sensor.rb`
 **Watches:** the same population as `instance_status_sensor` (running/starting with a heartbeat older than `InstanceStatusSensor::SILENT_THRESHOLD`), plus the rows the DecisionEngine's presumed-dead reaper already flipped to `error` — identified by their `system.instance_presumed_dead` event, so no other `error` row is admitted — then classifies it
-**Threshold:** `REBOOT_ATTEMPT_THRESHOLD` default **2** consecutive ineffective `instance_silent` remediations (`FLEET_UNRECOVERABLE_REBOOT_ATTEMPTS`); `EMIT_WINDOW_SECONDS` default **3600** (`FLEET_UNRECOVERABLE_EMIT_WINDOW_SECONDS`); `MAX_PER_TICK` default **25** (`FLEET_UNRECOVERABLE_MAX_PER_TICK`)
+**Threshold:** Configurable per **account** via `system_update_sensor_config` (`instance_unrecoverable`), with the class constants as fallbacks — `reboot_attempt_threshold` default **2** consecutive ineffective `instance_silent` remediations, `emit_window_seconds` default **3600**, `max_per_tick` default **25**. The `FLEET_UNRECOVERABLE_*` environment variables this sensor once read were removed in APO-2e: nothing reads them, and setting one now tunes nothing. See [Configuring Sensor Thresholds](#configuring-sensor-thresholds).
 **Signals:** `system.instance_unrecoverable` with a classified `reason` — `provider_terminal` (the provider reports the VM terminated/error), `host_unreachable` (a connection to the instance's provider is in `error` and none is still connected+enabled, so the control path is positively observed down), or `reboot_exhausted` (the validate arc scored that many `instance_silent:<id>` remediations ineffective in a row).
 **Absence is not a verdict:** no adapter, a blank `cloud_instance_id`, a failed `sync_status`, a provider with no connection rows, and connections that are merely `pending` (never tested) all leave the instance on the ordinary `instance_silent` lane. Unknown provider state is never escalated to a replace, and a provider read that SUCCEEDS with a non-terminal state rules `host_unreachable` out outright.
 **Emit-once-per-window:** suppressed while a `system.instance_unrecoverable` FleetEvent for that instance is newer than `EMIT_WINDOW_SECONDS`, per instance — the condition clears when a person replaces the instance, not inside a tick interval. The suppression is applied in SQL *before* `MAX_PER_TICK`, so already-proposed instances cannot consume the window and starve the rest of a mass failure.
@@ -544,25 +544,73 @@ Action executors live at:
 
 ## Configuring Sensor Thresholds
 
-Sensors read thresholds from `Fleet::SensorConfig` records (account-scoped). Operator-tunable via:
+Sensor thresholds are **operator configuration**, resolved per account from
+`System::Fleet::SensorConfig` rows with the sensor's class constant as the
+fallback. There is one resolution seam —
+`System::Fleet::Sensors::BaseSensor.resolved_threshold` — and every sensor that
+is tunable declares its keys by overriding `.default_thresholds`.
+
+**All values are seconds or plain counts** (never minutes), so one pair of MCP
+verbs describes every sensor without a per-key unit:
 
 ```javascript
-// ⚠️ Sensor config MCP actions are aspirational — edit Fleet::SensorConfig via Rails console or REST today
-// platform.system_get_sensor_config({ sensor: "instance_status" })      // aspirational
-// platform.system_update_sensor_config({                                // aspirational
-//   sensor: "instance_status",
-//   silent_threshold_minutes: 10  // default 5
-// })
+platform.system_get_sensor_config({ sensor: "instance_status" })
+// → { sensors: [ { sensor, sensor_class, defaults, overrides, effective } ] }
+
+platform.system_update_sensor_config({
+  sensor: "instance_status",
+  config: { silent_threshold_seconds: 600 }   // default 180
+})
 ```
 
-Until those MCP wrappers ship, configure via Rails console:
+Omit `sensor` on the read to list every configurable sensor with its declared
+keys. The write is a **partial merge** — only the keys you supply change — and
+passing a key as `null` drops the override so the key falls back to the
+platform default.
+
+Permissions: the read takes `system.fleet.read`, the write `system.fleet.manage`
+(both granted to `admin`).
+
+The write **rejects** rather than ignores two things, because a silently
+dropped tuning looks exactly like one that took effect:
+
+- a key the named sensor does not declare (the error lists the declared keys);
+- a value that is not a positive integer — `max_per_tick: 0` disables a
+  detector while reading as configuration.
+
+The same rule applies on the read side: a stored value the resolver cannot use
+falls back to the constant and logs, so one bad row can never stop a 60-second
+perception pass.
+
+### What is tunable today
+
+| Sensor key | Threshold key | Default | Meaning |
+|---|---|---|---|
+| `instance_status` | `silent_threshold_seconds` | 180 | Heartbeat age at which an instance is called silent |
+| `instance_unrecoverable` | `max_per_tick` | 25 | Provider reads this sensor may make in one tick |
+| `instance_unrecoverable` | `emit_window_seconds` | 3600 | Emit-once window per instance |
+| `instance_unrecoverable` | `reboot_attempt_threshold` | 2 | Ineffective reboots before the lane is called spent |
+
+`instance_unrecoverable` deliberately has **no** silent-threshold key of its
+own: it classifies exactly the population `instance_status` calls silent, and
+reads that sensor's resolved value, so the two cannot disagree. Widening the
+silent window in one write widens it for both.
+
+A sensor absent from this table declares no thresholds and is not tunable —
+`system_update_sensor_config` refuses it by name rather than storing
+configuration nothing reads. Sensor keys are derived from the class name
+(`InstanceStatusSensor` → `instance_status`), and only sensors registered in
+`FleetAutonomyService::SENSORS` are offered: tuning one that never ticks would
+be configuration that can never take effect.
+
+Rails console equivalent, for a break-glass path with no MCP session:
 
 ```ruby
-Fleet::SensorConfig.upsert_for(account: Account.find("<id>"), sensor: "instance_status",
-  config: { silent_threshold_minutes: 10 })
+System::Fleet::SensorConfig.upsert_for(
+  account: Account.find("<id>"), sensor: "instance_status",
+  config: { "silent_threshold_seconds" => 600 }
+)
 ```
-
-If no `Fleet::SensorConfig` exists for an account, sensor defaults from constants in each sensor class apply.
 
 ## Adding a New Sensor
 
