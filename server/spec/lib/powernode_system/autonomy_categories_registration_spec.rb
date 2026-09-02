@@ -183,17 +183,23 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
   # the correct failure (the bulk PATCH accepts those names too); it just needs
   # to be read as "who else registered this?", not as a bug here.
   it "registers no system category that nothing seeds, executes or gates" do
-    # The three composer categories, plus the eleven APO-1c skill categories
-    # (IMP-7e2bdc1774e4). Every one of the fourteen is backed by a
-    # System::Ai::Skills executor that declares `requires_approval: true` in its
-    # descriptor — BaseSkillExecutor#execute resolves the row before #perform —
-    # and none is seeded, because these skills reach an operator through the
-    # MCP / REST / Concierge doors rather than through an agent's seed. The
-    # engine's second `concat` names the executor behind each one.
-    # The fourteen gated-executor categories are seeded on Fleet Autonomy
-    # since the branch-health pass of 2026-09-02 (require_approval, the same
-    # verdict the resolver defaulted to); only the registered-but-ungated
-    # composer category remains unseeded.
+    # NO COUNT AND NO ROSTER, deliberately (IMP-51e5c6184ae4). This comment
+    # used to carry both — "the eleven APO-1c skill categories … every one of
+    # the fourteen" — and it also carried two CONTRADICTORY sentences about the
+    # same set once the branch-health pass of 2026-09-02 seeded them: one saying
+    # "none is seeded", the next saying all fourteen are. The counts drift every
+    # time an executor lands or a duplicate category is retired (this task
+    # retired three), and a stale count sitting next to a live assertion reads
+    # as authority the assertion never gave it. The list below is the whole claim.
+    #
+    # What the list means: an extension category that is REGISTERED — through
+    # the engine's concat blocks, or through the derivation over
+    # System::Governance::PolicyDeclarations — but seeded by no agent. Such a
+    # category is still tunable through PATCH /api/v1/system/autonomy, and
+    # BaseSkillExecutor#execute resolves it before #perform, so it is a real
+    # operator control with no row behind it until someone creates one. These
+    # reach an operator through the MCP / REST / Concierge doors rather than
+    # through an agent's seed; the engine names the executor behind each.
     deliberately_unseeded = %w[
       system.sdwan_federation_compose
     ].sort
