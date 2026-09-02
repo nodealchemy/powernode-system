@@ -314,15 +314,17 @@ for any claimed members to finish their normal terminate, then delete.
 ## Governance — which pool verbs are gated, and which are not
 
 Pool verbs are **not** uniformly approval-gated, the split does not follow
-cost, and — the part that catches people — **the one gate that exists sits on
-the REST route, not on the MCP verb this runbook tells you to use.** Know
-which is which before you assume an approval will stop something.
+cost, and — the part that catches people — **every gate that exists sits on a
+REST route, not on the MCP verb this runbook tells you to use.** Know which is
+which before you assume an approval will stop something.
 
 | Verb | Autonomy gate | Declared policy | What actually runs it |
 |---|---|---|---|
 | Create pool | **Gated on the REST route ONLY** — `Ai::GatedActions#gate_create!` | `system.instance_pool_create` → `require_approval` | `POST /api/v1/system/instance_pools` → `System::Executors::InstancePool::CreatePool`. The MCP verb `system_create_instance_pool` — the one Phase 1 above prescribes — is **ungated**: it calls `System::InstancePool.create!` directly |
 | Delete pool | **Gated on the REST route ONLY** — `gate!` | `system.instance_pool_delete` → `require_approval` | `DELETE /api/v1/system/instance_pools/:id` → `DeletePool`, whose `on_proceed` only sets `status: "archived"`. The MCP verb `system_delete_instance_pool` (Phase 5 above) is **ungated and strictly more destructive** — it calls `pool.destroy!` |
-| Update pool | **Ungated** | `system.instance_pool_update` → `notify_and_proceed` | `PATCH /api/v1/system/instance_pools/:id` → `@pool.update!`, and `system_update_instance_pool`. `update_params` permit `target_size`, `max_size` **and `status`** |
+| Update pool — ceiling raise | **Gated on the REST route ONLY** — `gate_update!` | `system.instance_pool_ceiling_raise` → `require_approval` | `PATCH /api/v1/system/instance_pools/:id` with a **higher** `target_size` or `max_size` → `System::Executors::InstancePool::UpdatePool`. The MCP verb `system_update_instance_pool` is **ungated** |
+| Update pool — archive | **Gated on the REST route ONLY** — `gate_update!` | `system.instance_pool_archive` → `require_approval` | `PATCH {pool: {status: "archived"}}` → `UpdatePool`. Same state the gated `destroy`'s `on_proceed` writes; same MCP hole |
+| Update pool — everything else | **Ungated** | `system.instance_pool_update` → `notify_and_proceed` (no gate site reads it) | Size **decreases**, `min_size`, `description`, regions, metadata, `status: "paused"`/`"draining"` → `@pool.update!` inline, and all of `system_update_instance_pool` |
 | Replenish | **Ungated** | `system.instance_pool_replenish` → `auto_approve` | `POST .../:id/replenish` and `system_replenish_instance_pool`, both on `System::InstancePoolService.replenish!` |
 | Drain | **Ungated** | `system.instance_pool_drain` → `require_approval` | `POST .../:id/drain` and `system_drain_instance_pool`, both on `InstancePoolService.drain!` — the declared `require_approval` has no gate site to enforce it |
 | Recycle stale | **Ungated** | *(no declared category at all)* | `POST .../:id/recycle_stale` and `system_recycle_pool`, both on `InstancePoolService.recycle_stale_members!` — this one **terminates members** |
@@ -354,18 +356,47 @@ two reasons:
    `deficit`) and again by the `max_size` headroom cap — so it can never
    exceed the ceiling standing on the pool.
 
-   **But know the limits of that.** The ceiling is not itself locked behind
-   the gated verb. `PATCH /api/v1/system/instance_pools/:id` is ungated and
-   permits `target_size` and `max_size`, so the ceiling can be raised with no
-   approval and the next tick will spend up to the new one — and `create` is
-   only gated on the REST route, so a pool minted through
-   `system_create_instance_pool` never had an approved ceiling to begin with.
-   The same `update_params` also permit `status`, so
-   `PATCH {pool: {status: "archived"}}` reproduces exactly what the *gated*
-   destroy's `on_proceed` does, and `status: "draining"` sidesteps the drain
-   policy row. If you want an approval standing between a person and pool
-   spend or pool teardown, it belongs on **update**, not on replenish:
-   replenish is the actuator, update is the decision.
+   **Know where that ceiling is locked, and where it is not.** Until
+   IMP-24daa05e7a22 it was not locked at all: `PATCH
+   /api/v1/system/instance_pools/:id` was ungated and permits `target_size`,
+   `max_size` and `status`, so the ceiling could be raised with no approval and
+   the next tick would spend up to the new one, and
+   `PATCH {pool: {status: "archived"}}` reproduced exactly what the *gated*
+   destroy's `on_proceed` does. An **increase** to either size and the
+   **archive** transition now gate (table above); decreases, `min_size` and
+   `status: "paused"`/`"draining"` stay inline, so `draining` still sidesteps
+   the drain policy row.
+
+   The gate is on **one route**, not on the column. Three writers still move
+   `target_size`/`max_size`/`status` with no approval, and none of them is a
+   defect this change closed:
+
+   - every pool **MCP verb**. `system_create_instance_pool` calls
+     `System::InstancePool.create!` directly, so a pool minted there never had
+     an approved ceiling to begin with, and `system_update_instance_pool`
+     raises one without meeting the gate the REST route now enforces. This is
+     the remaining half of IMP-24daa05e7a22, filed as improvement
+     `01a06317-5f42-7792-a393-ac7e702dcd62` — tracked and *not fixed*, so do
+     not read the table's gated rows as covering the MCP path.
+   - `System::Gitops::ApplyService#apply!`, whose `POOL_SCALAR_KEYS` include
+     `target_size`, `min_size`, `max_size`, `lifecycle_class` and `status` — a
+     GitOps sync raises a ceiling from a repo commit, reached from
+     `system_gitops_apply_proposal` and from the decision engine.
+   - `System::CiRunnerLeaseService`, which sets `target_size` from configured
+     runner demand.
+
+   So read the table as "the REST PATCH is gated", not "the ceiling is
+   locked". `spec/lint/instance_pool_replenish_gating_spec.rb` censuses these
+   writers by file and count, so a fourth one reds rather than quietly
+   widening the surface.
+
+   Note what the gate does **not** depend on: `authorize_write!`'s
+   `worker_authenticated?` short-circuit skips the **permission** check only.
+   It returns into the action body, which still evaluates the gate, so a
+   worker-JWT `PATCH` raising `target_size` parks exactly like an operator's.
+
+   Replenish is the actuator, update is the decision — and it is the decision
+   the approval now stands in front of, on the REST route.
 2. **It runs unattended.** `System::InstancePoolReplenisherJob` POSTs the
    replenish route every 60 s for every pool it lists, which it fetches with
    `status=active,draining`. A `require_approval` gate there would park one
@@ -400,7 +431,10 @@ reds that guard and forces this table to be updated in the same change.
 > `system.instance_pool_replenish` — along with `_acquire`, `_drain` and
 > `_update` — is also seeded onto the *operator* policy path, so it appears in
 > the autonomy UI as a control you can edit while no gate site reads it.
-> Changing those rows will not change what any of those verbs does.
+> Changing those rows will not change what any of those verbs does. `_update`
+> stayed in that list after IMP-24daa05e7a22: the two gated PATCH transitions
+> resolve `system.instance_pool_ceiling_raise` and `system.instance_pool_archive`,
+> which are the two rows that *are* read.
 
 ## Observing pool health
 
