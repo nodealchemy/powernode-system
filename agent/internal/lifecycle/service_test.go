@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1014,5 +1015,108 @@ func TestRenderUnitModeGraph_DedupesRecoveryAgainstOutgoingSoftdep(t *testing.T)
 	if n := strings.Count(got, "powernode-m-telemetry.service"); n != 2 {
 		// once in After=, once in Wants=.
 		t.Errorf("telemetry unit should appear exactly twice (After= and Wants=), got %d:\n%s", n, got)
+	}
+}
+
+// startedUnits returns the units the runner was asked to `systemctl start`,
+// in issue order. The attach loop's whole contract in the two tests below is
+// WHICH starts it issued after a failure, so the assertion has to read the
+// issued commands, not just the returned results.
+func startedUnits(r *mount.RecorderRunner) []string {
+	var out []string
+	for _, inv := range r.Invocations {
+		if inv.Name == "systemctl" && len(inv.Args) == 2 && inv.Args[0] == "start" {
+			out = append(out, inv.Args[1])
+		}
+	}
+	return out
+}
+
+// TestAttachServicesMode_SoftdepFailureDoesNotAbortRemainingStarts pins the
+// SOFT arm: a service that only ever gets softdep'd on may fail to start
+// without stranding the siblings after it in the topological order.
+//
+// System::ModuleServiceDependency::start_ordering (server/app/models/system/
+// module_service_dependency.rb) already excludes softdep from start ordering;
+// the renderer already emits Wants= (not Requires=) for it, so systemd would
+// not cancel the dependent's job. The attach loop is the last place that can
+// still fail closed — if it returns on the first failing `systemctl start`,
+// the dependent's start is never ISSUED at all and the Wants= is moot.
+func TestAttachServicesMode_SoftdepFailureDoesNotAbortRemainingStarts(t *testing.T) {
+	setUnitDir(t)
+	// Dependencies (names-only) carries the edge too, exactly as the server
+	// serializes it — which is what puts the soft target FIRST in topo order.
+	services := []manifest.Service{
+		{Name: "bootstrap", StartCommand: "/bin/true"},
+		{Name: "mcp-proxy", StartCommand: "/bin/true",
+			Dependencies: []string{"bootstrap"},
+			DependencyEdges: []manifest.DependencyEdge{
+				{Service: "bootstrap", Kind: manifest.DependencyKindSoftdep},
+			}},
+	}
+	bootUnit := UnitName("m1", "bootstrap")
+	proxyUnit := UnitName("m1", "mcp-proxy")
+	r := &mount.RecorderRunner{StubErr: map[string]error{
+		"systemctl start " + bootUnit: errors.New("Job failed"),
+	}}
+
+	results, err := AttachServicesMode(context.Background(), r, "m1", services, RootModeNative)
+	if err == nil {
+		t.Fatal("expected the soft dependency's start failure to still be reported, got nil error")
+	}
+	started := startedUnits(r)
+	if len(started) != 2 || started[0] != bootUnit || started[1] != proxyUnit {
+		t.Fatalf("expected `systemctl start` for both units in topo order, got %v", started)
+	}
+	byUnit := map[string]AttachResult{}
+	for _, res := range results {
+		byUnit[res.Unit] = res
+	}
+	if got := byUnit[bootUnit]; got.StepErr == nil || got.Started {
+		t.Errorf("bootstrap result should record the failure and not be started, got %+v", got)
+	}
+	if got := byUnit[proxyUnit]; got.StepErr != nil || !got.Started {
+		t.Errorf("mcp-proxy should have started despite the soft dependency failing, got %+v", got)
+	}
+}
+
+// TestAttachServicesMode_HardDependencyFailureStopsDependentStart pins the
+// HARD arm, separately: a start_before/requires_health target that fails
+// still aborts, because its dependents render Requires= and systemd would
+// cancel their jobs anyway — issuing the start would only manufacture a
+// second failure. This is the arm the softdep exclusion must NOT widen.
+//
+// `zebra` depends on nothing and is not a dependent of bootstrap by any
+// path, yet topoSort's lexicographic tiebreak places it AFTER mcp-proxy, so
+// the retained abort strands it too. Asserting the exact issued-start set
+// (not just its first element) is what pins that blast radius: a later
+// narrowing of the abort to the failure's own dependent closure has to come
+// back through this test rather than passing silently.
+func TestAttachServicesMode_HardDependencyFailureStopsDependentStart(t *testing.T) {
+	setUnitDir(t)
+	services := []manifest.Service{
+		{Name: "bootstrap", StartCommand: "/bin/true"},
+		{Name: "mcp-proxy", StartCommand: "/bin/true",
+			Dependencies: []string{"bootstrap"},
+			DependencyEdges: []manifest.DependencyEdge{
+				{Service: "bootstrap", Kind: manifest.DependencyKindStartBefore},
+			}},
+		{Name: "zebra", StartCommand: "/bin/true"},
+	}
+	bootUnit := UnitName("m1", "bootstrap")
+	r := &mount.RecorderRunner{StubErr: map[string]error{
+		"systemctl start " + bootUnit: errors.New("Job failed"),
+	}}
+
+	_, err := AttachServicesMode(context.Background(), r, "m1", services, RootModeNative)
+	if err == nil {
+		t.Fatal("expected an error when a hard dependency fails to start")
+	}
+	if !strings.Contains(err.Error(), bootUnit) {
+		t.Errorf("error should name the failing dependency unit, got %v", err)
+	}
+	started := startedUnits(r)
+	if len(started) != 1 || started[0] != bootUnit {
+		t.Fatalf("expected the hard-dependency failure to abort every later start, got %v", started)
 	}
 }

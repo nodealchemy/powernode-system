@@ -150,11 +150,45 @@ func AttachServicesMode(ctx context.Context, runner mount.Runner, moduleID strin
 	// across reboots, but we want the agent to be the source of truth
 	// after reboot — so we use start (not enable) so a removed module
 	// doesn't ghost-start on the next boot.
+	//
+	// A FAILING START ONLY ABORTS THE LOOP WHEN IT CAN STRAND SOMETHING.
+	// `dependents` is the Requires= mirror (recoveryDependents), i.e. the
+	// siblings that declared a NECESSITY edge on this service. The
+	// predicate is "not softdep": start_before, requires_health, and any
+	// kind this agent does not recognise (fail-closed, the same reading
+	// writeDependencyDirectives takes). The server draws the line from
+	// the other side, as an allowlist —
+	// System::ModuleServiceDependency's `scope :start_ordering, ->
+	// { where(kind: %w[start_before requires_health]) }` (server/app/
+	// models/system/module_service_dependency.rb) — so the two agree on
+	// today's three validated kinds, and a future fourth kind would
+	// diverge in the conservative direction here.
+	//
+	// So when the failing service has such a dependent, we stop: those
+	// dependents render Requires=, and systemd would cancel their start
+	// jobs anyway. When it has NONE, the failure is soft — its dependents
+	// render After= + Wants=, which systemd does not cancel — and
+	// returning here would strand every later service on a dependency the
+	// manifest declared optional.
+	//
+	// The abort we KEEP is still wider than the failure's dependency
+	// closure: topoSort is Kahn's with a lexicographic tiebreak, so a
+	// service depending on nothing can sit after the dependent in the
+	// order and is aborted with it (see the hard-arm test's `zebra`).
+	// Narrowing the abort to the actual dependent closure is a separate
+	// change. The error is recorded per-unit and returned to the caller
+	// either way; what changed is only whether the remaining starts are
+	// ISSUED.
+	var startErrs []error
 	for i, svc := range ordered {
 		unitName := UnitName(moduleID, svc.Name)
 		if err := systemd.Action(ctx, runner, unitName, systemd.Start); err != nil {
 			results[i].StepErr = err
-			return results, fmt.Errorf("start %s: %w", unitName, err)
+			startErrs = append(startErrs, fmt.Errorf("start %s: %w", unitName, err))
+			if len(dependents[svc.Name]) > 0 {
+				return results, errors.Join(startErrs...)
+			}
+			continue
 		}
 		results[i].Started = !results[i].Skipped // unchanged units still get started so a manual stop is corrected
 		if results[i].Skipped {
@@ -164,7 +198,7 @@ func AttachServicesMode(ctx context.Context, runner mount.Runner, moduleID strin
 		}
 	}
 
-	return results, nil
+	return results, errors.Join(startErrs...)
 }
 
 // AttachServicesNative renders + offline-enables a module's units inside the
