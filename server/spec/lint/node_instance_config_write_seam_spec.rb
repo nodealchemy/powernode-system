@@ -37,6 +37,24 @@ require "tmpdir"
 # it resolves to. It is checked in BOTH directions: an entry that no longer
 # matches any live hit fails just as loudly as a new unlisted hit, so the list
 # cannot rot into a blanket allow.
+#
+# MASS ASSIGNMENT IS THE SAME WRITE WITH THE KEY MOVED (IMP-96f542e82141). A
+# controller that permits `config: {}` hands the whole document to `update`
+# from the request body; `config` never appears at the write site, so the four
+# call-site shapes below cannot see it. `PUT` a stale document and the interval
+# since the operator loaded the page is erased — the same clobber, reached from
+# outside. So the permit LIST is scanned too, and its census is split in two:
+# PERMIT_NON_NODE_INSTANCE (a different model — nothing to clobber here) and
+# PERMIT_NODE_INSTANCE_OPEN (a NodeInstance, an OPEN hazard, listed so it is
+# visible and so a FURTHER permit list cannot appear unnoticed — including one
+# added to an ALREADY-LISTED controller, which is why a permit key carries the
+# enclosing method name and not just the params root).
+#
+# THAT CLAIM IS ABOUT PERMIT LISTS ONLY. It is not a claim that every wholesale
+# NodeInstance write is now visible: the KNOWN LIMIT below names one that is
+# not. Listing is not sanctioning either — whether those two controllers should
+# permit `config` wholesale at all is a separate change, deliberately not made
+# here.
 RSpec.describe "System::NodeInstance#config write seam", type: :lint do
   # Repo-relative-path#receiver-token, never a line number — the key has to
   # survive a line shift. `self` is path-scoped for exactly this reason: it is
@@ -81,6 +99,67 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
       "truth for these knobs."
   }.freeze
 
+  # ── permit-list census ──────────────────────────────────────────────────
+  #
+  # Keyed the same way, with the receiver token spelled
+  # `permit:<params root>@<method>` so it can never collide with a call-site
+  # receiver in the same file, and so two permit lists in one controller are
+  # two entries rather than one.
+  PERMIT_NON_NODE_INSTANCE = {
+    "app/controllers/api/v1/system/nodes_controller.rb#permit:node@node_params" =>
+      "System::Node.",
+    "app/controllers/api/v1/system/worker_api/nodes_controller.rb#permit:node@node_params" =>
+      "System::Node — worker-side node update.",
+    "app/controllers/api/v1/system/node_modules_controller.rb#permit:node_module@node_module_params" =>
+      "System::NodeModule — operator-edited module config.",
+    "app/controllers/api/v1/system/node_templates_controller.rb#permit:node_template@template_params" =>
+      "System::NodeTemplate.",
+    "app/controllers/api/v1/system/providers_controller.rb#permit:provider@provider_params" =>
+      "System::Provider.",
+    "app/controllers/api/v1/system/provider_connections_controller.rb#permit:provider_connection@connection_params" =>
+      "System::ProviderConnection.",
+    "app/controllers/api/v1/system/provider_networks_controller.rb#permit:network@network_params" =>
+      "System::ProviderNetwork.",
+    "app/controllers/api/v1/system/provider_network_subnets_controller.rb#permit:subnet@subnet_params" =>
+      "System::ProviderNetworkSubnet.",
+    "app/controllers/api/v1/system/provider_volumes_controller.rb#permit:volume@volume_params" =>
+      "System::ProviderVolume.",
+    "app/controllers/api/v1/system/worker_api/volumes_controller.rb#permit:volume@volume_params" =>
+      "System::ProviderVolume — worker-side volume sync (create).",
+    "app/controllers/api/v1/system/worker_api/volumes_controller.rb#permit:volume@volume_update_params" =>
+      "System::ProviderVolume — worker-side volume sync (update).",
+    "app/controllers/api/v1/system/puppet_modules_controller.rb#permit:puppet_module@puppet_module_params" =>
+      "System::PuppetModule.",
+    "app/controllers/api/v1/system/puppet_resources_controller.rb#permit:puppet_resource@puppet_resource_params" =>
+      "System::PuppetResource.",
+    "app/controllers/api/v1/system/module_puppet_assignments_controller.rb#permit:puppet_assignment@assignment_params" =>
+      "System::ModulePuppetAssignment."
+  }.freeze
+
+  # NOT an allow-list. These three lists — across two controllers — DO replace
+  # a live NodeInstance document from the request body, and they are the reason
+  # this rule exists. They are named here so the guard stays green on a hazard
+  # it did not create while still going red on a further one, and so nobody
+  # re-derives the finding. Per-METHOD, so narrowing one of the worker API's
+  # two lists and leaving the other is not mistaken for a clean tree.
+  PERMIT_NODE_INSTANCE_OPEN = {
+    "app/controllers/api/v1/system/node_instances_controller.rb#permit:node_instance@instance_params" =>
+      "System::NodeInstance — #update does `@instance.update(instance_params)`, " \
+      "so a PUT carrying `config` replaces the whole document and erases " \
+      "whatever the agent's telemetry lanes wrote in the interval.",
+    "app/controllers/api/v1/system/worker_api/node_instances_controller.rb#permit:instance@instance_params" =>
+      "System::NodeInstance — the worker API's CREATE params. Nothing to " \
+      "clobber at insert, but the same list shape as the update below.",
+    "app/controllers/api/v1/system/worker_api/node_instances_controller.rb#permit:instance@instance_update_params" =>
+      "System::NodeInstance — the worker API's UPDATE params; this is the " \
+      "clobbering half, and the cheaper of the two to narrow."
+  }.freeze
+
+  ACCOUNTED_FOR = NON_NODE_INSTANCE
+                    .merge(PERMIT_NON_NODE_INSTANCE)
+                    .merge(PERMIT_NODE_INSTANCE_OPEN)
+                    .freeze
+
   # db/seeds is in scope deliberately: a seed writes the same column against
   # the same live fleet, and it was outside the earlier greps.
   SCAN_GLOBS = %w[app/**/*.rb lib/**/*.rb db/seeds/**/*.rb].freeze
@@ -101,6 +180,18 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
   # KNOWN LIMIT, stated so it is not mistaken for coverage: a config-bearing
   # attribute hash assembled across several lines and then passed to `update!`
   # is not detected. The `attrs` rule catches the single-line literal only.
+  #
+  # THAT LIMIT IS LIVE, NOT HYPOTHETICAL, and it hides the MCP twin of the REST
+  # endpoints censused below. `system_update_instance` reaches
+  # `app/services/ai/tools/system_fleet_tool.rb#update_instance`, which builds
+  # `attrs = {}`, assigns `attrs[:config] = incoming` (~:2860, and again ~:2880)
+  # and calls `instance.update!(attrs)` (~:2884) — a whole-document replace on a
+  # live NodeInstance, invisible to all five rules here (`attrs[:config] =` is
+  # neither a single-line `attrs = { config:` literal nor a `<recv>.config =`).
+  # The code half-knows: it hand-preserves the `network_profile_source` stamp
+  # across the replace, which is a per-key workaround for a whole-document
+  # write. Closing it needs a sixth shape (`<hash>[:config] =` feeding a write
+  # verb); that is its own change and is deliberately not made here.
   VERB_RE = /
     (?<recv>(?:@?[A-Za-z_]\w*\.)*@?[A-Za-z_]\w*)?\.?
     \b(?<verb>update!|update|update_columns|update_column|assign_attributes)\(
@@ -117,6 +208,85 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
   CONT_BLOCK_RE   = /\A\s*\)\s*do\s*\|\s*(?<var>\w+)\s*\|/
   CREATE_LOOKBACK = 6
 
+  #   permit   — `params.require(:x).permit(..., config: {})`, the strong-params
+  #              list that lets a request body carry the whole document into
+  #              `update`. Read across the WHOLE call by paren depth, because
+  #              the key is usually the last entry of a multi-line list.
+  #
+  # A scalar `permit(:config)` is deliberately NOT a hit: strong parameters
+  # drops a Hash value for a scalar key, so that spelling cannot carry a
+  # document at all.
+  #
+  # The hit is keyed `permit:<params root>@<enclosing method>`, not by the root
+  # alone: `worker_api/node_instances_controller.rb` carries TWO permit lists
+  # under the same `:instance` root (create and update), and a single key would
+  # let a half-done narrowing — or a THIRD list added to an already-exempted
+  # controller, which is exactly where a new one would appear — hide behind the
+  # existing entry.
+  #
+  # BOUND, stated so it is not mistaken for coverage: the paren walk gives up
+  # after PERMIT_MAX_LINES, so a permit list longer than that is read only as
+  # far as the cap. The longest in this tree is twelve lines
+  # (`node_modules_controller.rb#node_module_params`).
+  PERMIT_RE       = /(?:require\(:(?<root>\w+)\)\s*\.\s*)?\bpermit\(/
+  PERMIT_CONFIG_RE = /(?:\A|[,(\s])config:\s*[\[{]/
+  PERMIT_MAX_LINES = 30
+  DEF_RE           = /\A\s*def\s+(?:self\.)?(?<name>[\w?!]+)/
+
+  # The text of a `permit(...)` call, from just after its open paren to the
+  # paren that closes it — so a `config:` belonging to a LATER permit call in
+  # the same method is never attributed to this one.
+  #
+  # Parens are counted in CODE ONLY: a trailing comment and the inside of a
+  # string literal are skipped. Both directions of getting this wrong were
+  # observed on synthetic sources before it was written this way — a lone `)`
+  # in a trailing comment closes the walk early and HIDES a `config: {}` below
+  # it (a false negative in precisely the shape this rule exists to catch),
+  # and a lone `(` runs the walk past the call and files the hit under a
+  # neighbouring method's root. This tree already writes comments inside a
+  # permit list (`node_modules_controller.rb`), so it is authored shape, not a
+  # thought experiment.
+  #
+  # REMAINING CAVEAT: `%w(...)`, a regex literal and a `?)` character literal
+  # are still counted as code. None appears in a permit list in this tree.
+  def self.permit_call_text(lines, idx, start_col)
+    depth = 1
+    buf   = +""
+
+    (idx...[ idx + PERMIT_MAX_LINES, lines.length ].min).each do |j|
+      seg = j == idx ? lines[j][start_col..].to_s : lines[j]
+      next if j != idx && seg.strip.start_with?("#")
+
+      quote   = nil
+      escaped = false
+
+      seg.each_char do |ch|
+        if quote
+          if escaped          then escaped = false
+          elsif ch == "\\"    then escaped = true
+          elsif ch == quote   then quote = nil
+          end
+          next
+        end
+
+        break if ch == "#" # trailing comment — nothing after it is code
+
+        if ch == '"' || ch == "'"
+          quote = ch
+          next
+        end
+
+        depth += 1 if ch == "("
+        depth -= 1 if ch == ")"
+        break if depth.zero?
+        buf << ch
+      end
+      return buf if depth.zero?
+    end
+
+    buf
+  end
+
   def self.scan(root)
     root = Pathname.new(root)
     SCAN_GLOBS.flat_map { |g| Dir.glob(root.join(g).to_s) }.sort.flat_map do |abs|
@@ -128,6 +298,8 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
       # variable while the block is open is an initializer, not a clobber: the
       # block body runs before the INSERT.
       creating = []
+      # Enclosing method, for the permit key only. `nil` at file scope.
+      current_def = nil
 
       lines.each_with_index do |line, idx|
         creating.pop while creating.any? && line.match?(/\A\s{0,#{creating.last[0]}}end\b/)
@@ -136,6 +308,10 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
         # the forbidden idioms verbatim, and a guard that trips on the
         # explanation of the rule is a guard nobody keeps.
         next if line.strip.start_with?("#")
+
+        if (d = line.match(DEF_RE))
+          current_def = d[:name]
+        end
 
         c = line.match(CREATE_BLOCK_RE)
         if c.nil? && (c = line.match(CONT_BLOCK_RE))
@@ -167,6 +343,17 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
         if line.match?(ATTRS_RE)
           found << { path: rel, line: idx + 1, receiver: "(attrs-hash)", shape: "attrs", source: line.strip }
         end
+
+        if (m = line.match(PERMIT_RE))
+          call = permit_call_text(lines, idx, m.end(0))
+          if call.match?(PERMIT_CONFIG_RE)
+            found << {
+              path: rel, line: idx + 1,
+              receiver: "permit:#{m[:root] || '(anonymous)'}@#{current_def || '(toplevel)'}",
+              shape: "permit", source: line.strip
+            }
+          end
+        end
       end
 
       found.uniq { |h| [ h[:line], h[:shape] ] }
@@ -178,7 +365,7 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
   let(:keys) { hits.map { |h| "#{h[:path]}##{h[:receiver]}" }.uniq }
 
   it "has no wholesale NodeInstance config write outside the seam" do
-    novel = hits.reject { |h| NON_NODE_INSTANCE.key?("#{h[:path]}##{h[:receiver]}") }
+    novel = hits.reject { |h| ACCOUNTED_FOR.key?("#{h[:path]}##{h[:receiver]}") }
 
     expect(novel).to be_empty, <<~MSG
       Wholesale `config` writes that are not accounted for.
@@ -192,19 +379,24 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
       heartbeat wrote in the interval — boot_lkg, module_verify_state,
       sdwan_state and runtime_metrics all live in this column.
 
-      If the receiver is a DIFFERENT model, add it to NON_NODE_INSTANCE above
-      with the model it resolves to.
+      If the shape is `permit`, the write is a MASS ASSIGNMENT: the params list
+      admits `config` wholesale, so a request body replaces the document. Drop
+      `config: {}` from the permit list and route the change through the seam.
+
+      If the receiver is a DIFFERENT model, add it to NON_NODE_INSTANCE (call
+      sites) or PERMIT_NON_NODE_INSTANCE (permit lists) above, with the model
+      it resolves to.
 
       #{novel.map { |h| "  #{h[:path]}:#{h[:line]}  (#{h[:receiver]}, #{h[:shape]})  #{h[:source]}" }.join("\n")}
     MSG
   end
 
-  it "carries no stale NON_NODE_INSTANCE entries" do
-    fixed = NON_NODE_INSTANCE.keys - keys
+  it "carries no stale census entries" do
+    fixed = ACCOUNTED_FOR.keys - keys
 
     expect(fixed).to be_empty, <<~MSG
-      NON_NODE_INSTANCE names receivers that no longer write `config` wholesale
-      (or whose file moved). Delete those lines — a census nobody prunes stops
+      The census names receivers that no longer write `config` wholesale (or
+      whose file moved). Delete those lines — a census nobody prunes stops
       being a decision and becomes permission:
 
       #{fixed.map { |k| "  #{k}" }.join("\n")}
@@ -238,6 +430,105 @@ RSpec.describe "System::NodeInstance#config write seam", type: :lint do
         instance.config["k"] = 1
         instance.config ||= {}
         attrs = { config: (instance.config || {}).merge("k" => 1) }
+      RUBY
+    end
+
+    # IMP-96f542e82141 — MASS ASSIGNMENT. A strong-params list that permits
+    # `config: {}` hands the whole document to `update`, and the key never
+    # appears at the write site, so none of the four shapes above can see it.
+    it "flags a permit-list that admits the whole config document" do
+      expect(scan_source(<<~RUBY).map { |h| "#{h[:receiver]}:#{h[:shape]}" }).to contain_exactly("permit:node_instance@instance_params:permit")
+        def instance_params
+          params.require(:node_instance).permit(
+            :name, :status,
+            config: {}
+          )
+        end
+      RUBY
+    end
+
+    # A `)` in a trailing comment used to close the paren walk early, hiding
+    # every key below it — the false negative is in the exact shape the rule
+    # exists to catch, so it gets its own pin rather than a caveat.
+    it "flags a permit list whose earlier line carries a comment containing parens" do
+      expect(scan_source(<<~RUBY).map { |h| h[:receiver] }).to contain_exactly("permit:node_instance@instance_params")
+        def instance_params
+          params.require(:node_instance).permit(
+            :name, # TODO: drop this one)
+            :status,
+            config: {}
+          )
+        end
+      RUBY
+    end
+
+    # ...and the same walk must not RUN PAST its call either, or a hit lands
+    # under a neighbouring method's key, where an exemption may already cover it.
+    it "does not let an unbalanced paren in a comment attribute a later key to an earlier call" do
+      expect(scan_source(<<~RUBY).map { |h| "#{h[:receiver]}:#{h[:line]}" }).to contain_exactly("permit:node_instance@instance_params:8")
+        def ssh_params
+          params.require(:node).permit(
+            :ssh_key # legacy (do not use
+          )
+        end
+
+        def instance_params
+          params.require(:node_instance).permit(
+            :status,
+            config: {}
+          )
+        end
+      RUBY
+    end
+
+    # Two lists, one file, ONE params root — the worker API's real shape. They
+    # must be two keys, or narrowing one of them reads as narrowing both.
+    it "keys two permit lists sharing a params root by their enclosing methods" do
+      flagged = scan_source(<<~RUBY).map { |h| h[:receiver] }
+        def instance_params
+          params.require(:instance).permit(
+            :name,
+            config: {}
+          )
+        end
+
+        def instance_update_params
+          params.require(:instance).permit(
+            :status,
+            config: {}
+          )
+        end
+      RUBY
+
+      expect(flagged).to contain_exactly(
+        "permit:instance@instance_params", "permit:instance@instance_update_params"
+      )
+    end
+
+    it "does not flag a scalar permit or a differently-prefixed key" do
+      expect(scan_source(<<~RUBY)).to be_empty
+        def repo_params
+          params.require(:package_repository).permit(
+            :name, :config,
+            apt_config: {},
+            rpm_config: {}
+          )
+        end
+      RUBY
+    end
+
+    it "attributes `config:` to the permit call that actually encloses it" do
+      expect(scan_source(<<~RUBY).map { |h| "#{h[:receiver]}:#{h[:line]}" }).to contain_exactly("permit:instance@instance_params:6")
+        def ssh_params
+          params.require(:node).permit(:ssh_key)
+        end
+
+        def instance_params
+          params.require(:instance).permit(
+            :status,
+            config: {}
+          )
+        end
       RUBY
     end
 
