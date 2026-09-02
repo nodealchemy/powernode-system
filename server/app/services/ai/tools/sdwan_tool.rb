@@ -322,7 +322,10 @@ module Ai
         {
           "system_sdwan_list_networks" => {
             description: "List SDWAN networks for the current account",
-            parameters: { options: { type: "object", required: false, description: "Reserved options hash (currently unused; pass {} or omit)" } }
+            parameters: {
+              options: { type: "object", required: false, description: "Reserved options hash (currently unused; pass {} or omit)" },
+              **PAGINATION_PARAMETERS
+            }
           },
           "system_sdwan_get_network" => {
             description: "Fetch an SDWAN network by id",
@@ -349,7 +352,10 @@ module Ai
           },
           "system_sdwan_list_peers" => {
             description: "List peers in an SDWAN network",
-            parameters: { network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose peers to list" } }
+            parameters: {
+              network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose peers to list" },
+              **PAGINATION_PARAMETERS
+            }
           },
           "system_sdwan_get_peer" => {
             description: "Fetch a single peer with its current key + endpoint",
@@ -389,7 +395,10 @@ module Ai
           },
           "system_sdwan_list_firewall_rules" => {
             description: "List firewall rules in an SDWAN network (priority-ordered)",
-            parameters: { network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose firewall rules to list" } }
+            parameters: {
+              network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose firewall rules to list" },
+              **PAGINATION_PARAMETERS
+            }
           },
           "system_sdwan_get_firewall_rule" => {
             description: "Fetch a single firewall rule, including its compiled nft preview",
@@ -447,7 +456,10 @@ module Ai
           # Slice 4: user VPN
           "system_sdwan_list_access_grants" => {
             description: "List user access grants on an SDWAN network",
-            parameters: { network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose access grants to list" } }
+            parameters: {
+              network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose access grants to list" },
+              **PAGINATION_PARAMETERS
+            }
           },
           "system_sdwan_create_access_grant" => {
             description: "Grant a user access to an SDWAN network (precondition for issuing them VPN devices)",
@@ -467,7 +479,10 @@ module Ai
           },
           "system_sdwan_list_user_devices" => {
             description: "List a user's VPN devices on an SDWAN network (per access grant)",
-            parameters: { access_grant_id: { type: "string", required: true, description: "UUID of the SDWAN access grant whose devices to list" } }
+            parameters: {
+              access_grant_id: { type: "string", required: true, description: "UUID of the SDWAN access grant whose devices to list" },
+              **PAGINATION_PARAMETERS
+            }
           },
           "system_sdwan_issue_user_device" => {
             description: "Issue a fresh WireGuard config for a user. Returns a one-shot bootstrap_url (15-min expiry, single-use) — copy it to the user out-of-band. Approval-gated (sdwan.user_device_create) — under require_approval this returns pending: true with a deferred_operation_id; the keypair + token are minted only at approval, and the token is then revealed once in the approval decision response, not here.",
@@ -486,7 +501,10 @@ module Ai
           # Slice 6: federation scaffold (data-only in v1)
           "system_sdwan_list_federation_peers" => {
             description: "List federation peer records (proposed cross-Powernode-instance overlay peerings)",
-            parameters: { options: { type: "object", required: false, description: "Reserved options hash (currently unused; pass {} or omit)" } }
+            parameters: {
+              options: { type: "object", required: false, description: "Reserved options hash (currently unused; pass {} or omit)" },
+              **PAGINATION_PARAMETERS
+            }
           },
           "system_sdwan_get_federation_peer" => {
             description: "Fetch a federation peer with its v1-allowed transitions",
@@ -638,7 +656,8 @@ module Ai
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose advertisements to list" },
               source: { type: "string", required: false, enum: ::Sdwan::SubnetAdvertisement::SOURCES,
                        description: "Filter: declared_lan_subnet | virtual_ip | learned_via_bgp | pod_subnet" },
-              include_withdrawn: { type: "boolean", required: false, description: "Include withdrawn (inactive) advertisements (default false = active only)" }
+              include_withdrawn: { type: "boolean", required: false, description: "Include withdrawn (inactive) advertisements (default false = active only)" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_sdwan_get_routing_summary" => {
@@ -669,7 +688,8 @@ module Ai
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose Virtual IPs to list" },
               state: { type: "string", required: false, enum: ::Sdwan::VirtualIp::STATES,
-                      description: "Filter: pending | active | failing_over | unassigned | error" }
+                      description: "Filter: pending | active | failing_over | unassigned | error" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_sdwan_get_virtual_ip" => {
@@ -702,7 +722,10 @@ module Ai
           },
           "system_sdwan_list_vip_assignments" => {
             description: "Audit-grade history of VIP holder transitions for a Virtual IP",
-            parameters: { virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP whose assignment history to list" } }
+            parameters: {
+              virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP whose assignment history to list" },
+              **PAGINATION_PARAMETERS
+            }
           },
           # ─── Slice 9c: iBGP routing control plane ──────────────────────
           "system_sdwan_get_account_bgp" => {
@@ -732,7 +755,8 @@ module Ai
               scope: { type: "string", required: false, enum: ::Sdwan::RoutePolicy::SCOPES,
                       description: "account | network | peer" },
               direction: { type: "string", required: false, enum: ::Sdwan::RoutePolicy::DIRECTIONS,
-                          description: "import | export" }
+                          description: "import | export" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_sdwan_get_route_policy" => {
@@ -774,7 +798,8 @@ module Ai
             description: "List hub DNAT port mappings for a network. Optionally filter by hub_peer_id.",
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose port mappings to list" },
-              hub_peer_id: { type: "string", required: false, description: "Optional UUID of the hub peer to filter mappings by" }
+              hub_peer_id: { type: "string", required: false, description: "Optional UUID of the hub peer to filter mappings by" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_sdwan_get_port_mapping" => {
@@ -841,7 +866,8 @@ module Ai
           "system_sdwan_list_host_bridges" => {
             description: "List HostBridges for the current account. Optionally filter by node_instance_id.",
             parameters: {
-              node_instance_id: { type: "string", required: false, description: "Optional UUID of the System::NodeInstance (host) to filter bridges by" }
+              node_instance_id: { type: "string", required: false, description: "Optional UUID of the System::NodeInstance (host) to filter bridges by" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_sdwan_get_host_bridge" => {
@@ -913,7 +939,7 @@ module Ai
           },
           "system_sdwan_list_ipfix_collectors" => {
             description: "List IPFIX collectors for the current account.",
-            parameters: {}
+            parameters: { **PAGINATION_PARAMETERS }
           },
           "system_sdwan_get_ipfix_collector" => {
             description: "Fetch one IPFIX collector, including `is_winning_collector` — the compiler stamps only ONE collector onto the account's OVS bridges (the oldest active row), so a fleet may hold several while exactly one exports.",
@@ -944,10 +970,11 @@ module Ai
             }
           },
           "system_sdwan_list_ovn_acls" => {
-            description: "List OVN ACLs for the current account. Optionally filter by logical_switch_id (per-switch scope) or sdwan_ovn_deployment_id (per-deployment scope). With no filter, returns every active ACL across every switch in every deployment.",
+            description: "List OVN ACLs for the current account, one page at a time, highest priority first. Optionally filter by logical_switch_id (per-switch scope) or sdwan_ovn_deployment_id (per-deployment scope). With no filter, pages through ACLs across every switch in every deployment; read count and has_more to tell a complete answer from a truncated one. ACLs of every state are listed, and at equal priority this order is the UUIDv7 id, NOT the compiler's name tiebreak — use system_sdwan_compile_ovn_plan for OVN evaluation order.",
             parameters: {
               logical_switch_id: { type: "string", required: false, description: "Restrict to ACLs on this switch" },
-              sdwan_ovn_deployment_id: { type: "string", required: false, description: "Restrict to ACLs on switches under this deployment" }
+              sdwan_ovn_deployment_id: { type: "string", required: false, description: "Restrict to ACLs on switches under this deployment" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_sdwan_delete_ovn_acl" => {
@@ -967,8 +994,11 @@ module Ai
           # tearing down the whole switch.
           "system_sdwan_list_ovn_deployments" => {
             description: "List the account's OVN deployments (id, endpoints, status). Use to rediscover a deployment id when the create response was lost or a session restarted.",
-            parameters: { status: { type: "string", required: false, enum: ::Sdwan::OvnDeployment::STATES,
-                                   description: "Optional status filter: pending | bootstrapping | active | degraded" } }
+            parameters: {
+              status: { type: "string", required: false, enum: ::Sdwan::OvnDeployment::STATES,
+                        description: "Optional status filter: pending | bootstrapping | active | degraded" },
+              **PAGINATION_PARAMETERS
+            }
           },
           "system_sdwan_get_ovn_deployment" => {
             description: "Fetch one OVN deployment with its logical switches (each switch includes its ports), so an agent can rediscover the full topology and the ids it needs for compile/delete.",
@@ -976,7 +1006,10 @@ module Ai
           },
           "system_sdwan_list_ovn_logical_switches" => {
             description: "List OVN logical switches (optionally scoped to a deployment), each with its ports so port ids are discoverable for system_sdwan_delete_ovn_logical_switch_port.",
-            parameters: { deployment_id: { type: "string", required: false, description: "Restrict to switches under this Sdwan::OvnDeployment" } }
+            parameters: {
+              deployment_id: { type: "string", required: false, description: "Restrict to switches under this Sdwan::OvnDeployment" },
+              **PAGINATION_PARAMETERS
+            }
           },
           "system_sdwan_delete_ovn_logical_switch_port" => {
             description: "Delete a single OVN logical switch port (prune). Removes the port row + excludes it from the next OVN compile, leaving the switch and its other ports intact.",
@@ -1268,9 +1301,9 @@ module Ai
 
       # === Networks ===
 
-      def list_networks(_params)
-        scope = ::Sdwan::Network.where(account_id: @account.id).order(:name)
-        success_result(networks: scope.map { |n| serialize_network(n) }, count: scope.size)
+      def list_networks(params)
+        scope = ::Sdwan::Network.where(account_id: @account.id)
+        paginated_result(:networks, scope, params, sort: :name, direction: :asc) { |n| serialize_network(n) }
       end
 
       def get_network(params)
@@ -1387,8 +1420,7 @@ module Ai
 
       def list_peers(params)
         network = account_networks.find(params[:network_id])
-        peers = network.peers.includes(:keys).order(:created_at)
-        success_result(peers: peers.map { |p| serialize_peer(p) }, count: peers.size)
+        paginated_result(:peers, network.peers.includes(:keys), params, direction: :asc) { |p| serialize_peer(p) }
       end
 
       def get_peer(params)
@@ -1475,13 +1507,10 @@ module Ai
 
       def list_firewall_rules(params)
         network = account_networks.find(params[:network_id])
-        rules = network.firewall_rules.ordered
-        success_result(
-          network_id: network.id,
-          firewall_rules: rules.map { |r| serialize_rule(r) },
-          count: rules.size,
-          default_policy: ::Sdwan::FirewallCompiler.new(network).default_policy
-        )
+        paginated_result(:firewall_rules, network.firewall_rules, params,
+                         sort: :priority, direction: :asc,
+                         network_id: network.id,
+                         default_policy: ::Sdwan::FirewallCompiler.new(network).default_policy) { |r| serialize_rule(r) }
       end
 
       def get_firewall_rule(params)
@@ -1620,8 +1649,7 @@ module Ai
 
       def list_access_grants(params)
         network = account_networks.find(params[:network_id])
-        grants = network.access_grants.includes(:user, :user_devices).order(created_at: :desc)
-        success_result(grants: grants.map { |g| serialize_grant(g) }, count: grants.size)
+        paginated_result(:grants, network.access_grants.includes(:user, :user_devices), params) { |g| serialize_grant(g) }
       end
 
       # IMP-343163bf37a4: gated on `sdwan.access_grant_create`, matching
@@ -1723,8 +1751,7 @@ module Ai
 
       def list_user_devices(params)
         grant = account_access_grants.find(params[:access_grant_id])
-        devices = grant.user_devices.order(created_at: :desc)
-        success_result(devices: devices.map { |d| serialize_user_device(d) }, count: devices.size)
+        paginated_result(:devices, grant.user_devices, params) { |d| serialize_user_device(d) }
       end
 
       # IMP-051f3811ac60 — routed through Ai::AutonomyGate as
@@ -1854,9 +1881,9 @@ module Ai
 
       # === Federation (Slice 6) ===
 
-      def list_federation_peers(_params)
-        peers = ::System::FederationPeer.where(account_id: @account.id).order(created_at: :desc)
-        success_result(federation_peers: peers.map { |p| serialize_federation_peer(p) }, count: peers.size)
+      def list_federation_peers(params)
+        peers = ::System::FederationPeer.where(account_id: @account.id)
+        paginated_result(:federation_peers, peers, params) { |p| serialize_federation_peer(p) }
       end
 
       def get_federation_peer(params)
@@ -2514,12 +2541,8 @@ module Ai
         scope = network.subnet_advertisements
         scope = scope.where(source: params[:source]) if params[:source].present?
         scope = scope.active unless params[:include_withdrawn]
-        scope = scope.order(:prefix)
-        success_result(
-          network_id: network.id,
-          advertisements: scope.map { |a| serialize_subnet_advertisement(a) },
-          count: scope.size
-        )
+        paginated_result(:advertisements, scope, params, sort: :prefix, direction: :asc,
+                         network_id: network.id) { |a| serialize_subnet_advertisement(a) }
       end
 
       def get_routing_summary(params)
@@ -2596,9 +2619,9 @@ module Ai
 
       def list_virtual_ips(params)
         network = account_networks.find(params[:network_id])
-        scope = network.virtual_ips.order(:name)
+        scope = network.virtual_ips
         scope = scope.where(state: params[:state]) if params[:state].present?
-        success_result(virtual_ips: scope.map { |v| serialize_virtual_ip(v) }, count: scope.size)
+        paginated_result(:virtual_ips, scope, params, sort: :name, direction: :asc) { |v| serialize_virtual_ip(v) }
       end
 
       def get_virtual_ip(params)
@@ -2716,12 +2739,8 @@ module Ai
 
       def list_vip_assignments(params)
         vip = account_virtual_ips.find(params[:virtual_ip_id])
-        assignments = vip.assignments.order(assumed_at: :desc).limit(100)
-        success_result(
-          virtual_ip_id: vip.id,
-          assignments: assignments.map { |a| serialize_vip_assignment(a) },
-          count: assignments.size
-        )
+        paginated_result(:assignments, vip.assignments, params,
+                         virtual_ip_id: vip.id) { |a| serialize_vip_assignment(a) }
       end
 
       # ─── Slice 9c — iBGP control plane ─────────────────────────────────
@@ -2800,11 +2819,7 @@ module Ai
         scope = ::Sdwan::RoutePolicy.where(account_id: @account.id)
         scope = scope.where(scope: params[:scope]) if params[:scope].present?
         scope = scope.where(direction: params[:direction]) if params[:direction].present?
-        policies = scope.order(:scope, :name)
-        success_result(
-          route_policies: policies.map { |p| serialize_route_policy(p) },
-          count: policies.size
-        )
+        paginated_result(:route_policies, scope, params, sort: :scope, direction: :asc) { |p| serialize_route_policy(p) }
       end
 
       def get_route_policy(params)
@@ -2930,11 +2945,7 @@ module Ai
         net = ::Sdwan::Network.where(account_id: @account.id).find(params[:network_id])
         scope = net.port_mappings
         scope = scope.where(sdwan_peer_id: params[:hub_peer_id]) if params[:hub_peer_id].present?
-        mappings = scope.order(:listen_port, :protocol)
-        success_result(
-          port_mappings: mappings.map { |m| serialize_port_mapping(m) },
-          count: mappings.size
-        )
+        paginated_result(:port_mappings, scope, params, sort: :listen_port, direction: :asc) { |m| serialize_port_mapping(m) }
       rescue ActiveRecord::RecordNotFound
         error_result("network not found in account scope")
       end
@@ -3310,11 +3321,7 @@ module Ai
       def list_host_bridges(params)
         scope = ::Sdwan::HostBridge.where(account_id: @account.id)
         scope = scope.where(node_instance_id: params[:node_instance_id]) if params[:node_instance_id].present?
-        bridges = scope.order(:node_instance_id, :short_id)
-        success_result(
-          host_bridges: bridges.map { |b| serialize_host_bridge(b) },
-          count: bridges.size
-        )
+        paginated_result(:host_bridges, scope, params, sort: :node_instance_id, direction: :asc) { |b| serialize_host_bridge(b) }
       end
 
       # IMP-53a5c597ec8c — the missing single-row read. `list` could page the
@@ -3558,7 +3565,7 @@ module Ai
       def list_ovn_deployments(params)
         scope = account_ovn_deployments
         scope = scope.where(status: params[:status]) if params[:status].present?
-        success_result(ovn_deployments: scope.order(:created_at).map { |d| serialize_ovn_deployment(d) })
+        paginated_result(:ovn_deployments, scope, params, direction: :asc) { |d| serialize_ovn_deployment(d) }
       end
 
       def get_ovn_deployment(params)
@@ -3573,9 +3580,8 @@ module Ai
       def list_ovn_logical_switches(params)
         scope = account_ovn_logical_switches
         scope = scope.where(sdwan_ovn_deployment_id: params[:deployment_id]) if params[:deployment_id].present?
-        success_result(
-          ovn_logical_switches: scope.includes(:ports).order(:created_at).map { |s| serialize_ovn_logical_switch_with_ports(s) }
-        )
+        paginated_result(:ovn_logical_switches, scope.includes(:ports), params,
+                         direction: :asc) { |s| serialize_ovn_logical_switch_with_ports(s) }
       end
 
       def delete_ovn_logical_switch_port(params)
@@ -3683,12 +3689,9 @@ module Ai
         end
       end
 
-      def list_ipfix_collectors(_params)
-        collectors = ::Sdwan::IpfixCollector.where(account_id: @account.id).order(:name)
-        success_result(
-          ipfix_collectors: collectors.map { |c| serialize_ipfix_collector(c) },
-          count: collectors.size
-        )
+      def list_ipfix_collectors(params)
+        collectors = ::Sdwan::IpfixCollector.where(account_id: @account.id)
+        paginated_result(:ipfix_collectors, collectors, params, sort: :name, direction: :asc) { |c| serialize_ipfix_collector(c) }
       end
 
       # REST twin of IpfixCollectorsController#show, down to the
@@ -3870,16 +3873,18 @@ module Ai
                          .pluck(:id)
           scope = scope.where(sdwan_ovn_logical_switch_id: switch_ids)
         end
-        # Compiler order: priority desc, name asc.
-        acls = scope.order(priority: :desc, name: :asc).to_a
-        success_result(
-          ovn_acls: acls.map { |a| serialize_ovn_acl(a) },
-          count: acls.size,
-          filters: {
-            logical_switch_id: params[:logical_switch_id],
-            sdwan_ovn_deployment_id: params[:sdwan_ovn_deployment_id]
-          }.compact
-        )
+        # ORDER DIFFERS FROM THE COMPILER AT EQUAL PRIORITY, deliberately.
+        # Sdwan::OvnCompiler#acls_for sorts by [-priority, name] (ovn_compiler.rb:161)
+        # so the plan emits in OVN evaluation order; a keyset cursor can carry ONE
+        # sort column plus the id tiebreak, so this listing walks priority desc with
+        # the UUIDv7 id breaking ties instead of the name. Priority defaults to 1000,
+        # so ties are the common case: read the compiled plan, not this listing, to
+        # reason about which of two equal-priority ACLs OVN applies first.
+        paginated_result(:ovn_acls, scope, params, sort: :priority,
+                         filters: {
+                           logical_switch_id: params[:logical_switch_id],
+                           sdwan_ovn_deployment_id: params[:sdwan_ovn_deployment_id]
+                         }.compact) { |a| serialize_ovn_acl(a) }
       end
 
       def serialize_ovn_acl(a)

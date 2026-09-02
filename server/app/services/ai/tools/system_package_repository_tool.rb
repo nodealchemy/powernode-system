@@ -85,11 +85,12 @@ module Ai
       def self.action_definitions
         {
           "system_list_package_repositories" => {
-            description: "List accessible apt/rpm package repositories (account-scoped + shared). Filter by platform via node_platform_ids — repos linked to any of the supplied platforms are returned.",
+            description: "List accessible apt/rpm package repositories (account-scoped + shared), one page at a time. Filter by platform via node_platform_ids — repos linked to any of the supplied platforms are eligible. Read count and has_more to tell a complete answer from a truncated one.",
             parameters: {
               kind: { type: "string", required: false, enum: ::System::PackageRepository::KINDS,
                                       description: "Filter by repository kind: apt, rpm, or dnf" },
-              node_platform_ids: { type: "array", required: false, items: { type: "string" }, description: "Array of NodePlatform UUIDs; repos linked to ANY are returned" }
+              node_platform_ids: { type: "array", required: false, items: { type: "string" }, description: "Array of NodePlatform UUIDs; repos linked to ANY are returned" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_get_package_repository" => {
@@ -204,7 +205,8 @@ module Ai
             description: "List which NodeModules were materialized from which packages (auditable provenance)",
             parameters: {
               repository_id: { type: "string", required: false, description: "Filter links by source PackageRepository UUID" },
-              auto_generated: { type: "boolean", required: false, description: "Filter by whether the link was auto-generated (true) or operator-created (false)" }
+              auto_generated: { type: "boolean", required: false, description: "Filter by whether the link was auto-generated (true) or operator-created (false)" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_refresh_package_module" => {
@@ -305,9 +307,8 @@ module Ai
                        .where(system_package_repository_platforms: { node_platform_id: platform_ids })
                        .distinct
         end
-        success_result(
-          package_repositories: repos.includes(:node_platforms).order(:name).map { |r| serialize_repo(r) }
-        )
+        paginated_result(:package_repositories, repos.includes(:node_platforms), params,
+                         sort: :name, direction: :asc) { |r| serialize_repo(r) }
       end
 
       def get_repository(params)
@@ -568,21 +569,19 @@ module Ai
         unless params[:auto_generated].nil?
           links = links.where(auto_generated: params[:auto_generated])
         end
-        success_result(
-          links: links.order(created_at: :desc).limit(200).map { |l|
-            {
-              id: l.id,
-              node_module_id: l.node_module_id,
-              package_name: l.package_name,
-              package_version: l.package_version,
-              architecture: l.architecture,
-              repository_id: l.package_repository_id,
-              auto_generated: l.auto_generated,
-              recommends_chosen: l.recommends_chosen,
-              last_synced_at: l.last_synced_at
-            }
+        paginated_result(:links, links, params) do |l|
+          {
+            id: l.id,
+            node_module_id: l.node_module_id,
+            package_name: l.package_name,
+            package_version: l.package_version,
+            architecture: l.architecture,
+            repository_id: l.package_repository_id,
+            auto_generated: l.auto_generated,
+            recommends_chosen: l.recommends_chosen,
+            last_synced_at: l.last_synced_at
           }
-        )
+        end
       end
 
       def refresh_package_module(params)

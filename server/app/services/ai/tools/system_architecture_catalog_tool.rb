@@ -67,12 +67,15 @@ module Ai
       def self.action_definitions
         {
           "system_list_architectures" => {
-            description: "List the platform-wide architecture catalog. Returns canonical + custom rows with usage counts.",
+            description: "List the platform-wide architecture catalog, one page at a time in name order. " \
+                         "Returns canonical + custom rows with usage counts. Read count (the total matching your " \
+                         "filters) and has_more to tell a complete answer from a truncated one.",
             parameters: {
               family:        { type: "string",  required: false, enum: ::System::NodeArchitecture::FAMILIES,
                                 description: "Filter by family (x86, arm, power, z, risc-v, mips, other)" },
               is_canonical:  { type: "boolean", required: false, description: "Filter by canonical vs operator-created custom rows" },
-              enabled:       { type: "boolean", required: false, description: "Filter by enabled (true) vs disabled (false) architectures" }
+              enabled:       { type: "boolean", required: false, description: "Filter by enabled (true) vs disabled (false) architectures" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_get_architecture" => {
@@ -197,7 +200,10 @@ module Ai
         unless params[:enabled].nil?
           scope = bool(params[:enabled]) ? scope.enabled : scope.disabled
         end
-        success_result(architectures: scope.ordered.map { |a| serialize(a) })
+        # The `ordered` scope is (family, name); a keyset cursor carries ONE
+        # sort column plus the id tiebreak, so the page walks by name. Filter
+        # by family to recover the grouping the old ordering gave for free.
+        paginated_result(:architectures, scope, params, sort: :name, direction: :asc) { |a| serialize(a) }
       end
 
       def get_architecture(params)

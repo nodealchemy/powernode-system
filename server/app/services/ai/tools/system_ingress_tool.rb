@@ -241,12 +241,14 @@ module Ai
             }
           },
           "system_list_services" => {
-            description: "List this account's Sdwan::Service records, newest first.",
+            description: "List this account's Sdwan::Service records, newest first, one page at a time. " \
+                         "Read count (the total matching your filters) and has_more to tell a complete answer from a truncated one.",
             parameters: {
               status:         { type: "string",  required: false, enum: ::Sdwan::Service::STATUSES,
                                                    description: "Filter by status (active | disabled)" },
               local_enabled:  { type: "boolean", required: false, description: "Filter by local-exposure state" },
-              public_enabled: { type: "boolean", required: false, description: "Filter by public (Path B) exposure state" }
+              public_enabled: { type: "boolean", required: false, description: "Filter by public (Path B) exposure state" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_get_service" => {
@@ -345,11 +347,13 @@ module Ai
       end
 
       def list_services(params)
-        scope = account_services.order(created_at: :desc)
+        scope = account_services
         scope = scope.where(status: params[:status]) if params[:status].present?
         scope = scope.where(local_enabled: params[:local_enabled]) unless params[:local_enabled].nil?
         scope = scope.where(public_enabled: params[:public_enabled]) unless params[:public_enabled].nil?
-        success_result(services: scope.map { |s| serialize_service(s) }, count: scope.size)
+        # :id desc IS the old created_at desc on a UUIDv7 primary key, and it is
+        # the only ordering a keyset cursor can make total on its own.
+        paginated_result(:services, scope, params) { |s| serialize_service(s) }
       end
 
       def get_service(params)

@@ -83,10 +83,12 @@ module Ai
           "system_list_storage_assignments_by_owner" => {
             description: <<~DESC.squish,
               List StorageAssignments filtered by owner_kind,
-              service_user_username, chown_state, or node_instance_id. Use
-              for ops audits like "which assignments still use
-              owner_kind=root?" or "show me every chown that's stuck in
-              failed across the fleet".
+              service_user_username, chown_state, or node_instance_id, one
+              page at a time (newest first). Use for ops audits like "which
+              assignments still use owner_kind=root?" or "show me every chown
+              that's stuck in failed across the fleet" — read count (the total
+              matching your filters) and has_more before concluding the answer
+              is complete.
             DESC
             parameters: {
               owner_kind:            { type: "string", required: false,
@@ -98,7 +100,8 @@ module Ai
                                         description: "Filter by the storage provider NodeInstance UUID" },
               chown_state:           { type: "string", required: false,
                                         enum: ::System::StorageAssignment::CHOWN_STATES,
-                                        description: "complete | pending | running | failed | manual_required" }
+                                        description: "complete | pending | running | failed | manual_required" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_storage_chown_status" => {
@@ -222,15 +225,16 @@ module Ai
         scope = scope.where(owner_kind: params[:owner_kind]) if params[:owner_kind].present?
         if params[:service_user_username].present?
           user = ::System::ServiceUser.live.find_by(username: params[:service_user_username])
-          return success_result(assignments: []) unless user
-          scope = scope.where(service_user_id: user.id)
+          # `none`, not an early success_result: an unknown username is still an
+          # empty PAGE, and answering it without the shared envelope would put
+          # this action back in the class of callers that report emptiness and
+          # truncation differently from every other list action.
+          scope = user ? scope.where(service_user_id: user.id) : scope.none
         end
         scope = scope.where(node_instance_id: params[:node_instance_id]) if params[:node_instance_id].present?
         scope = scope.where(chown_state: params[:chown_state]) if params[:chown_state].present?
 
-        success_result(
-          assignments: scope.includes(:service_user, :shared_group).map { |a| serialize(a) }
-        )
+        paginated_result(:assignments, scope.includes(:service_user, :shared_group), params) { |a| serialize(a) }
       end
 
       def storage_chown_status(params)

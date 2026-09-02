@@ -5518,7 +5518,11 @@ end
     it "emits system_list_instance_pools one level deep" do
       r = call("system_list_instance_pools")
       expect(r[:success]).to be true
-      expect(r[:data].keys).to contain_exactly(:pools, :count)
+      # Equality, not existence: `pools` sits at the top of `data` rather than
+      # under a redundant wrapper. The other keys are the shared list-page
+      # envelope every paginated list action carries (APO-8b,
+      # IMP-c5a62a32d3bb) — enumerated here so a NEW stray key still fails.
+      expect(r[:data].keys).to contain_exactly(:pools, :count, :returned, :limit, :has_more, :next_cursor)
       expect(r[:data][:pools].map { |p| p[:id] }).to include(pool.id)
     end
 

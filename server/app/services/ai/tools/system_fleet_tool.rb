@@ -627,8 +627,11 @@ module Ai
         {
           # === Nodes ===
           "system_list_nodes" => {
-            description: "List all nodes for the current account",
-            parameters: { template_id: { type: "string", required: false, description: "Optional NodeTemplate UUID to filter nodes by their bound template" } }
+            description: "List nodes for the current account, one page at a time (name order). Read count and has_more to tell a complete answer from a truncated one.",
+            parameters: {
+              template_id: { type: "string", required: false, description: "Optional NodeTemplate UUID to filter nodes by their bound template" },
+              **PAGINATION_PARAMETERS
+            }
           },
           "system_get_node" => {
             description: "Fetch a node by id",
@@ -788,7 +791,8 @@ module Ai
             description: "List instances (filterable by node_id or template_id)",
             parameters: {
               node_id: { type: "string", required: false, description: "Optional node UUID to list only that node's instances" },
-              template_id: { type: "string", required: false, description: "Optional NodeTemplate UUID to list instances of nodes on that template" }
+              template_id: { type: "string", required: false, description: "Optional NodeTemplate UUID to list instances of nodes on that template" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_get_instance" => {
@@ -821,7 +825,8 @@ module Ai
             description: "List provider instance-type catalog SKUs that carry a GPU, optionally filtered by gpu_type and a minimum GPU count. Use to pick a GPU SKU for provisioning.",
             parameters: {
               gpu_type: { type: "string", required: false, description: "Filter SKUs to a specific GPU/accelerator type" },
-              min_gpu_count: { type: "integer", required: false, description: "Minimum number of GPUs the SKU must carry (defaults to 1)" }
+              min_gpu_count: { type: "integer", required: false, description: "Minimum number of GPUs the SKU must carry (defaults to 1)" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_deploy_inference_server" => {
@@ -1008,7 +1013,8 @@ module Ai
           "system_list_templates" => {
             description: "List node templates for the current account, optionally narrowed by a name/description substring. For a purpose-based search ('something that serves web traffic') use system_discover_templates instead — this one is a literal filter.",
             parameters: {
-              q: { type: "string", required: false, description: "Case-insensitive substring matched against template name OR description" }
+              q: { type: "string", required: false, description: "Case-insensitive substring matched against template name OR description" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_get_template" => {
@@ -1048,7 +1054,10 @@ module Ai
           # === Modules + Versions ===
           "system_list_modules" => {
             description: "List node modules (filterable by variety)",
-            parameters: { options: { type: "object", required: false, description: "Filter options hash — supports { variety: '<variety>' } to filter modules by variety" } }
+            parameters: {
+              options: { type: "object", required: false, description: "Filter options hash — supports { variety: '<variety>' } to filter modules by variety" },
+              **PAGINATION_PARAMETERS
+            }
           },
           "system_get_module" => {
             description: "Fetch a module with its current_version + assignments",
@@ -1056,7 +1065,10 @@ module Ai
           },
           "system_list_module_versions" => {
             description: "List versions of a module (newest first)",
-            parameters: { module_id: { type: "string", required: true, description: "UUID of the NodeModule whose versions to list" } }
+            parameters: {
+              module_id: { type: "string", required: true, description: "UUID of the NodeModule whose versions to list" },
+              **PAGINATION_PARAMETERS
+            }
           },
 
           # === Catalog discovery (IMP-67aea0728774) ===
@@ -1110,7 +1122,8 @@ module Ai
             description: "List recent tasks (filterable by node_id or instance_id). Each task carries error_message — the stored failure reason, REDACTED of credential-shaped tokens and truncated to 300 chars on this surface; call system_get_task for the full redacted text.",
             parameters: {
               node_id: { type: "string", required: false, description: "Optional node UUID to list only tasks operating on that node" },
-              instance_id: { type: "string", required: false, description: "Optional instance UUID to list only tasks operating on that instance" }
+              instance_id: { type: "string", required: false, description: "Optional instance UUID to list only tasks operating on that instance" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_get_task" => {
@@ -1194,7 +1207,8 @@ module Ai
               transport: { type: "string", required: false, enum: VOLUME_TRANSPORTS,
                           description: "Filter volumes by transport (nfs | iscsi | smb | block)" },
               node_instance_id: { type: "string", required: false, description: "Filter to volumes attached to this NodeInstance UUID" },
-              unattached_only: { type: "boolean", required: false, description: "When true, return only volumes not attached to any instance" }
+              unattached_only: { type: "boolean", required: false, description: "When true, return only volumes not attached to any instance" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_get_volume" => {
@@ -1278,11 +1292,12 @@ module Ai
           # agent reports progress/phase transitions, operator may cancel
           # before sync starts.
           "system_list_storage_migrations" => {
-            description: "List storage migrations for the account (newest first, capped at 100). Filterable by status, node_instance_id, or active_only.",
+            description: "List storage migrations for the account (newest first). Filterable by status, node_instance_id, or active_only.",
             parameters: {
               status: { type: "string", required: false, description: "Filter by migration status" },
               node_instance_id: { type: "string", required: false, description: "Filter to migrations for this NodeInstance UUID" },
-              active_only: { type: "boolean", required: false, description: "Only non-terminal migrations" }
+              active_only: { type: "boolean", required: false, description: "Only non-terminal migrations" },
+              **PAGINATION_PARAMETERS
             }
           },
           "system_get_storage_migration" => {
@@ -1438,7 +1453,7 @@ module Ai
           # === Slice 7 — pre-warmed instance pools ===
           "system_list_instance_pools" => {
             description: "List instance pools for the current account with size + occupancy stats",
-            parameters: {}
+            parameters: { **PAGINATION_PARAMETERS }
           },
           "system_get_instance_pool" => {
             description: "Fetch a single instance pool with full member roster + counts",
@@ -1611,12 +1626,12 @@ module Ai
 
           # === Gap remediation slice 5 — disk image CI ===
           "system_list_disk_image_publications" => {
-            description: "List DiskImagePublications for the account, optionally filtered by node_platform_id and/or status. Returns oldest-first by default.",
+            description: "List DiskImagePublications for the account, optionally filtered by node_platform_id and/or status. Newest first.",
             parameters: {
               node_platform_id: { type: "string", required: false, description: "Filter publications to this NodePlatform UUID" },
               status: { type: "string", required: false, enum: ::System::DiskImagePublication::STATUSES,
                       description: "queued | awaiting_upload | verifying | published | failed | retired | purged" },
-              limit: { type: "integer", required: false, description: "Default 50" }
+              **PAGINATION_PARAMETERS
             }
           },
           "system_set_default_disk_image_publication" => {
@@ -1653,7 +1668,7 @@ module Ai
           },
           "system_list_ci_workers" => {
             description: "List CI workers (Workers with role='ci_worker') for the current account.",
-            parameters: {}
+            parameters: { **PAGINATION_PARAMETERS }
           },
           "system_lease_ci_runner" => {
             description: "Lease an ephemeral Gitea Act runner from a builder pool: acquire a warm builder instance, correlate it to the Gitea runner it self-registered, and return the lease. The instance is recycled (terminate + backfill) on release so no state bleeds between jobs.",
@@ -1680,12 +1695,12 @@ module Ai
               status: { type: "string", required: false, enum: ::System::CiRunnerLease::STATUSES,
                       description: "Filter to a single lease status: leased | registered | busy | releasing | released | errored" },
               active: { type: "boolean", required: false, description: "When true, return only active (non-terminal) leases" },
-              limit: { type: "integer", required: false, description: "Max rows (default 50)" }
+              **PAGINATION_PARAMETERS
             }
           },
           "system_list_disk_image_webhooks" => {
             description: "List DiskImageWebhook rows for the current account (the inbound webhook receivers that ingest publications from Gitea Actions). Returns id, label, status and receive counters — no slice of the HMAC secret (IMP-27cc7dceb97b); the operator UI's secret_preview comes from the REST endpoint GET /api/v1/system/disk_image_webhooks instead.",
-            parameters: {}
+            parameters: { **PAGINATION_PARAMETERS }
           },
           "system_dispatch_module_build_batch" => {
             description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks). This planner builds ONLY manifest-backed platform modules (those with a modules/<slug>/ tree); package-origin modules materialized from an upstream apt/rpm package build through a separate package-closure trigger and are never planned here even with force_all — the result lists any it dropped under excluded_modules[] (with a reason each) plus excluded_count, and system_refresh_package_module is how you rebuild those. Requires system.module_builds.dispatch, which core grants explicitly only to the system_worker role by design (bounds a leaked NON-admin token's blast radius) — so ordinary agent/operator principals are denied, but a system.admin holder CAN invoke it (User#has_permission? short-circuits on system.admin, before the role-grant exclusion is consulted). Confirmed live over MCP: an admin operator connector dispatches successfully.",
@@ -1747,8 +1762,8 @@ module Ai
             }
           },
           "system_gitops_list_repositories" => {
-            description: "List every GitOps repository registered for this account, with the same projection system_gitops_get_repository returns. Use this to discover repository ids — no other verb reports them for a repository this caller did not itself register.",
-            parameters: {}
+            description: "List the GitOps repositories registered for this account, one page at a time, with the same projection system_gitops_get_repository returns. Read count and has_more to tell a complete answer from a truncated one. Use this to discover repository ids — no other verb reports them for a repository this caller did not itself register.",
+            parameters: { **PAGINATION_PARAMETERS }
           },
           "system_gitops_get_repository" => {
             description: "Read one registered GitOps repository's configuration and last-sync state: repo_url, branch, path_prefix, auto_apply, enabled, last_status/last_error/last_synced_at, and the credential contract — `vault_credential_path` (the Vault KV path the sync reads) and `required_credential_keys` (the key NAMES that path must carry for this remote's scheme). Key names and the path only, never credential values. To check whether that path actually resolves and holds those keys, use the REST probe POST /api/v1/admin_settings/vault/test { path:, required_keys: } — there is deliberately no MCP verb for it.",
@@ -1776,7 +1791,7 @@ module Ai
           # === Provider catalog ===
           "system_list_providers" => {
             description: "List providers for the current account with id, name, type, enabled, config.",
-            parameters: {}
+            parameters: { **PAGINATION_PARAMETERS }
           },
           "system_get_provider" => {
             description: "Fetch a single provider with full config hash (used to inspect routed-mode host_node_instance_id wiring etc.).",
@@ -2227,10 +2242,7 @@ module Ai
       def list_nodes(params)
         scope = account_nodes
         scope = scope.where(node_template_id: params[:template_id]) if params[:template_id].present?
-        success_result(
-          nodes: scope.order(name: :asc).map { |n| serialize_node(n) },
-          count: scope.size
-        )
+        paginated_result(:nodes, scope, params, sort: :name, direction: :asc) { |n| serialize_node(n) }
       end
 
       def get_node(params)
@@ -2905,10 +2917,7 @@ module Ai
           node_ids = account_nodes.where(node_template_id: params[:template_id]).pluck(:id)
           scope = scope.where(node_id: node_ids)
         end
-        success_result(
-          instances: scope.order(created_at: :desc).limit(200).map { |i| serialize_instance(i) },
-          count: scope.size
-        )
+        paginated_result(:instances, scope, params) { |i| serialize_instance(i) }
       end
 
       def get_instance(params)
@@ -3011,10 +3020,10 @@ module Ai
         scope = ::System::ProviderInstanceType
                 .where(account_id: @account.id)
                 .by_gpu(params[:gpu_type].presence, min_count: [ params[:min_gpu_count].to_i, 1 ].max)
-        success_result(
-          instance_types: scope.order(:gpu_type, :gpu_count).map { |t| serialize_instance_type_gpu(t) },
-          count: scope.size
-        )
+        # Ordered by id (UUIDv7) rather than the catalog's gpu_type/gpu_count:
+        # gpu_type is NULLABLE, and a keyset cursor on a nullable column drops
+        # every NULL-valued row from page two onward.
+        paginated_result(:instance_types, scope, params) { |t| serialize_instance_type_gpu(t) }
       end
 
       # Deploy an inference runtime (ollama) onto a GPU node + make it consumable
@@ -3676,7 +3685,7 @@ module Ai
       # parameters at all, so an agent looking for one template had to pull the
       # whole catalog and filter client-side.
       def list_templates(params = {})
-        templates = account_templates.order(name: :asc)
+        templates = account_templates
         if (q = params[:q].to_s.strip).present?
           like = "%#{::ActiveRecord::Base.sanitize_sql_like(q)}%"
           templates = templates.where(
@@ -3684,10 +3693,7 @@ module Ai
             like: like
           )
         end
-        success_result(
-          templates: templates.map { |t| serialize_template(t) },
-          count: templates.size
-        )
+        paginated_result(:templates, templates, params, sort: :name, direction: :asc) { |t| serialize_template(t) }
       end
 
       def get_template(params)
@@ -3913,10 +3919,7 @@ module Ai
         if (variety = params.dig(:options, :variety))
           scope = scope.where(variety: variety)
         end
-        success_result(
-          modules: scope.order(name: :asc).map { |m| serialize_module(m) },
-          count: scope.size
-        )
+        paginated_result(:modules, scope, params, sort: :name, direction: :asc) { |m| serialize_module(m) }
       end
 
       def get_module(params)
@@ -3926,11 +3929,7 @@ module Ai
 
       def list_module_versions(params)
         node_module = account_modules.find(params[:module_id])
-        versions = node_module.versions.order(version_number: :desc)
-        success_result(
-          versions: versions.map { |v| serialize_version(v) },
-          count: versions.size
-        )
+        paginated_result(:versions, node_module.versions, params, sort: :version_number) { |v| serialize_version(v) }
       end
 
       # === Catalog discovery (IMP-67aea0728774) ===
@@ -4088,11 +4087,7 @@ module Ai
         if params[:instance_id].present?
           scope = scope.where(operable_type: "System::NodeInstance", operable_id: params[:instance_id])
         end
-        scope = scope.order(created_at: :desc).limit(100)
-        success_result(
-          tasks: scope.map { |t| serialize_task(t) },
-          count: scope.size
-        )
+        paginated_result(:tasks, scope, params) { |t| serialize_task(t) }
       end
 
       def cancel_task(params)
@@ -4384,7 +4379,7 @@ module Ai
             system_provider_volume_types: { volume_type: params[:transport] }
           )
         end
-        success_result(volumes: scope.includes(:volume_type).order(:size_gb, :created_at).map { |v| serialize_volume(v) })
+        paginated_result(:volumes, scope.includes(:volume_type), params, sort: :size_gb, direction: :asc) { |v| serialize_volume(v) }
       end
 
       def get_volume(params)
@@ -4755,11 +4750,11 @@ module Ai
       end
 
       def list_storage_migrations(params)
-        scope = ::System::StorageMigration.where(account: @account).order(created_at: :desc)
+        scope = ::System::StorageMigration.where(account: @account)
         scope = scope.where(status: params[:status]) if params[:status].present?
         scope = scope.for_instance(params[:node_instance_id]) if params[:node_instance_id].present?
         scope = scope.active if params[:active_only]
-        success_result(storage_migrations: scope.limit(100).map { |m| serialize_storage_migration(m) })
+        paginated_result(:storage_migrations, scope, params) { |m| serialize_storage_migration(m) }
       end
 
       def get_storage_migration(params)
@@ -5470,12 +5465,9 @@ module Ai
       # Slice 7 — instance pool action handlers
       # ────────────────────────────────────────────────────────────────
 
-      def list_instance_pools(_params)
-        pools = ::System::InstancePool.for_account(@account).order(:name)
-        success_result(
-          pools: pools.map(&:to_summary),
-          count: pools.count
-        )
+      def list_instance_pools(params)
+        paginated_result(:pools, ::System::InstancePool.for_account(@account), params,
+                         sort: :name, direction: :asc, &:to_summary)
       end
 
       def get_instance_pool(params)
@@ -5919,12 +5911,7 @@ module Ai
         scope = ::System::DiskImagePublication.where(account_id: @account.id)
         scope = scope.where(node_platform_id: params[:node_platform_id]) if params[:node_platform_id].present?
         scope = scope.where(status: params[:status]) if params[:status].present?
-        scope = scope.order(created_at: :desc).limit((params[:limit] || 50).to_i)
-
-        success_result(
-          publications: scope.map { |p| serialize_disk_image_publication(p) },
-          count: scope.size
-        )
+        paginated_result(:publications, scope, params) { |p| serialize_disk_image_publication(p) }
       end
 
       # "Default" = the publication whose facts are copied onto the parent
@@ -6114,7 +6101,7 @@ module Ai
         )
       end
 
-      def list_ci_workers(_params)
+      def list_ci_workers(params)
         # Worker.roles is a has_many :through (worker_roles → roles), not a
         # Postgres array column — must join + filter on Role.name.
         scope = ::Worker.where(account_id: @account.id)
@@ -6122,10 +6109,7 @@ module Ai
                         .where(roles: { name: "ci_worker" })
                         .distinct
 
-        success_result(
-          ci_workers: scope.map { |w| ::System::CiWorkerSerializer.new(w).as_json },
-          count: scope.size
-        )
+        paginated_result(:ci_workers, scope, params) { |w| ::System::CiWorkerSerializer.new(w).as_json }
       end
 
       # === Campaign 019f5885 inc3 — ephemeral CI runner leases ===
@@ -6157,12 +6141,7 @@ module Ai
         scope = ::System::CiRunnerLease.where(account_id: @account.id)
         scope = scope.by_status(params[:status]) if params[:status].present?
         scope = scope.active if params[:active] == true
-        scope = scope.recent.limit((params[:limit].presence || 50).to_i)
-
-        success_result(
-          ci_runner_leases: scope.map { |lease| serialize_ci_runner_lease(lease) },
-          count: scope.size
-        )
+        paginated_result(:ci_runner_leases, scope, params) { |lease| serialize_ci_runner_lease(lease) }
       end
 
       def serialize_ci_runner_lease(lease)
@@ -6337,13 +6316,10 @@ module Ai
         }
       end
 
-      def list_disk_image_webhooks(_params)
-        scope = ::System::DiskImageWebhook.where(account_id: @account.id).order(created_at: :desc)
+      def list_disk_image_webhooks(params)
+        scope = ::System::DiskImageWebhook.where(account_id: @account.id)
 
-        success_result(
-          webhooks: scope.map { |w| serialize_disk_image_webhook(w) },
-          count: scope.size
-        )
+        paginated_result(:webhooks, scope, params) { |w| serialize_disk_image_webhook(w) }
       end
 
       def serialize_disk_image_publication(pub)
@@ -6498,10 +6474,10 @@ module Ai
       # naming arbitrary Vault KV paths is a different exposure from an
       # operator doing it in the admin UI, and the decision is pinned in
       # server/spec/services/ai/tools/system_fleet_gitops_repository_read_spec.rb.
-      def gitops_list_repositories(_params)
-        repos = ::System::GitopsRepository.where(account_id: @account.id).order(:name)
+      def gitops_list_repositories(params)
+        repos = ::System::GitopsRepository.where(account_id: @account.id)
 
-        success_result(repositories: repos.map { |r| serialize_gitops_repository(r) })
+        paginated_result(:repositories, repos, params, sort: :name, direction: :asc) { |r| serialize_gitops_repository(r) }
       end
 
       def gitops_get_repository(params)
@@ -6598,12 +6574,9 @@ module Ai
 
       # === Provider catalog ===
 
-      def list_providers(_params)
-        providers = ::System::Provider.where(account_id: @account.id).order(:name)
-        success_result(
-          providers: providers.map { |p| serialize_provider(p) },
-          count: providers.size
-        )
+      def list_providers(params)
+        providers = ::System::Provider.where(account_id: @account.id)
+        paginated_result(:providers, providers, params, sort: :name, direction: :asc) { |p| serialize_provider(p) }
       end
 
       def get_provider(params)

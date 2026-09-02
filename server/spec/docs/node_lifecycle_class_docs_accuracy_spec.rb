@@ -18,8 +18,10 @@ require "yaml"
 #     so the wrong call succeeds and teaches the wrong model.
 #   * NOT READABLE. `serialize_node` emits eight keys and none is
 #     `lifecycle_class`; no serializer under server/app/serializers/ mentions it.
-#   * NOT FILTERABLE. `system_list_nodes` declares exactly one parameter,
-#     `template_id`, and `list_nodes` has exactly one where-clause.
+#   * NOT FILTERABLE. `system_list_nodes` declares exactly one FILTER
+#     parameter, `template_id` (alongside the shared `limit`/`cursor` page
+#     controls, which select a POSITION, not a subset), and `list_nodes` has
+#     exactly one where-clause.
 #   * AND, SINCE IMP-19843220ac68, NOT WRITTEN EITHER — but "nothing sets it"
 #     is still a sentence to write carefully, because it was wrong twice
 #     before. Until that change `InstancePoolService#provision_warming_member!`
@@ -238,9 +240,15 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
   describe "the MCP node surface (Ai::Tools::SystemFleetTool)" do
     let(:defs) { Ai::Tools::SystemFleetTool.action_definitions }
 
+    # Equality over the WHOLE key set, so a new filter cannot slip in behind an
+    # `include` check. The page controls are cited from their one definition
+    # rather than restated, so this stays an equality oracle on the FILTER
+    # surface while APO-8b's `limit`/`cursor` ride along — those select a
+    # position in the result, not a subset of it, which is why the doc row
+    # below can still call template_id the only filter.
     it "declares exactly template_id on system_list_nodes — no status, no lifecycle_class" do
       params = defs.fetch("system_list_nodes").fetch(:parameters)
-      expect(params.keys).to eq([ :template_id ])
+      expect(params.keys).to eq([ :template_id, *Ai::Tools::BaseTool::PAGINATION_PARAMETERS.keys ])
     end
 
     # POSITIVE enumeration, not `not_to include(:lifecycle_class)`: a rename of
