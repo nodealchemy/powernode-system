@@ -287,7 +287,7 @@ module Ai
           name: "sdwan",
           description: "SDWAN overlay operations: networks, peers, topology compilation, firewall rules, key rotation",
           parameters: {
-            action: { type: "string", required: true, description: "Action to perform" },
+            action: { type: "string", required: true, enum: action_definitions.keys, description: "Action to perform" },
             id: { type: "string", required: false, description: "Resource ID (context-dependent)" },
             network_id: { type: "string", required: false },
             peer_id: { type: "string", required: false },
@@ -300,11 +300,16 @@ module Ai
             endpoint_port: { type: "integer", required: false },
             listen_port: { type: "integer", required: false },
             priority: { type: "integer", required: false },
-            firewall_action: { type: "string", required: false, description: "accept | drop | reject" },
-            direction: { type: "string", required: false, description: "ingress | egress | both" },
-            protocol: { type: "string", required: false, description: "any | tcp | udp | icmp6" },
-            src_selector: { type: "object", required: false },
-            dst_selector: { type: "object", required: false },
+            firewall_action: { type: "string", required: false, enum: ::Sdwan::FirewallRule::ACTIONS,
+                              description: "accept | drop | reject" },
+            direction: { type: "string", required: false, enum: ::Sdwan::FirewallRule::DIRECTIONS,
+                        description: "ingress | egress | both" },
+            protocol: { type: "string", required: false, enum: ::Sdwan::FirewallRule::PROTOCOLS,
+                       description: "any | tcp | udp | icmp6" },
+            src_selector: { type: "object", required: false, properties: { peer_id: { type: "string" }, tag: { type: "string" },
+                                     cidr: { type: "string" }, all: { type: "boolean" } } },
+            dst_selector: { type: "object", required: false, properties: { peer_id: { type: "string" }, tag: { type: "string" },
+                                     cidr: { type: "string" }, all: { type: "boolean" } } },
             port_from: { type: "integer", required: false },
             port_to: { type: "integer", required: false },
             enabled: { type: "boolean", required: false },
@@ -395,12 +400,19 @@ module Ai
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network this rule belongs to" },
               name: { type: "string", required: true, description: "Display name for the firewall rule" },
-              firewall_action: { type: "string", required: false, description: "accept (default) | drop | reject" },
-              direction: { type: "string", required: false, description: "ingress | egress | both (default)" },
-              protocol: { type: "string", required: false, description: "any (default) | tcp | udp | icmp6" },
+              firewall_action: { type: "string", required: false, enum: ::Sdwan::FirewallRule::ACTIONS,
+                                description: "accept (default) | drop | reject" },
+              direction: { type: "string", required: false, enum: ::Sdwan::FirewallRule::DIRECTIONS,
+                          description: "ingress | egress | both (default)" },
+              protocol: { type: "string", required: false, enum: ::Sdwan::FirewallRule::PROTOCOLS,
+                         description: "any (default) | tcp | udp | icmp6" },
               priority: { type: "integer", required: false, description: "Evaluation priority (lower runs first); defaults to the model's default" },
-              src_selector: { type: "object", required: false, description: "Source match: one of {peer_id|tag|cidr|all}" },
-              dst_selector: { type: "object", required: false, description: "Destination match: one of {peer_id|tag|cidr|all}" },
+              src_selector: { type: "object", required: false, properties: { peer_id: { type: "string" }, tag: { type: "string" },
+                                             cidr: { type: "string" }, all: { type: "boolean" } },
+                              description: "Source match: exactly one of {peer_id|tag|cidr|all}" },
+              dst_selector: { type: "object", required: false, properties: { peer_id: { type: "string" }, tag: { type: "string" },
+                                             cidr: { type: "string" }, all: { type: "boolean" } },
+                              description: "Destination match: exactly one of {peer_id|tag|cidr|all}" },
               port_from: { type: "integer", required: false, description: "Start of the port range (tcp/udp only; pair with port_to)" },
               port_to:   { type: "integer", required: false, description: "End of the port range (tcp/udp only; pair with port_from)" }
             }
@@ -410,12 +422,19 @@ module Ai
             parameters: {
               firewall_rule_id: { type: "string", required: true, description: "UUID of the SDWAN firewall rule to update" },
               name: { type: "string", required: false, description: "New display name for the rule" },
-              firewall_action: { type: "string", required: false, description: "accept | drop | reject" },
-              direction: { type: "string", required: false, description: "ingress | egress | both" },
-              protocol: { type: "string", required: false, description: "any | tcp | udp | icmp6" },
+              firewall_action: { type: "string", required: false, enum: ::Sdwan::FirewallRule::ACTIONS,
+                                description: "accept | drop | reject" },
+              direction: { type: "string", required: false, enum: ::Sdwan::FirewallRule::DIRECTIONS,
+                          description: "ingress | egress | both" },
+              protocol: { type: "string", required: false, enum: ::Sdwan::FirewallRule::PROTOCOLS,
+                         description: "any | tcp | udp | icmp6" },
               priority: { type: "integer", required: false, description: "Evaluation priority (lower runs first)" },
-              src_selector: { type: "object", required: false, description: "Source match: one of {peer_id|tag|cidr|all}" },
-              dst_selector: { type: "object", required: false, description: "Destination match: one of {peer_id|tag|cidr|all}" },
+              src_selector: { type: "object", required: false, properties: { peer_id: { type: "string" }, tag: { type: "string" },
+                                             cidr: { type: "string" }, all: { type: "boolean" } },
+                              description: "Source match: exactly one of {peer_id|tag|cidr|all}" },
+              dst_selector: { type: "object", required: false, properties: { peer_id: { type: "string" }, tag: { type: "string" },
+                                             cidr: { type: "string" }, all: { type: "boolean" } },
+                              description: "Destination match: exactly one of {peer_id|tag|cidr|all}" },
               port_from: { type: "integer", required: false, description: "Start of the port range (tcp/udp only)" },
               port_to:   { type: "integer", required: false, description: "End of the port range (tcp/udp only)" },
               enabled:   { type: "boolean", required: false, description: "Whether the rule is active" }
@@ -435,7 +454,8 @@ module Ai
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network to grant access to" },
               user_id:    { type: "string", required: true,  description: "UUID of the User (in this account) being granted access" },
-              tags:       { type: "array",  required: false, description: "Optional list of tag strings applied to the grant (used for firewall tag selectors)" }
+              tags:       { type: "array",  required: false, items: { type: "string" },
+                                            description: "Optional list of tag strings applied to the grant (used for firewall tag selectors)" }
             }
           },
           "system_sdwan_revoke_access_grant" => {
@@ -539,9 +559,12 @@ module Ai
             description: "Stand up a federation overlay topology (hub-and-spoke OR full-mesh) across instances. Creates one Sdwan::Network, enrolls each member as a peer (hubs publicly_reachable), and compiles the per-peer WireGuard + FRR route-policy envelope (Sdwan::PeerEnroller + TopologyCompiler + RoutePolicyCompiler). Failures are collected, not short-circuited.",
             parameters: {
               network_name: { type: "string", required: true, description: "Display name for the new federation Sdwan::Network" },
-              topology: { type: "string", required: true, description: "hub_and_spoke | full_mesh" },
-              peers: { type: "array", required: true, description: "Member descriptors (1-200). Each: {node_instance_id (required), role: 'hub'|'spoke' (hub_and_spoke only; default spoke), endpoint_host_v6, endpoint_host_v4, endpoint_port, listen_port, lan_subnets: [cidr], bgp_route_reflector_client: bool}" },
-              routing_protocol: { type: "string", required: false, description: "static (default) | ibgp — 'ibgp' enables FRR route-policy distribution" },
+              topology: { type: "string", required: true, enum: ::System::Ai::Skills::SdwanFederationComposeExecutor::TOPOLOGIES,
+                         description: "hub_and_spoke | full_mesh" },
+              peers: { type: "array", required: true, items: { type: "object" },
+                      description: "Member descriptors (1-200). Each: {node_instance_id (required), role: 'hub'|'spoke' (hub_and_spoke only; default spoke), endpoint_host_v6, endpoint_host_v4, endpoint_port, listen_port, lan_subnets: [cidr], bgp_route_reflector_client: bool}" },
+              routing_protocol: { type: "string", required: false, enum: ::Sdwan::Network::ROUTING_PROTOCOLS,
+                                 description: "static (default) | ibgp — 'ibgp' enables FRR route-policy distribution" },
               dry_run: { type: "boolean", required: false, description: "Plan only — no rows persisted" }
             }
           },
@@ -566,11 +589,22 @@ module Ai
               backend_peer_id: { type: "string", required: true, description: "Sdwan::Peer hosting the service; seated as the VIP's primary holder (iBGP advertiser)" },
               backend_port: { type: "integer", required: true, description: "Port the backend service listens on (advertised in the catalog offering)" },
               vip_cidr: { type: "string", required: true, description: "Operator-supplied host CIDR for the VIP (a /128 v6 or /32 v4) within the network's /64" },
-              protocol: { type: "string", required: false, description: "Service protocol advertised in the catalog: https (default) | http | tcp | tls" },
-              grant_scopes: { type: "array", required: false, description: "Default FederationGrant scopes subscribers receive (subset of read, write, admin, migrate). Defaults to ['read']" },
+              protocol: { type: "string", required: false, enum: ::System::Federation::ServiceOffering::PROTOCOLS,
+                         description: "Service protocol advertised in the catalog: https (default) | http | tcp | tls" },
+              grant_scopes: { type: "array", required: false,
+                             items: { type: "string", enum: ::System::FederationGrant::SCOPES },
+                             description: "Default FederationGrant scopes subscribers receive (subset of read, write, admin, migrate). Defaults to ['read']" },
               grant_ttl_days: { type: "integer", required: false, description: "Default grant TTL in days (>= 7)" },
               traefik_dynamic_dir: { type: "string", required: false, description: "Override for the Traefik dynamic-config directory" },
-              public_dns: { type: "object", required: false, description: "INTERNET-FACING name only: { dns_credential_id, record_name, record_type? (A|AAAA|CNAME), record_content?, ttl? }. Omit for overlay-only discovery." }
+              public_dns: { type: "object", required: false,
+                           properties: {
+                             dns_credential_id: { type: "string" },
+                             record_name:       { type: "string" },
+                             record_type:       { type: "string", enum: ::System::Ai::Skills::ServiceDiscoveryComposerExecutor::DNS_RECORD_TYPES },
+                             record_content:    { type: "string" },
+                             ttl:               { type: "integer" }
+                           },
+                           description: "INTERNET-FACING name only: { dns_credential_id, record_name, record_type? (A|AAAA|CNAME), record_content?, ttl? }. Omit for overlay-only discovery." }
             }
           },
           # Slice 9a — routing layer (static subnet routing baseline)
@@ -578,28 +612,32 @@ module Ai
             description: "Declare the external LAN prefixes a peer can route to. In static mode, the topology compiler folds these into AllowedIPs so other peers route across the SDWAN to reach them. CIDR strings (v4 or v6). Approval-gated (sdwan.peer_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer whose LAN subnets to declare" },
-              lan_subnets: { type: "array", required: true, description: "Array of CIDR strings. Empty array clears." }
+              lan_subnets: { type: "array", required: true, items: { type: "string" },
+                            description: "Array of CIDR strings. Empty array clears." }
             }
           },
           "system_sdwan_set_peer_tags" => {
             description: "Set the firewall tag labels on a peer. A FirewallRule whose src/dst selector is { \"tag\": \"<label>\" } matches every peer carrying that label (Sdwan::SelectorResolver compiles it to an nft set of their addresses). Replaces the peer's whole tag set; empty array clears it. Approval-gated (sdwan.peer_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer to label" },
-              tags: { type: "array", required: true, description: "Array of tag label strings (whitespace-trimmed, de-duped). Empty array clears all tags." }
+              tags: { type: "array", required: true, items: { type: "string" },
+                     description: "Array of tag label strings (whitespace-trimmed, de-duped). Empty array clears all tags." }
             }
           },
           "system_sdwan_update_network_routing_mode" => {
             description: "Set a network's routing protocol: 'static' (declarative AllowedIPs, no daemon) or 'ibgp' (slice 9c FRR + dynamic distribution). Until slice 9c lands, only 'static' is fully functional. Approval-gated (sdwan.network_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose routing mode to set" },
-              routing_protocol: { type: "string", required: true, description: "static | ibgp" }
+              routing_protocol: { type: "string", required: true, enum: ::Sdwan::Network::ROUTING_PROTOCOLS,
+                                 description: "static | ibgp" }
             }
           },
           "system_sdwan_list_subnet_advertisements" => {
             description: "List route advertisements for a network — declared lan_subnets, VIP announcements (slice 9b), and BGP-learned routes (slice 9c) unified. Filterable by source.",
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose advertisements to list" },
-              source: { type: "string", required: false, description: "Filter: declared_lan_subnet | virtual_ip | learned_via_bgp" },
+              source: { type: "string", required: false, enum: ::Sdwan::SubnetAdvertisement::SOURCES,
+                       description: "Filter: declared_lan_subnet | virtual_ip | learned_via_bgp | pod_subnet" },
               include_withdrawn: { type: "boolean", required: false, description: "Include withdrawn (inactive) advertisements (default false = active only)" }
             }
           },
@@ -614,11 +652,14 @@ module Ai
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network the Virtual IP lives in" },
               name: { type: "string", required: true, description: "Display name for the Virtual IP" },
               cidr: { type: "string", required: true, description: "Host CIDR for the VIP (typically /32 for v4, /128 for v6) within the network's /64" },
-              holder_peer_ids: { type: "array", required: true, description: "Ordered: first entry is primary holder when anycast=false." },
-              failover_holder_peer_ids: { type: "array", required: false, description: "Ordered failover candidates (non-anycast); head is promoted on failover" },
+              holder_peer_ids: { type: "array", required: true, items: { type: "string" },
+                                description: "Ordered: first entry is primary holder when anycast=false." },
+              failover_holder_peer_ids: { type: "array", required: false, items: { type: "string" },
+                                         description: "Ordered failover candidates (non-anycast); head is promoted on failover" },
               anycast: { type: "boolean", required: false, description: "When true, all holders advertise simultaneously (slice 9c iBGP); default false" },
               description: { type: "string", required: false, description: "Free-form description of the VIP's purpose" },
-              tags: { type: "array", required: false, description: "Optional list of tag strings applied to the VIP" },
+              tags: { type: "array", required: false, items: { type: "string" },
+                     description: "Optional list of tag strings applied to the VIP" },
               advertised_med: { type: "integer", required: false, description: "BGP MULTI_EXIT_DISC advertised for this VIP (default 0)" },
               advertised_local_pref: { type: "integer", required: false, description: "BGP LOCAL_PREF advertised for this VIP (default 100)" }
             }
@@ -627,7 +668,8 @@ module Ai
             description: "List Virtual IPs in an SDWAN network",
             parameters: {
               network_id: { type: "string", required: true, description: "UUID of the SDWAN network whose Virtual IPs to list" },
-              state: { type: "string", required: false, description: "Filter: pending|active|failing_over|unassigned|error" }
+              state: { type: "string", required: false, enum: ::Sdwan::VirtualIp::STATES,
+                      description: "Filter: pending | active | failing_over | unassigned | error" }
             }
           },
           "system_sdwan_get_virtual_ip" => {
@@ -638,11 +680,14 @@ module Ai
             description: "Update a Virtual IP's holders, failover candidates, anycast mode, advertised_med/local_pref, etc. Holder changes are recorded as 'holder_changed' assignment rows. Approval-gated (sdwan.virtual_ip_update) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               virtual_ip_id: { type: "string", required: true, description: "UUID of the SDWAN virtual IP to update" },
-              holder_peer_ids: { type: "array", required: false, description: "Ordered holder peer UUIDs; first is primary when anycast=false" },
-              failover_holder_peer_ids: { type: "array", required: false, description: "Ordered failover candidate peer UUIDs (non-anycast)" },
+              holder_peer_ids: { type: "array", required: false, items: { type: "string" },
+                                description: "Ordered holder peer UUIDs; first is primary when anycast=false" },
+              failover_holder_peer_ids: { type: "array", required: false, items: { type: "string" },
+                                         description: "Ordered failover candidate peer UUIDs (non-anycast)" },
               anycast: { type: "boolean", required: false, description: "When true, all holders advertise simultaneously (slice 9c iBGP)" },
               description: { type: "string", required: false, description: "Free-form description of the VIP's purpose" },
-              tags: { type: "array", required: false, description: "Optional list of tag strings applied to the VIP" },
+              tags: { type: "array", required: false, items: { type: "string" },
+                     description: "Optional list of tag strings applied to the VIP" },
               advertised_med: { type: "integer", required: false, description: "BGP MULTI_EXIT_DISC advertised for this VIP" },
               advertised_local_pref: { type: "integer", required: false, description: "BGP LOCAL_PREF advertised for this VIP" }
             }
@@ -672,7 +717,8 @@ module Ai
             description: "Live BGP session matrix across all networks (or filtered to one network). Returns observed sessions reported by agents — not desired state.",
             parameters: {
               network_id: { type: "string", required: false, description: "Filter to one network" },
-              state: { type: "string", required: false, description: "idle | connect | active | opensent | openconfirm | established" }
+              state: { type: "string", required: false, enum: ::Sdwan::BgpSession::STATES,
+                      description: "idle | connect | active | opensent | openconfirm | established" }
             }
           },
           "system_sdwan_get_bgp_config_for_peer" => {
@@ -683,8 +729,10 @@ module Ai
           "system_sdwan_list_route_policies" => {
             description: "List SDWAN route policies for the current account, optionally filtered by scope/direction.",
             parameters: {
-              scope: { type: "string", required: false, description: "account | network | peer" },
-              direction: { type: "string", required: false, description: "import | export" }
+              scope: { type: "string", required: false, enum: ::Sdwan::RoutePolicy::SCOPES,
+                      description: "account | network | peer" },
+              direction: { type: "string", required: false, enum: ::Sdwan::RoutePolicy::DIRECTIONS,
+                          description: "import | export" }
             }
           },
           "system_sdwan_get_route_policy" => {
@@ -695,9 +743,12 @@ module Ai
             description: "Create a route policy. statements is an ordered list of {match: {...}, action: {...}} objects. Compile output appears in TopologyCompiler#bgp.policies. Approval-gated (sdwan.route_policy_create) — under require_approval this returns pending: true with a deferred_operation_id and the change is applied only once an operator approves.",
             parameters: {
               name: { type: "string", required: true, description: "Display name for the route policy" },
-              scope: { type: "string", required: true, description: "account | network | peer" },
-              direction: { type: "string", required: true, description: "import | export" },
-              statements: { type: "array", required: true, description: "Ordered list of {match,action} hashes" },
+              scope: { type: "string", required: true, enum: ::Sdwan::RoutePolicy::SCOPES,
+                      description: "account | network | peer" },
+              direction: { type: "string", required: true, enum: ::Sdwan::RoutePolicy::DIRECTIONS,
+                          description: "import | export" },
+              statements: { type: "array", required: true, items: { type: "object" },
+                           description: "Ordered list of {match,action} hashes" },
               scope_resource_id: { type: "string", required: false, description: "UUID of the scoped resource (network or peer) when scope is 'network' or 'peer'" },
               description: { type: "string", required: false, description: "Free-form description of the policy's intent" },
               enabled: { type: "boolean", required: false, description: "Whether the policy is active and compiled into frr.conf" }
@@ -737,7 +788,8 @@ module Ai
               hub_peer_id: { type: "string", required: true, description: "UUID of the hub peer that listens for and DNATs the traffic" },
               name: { type: "string", required: true, description: "Display name for the port mapping" },
               listen_port: { type: "integer", required: true, description: "Port the hub listens on for inbound traffic" },
-              protocol: { type: "string", required: true, description: "tcp | udp" },
+              protocol: { type: "string", required: true, enum: ::Sdwan::PortMapping::PROTOCOLS,
+                         description: "tcp | udp" },
               target_peer_id: { type: "string", required: false, description: "UUID of the target peer to DNAT to (mutually exclusive with target_virtual_ip_id)" },
               target_virtual_ip_id: { type: "string", required: false, description: "UUID of the target virtual IP to DNAT to (mutually exclusive with target_peer_id)" },
               target_port: { type: "integer", required: false, description: "Defaults to listen_port if omitted" },
@@ -746,7 +798,8 @@ module Ai
               metadata: { type: "object", required: false, description: "Free-form operator metadata stored on the mapping" },
               rate_limit: { type: "integer", required: false, description: "Hardened DNAT tier (increment 6): max NEW CONNECTIONS per second (conntrack flows — the nat chain only sees each connection's first packet, so this throttles connection-establishment rate, not request/packet throughput). Omit for unrestricted (default)." },
               max_connections: { type: "integer", required: false, description: "Hardened DNAT tier (increment 6): max concurrent connections before excess are dropped. Omit for unrestricted (default)." },
-              source_cidrs: { type: "array", required: false, description: "Hardened DNAT tier (increment 6): allow-list of source CIDR strings (v4 and/or v6). Traffic from any other source is dropped. Omit/empty for unrestricted (default)." }
+              source_cidrs: { type: "array", required: false, items: { type: "string" },
+                             description: "Hardened DNAT tier (increment 6): allow-list of source CIDR strings (v4 and/or v6). Traffic from any other source is dropped. Omit/empty for unrestricted (default)." }
             }
           },
           "system_sdwan_update_port_mapping" => {
@@ -768,7 +821,8 @@ module Ai
             description: "Allocate a HostBridge for a NodeInstance via Sdwan::HostBridgeAllocator. Idempotent — returns the existing bridge of the requested kind on this host if one already exists. When `kind` is omitted the allocator picks 'ovs' for heavyweight hosts and 'linux' for lightweight hosts based on the host's network_profile.",
             parameters: {
               node_instance_id: { type: "string", required: true, description: "UUID of the System::NodeInstance (host) to allocate a bridge on" },
-              kind: { type: "string", required: false, description: "linux | ovs (defaults to host's network_profile mapping)" }
+              kind: { type: "string", required: false, enum: ::Sdwan::HostBridge::KINDS,
+                     description: "linux | ovs (defaults to host's network_profile mapping)" }
             }
           },
           "system_sdwan_activate_host_bridge" => {
@@ -821,9 +875,11 @@ module Ai
             parameters: {
               logical_switch_id: { type: "string", required: true, description: "UUID of the Sdwan::OvnLogicalSwitch this port attaches to" },
               name: { type: "string", required: true, description: "Port name (unique per switch)" },
-              kind: { type: "string", required: true, description: "vm | container | external" },
+              kind: { type: "string", required: true, enum: ::Sdwan::OvnLogicalSwitchPort::KINDS,
+                     description: "vm | container | external" },
               host_node_instance_id: { type: "string", required: false, description: "Required for vm/container ports; ignored for external" },
-              addresses: { type: "array", required: false, description: "Array of IPv4/IPv6 strings; appended to the OVN `addresses=` line" },
+              addresses: { type: "array", required: false, items: { type: "string" },
+                          description: "Array of IPv4/IPv6 strings; appended to the OVN `addresses=` line" },
               mac: { type: "string", required: false, description: "MAC in `xx:xx:xx:xx:xx:xx` form; auto-generated when blank" }
             }
           },
@@ -869,7 +925,8 @@ module Ai
             description: "Enable or disable an IPFIX collector. THIS is how you stop a collector exporting — use it rather than system_sdwan_delete_ipfix_collector, which additionally destroys every flow sample recorded against the collector. Disabling keeps the row and its samples and only drops the ipfix: block from the next topology compile. Approval-gated (sdwan.ipfix_collector_update) — under require_approval this returns pending: true with a deferred_operation_id and the transition is applied only once an operator approves.",
             parameters: {
               collector_id: { type: "string", required: true, description: "Sdwan::IpfixCollector id" },
-              state: { type: "string", required: true, description: "active | disabled" }
+              state: { type: "string", required: true, enum: ::Sdwan::IpfixCollector::STATES,
+                      description: "active | disabled" }
             }
           },
           # ─── Phase O6 follow-up — OVN ACLs ──────────────────────────────
@@ -878,10 +935,12 @@ module Ai
             parameters: {
               logical_switch_id: { type: "string", required: true, description: "Sdwan::OvnLogicalSwitch id this ACL applies to" },
               name: { type: "string", required: true, description: "Operator-chosen name (unique per switch, max 63 chars, [letters/digits/_/-/.] only)" },
-              direction: { type: "string", required: true, description: "from-lport (egress from source pod/VM) | to-lport (ingress to destination)" },
+              direction: { type: "string", required: true, enum: ::Sdwan::OvnAcl::DIRECTIONS,
+                          description: "from-lport (egress from source pod/VM) | to-lport (ingress to destination)" },
               priority: { type: "integer", required: false, description: "0-32767, higher first; default 1000. Ties broken by lexicographic match-string order." },
               match: { type: "string", required: true, description: "OVN match expression, e.g. `ip4.src == 10.0.0.0/8 && tcp.dst == 5432`. Raw OVN syntax — OVN's parser rejects bad values at apply time." },
-              acl_action: { type: "string", required: true, description: "allow | drop | reject | allow-related" }
+              acl_action: { type: "string", required: true, enum: ::Sdwan::OvnAcl::ACTIONS,
+                           description: "allow | drop | reject | allow-related" }
             }
           },
           "system_sdwan_list_ovn_acls" => {
@@ -908,7 +967,8 @@ module Ai
           # tearing down the whole switch.
           "system_sdwan_list_ovn_deployments" => {
             description: "List the account's OVN deployments (id, endpoints, status). Use to rediscover a deployment id when the create response was lost or a session restarted.",
-            parameters: { status: { type: "string", required: false, description: "Optional status filter (pending | active | degraded | ...)" } }
+            parameters: { status: { type: "string", required: false, enum: ::Sdwan::OvnDeployment::STATES,
+                                   description: "Optional status filter: pending | bootstrapping | active | degraded" } }
           },
           "system_sdwan_get_ovn_deployment" => {
             description: "Fetch one OVN deployment with its logical switches (each switch includes its ports), so an agent can rediscover the full topology and the ids it needs for compile/delete.",
