@@ -147,12 +147,45 @@ module System
       end
 
       def collect_drift_summary(account)
-        # Compute a fleet-wide drift summary: count of instances with any drift
-        # vs. count fully reconciled. Useful single-number for executive reports.
-        instances = ::System::NodeInstance
-                    .joins(:node)
-                    .where(system_nodes: { account_id: account.id })
-                    .where(status: "running")
+        # Compute a fleet-wide drift summary: how many instances carry drift,
+        # how many are reconciled, and — the part an audit reader cannot do
+        # without — how many instances those two counts actually COVER.
+        #
+        # Scoped to every NON-TERMINATED instance, not `running`.
+        # `System::NodeInstance::ACTIVE_STATUSES` omits
+        # `starting`/`stopping`/`rebooting`/`error`, and those instances used
+        # to reach neither count with nothing in the section disclosing the
+        # filter (IMP-f28b393916f3) — an evidence document that reports "0
+        # drifted, 100% reconciled" for a fleet with a node wedged in `error`
+        # is answering a narrower question than the one it appears to answer.
+        # `terminated` stays out: that replica is gone, not unassessed.
+        #
+        # The walked population is ACTIVE_STATUSES, matching drift_check
+        # (PlatformMaintenanceExecutor#drift_summary_for). The compliance
+        # document and the maintenance verb must not disagree about the same
+        # fleet, so the boundary is the model's one definition rather than a
+        # second literal here — INCLUDING drift_check's second cut, the
+        # reporting/silent split applied below.
+        #
+        # `.to_a`, not `find_each`: the population must be PARTITIONED before
+        # the drift question is asked, and a partition needs the whole set. The
+        # trade is the non-terminated fleet in memory for the length of one
+        # snapshot — the same trade drift_check already makes
+        # (PlatformMaintenanceExecutor#drift_summary_for does `instances.to_a`).
+        #
+        # `:node` only. Preloading `node_modules` here would be dead weight:
+        # #module_drift builds `node.node_modules.includes(:current_version)`,
+        # a FRESH relation, so it re-queries whatever was preloaded. The node
+        # itself is read straight off the association and is worth preloading.
+        all_instances = ::System::NodeInstance
+                        .joins(:node)
+                        .includes(:node)
+                        .where(system_nodes: { account_id: account.id })
+                        .where.not(status: "terminated")
+                        .to_a
+
+        assessable, unassessed =
+          all_instances.partition { |i| ::System::NodeInstance::ACTIVE_STATUSES.include?(i.status) }
 
         # Drift is decided by System::NodeInstance#module_drifted?, the one
         # definition — NOT by a local copy. The copy that used to live here
@@ -161,25 +194,56 @@ module System
         # `reconciled` and the evidence document reported 0% drift for a
         # fleet that had entirely failed to converge (IMP-29b38f6f48b2).
         # The shared method adds the `mismatched` limb that catches it.
+        # SECOND CUT, and the one that keeps this honest. ACTIVE_STATUSES
+        # includes `pending` and `provisioning` — rows no agent has ever
+        # reported for. `running_module_digests` is `{}` NOT NULL by DEFAULT,
+        # so #module_drift calls every assigned module "missing" for them; that
+        # is the column's default, not an observation, and counting it as drift
+        # in an evidence document would bury real drift under provisioning
+        # noise. drift_check draws exactly this line
+        # (`reporting, silent = assessable.partition { .. last_heartbeat_at }`).
         #
-        # No added query cost: #module_drift issues the same
-        # `node.node_modules.includes(:current_version)` per instance that the
-        # local copy did.
-        drifted = 0
-        reconciled = 0
-        instances.find_each do |i|
-          if i.module_drifted?
-            drifted += 1
-          else
-            reconciled += 1
-          end
-        end
+        # `running` is exempt on purpose: #record_heartbeat! writes
+        # running_module_digests unconditionally, so a live agent that has
+        # mounted nothing persists `{}` — the platform already calls that drift
+        # (ModuleDriftSensor emits for it, drift_report reports it), and
+        # narrowing it here would make this document the one consumer that
+        # reported it clean.
+        reporting, silent = assessable.partition { |i| answers_drift?(i) }
+
+        drifted, reconciled = reporting.partition(&:module_drifted?)
 
         {
-          drifted_count: drifted,
-          reconciled_count: reconciled,
-          drift_ratio_pct: instances.count.zero? ? 0 : ((drifted * 100.0) / instances.count).round(1)
+          # The DENOMINATOR the buckets are read against. Without it a reader
+          # cannot tell "every instance was assessed and none drifted" from
+          # "a whole status class was filtered out of the question".
+          # Identity: assessed + not_reporting + not_assessed == instance_count,
+          # and drifted + reconciled == assessed.
+          instance_count: all_instances.size,
+          assessed_count: reporting.size,
+          drifted_count: drifted.size,
+          reconciled_count: reconciled.size,
+          not_reporting_count: silent.size,
+          not_reporting_instances: silent.map { |i| instance_row(i) },
+          not_assessed_count: unassessed.size,
+          not_assessed_instances: unassessed.map { |i| instance_row(i) },
+          # Ratio over the ASSESSED population, not the whole fleet: it is the
+          # share of instances the question was answered for, and widening its
+          # denominator to include instances that were never asked would move
+          # the number without anything having converged.
+          drift_ratio_pct: reporting.empty? ? 0 : ((drifted.size * 100.0) / reporting.size).round(1)
         }
+      end
+
+      def instance_row(instance)
+        { id: instance.id, status: instance.status, name: instance.name }
+      end
+
+      # See the reporting/silent comment in #collect_drift_summary. Kept as one
+      # predicate so the sensor's copy and this one can be diffed against each
+      # other and against drift_check's split.
+      def answers_drift?(instance)
+        instance.last_heartbeat_at.present? || instance.status == "running"
       end
 
       def collect_recent_decisions(account)
