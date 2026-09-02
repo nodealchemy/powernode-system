@@ -28,8 +28,10 @@ module System
       # status=active,draining. (db/seeds/example_instance_pool.rb calls the
       # service too, on a seeded pool.) Note which way round that runs: the
       # two verbs that ARE gated are pool creation and teardown, while the
-      # verb with the spend attached is not. (_update, _drain and _acquire are
-      # ungated too — replenish is simply the one this note is about.)
+      # verb with the spend attached is not. (_drain and _acquire are ungated
+      # too, as is every _update transition except the ceiling raise and the
+      # archive IMP-24daa05e7a22 gated — replenish is simply the one this note
+      # is about.)
       #
       # WHY UNGATED IS DELIBERATE. The policy for the verb already exists and
       # already says so: PolicyDeclarations::INSTANCE_POOL_POLICIES maps
@@ -44,11 +46,20 @@ module System
       # THE LIMITS OF THAT ARGUMENT, stated rather than glossed. "The spend was
       # approved at pool-create time" is the weak half, twice over:
       #   * The ceiling is not immutable behind a gated verb.
-      #     InstancePoolsController#update is ungated and its update_params
-      #     permit :target_size and :max_size, so the ceiling can be raised
-      #     without an approval and the next tick spends up to the new one.
-      #     (They also permit :status, so #update reaches "archived" — what the
-      #     gated destroy does — and "draining".)
+      #     InstancePoolsController#update permits :target_size, :max_size and
+      #     :status, and until IMP-24daa05e7a22 applied all three inline: the
+      #     ceiling could be raised without an approval and the next tick would
+      #     spend up to the new one, and PATCH "archived" reproduced what the
+      #     gated destroy does. An INCREASE to either size now gates under
+      #     "system.instance_pool_ceiling_raise" and the archive transition
+      #     under "system.instance_pool_archive" — but ON THAT ROUTE ONLY.
+      #     Decreases, min_size and status "paused"/"draining" stay inline
+      #     there, and three other writers move the same columns with no
+      #     approval at all: SystemFleetTool's system_update_instance_pool,
+      #     System::Gitops::ApplyService#apply! (POOL_SCALAR_KEYS) and
+      #     System::CiRunnerLeaseService. All three are censused by file and
+      #     count in spec/lint/instance_pool_replenish_gating_spec.rb. The MCP
+      #     half is filed as improvement 01a06317-5f42-7792-a393-ac7e702dcd62.
       #   * #create is gated on the REST route ONLY. The MCP verb
       #     system_create_instance_pool calls System::InstancePool.create!
       #     directly; SystemFleetTool's only declaration carrying
@@ -57,8 +68,10 @@ module System
       #     every pool verb and a pool minted over MCP never had an approved
       #     ceiling. That is a tracked gap in the governance-registry rollout,
       #     not a per-pool decision.
-      # If instance-pool spend is to be gated at all, #update is the verb worth
-      # gating — gating replenish catches the actuator and misses the decision.
+      # #update was the verb worth gating, and is the verb whose REST route
+      # got gated — gating replenish catches the actuator and misses the
+      # decision. The MCP twin, GitOps apply and the CI-runner lease still
+      # reach the decision ungated.
       #
       # WHAT A GATE HERE WOULD COST. A require_approval gate on an unattended
       # 60 s cron would park one approval per pool per minute and stall

@@ -29,16 +29,25 @@ require "tmpdir"
 # WHAT THAT ARGUMENT DOES *NOT* SAY, because an earlier draft of this very file
 # said it and it is false. It does NOT say "the ceiling was already approved at
 # pool-create time". Two things break that:
-#   * InstancePoolsController#update is ungated and its update_params permit
-#     :target_size, :max_size AND :status — so the ceiling can be raised with no
-#     approval, and PATCH status:"archived" reproduces the GATED destroy.
+#   * InstancePoolsController#update USED to be ungated with update_params
+#     permitting :target_size, :max_size AND :status — so the ceiling could be
+#     raised with no approval, and PATCH status:"archived" reproduced the GATED
+#     destroy. IMP-24daa05e7a22 gated those two transitions (a target_size or
+#     max_size INCREASE under system.instance_pool_ceiling_raise, the archive
+#     under system.instance_pool_archive) and left the rest of the PATCH —
+#     decreases, min_size, description, regions, metadata, status
+#     paused/draining — inline, by operator direction.
 #   * #create is gated on the REST route ONLY. SystemFleetTool's sole
 #     declaration carrying action_category/executor_class/gate_context/on_proceed
 #     is system_terminate_instance, so BaseTool#gated_action? is false for every
 #     pool verb: a pool minted through system_create_instance_pool never passed
-#     an approval at all.
+#     an approval at all. The MCP twins of the now-gated REST verbs are the
+#     remaining half of IMP-24daa05e7a22 and are NOT closed here.
 # The honest form of the reason is bounded-and-unattended, not already-approved.
-# If instance-pool spend is to be gated, #update is the verb worth gating.
+# #update was the verb worth gating for spend, and is the verb whose REST
+# ROUTE got gated — which is a smaller claim than "the ceiling is locked".
+# CEILING_WRITERS below censuses every site that still moves
+# target_size/max_size/status, three of which meet no gate at all.
 #
 # WHY A GUARD AND NOT JUST A COMMENT. The rationale above is a MATCHED PAIR:
 # prose in three files that is true only while the mechanism underneath it
@@ -100,18 +109,32 @@ module InstancePoolReplenishGatingGuard
 
   SCAN_GLOBS = %w[app/**/*.rb lib/**/*.rb db/**/*.rb].freeze
 
-  # The two verbs that route through Ai::GatedActions, and the categories they
+  # The verbs that route through Ai::GatedActions, and the categories they
   # pass. Restated here independently of the controller so that changing either
   # side alone reds, rather than the guard following the code.
+  #
+  # UpdatePool carries TWO categories because #update gates two distinct
+  # transitions through one executor (IMP-24daa05e7a22): the ceiling raise and
+  # the archive. A executor⇒category map with one value each could not express
+  # that, and collapsing them to one category is exactly the change this guard
+  # exists to make visible.
   GATED = {
-    "CreatePool" => "system.instance_pool_create",
-    "DeletePool" => "system.instance_pool_delete"
+    "CreatePool" => %w[system.instance_pool_create],
+    "DeletePool" => %w[system.instance_pool_delete],
+    "UpdatePool" => %w[system.instance_pool_ceiling_raise system.instance_pool_archive]
   }.freeze
 
   # The instance-pool categories that have a POLICY ROW an operator can edit
   # and NO gate site that reads it. ReplenishPool is the one this task is
   # about; the other three are named because a census that lists only the
   # finding's own subject re-confirms the belief that opened it.
+  #
+  # system.instance_pool_update is still here after IMP-24daa05e7a22: the two
+  # gated PATCH transitions resolve their OWN categories, so the _update row
+  # remains an operator control nothing reads. That is deliberate — the
+  # transitions it would have covered are applied inline by operator direction
+  # — but it is still the RUNTIME_OPERATOR_GATED_KEYS shape, so it stays
+  # censused rather than quietly dropped.
   UNGATED_CATEGORIES = %w[
     system.instance_pool_acquire
     system.instance_pool_drain
@@ -158,8 +181,99 @@ module InstancePoolReplenishGatingGuard
     }
   }.freeze
 
+  # Every site in THIS extension that writes an InstancePool row, with why —
+  # the ceiling half of IMP-24daa05e7a22. The gate added there sits on ONE
+  # ROUTE; the column is not immutable, and the prose in three files now says
+  # so. This census is what keeps that sentence honest: a fourth ungated
+  # writer reds here instead of quietly widening the surface, the way
+  # REPLENISH_CALLERS does for the actuator.
+  #
+  # Scoped to EXT_ROOT rather than SCAN_ROOTS on purpose: `pool.save!` in core
+  # is Ai::Memory's memory POOL, a different concept, and a census that has to
+  # explain its own false positives stops being read.
+  CEILING_WRITERS = {
+    "app/controllers/api/v1/system/instance_pools_controller.rb" => {
+      count: 3,
+      why: "The REST surface: gate_create!'s unsaved candidate (`InstancePool.new`), " \
+           "#update's INLINE arm for everything the two gates do not cover, and " \
+           "#destroy's on_proceed `update!(status: \"archived\")`. The two GATED " \
+           "update transitions write through UpdatePool, not from here."
+    },
+    "app/services/ai/tools/system_fleet_tool.rb" => {
+      count: 2,
+      why: "system_create_instance_pool's `InstancePool.create!` and " \
+           "system_update_instance_pool's `pool.update!` — the MCP twins. " \
+           "Neither declaration carries action_category/executor_class/" \
+           "gate_context/on_proceed, so BaseTool#gated_action? is false and a " \
+           "ceiling raise over MCP meets no gate. The open half of " \
+           "IMP-24daa05e7a22; if these gain a gate, this count changes and the " \
+           "runbook's 'three writers remain' paragraph has to change with it."
+    },
+    "app/services/system/ci_runner_lease_service.rb" => {
+      count: 1,
+      why: "Sets target_size from configured CI-runner demand. Ungated by " \
+           "design — it is a reconciler, not an operator decision — but it does " \
+           "raise a ceiling the replenish tick then spends up to."
+    },
+    "app/services/system/executors/instance_pool/create_pool.rb" => {
+      count: 1,
+      why: "The GATED create's executor — the only writer on that path, and the " \
+           "shape the ceiling raise now copies."
+    },
+    "app/services/system/executors/instance_pool/update_pool.rb" => {
+      count: 1,
+      why: "The GATED update's executor, live since IMP-24daa05e7a22. Its " \
+           "replay_baseline_attributes refuse a raise whose premise expired " \
+           "between park and approval."
+    },
+    "app/services/system/fleet/sensors/instance_status_sensor.rb" => {
+      count: 1,
+      why: "Merges region_health into metadata. Touches no size column, which " \
+           "is exactly why UpdatePool leaves metadata unfingerprinted: a parked " \
+           "ceiling raise must not be invalidated by a sensor tick."
+    },
+    "app/services/system/gitops/apply_service.rb" => {
+      count: 2,
+      why: "GitOps sync: `InstancePool.create!` and `pool.update!(updates)` over " \
+           "POOL_SCALAR_KEYS, which include target_size, min_size, max_size, " \
+           "lifecycle_class and status. Reached from system_gitops_apply_proposal " \
+           "and from Decision::Engine, neither of which is a gate site — so a " \
+           "repo commit raises a ceiling with no approval."
+    },
+    "app/services/system/instance_pool_service.rb" => {
+      count: 2,
+      why: "The service's own bookkeeping: last_replenished_at after a tick and " \
+           "status \"draining\" from drain!. Neither raises a ceiling; censused " \
+           "so a receiver-agnostic scanner stays honest about what it matches."
+    },
+    "db/seeds/example_instance_pool.rb" => {
+      count: 2,
+      why: "The example seed's assign_attributes + save! pair. Seed-time, but it " \
+           "is a real writer of the size columns and reaches the model validator."
+    },
+    "db/seeds/powernode_dev_cell.rb" => {
+      count: 2,
+      why: "The dev-cell seed's assign_attributes + save! pair, same shape."
+    }
+  }.freeze
+
   MENTION_RE   = /Executors::InstancePool::(?<klass>[A-Za-z_]\w*)?/
-  CATEGORY_RE  = /action_category:\s*(?<q>["'])(?<cat>system\.instance_pool_\w+)\k<q>/
+  # Deliberately NOT anchored to `action_category:`. #update resolves its
+  # category through a constant map (GATED_UPDATE_CATEGORIES) and passes it as
+  # a variable, so an `action_category:`-anchored scan would read the two gated
+  # transitions as absent and this guard would go on asserting the pre-fix
+  # world while the code did the opposite. Any quoted system.instance_pool_*
+  # literal on a non-comment line of the controller counts.
+  CATEGORY_RE  = /(?<q>["'])(?<cat>system\.instance_pool_\w+)\k<q>/
+  # De-anchoring CATEGORY_RE cost the guard its gate-SITE discriminator: the
+  # four literals it finds are the GATED_UPDATE_CATEGORIES constant's values
+  # plus create/delete's inline ones, so reverting #update's body to a bare
+  # `@pool.update!(update_params)` while leaving the frozen constant in place
+  # kept the category equality green. GATE_SITE_RE is the missing half —
+  # region-scoped to #update's body below, so the CALL has to be there too.
+  GATE_SITE_RE = /gate_update!\(/
+  # Receiver-agnostic write census for the ceiling columns; see CEILING_WRITERS.
+  CEILING_WRITE_RE = /\bpool\.(?:update!|assign_attributes|save!)|::System::InstancePool\.(?:create!|new)\(/
   # Receiver-agnostic on purpose — see KNOWN LIMITS above.
   REPLENISH_RE = /\.replenish!/
 
@@ -216,6 +330,34 @@ module InstancePoolReplenishGatingGuard
     cats
   end
 
+  def self.ceiling_writers(root = EXT_ROOT)
+    counts = Hash.new(0)
+    source_files([ root ], root).each do |rel, abs|
+      each_code_line(abs) { |line, _no| counts[rel] += line.scan(CEILING_WRITE_RE).length }
+    end
+    counts.reject { |_k, v| v.zero? }
+  end
+
+  # The BODY of `def <name>` up to the matching `end` at the same indentation,
+  # comments stripped. Region-scoped for the reason comment_block_above is: a
+  # whole-file presence check for "gate_update!" passes as soon as the words
+  # appear anywhere, including in the rationale explaining what was gated.
+  def self.method_body(lines, name)
+    idx = lines.index { |l| l.match?(/\A\s*def #{Regexp.escape(name)}\s*(?:\(|$)/) }
+    return nil if idx.nil?
+
+    indent = lines[idx][/\A\s*/]
+    body = []
+    i = idx + 1
+    while i < lines.length
+      break if lines[i] == "#{indent}end\n" || lines[i].rstrip == "#{indent}end"
+
+      body << lines[i] unless lines[i].strip.start_with?("#")
+      i += 1
+    end
+    body.join
+  end
+
   # The contiguous run of comment lines immediately above `def <name>`, as one
   # string. Region-scoped on purpose: a presence check over a WHOLE FILE passes
   # as soon as the words appear anywhere in it, including in a neighbouring
@@ -240,15 +382,15 @@ RSpec.describe "instance-pool replenish gating asymmetry", type: :lint do
 
   # ── the mechanism, as equalities ──────────────────────────────────────────
 
-  it "gives exactly CreatePool and DeletePool a deferred-operation producer" do
+  it "gives exactly CreatePool, DeletePool and UpdatePool a deferred-operation producer" do
     producers = guard.executor_mentions.group_by { |h| h[:klass] }
 
     expect(producers.keys.compact.sort).to eq(guard::GATED.keys.sort), <<~MSG
       The set of instance-pool executors NAMED in source changed.
 
-      Only CreatePool and DeletePool are supposed to be reachable through
-      Ai::DeferredOperation. If ReplenishPool (or DrainPool / UpdatePool) has
-      just acquired a producer, that is a governance change, not a refactor:
+      Only CreatePool, DeletePool and UpdatePool are supposed to be reachable
+      through Ai::DeferredOperation. If ReplenishPool or DrainPool has just
+      acquired a producer, that is a governance change, not a refactor:
       the rationale recorded in
         app/services/system/executors/instance_pool/replenish_pool.rb
         app/controllers/api/v1/system/instance_pools_controller.rb (#replenish)
@@ -271,11 +413,66 @@ RSpec.describe "instance-pool replenish gating asymmetry", type: :lint do
     MSG
   end
 
-  it "gates exactly the create and delete categories in the controller" do
-    expect(guard.controller_categories.sort).to eq(guard::GATED.values.sort)
+  it "gates exactly the create, delete, ceiling-raise and archive categories in the controller" do
+    expect(guard.controller_categories.sort).to eq(guard::GATED.values.flatten.sort)
   end
 
-  it "leaves the four remaining declared categories with no gate site" do
+  it "keeps the gate CALL in #update, not just the category constant" do
+    lines = guard.source_lines(
+      "app/controllers/api/v1/system/instance_pools_controller.rb"
+    )
+    body = guard.method_body(lines, "update")
+
+    expect(body).not_to be_nil, "InstancePoolsController#update not found"
+
+    aggregate_failures do
+      expect(body).to match(guard::GATE_SITE_RE), <<~MSG
+        InstancePoolsController#update no longer calls gate_update!.
+
+        The category equality above cannot see this: it scans for quoted
+        system.instance_pool_* literals, and GATED_UPDATE_CATEGORIES supplies
+        two of them from a frozen constant whether or not anything reads it.
+        So a revert of #update's body to a bare `@pool.update!(update_params)`
+        leaves that example green and the ceiling ungated. This one is the
+        presence half.
+      MSG
+
+      # And the call must take its category FROM that constant, not from a
+      # freshly inlined literal that happens to match.
+      expect(body).to include("action_category: categories.first"), <<~MSG
+        #update's gate_update! no longer resolves its category through
+        gated_update_categories/GATED_UPDATE_CATEGORIES. Two transitions gate
+        under two categories precisely so relaxing one policy row does not
+        carry the other through; a single inlined literal collapses that.
+      MSG
+    end
+  end
+
+  it "censuses every site that writes an instance-pool row" do
+    expect(guard.ceiling_writers).to eq(
+      guard::CEILING_WRITERS.transform_values { |v| v[:count] }
+    ), <<~MSG
+      A writer of System::InstancePool was added, removed or duplicated.
+
+      IMP-24daa05e7a22 gated a ceiling raise on ONE ROUTE. The prose in
+        app/controllers/api/v1/system/instance_pools_controller.rb (#replenish)
+        app/services/system/executors/instance_pool/replenish_pool.rb
+        docs/runbooks/instance-pool-tuning.md
+      says exactly that, and names the three writers that still move
+      target_size/max_size/status with no gate (the MCP twins, GitOps apply,
+      the CI-runner lease). If this census changed, that list changed: add
+      yours to CEILING_WRITERS with a :why, or gate it and correct all three
+      files in the same change.
+    MSG
+  end
+
+  it "gives every censused ceiling writer a real rationale" do
+    guard::CEILING_WRITERS.each do |path, entry|
+      expect(entry[:why].to_s.length).to be > 60, "#{path}: :why must explain, not label"
+    end
+  end
+
+  it "leaves the same four declared categories with no gate site" do
     declared = System::Governance::PolicyDeclarations::INSTANCE_POOL_POLICIES.keys
     ungated  = declared - guard.controller_categories
 
@@ -390,6 +587,54 @@ RSpec.describe "instance-pool replenish gating asymmetry", type: :lint do
         expect(guard.executor_mentions).not_to be_empty
         expect(guard.controller_categories).not_to be_empty
         expect(guard.replenish_callers).not_to be_empty
+        expect(guard.ceiling_writers).not_to be_empty
+      end
+    end
+
+    it "scopes a method body to its own def, and skips comments" do
+      lines = <<~'RUBY'.lines
+        module A
+          class B
+            # gate_update!( in a comment above the wrong method
+            def other
+              gate_update!(action_category: "decoy")
+            end
+
+            def update
+              authorize_write!
+              # gate_update!( in a comment inside the right method
+              gate_update!(action_category: categories.first)
+            end
+          end
+        end
+      RUBY
+
+      body = InstancePoolReplenishGatingGuard.method_body(lines, "update")
+
+      aggregate_failures do
+        expect(body).to match(guard::GATE_SITE_RE)
+        expect(body).to include("action_category: categories.first")
+        expect(body).not_to include("decoy")
+        # The comment INSIDE #update must not be what satisfies the match.
+        expect(body.scan(guard::GATE_SITE_RE).length).to eq(1)
+      end
+    end
+
+    it "counts instance-pool writes per file, ignoring comments" do
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, "app"))
+        File.write(File.join(dir, "app", "probe.rb"), <<~'RUBY')
+          pool = ::System::InstancePool.create!(name: "x")
+          # pool.update!(target_size: 9)
+          @pool.update!(attrs)
+          pool.assign_attributes(target_size: 1)
+          pool.save!
+          pool.destroy!
+        RUBY
+
+        # 4: create!, the two update!/assign_attributes and save! — the
+        # comment and the destroy! are not ceiling writes.
+        expect(guard.ceiling_writers(dir)).to eq({ "app/probe.rb" => 4 })
       end
     end
 

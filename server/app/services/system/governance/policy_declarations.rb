@@ -845,13 +845,28 @@ module System
         "system.runtime_k8s_runtime_upgrade"     => "require_approval"
       }.freeze
 
+      # IMP-24daa05e7a22 — `_ceiling_raise` and `_archive` are the two PATCH
+      # transitions Api::V1::System::InstancePoolsController#update gates. They
+      # are separate categories rather than a single "update" row because they
+      # are separate operator decisions with different blast radius: one commits
+      # spend the (deliberately ungated) replenish tick will then make, the
+      # other reaches the state the GATED destroy's on_proceed writes. An
+      # operator relaxing one must not relax the other, which one shared row
+      # could not express.
+      #
+      # `_update` stays declared and stays UNREAD by any gate site: every other
+      # PATCH transition — decreases, min_size, description, regions, metadata,
+      # status paused/draining — is applied inline by operator direction. It is
+      # censused as such in spec/lint/instance_pool_replenish_gating_spec.rb.
       INSTANCE_POOL_POLICIES = {
-        "system.instance_pool_create"     => "require_approval",   # capacity commitment
-        "system.instance_pool_update"     => "notify_and_proceed", # changes pool size targets
-        "system.instance_pool_delete"     => "require_approval",   # removes pool + ready instances
-        "system.instance_pool_replenish"  => "auto_approve",       # tops up to target — routine
-        "system.instance_pool_drain"      => "require_approval",   # halts replenishment
-        "system.instance_pool_acquire"    => "auto_approve"        # claim a ready member — fast path
+        "system.instance_pool_create"        => "require_approval",   # capacity commitment
+        "system.instance_pool_update"        => "notify_and_proceed", # changes pool size targets
+        "system.instance_pool_ceiling_raise" => "require_approval",   # raises target/max — commits spend
+        "system.instance_pool_archive"       => "require_approval",   # PATCH twin of the gated destroy
+        "system.instance_pool_delete"        => "require_approval",   # removes pool + ready instances
+        "system.instance_pool_replenish"     => "auto_approve",       # tops up to target — routine
+        "system.instance_pool_drain"         => "require_approval",   # halts replenishment
+        "system.instance_pool_acquire"       => "auto_approve"        # claim a ready member — fast path
       }.freeze
 
       PROVISIONING_POLICIES = {

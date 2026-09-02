@@ -192,14 +192,24 @@ module System
     # A nil size is already reported by the numericality validators above, and
     # comparing one here RAISES rather than adding an error — `5 < nil` is an
     # ArgumentError, not false. A `validate` method must not raise, so the
-    # guard belongs here and not at any one call site — THREE reach this
-    # validator: the gated create's unsaved candidate, the executor's
-    # `create!`, and InstancePoolsController#update's `update!`.
+    # guard belongs here and not at any one call site. A bare cardinal here
+    # has no oracle and this comment has already carried a wrong one twice, so
+    # it is stated as a census with a location instead: MANY sites reach this
+    # validator — the gated create's unsaved candidate, CreatePool's `create!`,
+    # InstancePoolsController#update's inline `update!` and its gate_update!
+    # pre-validation, UpdatePool's `update!` at approval time, destroy's
+    # on_proceed, SystemFleetTool's create/update, Gitops::ApplyService's
+    # create/update, CiRunnerLeaseService, InstanceStatusSensor and two seeds.
+    # spec/lint/instance_pool_replenish_gating_spec.rb (CEILING_WRITERS) holds
+    # the enumerable half of that by file and count; this comment says only
+    # that there is no single call site to put the guard on.
     #
-    # It was latent on only one of them. The ungated `PATCH` has been
+    # It was latent on only one of them. #update's INLINE arm has been
     # answering 500 for `"target_size": null` since that action was written —
     # #update permits all three sizes and rescues only RecordInvalid, and
-    # nothing rescues ArgumentError. On the gated create the raise was hidden
+    # nothing rescues ArgumentError. (Still the inline arm after
+    # IMP-24daa05e7a22: a null size is not an increase, so it never reaches
+    # the ceiling gate.) On the gated create the raise was hidden
     # instead (Ai::AutonomyGate#evaluate rescues StandardError) until
     # IMP-785d60f5ec3e put `candidate.valid?` in front of the gate, at which
     # point the same payload answered 500 there too. This guard repairs both.

@@ -118,8 +118,10 @@ RSpec.describe "Api::V1::System::Autonomy by_domain pivot", type: :request do
     pivot = by_domain
 
     pool = %w[
-      system.instance_pool_acquire system.instance_pool_create system.instance_pool_delete
-      system.instance_pool_drain system.instance_pool_replenish system.instance_pool_update
+      system.instance_pool_acquire system.instance_pool_archive
+      system.instance_pool_ceiling_raise system.instance_pool_create
+      system.instance_pool_delete system.instance_pool_drain
+      system.instance_pool_replenish system.instance_pool_update
     ]
 
     expect(categories_in(pivot, "instance_pool")).to match_array(pool)
