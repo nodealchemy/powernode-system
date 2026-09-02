@@ -15,8 +15,9 @@ dev-cell is its first consumer.
 
 [`docs/runbooks/module-authoring.md`](./runbooks/module-authoring.md) documents
 a per-repo "standalone module" pattern (`templates/module-repo/` skeleton, its
-own Gitea repo, its own `.gitea/workflows/build.yaml`, polled ingest via
-`ModuleOciIngestService`). This module does **not** use that pattern — it
+own Gitea repo, its own `.gitea/workflows/build.yaml`, webhook-triggered ingest
+via `ModuleOciIngestService` — see [module-authoring.md](./runbooks/module-authoring.md#troubleshooting)
+for the trigger mechanism). This module does **not** use that pattern — it
 lives in-tree at [`modules/claude-tmux/`](../modules/claude-tmux/), built by
 the shared [`build-platform-modules.yaml`](../.gitea/workflows/build-platform-modules.yaml)
 matrix (the same pipeline as `node-exporter`, `redis`, `storage-tools`,

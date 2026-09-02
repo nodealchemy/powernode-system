@@ -377,7 +377,7 @@ jobs:
 4. **OCI push**: `oras` uploads the artifact to `registry.example.com`
 5. **Cosign signing**: static-key signing — Gitea Actions isn't on Sigstore Fulcio's trusted-issuer list, so keyless certs would never verify server-side. The `assemble` job signs with `POWERNODE_COSIGN_PRIVATE_KEY`, a Gitea Actions secret you add to your repo (ask your platform operator for the value — it's the private half of the platform's `POWERNODE_COSIGN_PUBLIC_KEY`). Keyless/Fulcio signing only applies to modules actually built on a Fulcio-trusted CI (e.g. GitHub Actions), not this Gitea template.
 
-The platform's `ModuleOciIngestService` polls the registry; when a new tag appears with a valid Cosign signature, it creates a `NodeModuleVersion` row in `promotion_state: built`. By default that means `cosign verify` against the platform's static `POWERNODE_COSIGN_PUBLIC_KEY`; the `NodeModule`'s `cosign_identity_regexp` / `cosign_issuer_regexp` (set on the DB row, not the manifest) only come into play on the keyless fallback path, for modules signed by a genuinely Fulcio-trusted issuer.
+The Gitea webhook (`POST /api/v1/system/webhooks/gitea/module`) is what triggers ingestion — there is no polling timer. `GiteaModuleController` verifies the HMAC and calls `System::ModulePublicationProcessor.process!`, either inline (dev) or via the worker's `System::ProcessModulePublicationJob` calling back to the worker API (production default, `POWERNODE_WEBHOOK_INGEST_MODE=async`). The processor calls `ModuleOciIngestService.ingest!`, which verifies the Cosign signature and creates a `NodeModuleVersion` row in `promotion_state: built`. By default that means `cosign verify` against the platform's static `POWERNODE_COSIGN_PUBLIC_KEY`; the `NodeModule`'s `cosign_identity_regexp` / `cosign_issuer_regexp` (set on the DB row, not the manifest) only come into play on the keyless fallback path, for modules signed by a genuinely Fulcio-trusted issuer.
 
 ## Phase 6 — Verify publication ✅
 
@@ -504,10 +504,10 @@ The `mask` directive is a deliberate escape hatch — use sparingly; it inverts 
 |---|---|---|
 | `ModuleManifestSchemaError` on push | YAML doesn't match schema_version | Run `platform.system_validate_module_manifest` locally first |
 | Cosign signature rejected | Static-key mismatch (default path) — repo's `POWERNODE_COSIGN_PRIVATE_KEY` doesn't correspond to the platform's `POWERNODE_COSIGN_PUBLIC_KEY`; only the keyless fallback checks `cosign_identity_regexp`/`cosign_issuer_regexp` | Confirm the repo's cosign key secret with your platform operator; for the keyless fallback, verify the signing CI's OIDC issuer matches your regexp |
-| Module shows in registry but no `NodeModuleVersion` row | OCI ingest hasn't run yet | Wait 60 s for the next ingest poll; check `journalctl -u 'powernode-*-sidekiq.service' \| grep ModuleOciIngest` |
+| Module shows in registry but no `NodeModuleVersion` row | Ingestion is webhook-triggered, not polled — the Gitea webhook delivery never reached the platform, or (async mode) the worker callback failed | Check the repo's Gitea webhook deliveries (repo → Settings → Webhooks → Recent Deliveries) and redeliver the failed one; check `journalctl -u 'powernode-*-rails.service' \| grep GiteaModule` for HMAC/lookup errors, and — when `POWERNODE_WEBHOOK_INGEST_MODE=async` (production default) — the worker's `System::ProcessModulePublicationJob` logs for ingest failures |
 | `protected_spec` collision on assignment | Another module owns one of your protected files | Rename your file or use `mask` in a `config`-variety override |
 | Assignment to template succeeds but agent doesn't pull | The module's `current_version_id` does not point at a version carrying a mountable artifact. That pointer — **not** `promotion_state` — is what the node-facing download resolves (`NodeApi::ModulesController#download` reads `@module.current_version&.artifact`) | [Why the agent isn't pulling](#why-the-agent-isnt-pulling), below. Promoting is **not** the fix |
-| fs-verity digest mismatch on agent | Module artifact corrupted during transit | Re-run CI build; the platform re-ingests on next OCI poll |
+| fs-verity digest mismatch on agent | Module artifact corrupted during transit | Re-run CI build; the new tag's webhook delivery re-triggers ingestion — no need to wait |
 
 ### Why the agent isn't pulling
 

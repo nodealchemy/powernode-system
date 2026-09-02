@@ -270,9 +270,11 @@ The workflow runs:
 6. **Webhook** — POSTs to platform's `/api/v1/system/webhooks/gitea/module`
    with HMAC signed by `POWERNODE_WEBHOOK_SECRET`
 
-**Expected outcome:** ~5–8 min runtime. Workflow shows `success`. The
-platform's `ModuleOciIngestService` polls the registry and creates a
-`NodeModuleVersion` row in `promotion_state: built`.
+**Expected outcome:** ~5–8 min runtime. Workflow shows `success`. Step 6's
+webhook triggers `System::ModulePublicationProcessor`, which calls
+`ModuleOciIngestService.ingest!` — there is no polling — and creates a
+`NodeModuleVersion` row in `promotion_state: built`. If the row is missing,
+check the repo's Gitea webhook deliveries and redeliver rather than waiting.
 
 ## Step 8 — Verify ingestion
 
