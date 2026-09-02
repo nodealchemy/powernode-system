@@ -357,7 +357,7 @@ fetching the wizard payload.
 | Action | What it does | Audience |
 |---|---|---|
 | `system_destroy_instance` | Tear down a NodeInstance immediately (skips drain — operator must accept blast radius) | operator |
-| `system_drain_instance` | Graceful shutdown — cordon + drain workloads, then stop services | operator |
+| `system_drain_instance` | **Records drain intent only** — writes `drain_initiated_at`/`drain_timeout_seconds` onto the instance config and emits a `system.instance.drain_initiated` FleetEvent. Nothing is cordoned or stopped, the instance stays `running`, and nothing reads the markers back. Relocate workloads by hand, then `system_terminate_instance` — see [node-provisioning.md](./runbooks/node-provisioning.md) Phase 5 | operator |
 | `system_get_silent_instances` | Audit query — list NodeInstances whose `last_heartbeat_at` exceeds the silent threshold | operator, agent |
 | `system_refresh_instance_modules` | Force the agent to re-reconcile its module set against the platform's view | operator, agent |
 | `system_module_mark_canary` | Mark a module as a honeypot canary (any access emits a high-severity FleetEvent) | operator |

@@ -13,9 +13,12 @@ module System
       #
       # Sub-actions:
       #
-      #   - "drain_instance"  → cordon + drain a specific NodeInstance
-      #                          (mirrors system_drain_instance MCP action;
-      #                          marks config.drain_* keys, emits FleetEvent)
+      #   - "drain_instance"  → record drain INTENT on a NodeInstance.
+      #                          Mirrors the system_drain_instance MCP action:
+      #                          merges config.drain_* keys and emits a
+      #                          FleetEvent. It cordons nothing, stops nothing,
+      #                          and transitions no AASM state — the instance
+      #                          stays running. See the branch below.
       #   - "scale"           → mutate target_replicas on a deployment
       #                          (increment / decrement / set)
       #   - "failover_check"  → surface peers + instances showing stress
@@ -74,10 +77,22 @@ module System
         private
 
         # ── drain_instance ────────────────────────────────────────────────
-        # Marks the instance for drain via config keys. The worker
-        # runtime (agent on-node) reads these keys and stops accepting
-        # new work. Operator can follow up with terminate once the
-        # in-flight work has bled off.
+        # Marks the instance for drain via config keys, and that is ALL it
+        # does. IMP-b4d9d7908c48: this comment used to claim "the worker
+        # runtime (agent on-node) reads these keys and stops accepting new
+        # work". It does not. The drain_* keys are written in exactly two
+        # places — all three here, the first two in
+        # Ai::Tools::SystemFleetTool#drain_instance — and read NOWHERE: not in
+        # server/, extensions/, worker/, frontend/, or the Go agent. The whole
+        # config blob does reach the node via
+        # GET /api/v1/system/node_api/config (config_controller.rb:783-793),
+        # but its one agent caller
+        # (agent/cmd/powernode-agent/internal/cli/volume_setup_cmd.go:188-215)
+        # decodes a typed struct reaching only data.node.disk_policy.
+        # So: workloads keep running, no AASM transition fires, timeout_seconds
+        # enforces nothing, and relocation is the operator's manual job before
+        # they call terminate. Do not restate the old claim without a consumer
+        # to cite.
         def drain_instance(params)
           instance_id = params[:instance_id]
           return failure("instance_id is required") if instance_id.blank?
@@ -118,8 +133,16 @@ module System
               drain_timeout_seconds: timeout
             },
             recommendations: [
-              "Instance marked for drain. The on-node agent will stop accepting new work and bleed off in-flight load within #{timeout}s.",
-              "After drain completes, call system_terminate_instance to remove the row OR system_destroy_instance to release the cloud resource."
+              "Drain INTENT recorded on #{instance.name}: config.drain_* markers written and a " \
+              "platform.resilience.drain_started event emitted. Nothing was stopped or cordoned — " \
+              "the instance is still running and still serving. Nothing reads these markers, so the " \
+              "#{timeout}s timeout enforces nothing.",
+              "Relocate the workloads YOURSELF before going further — drain the Kubernetes node with " \
+              "kubectl, stop or migrate containers, move any VIP. Nothing reports progress because " \
+              "nothing knows the relocation started.",
+              "Only once you have confirmed the node is idle: system_terminate_instance to destroy the " \
+              "cloud resource (approval-gated), or system_destroy_instance to remove a registry row " \
+              "whose cloud resource is already gone."
             ]
           )
         end

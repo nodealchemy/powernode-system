@@ -632,7 +632,10 @@ SKILLS_DATA = [
       "drain X", "scale up", "what's wrong with the fleet", "any unhealthy peers".
 
       Action-discriminated:
-        - drain_instance  → cordon + drain a specific NodeInstance
+        - drain_instance  → record drain INTENT on a NodeInstance (writes
+          drain_* markers + a FleetEvent). It cordons nothing and stops
+          nothing; workloads keep running and the operator relocates them
+          by hand before calling system_terminate_instance.
         - scale           → mutate target_replicas (set | increment | decrement)
         - failover_check  → read-only triage of stress signals
 

@@ -252,20 +252,33 @@ kubectl --kubeconfig ~/.kube/k3s.yaml get pod hello -w
 # → hello   1/1   Running
 ```
 
-**VIP failover (advanced):** drain the bootstrap server and watch the VIP
-migrate:
+**VIP failover (advanced):** this tutorial used to tell you to call
+`system_drain_instance` on the bootstrap server and watch the VIP migrate
+within ~10s. **It does not.** That verb writes two `drain_*` marker keys onto
+the instance config and emits a FleetEvent; it stops no service, transitions no
+state, and nothing — the SDWAN VIP allocator included — reads those markers.
+The instance stays `running` and keeps holding the VIP. See
+[node-provisioning.md](../runbooks/node-provisioning.md) Phase 5 for the full
+contract.
+
+To actually move a non-anycast VIP off its current holder, promote the standby
+explicitly with `platform.system_sdwan_failover_virtual_ip` (takes
+`virtual_ip_id`; approval-gated under `system.sdwan_vip_failover`), or stop the
+holder outright with `platform.system_stop_instance`. Read the current holder
+back with:
 
 ```javascript
-platform.system_drain_instance({ instance_id: "<bootstrap-instance-id>" })
-// Within ~10s, VIP migrates to next k3s-server-bearing peer (if any)
-platform.system_sdwan_get_virtual_ip({ name: "k3s_api_endpoint" })
-// → { virtual_ip: { holders: [<different instance>], ... } }
+// system_sdwan_get_virtual_ip declares virtual_ip_id (required) and nothing
+// else — there is no name lookup. Get the id from system_sdwan_list_virtual_ips.
+platform.system_sdwan_get_virtual_ip({ virtual_ip_id: "<vip-id>" })
+// → { virtual_ip: { holders: [...], ... } }
 
 kubectl --kubeconfig ~/.kube/k3s.yaml get nodes
-# Still works — the VIP /128 now resolves to a different host
+# Still works if the VIP /128 now resolves to a different host
 ```
 
-(Single-server cluster: drain causes outage; this is why production wants ≥2 servers.)
+(Single-server cluster: stopping the only server causes an outage; this is why
+production wants ≥2 servers.)
 
 ## Cleanup
 

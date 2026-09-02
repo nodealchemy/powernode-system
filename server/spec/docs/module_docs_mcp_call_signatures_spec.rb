@@ -373,7 +373,18 @@ module ModuleDocsMcpCallSignatures
     # system_create_node declares, and neither required parameter. The rest of
     # this runbook's call sites (system_get_task({ id: }), list_agents,
     # execute_agent, ...) are the rename family and stay uncovered for now.
-    "docs/runbooks/node-provisioning.md" => %w[system_create_node]
+    # IMP-b4d9d7908c48 — the Phase 5 drain example passed `cordon_only: false`
+    # under the comment "false → also stop services after cordon".
+    # system_drain_instance declares exactly instance_id and timeout_seconds
+    # (system_fleet_tool.rb:1318-1324); `cordon_only` is undeclared, and
+    # BaseTool#validate_params! only checks that REQUIRED keys are present
+    # (base_tool.rb:443-453) — it never rejects an extra one, so the key was
+    # silently dropped. There is no cordon-only mode to opt out of and no
+    # service stop to opt into: the handler merges two config keys and emits a
+    # FleetEvent (system_fleet_tool.rb:5216-5254). The pin is on the verb, not
+    # the key, so a future doc edit that reintroduces any undeclared parameter
+    # on this call reddens.
+    "docs/runbooks/node-provisioning.md" => %w[system_create_node system_drain_instance]
   }.freeze
 
   # Call sites left BROKEN on purpose, each tracked by a filed finding, because
@@ -1855,7 +1866,7 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   # line opening with a protocol-relative path would read as commented. No such
   # site exists: swept 2026-08-31, 351 call sites tree-wide, exactly 3 report
   # commented and all 3 are genuine (FLEET_SENSORS.md:541 and :542,
-  # node-provisioning.md:210).
+  # node-provisioning.md:211).
   #
   # It also names the situation outright, because the failure the gate produces
   # ("calls a registered MCP verb") does not say that an exemption was

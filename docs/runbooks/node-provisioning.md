@@ -14,16 +14,18 @@ Step-by-step operator guide for the full Node + NodeInstance lifecycle: from "I 
 | 2. Provision instance | Provider boots a VM with the netboot image | 30 s – 10 min | `system_provision_instance` |
 | 3. Bootstrap | Agent installs, mTLS handshake, module reconcile | ~90 s cold (5-10 min on slow providers) | none — agent-driven |
 | 4. Run | Heartbeats, reconcile loop, task lease | indefinite | `system_get_instance` |
-| 5. Drain | Workloads relocated, services stopped | 1-30 min | `system_drain_instance` |
+| 5. Drain | **Marker + FleetEvent only** — workloads keep running; relocation is manual | seconds (the call itself) | `system_drain_instance` |
 | 6. Decommission | Provider VM destroyed, FK cascades fire | <1 min | `system_terminate_instance` |
 
 ## Lifecycle diagram
 
 The `NodeInstance` AASM has **9 states**: `pending`, `provisioning`, `starting`,
 `running`, `stopping`, `stopped`, `rebooting`, `terminated`, `error`. There is
-**no `draining` state** (drain is an *operation* that ultimately drives the
-instance `running → stopping → stopped`; `draining` is a `pool_state` on pooled
-instances, not an instance AASM state) and **no `failed` state** — the terminal
+**no `draining` state**, and `system_drain_instance` does not drive the instance
+toward one: it records intent and changes no state at all (Phase 5 below).
+`draining` is a `pool_state` on pooled instances — a different column, unrelated
+to the `config["drain_*"]` markers — not an instance AASM state. There is also
+**no `failed` state** — the terminal
 failure state is `error`. The "bootstrapping" box below is the agent-driven boot
 window *within* the `provisioning` state, not a separate AASM state.
 
@@ -45,9 +47,10 @@ window *within* the `provisioning` state, not a separate AASM state.
   │   running    │  heartbeats every 30s  │  error   │ terminal failure
   └──────┬───────┘  task lease ready      └────┬─────┘ (no orphaned row)
          │                                      │ terminate
-         │ system_drain_instance (graceful):    │ (allowed from error)
-         │   stop/cordon → AASM stopping→stopped │
-         │ -or- system_terminate_instance (hard)│
+         │ system_terminate_instance (hard).    │ (allowed from error)
+         │   stop/reboot also leave running.    │
+         │   system_drain_instance does NOT —   │
+         │   it records intent, changes nothing.│
          ▼                                       ▼
   ┌──────────────────────────────────────────────────┐
   │              terminated                          │
@@ -56,10 +59,14 @@ window *within* the `provisioning` state, not a separate AASM state.
   └──────────────────────────────────────────────────┘
 ```
 
-> The `terminate` event currently transitions only from `running`, `stopped`,
-> and `error` — **not** directly from `provisioning` or `starting`. See
-> [Per-state error recovery](#per-state-error-recovery) for how to clear an
-> instance still mid-`provisioning`.
+> The `terminate` event transitions from every non-terminal state — `pending`,
+> `provisioning`, `starting`, `running`, `stopping`, `stopped`, `rebooting` and
+> `error` (`server/app/models/system/node_instance.rb:199-201`), so an instance
+> stuck mid-`provisioning` can be terminated directly. This runbook previously
+> said it reached only `running`/`stopped`/`error`; that was the pre-fix shape,
+> corrected under audit 2026-06-09 finding F4-02 (see the model comment at
+> `:194-198`). See [Per-state error recovery](#per-state-error-recovery) for the
+> other ways to clear a stuck instance.
 
 ## Phase 1 — Create Node ✅
 
@@ -258,31 +265,134 @@ platform.system_drift_report({ instance_id: "<instance-id>" })
 
 If `drift: true`, the `module_drift_sensor` will emit `system.module_drift`; Fleet Autonomy auto-runs `drift_remediate` (notify_and_proceed policy) on next tick.
 
-## Phase 5 — Drain (graceful) ⚠️
+## Phase 5 — Drain (records intent only) ⚠️
 
-For `persistent` instances running workloads (Docker daemon, K3s server), prefer drain over hard terminate:
+**`system_drain_instance` does not drain anything.** It writes two marker keys
+and emits one `FleetEvent`. Workloads keep running, no service is stopped, and
+nothing reads the markers back. Read this section before you use it — the verb
+name is the most misleading thing about it.
 
 ```javascript
 platform.system_drain_instance({
   instance_id: "<instance-id>",
-  timeout_seconds: 600,           // give workloads up to 10 min to relocate
-  cordon_only: false              // false → also stop services after cordon
+  timeout_seconds: 600            // metadata only — enforces nothing
 })
-// → { instance_id, instance_name, drain_initiated_at, drain_timeout_seconds }
-// (records drain markers + emits platform.resilience.drain_started; the
-//  instance AASM moves running → stopping → stopped as services wind down —
-//  there is no "draining" instance state)
+// → { drained: true, instance: {...}, drain_initiated_at, drain_timeout_seconds,
+//     next_step: "operator should call system_terminate_instance after workloads relocate" }
 ```
 
-Drain coordinates with Devops layer:
-- **DockerHost**: `docker stop` containers tagged `--restart=always` first; then daemon shutdown
-- **KubernetesNode (k3s-agent)**: `kubectl cordon` + `kubectl drain --ignore-daemonsets`
-- **k3s-server bootstrap node**: triggers slice 3 VIP failover before stopping the API server
+**What the call does**, in full
+(`server/app/services/ai/tools/system_fleet_tool.rb:5216-5254`):
 
-**What to watch:**
-- Pod relocation requires capacity on remaining nodes — drain can stall if cluster is at capacity. Add capacity first or accept partial drain.
-- Local-path PVCs don't migrate; pods using them go pending. Plan stateful workload placement accordingly.
-- Single-server K3s clusters cannot drain the only server — kubectl loses access. Either add a second `k3s-server` first, or hard-terminate.
+1. Merges two keys into `NodeInstance#config` — `drain_initiated_at` (now,
+   ISO8601) and `drain_timeout_seconds` (`:5228-5231`).
+2. Creates one `System::FleetEvent` — `kind: "system.instance.drain_initiated"`,
+   `severity: "low"`, payload `{ drain_timeout_seconds, initiated_by }` — behind
+   an `if defined?(::System::FleetEvent)` guard, so even this is conditional
+   (`:5233-5245`).
+3. Returns. `drained: true` means *the marker was written* — not that anything
+   drained.
+
+**What it does not do.** There is no AASM transition in the handler, so the
+instance stays `running`; there is no `draining` instance state and no
+`running → stopping → stopped` walk. No container is stopped, no Kubernetes
+node is cordoned or drained, no VIP is failed over, no systemd unit on the node
+is touched. The tool's own description says so:
+"Workloads remain running; operator should call system_terminate_instance after
+relocation completes" (`system_fleet_tool.rb:1319`).
+
+**And nothing consumes the markers.** `drain_initiated_at`,
+`drain_timeout_seconds` and `drain_initiated_by_user_id` are *written* in
+exactly two places — `system_fleet_tool.rb:5228-5231` and
+`server/app/services/system/ai/skills/platform_resilience_executor.rb:113-117`
+(the `platform_resilience` skill's `drain_instance` branch). **The two writers
+are not interchangeable**: the skill writes a third key
+(`drain_initiated_by_user_id`) and emits a *different* event — kind
+`platform.resilience.drain_started`, severity `info`, wrapped in a bare
+`rescue StandardError` that silently swallows a failed emit
+(`platform_resilience_executor.rb:119-124`, `:280-291`) — where the MCP verb
+emits `system.instance.drain_initiated`, severity `low`, unrescued. Filter on
+the wrong kind and you will find nothing; on the skill path there may be nothing
+to find — and read in none, across `server/`, `extensions/`,
+`worker/`, `frontend/` and the Go agent. The whole `NodeInstance#config` blob
+*is* shipped to the node by `GET /api/v1/system/node_api/config`
+(`server/app/controllers/api/v1/system/node_api/config_controller.rb:783-793`),
+so the markers physically reach the agent — but the only agent caller of that
+endpoint, `agent/cmd/powernode-agent/internal/cli/volume_setup_cmd.go:188-215`,
+unmarshals into a typed struct reaching just `data.node.disk_policy` and never
+looks at the instance config. So the markers, and the event, are an audit trail
+for humans — the event is readable back through `system_recent_signals`, which
+queries `System::FleetEvent` and takes a `kind` filter
+(`system_fleet_tool.rb:1228-1235`, handler `:4738-4752`). Note it is
+`system_recent_signals`, not `recent_events`: the latter reads
+`Ai::ExecutionEvent` and never sees a FleetEvent
+(`server/app/services/ai/introspection/platform_introspection_service.rb:88-106`).
+Treat the markers as nothing more than that.
+
+**Parameters — and one that never existed** (`system_fleet_tool.rb:1318-1324`):
+
+| Key | Status | Effect |
+|---|---|---|
+| `instance_id` | required | The NodeInstance to mark. |
+| `timeout_seconds` | optional, default 600 | Stored in `config` and in the event payload. **Enforces nothing**: no timer runs, nothing auto-terminates, nothing reads it back. It is a note to the next human, not a relocation window. |
+| `cordon_only` | **does not exist** | Earlier revisions of this runbook showed `cordon_only: false` with the comment "false → also stop services after cordon". There has never been such a parameter, and there is no cordon path to opt out of. `BaseTool#validate_params!` (`server/app/services/ai/tools/base_tool.rb:443-453`) only checks that *required* keys are present — it does not reject extra ones — so the key was accepted, ignored and dropped, and the call returned `success` having done nothing extra. |
+
+**There is no cordon-only capability today.** No MCP verb marks a NodeInstance
+unschedulable while leaving it up. Depending on what you actually wanted:
+
+- **Stop the workloads on the node**: `system_stop_instance` really does stop
+  the instance (disk and registry row retained, restart with
+  `system_start_instance`). That is the blunt version of "also stop services",
+  and it is a whole-VM stop, not a per-service one.
+- **Keep it from being started or terminated while you work**:
+  `system_instance_hold` places an operator ops hold. Every caller reaching
+  `System::InstanceControlService` is refused for `start`/`reboot`/`terminate`
+  while it is set, and `force` does not override it
+  (`server/app/services/system/instance_control_service.rb:32, 95-103`); `stop`
+  is deliberately still allowed.
+- **Cordon a Kubernetes node**: do it at the Kubernetes layer.
+  `kubectl cordon <node>`, then `kubectl drain --ignore-daemonsets`, using the
+  cluster's own kubeconfig from `platform.kubernetes_get_kubeconfig`. Nothing in
+  `system_drain_instance` reaches kubectl.
+- **Stop containers on a Docker host**: use the `docker_*` verbs against the
+  DockerHost directly.
+
+**The sequence that actually retires a running instance:**
+
+1. `system_drain_instance` — optional. Take it for the marker and the event if
+   you want the audit trail; it buys nothing else.
+2. **Relocate the workloads yourself.** This step is manual and unverified:
+   drain the Kubernetes node with `kubectl`, stop or migrate containers, move
+   the VIP. Nothing on the platform side reports progress, because nothing on
+   the platform side knows the relocation started.
+3. Confirm by your own means that the node is idle.
+4. `system_terminate_instance` — which really does destroy the provider VM:
+   it routes through `System::ProvisioningService#terminate_instance`, which
+   calls the provider adapter's own `terminate_instance` on the instance's
+   `cloud_instance_id` (`server/app/services/system/provisioning_service.rb:265-290`).
+   **It is approval-gated** (`action_category: "system.task.terminate"`,
+   `system_fleet_tool.rb:426-435`): where policy requires approval the call
+   returns `{ pending: true }` with an `approval_request_id` and the instance is
+   **not** terminated until an operator approves (`:766-770`). Do not read that
+   response as a completed termination — the same mistake this whole section is
+   about, one verb along.
+
+> **The failure this ordering exists to prevent.** The response's `next_step`
+> tells you to "call system_terminate_instance after workloads relocate", which
+> reads as though the drain started the relocation. It did not. Terminating on
+> the strength of a drain that only wrote a timestamp destroys the VM with its
+> workloads still on it.
+
+**What to watch when you do step 2 by hand** (these are properties of `kubectl
+drain` and of your cluster, not of `system_drain_instance`):
+
+- Pod relocation needs capacity on the remaining nodes — a drain stalls if the
+  cluster is at capacity. Add capacity first, or accept a partial drain.
+- Local-path PVCs do not migrate; pods using them go pending. Plan stateful
+  placement accordingly.
+- A single-server K3s cluster cannot drain its only server — kubectl loses
+  access. Add a second `k3s-server` first, or accept the outage and
+  hard-terminate.
 
 ## Phase 6 — Decommission ✅
 

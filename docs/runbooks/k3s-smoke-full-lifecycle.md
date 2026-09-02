@@ -248,8 +248,12 @@ SMOKE_K3S_LEVEL=db bundle exec rails runner \
   "load Rails.root.join('../extensions/system/server/db/seeds/smoke_test_k3s_drain_reprovision.rb')"
 ```
 
-Picks one k3s-agent NodeInstance, marks it stopped (db-tier equivalent
-of `system_drain_instance`), destroys the KubernetesNode + NodeInstance,
+Picks one k3s-agent NodeInstance and marks it stopped — note this is NOT what
+`system_drain_instance` does, despite the seed's name. That verb records drain
+intent and performs no transition at all (see
+[node-provisioning.md](./node-provisioning.md) Phase 5); the seed short-circuits
+straight to `stopped` so the db-tier run has a terminal state to assert on. It
+then destroys the KubernetesNode + NodeInstance,
 then reprovisions a replacement agent and re-joins it. Asserts
 `cluster.node_count` decrements then restores.
 

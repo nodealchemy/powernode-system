@@ -70,7 +70,7 @@ articles = [
       2. **Provision** — `system_provision_instance` triggers provider VM creation
       3. **Bootstrap** — agent installs, mTLS handshake, module reconcile (~90s cold)
       4. **Run** — heartbeats every 30s, reconcile loop, task lease
-      5. **Drain** — `system_drain_instance` (graceful) — relocates workloads
+      5. **Drain** — `system_drain_instance` records drain intent only (markers + FleetEvent); it relocates nothing and stops nothing — the operator relocates workloads by hand
       6. **Decommission** — `system_terminate_instance` — cascade FK cleanup
 
       ## Per-state error recovery
