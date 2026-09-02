@@ -202,6 +202,29 @@ SKILLS_DATA = [
     PROMPT
   },
   {
+    name: "Restore Volume",
+    slug: "system-restore-volume",
+    description: "Restore a ProviderVolume from one of its completed snapshots — the restore half of project data protection (APO-5 / DR-2)",
+    category: "devops",
+    subdomain: "storage",
+    executor: "System::Ai::Skills::RestoreVolumeExecutor",
+    tags: %w[storage volumes snapshot restore disaster-recovery],
+    system_prompt: <<~PROMPT.strip
+      Restore a volume from a snapshot. Inputs: snapshot_id (required, must be a
+      'completed' snapshot), take_snapshot_first (default true), dry_run.
+
+      DESTRUCTIVE AND IRREVERSIBLE. Everything written to the volume since the
+      snapshot is discarded on providers that roll back in place. There is no
+      rollback for this skill — the only way back is the pre-restore snapshot,
+      which take_snapshot_first captures. Do not turn that flag off unless an
+      operator has said the current contents are expendable.
+
+      Approval-gated. Providers with no snapshot primitive (Proxmox today) are
+      refused at the service seam, so a failure here means no restore happened —
+      never assume a partial one did.
+    PROMPT
+  },
+  {
     name: "Rolling Module Upgrade",
     slug: "system-rolling-module-upgrade",
     invocation_mode: "workflow_step",
@@ -959,6 +982,54 @@ SKILLS_DATA = [
       Convergence is tick-driven — each approved batch upgrades a slice and the next
       sensor tick re-plans the remainder.
       APPROVAL-GATED: reboots every drifted node on the platform, batch by batch.
+    PROMPT
+  },
+  {
+    name: "Replace Instance",
+    slug: "system-replace-instance",
+    description: "Replace an unrecoverable NodeInstance with a warm pool member — acquire, reattach volumes, re-enrol SDWAN, move VIPs. The terminate is a separate approval.",
+    category: "sre_observability",
+    subdomain: "fleet",
+    executor: "System::Ai::Skills::ReplaceInstanceExecutor",
+    tags: %w[fleet disaster-recovery instance-pool storage sdwan],
+    system_prompt: <<~PROMPT.strip
+      Replace an instance the platform has classified UNRECOVERABLE (the
+      system.instance_unrecoverable signal) with a warm member of an instance pool.
+      Inputs: instance_id (required), operation_id (required — the idempotency key;
+      pass the signal fingerprint, or any id stable for the failure, so a re-drive
+      replays instead of claiming a second pool member — an acquire is also matched
+      on the failed instance, so a reclassified failure adopts the replacement it
+      already has), pool_id / pool_name (default: the failed instance's own pool),
+      reason, reap (default false), dry_run.
+      Composes, in order: InstancePoolService#acquire! → volume detach+attach →
+      Sdwan::PeerEnroller per network the failed instance held → VIP holder
+      substitution. Every step is skipped if a FleetEvent already records it for the
+      same operation_id.
+      APPROVAL-GATED on system.instance_replace. The TERMINATE of the failed instance
+      is a SEPARATE approval on system.instance_reap, performed by a DIFFERENT
+      executor (system-reap-instance) — an approved replace moves the workload and
+      leaves the dead instance visible.
+    PROMPT
+  },
+  {
+    name: "Reap Instance",
+    slug: "system-reap-instance",
+    description: "Terminate an unrecoverable NodeInstance whose workload has already moved to a pooled replacement — the destructive half of a DR replace, gated separately from it",
+    category: "sre_observability",
+    subdomain: "fleet",
+    executor: "System::Ai::Skills::ReapInstanceExecutor",
+    tags: %w[fleet disaster-recovery terminate destructive],
+    system_prompt: <<~PROMPT.strip
+      Terminate the FAILED instance of a DR replace, after replace_instance has already
+      moved its volumes, SDWAN membership and VIPs onto a warm pool member.
+      Inputs: instance_id (required — the failed instance, not the replacement),
+      operation_id (required — the SAME id the replace ran under; the terminate is
+      skipped if a FleetEvent already records it), reason.
+      DESTRUCTIVE AND IRREVERSIBLE. APPROVAL-GATED on system.instance_reap, which is a
+      SEPARATE operator control from system.instance_replace precisely so the additive
+      half can be tuned to proceed while the terminate still needs a person. Do not
+      invoke it to "finish" a replace whose additive half failed — an instance still
+      holding volumes or a VIP must be replaced first, or the data goes with the VM.
     PROMPT
   },
 ].freeze

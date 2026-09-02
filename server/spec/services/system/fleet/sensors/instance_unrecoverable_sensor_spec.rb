@@ -411,16 +411,25 @@ RSpec.describe System::Fleet::Sensors::InstanceUnrecoverableSensor do
       ).to include("system.instance_replace")
     end
 
-    # There is no replace ACTUATOR yet, so the lane must be DECLARED
-    # non-remediating or the equality oracle in proceed_lane_actuation_spec
-    # fails — and, more importantly, a pending RemediationOutcome would score
-    # ineffective every settle window and manufacture a false
-    # fleet.remediation_stuck for work no code attempted.
-    it "is declared non-remediating while no replace applier exists" do
+    # IMP-555db48d41f1 (APO-4) INVERTED THIS ORACLE, and the inversion is the
+    # point rather than a relaxation. While no replace actuator existed the
+    # lane HAD to be declared non-remediating, or a pending RemediationOutcome
+    # would score ineffective every settle window and manufacture a false
+    # fleet.remediation_stuck for work no code attempted. An actuator exists
+    # now (ReplaceInstanceExecutor, reached as the binding's :skill), so the
+    # exemption became the STALE half of the matched pair: keeping it would
+    # exempt a lane that really does act, which is the same equality oracle
+    # failing in the other direction.
+    #
+    # Still no REMEDIATION_APPLIERS entry, deliberately — the executor's run IS
+    # the remediation, the system.boot_image_drift shape.
+    it "actuates through its skill rather than an applier, and is no longer exempt" do
       expect(System::Fleet::DecisionEngine::REMEDIATION_APPLIERS)
         .not_to have_key("system.instance_unrecoverable")
+      expect(System::Fleet::DecisionEngine::SIGNAL_BINDINGS["system.instance_unrecoverable"][:skill])
+        .to eq(System::Ai::Skills::ReplaceInstanceExecutor)
       expect(System::Fleet::RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES)
-        .to include("system.instance_replace")
+        .not_to include("system.instance_replace")
     end
   end
 end

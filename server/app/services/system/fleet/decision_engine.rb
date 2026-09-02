@@ -154,25 +154,66 @@ module System
         # (system.instance_replace, seeded require_approval) rather than
         # widening what the reboot lane means.
         #
-        # skill: nil — there is nothing an executor would add. The sensor's
-        # payload already carries the classified reason, which is the whole
-        # content of the operator decision.
+        # IMP-555db48d41f1 (APO-4, DR-1) CLOSED THE APPLIER GAP THIS COMMENT
+        # USED TO DESCRIBE. The paragraph here read "skill: nil — there is
+        # nothing an executor would add" and "NO APPLIER, DELIBERATELY ...
+        # a destructive multi-step provision that no service on this side
+        # performs today". The second half was true and is no longer:
+        # System::Ai::Skills::ReplaceInstanceExecutor now composes the verbs
+        # that already existed separately (pool acquire, volume detach/attach,
+        # Sdwan::PeerEnroller, the VIP holder set, ProvisioningService
+        # terminate), so the lane ACTUATES through its skill and
+        # system.instance_replace has come OUT of
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
         #
-        # NO APPLIER, DELIBERATELY, and this is the one thing not to "fix" by
-        # analogy with the appliers below. Replacing an instance is a
-        # destructive multi-step provision (terminate, re-provision from the
-        # template/pool, re-attach storage and addresses) that no service on
-        # this side performs today; wiring a partial one here would make an
-        # approved replace look actuated while leaving the fleet short an
-        # instance. The category is therefore DECLARED in
-        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES so the
-        # equality oracle in proceed_lane_actuation_spec sees a silent lane
-        # that says it is silent, and so a retune away from require_approval
-        # cannot mint pending outcomes that score ineffective every settle
-        # window into a false fleet.remediation_stuck.
+        # The objection the old comment raised is answered, not waived: the
+        # executor never terminates anything on this path. Its additive half
+        # (acquire → reattach → re-enrol → move VIP) is the whole of what an
+        # approved replace applies, and the reap is a SECOND approval on
+        # system.instance_reap. So an approved replace cannot "look actuated
+        # while leaving the fleet short an instance" — it leaves the fleet with
+        # the replacement in service and the dead row still visible.
+        #
+        # side_effectful + dry_run_supported: seeded require_approval, so
+        # #invoke_skill runs the executor PLAN-ONLY to stamp `skill_plan` onto
+        # the approval request, and the real run happens on #execute_approved!.
         "system.instance_unrecoverable" => {
-          skill: nil,
-          action_category: "system.instance_replace"
+          skill: ::System::Ai::Skills::ReplaceInstanceExecutor,
+          action_category: "system.instance_replace",
+          side_effectful: true,
+          dry_run_supported: true,
+          # operation_id is the idempotency key every step of the executor is
+          # written against, and the SIGNAL FINGERPRINT is what the lane has to
+          # offer. It is NOT a stable key, and the executor does not treat it
+          # as one: the sensor derives it as
+          # "instance_unrecoverable:<id>:<reason>" from a reason it RE-DERIVES
+          # every tick, so the same dead instance arrives under a new id the
+          # moment it reclassifies (host_unreachable while the provider
+          # connection is down, provider_terminal once it recovers). The
+          # executor's #adopted_acquisition matches an acquire on the FAILED
+          # INSTANCE as well as the operation_id for exactly that reason — the
+          # fingerprint gives a re-emitted IDENTICAL signal a cheap replay, and
+          # adoption covers the re-classified one.
+          #
+          # reap: true — the operator ruling splits the destructive half into
+          # its OWN approval, and split does not mean absent. Without this the
+          # lane would apply the additive half and never ask anyone about the
+          # dead instance, so FLEET_SENSORS.md's "the reap is gated separately
+          # on system.instance_reap" would describe a card nobody is ever
+          # shown. The executor asks Ai::AutonomyGate under that category,
+          # which parks a second approval naming ReapInstanceExecutor; nothing
+          # terminates until a person releases it.
+          input_mapper: ->(signal) {
+            instance_id = signal.dig(:payload, "instance_id")
+            next nil if instance_id.blank?
+
+            {
+              instance_id: instance_id,
+              operation_id: signal[:fingerprint].presence || "instance_replace:#{instance_id}",
+              reason: signal.dig(:payload, "reason"),
+              reap: true
+            }
+          }
         },
         # Node mTLS cert nearing expiry (CertificateExpirySensor).
         #

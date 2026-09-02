@@ -530,13 +530,29 @@ module System
         # tunable operator decisions and collapsing them would put "reboot it"
         # and "throw it away and build another" behind one row.
         #
-        # require_approval, and it should stay that way while there is no
-        # replace applier — DecisionEngine's binding records why one was not
-        # written. Also listed in
-        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES so a retune
-        # to a proceeding verb cannot mint outcomes for an action no code
-        # attempts.
+        # require_approval, and it should stay that way now that a replace
+        # APPLIER exists (IMP-555db48d41f1 / APO-4 —
+        # System::Ai::Skills::ReplaceInstanceExecutor, named by the
+        # DecisionEngine binding). The reasoning inverted with the actuator:
+        # this row used to hold the lane shut because nothing would have run,
+        # and now holds it shut because something will. The category came OUT
+        # of RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES in the
+        # same change — a lane that actuates must be scored.
         "system.instance_replace"        => "require_approval",
+        # IMP-555db48d41f1 (APO-4, DR-1) — the DESTRUCTIVE half of a replace,
+        # split out so it can be refused while the additive half proceeds.
+        # This is the action_category of a CLASS of its own,
+        # System::Ai::Skills::ReapInstanceExecutor: the replace executor has no
+        # terminate call site at all, and hands the reap to Ai::AutonomyGate
+        # under THIS category, which parks a resumable row and replays the reap
+        # executor when a person releases it. The class split is what makes the
+        # split gate real — a flag on the replace executor would have resolved
+        # the REPLACE category (BaseSkillExecutor gates on one category per
+        # class), so this row would have governed nothing. No signal binding
+        # routes it, so it is not in System::Autonomy::ActionCategoryRouter's
+        # routed set — the row exists so the terminate is an operator-visible,
+        # separately tunable control rather than an unrowed default.
+        "system.instance_reap"           => "require_approval",
         "system.cert_revoke"             => "require_approval",
         "system.module_promote_to_live"  => "require_approval",
         "system.fleet_rolling_upgrade"   => "require_approval",

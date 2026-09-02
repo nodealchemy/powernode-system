@@ -1,0 +1,88 @@
+# frozen_string_literal: true
+
+module System
+  module Ai
+    module Skills
+      # APO-4 (DR-1) — the DESTRUCTIVE half of a replace: terminate the
+      # instance whose workload ReplaceInstanceExecutor has already moved onto
+      # a warm pool member.
+      #
+      # WHY THIS IS A CLASS AND NOT A FLAG. The first cut of APO-4 carried the
+      # reap as a `reap_only:` input on ReplaceInstanceExecutor, replayed there
+      # when the approval released. That put the terminate behind the WRONG
+      # gate: BaseSkillExecutor#gate_action! resolves the CLASS's single
+      # `action_category`, which on the replace executor is
+      # system.instance_replace — the ADDITIVE category. Two consequences, both
+      # real:
+      #
+      #   * any caller that could reach the replace could pass the flag, so a
+      #     plan-authored invocation parked a card describing a REPLACE and
+      #     released a TERMINATE;
+      #   * an operator retuning system.instance_replace to a proceeding verb
+      #     (which PolicyDeclarations explicitly contemplates as a tunable
+      #     decision) would have auto-executed the terminate with no reap
+      #     approval anywhere in the loop.
+      #
+      # A separate class is what makes the second approval real: this
+      # executor's own action_category IS system.instance_reap, so an ungated
+      # call gates on the reap policy and a released approval replays THIS
+      # class. The replace executor can no longer terminate anything at all —
+      # it has no terminate call site left.
+      #
+      # IDEMPOTENT ON operation_id, on the same ledger the additive half
+      # writes (InstanceReplacementLedger): a double release cannot ask the
+      # provider to terminate twice, and the reap event shares the replace's
+      # correlation_id so the whole operation reads as one thing.
+      class ReapInstanceExecutor < BaseSkillExecutor
+        include InstanceReplacementLedger
+
+        skill_descriptor(
+          name: "reap_instance",
+          description: "Terminate an unrecoverable NodeInstance whose workload has already been moved to a pooled replacement. The destructive half of a DR replace, gated separately from it.",
+          category: "fleet",
+          inputs: {
+            instance_id: { type: "string", required: true,
+                           description: "System::NodeInstance to terminate — the FAILED one, whose volumes/VIPs have already moved" },
+            operation_id: { type: "string", required: true,
+                            description: "The replace's idempotency key — the terminate is skipped if a FleetEvent already records it for this id" },
+            reason: { type: "string", required: false,
+                      description: "Classified reason from the unrecoverable sensor, carried onto the step event" }
+          },
+          outputs: {
+            reaped: :boolean,
+            failed_instance_id: :string,
+            replayed: :boolean
+          },
+          requires_approval: true,
+          # Declared rather than derived: the derived name would be
+          # system.reap_instance, and the operator-facing row, the
+          # PolicyDeclarations entry and Ai::AutonomyGate must all resolve the
+          # SAME spelling — system.instance_reap.
+          action_category: "system.instance_reap",
+          blast_radius: :high
+        )
+
+        binds_to "Fleet Autonomy"
+
+        protected
+
+        def perform(instance_id:, operation_id:, reason: nil)
+          failed = find_instance(instance_id)
+          return failure("Instance not found in account scope: #{instance_id}") unless failed
+
+          prior = replayed_step("reap", operation_id)
+          return success(prior.payload.symbolize_keys.merge(replayed: true)) if prior
+
+          result = ::System::ProvisioningService.terminate_instance(instance: failed)
+          return failure("Reap of #{failed.name} failed: #{result.error}") unless result.success?
+
+          payload = { "reaped" => true, "failed_instance_id" => failed.id }
+          record_step!(step: "reap", operation_id: operation_id, payload: payload,
+                       failed: failed, reason: reason, severity: "medium")
+
+          success(payload.symbolize_keys.merge(replayed: false))
+        end
+      end
+    end
+  end
+end

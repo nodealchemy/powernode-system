@@ -35,13 +35,32 @@ module System
       # rather than escalating it to a replace proposal. Every predicate below
       # fails CLOSED (returns "not unrecoverable") on anything it cannot read.
       #
-      # NOT AN ACTUATOR. There is no replace applier: this increment delivers
-      # detection plus the distinct policy row. system.instance_replace is
-      # therefore listed in
-      # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES so a proceeded
-      # decision (if an operator ever retunes the lane off require_approval)
-      # cannot mint a pending outcome that scores ineffective every settle
-      # window and manufactures a false fleet.remediation_stuck.
+      # THE ACTUATOR ARRIVED IN APO-4 (IMP-555db48d41f1). This paragraph read
+      # "NOT AN ACTUATOR. There is no replace applier: this increment delivers
+      # detection plus the distinct policy row", which was true of APO-2b and
+      # is not true now: the binding names
+      # System::Ai::Skills::ReplaceInstanceExecutor, and
+      # system.instance_replace has come out of
+      # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES because a lane
+      # that actuates must be scored rather than exempted.
+      #
+      # What this sensor does is unchanged — it still only DETECTS, and the
+      # payload it emits (instance_id + the classified reason) is what the
+      # executor's input_mapper reads. Its fingerprint matters more than it
+      # used to: the binding passes it as the executor's `operation_id`, so a
+      # re-emitted IDENTICAL signal replays a replace already in progress
+      # rather than claiming a second warm member.
+      #
+      # THE FINGERPRINT IS NOT STABLE ACROSS A RECLASSIFICATION, and no reader
+      # of it should assume otherwise. #unrecoverable_reason re-derives the
+      # reason on every tick from a live provider read, so the same dead
+      # instance emits "…:host_unreachable" while its provider connection is
+      # down and "…:provider_terminal" once that connection recovers — two
+      # fingerprints, one failure. The replace executor closes that with
+      # #adopted_acquisition (an acquire is matched on the FAILED INSTANCE as
+      # well as the operation_id); the alternative, making the fingerprint
+      # reason-free, would collapse genuinely distinct classifications into one
+      # signal and cost the operator the reason on the card.
       class InstanceUnrecoverableSensor < BaseSensor
         # The same fence InstanceStatusSensor carries over the same population:
         # never speak for an instance another control plane owns.
