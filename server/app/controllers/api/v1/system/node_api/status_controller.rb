@@ -72,7 +72,7 @@ module Api
           # Body (from powernode-agent's runtime.HeartbeatPayload):
           #   boot_id, agent_version, architecture, uptime_seconds,
           #   module_digests (hash of module_id → oci_digest), mount_state,
-          #   load_average, memory_free_kb, booted_image_git_sha,
+          #   load_average, memory_free_kb, cpu_pct, booted_image_git_sha,
           #   sdwan_state (per-network applier outcomes — see
           #   Sdwan::AgentApplyStateWriter), sdwan_ovn_state,
           #   module_verify_state (see System::ModuleVerifyStateWriter),
@@ -205,10 +205,13 @@ module Api
             # Runtime metrics (IMP-938ee27f4921): mount_state / load_average /
             # memory_free_kb / uptime_seconds have always been sent and never
             # read, while ProjectMetricsCollector named this exact source for
-            # memory_pct and reported `unavailable` forever. None of the four
-            # present => nothing written, so a pre-feature agent stays
-            # distinguishable from a reporting one. Wrapped like the blocks
-            # above so an ingest bug cannot bounce telemetry.
+            # memory_pct and reported `unavailable` forever. APO-2a added the
+            # fifth, cpu_pct — MEASURED on-node from /proc/stat deltas, never
+            # inferred from load_average — so the SLO sensor has a load signal
+            # that is not memory. None of the five present => nothing written,
+            # so a pre-feature agent stays distinguishable from a reporting
+            # one. Wrapped like the blocks above so an ingest bug cannot
+            # bounce telemetry.
             begin
               runtime_obs = hb.slice(*::System::RuntimeMetricsWriter::WIRE_KEYS)
               ::System::RuntimeMetricsWriter.write!(

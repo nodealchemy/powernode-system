@@ -67,7 +67,8 @@ func readMeminfoFieldKB(path, field string) (int64, bool) {
 // deliberately NOT derived from it (IMP-938ee27f4921): load average
 // folds in I/O-wait run-queue length and converting to a percentage
 // needs a per-instance core count this agent doesn't reliably have on
-// physical/pivot nodes.
+// physical/pivot nodes. cpu_pct comes from cpuSampler instead, which
+// measures the busy/idle split directly from /proc/stat (APO-2a).
 //
 // Returns ("", false) when the file can't be read or doesn't carry at
 // least three fields.

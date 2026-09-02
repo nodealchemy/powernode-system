@@ -34,8 +34,19 @@ type HeartbeatPayload struct {
 	// distinct from an explicit 0, which is the most alarming reading a node
 	// can report (memory exhausted) and must never be indistinguishable from
 	// "not measured". See buildHeartbeat / readMemAvailableKB.
-	MemoryFreeKB *int64                  `json:"memory_free_kb"`
-	SdwanState   []sdwan.HeartbeatStatus `json:"sdwan_state,omitempty"`
+	MemoryFreeKB *int64 `json:"memory_free_kb"`
+	// CPUPct is percent-busy across the interval since the PREVIOUS heartbeat,
+	// measured on-node from /proc/stat deltas (APO-2a). *float64 and not
+	// omitempty for exactly the MemoryFreeKB reason: 0.0 is a genuinely idle
+	// node — a real reading — and must never be indistinguishable from "not
+	// measured". nil (marshalled as null) is the honest answer for the first
+	// heartbeat of a process, an unreadable /proc/stat, and a counter reset.
+	//
+	// This is NOT derived from LoadAverage, here or on the server
+	// (IMP-938ee27f4921): a load average folds in I/O-wait run-queue length
+	// and needs a core count to become a percentage. See cpuSampler.
+	CPUPct     *float64                `json:"cpu_pct"`
+	SdwanState []sdwan.HeartbeatStatus `json:"sdwan_state,omitempty"`
 	// SdwanOvnState is the most recent OVN NB plan replay observation
 	// (IMP-57e9a90598ee). Top-level rather than nested in SdwanState
 	// because the NB replay is host-scoped, not per-network. nil — and

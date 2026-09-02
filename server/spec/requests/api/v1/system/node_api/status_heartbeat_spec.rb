@@ -725,6 +725,51 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
       expect(recorded["uptime_seconds"]).to eq(3_600)
     end
 
+    # APO-2a (IMP-ff9043758d8b) — cpu_pct, the fifth scalar. The agent MEASURES
+    # percent-busy from /proc/stat deltas (load_average is still never
+    # converted server-side); this is the ingest half of that producer.
+    it "lands a measured cpu_pct under the writer's CONFIG_KEY" do
+      post_heartbeat(cpu_pct: 42.5)
+
+      expect(response).to have_http_status(:ok)
+      expect(recorded["cpu_pct"]).to eq(42.5)
+    end
+
+    it "tolerates a stringly-typed cpu_pct" do
+      post_heartbeat(cpu_pct: "42.5")
+
+      expect(recorded["cpu_pct"]).to eq(42.5)
+    end
+
+    # 0.0 is a genuinely idle node, the one reading that must never be
+    # confused with "not measured" — and it is enough on its own to qualify
+    # the heartbeat for a write.
+    it "records a measured 0.0 cpu_pct as a reading, not as absence" do
+      post_heartbeat_sans(:mount_state, :uptime_seconds, cpu_pct: 0.0)
+
+      expect(recorded).to be_present
+      expect(recorded["cpu_pct"]).to eq(0.0)
+    end
+
+    it "never records cpu_pct as a measured value when the field is absent" do
+      post_heartbeat
+
+      expect(recorded["cpu_pct"]).to be_nil
+    end
+
+    # A percentage outside 0..100 is a broken producer, not a reading. Storing
+    # it would put a fabricated number into ProjectMetricsCollector's mean.
+    it "rejects an out-of-range or non-numeric cpu_pct, storing nil" do
+      post_heartbeat(cpu_pct: 250.0)
+      expect(recorded["cpu_pct"]).to be_nil
+
+      post_heartbeat(cpu_pct: -1.0)
+      expect(recorded["cpu_pct"]).to be_nil
+
+      post_heartbeat(cpu_pct: "busy")
+      expect(recorded["cpu_pct"]).to be_nil
+    end
+
     # Each qualifying tick writes a FRESH snapshot rather than merging onto the
     # previous one — a field that stops being reported must disappear from the
     # document on the very next heartbeat, not linger as a stale positive.

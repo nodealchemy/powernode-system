@@ -87,6 +87,12 @@ type Service struct {
 	// node past the platform's 600s live-heartbeat window and make it read as
 	// SILENT — an outage manufactured by an observability feature.
 	verifyProbes *probe.Evaluator
+	// cpu measures percent-busy across the interval BETWEEN heartbeats
+	// (APO-2a). Stateful by necessity — a CPU percentage is a delta of two
+	// /proc/stat readings — and bound lazily on the first buildHeartbeat so
+	// New() stays a pure constructor and tests can substitute a fixture path.
+	// Touched only from the heartbeat goroutine, so it needs no locking.
+	cpu *cpuSampler
 }
 
 func New(cfg Config) *Service {
@@ -618,13 +624,23 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 	// IMP-6151ae14f4e5: both left nil/omitted (never a fabricated reading)
 	// when /proc is unreadable or unparseable. See readMemAvailableKB /
 	// readLoadAverage for why MemAvailable (not MemFree) and why
-	// load_average is still populated even though cpu_pct isn't derived
-	// from it.
+	// load_average is still populated even though cpu_pct is not derived
+	// from it (it is measured separately, below).
 	if kb, ok := readMemAvailableKB("/proc/meminfo"); ok {
 		payload.MemoryFreeKB = &kb
 	}
 	if la, ok := readLoadAverage("/proc/loadavg"); ok {
 		payload.LoadAverage = la
+	}
+	// APO-2a: percent-busy MEASURED here rather than inferred from
+	// load_average on the server. nil until a second reading exists (and on
+	// every unreadable/reset tick) — an unmeasured interval must never ship
+	// as 0.0, which reads as a perfectly idle node. See cpuSampler.
+	if s.cpu == nil {
+		s.cpu = &cpuSampler{path: procStatPath}
+	}
+	if pct, ok := s.cpu.Sample(); ok {
+		payload.CPUPct = &pct
 	}
 	// Pure snapshot read — the probes themselves run in PostSend. nil stays
 	// nil (omitempty): "no module here declares a probe" is an absence the
