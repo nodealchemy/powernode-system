@@ -99,18 +99,26 @@ module System
       # one family; declared BEFORE "sdwan" because system.sdwan_federation_compose
       # extends system.sdwan_ and first match wins.
       "topology"          => %w[system.sdwan_federation_compose system.multi_tenant_isolation system.service_discovery_compose],
-      "sdwan"             => %w[system.sdwan_ sdwan. system.federation_peer_],
+      "sdwan"             => %w[system.sdwan_ sdwan. system.federation_],
       "container_runtime" => %w[system.runtime_],
       "disk_image"        => %w[system.disk_image_],
       "gitops"            => %w[system.gitops_],
-      "packages"          => %w[system.package_module. system.package_repository.],
-      "architecture"      => %w[system.architecture.],
-      "storage"           => %w[system.storage_],
+      "packages"          => %w[system.package_module. system.package_module_ system.package_repository.],
+      # Both spellings are registered today: `system.architecture.<verb>` (seeded
+      # policy rows) and `system.architecture_<verb>` (the gated executors'
+      # derived categories, APO-1c). Deduplicating the spelling is filed; until
+      # then both pivot into the same domain.
+      "architecture"      => %w[system.architecture. system.architecture_],
+      "storage"           => %w[system.storage_ system.restore_volume],
+      # Service exposure + certificate issuance (APO-1c gated executors).
+      "ingress"           => %w[system.expose_service_ system.acme_certificate_],
+      # Platform-deployment scaling (APO-3b): the hub-excluded replica reconciler.
+      "platform"          => %w[system.platform.],
       # DELIBERATE: project.* is core-owned (Ai::InterventionPolicy::STATIC_CATEGORIES). Claiming it here is a
       # display choice for this account-wide view, not a core→extension dependency (that arrow points the
       # permitted way) — do NOT "fix" by filtering core rows out. Ruled 2026-08-23 (IMP-fa63f411633b).
       "project"           => %w[project.],
-      "node_lifecycle"    => %w[system.cert_ system.acme_cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.capability_gap_ system.observation system.task. system.task_ system.template_closure_ system.node_boot_image_]
+      "node_lifecycle"    => %w[system.cert_ system.acme_cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.capability_gap_ system.observation system.task. system.task_ system.template_closure_ system.node_boot_image_ system.node_lkg_ system.fulfill_capability_ system.relocate_]
     }.freeze
 
     # GET /api/v1/system/autonomy
