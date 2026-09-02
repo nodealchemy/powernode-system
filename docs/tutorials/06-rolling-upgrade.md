@@ -395,24 +395,37 @@ platform.system_platform_maintenance({
   deployment_id: "<deployment-id>"   // omit to scan every deployment
 })
 // → { data: { deployments: [ { deployment_id, deployment_name, template,
+//                              instance_count,
 //                              drift_count,
 //                              drifted_instances: [ { id, status, name, drift } ],
 //                              not_reporting_count,
-//                              not_reporting_instances: [ { id, status, name } ] } ] },
+//                              not_reporting_instances: [ { id, status, name } ],
+//                              not_assessed_count,
+//                              not_assessed_instances: [ { id, status, name } ] } ] },
 //     recommendations: [ "..." ] }
 ```
 
-Read `recommendations` and `not_reporting_count` as carefully as
-`drift_count`:
+Read `recommendations`, `not_reporting_count` and `not_assessed_count` as
+carefully as `drift_count`:
 
 - `not_reporting_count` is instances that have **never heartbeated**. Drift
   is **unknown** for them, not clear — they are excluded from the "nothing
   to remediate" recommendation for that reason. An instance that HAS
   heartbeated and reports nothing mounted is counted as drift, not here.
-- The sweep covers instances in `pending`, `provisioning`, `running` and
-  `stopped` (`NodeInstance.active`). Instances in `starting`, `stopping`,
-  `rebooting` or `error` are in **neither** count, and nothing in the payload
-  says so — check those by instance.
+- `not_assessed_count` is instances in `starting`, `stopping`, `rebooting`
+  or `error` — the states outside `NodeInstance.active`. Drift is **not
+  asked** for them at all: a mid-reboot digest map is not evidence of
+  anything. They are named in `not_assessed_instances` (with their status)
+  and they also suppress the all-clear, so re-run once they settle. Two of
+  those states are what the platform's own remediation produces, so expect
+  this bucket during a repair.
+- The three buckets name only the instances that need attention: a
+  **converged, reporting** instance is in none of them. Read them against
+  `instance_count`, which is every non-terminated instance of the template —
+  so `drift_count + not_reporting_count + not_assessed_count + the converged
+  remainder = instance_count`. Zero across all three with a non-zero
+  `instance_count` means every instance was assessed and none needs
+  remediation; it never means a subset was filtered out of the question.
 
 `drift_check` compares each instance against the modules its **node** is
 assigned. That is the layer a `sync_modules` reconcile (queued by
@@ -422,7 +435,11 @@ was built from is a separate question neither verb answers.
 
 > Until IMP-0d106a152c47 (2026-08-31) `drift_check`'s detector was a
 > hardcoded `false`: it reported every deployment healthy without looking.
-> If you are reading an older run's output, it proves nothing.
+> If you are reading an older run's output, it proves nothing. A run from
+> before IMP-351be1c674e0 has no `not_assessed_count`: it scoped the sweep
+> with `NodeInstance.active` and dropped the four states above from both
+> counts silently, so "0 drifted, 0 unknown" there does not mean every
+> instance was looked at.
 
 ## Extract a learning
 
