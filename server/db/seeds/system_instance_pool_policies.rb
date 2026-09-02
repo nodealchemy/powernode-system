@@ -6,7 +6,9 @@
 # auto-execute regardless of operator intent.
 #
 # Scoped to the Fleet Autonomy agent (the most sensible owner — pools are
-# fleet capacity machinery) AND seeded as global so manual ops are covered too.
+# fleet capacity machinery) AND seeded as global for the GATED SUBSET ONLY, so
+# manual ops are covered exactly where a gate site reads the row — see the note
+# at the manual-scope call below (IMP-5a2b801f3386).
 
 puts "\n  Seeding instance pool policies..."
 
@@ -42,9 +44,18 @@ end
 # assert it against a RUNNING database without executing this seed.
 pool_policies = System::Governance::PolicyDeclarations::INSTANCE_POOL_POLICIES
 
-# Manual scope (operators clicking Settings buttons in the UI)
-count = upsert_pool_policies_for_scope!(admin_account, pool_policies, scope: "global")
-puts "  ✅ Instance pool policies (manual): #{count} created/updated"
+# Manual scope (operators clicking Settings buttons in the UI).
+#
+# IMP-5a2b801f3386 — the GATED SUBSET, not all eight. A manual-scope row for a
+# category no gate site passes renders in the Autonomy modal as a control an
+# operator can edit and nothing reads; `system.instance_pool_drain` showed an
+# approval requirement no code path enforced. The rationale, and which four
+# verbs qualify, is on INSTANCE_POOL_OPERATOR_GATED_KEYS.
+operator_policies = System::Governance::PolicyDeclarations::INSTANCE_POOL_OPERATOR_POLICIES
+
+count = upsert_pool_policies_for_scope!(admin_account, operator_policies, scope: "global")
+puts "  ✅ Instance pool policies (manual): #{count} created/updated " \
+     "(#{operator_policies.size} of #{pool_policies.size} gated)"
 
 # Agent scope (Fleet Autonomy creating pools as part of capacity expansion)
 fleet_agent = ::Ai::Agent.resolve_for(admin_account.id, name: "Fleet Autonomy", agent_type: "monitor")

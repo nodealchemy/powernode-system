@@ -909,6 +909,62 @@ module System
         "system.instance_pool_acquire"       => "auto_approve"        # claim a ready member — fast path
       }.freeze
 
+      # IMP-5a2b801f3386 — DELIBERATELY THE GATED SUBSET, NOT ALL EIGHT.
+      #
+      # The operator set below seeds rows at (scope "global", ai_agent_id nil):
+      # the shape an agent-less caller resolves, and the shape the Autonomy
+      # modal renders. A row here for a category NO gate site passes is a
+      # control an operator can edit that changes nothing — the defect
+      # RUNTIME_OPERATOR_GATED_KEYS was introduced to prevent
+      # (IMP-9b9653e6514e), and `system.instance_pool_drain` was its sharpest
+      # form: declared require_approval, so the operator was shown an approval
+      # requirement no code path enforces.
+      #
+      # The four listed are the four an InstancePoolsController gate site
+      # passes to Ai::GatedActions — `_create` (#create), `_delete` (#destroy)
+      # and `_ceiling_raise` / `_archive` (#update's GATED_UPDATE_CATEGORIES).
+      # The other four — `_acquire`, `_drain`, `_replenish`, `_update` — have
+      # no gate site and so get no operator row; they resolve to
+      # Ai::InterventionPolicyService's require_approval default on that path,
+      # which is the honest answer for an action no gate consults, and they
+      # stay REGISTERED (registration in the engine unions every set, and the
+      # agent set below still declares them) so an operator-authored row for
+      # one still validates.
+      #
+      # `_replenish` staying ungated is a recorded DECISION, not an omission —
+      # see System::Executors::InstancePool::ReplenishPool and the census in
+      # spec/lint/instance_pool_replenish_gating_spec.rb. Gaining a gate site
+      # for any of the four is what puts it back in this list; both halves are
+      # pinned by spec/db/seeds/system_instance_pool_operator_policies_spec.rb.
+      #
+      # WITHDRAWING A DECLARATION DOES NOT DELETE A ROW. This is forward-only:
+      # db:seed runs on first boot only, so an install that has already booted
+      # keeps the four rows its first boot wrote, and its operator still sees
+      # `_drain` advertising an approval nothing enforces. Nothing collects
+      # them, by design and not by oversight — PolicyReconciler is create-only
+      # ("reconcile ABSENCE ONLY ... never delete": at this shape it cannot
+      # tell a stale seeded row from an operator's tuning),
+      # clean_stale_operator_policies! keys on scope "action_type" rather than
+      # "global", and clean_unregistered_policies! collects only DEREGISTERED
+      # categories — these four stay registered via the agent set below, which
+      # is correct. Whether a bounded one-shot collection is warranted, and on
+      # what predicate, is a governance decision this task did not settle; it
+      # is filed as improvement 01a063db-c869-7117-b7f6-f88b7061ab4a. Until it
+      # is taken, deactivating one of the four by hand is harmless and equally
+      # inert.
+      #
+      # The AGENT set is untouched and keeps all eight: Fleet Autonomy's own
+      # dispatch vocabulary is a different audience on a different path.
+      INSTANCE_POOL_OPERATOR_GATED_KEYS = %w[
+        system.instance_pool_create
+        system.instance_pool_delete
+        system.instance_pool_ceiling_raise
+        system.instance_pool_archive
+      ].freeze
+
+      INSTANCE_POOL_OPERATOR_POLICIES =
+        INSTANCE_POOL_POLICIES.slice(*INSTANCE_POOL_OPERATOR_GATED_KEYS).freeze
+
       PROVISIONING_POLICIES = {
         "project.adapt" => "notify_and_proceed",
         "project.cost_control" => "notify_and_proceed",
@@ -985,9 +1041,12 @@ module System
       # nil means an agent-less row; a set whose agent is absent is SKIPPED,
       # never guessed at another shape.
       #
-      # NOTE the two dual-shape entries: instance-pool declares the same six
-      # categories at BOTH the operator (global) and agent shapes, exactly as
-      # its seed writes them, because the two bind different callers.
+      # NOTE the dual-shape instance-pool entries: the same family is declared
+      # at BOTH the operator (global) and agent shapes, exactly as its seed
+      # writes them, because the two bind different callers — but NOT the same
+      # rows. The agent set carries all eight categories; the operator set
+      # carries only the four a gate site passes (IMP-5a2b801f3386, see
+      # INSTANCE_POOL_OPERATOR_GATED_KEYS above).
       POLICY_SETS = [
         { key: "fleet-autonomy",     agent_key: "fleet-autonomy",     scope: "agent",
           priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: FLEET_AUTONOMY_POLICIES },
@@ -1011,7 +1070,7 @@ module System
         { key: "runtime-operator",   agent_key: nil,                  scope: "action_type",
           priority: 5,  conditions: DEFAULT_TRUST_CONDITIONS, policies: RUNTIME_OPERATOR_POLICIES },
         { key: "instance-pool-operator", agent_key: nil,              scope: "global",
-          priority: 5,  conditions: {}, policies: INSTANCE_POOL_POLICIES },
+          priority: 5,  conditions: {}, policies: INSTANCE_POOL_OPERATOR_POLICIES },
         { key: "platform-scaling",   agent_key: nil,                  scope: "global",
           priority: 5,  conditions: {}, policies: PLATFORM_SCALING_POLICIES }
       ].freeze
