@@ -290,6 +290,147 @@ describe('InstancePoolsPage', () => {
     });
   });
 
+  // IMP-067f39468350 — POST /instance_pools and DELETE /instance_pools/:id are
+  // BOTH approval-gated (system.instance_pool_create / _delete), and have been
+  // since IMP-24daa05e7a22 wired the REST gates. The client did not know:
+  // `create` read `extractData(response).pool` off a 202 body that carries no
+  // `pool`, so the caller upserted `undefined` and the catch rendered "Failed
+  // to create pool" for an operation that had parked correctly; `destroy`
+  // ignored the response entirely and removed the row from the list, telling
+  // the operator a pool was archived while it still existed. Same defect the
+  // gated PATCH above already fixed, on the two doors that were missed.
+  describe('a gated create parked for approval', () => {
+    const PENDING_CREATE = {
+      pending: true,
+      deferred_operation_id: 'dop-2',
+      action_category: 'system.instance_pool_create',
+      approval_request_id: 'ar-2',
+      message: 'Awaiting approval',
+    };
+
+    const openCreateAndSubmit = async () => {
+      mockGet.mockResolvedValueOnce(listResponse([]));
+      renderPage();
+
+      await waitFor(() =>
+        expect(screen.getAllByText('Create Pool').length).toBeGreaterThan(0),
+      );
+      fireEvent.click(screen.getAllByText('Create Pool')[0]);
+      await waitFor(() =>
+        expect(screen.getByText('Create instance pool')).toBeInTheDocument(),
+      );
+
+      fireEvent.change(screen.getByLabelText(/^name/i), {
+        target: { value: 'burst-pool' },
+      });
+      fireEvent.change(screen.getByLabelText(/node template/i), {
+        target: { value: 'tpl-1' },
+      });
+      // Submit the modal's FORM rather than clicking by name: the footer
+      // button, the header action and the empty-state action all read
+      // "Create Pool", and a by-name click is ambiguous between them.
+      const nameInput = screen.getByLabelText(/^name/i);
+      fireEvent.submit(nameInput.closest('form') as HTMLFormElement);
+    };
+
+    it('surfaces an approval-required notice instead of a failure', async () => {
+      mockPost.mockResolvedValueOnce(envelope(PENDING_CREATE));
+
+      await openCreateAndSubmit();
+
+      await waitFor(() => expect(mockPost).toHaveBeenCalled());
+      await waitFor(() => expect(mockAddNotification).toHaveBeenCalled());
+
+      const notice = mockAddNotification.mock.calls[0][0];
+      expect(notice.type).toBe('info');
+      expect(notice.message).toMatch(/approval required/i);
+      expect(notice.details).toMatchObject({
+        action: 'system.instance_pool_create',
+        approval_request_id: 'ar-2',
+        deferred_operation_id: 'dop-2',
+      });
+    });
+
+    it('never reports the parked create as created or failed', async () => {
+      mockPost.mockResolvedValueOnce(envelope(PENDING_CREATE));
+
+      await openCreateAndSubmit();
+
+      await waitFor(() => expect(mockAddNotification).toHaveBeenCalled());
+      const types = mockAddNotification.mock.calls.map((c) => c[0].type);
+      expect(types).not.toContain('error');
+      expect(types).not.toContain('success');
+    });
+
+    // Control: the ungated 201 still upserts the new pool and toasts success.
+    it('still reports success on the inline 201', async () => {
+      mockPost.mockResolvedValueOnce(
+        envelope({ pool: { ...POOL_A, id: 'pool-new', name: 'burst-pool' } }),
+      );
+
+      await openCreateAndSubmit();
+
+      await waitFor(() => expect(mockAddNotification).toHaveBeenCalled());
+      const notice = mockAddNotification.mock.calls[0][0];
+      expect(notice.type).toBe('success');
+      expect(notice.message).toMatch(/created successfully/i);
+    });
+  });
+
+  describe('a gated delete parked for approval', () => {
+    const PENDING_DELETE = {
+      pending: true,
+      deferred_operation_id: 'dop-3',
+      action_category: 'system.instance_pool_delete',
+      approval_request_id: 'ar-3',
+      message: 'Awaiting approval',
+    };
+
+    const confirmDelete = async () => {
+      mockGet.mockResolvedValueOnce(listResponse([POOL_A]));
+      renderPage();
+
+      const row = await waitFor(() => screen.getByTestId('pool-row-pool-a'));
+      fireEvent.click(within(row).getByLabelText(/delete web-warm/i));
+      await waitFor(() =>
+        expect(screen.getByText('Archive instance pool')).toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /archive pool/i }));
+    };
+
+    it('surfaces an approval-required notice and leaves the row in the list', async () => {
+      mockDelete.mockResolvedValueOnce(envelope(PENDING_DELETE));
+
+      await confirmDelete();
+
+      await waitFor(() => expect(mockAddNotification).toHaveBeenCalled());
+
+      const notice = mockAddNotification.mock.calls[0][0];
+      expect(notice.type).toBe('info');
+      expect(notice.message).toMatch(/approval required/i);
+      expect(notice.details).toMatchObject({
+        action: 'system.instance_pool_delete',
+        approval_request_id: 'ar-3',
+        deferred_operation_id: 'dop-3',
+      });
+
+      // The ROW is the oracle: nothing was archived, so nothing may vanish
+      // from the operator's list.
+      expect(screen.getByTestId('pool-row-pool-a')).toBeInTheDocument();
+    });
+
+    it('never reports the parked delete as archived', async () => {
+      mockDelete.mockResolvedValueOnce(envelope(PENDING_DELETE));
+
+      await confirmDelete();
+
+      await waitFor(() => expect(mockAddNotification).toHaveBeenCalled());
+      const types = mockAddNotification.mock.calls.map((c) => c[0].type);
+      expect(types).not.toContain('success');
+      expect(types).not.toContain('error');
+    });
+  });
+
   it('archives a pool via DELETE after confirmation', async () => {
     mockGet.mockResolvedValueOnce(listResponse([POOL_A]));
     mockDelete.mockResolvedValueOnce({ data: { success: true } });

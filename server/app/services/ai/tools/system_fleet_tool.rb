@@ -384,6 +384,24 @@ module Ai
         "system_create_provider_instance_type" => "system.providers.create"
       }.freeze
 
+      # IMP-067f39468350 — the instance-pool gate's own names, spelled ONCE.
+      #
+      # The categories are the two InstancePoolsController::GATED_UPDATE_
+      # CATEGORIES values plus the create one, restated here rather than read
+      # off the controller: this file is loaded at class-body evaluation and
+      # must not force a controller autoload. That they agree is asserted in
+      # spec/services/ai/tools/system_fleet_instance_pool_gating_spec.rb
+      # against the controller's OWN constant, so a drift on either side reds
+      # — the load-bearing claim being that one operator-tuned policy row
+      # governs a ceiling raise whichever door it arrives through.
+      POOL_UPDATE_ACTION          = "system_update_instance_pool"
+      POOL_CREATE_CATEGORY        = "system.instance_pool_create"
+      POOL_CEILING_RAISE_CATEGORY = "system.instance_pool_ceiling_raise"
+      POOL_ARCHIVE_CATEGORY       = "system.instance_pool_archive"
+      # The columns a "raise" is measured on — the two the replenish tick
+      # spends up to. min_size is not one of them: it cannot raise the ceiling.
+      POOL_CEILING_ATTRIBUTES     = %i[target_size max_size].freeze
+
       # GOVERNANCE DECLARATION (IMP-d410a587d6bf) — the MCP half of instance
       # lifecycle was outside the approval regime entirely. This tool held ZERO
       # Ai::AutonomyGate references while its REST twin
@@ -421,7 +439,13 @@ module Ai
       # consulted. On :proceed the response is what it always was
       # (`terminated: true` + the instance); on require_approval it parks.
       #
-      # SCOPE, stated so this is not read as more than it is. ONE verb is gated.
+      # SCOPE, stated so this is not read as more than it is. THREE verbs on
+      # this tool are gate-routed: system_terminate_instance (this one),
+      # plus system_create_instance_pool and system_update_instance_pool
+      # (IMP-067f39468350, declared below). The authoritative census is
+      # server/spec/services/ai/tools/action_declaration_completeness_spec.rb
+      # (GATE_ROUTED_ACTIONS) in core, which reds if this sentence and the
+      # declarations drift apart. Nothing else on this tool meets a gate.
       # The same ProvisioningService.terminate_instance call is still reachable
       # UNGATED from sibling verbs on this tool — system_recycle_pool,
       # system_drain_instance_pool and system_return_pooled_instance (all via
@@ -487,7 +511,32 @@ module Ai
       declare_action "system_compliance_snapshot", mutating: false
       declare_action "system_compose_preview_template", mutating: false
       declare_action "system_create_cve", mutating: true
-      declare_action "system_create_instance_pool", mutating: true
+      # IMP-067f39468350 — the MCP half of the instance-pool spend-ceiling gate.
+      # IMP-24daa05e7a22 gated POST /instance_pools under
+      # "system.instance_pool_create" while this verb called
+      # `::System::InstancePool.create!` directly, so a pool minted over MCP
+      # never had an approved ceiling at all and the 60 s replenish tick
+      # (deliberately ungated, IMP-714ab7da6b9c) spent up to it. SAME category
+      # as the REST twin, so ONE operator-tuned policy row governs pool
+      # creation whichever door it arrives through.
+      #
+      # Ai::Executors::DeferredToolCall is the GENERIC replay executor
+      # (docs/concepts/deferred-tool-call-replay.md): on approval it rebuilds
+      # this tool as the ORIGINAL principal and re-invokes the same action, so
+      # the action body stays the single author of the write and no second
+      # implementation of "create a pool" can drift from it.
+      #
+      # The gate context is this tool's own, not the generic one, because the
+      # REST twin validates the candidate BEFORE the gate (IMP-785d60f5ec3e):
+      # an unsaveable payload must keep its field-level error rather than park
+      # an approval that could only ever fail. A gated action never reaches
+      # #call, so the body's own rescue is no longer the thing that answers.
+      declare_action "system_create_instance_pool",
+                     mutating: true,
+                     action_category: POOL_CREATE_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :create_instance_pool_gate_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_create_module", mutating: true
       declare_action "system_create_node", mutating: true
       declare_action "system_create_provider", mutating: true
@@ -617,7 +666,27 @@ module Ai
       declare_action "system_unassign_module_from_template", mutating: true
       declare_action "system_unmark_module_canary", mutating: true
       declare_action "system_update_instance", mutating: true
-      declare_action "system_update_instance_pool", mutating: true
+      # IMP-067f39468350 — the other half. `pool.update!(attrs)` over a slice
+      # carrying target_size/max_size/status was the exact write
+      # InstancePoolsController#update stopped doing bare: anyone holding
+      # system.instances.create could raise the spend ceiling, or reach
+      # status "archived" — the state the GATED destroy's on_proceed writes.
+      #
+      # The category here is the CEILING RAISE one, and it is not the only
+      # category this verb can gate under: the archive transition parks under
+      # "system.instance_pool_archive", and a payload that raises nothing is
+      # applied inline. Which of the three a call is depends on the PAYLOAD
+      # measured against the persisted row, and `declare_action` takes one
+      # static category — so #run_through_autonomy_gate is overridden below to
+      # substitute the archive category and to route the ungated payloads to
+      # #call. Everything else (Ai::AutonomyGate, the DeferredToolCall replay,
+      # the pending envelope, #authorization_error) is the inherited seam.
+      declare_action POOL_UPDATE_ACTION,
+                     mutating: true,
+                     action_category: POOL_CEILING_RAISE_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :instance_pool_update_gate_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_update_module", mutating: true
       declare_action "system_update_module_assignment", mutating: true
       declare_action "system_update_node", mutating: true
@@ -1518,7 +1587,10 @@ module Ai
             parameters: { id: { type: "string", required: true, description: "UUID of the InstancePool to fetch (account-scoped)" } }
           },
           "system_create_instance_pool" => {
-            description: "Create a new pre-warmed instance pool. Reaper will provision target_size warming members on next tick.",
+            description: "Create a new pre-warmed instance pool. Reaper will provision target_size warming members on next tick. " \
+                         "APPROVAL-GATED (system.instance_pool_create): when policy requires approval this returns " \
+                         "{pending: true} with an approval_request_id and NO pool is created until an operator " \
+                         "approves — do not report a created pool on that response.",
             parameters: {
               name: { type: "string", required: true, description: "Display name for the new instance pool" },
               template_id: { type: "string", required: true, description: "UUID of the NodeTemplate pool members are provisioned from (fixed at create time)" },
@@ -1539,7 +1611,14 @@ module Ai
           # status, region/type, metadata. node_template is NOT mutable on
           # update (create-only), matching the REST controller.
           "system_update_instance_pool" => {
-            description: "Tune an existing instance pool: min_size/max_size/target_size, status, provider region/type, metadata. The reaper reconciles to the new sizes on its next tick. (Template is fixed at create time.)",
+            description: "Tune an existing instance pool: min_size/max_size/target_size, status, provider region/type, metadata. The reaper reconciles to the new sizes on its next tick. (Template is fixed at create time.) " \
+                         "APPROVAL-GATED IN PART: a target_size/max_size INCREASE parks under " \
+                         "system.instance_pool_ceiling_raise, and status -> \"archived\" parks under " \
+                         "system.instance_pool_archive — either returns {pending: true} with an approval_request_id " \
+                         "and writes NOTHING until an operator approves, so do not report a completed change on that " \
+                         "response. Size DECREASES, min_size, description, regions, metadata and status " \
+                         "active/paused/draining apply immediately. A payload that both raises a ceiling and archives " \
+                         "is refused — send them as separate calls.",
             parameters: {
               id: { type: "string", required: true, description: "UUID of the InstancePool to update (account-scoped)" },
               description: { type: "string", required: false, description: "New free-text description for the pool" },
@@ -5643,9 +5722,26 @@ module Ai
         )
       end
 
+      # APPROVAL-GATED since IMP-067f39468350. Ai::Tools::BaseTool#execute routes
+      # this action through Ai::AutonomyGate on the strength of the declaration
+      # above, and reaches this body only on the branch where an operator has
+      # already decided: the Ai::Executors::DeferredToolCall replay (approved,
+      # or auto_approve/notify_and_proceed inline). It stays the ONLY writer, so
+      # the approved payload and the written row cannot differ.
       def create_instance_pool(params)
         template = ::System::NodeTemplate.for_account(@account).find(params[:template_id])
-        pool = ::System::InstancePool.create!(
+        pool = ::System::InstancePool.create!(instance_pool_create_attributes(params, template))
+        success_result(pool: pool.to_summary)
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("instance pool validation failed: #{e.message}")
+      end
+
+      # The create payload, in ONE place: the gate's pre-park validation builds
+      # an unsaved candidate from this and the body above writes it. Two
+      # spellings of the same attribute set is how a gate comes to validate
+      # something other than what is later written.
+      def instance_pool_create_attributes(params, template)
+        {
           account: @account,
           node_template: template,
           name: params[:name],
@@ -5656,28 +5752,313 @@ module Ai
           provider_region_id: params[:provider_region_id],
           provider_instance_type_id: params[:provider_instance_type_id],
           preferred_regions: Array(params[:preferred_regions]).compact_blank
-        )
-        success_result(pool: pool.to_summary)
-      rescue ActiveRecord::RecordInvalid => e
-        error_result("instance pool validation failed: #{e.message}")
+        }
       end
 
       # F8-07 — REST update parity (instance_pools_controller update_params).
       # Template is create-only, so it's intentionally not updatable here.
+      #
+      # PARTIALLY gated since IMP-067f39468350, and which part is gated is the
+      # point — same split as InstancePoolsController#update. A target_size /
+      # max_size INCREASE and the transition to "archived" park; decreases,
+      # min_size, description, regions, metadata and status paused/draining are
+      # applied here inline, by operator direction. The decision is made in
+      # #instance_pool_update_gate_decision, which reaches this body through
+      # #call for the ungated payloads and through the DeferredToolCall replay
+      # for the approved ones — one writer either way.
       def update_instance_pool(params)
         pool = ::System::InstancePool.for_account(@account).find(params[:id])
-        attrs = params.slice(
-          :description, :target_size, :min_size, :max_size, :status,
-          :provider_region_id, :provider_instance_type_id, :metadata, :preferred_regions
-        ).to_h.compact
-        # Normalize the cross-AZ list (empty array clears it back to single-AZ).
-        attrs[:preferred_regions] = Array(attrs[:preferred_regions]).compact_blank if attrs.key?(:preferred_regions)
+        attrs = instance_pool_update_attributes(params)
         return error_result("no mutable fields supplied") if attrs.empty?
 
-        pool.update!(attrs)
+        ::System::InstancePool.transaction do
+          # Behind the row lock, not before it — the placement
+          # System::Executors::InstancePool::UpdatePool#perform argues for: an
+          # unlocked premise read races the very writer it exists to catch, so
+          # a decrease landing between the check and the update! passes and is
+          # then overwritten anyway. The inline (ungated) arm takes the same
+          # lock: it is the writer the guard is protecting against, and it costs
+          # one row lock on a verb that already writes that row.
+          pool.lock!
+          verify_pool_replay_baseline!(pool, params)
+          pool.update!(attrs)
+        end
         success_result(pool: pool.reload.to_summary)
       rescue ActiveRecord::RecordInvalid => e
         error_result("instance pool validation failed: #{e.message}")
+      rescue ::System::Executors::Base::ReplayBaselineError => e
+        error_result(e.message)
+      end
+
+      # PREMISE EXPIRY on the MCP door (IMP-067f39468350, review finding).
+      #
+      # A ceiling raise parks. Hours later an operator LOWERS the pool inline —
+      # decreases are deliberately ungated — and then the approval lands and
+      # replays the request verbatim, writing the old high number back over a
+      # reduction nobody re-approved. That is the exact defect IMP-391525770512
+      # closed on the REST twin, and #run_through_autonomy_gate opened a second
+      # door onto the same executor-less write, so the guard has to ride here
+      # too: a per-verb premise guard that covers one surface of a resource is
+      # a hole reachable by naming the other one.
+      #
+      # NOT a second spelling of the comparison. The declared attribute list and
+      # the refusal both come from System::Executors::InstancePool::UpdatePool /
+      # System::Executors::Base, so the REST executor and this arm cannot drift
+      # about what is replay-sensitive. `send` because #verify_replay_baseline!
+      # is protected on that hierarchy and this tool is not in it — reusing the
+      # one implementation is worth the reach; re-implementing it is not.
+      #
+      # Two fences, because the baseline arrives inside caller-shaped params:
+      #   * #instance_pool_update_gate_context drops any caller-supplied copy
+      #     and stamps its own from the PERSISTED row before packing;
+      #   * this honours the key ONLY on an #approved_replay? — the same
+      #     evidence BaseTool#execute requires to skip the gate at all — so a
+      #     forged baseline on a direct call is inert rather than a guard the
+      #     caller gets to author.
+      def verify_pool_replay_baseline!(pool, params)
+        return unless approved_replay?
+
+        baseline = pool_param_field(params, ::System::Executors::Base::REPLAY_BASELINE_KEY)
+        return if baseline.blank?
+
+        ::System::Executors::InstancePool::UpdatePool
+          .new({ ::System::Executors::Base::REPLAY_BASELINE_KEY => baseline }, deferred_operation: nil)
+          .send(:verify_replay_baseline!, pool)
+      end
+
+      # The mutable surface of the PATCH — the same permit list
+      # InstancePoolsController#update_params carries, minus node_template
+      # (create-only).
+      POOL_UPDATE_ATTRIBUTES = %i[
+        description target_size min_size max_size status
+        provider_region_id provider_instance_type_id metadata preferred_regions
+      ].freeze
+
+      # The update payload, in ONE place — read by the gate to decide WHICH
+      # category (or none) a call is, and by the body above to write it. If the
+      # two disagreed about what the payload contains, the gate would be
+      # measuring a different request than the one that lands.
+      #
+      # KEY-SHAPE INDIFFERENT, and that is load-bearing rather than tidy.
+      # Ai::Tools::McpPlatformToolRegistrar hands every real MCP call
+      # `params.with_indifferent_access`, and the previous
+      # `params.slice(:a, :b).to_h` returned a plain hash with STRING keys for
+      # exactly that caller — so a symbol read of :status/:target_size here
+      # would see an EMPTY payload, resolve no category, and route every
+      # production ceiling raise down the inline arm while every symbol-keyed
+      # spec stayed green. (It also cost the `preferred_regions` normalization
+      # below: `attrs.key?(:preferred_regions)` was already false for those
+      # callers, so an empty list never cleared the pool back to single-AZ.)
+      # This tool carries the same warning at #authorization_error — the two
+      # halves of one call must not disagree about key type, least of all in
+      # the permissive direction.
+      def instance_pool_update_attributes(params)
+        attrs = POOL_UPDATE_ATTRIBUTES.each_with_object({}) do |key, acc|
+          value = pool_param_field(params, key)
+          acc[key] = value unless value.nil?
+        end
+        # Normalize the cross-AZ list (empty array clears it back to single-AZ).
+        attrs[:preferred_regions] = Array(attrs[:preferred_regions]).compact_blank if attrs.key?(:preferred_regions)
+        attrs
+      end
+
+      # One field, whatever key type the caller used. `key?` rather than a
+      # `||` fallback so a legitimately `false` value is not read as absent.
+      def pool_param_field(params, key)
+        return params[key] if params.respond_to?(:key?) && params.key?(key)
+        return params[key.to_s] if params.respond_to?(:key?) && params.key?(key.to_s)
+
+        nil
+      end
+
+      # ── the instance-pool gate seam (IMP-067f39468350) ────────────────────
+      #
+      # WHY THIS IS OVERRIDDEN AT ALL. `declare_action` carries ONE static
+      # action_category, and this verb has three answers depending on the
+      # payload measured against the PERSISTED row — the same three
+      # InstancePoolsController#update resolves:
+      #
+      #   * target_size / max_size INCREASE -> system.instance_pool_ceiling_raise
+      #   * status -> "archived"            -> system.instance_pool_archive
+      #   * everything else                 -> applied inline, no approval
+      #
+      # so the category cannot be decided at class-body evaluation. Only the
+      # CHOICE is made here: the gate itself, the DeferredToolCall replay, the
+      # pending envelope, the misdeclaration fail-closed and #authorization_error
+      # are all the inherited seam, reached through `super` with the resolved
+      # category substituted. Nothing else on this tool takes this branch.
+      def run_through_autonomy_gate(declaration, params)
+        return super unless routed_action_name(params) == POOL_UPDATE_ACTION
+
+        decision = instance_pool_update_gate_decision(params)
+        return decision[:result] if decision.key?(:result)
+
+        super(declaration.merge(action_category: decision[:category]), params)
+      end
+
+      # {result: <envelope>} to answer the caller here, {category: <string>} to
+      # gate under that category. Resolution happens BEFORE the operation is
+      # created, so a cross-account id or an unsaveable payload comes back as
+      # the error envelope the pre-gate arm produced rather than as an approval
+      # card naming another tenant's pool, or one that could only ever fail.
+      def instance_pool_update_gate_decision(params)
+        pool  = ::System::InstancePool.for_account(@account).find(params[:id])
+        attrs = instance_pool_update_attributes(params)
+        categories = gated_pool_update_categories(pool, attrs)
+
+        # Nothing here raises a ceiling or archives the pool: #call applies it
+        # inline, exactly as it did before this verb was gated. This is also the
+        # arm an empty payload takes — the body answers "no mutable fields
+        # supplied" rather than parking an approval for nothing.
+        return { result: call(params) } if categories.empty?
+
+        if categories.size > 1
+          return { result: error_result(
+            "this update crosses two approval gates (#{categories.join(', ')}) — " \
+            "send the ceiling change and the archive as separate calls"
+          ) }
+        end
+
+        invalid = instance_pool_validation_error(pool, attrs)
+        return { result: invalid } if invalid
+
+        { category: categories.first }
+      rescue ActiveRecord::RecordNotFound => e
+        { result: error_result(e.message) }
+      end
+
+      # Categories this payload has to clear before it may be written, in a
+      # stable order. Mirrors InstancePoolsController#gated_update_categories:
+      # measured against the PERSISTED row, so re-sending the standing value is
+      # not a raise and a DECREASE never gates.
+      def gated_pool_update_categories(pool, attrs)
+        categories = []
+        categories << POOL_CEILING_RAISE_CATEGORY if raises_pool_ceiling?(pool, attrs)
+        if attrs[:status].to_s == "archived" && pool.status != "archived"
+          categories << POOL_ARCHIVE_CATEGORY
+        end
+        categories
+      end
+
+      def raises_pool_ceiling?(pool, attrs)
+        POOL_CEILING_ATTRIBUTES.any? do |field|
+          requested = coerce_pool_size(attrs[field])
+          requested.present? && requested > pool.public_send(field).to_i
+        end
+      end
+
+      # A size that is absent, null or non-numeric is not a raise — it is an
+      # invalid payload, and the inline path answers it with the same
+      # field-level error it always did rather than parking an operation that
+      # could never run.
+      def coerce_pool_size(value)
+        Integer(value.to_s, 10)
+      rescue ArgumentError, TypeError
+        nil
+      end
+
+      # VALIDATE BEFORE PARKING, the way Ai::GatedActions#gate_update! does for
+      # the REST twin: assign in memory, ask, then put the row back. Without it
+      # an unsaveable PATCH (target_size above max_size) would answer 202 and
+      # park an approval whose only possible outcome is a failed replay.
+      def instance_pool_validation_error(pool, attrs)
+        pool.assign_attributes(attrs)
+        return nil if pool.valid?
+
+        error_result("instance pool validation failed: #{pool.errors.full_messages.to_sentence}")
+      rescue ArgumentError, TypeError => e
+        # A malformed value the assignment itself rejects (a non-castable
+        # status/metadata shape) is a caller error, not a gate outcome.
+        error_result("instance pool validation failed: #{e.message}")
+      ensure
+        pool.reload if pool.persisted?
+      end
+
+      # The gated PATCH's context. The generic one
+      # (BaseTool#deferred_tool_call_context) packs the replay and refuses an
+      # unattributed caller; this adds the two things the REST twin's gate
+      # carries and a seam that cannot know which param names a row cannot
+      # supply for itself:
+      #
+      #   * the REPLAY BASELINE — the request-time fingerprint
+      #     #verify_pool_replay_baseline! checks before the approved write
+      #     lands. Stamped from the PERSISTED row, and any copy the caller sent
+      #     is dropped FIRST: a guard whose comparison value the caller chooses
+      #     is the guard inverted.
+      #   * source_type/source_id — BaseTool documents their absence as
+      #     "this seam does not know which of a caller's params names a row".
+      #     Here the row is already in hand, and recording the pair is what
+      #     arms Ai::DeferredOperation#assert_source_within_account! (it no-ops
+      #     for an unrecorded pair rather than guessing) and anchors the
+      #     operation to the pool the way InstancePoolsController#update does.
+      def instance_pool_update_gate_context(params)
+        pool  = ::System::InstancePool.for_account(@account).find(params[:id])
+        attrs = instance_pool_update_attributes(params)
+
+        replay_params = params.except(
+          ::System::Executors::Base::REPLAY_BASELINE_KEY,
+          ::System::Executors::Base::REPLAY_BASELINE_KEY.to_s
+        ).merge(
+          ::System::Executors::Base::REPLAY_BASELINE_KEY =>
+            ::System::Executors::InstancePool::UpdatePool.replay_baseline(pool, attrs)
+        )
+
+        deferred_tool_call_context(replay_params).merge(
+          source_type: "System::InstancePool",
+          source_id: pool.id
+        )
+      end
+
+      # The create half's gate context. The generic one
+      # (BaseTool#deferred_tool_call_context) packs the replay and refuses an
+      # unattributed caller; this adds what the REST twin does before ITS gate:
+      # resolve the template under the account scope and validate the candidate,
+      # so a payload that could only ever fail keeps its own error rather than
+      # becoming an approval an operator has to dispose of. Both raises are the
+      # ones BaseTool#run_through_autonomy_gate converts to an error envelope.
+      def create_instance_pool_gate_context(params)
+        template  = ::System::NodeTemplate.for_account(@account).find(params[:template_id])
+        candidate = ::System::InstancePool.new(instance_pool_create_attributes(params, template))
+        unless candidate.valid?
+          raise ArgumentError,
+                "instance pool validation failed: #{candidate.errors.full_messages.to_sentence}"
+        end
+
+        deferred_tool_call_context(params).merge(
+          description: "Create instance pool '#{params[:name]}' " \
+                       "(target #{candidate.target_size}, max #{candidate.max_size})"
+        )
+      end
+
+      # The approval card's headline for the gated PATCH. Reads the PRE-change
+      # row deliberately, so the card can say what the ceiling is being moved
+      # FROM. Sizes and a pool name only — never a caller-supplied value that
+      # could carry minted material (BaseTool#deferred_tool_call_description).
+      def deferred_tool_call_description(params)
+        instance_pool_update_description(params) || super
+      end
+
+      def instance_pool_update_description(params)
+        return nil unless routed_action_name(params) == POOL_UPDATE_ACTION
+
+        pool = ::System::InstancePool.for_account(@account).find_by(id: params[:id])
+        return nil if pool.nil?
+
+        attrs = instance_pool_update_attributes(params)
+        if attrs[:status].to_s == "archived" && pool.status != "archived"
+          return "Archive instance pool '#{pool.name}'"
+        end
+
+        moves = POOL_CEILING_ATTRIBUTES.filter_map do |field|
+          requested = coerce_pool_size(attrs[field])
+          current   = pool.public_send(field).to_i
+          next if requested.blank? || requested <= current
+
+          "#{field} #{current} -> #{requested}"
+        end
+        return nil if moves.empty?
+
+        "Raise instance pool '#{pool.name}' ceiling (#{moves.join(', ')})"
       end
 
       def drain_instance_pool(params)

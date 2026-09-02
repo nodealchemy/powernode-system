@@ -37,17 +37,22 @@ require "tmpdir"
 #     under system.instance_pool_archive) and left the rest of the PATCH —
 #     decreases, min_size, description, regions, metadata, status
 #     paused/draining — inline, by operator direction.
-#   * #create is gated on the REST route ONLY. SystemFleetTool's sole
-#     declaration carrying action_category/executor_class/gate_context/on_proceed
-#     is system_terminate_instance, so BaseTool#gated_action? is false for every
-#     pool verb: a pool minted through system_create_instance_pool never passed
-#     an approval at all. The MCP twins of the now-gated REST verbs are the
-#     remaining half of IMP-24daa05e7a22 and are NOT closed here.
-# The honest form of the reason is bounded-and-unattended, not already-approved.
-# #update was the verb worth gating for spend, and is the verb whose REST
-# ROUTE got gated — which is a smaller claim than "the ceiling is locked".
-# CEILING_WRITERS below censuses every site that still moves
-# target_size/max_size/status, three of which meet no gate at all.
+#   * #create was gated on the REST route ONLY, so a pool minted through
+#     system_create_instance_pool never passed an approval at all.
+#     IMP-067f39468350 closed that half: system_create_instance_pool and
+#     system_update_instance_pool now carry the
+#     action_category/executor_class/gate_context/on_proceed quartet
+#     BaseTool#gated_action? reads, park under the SAME categories as the REST
+#     twins, and replay through Ai::Executors::DeferredToolCall. The MCP verbs
+#     that still meet no gate are delete/drain/recycle/replenish/acquire.
+# The honest form of the reason is bounded-and-unattended, not already-approved,
+# and IMP-067f39468350 did not change that: GitOps apply and the CI-runner
+# lease still write the ceiling with no approval, so "the spend was approved
+# when the pool was created" remains a claim about the OPERATOR doors rather
+# than about the column. #update was the verb worth gating for spend, and both
+# of its operator doors are gated now — which is still a smaller claim than
+# "the ceiling is locked". CEILING_WRITERS below censuses every site that
+# moves target_size/max_size/status, two of which meet no gate at all.
 #
 # WHY A GUARD AND NOT JUST A COMMENT. The rationale above is a MATCHED PAIR:
 # prose in three files that is true only while the mechanism underneath it
@@ -162,10 +167,12 @@ module InstancePoolReplenishGatingGuard
     "extensions/system/server/app/services/ai/tools/system_fleet_tool.rb" => {
       count: 1,
       why: "MCP verb system_replenish_instance_pool — declared `mutating: true` " \
-           "only, so BaseTool#gated_action? (base_tool.rb:325) is false for it: " \
-           "a declaration is gated only when it carries action_category, " \
-           "executor_class, gate_context AND on_proceed, and on this tool only " \
-           "system_terminate_instance does."
+           "only, so BaseTool#gated_action? is false for it: a declaration is " \
+           "gated only when it carries action_category, executor_class, " \
+           "gate_context AND on_proceed, and on this tool only " \
+           "system_terminate_instance and the two pool verbs gated by " \
+           "IMP-067f39468350 (create/update) do. Replenish staying ungated is " \
+           "the recorded decision this whole guard is about."
     },
     "extensions/system/server/app/services/system/executors/instance_pool/replenish_pool.rb" => {
       count: 1,
@@ -188,11 +195,13 @@ module InstancePoolReplenishGatingGuard
   }.freeze
 
   # Every site in THIS extension that writes an InstancePool row, with why —
-  # the ceiling half of IMP-24daa05e7a22. The gate added there sits on ONE
-  # ROUTE; the column is not immutable, and the prose in three files now says
-  # so. This census is what keeps that sentence honest: a fourth ungated
-  # writer reds here instead of quietly widening the surface, the way
-  # REPLENISH_CALLERS does for the actuator.
+  # the ceiling half of IMP-24daa05e7a22, extended to the MCP door by
+  # IMP-067f39468350. Both OPERATOR doors are gated now; the column still is
+  # not immutable (GitOps apply and the CI-runner lease write it with no
+  # approval), and the prose in three files says exactly that. This census is
+  # what keeps that sentence honest: a further ungated writer reds here
+  # instead of quietly widening the surface, the way REPLENISH_CALLERS does
+  # for the actuator.
   #
   # Scoped to EXT_ROOT rather than SCAN_ROOTS on purpose: `pool.save!` in core
   # is Ai::Memory's memory POOL, a different concept, and a census that has to
@@ -206,14 +215,18 @@ module InstancePoolReplenishGatingGuard
            "update transitions write through UpdatePool, not from here."
     },
     "app/services/ai/tools/system_fleet_tool.rb" => {
-      count: 2,
-      why: "system_create_instance_pool's `InstancePool.create!` and " \
-           "system_update_instance_pool's `pool.update!` — the MCP twins. " \
-           "Neither declaration carries action_category/executor_class/" \
-           "gate_context/on_proceed, so BaseTool#gated_action? is false and a " \
-           "ceiling raise over MCP meets no gate. The open half of " \
-           "IMP-24daa05e7a22; if these gain a gate, this count changes and the " \
-           "runbook's 'three writers remain' paragraph has to change with it."
+      count: 4,
+      why: "The MCP twins, GATED since IMP-067f39468350: both declarations now " \
+           "carry action_category/executor_class/gate_context/on_proceed, so " \
+           "BaseTool#gated_action? is true and the write happens only on the " \
+           "branch an operator decided. FOUR writes, not two — the two action " \
+           "bodies (`InstancePool.create!`, `pool.update!`) plus the two " \
+           "pre-park validations that mirror Ai::GatedActions: the unsaved " \
+           "`InstancePool.new` candidate in create_instance_pool_gate_context " \
+           "and the in-memory `pool.assign_attributes` in " \
+           "instance_pool_validation_error, which reloads the row straight " \
+           "back. Same shape as the controller entry above, which counts its " \
+           "own gate_create! candidate."
     },
     "app/services/system/ci_runner_lease_service.rb" => {
       count: 1,
@@ -460,15 +473,16 @@ RSpec.describe "instance-pool replenish gating asymmetry", type: :lint do
     ), <<~MSG
       A writer of System::InstancePool was added, removed or duplicated.
 
-      IMP-24daa05e7a22 gated a ceiling raise on ONE ROUTE. The prose in
+      IMP-24daa05e7a22 gated a ceiling raise on the REST route and
+      IMP-067f39468350 gated the MCP twins. The prose in
         app/controllers/api/v1/system/instance_pools_controller.rb (#replenish)
         app/services/system/executors/instance_pool/replenish_pool.rb
         docs/runbooks/instance-pool-tuning.md
-      says exactly that, and names the three writers that still move
-      target_size/max_size/status with no gate (the MCP twins, GitOps apply,
-      the CI-runner lease). If this census changed, that list changed: add
-      yours to CEILING_WRITERS with a :why, or gate it and correct all three
-      files in the same change.
+      says exactly that, and names the two writers that still move
+      target_size/max_size/status with no gate (GitOps apply, the CI-runner
+      lease). If this census changed, that list changed: add yours to
+      CEILING_WRITERS with a :why, or gate it and correct all three files in
+      the same change.
     MSG
   end
 
@@ -543,10 +557,16 @@ RSpec.describe "instance-pool replenish gating asymmetry", type: :lint do
       expect(text).to include("InstancePoolReplenisherJob")
       expect(text).to include("system.instance_pool_replenish")
       expect(text).to include("auto_approve")
-      # The correction that cost this task a review round: create is gated on
-      # the REST route ONLY, so "already approved at pool-create time" is not
-      # the reason. Pinned so the weaker claim cannot creep back.
-      expect(text).to include("REST route ONLY")
+      # The correction that cost IMP-714ab7da6b9c a review round: "already
+      # approved at pool-create time" is not the reason replenish may run
+      # unattended. IMP-067f39468350 changed WHY — create is now gated on both
+      # operator doors — without changing the conclusion, because GitOps apply
+      # and the CI-runner lease still mint and raise with no approval. Pin the
+      # current reason, and the remaining ungated writer by name, so neither
+      # the stale "REST route ONLY" wording nor the weaker claim it replaced
+      # can creep back.
+      expect(text).to include("gated on BOTH DOORS")
+      expect(text).to include("CiRunnerLeaseService")
     end
   end
 
@@ -563,7 +583,11 @@ RSpec.describe "instance-pool replenish gating asymmetry", type: :lint do
       expect(block).to include("system.instance_pool_replenish")
       expect(block).to include("InstancePoolReplenisherJob")
       expect(block).to include("ReplenishPool")
-      expect(block).to include("gated on THIS route only")
+      # IMP-067f39468350 — the ceiling gate now stands on the REST route AND
+      # the MCP verb, so the old "gated on THIS route only" wording is false
+      # here. What must still be written down is which door is which.
+      expect(block).to include("gated on BOTH the REST route and the MCP verb")
+      expect(block).to include("system_update_instance_pool")
     end
   end
 
@@ -576,8 +600,15 @@ RSpec.describe "instance-pool replenish gating asymmetry", type: :lint do
       expect(text).to include("system.instance_pool_replenish")
       expect(text).to include("auto_approve")
       expect(text).to include("ReplenishPool")
+      # Still true of DELETE, whose MCP verb is ungated and strictly more
+      # destructive than the gated REST route — the one row where the old
+      # wording is not stale.
       expect(text).to include("Gated on the REST route ONLY")
       expect(text).to include("system_create_instance_pool")
+      # And the correction IMP-067f39468350 owes the table: create and the
+      # ceiling raise/archive stand on both doors now.
+      expect(text).to include("Gated on both doors")
+      expect(text).to include("IMP-067f39468350")
     end
   end
 

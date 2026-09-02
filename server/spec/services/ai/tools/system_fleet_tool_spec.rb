@@ -146,7 +146,13 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         )
       end
 
+      # max_size 5 -> 8 and target_size 2 -> 4 are CEILING RAISES, and since
+      # IMP-067f39468350 this verb parks one under
+      # system.instance_pool_ceiling_raise. The parity claim here is about the
+      # WRITE, so it opts into the :proceed branch; the gate itself is pinned
+      # in system_fleet_instance_pool_gating_spec.rb.
       it "tunes min/max/target size" do
+        auto_approve_policy!
         r = call("system_update_instance_pool", id: pool.id, min_size: 0, max_size: 8, target_size: 4)
         expect(r[:success]).to be true
         pool.reload
@@ -5528,7 +5534,12 @@ end
       expect(r[:data][:pool][:id]).to eq(pool.id)
     end
 
+    # Gated since IMP-067f39468350 — under the default require_approval this
+    # answers the pending envelope, whose shape BaseTool.pending_payload owns.
+    # The nesting property belongs to the ACTION's own payload, so take the
+    # :proceed branch to see it.
     it "emits system_create_instance_pool one level deep" do
+      auto_approve_policy!
       r = call("system_create_instance_pool",
                name: "nesting-created", template_id: template.id, target_size: 1)
       expect(r[:success]).to be true
@@ -5536,7 +5547,9 @@ end
       expect(::System::InstancePool.find(r[:data][:pool][:id]).name).to eq("nesting-created")
     end
 
+    # Same, and target_size 2 -> 3 is the raise that parks.
     it "emits system_update_instance_pool one level deep" do
+      auto_approve_policy!
       r = call("system_update_instance_pool", id: pool.id, target_size: 3)
       expect(r[:success]).to be true
       expect(r[:data].keys).to contain_exactly(:pool)

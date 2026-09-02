@@ -28,7 +28,7 @@ import {
   isPendingApproval,
   defaultMeta,
 } from '@system/features/system/services/api/helpers';
-import type { Gated } from '@system/features/system/services/api/helpers';
+import type { Deleted, Gated } from '@system/features/system/services/api/helpers';
 import { pendingApprovalNotice } from '@system/features/system/utils/pendingApproval';
 import type {
   ApiEnvelope,
@@ -135,11 +135,21 @@ const instancePoolsApi = {
     return extractData(response).pool;
   },
 
-  create: async (data: CreatePoolPayload): Promise<InstancePoolSummary> => {
+  // Gated since IMP-24daa05e7a22 (system.instance_pool_create): committing
+  // capacity is an operator decision, so POST answers 202 `{pending: true,
+  // ...}` with NO `pool` key whenever the policy parks. IMP-067f39468350 —
+  // this read `extractData(response).pool` and handed the caller `undefined`
+  // on that branch: the list upserted a member-less object and threw while
+  // rendering, which the caller's catch reported as "Failed to create pool"
+  // for an operation that had parked correctly. Same `extractGated` seam the
+  // PATCH below already uses.
+  create: async (
+    data: CreatePoolPayload,
+  ): Promise<Gated<InstancePoolSummary>> => {
     const response = await apiClient.post<
       ApiEnvelope<{ pool: InstancePoolSummary }>
     >('/system/instance_pools', { pool: data });
-    return extractData(response).pool;
+    return extractGated(response, (d) => d.pool);
   },
 
   // Gated since IMP-24daa05e7a22: a target_size/max_size INCREASE and the
@@ -173,8 +183,16 @@ const instancePoolsApi = {
     return extractData(response).pool;
   },
 
-  destroy: async (id: string): Promise<void> => {
-    await apiClient.delete(`/system/instance_pools/${id}`);
+  // Gated too (system.instance_pool_delete). This DISCARDED the response, so
+  // a parked 202 was indistinguishable from a completed archive: the caller
+  // dropped the row from the list and toasted "archived" while the pool was
+  // still active and its replenish tick still spending. The non-pending body
+  // carries the archived pool; the caller only needs to know it happened.
+  destroy: async (id: string): Promise<Gated<Deleted>> => {
+    const response = await apiClient.delete<
+      ApiEnvelope<{ pool: InstancePoolSummary }>
+    >(`/system/instance_pools/${id}`);
+    return extractGated(response, () => ({ deleted: true }) as Deleted);
   },
 };
 
@@ -377,7 +395,18 @@ const InstancePoolsPage: React.FC = () => {
     if (!deletePool) return;
     setDeleting(true);
     try {
-      await instancePoolsApi.destroy(deletePool.id);
+      const result = await instancePoolsApi.destroy(deletePool.id);
+      // Nothing has been archived on the pending branch — never a success
+      // toast, and above all never removeItem: dropping the row would tell
+      // the operator a pool is gone while it is still active and its
+      // replenish tick is still spending.
+      if (isPendingApproval(result)) {
+        addNotification(
+          pendingApprovalNotice(`archiving pool "${deletePool.name}"`, result),
+        );
+        setDeletePool(null);
+        return;
+      }
       // Backend soft-archives — drop from the active list immediately.
       removeItem(deletePool.id);
       addNotification({
@@ -1229,6 +1258,18 @@ const CreatePoolModal: React.FC<CreatePoolModalProps> = ({
           max_size: form.max_size,
           lifecycle_class: form.lifecycle_class,
         });
+        // No pool exists yet on the pending branch — never a success toast,
+        // and never an upsert of a body that carries no pool.
+        if (isPendingApproval(created)) {
+          addNotification(
+            pendingApprovalNotice(
+              `creating pool "${form.name.trim()}"`,
+              created,
+            ),
+          );
+          onClose();
+          return;
+        }
         onCreated(created);
       } catch (err) {
         addNotification({
@@ -1240,7 +1281,7 @@ const CreatePoolModal: React.FC<CreatePoolModalProps> = ({
         setSubmitting(false);
       }
     },
-    [form, validate, onCreated, addNotification],
+    [form, validate, onCreated, onClose, addNotification],
   );
 
   return (
