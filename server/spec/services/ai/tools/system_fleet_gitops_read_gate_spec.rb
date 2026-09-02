@@ -82,14 +82,30 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps read audience (IMP-b1191457a0
       end
     end
 
-    # The blast radius of adding `admin: true` is bounded to the READ name.
-    # Widening either of these would hand an operator role the reconcile tick
-    # and the sync trigger, which are worker verbs by design.
-    it "leaves system.gitops.reconcile and system.gitops.sync worker-only" do
-      admin_grants = ::Permissions.permissions_for_role("admin")
+    # THIS task's blast radius was bounded to the READ name. It no longer
+    # describes the catalog, because the operator decided otherwise for one of
+    # the two names this task left alone.
+    #
+    # The rationale that used to sit here — "the reconcile tick and the sync
+    # trigger, which are worker verbs by design" — was only ever true of
+    # .reconcile. Its sole consumer is the worker tick
+    # (api/v1/system/worker_api/gitops_controller.rb:14), so it stays
+    # worker-only and the first example still pins that.
+    #
+    # .sync is not a worker verb: the only thing gating on it is sync_now
+    # (gitops_repositories_controller.rb:65), a REST action behind an operator
+    # button (GitopsTab.tsx:35) — the same modelling defect this task fixed for
+    # .read. IMP-e313a4a72309 granted it (and system.gitops.write) to `admin`
+    # on an explicit operator decision of 2026-09-01, so the second example is
+    # inverted rather than deleted: it now pins the widening, and the audience
+    # is asserted in full in
+    # spec/requests/api/v1/system/gitops_repositories_admin_grant_spec.rb.
+    it "leaves system.gitops.reconcile worker-only" do
+      expect(::Permissions.permissions_for_role("admin")).not_to include("system.gitops.reconcile")
+    end
 
-      expect(admin_grants).not_to include("system.gitops.reconcile")
-      expect(admin_grants).not_to include("system.gitops.sync")
+    it "no longer holds system.gitops.sync back from admin (IMP-e313a4a72309)" do
+      expect(::Permissions.permissions_for_role("admin")).to include("system.gitops.sync")
     end
   end
 

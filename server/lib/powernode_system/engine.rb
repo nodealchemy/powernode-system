@@ -221,8 +221,18 @@ module PowernodeSystem
                      grant: { admin: true }
           permission "system.gitops.reconcile", "Trigger GitOps reconcile tick (worker, cron)",
                      grant: { system_worker: true }
-          permission "system.gitops.sync", "Sync a GitOps repository (worker)",
-                     grant: { system_worker: true }
+          # IMP-e313a4a72309 — `admin` added, per an explicit operator decision
+          # (2026-09-01) taken on both this name and system.gitops.write below.
+          # The only thing gating on .sync is sync_now
+          # (gitops_repositories_controller.rb:65), a REST action behind an
+          # operator button (GitopsTab.tsx:35) — no worker code path authorizes
+          # on it, so "(worker)" was never accurate. `system_worker` is kept
+          # rather than moved: the grant is WIDENED. The genuine worker tick is
+          # .reconcile above (worker_api/gitops_controller.rb:14), which stays
+          # worker-only. Covered by
+          # spec/requests/api/v1/system/gitops_repositories_admin_grant_spec.rb.
+          permission "system.gitops.sync", "Sync a GitOps repository (operator sync_now)",
+                     grant: { admin: true, system_worker: true }
           # IMP-b1191457a091 — `admin` added. This is the OPERATOR-facing read:
           # the REST controller gates index/show/sync_runs on it and the
           # OperationsHub GitOps tab is filtered on it (frontend
@@ -235,17 +245,26 @@ module PowernodeSystem
           # so nothing here has to stay worker-only; system_worker is kept
           # rather than moved.
           #
-          # .reconcile and .sync are left untouched by that task, NOT vindicated
-          # by it. .reconcile is genuinely a worker tick. .sync is not: the REST
-          # sync_now it gates is an operator action with an operator button
-          # (GitopsTab.tsx), so it carries the same modelling defect this line
-          # fixes, as does system.gitops.write below — granted to NO role at all
-          # while the create/update/destroy controls gate on it. Both are filed
-          # rather than fixed here; do not read their absence as a decision that
-          # they are correct.
+          # .reconcile and .sync were left untouched by that task, NOT vindicated
+          # by it; .sync and .write were filed instead, and IMP-e313a4a72309
+          # closed both (see the .sync comment above). .reconcile remains the
+          # one genuine worker tick of the four.
           permission "system.gitops.read", "Read GitOps repository state",
                      grant: { admin: true, system_worker: true }
-          permission "system.gitops.write", "Modify GitOps repository state", grant: {}
+          # IMP-e313a4a72309 — `admin` added, same operator decision as .sync
+          # above. This was `grant: {}` — named by no role's grant at all —
+          # while create/update/destroy gate on it
+          # (gitops_repositories_controller.rb:34, :44, :53) and the UI renders
+          # its controls behind it (GitopsTab.tsx:34, OperationsHubPage.tsx:64).
+          # An empty grant hash is not an empty AUDIENCE: super_admin and
+          # system_worker both hold system.admin, on which User#has_permission?
+          # short-circuits (user.rb:138-141, config/permissions.rb:947 and :958
+          # via the SYSTEM_PERMISSIONS splat), so the controls worked for them
+          # and were unreachable for every other role — which is the defect.
+          # No worker path authorizes on this name, so `admin` alone is the
+          # correct addition.
+          permission "system.gitops.write", "Modify GitOps repository state",
+                     grant: { admin: true }
           permission "system.metrics.read", "Read system metrics + telemetry",
                      grant: { system_worker: true }
           permission "system.health.check", "Check worker / system health (WorkerPermissionsView + health endpoints)",
