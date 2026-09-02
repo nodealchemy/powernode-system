@@ -87,7 +87,17 @@ template.assign_attributes(
     "unsupported_slo_targets" => {
       "p99_latency_ms" => "no metric.latency_ms producer wired — latency violations are NOT detected (F6-04)"
     },
+    # Per-project scaling bounds (APO 3a). Both are the default window for a
+    # project built from this template: scale-OUT may auto-apply inside it, and
+    # the scale-in skill clamps a removal at the floor. Scale-IN still takes an
+    # operator approval regardless of these numbers.
+    #
+    # Nothing merges a template's default_configuration into a mission's own
+    # configuration, so `Ai::Mission#scaling_bounds` reads this rung off the
+    # template directly; a mission that declares its own watch_policies bound
+    # overrides it.
     "watch_policies" => { "enabled" => true, "sample_interval_seconds" => 60,
+                          "auto_scale_min_replicas" => 1,
                           "auto_scale_max_replicas" => 5 },
     "provisioned_resources" => {}
   }

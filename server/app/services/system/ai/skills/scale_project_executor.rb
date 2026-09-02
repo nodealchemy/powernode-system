@@ -10,8 +10,10 @@ module System
       #                       template + region (composes ProvisionFullStackExecutor
       #                       in its compute-only mode)
       #   remove_replicas   — scale IN: terminate the N newest replicas of the
-      #                       mission's OWN set, never below a floor of one,
-      #                       through the same teardown the rollback uses
+      #                       mission's OWN set, never below the project's
+      #                       declared replica floor (APO 3a — see
+      #                       #replica_floor_for), through the same teardown
+      #                       the rollback uses
       #   vertical_resize   — plan a rolling module upgrade or instance-type
       #                       swap (composes RollingModuleUpgradeExecutor —
       #                       returns a batched plan, not in-band mutation)
@@ -61,10 +63,16 @@ module System
         STRATEGIES = %w[add_replicas vertical_resize add_region remove_replicas].freeze
         MAX_DELTA  = 50
 
-        # Never scale a project to zero. A removal that would empty the mission
-        # is clamped to leave this many replicas standing — converging toward
-        # the request instead of refusing it outright, the same way the
-        # composer clamps an oversized scale-out delta.
+        # The HARD platform minimum — never scale a project to zero. A removal
+        # that would empty the mission is clamped to leave at least this many
+        # replicas standing, converging toward the request instead of refusing
+        # it outright, the same way the composer clamps an oversized scale-out
+        # delta.
+        #
+        # This is a FLOOR ON THE FLOOR, not the whole answer: the effective
+        # floor is the project's own declared one (`Ai::Mission#scaling_bounds`,
+        # APO 3a), which a mission may raise above this and can never lower
+        # below it. See #replica_floor_for.
         MIN_REPLICAS = 1
 
         skill_descriptor(
@@ -256,7 +264,8 @@ module System
         # capacity is the last thing to go.
         def run_remove_replicas(mission:, requested:, name_prefix:, dry_run:)
           replicas = mission_replicas(mission)
-          removable = [ requested, replicas.size - MIN_REPLICAS ].min
+          floor = replica_floor_for(mission)
+          removable = [ requested, replicas.size - floor ].min
           prefix = name_prefix.presence || mission.provenance_name_prefix
 
           # At (or below) the floor there is nothing this strategy may do. A
@@ -267,7 +276,7 @@ module System
             return success(removal_envelope(
               dry_run: dry_run, count: 0,
               actions: [ { step: "remove_replicas_floor", requested: requested,
-                           live_replicas: replicas.size, floor: MIN_REPLICAS } ],
+                           live_replicas: replicas.size, floor: floor } ],
               outputs: removal_outputs(prefix: prefix, floor_reached: true)
             ))
           end
@@ -472,6 +481,28 @@ module System
           end
 
           found
+        end
+
+        # This project's replica floor (APO 3a). The mission owns it —
+        # `Ai::Mission#scaling_bounds` resolves the declaration DB-first
+        # (mission `watch_policies` → the mission template's
+        # default_configuration → Account#settings → SiteSetting → core's
+        # constant), so a project that must never drop below N replicas can say
+        # so instead of every project sharing this executor's one number.
+        #
+        # MIN_REPLICAS stays the hard platform minimum: a project may RAISE its
+        # floor, never lower it, so no configuration path reaches scale-to-zero
+        # through this arm. The rescue is the only fallback that can actually
+        # fire — #run resolves the mission through ::Ai::Mission before it ever
+        # dispatches a strategy, so the reader is always there; what it cannot
+        # promise is that resolving the declaration (a settings read, a
+        # template load) succeeds.
+        def replica_floor_for(mission)
+          [ mission.scaling_bounds.min.to_i, MIN_REPLICAS ].max
+        rescue StandardError => e
+          Rails.logger.warn("[ScaleProjectExecutor] replica floor unresolved (#{e.class}); " \
+                            "using platform minimum #{MIN_REPLICAS}")
+          MIN_REPLICAS
         end
 
         def removal_outputs(prefix: nil, removed: [], detached_peers: [], deleted_volumes: [],
