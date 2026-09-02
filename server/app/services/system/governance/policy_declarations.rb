@@ -863,6 +863,31 @@ module System
         "project.security_change" => "require_approval"
       }.freeze
 
+      # IMP-8c0f0fe9a8cf (APO-3b) — the destructive half of PlatformDeployment
+      # replica reconciliation (System::Platform::ReplicaReconciler).
+      #
+      # Scale-OUT is deliberately NOT declared here: it provisions, which is
+      # additive and reversible, and it runs on the caller's own authority.
+      # Declaring a category the reconciler never resolves would render an
+      # operator control that governs nothing — the defect
+      # RUNTIME_OPERATOR_GATED_KEYS below exists to avoid.
+      #
+      # Scale-IN terminates instances, which is not reversible, so the
+      # reconciler resolves this category before actuating and removes nothing
+      # unless the verdict auto-executes. require_approval is a NO-OP on
+      # resolution (it is also the absent-row default), so the row buys exactly
+      # one thing: the control is REAL and retunable in the Autonomy modal
+      # rather than a verdict with nothing behind it. Registration for that
+      # modal is derived from POLICY_SETS in the engine initializer, so this
+      # declaration is the only edit the category needs.
+      #
+      # Global scope, no agent: the reconciler is reached from the operator's
+      # Concierge-bound platform_resilience skill, not from a monitor agent's
+      # tick, so an agent-scoped row would resolve for nobody who can call it.
+      PLATFORM_SCALING_POLICIES = {
+        "system.platform.scale_in" => "require_approval"
+      }.freeze
+
       # DELIBERATELY THE GATED SUBSET, NOT ALL SEVEN. The other four runtime
       # categories have no gate site, so an operator row for them would render
       # as a working control that nothing reads —
@@ -931,7 +956,9 @@ module System
         { key: "runtime-operator",   agent_key: nil,                  scope: "action_type",
           priority: 5,  conditions: DEFAULT_TRUST_CONDITIONS, policies: RUNTIME_OPERATOR_POLICIES },
         { key: "instance-pool-operator", agent_key: nil,              scope: "global",
-          priority: 5,  conditions: {}, policies: INSTANCE_POOL_POLICIES }
+          priority: 5,  conditions: {}, policies: INSTANCE_POOL_POLICIES },
+        { key: "platform-scaling",   agent_key: nil,                  scope: "global",
+          priority: 5,  conditions: {}, policies: PLATFORM_SCALING_POLICIES }
       ].freeze
     end
   end

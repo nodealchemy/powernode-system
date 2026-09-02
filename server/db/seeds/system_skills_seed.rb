@@ -621,7 +621,7 @@ SKILLS_DATA = [
   {
     name: "Platform Resilience",
     slug: "system-platform-resilience",
-    description: "Incident response — drain a misbehaving instance, scale a deployment up or down, or triage cross-platform stress (stale peers, errored instances). Action-discriminated.",
+    description: "Incident response — cordon and stop a misbehaving instance, scale a deployment up or down (THIS skill reconciles the live replica count after writing target_replicas; the Scaling panel and the GitOps bridge still only record it), or triage cross-platform stress (stale peers, errored instances). Action-discriminated.",
     category: "devops",
     subdomain: "platform-deployment",
     executor: "System::Ai::Skills::PlatformResilienceExecutor",
@@ -632,11 +632,26 @@ SKILLS_DATA = [
       "drain X", "scale up", "what's wrong with the fleet", "any unhealthy peers".
 
       Action-discriminated:
-        - drain_instance  → record drain INTENT on a NodeInstance (writes
-          drain_* markers + a FleetEvent). It cordons nothing and stops
-          nothing; workloads keep running and the operator relocates them
-          by hand before calling system_terminate_instance.
-        - scale           → mutate target_replicas (set | increment | decrement)
+        - drain_instance  → CORDON + STOP a NodeInstance. A READY pool member
+          is taken out of the allocator (pool_state=draining); a CLAIMED one is
+          left alone (it is already un-acquirable, and flipping it would strand
+          it). The instance is then stopped through the lifecycle choke point,
+          which honours an operator ops hold. Requires the caller to hold
+          system.instances.control — the same grant system_stop_instance
+          requires. Disk and registry row survive — system_start_instance
+          brings it back; system_terminate_instance destroys it. Nothing
+          migrates in-flight work off it first.
+        - scale           → set target_replicas (set | increment | decrement)
+          AND reconcile the live replica count to match — a reconcile runs even
+          when the requested target already equals the stored one, because that
+          is exactly the state a partly-converged or panel-written deployment
+          is in. Scale-out provisions (needs system.instances.create); scale-in
+          terminates (needs system.instances.control) only when BOTH the
+          system.task.terminate and system.platform.scale_in policies
+          auto-execute, and otherwise names the excess instances instead.
+          REFUSED for the deployment hosting this control plane itself. NOTE:
+          only THIS path reconciles — the Scaling panel PATCH and the GitOps
+          bridge still write target_replicas without converging anything.
         - failover_check  → read-only triage of stress signals
 
       Prefer failover_check first for vague problems — it's the safe diagnostic call.

@@ -25,10 +25,11 @@ require "rails_helper"
 # executor nests a tool — PlatformResilienceExecutor and
 # PlatformMaintenanceExecutor mutate models/services directly — so the
 # nested-depth re-arm (IMP-0e6b216de843) can never reach them. This is a
-# FIRST-HOP gap, and the sharpest edge is that drain_instance writes
-# `config["drain_initiated_by_user_id"] = @user&.id`, which is nil for an
-# instance: exactly the unattributed destructive action the overlay exists to
-# prevent.
+# FIRST-HOP gap, and the sharpest edge is drain_instance: since
+# IMP-8c0f0fe9a8cf it cordons and STOPS the instance through
+# System::InstanceControlService, attributed to `@user&.id` — nil for an
+# instance principal. An unattributed stop of a fleet node is exactly the
+# destructive action the overlay exists to prevent.
 RSpec.describe "instance principal → SystemFleetTool inner-action ops" do
   let(:account) { create(:account) }
   let(:node_instance) { double("NodeInstance", id: SecureRandom.uuid, account: account) }
@@ -144,18 +145,25 @@ RSpec.describe "instance principal → SystemFleetTool inner-action ops" do
       }.to raise_error(::Mcp::ProtocolService::PermissionDeniedError, /destroy-shaped/i)
     end
 
-    # The sharpest edge, against real production code and a real row: the drain
-    # markers the on-node agent reads, stamped with a nil initiator.
-    it "leaves the instance undrained and unstamped" do
-      target = create(:system_node_instance, account: account)
+    # The sharpest edge, against real production code and a real row.
+    #
+    # This used to assert the absence of the `drain_*` config markers. Since
+    # IMP-8c0f0fe9a8cf (APO-3b) the branch writes no markers at ALL, so that
+    # assertion would pass whether or not the overlay fired — an absence oracle
+    # the change under test had quietly emptied. What the overlay now has to
+    # prevent is the real thing: an unattributed STOP. Assert the lifecycle
+    # choke point was never reached and the row never left `running`.
+    it "leaves the instance running and never reaches the lifecycle service" do
+      target = create(:system_node_instance, account: account, status: "running")
+      allow(::System::InstanceControlService).to receive(:execute)
 
       expect {
         invoke_as_instance(action: "system_platform_resilience",
                            op: "drain_instance", instance_id: target.id)
       }.to raise_error(::Mcp::ProtocolService::PermissionDeniedError)
 
-      expect(target.reload.config).not_to have_key("drain_initiated_at")
-      expect(target.config).not_to have_key("drain_initiated_by_user_id")
+      expect(::System::InstanceControlService).not_to have_received(:execute)
+      expect(target.reload.status).to eq("running")
     end
   end
 
@@ -196,9 +204,17 @@ RSpec.describe "instance principal → SystemFleetTool inner-action ops" do
   # through has_permission? and eligible for approval gating. Pinned at EVERY
   # op, including the two destroy-shaped ones.
   describe "user principals" do
+    # `system.instances.control` is NOT decoration. Since IMP-8c0f0fe9a8cf the
+    # drain branch stops the instance through System::InstanceControlService,
+    # and the executor gates that on the grant `system_stop_instance` itself
+    # requires rather than on the skill's coarser `system.platform.scale`
+    # entry-point mapping. A user holding only the entry-point grant is refused
+    # by the executor (pinned in platform_resilience_executor_spec.rb); this
+    # file is about the OVERLAY, so its operator holds what the drain needs.
     let(:operator) do
       create(:user, account: account,
-                    permissions: %w[system.platform.read system.platform.scale])
+                    permissions: %w[system.platform.read system.platform.scale
+                                    system.instances.control])
     end
 
     {
@@ -230,8 +246,18 @@ RSpec.describe "instance principal → SystemFleetTool inner-action ops" do
 
     # End to end against production code: a user's drain really drains, and is
     # attributed to them.
+    #
+    # IMP-8c0f0fe9a8cf (APO-3b) changed what "really drains" MEANS. It used to
+    # assert the three config.drain_* markers, which is what the branch wrote
+    # when it stopped nothing; drain now cordons and STOPS through
+    # System::InstanceControlService, and the attribution rides on the
+    # FleetEvent instead of on a config key nothing read. Only the lifecycle
+    # call is stubbed — this file is about the instance-principal overlay, not
+    # about provider adapters.
     it "lets a user drain an instance for real, attributed" do
-      target = create(:system_node_instance, account: account)
+      target = create(:system_node_instance, account: account, status: "running")
+      allow(::System::InstanceControlService).to receive(:execute)
+        .and_return(::System::Runtime::Result.ok(data: { status: "stopped" }))
 
       result = ::Ai::Tools::SystemFleetTool
                  .new(account: account, user: operator)
@@ -240,8 +266,11 @@ RSpec.describe "instance principal → SystemFleetTool inner-action ops" do
                             .with_indifferent_access)
 
       expect(result[:success]).to be true
-      expect(target.reload.config["drain_initiated_at"]).to be_present
-      expect(target.config["drain_initiated_by_user_id"]).to eq(operator.id)
+      expect(::System::InstanceControlService).to have_received(:execute)
+        .with(instance: an_object_having_attributes(id: target.id), action: :stop)
+      event = ::System::FleetEvent.find_by(kind: "platform.resilience.drain_started",
+                                           node_instance_id: target.id)
+      expect(event&.payload&.dig("by_user")).to eq(operator.id)
     end
   end
 
@@ -252,7 +281,9 @@ RSpec.describe "instance principal → SystemFleetTool inner-action ops" do
   # never engages.
   describe "in-process caller (internal: true, no provenance)" do
     it "still runs the destroy-shaped op" do
-      target = create(:system_node_instance, account: account)
+      target = create(:system_node_instance, account: account, status: "running")
+      allow(::System::InstanceControlService).to receive(:execute)
+        .and_return(::System::Runtime::Result.ok(data: { status: "stopped" }))
 
       result = ::Ai::Tools::SystemFleetTool
                  .new(account: account, user: nil, internal: true)
@@ -261,8 +292,11 @@ RSpec.describe "instance principal → SystemFleetTool inner-action ops" do
                             .with_indifferent_access)
 
       expect(result[:success]).to be true
-      expect(target.reload.config["drain_initiated_at"]).to be_present
-      expect(target.config["drain_initiated_by_user_id"]).to be_nil
+      expect(::System::InstanceControlService).to have_received(:execute)
+        .with(instance: an_object_having_attributes(id: target.id), action: :stop)
+      event = ::System::FleetEvent.find_by(kind: "platform.resilience.drain_started",
+                                           node_instance_id: target.id)
+      expect(event&.payload&.dig("by_user")).to be_nil
     end
   end
 
