@@ -89,11 +89,17 @@ end
 # expected NoReadyMembersError that fires before the reaper has had a
 # chance to provision warm members.
 begin
-  claim_result = replenisher.acquire!(pool_id: pool.id)
-  if claim_result.is_a?(Hash) && claim_result[:instance]
-    puts "  ✅ Claimed instance: #{claim_result[:instance].id[0, 8]} (claim atomic via SELECT FOR UPDATE SKIP LOCKED)"
-    puts "       To return: ::System::InstancePoolService.new(account: account).return!(claim_id: ...)"
-  end
+  # `acquire!` returns the claimed ::System::NodeInstance itself — the last
+  # expression of its transaction block — not a result Hash. There is no claim
+  # record and therefore no claim id: the instance row IS the handle, which is
+  # why the return verbs below take `instance:` and `instance_id:`.
+  claimed = replenisher.acquire!(pool_id: pool.id)
+  puts "  ✅ Claimed instance: #{claimed.name} (#{claimed.id})"
+  puts "       pool_state=#{claimed.pool_state} " \
+       "acquired_at=#{claimed.pool_acquired_at&.iso8601} " \
+       "(claim atomic via SELECT FOR UPDATE SKIP LOCKED)"
+  puts "       To return: ::System::InstancePoolService.release!(instance: claimed, pool: pool)"
+  puts "       From MCP:  system_return_pooled_instance({ instance_id: '#{claimed.id}' })"
 rescue ::System::InstancePoolService::NoReadyMembersError => e
   puts "  ℹ️  #{e.message}"
   puts "       The system_pool_replenish Sidekiq job promotes warming → ready"
