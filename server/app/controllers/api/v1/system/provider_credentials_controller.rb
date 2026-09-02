@@ -17,6 +17,12 @@ module Api
       # can render the "configured" state without leaking secrets.
       class ProviderCredentialsController < BaseController
         before_action :set_account
+        # Ordered AHEAD of :set_provider — that filter can render (400/404, and
+        # since IMP-efc4b9c2d96b the SDK refusal, which names the adapter gems
+        # this build ships), which would halt the chain before the in-body
+        # require_permission ever ran. The in-body calls stay as the per-action
+        # record of what each one needs.
+        before_action :require_credential_action_permission, only: %i[create test]
         before_action :set_provider, only: %i[create test]
         before_action :set_credential, only: %i[destroy]
 
@@ -116,6 +122,15 @@ module Api
           render_unauthorized unless @account
         end
 
+        # Self-halting (require_permission raises PermissionDenied), so a
+        # caller without the permission gets 403 and never reaches
+        # :set_provider.
+        def require_credential_action_permission
+          require_permission(
+            action_name == "test" ? "system.providers.test" : "system.providers.create"
+          )
+        end
+
         # Resolve `provider_id` polymorphically — the FirstRunWizard
         # sends the provider_type slug (e.g. "vultr") during BYOC
         # because no System::Provider row exists yet, while
@@ -126,7 +141,10 @@ module Api
         # Auto-create-on-first-cred: when the operator brings a cred
         # for a type that doesn't have a provider row yet, we create
         # one. This is the BYOC seamless-onboarding path — saves the
-        # operator from a pre-step "create provider" click.
+        # operator from a pre-step "create provider" click. No longer
+        # unconditional: a registry-supported type whose adapter SDK gem
+        # is not bundled in this build is refused before the mint — see
+        # #provider_sdk_refusal.
         def set_provider
           raw = params[:provider_id] ||
                 params.dig(:provider_credential, :provider_id)
@@ -138,6 +156,10 @@ module Api
           end
 
           @provider = resolve_provider(raw, provider_type)
+          # resolve_provider already refused (APO-7 SDK guard) — rendering a
+          # second time here would raise DoubleRenderError.
+          return if performed?
+
           render_not_found("Provider") unless @provider
         end
 
@@ -151,9 +173,62 @@ module Api
             return nil if type.blank?
             return nil unless ::System::Provider::PROVIDER_TYPES.include?(type)
 
-            ::System::Provider.where(account_id: @account.id, provider_type: type).first ||
-              auto_create_provider!(type)
+            existing = ::System::Provider.where(account_id: @account.id, provider_type: type).first
+            return existing if existing
+
+            # APO-7 follow-up: refuse BEFORE minting. The guard is on the
+            # mint, not on the credential — an existing row of that type is
+            # returned above untouched (the connection doors refuse to build
+            # anything on it). `supported?` gates the predicate, so types with
+            # no registry adapter at all (digitalocean/linode/vultr/custom)
+            # are outside it by design, exactly as at the four APO-7 doors.
+            if (refusal = provider_sdk_refusal(type))
+              return render_sdk_refusal(refusal)
+            end
+
+            auto_create_provider!(type)
           end
+        end
+
+        # After APO-7 four doors (system_create_provider,
+        # provider_connections#create/#update, system_create_provider_connection)
+        # refuse a provider type whose adapter SDK gem is not bundled in this
+        # build. This controller mints a System::Provider row as a side effect
+        # of a credential POST, so without the same predicate it is a second
+        # way to obtain exactly the inoperable row those doors refuse. It is
+        # NOT the last one: REST ProvidersController#create/#update
+        # (providers_controller.rb:25/37) permits :provider_type with no
+        # registry guard and is still open — tracked separately, out of scope
+        # for IMP-efc4b9c2d96b.
+        #
+        # @param provider_type [String]
+        # @return [String, nil] refusal text naming the missing gem, or nil
+        def provider_sdk_refusal(provider_type)
+          return nil if provider_type.blank?
+
+          registry = ::System::Providers::Registry
+          return nil unless registry.supported?(provider_type)
+          return nil if registry.sdk_available?(provider_type)
+
+          registry.sdk_missing_message(provider_type)
+        end
+
+        # Refuse in the shape each action promises: #create answers 422
+        # (nothing was written), while #test's contract is "always 200, the
+        # boolean carries the verdict" — 422-ing the wizard's test button
+        # would be a contract change. Returns nil so `@provider` stays unset;
+        # `performed?` in #set_provider halts the filter chain before the
+        # action body runs.
+        #
+        # @param message [String] refusal text naming the missing gem
+        # @return [nil]
+        def render_sdk_refusal(message)
+          if action_name == "test"
+            render_success(data: { valid: false, error: message })
+          else
+            render_error(message, status: :unprocessable_content, code: "PROVIDER_SDK_MISSING")
+          end
+          nil
         end
 
         def auto_create_provider!(provider_type)
