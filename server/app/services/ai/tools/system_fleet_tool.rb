@@ -1576,10 +1576,10 @@ module Ai
             }
           },
           "system_create_provider" => {
-            description: "Create a substrate provider record (e.g. onboard a new local_qemu/libvirt host). Credentials are NOT accepted here — attach them afterwards via the Vault-backed provider credential flow (provider connections + BYOC credential test); secret material must never transit tool calls.",
+            description: "Create a substrate provider record (e.g. onboard a new local_qemu/libvirt host). OPERABLE PROVIDER TYPES IN THIS BUILD: #{::System::Providers::Registry.available_providers.join(', ')} — any other registered type is refused with a result naming the cloud SDK gem that is not bundled. Credentials are NOT accepted here — attach them afterwards via the Vault-backed provider credential flow (provider connections + BYOC credential test); secret material must never transit tool calls.",
             parameters: {
               name: { type: "string", required: true, description: "Unique provider name within the account" },
-              provider_type: { type: "string", required: true, description: "Provider type slug (e.g. local_qemu, proxmox, aws, pro_cloud)" },
+              provider_type: { type: "string", required: true, description: "Provider type slug — must be one of the operable types listed in this action's description. A registered-but-inoperable type is refused with a result naming the gem it needs." },
               description: { type: "string", required: false, description: "Free-text description for the provider" },
               enabled: { type: "boolean", required: false, description: "Defaults to true" },
               config: { type: "object", required: false, description: "Non-secret wiring config (e.g. host_node_instance_id, bridge_name)" }
@@ -1592,7 +1592,7 @@ module Ai
             }
           },
           "system_create_provider_connection" => {
-            description: "Create a ProviderConnection for a provider (status starts 'pending'). NO credential parameters are accepted — the adapter layer resolves keys from the Vault-encrypted BYOC ProviderCredential store (saved via the provider Credentials UI/REST) at use time. Set test_connection=true to immediately run the live credential test: on success the connection flips to 'connected' (required before Registry will use it for provisioning).",
+            description: "Create a ProviderConnection for a provider (status starts 'pending'). Refused with a result naming the missing cloud SDK gem when the provider's type is not operable in this build (same rule as system_create_provider). NO credential parameters are accepted — the adapter layer resolves keys from the Vault-encrypted BYOC ProviderCredential store (saved via the provider Credentials UI/REST) at use time. Set test_connection=true to immediately run the live credential test: on success the connection flips to 'connected' (required before Registry will use it for provisioning).",
             parameters: {
               provider_id: { type: "string", required: true, description: "System::Provider id (account-scoped)" },
               name: { type: "string", required: true, description: "Display name for the provider connection" },
@@ -6319,6 +6319,17 @@ module Ai
       # calls — attach credentials afterwards via the Vault-backed provider
       # credential flow.
       def create_provider(params)
+        # APO-7: refuse a provider type whose adapter cannot run in this
+        # build BEFORE writing the row. Creating it succeeded happily and the
+        # first provisioning call then raised a bare NameError from inside
+        # the adapter, which an MCP caller sees as -32603 rather than as a
+        # refusal naming the gem it is missing.
+        provider_type = params[:provider_type].to_s
+        registry = ::System::Providers::Registry
+        if registry.supported?(provider_type) && !registry.sdk_available?(provider_type)
+          return error_result(registry.sdk_missing_message(provider_type))
+        end
+
         provider = ::System::Provider.new(
           account_id: @account.id,
           name: params[:name],
@@ -6371,6 +6382,18 @@ module Ai
 
       def create_provider_connection(params)
         provider = ::System::Provider.where(account_id: @account.id).find(params[:provider_id])
+
+        # APO-7: the MCP twin of the guarded REST create. A refusal that lives
+        # only in ProviderConnectionsController is bypassable by exactly the
+        # caller class the guard exists for — an agent holding
+        # system.connections.create reaches this action directly. Refuse
+        # BEFORE the write: test_connection! below only reports the later
+        # failure, by which point the dead row has already landed.
+        provider_type = provider.provider_type.to_s
+        registry = ::System::Providers::Registry
+        if registry.supported?(provider_type) && !registry.sdk_available?(provider_type)
+          return error_result(registry.sdk_missing_message(provider_type))
+        end
 
         connection = ::System::ProviderConnection.new(
           account_id: @account.id,

@@ -5,6 +5,17 @@ module System
     # AWS EC2 cloud provider adapter
     # Uses aws-sdk-ec2 for cloud operations
     class AwsProvider < BaseProvider
+      # aws-sdk-ec2 is NOT in the core bundle (APO-7). Declaring it here is
+      # what makes Registry hide "aws" and refuse with a named gem instead of
+      # letting the first call raise NameError: uninitialized constant Aws.
+      def self.required_sdk_gem
+        "aws-sdk-ec2"
+      end
+
+      def self.sdk_constant
+        "Aws::EC2::Client"
+      end
+
       # AWS-specific status mappings
       AWS_STATUS_MAP = {
         "pending" => "pending",

@@ -7,8 +7,20 @@ module System
     class Registry
       class UnknownProviderError < StandardError; end
 
-      # Registered provider types and their adapter classes
-      # Provider classes are loaded lazily to avoid loading unnecessary dependencies
+      # Raised when the provider type IS registered but the adapter's SDK gem
+      # is not bundled in this build (APO-7). A subclass of
+      # UnknownProviderError so `.with_adapter` — and every existing caller
+      # that already rescues UnknownProviderError — turns it into a
+      # Runtime::Result refusal naming the gem, never a bare NameError from
+      # deep inside the adapter.
+      class ProviderSdkMissingError < UnknownProviderError; end
+
+      # Registered provider types and their adapter classes.
+      # Mapped by class NAME so an adapter file that is not present is not a
+      # boot error. Note that #available_providers / #sdk_available? DO
+      # resolve every mapped class (constantize) in order to ask it whether
+      # its optional SDK gem is loaded — an adapter must therefore never
+      # `require` an unbundled gem at the top of its file.
       PROVIDER_CLASSES = {
         "aws" => "System::Providers::AwsProvider",
         "gcp" => "System::Providers::GcpProvider",
@@ -36,6 +48,11 @@ module System
           end
 
           provider_class = PROVIDER_CLASSES[provider_type].constantize
+
+          unless provider_class.sdk_available?
+            raise ProviderSdkMissingError, sdk_missing_message(provider_type)
+          end
+
           provider_class.new(connection, region: region)
         end
 
@@ -98,19 +115,66 @@ module System
           class_name.constantize
         end
 
-        # List available provider types
+        # List provider types that are OPERABLE in this build — registered
+        # and with their SDK gem actually loaded. Adapters whose optional gem
+        # is missing are hidden here rather than advertised and then failing
+        # at first call (APO-7).
         #
-        # @return [Array<String>] Available provider type identifiers
+        # @return [Array<String>] Operable provider type identifiers
         def available_providers
+          PROVIDER_CLASSES.keys.select { |provider_type| sdk_available?(provider_type) }
+        end
+
+        # Every registered provider type, operable or not. Callers that need
+        # the mapping itself (docs, catalog listings, "is this a typo?"
+        # checks) use this; callers that are about to USE an adapter use
+        # #available_providers.
+        #
+        # @return [Array<String>] Registered provider type identifiers
+        def registered_providers
           PROVIDER_CLASSES.keys
         end
 
-        # Check if a provider type is supported
+        # Check if a provider type is registered (mapping exists). This does
+        # NOT imply the adapter can run — see #sdk_available?.
         #
         # @param provider_type [String] The provider type to check
-        # @return [Boolean] True if provider is supported
+        # @return [Boolean] True if provider is registered
         def supported?(provider_type)
           PROVIDER_CLASSES.key?(provider_type)
+        end
+
+        # Check if a registered provider type's SDK gem is loaded here.
+        #
+        # @param provider_type [String] The provider type to check
+        # @return [Boolean] True if the adapter can actually run
+        def sdk_available?(provider_type)
+          adapter_class = adapter_for(provider_type)
+          return false unless adapter_class
+
+          adapter_class.sdk_available?
+        end
+
+        # @param provider_type [String] The provider type to check
+        # @return [String, nil] The gem this provider type needs but does not
+        #   have, or nil when the adapter is operable (or unregistered)
+        def missing_sdk_gem(provider_type)
+          adapter_class = adapter_for(provider_type)
+          return nil unless adapter_class
+          return nil if adapter_class.sdk_available?
+
+          adapter_class.required_sdk_gem
+        end
+
+        # Refusal text naming the missing gem, for callers that answer with a
+        # result instead of raising.
+        #
+        # @param provider_type [String] The provider type being refused
+        # @return [String] Operator-actionable refusal message
+        def sdk_missing_message(provider_type)
+          "Provider type '#{provider_type}' is not operable in this build: " \
+            "the #{missing_sdk_gem(provider_type)} gem is not bundled. " \
+            "Operable provider types: #{available_providers.join(', ')}."
         end
 
         # Register a custom provider (for extensions/plugins)

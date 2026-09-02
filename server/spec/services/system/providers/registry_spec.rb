@@ -31,6 +31,15 @@ RSpec.describe System::Providers::Registry do
   end
 
   before do
+    # IMP-384a74c79f86: aws-sdk-ec2 / google-cloud-compute / fog-openstack are
+    # not bundled, so Registry now HIDES those adapters and refuses to build
+    # them. Stubbing the SDK constants keeps these examples testing the
+    # type -> adapter-class mapping, which is what they are for. The
+    # availability guard itself is covered by sdk_availability_guard_spec.rb.
+    stub_const("Aws::EC2::Client", Class.new)
+    stub_const("Google::Cloud::Compute::V1::Instances::Rest::Client", Class.new)
+    stub_const("Fog::OpenStack::Compute", Class.new)
+
     connection # ensure connection exists
   end
 
@@ -108,7 +117,7 @@ RSpec.describe System::Providers::Registry do
   end
 
   describe ".available_providers" do
-    it "returns list of registered provider types" do
+    it "returns the operable provider types (SDK constants stubbed present here)" do
       providers = described_class.available_providers
       expect(providers).to be_an(Array)
       expect(providers).to include("aws", "openstack", "gcp", "azure", "mock")
@@ -116,7 +125,7 @@ RSpec.describe System::Providers::Registry do
   end
 
   describe ".supported?" do
-    it "returns true for registered providers" do
+    it "returns true for registered providers (registration, not operability)" do
       expect(described_class.supported?("aws")).to be true
       expect(described_class.supported?("openstack")).to be true
       expect(described_class.supported?("gcp")).to be true

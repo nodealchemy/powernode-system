@@ -45,6 +45,41 @@ module System
 
       attr_reader :connection, :region, :logger, :last_authentication_error
 
+      # === Optional SDK availability (APO-7) ===============================
+      #
+      # Some adapters are written against a cloud SDK gem that is NOT in the
+      # core bundle (aws-sdk-ec2, google-cloud-compute, fog-openstack). The
+      # adapter code is complete, but every call would raise a bare NameError
+      # on a build without the gem — which reaches an MCP caller as an
+      # internal error rather than as a refusal it can act on.
+      #
+      # An adapter that needs a gem declares the gem name and the constant
+      # that proves it is loaded; System::Providers::Registry then hides the
+      # adapter and refuses in front of the caller. Adapters that run on the
+      # core bundle alone (proxmox, mock, local_qemu, pro_cloud, and azure —
+      # a hand-rolled faraday REST client, see AzureProvider) inherit the
+      # defaults and are always available.
+
+      # @return [String, nil] Gem that must be bundled for this adapter to
+      #   work, or nil when the adapter needs no optional gem.
+      def self.required_sdk_gem
+        nil
+      end
+
+      # @return [String, nil] Fully qualified constant whose presence proves
+      #   the SDK is loaded, or nil when no gem is required.
+      def self.sdk_constant
+        nil
+      end
+
+      # @return [Boolean] True when this adapter can actually run here.
+      def self.sdk_available?
+        const_path = sdk_constant
+        return true if const_path.nil?
+
+        Object.const_defined?(const_path)
+      end
+
       # Initialize provider with connection credentials
       #
       # @param connection [System::ProviderConnection] The provider connection with credentials

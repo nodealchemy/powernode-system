@@ -4222,7 +4222,12 @@ end
   # connection action accepts NO key material — the adapter layer resolves
   # credentials from the BYOC System::ProviderCredential store at use time.
   describe "provider chain creates (audit F4-07)" do
-    let(:provider) { create(:system_provider, account: account) }
+    # proxmox, not the factory default (aws): APO-7 made
+    # system_create_provider_connection refuse a provider whose optional SDK
+    # gem is not bundled, and aws-sdk-ec2 is absent from the core bundle.
+    # These examples are about the create CHAIN, not about aws, so they pin an
+    # always-operable type and hold in the `provider-specs` lane too.
+    let(:provider) { create(:system_provider, account: account, provider_type: "proxmox") }
 
     describe "system_create_provider_connection" do
       it "creates a credential-less connection for the account's provider" do

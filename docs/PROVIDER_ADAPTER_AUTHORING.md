@@ -326,6 +326,11 @@ The script generates a throwaway supplementary Gemfile (`eval_gemfile "Gemfile"`
 CI runs this automatically in the **`provider-specs`** job (`.gitea/workflows/ci.yaml`); the default
 `rspec` job's `services` suite still shows those 64 as `pending`, which is expected there.
 
+Because the gems are absent from the **runtime** bundle, those two adapters are also withdrawn at
+runtime rather than advertised and then failing at first call — see §10, *Adapters that need an
+optional SDK gem*. `sdk_availability_guard_spec.rb` covers that in the default lane and is written
+to hold in this lane too.
+
 ---
 
 ## 8. The error hierarchy — when to raise each
@@ -405,6 +410,43 @@ To register a new adapter, **add an entry to `PROVIDER_CLASSES`** keyed by the e
 out-of-tree plugin, call `Registry.register("your_type", "Your::Adapter::ClassName")` at load time.
 An unknown type raises `Registry::UnknownProviderError`.
 
+### Adapters that need an optional SDK gem
+
+Registration alone does not make an adapter usable. If your adapter is written against a gem that is
+**not** in `server/Gemfile` (today: `aws-sdk-ec2`, `google-cloud-compute`, `fog-openstack`), declare
+it on the adapter class:
+
+```ruby
+class AwsProvider < BaseProvider
+  def self.required_sdk_gem = "aws-sdk-ec2"
+  def self.sdk_constant     = "Aws::EC2::Client"   # presence proves the gem is loaded
+end
+```
+
+`BaseProvider` defaults both to `nil`, so an adapter that runs on the core bundle (proxmox, mock,
+local_qemu, pro_cloud, and azure — a hand-rolled Faraday client) needs no change. With the pair
+declared, the Registry:
+
+- **omits** the type from `Registry.available_providers` (`registered_providers` still lists every
+  mapped type, operable or not);
+- answers `Registry.sdk_available?(type)` / `Registry.missing_sdk_gem(type)` /
+  `Registry.sdk_missing_message(type)`;
+- raises `Registry::ProviderSdkMissingError` — a **subclass of `UnknownProviderError`**, so
+  `with_adapter` and every existing rescue turn it into a `Runtime::Result.err` naming the gem —
+  instead of letting the first call raise a bare `NameError` from inside the adapter.
+
+The provider/connection front doors refuse before writing anything: `system_create_provider` and
+`system_create_provider_connection` return an error result, and `POST`/`PATCH`
+`/api/v1/system/provider_connections` return 422 (the `PATCH` guard matters because
+`connection_params` permits `:provider_id`). This is not an exhaustive claim about every write:
+`POST /api/v1/system/provider_credentials` still auto-creates a `System::Provider` row for any
+type in `System::Provider::PROVIDER_TYPES` — that row is inert, because every path that reaches an
+adapter goes through the registry guard above, and the BYOC credential probe itself uses hand-rolled
+HTTP (or `aws-sdk-core`, which *is* bundled), never the missing gem. The behaviour is covered by
+`spec/services/system/providers/sdk_availability_guard_spec.rb`, which drives the SDK constant in
+both directions with `hide_const`/`stub_const` so it holds under the default bundle *and* under the
+`provider-specs` lane described in §7.
+
 ---
 
 ## 11. Adding a new provider — step-by-step checklist
@@ -426,7 +468,10 @@ Using `MockProvider` (`app/services/system/providers/mock_provider.rb`) as the m
 6. **Narrow `capabilities` (§6)** if your backend lacks volumes/IPs/images/sync — don't fake them.
 7. **Raise the typed errors (§8)** on auth/rate/not-found/quota failures (especially in `list_instances`).
 8. **Register in the Registry (§10)** — add `"<name>" => "System::Providers::<Name>Provider"` to
-   `PROVIDER_CLASSES` in `app/services/system/providers/registry.rb`.
+   `PROVIDER_CLASSES` in `app/services/system/providers/registry.rb`. If your adapter needs a gem
+   that is not in `server/Gemfile`, also declare `self.required_sdk_gem` + `self.sdk_constant`
+   (§10, *Adapters that need an optional SDK gem*) so the Registry withdraws it instead of
+   advertising an adapter that raises `NameError` at first call.
 9. **Add a spec** at `server/spec/services/system/providers/<name>_provider_spec.rb` that calls
    `it_behaves_like "a cloud provider"` (and, as internals stabilize, the status-normalization and
    typed-error groups from `server/spec/services/system/providers/shared_examples.rb`).

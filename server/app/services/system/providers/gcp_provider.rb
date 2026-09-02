@@ -5,6 +5,16 @@ module System
     # Google Cloud Platform compute provider adapter
     # Uses google-cloud-compute for cloud operations
     class GcpProvider < BaseProvider
+      # google-cloud-compute is NOT in the core bundle (APO-7) — only
+      # google-cloud-storage is. See BaseProvider.required_sdk_gem.
+      def self.required_sdk_gem
+        "google-cloud-compute"
+      end
+
+      def self.sdk_constant
+        "Google::Cloud::Compute::V1::Instances::Rest::Client"
+      end
+
       # GCP-specific status mappings
       GCP_STATUS_MAP = {
         "PROVISIONING" => "pending",

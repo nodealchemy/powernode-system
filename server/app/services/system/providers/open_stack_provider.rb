@@ -5,6 +5,16 @@ module System
     # OpenStack cloud provider adapter
     # Uses fog-openstack for cloud operations
     class OpenStackProvider < BaseProvider
+      # fog-openstack is NOT in the core bundle (APO-7).
+      # See BaseProvider.required_sdk_gem.
+      def self.required_sdk_gem
+        "fog-openstack"
+      end
+
+      def self.sdk_constant
+        "Fog::OpenStack::Compute"
+      end
+
       # OpenStack-specific status mappings
       OPENSTACK_STATUS_MAP = {
         "BUILD" => "pending",

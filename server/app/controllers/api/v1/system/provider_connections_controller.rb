@@ -24,6 +24,15 @@ module Api
           require_permission("system.connections.create")
           connection = @account.system_provider_connections.build(connection_params)
 
+          # APO-7: a connection to a provider whose adapter cannot run here
+          # is unusable — #test and every provisioning call would raise a bare
+          # NameError from inside the adapter. Refuse in front of the operator
+          # with the gem name. `return` is load-bearing: rendering from an
+          # action body does not halt, and the save below would still land.
+          if (refusal = provider_sdk_refusal(connection.provider))
+            return render_error(refusal, status: :unprocessable_content)
+          end
+
           if connection.save
             render_success(provider_connection: serialize_connection(connection), status: :created)
           else
@@ -33,6 +42,16 @@ module Api
 
         def update
           require_permission("system.connections.update")
+
+          # APO-7: connection_params permits :provider_id, so a guard that
+          # lived only in #create would be undone by one PATCH. The invariant
+          # is a property of the CONNECTION — its provider's adapter must be
+          # able to run here — so it is re-checked against the provider the
+          # update is aiming at (falling back to the current one).
+          target_provider = ::System::Provider.find_by(id: connection_params[:provider_id]) || @connection.provider
+          if (refusal = provider_sdk_refusal(target_provider))
+            return render_error(refusal, status: :unprocessable_content)
+          end
 
           if @connection.update(connection_params)
             render_success(provider_connection: serialize_connection(@connection))
@@ -94,6 +113,19 @@ module Api
           @connection = @account.system_provider_connections.find(params[:id])
         rescue ActiveRecord::RecordNotFound
           render_not_found("Provider Connection")
+        end
+
+        # @param provider [System::Provider, nil]
+        # @return [String, nil] refusal text naming the missing gem, or nil
+        def provider_sdk_refusal(provider)
+          provider_type = provider&.provider_type
+          return nil if provider_type.blank?
+
+          registry = ::System::Providers::Registry
+          return nil unless registry.supported?(provider_type)
+          return nil if registry.sdk_available?(provider_type)
+
+          registry.sdk_missing_message(provider_type)
         end
 
         def connection_params
