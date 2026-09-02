@@ -48,8 +48,12 @@ require "rails_helper"
 #              contract", which is the same finding stated from the other side.
 #            * ActionCable `describe_tool` — serves the registered manifest,
 #              whose `outputSchema` is `default_output_schema`
-#              (mcp_platform_tool_registrar.rb:541-550, from `build_manifest`
-#              :510): one shared literal `{success, error}` for all 606.
+#              (mcp_platform_tool_registrar.rb `default_output_schema`, from
+#              `build_manifest`): one shared literal for all 606. Since
+#              IMP-e809396f9eda (2026-09-02) that literal is
+#              `{success, error, data}` where `data` carries the
+#              pending-approval envelope — still verb-independent, still not
+#              a per-action declaration.
 #
 #          This is not a parsing problem — the thing being compared against
 #          does not exist. The tripwire below pins the declaration side and the
@@ -776,12 +780,18 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   # element type, not an object's keys, and so is no oracle for the
   # `config:`/`metadata:` nesting this finding is about.
   #
-  # The structural argument is the one to rely on: MCP's own schema synthesizer
-  # emits `{"type", "description"}` per parameter and discards everything else
-  # (mcp_platform_tool_registrar.rb:531-535). A tool that declared a nested
-  # schema tomorrow could not get it onto the wire, so an operator's client
-  # never sees one either. A per-key nested check would have nothing to compare
-  # against — an inert gate. Widen this when that synthesizer carries more.
+  # The structural argument this check was built on has EXPIRED: until
+  # IMP-e809396f9eda (2026-09-02) MCP's schema synthesizer emitted only
+  # `{"type", "description"}` per parameter, so a nested schema could never
+  # reach the wire and a per-key nested check had nothing to compare against.
+  # The synthesizer now carries `enum`, `items`, `default` and nested
+  # `properties` through Ai::Tools::ParameterSchema (parameter_schema.rb,
+  # called from mcp_platform_tool_registrar.rb#convert_to_json_schema and the
+  # streamable-HTTP controller). So this top-level-only check is now the
+  # WEAKER of the two possible oracles; widening it to nested keys is filed
+  # as a follow-up (campaign-apo, "widen call-signature check to nested
+  # schema keys") rather than done here, because that widening changes what
+  # every covered doc is held to and deserves its own red-first run.
   def self.top_level_entries(body)
     keys = []
     depth = 0
@@ -1172,8 +1182,27 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
         eq([ {
           "type" => "object",
           "properties" => {
-            "success" => { "type" => "boolean" },
-            "error" => { "type" => "string" }
+            "success" => {
+              "type" => "boolean",
+              "description" => "False on refusal or failure; see `error`."
+            },
+            "error" => {
+              "type" => "string",
+              "description" => "Failure message. Present only when success is false."
+            },
+            # IMP-e809396f9eda (2026-09-02) added `data`, whose properties are
+            # the pending-approval envelope every gated action can return. The
+            # envelope's wire values are pinned by core's
+            # spec/services/ai/tools/mcp_tool_schema_fidelity_spec.rb; this
+            # oracle pins that the literal is still ONE shared, verb-independent
+            # schema, so it names the constant rather than re-typing it.
+            "data" => {
+              "description" => "Action payload on success. For an approval-gated action " \
+                               "parked by the autonomy gate it is the pending envelope below " \
+                               "and NOTHING has been applied yet.",
+              "additionalProperties" => true,
+              "properties" => Ai::Tools::BaseTool::PENDING_RESULT_PROPERTIES
+            }
           },
           "required" => [ "success" ]
         } ]),
