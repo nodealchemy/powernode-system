@@ -20,7 +20,10 @@ module System
             deleted: :boolean,
             architecture_id: :string
           },
-          requires_approval: true
+          requires_approval: true,
+          # DECLARED, not derived — see ArchitectureCreateExecutor
+          # (IMP-51e5c6184ae4): the seeded row is "system.architecture.delete".
+          action_category: "system.architecture.delete"
         )
 
         binds_to "Fleet Autonomy"

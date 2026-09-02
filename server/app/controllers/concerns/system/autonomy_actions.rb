@@ -104,11 +104,15 @@ module System
       "disk_image"        => %w[system.disk_image_],
       "gitops"            => %w[system.gitops_],
       "packages"          => %w[system.package_module. system.package_module_ system.package_repository.],
-      # Both spellings are registered today: `system.architecture.<verb>` (seeded
-      # policy rows) and `system.architecture_<verb>` (the gated executors'
-      # derived categories, APO-1c). Deduplicating the spelling is filed; until
-      # then both pivot into the same domain.
-      "architecture"      => %w[system.architecture. system.architecture_],
+      # ONE spelling (IMP-51e5c6184ae4). `system.architecture_<verb>` — the
+      # gated executors' derived categories under APO-1c — used to be listed
+      # here alongside the seeded `system.architecture.<verb>` rows so the modal
+      # at least filed both under one domain. The executors now DECLARE the
+      # dotted category, the underscored rows are retired, and a second
+      # spelling must not come back: it would render as a SECOND control over
+      # the same action, which pivoting it into this domain hides rather than
+      # fixes.
+      "architecture"      => %w[system.architecture.],
       "storage"           => %w[system.storage_ system.restore_volume],
       # Service exposure + certificate issuance (APO-1c gated executors).
       "ingress"           => %w[system.expose_service_ system.acme_certificate_],

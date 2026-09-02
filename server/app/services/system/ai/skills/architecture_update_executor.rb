@@ -19,7 +19,10 @@ module System
                                 description: "Allowed: name, family, apt_name, rpm_name, display_name, description, kernel_options, enabled, public" }
           },
           outputs: { architecture: :object },
-          requires_approval: true
+          requires_approval: true,
+          # DECLARED, not derived — see ArchitectureCreateExecutor
+          # (IMP-51e5c6184ae4): the seeded row is "system.architecture.update".
+          action_category: "system.architecture.update"
         )
 
         binds_to "Fleet Autonomy"

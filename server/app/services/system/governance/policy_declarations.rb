@@ -654,10 +654,18 @@ module System
         # TUNABLE through PATCH /api/v1/system/autonomy, and satisfies
         # routed_lane_policy_coherence_spec — BaseSkillExecutor is a declared
         # ActionCategoryRouter, so its categories are routed categories.
+        #
+        # ABSENT and must not be re-added (IMP-51e5c6184ae4):
+        # system.architecture_create / _update / _delete. Those three were the
+        # DERIVED "<domain>.<skill name>" categories of the architecture
+        # executors, seeded here beside the dotted rows the same executors'
+        # actions already had ("system.architecture.create" and siblings,
+        # declared above). Two rows over one action are two controls: an
+        # operator who tuned the dotted one did not tune the executor's gate.
+        # The executors now DECLARE `action_category:` on the dotted spelling,
+        # so there is nothing left to seed here — see
+        # spec/lib/powernode_system/autonomy_category_spelling_uniqueness_spec.rb.
         "system.acme_certificate_provision" => "require_approval",
-        "system.architecture_create"        => "require_approval",
-        "system.architecture_delete"        => "require_approval",
-        "system.architecture_update"        => "require_approval",
         "system.expose_service_local"       => "require_approval",
         "system.expose_service_public_tcp"  => "require_approval",
         "system.expose_service_publicly"    => "require_approval",
