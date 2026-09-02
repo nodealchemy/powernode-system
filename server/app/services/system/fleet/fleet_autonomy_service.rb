@@ -206,6 +206,13 @@ module System
         # nothing.
         ::System::Fleet::Sensors::StuckTaskBacklogSensor,
         ::System::Fleet::Sensors::InstanceStatusSensor,
+        # IMP-e2f53e87d090 (APO-2b) — the DR classifier for the population
+        # InstanceStatusSensor watches. A silent instance whose VM the provider
+        # calls terminated/error, whose host has no usable connection, or whose
+        # reboots the validate arc already scored ineffective cannot be
+        # rebooted back; it emits system.instance_unrecoverable on the distinct
+        # system.instance_replace lane instead of another reboot proposal.
+        ::System::Fleet::Sensors::InstanceUnrecoverableSensor,
         # Provider-side state drift (e.g. libvirt domstate=shut-off while
         # the model says status=running). Complementary to InstanceStatusSensor
         # which watches heartbeat staleness. Together they distinguish
@@ -598,6 +605,10 @@ module System
       def dedup_key_for(action_category, metadata)
         natural_key = case action_category
         when "system.instance_reprovision", "system.instance_reboot",
+             # IMP-e2f53e87d090 — the DR replace lane is per-instance too, so
+             # a re-emitted unrecoverable signal updates the one open approval
+             # rather than queueing another.
+             "system.instance_replace",
              "system.cert_rotate", "system.cert_revoke",
              # Observation signals never create remediation outcomes
              # (see RemediationValidator#record_proceeded!), so they should not

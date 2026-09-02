@@ -1,0 +1,281 @@
+# frozen_string_literal: true
+
+module System
+  module Fleet
+    module Sensors
+      # IMP-e2f53e87d090 (APO-2b) — the sense arm for "a reboot cannot bring
+      # this instance back".
+      #
+      # WHY IT IS A SEPARATE SENSOR AND A SEPARATE SIGNAL
+      #
+      # InstanceStatusSensor emits system.instance_silent for ANY running /
+      # starting instance with a stale heartbeat, and DecisionEngine's applier
+      # #reboot_silent_instance answers every one of them with a provider-side
+      # reboot (or a start, from a not-running row). Three materially different
+      # conditions collapsed into that one signal and that one remediation:
+      #
+      #   1. the VM is GONE — the provider reports terminated/error, so there
+      #      is nothing left to reboot;
+      #   2. the HOST is unreachable — the platform's own control path to that
+      #      provider is in error and no usable connection remains, so the
+      #      reboot cannot be dispatched at all;
+      #   3. the reboot has ALREADY been tried and the validate arc scored the
+      #      outcomes ineffective — re-running a proven-futile action.
+      #
+      # Disaster recovery's answer to all three is REPLACE, and a replace needs
+      # its own operator-tunable policy row. So this sensor emits a distinct
+      # kind (system.instance_unrecoverable) on a distinct action_category
+      # (system.instance_replace, seeded require_approval).
+      #
+      # UNKNOWN IS NOT UNRECOVERABLE. A missing adapter, a blank
+      # cloud_instance_id, a failed sync_status read, a provider carrying no
+      # connection rows, and a provider whose connections are merely `pending`
+      # (the schema default — never tested) are all ABSENCE of provider state,
+      # and absence keeps the instance on the existing instance_silent lane
+      # rather than escalating it to a replace proposal. Every predicate below
+      # fails CLOSED (returns "not unrecoverable") on anything it cannot read.
+      #
+      # NOT AN ACTUATOR. There is no replace applier: this increment delivers
+      # detection plus the distinct policy row. system.instance_replace is
+      # therefore listed in
+      # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES so a proceeded
+      # decision (if an operator ever retunes the lane off require_approval)
+      # cannot mint a pending outcome that scores ineffective every settle
+      # window and manufactures a false fleet.remediation_stuck.
+      class InstanceUnrecoverableSensor < BaseSensor
+        # The same fence InstanceStatusSensor carries over the same population:
+        # never speak for an instance another control plane owns.
+        include ::System::Autonomy::ControlPlaneFence
+
+        SIGNAL_KIND = "system.instance_unrecoverable"
+
+        # Read from InstanceStatusSensor rather than restated, so the two
+        # sensors cannot disagree about which instances are silent — this one
+        # exists to CLASSIFY that exact population.
+        SILENT_THRESHOLD = InstanceStatusSensor::SILENT_THRESHOLD
+
+        # The DecisionEngine's presumed-dead reaper flips a silent `running`
+        # instance to `error` at PRESUMED_DEAD_SILENCE_SECONDS (30 min) and
+        # emits this kind. A reaped instance is the CANONICAL disaster-recovery
+        # case — the model row was retired on a timer while the provider's own
+        # state may only settle to `terminated` later — so the candidate set
+        # below re-admits exactly the rows that reaper marked, and no other
+        # `error` row (a failed provision is a different problem with a
+        # different owner).
+        PRESUMED_DEAD_KIND = "system.instance_presumed_dead"
+
+        # Bounds the per-tick provider reads (one sync_status subprocess each,
+        # like InstanceStateDriftSensor::MAX_PER_TICK). Applied AFTER the
+        # emit-window exclusion below, so instances already carrying a live
+        # replace proposal never consume a slot.
+        MAX_PER_TICK = (ENV["FLEET_UNRECOVERABLE_MAX_PER_TICK"] || 25).to_i
+
+        # Emit-once-per-window. An unrecoverable instance STAYS unrecoverable —
+        # the condition clears when a person replaces it, not inside any tick
+        # interval — so re-emitting each 60s tick would bleed one FleetEvent
+        # and one operator-facing decision per minute, indefinitely. The
+        # suppression reads the durable FleetEvent the DecisionEngine mints for
+        # the signal, so it needs no sensor-side state and survives restarts.
+        # It is enforced IN SQL, before MAX_PER_TICK (see #candidates).
+        EMIT_WINDOW_SECONDS = (ENV["FLEET_UNRECOVERABLE_EMIT_WINDOW_SECONDS"] || 3600).to_i
+
+        # Consecutive ineffective instance_silent remediations before the
+        # reboot lane is called exhausted. Deliberately BELOW
+        # DecisionEngine::STUCK_STREAK_THRESHOLD (3): the generic stuck
+        # escalation says "this remediation is not working" without saying
+        # what to do instead, and this signal is the what-to-do-instead.
+        REBOOT_ATTEMPT_THRESHOLD = (ENV["FLEET_UNRECOVERABLE_REBOOT_ATTEMPTS"] || 2).to_i
+
+        # Provider-reported states from which a reboot cannot recover. A
+        # `stopped` VM is deliberately NOT here — start is the legal, correct
+        # remediation for it, and instance_state_drifted already converges the
+        # model.
+        TERMINAL_PROVIDER_STATES = %w[terminated error].freeze
+
+        def sense
+          fence_to_control_plane(candidates)
+            # No per-sensor attempt stamp exists to rotate on, and any fixed
+            # ordering key would let permanently-silent-but-RECOVERABLE
+            # instances (never-enrolled rows the provider still reports
+            # running) pin the front of the window forever and starve the rest
+            # — the defect IMP-bcadb1ecd52d fixed in InstanceStateDriftSensor.
+            # A random draw reaches every candidate within a bounded number of
+            # ticks without one.
+            .order(Arel.sql("random()"))
+            .limit(MAX_PER_TICK)
+            .filter_map { |inst| signal_for(inst) }
+        end
+
+        private
+
+        # The candidate population, narrowed IN SQL so MAX_PER_TICK bounds only
+        # work that is still to be done. Both exclusions below MUST precede the
+        # limit: filtering after it lets a fixed set of already-classified rows
+        # consume the whole window every tick while the rest of a mass failure
+        # is never looked at.
+        def candidates
+          ::System::NodeInstance
+            .includes(:provider_region)
+            .joins(:node)
+            .where(system_nodes: { account_id: account.id })
+            .where(
+              "system_node_instances.last_heartbeat_at < ? OR system_node_instances.last_heartbeat_at IS NULL",
+              Time.current - SILENT_THRESHOLD
+            )
+            .where(in_scope_status_sql, account_id: account.id, presumed_dead: PRESUMED_DEAD_KIND)
+            .where(
+              outside_emit_window_sql,
+              account_id: account.id, kind: SIGNAL_KIND,
+              since: Time.current - EMIT_WINDOW_SECONDS.seconds
+            )
+        end
+
+        # running/starting (InstanceStatusSensor's own population) PLUS the
+        # rows the presumed-dead reaper retired out of it.
+        def in_scope_status_sql
+          <<~SQL.squish
+            (
+              system_node_instances.status IN ('running', 'starting')
+              OR (
+                system_node_instances.status = 'error'
+                AND EXISTS (
+                  SELECT 1 FROM system_fleet_events reaped
+                  WHERE reaped.node_instance_id = system_node_instances.id
+                    AND reaped.account_id = :account_id
+                    AND reaped.kind = :presumed_dead
+                )
+              )
+            )
+          SQL
+        end
+
+        # Per-INSTANCE, not per-account: a host failure takes down many
+        # instances at once and each still needs its own replace decision.
+        def outside_emit_window_sql
+          <<~SQL.squish
+            NOT EXISTS (
+              SELECT 1 FROM system_fleet_events emitted
+              WHERE emitted.node_instance_id = system_node_instances.id
+                AND emitted.account_id = :account_id
+                AND emitted.kind = :kind
+                AND emitted.emitted_at > :since
+            )
+          SQL
+        end
+
+        def signal_for(instance)
+          reason, detail = unrecoverable_reason(instance)
+          return nil unless reason
+
+          signal(
+            kind: SIGNAL_KIND,
+            severity: :critical,
+            payload: {
+              instance_id: instance.id,
+              node_id: instance.node_id,
+              reason: reason,
+              last_heartbeat_at: instance.last_heartbeat_at&.iso8601,
+              silent_threshold_seconds: SILENT_THRESHOLD.to_i
+            }.merge(detail),
+            fingerprint: "#{SIGNAL_KIND.delete_prefix('system.')}:#{instance.id}:#{reason}"
+          )
+        end
+
+        # The three classifications, most definitive first. Returns
+        # [reason, extra_payload] or nil.
+        #
+        # host_unreachable is an INFERENCE about the control path, so a
+        # successful provider read disproves it: if the adapter answered at
+        # all, the path is up and the only question left is whether the reboot
+        # lane is spent. reboot_exhausted is independent evidence (the validate
+        # arc's own scoring) and survives a healthy read — a VM the provider
+        # calls `running` whose agent stayed silent through N ineffective
+        # reboots is exactly the case a replace answers.
+        def unrecoverable_reason(instance)
+          state, detail = provider_probe(instance)
+          return [ "provider_terminal", detail ] if state == :terminal
+
+          host = state == :unknown ? host_unreachable(instance) : nil
+          host || reboot_exhausted(instance)
+        end
+
+        # 1. Read the provider the same way InstanceStateDriftSensor does.
+        # Returns :terminal (the VM is gone), :reachable (the provider answered
+        # with a non-terminal state), or :unknown. EVERY absence path is
+        # :unknown: no adapter, no cloud id, an unsuccessful read, a blank
+        # status, or a raise.
+        def provider_probe(instance)
+          adapter = ::System::Providers::Registry.for_instance(instance)
+          return [ :unknown, nil ] unless adapter.respond_to?(:sync_status)
+
+          cloud_id = instance.config&.dig("cloud_instance_id")
+          return [ :unknown, nil ] if cloud_id.blank?
+
+          result = adapter.sync_status(cloud_id)
+          return [ :unknown, nil ] unless result.is_a?(Hash) && result[:success]
+
+          provider_status = result[:status].to_s
+          return [ :unknown, nil ] if provider_status.blank?
+          return [ :reachable, nil ] unless TERMINAL_PROVIDER_STATES.include?(provider_status)
+
+          [ :terminal, { provider_status: provider_status } ]
+        rescue StandardError => e
+          Rails.logger.warn(
+            "[InstanceUnrecoverableSensor] provider read failed for #{instance.id}: #{e.class}: #{e.message}"
+          )
+          [ :unknown, nil ]
+        end
+
+        # 2. The host is unreachable. Only a POSITIVELY OBSERVED failure
+        # counts: at least one connection to that provider is in `error` (the
+        # state ProviderConnection#mark_error! writes when a connection test
+        # fails) AND none is still usable.
+        #
+        # `pending` — the schema default, i.e. never tested — is deliberately
+        # NOT a failure, and neither is a provider with no connection rows at
+        # all: both are configuration ABSENCE, and escalating absence to a
+        # replace proposal is exactly the inference this sensor refuses.
+        def host_unreachable(instance)
+          region = instance.provider_region
+          return nil unless region
+
+          connections = ::System::ProviderConnection
+                          .where(provider_id: region.provider_id, account_id: account.id)
+          return nil unless connections.where(status: "error").exists?
+
+          # `enabled` as well as `status`: Registry#find_connection_for_region
+          # filters on status alone, so a connection an operator switched off
+          # still reads "connected" there while nothing can be dispatched
+          # through it — it is not a usable path out of the error state.
+          return nil if connections.where(status: "connected", enabled: true).exists?
+
+          [ "host_unreachable", { provider_id: region.provider_id } ]
+        rescue StandardError => e
+          Rails.logger.warn(
+            "[InstanceUnrecoverableSensor] connection read failed for #{instance.id}: #{e.class}: #{e.message}"
+          )
+          nil
+        end
+
+        # 3. The reboot lane is spent. Reuses the validate arc's own measure
+        # (RemediationOutcome.ineffective_streak — consecutive ineffective
+        # outcomes newest-first, reset by the first `effective` row) against
+        # the fingerprint InstanceStatusSensor mints, rather than counting
+        # reboots from a second source that could drift from it.
+        def reboot_exhausted(instance)
+          streak = ::System::Fleet::RemediationOutcome.ineffective_streak(
+            account: account, fingerprint: "instance_silent:#{instance.id}"
+          )
+          return nil if streak < REBOOT_ATTEMPT_THRESHOLD
+
+          [ "reboot_exhausted", { ineffective_streak: streak } ]
+        rescue StandardError => e
+          Rails.logger.warn(
+            "[InstanceUnrecoverableSensor] streak read failed for #{instance.id}: #{e.class}: #{e.message}"
+          )
+          nil
+        end
+      end
+    end
+  end
+end

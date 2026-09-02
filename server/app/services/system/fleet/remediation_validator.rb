@@ -138,6 +138,26 @@ module System
       #                                            when a rollout replaces
       #                                            them — indefinitely beyond
       #                                            SETTLE_WINDOW.
+      #   system.instance_replace                — IMP-e2f53e87d090 (APO-2b).
+      #                                            InstanceUnrecoverableSensor
+      #                                            classifies a silent instance
+      #                                            a reboot cannot recover (VM
+      #                                            terminated/error at the
+      #                                            provider, host connections
+      #                                            all unusable, or the reboot
+      #                                            lane already scored
+      #                                            ineffective). There is no
+      #                                            replace applier: the action
+      #                                            is a destructive multi-step
+      #                                            re-provision no service on
+      #                                            this side performs. Seeded
+      #                                            require_approval, so the
+      #                                            proceed arm is not reached
+      #                                            today — declared anyway so
+      #                                            the exemption survives an
+      #                                            operator retune, exactly the
+      #                                            reasoning system.capability_gap
+      #                                            carries below.
       NON_REMEDIATING_ACTION_CATEGORIES = %w[
         system.observation
         system.sdwan_service_health_investigate
@@ -150,6 +170,7 @@ module System
         system.task_backlog_investigate
         system.node_lkg_investigate
         system.module_promotion_investigate
+        system.instance_replace
       ].freeze
 
       # The same exemption, keyed by SIGNAL KIND instead of action_category —

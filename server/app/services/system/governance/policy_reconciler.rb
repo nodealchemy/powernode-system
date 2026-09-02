@@ -74,8 +74,8 @@ module System
         # A SKIPPED set is drift, not a neutral outcome. An install that enables
         # this extension AFTER its first boot never seeds the agents (db:seed is
         # first-boot only — the whole argument this class exists for), so every
-        # agent set skips — 117 declared rows across 8 of the 11 sets, out of
-        # 189 declared in total. Counting only `missing` reported that install
+        # agent set skips — 119 declared rows across 8 of the 11 sets, out of
+        # 191 declared in total. Counting only `missing` reported that install
         # as CLEAN: the skipped set contributes no missing rows precisely
         # because it was never examined. (Both figures are sums over
         # PolicyDeclarations and move with it; the prose they replace said

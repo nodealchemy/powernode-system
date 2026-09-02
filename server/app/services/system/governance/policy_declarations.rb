@@ -520,6 +520,23 @@ module System
         # Sensitive — require_approval
         "system.instance_reprovision"    => "require_approval",
         "system.instance_terminate"      => "require_approval",
+        # IMP-e2f53e87d090 (APO-2b) — the disaster-recovery lane.
+        # InstanceUnrecoverableSensor emits system.instance_unrecoverable for a
+        # silent instance a reboot demonstrably cannot recover (the VM is
+        # terminated/error at the provider, every connection to its host is
+        # unusable, or the reboot lane's outcomes already scored ineffective).
+        # It is a SEPARATE category from system.instance_reprovision on
+        # purpose: both are require_approval today, but they are separately
+        # tunable operator decisions and collapsing them would put "reboot it"
+        # and "throw it away and build another" behind one row.
+        #
+        # require_approval, and it should stay that way while there is no
+        # replace applier — DecisionEngine's binding records why one was not
+        # written. Also listed in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES so a retune
+        # to a proceeding verb cannot mint outcomes for an action no code
+        # attempts.
+        "system.instance_replace"        => "require_approval",
         "system.cert_revoke"             => "require_approval",
         "system.module_promote_to_live"  => "require_approval",
         "system.fleet_rolling_upgrade"   => "require_approval",

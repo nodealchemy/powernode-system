@@ -140,6 +140,40 @@ module System
           skill: nil,
           action_category: "system.instance_reboot"
         },
+        # IMP-e2f53e87d090 (APO-2b) — InstanceUnrecoverableSensor. The
+        # DISASTER-RECOVERY counterpart to system.instance_silent above.
+        #
+        # instance_silent means "the agent stopped phoning home" and its
+        # applier (#reboot_silent_instance) answers with a reboot/start. Three
+        # conditions produced that same signal and that same reboot even though
+        # a reboot can never fix them: the VM is terminated/error at the
+        # provider, the host's every provider connection is unusable, or the
+        # platform has already rebooted it and the validate arc scored those
+        # outcomes ineffective. DR's answer to all three is REPLACE, so it gets
+        # its own kind and its own operator-tunable category
+        # (system.instance_replace, seeded require_approval) rather than
+        # widening what the reboot lane means.
+        #
+        # skill: nil — there is nothing an executor would add. The sensor's
+        # payload already carries the classified reason, which is the whole
+        # content of the operator decision.
+        #
+        # NO APPLIER, DELIBERATELY, and this is the one thing not to "fix" by
+        # analogy with the appliers below. Replacing an instance is a
+        # destructive multi-step provision (terminate, re-provision from the
+        # template/pool, re-attach storage and addresses) that no service on
+        # this side performs today; wiring a partial one here would make an
+        # approved replace look actuated while leaving the fleet short an
+        # instance. The category is therefore DECLARED in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES so the
+        # equality oracle in proceed_lane_actuation_spec sees a silent lane
+        # that says it is silent, and so a retune away from require_approval
+        # cannot mint pending outcomes that score ineffective every settle
+        # window into a false fleet.remediation_stuck.
+        "system.instance_unrecoverable" => {
+          skill: nil,
+          action_category: "system.instance_replace"
+        },
         # Node mTLS cert nearing expiry (CertificateExpirySensor).
         #
         # IMP-43e94c9d46d4: this comment used to say cert rotation was handled
