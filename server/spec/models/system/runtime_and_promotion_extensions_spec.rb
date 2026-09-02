@@ -109,6 +109,90 @@ RSpec.describe "Runtime + promotion extensions", type: :model do
       end
     end
 
+    # IMP-249aa98969bd — module_first_seen_running_at is the dwell anchor
+    # PromotionCriteria needs: when this instance FIRST reported running this
+    # exact digest. Stamped by the same heartbeat ingest that records the
+    # digest, never overwritten while the digest holds, dropped when it changes.
+    describe "#record_heartbeat! first_seen_running_at stamping" do
+      let(:digest_a) { "sha256:#{'a' * 64}" }
+      let(:digest_b) { "sha256:#{'b' * 64}" }
+
+      def heartbeat!(digests)
+        instance.record_heartbeat!(agent_version: "0.1.0", boot_id: "boot-abc", module_digests: digests)
+        instance.reload
+      end
+
+      it "stamps the first heartbeat reporting a digest on a running instance" do
+        heartbeat!(node_module.id => digest_a)
+
+        expect(instance.first_seen_running_at_for(node_module.id)).to be_within(5.seconds).of(Time.current)
+      end
+
+      it "never overwrites the stamp while the digest holds" do
+        heartbeat!(node_module.id => digest_a)
+        first = instance.first_seen_running_at_for(node_module.id)
+
+        travel(20.minutes) { heartbeat!(node_module.id => digest_a) }
+
+        expect(instance.first_seen_running_at_for(node_module.id)).to be_within(1.second).of(first)
+      end
+
+      it "re-stamps when the reported digest changes" do
+        heartbeat!(node_module.id => digest_a)
+
+        travel(20.minutes) do
+          heartbeat!(node_module.id => digest_b)
+          expect(instance.first_seen_running_at_for(node_module.id)).to be_within(5.seconds).of(Time.current)
+        end
+      end
+
+      it "drops the stamp when the module stops being reported" do
+        heartbeat!(node_module.id => digest_a)
+        heartbeat!({})
+
+        expect(instance.module_first_seen_running_at).to eq({})
+        expect(instance.first_seen_running_at_for(node_module.id)).to be_nil
+      end
+
+      it "does not stamp a non-running instance" do
+        instance.update!(status: "starting")
+        heartbeat!(node_module.id => digest_a)
+
+        expect(instance.first_seen_running_at_for(node_module.id)).to be_nil
+      end
+
+      # A stamp carried across a REBOOT would credit the version with the whole
+      # downtime as dwell — an OVERSTATEMENT, the same unsafe direction the
+      # min(last_heartbeat_at) anchor failed in. The boot identity is the
+      # discriminator, exactly as it is for booted_image_git_sha.
+      it "re-stamps when the node reboots under a new boot_id" do
+        heartbeat!(node_module.id => digest_a)
+        first = instance.first_seen_running_at_for(node_module.id)
+
+        travel(20.minutes) do
+          instance.record_heartbeat!(agent_version: "0.1.0", boot_id: "boot-xyz",
+                                     module_digests: { node_module.id => digest_a })
+          instance.reload
+          expect(instance.first_seen_running_at_for(node_module.id)).to be_within(5.seconds).of(Time.current)
+        end
+
+        expect(instance.first_seen_running_at_for(node_module.id)).to be > first + 19.minutes
+      end
+
+      it "carries the stamp forward when the heartbeat reports no boot_id" do
+        heartbeat!(node_module.id => digest_a)
+        first = instance.first_seen_running_at_for(node_module.id)
+
+        travel(20.minutes) do
+          instance.record_heartbeat!(agent_version: "0.1.0", boot_id: nil,
+                                     module_digests: { node_module.id => digest_a })
+          instance.reload
+        end
+
+        expect(instance.first_seen_running_at_for(node_module.id)).to be_within(1.second).of(first)
+      end
+    end
+
     it "validates architecture inclusion via DB check constraint" do
       expect {
         instance.update_columns(architecture: "powerpc")

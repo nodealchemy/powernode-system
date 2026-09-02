@@ -9,9 +9,26 @@ module System
     # v0 thresholds:
     #   - REQUIRED_COUNT: minimum number of healthy instances must be
     #     running this exact oci_digest
-    #   - DWELL_TIME: how long the instance has been running it (uses
-    #     last_heartbeat_at as the dwell anchor — close enough until M-D2-2
-    #     adds a per-version "first_seen_running_at" timestamp)
+    #   - DWELL_TIME: how long the instance has been running it, read from
+    #     NodeInstance#first_seen_running_at_for (the
+    #     module_first_seen_running_at document stamped by the heartbeat
+    #     ingest). Instances must ALSO be currently alive — a qualifying
+    #     instance whose heartbeat is stale is a fault the platform is already
+    #     acting on, never promotion evidence.
+    #
+    # IMP-249aa98969bd: the anchor used to be `min(last_heartbeat_at)`, which
+    # measured SILENCE, not dwell. A healthy fleet heartbeating normally kept
+    # that anchor near zero and could never clear a 30-minute dwell; the gate
+    # cleared only once every qualifying instance had been silent for
+    # DWELL_TIME — ten times InstanceStatusSensor::SILENT_THRESHOLD, the age at
+    # which the platform already raises `system.instance_silent`. It was
+    # anti-correlated with the health it exists to certify. (The prior comment
+    # here deferred the real timestamp to "M-D2-2". No plan document for that
+    # milestone exists in this tree, and the name is used for two different
+    # things in it — SBOM-aware CVE matching (README.md) and a telemetry
+    # pipeline (capacity_recommend_executor.rb, score_evaluator.rb) — with
+    # nothing anywhere recording that it was to add this field. It was a
+    # deferral to a component no one owned.)
     #
     # The constants are deliberately conservative defaults for
     # staging→blessed. They are NOT the effective thresholds — those are
@@ -50,14 +67,44 @@ module System
         return { eligible: false, reason: "running_count #{running_count} < required #{required}",
                  running_count: running_count, required_count: required } if running_count < required
 
-        # Dwell time: the *most recent* of the qualifying instances must have
-        # observed the digest for at least the resolved dwell threshold. Using
-        # min(last_heartbeat_at) of the candidate set as the dwell-anchor proxy.
-        oldest_anchor = running_instances.filter_map(&:last_heartbeat_at).min
-        return { eligible: false, reason: "no heartbeat data" } if oldest_anchor.nil?
+        # Liveness: every qualifying instance must be heard from NOW. A stale
+        # heartbeat means the platform is already treating this instance as
+        # silent (InstanceStatusSensor -> drift remediation -> reprovision), so
+        # it is evidence of a fault, not evidence a version is safe to bless.
+        #
+        # Deliberately NOT operator-tunable, unlike the two thresholds above:
+        # those trade evidence for a fleet too small or too fresh to supply it,
+        # whereas this one asks only that the evidence be current. There is no
+        # fleet size at which "we have not heard from these instances" is
+        # promotion evidence, so it reuses NodeInstance::HEARTBEAT_STALE_AFTER
+        # (the same staleness the rest of the platform acts on) with no
+        # override key. Setting module_promotion_dwell_minutes to 0 still
+        # removes the dwell bar; it does not remove this.
+        silent = running_instances.count(&:stale_heartbeat?)
+        return { eligible: false,
+                 reason: "#{silent} of #{running_count} qualifying instances are silent " \
+                         "(no heartbeat within #{::System::NodeInstance::HEARTBEAT_STALE_AFTER.to_i}s)",
+                 running_count: running_count, required_count: required } if silent.positive?
 
-        observed = Time.current - oldest_anchor
-        return { eligible: false, reason: "dwell_time #{observed.to_i}s < required #{dwell.to_i}s",
+        # Dwell time: EVERY qualifying instance must have been running this
+        # digest for at least the resolved threshold, so the anchor is the
+        # instance that started running it most recently — the shortest dwell
+        # in the set.
+        starts = running_instances.map { |inst| inst.first_seen_running_at_for(version.node_module_id) }
+        unstamped = starts.count(&:nil?)
+
+        # An unstamped instance carries no dwell evidence at all, so it
+        # contributes zero — which is ineligible for any positive threshold and
+        # still eligible under an explicit 0-minute override (that override
+        # disables the dwell gate outright, exactly as it did before).
+        observed = unstamped.positive? ? 0.seconds : (Time.current - starts.max)
+        dwell_reason =
+          if unstamped.positive?
+            "no first_seen_running_at recorded for #{unstamped} of #{running_count} qualifying instances"
+          else
+            "dwell_time #{observed.to_i}s < required #{dwell.to_i}s"
+          end
+        return { eligible: false, reason: dwell_reason,
                  running_count: running_count, required_count: required,
                  dwell_time_minutes: (observed / 60.0).round(1) } if observed < dwell
 

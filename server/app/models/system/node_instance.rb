@@ -787,11 +787,13 @@ module System
       agent_version = cap_identifier_length(agent_version)
       booted_image_git_sha = cap_identifier_length(booted_image_git_sha)
 
+      reported = (module_digests || {}).to_h.transform_keys(&:to_s)
       attrs = {
         last_heartbeat_at: Time.current,
         agent_version: agent_version,
         boot_id: boot_id,
-        running_module_digests: (module_digests || {}).to_h
+        running_module_digests: reported,
+        module_first_seen_running_at: next_first_seen_running_at(reported, boot_id)
       }
       attrs[:architecture] = architecture if architecture.present?
       # Boot-image sha (campaign 019f505f): a reported sha always wins. A heartbeat
@@ -806,6 +808,23 @@ module System
         attrs[:booted_image_git_sha] = nil
       end
       update!(attrs)
+    end
+
+    # IMP-249aa98969bd — when this instance FIRST reported running the digest
+    # it currently reports for `module_id`, or nil if it has never been stamped
+    # (a pre-column instance that has not heartbeated since, or one that has
+    # only ever reported the module while not running).
+    #
+    # This is the dwell anchor System::Fleet::PromotionCriteria needs.
+    # last_heartbeat_at is NOT a substitute for it: that measures silence, and
+    # a healthy instance's silence is always near zero.
+    def first_seen_running_at_for(module_id)
+      raw = (module_first_seen_running_at || {})[module_id.to_s]
+      return nil if raw.blank?
+
+      Time.zone.parse(raw.to_s)
+    rescue ArgumentError, TypeError
+      nil
     end
 
     # The git_sha of the disk image currently promoted for this instance's
@@ -1026,6 +1045,44 @@ module System
     end
 
     private
+
+    # IMP-249aa98969bd — the next value of module_first_seen_running_at.
+    # Shadows the subset of running_module_digests reported while
+    # status == "running", carrying each module's existing stamp forward only
+    # while its digest is UNCHANGED and the node has not rebooted. A module
+    # whose digest changed is re-stamped (it started running something new); a
+    # module that dropped out of the report loses its stamp entirely, so the
+    # document can never accumulate entries for digests the instance no longer
+    # runs.
+    #
+    # The boot-identity arm matters as much as the digest one: a stamp carried
+    # across a reboot or a crash loop would credit the version with the entire
+    # downtime as dwell, an OVERSTATEMENT — the same unsafe direction the
+    # min(last_heartbeat_at) anchor failed in. The discriminator is the one
+    # #record_heartbeat! already uses for booted_image_git_sha: a reported
+    # boot_id that differs from the stored one is a new boot. A blank boot_id on
+    # either side proves nothing (an old agent that never reports it), so it
+    # carries rather than re-stamps — silence must not look like a reboot.
+    #
+    # Stamping requires status == "running": that is the state
+    # System::Fleet::PromotionCriteria counts, and it is what makes the value
+    # mean "running this digest since" rather than "merely reported it". The
+    # heartbeat endpoint calls #record_heartbeat! BEFORE mark_running!, so the
+    # heartbeat that brings a pending instance up stamps nothing and the next
+    # one (~30s later) does — a bounded UNDERSTATEMENT of dwell, which is the
+    # safe direction for a promotion gate.
+    def next_first_seen_running_at(reported_digests, reported_boot_id = nil)
+      previous_digests = (running_module_digests || {})
+      previous_stamps  = (module_first_seen_running_at || {})
+      stamp_now        = status.to_s == "running" ? Time.current.utc.iso8601 : nil
+      rebooted         = reported_boot_id.present? && boot_id.present? && boot_id != reported_boot_id
+
+      reported_digests.each_with_object({}) do |(module_id, digest), acc|
+        carried = previous_stamps[module_id] if !rebooted && previous_digests[module_id].to_s == digest.to_s
+        value = carried.presence || stamp_now
+        acc[module_id] = value if value.present?
+      end
+    end
 
     # Truncates (never rejects) a node-supplied identifier string to
     # MAX_IDENTIFIER_CHARS before it is persisted — see that constant's

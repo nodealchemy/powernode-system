@@ -23,6 +23,25 @@ RSpec.describe System::Fleet::PromotionCriteria do
     )
   end
 
+  # A qualifying instance is one that is `running`, reports the candidate
+  # digest, and — post IMP-249aa98969bd — carries BOTH facts the gate weighs:
+  # a FRESH heartbeat (it is alive now) and a first_seen_running_at stamp old
+  # enough to clear dwell (it has been running this digest long enough).
+  # Defaults describe the healthy, long-running fleet the gate exists to bless.
+  def qualifying_instance(idx, prefix: "promo-node",
+                          heartbeat_at: 5.seconds.ago,
+                          first_seen_at: (described_class::DWELL_TIME + 5.minutes).ago)
+    node = create(:system_node, account: account, node_template: template, name: "#{prefix}-#{idx}")
+    node.node_modules << mod
+    create(:system_node_instance, :running, node: node).tap do |inst|
+      inst.update!(
+        running_module_digests: { mod.id => digest },
+        last_heartbeat_at: heartbeat_at,
+        module_first_seen_running_at: first_seen_at.nil? ? {} : { mod.id.to_s => first_seen_at.iso8601 }
+      )
+    end
+  end
+
   describe ".evaluate" do
     context "with no oci_digest" do
       it "returns ineligible" do
@@ -43,17 +62,7 @@ RSpec.describe System::Fleet::PromotionCriteria do
     end
 
     context "with REQUIRED_COUNT instances at sufficient dwell time" do
-      before do
-        described_class::REQUIRED_COUNT.times do |i|
-          node = create(:system_node, account: account, node_template: template, name: "promo-node-#{i}")
-          node.node_modules << mod
-          inst = create(:system_node_instance, :running, node: node)
-          inst.update!(
-            running_module_digests: { mod.id => digest },
-            last_heartbeat_at: (described_class::DWELL_TIME + 5.minutes).ago
-          )
-        end
-      end
+      before { described_class::REQUIRED_COUNT.times { |i| qualifying_instance(i) } }
 
       it "returns eligible" do
         result = described_class.evaluate(version: version)
@@ -69,18 +78,14 @@ RSpec.describe System::Fleet::PromotionCriteria do
   # the operator can tune the bar. Resolution cascade (highest wins):
   # per-module config → per-account settings → SiteSetting global → default.
   describe "configurable thresholds" do
-    def make_running_instance(idx, heartbeat_at:)
-      node = create(:system_node, account: account, node_template: template, name: "cfg-node-#{idx}")
-      node.node_modules << mod
-      create(:system_node_instance, :running, node: node).tap do |inst|
-        inst.update!(running_module_digests: { mod.id => digest }, last_heartbeat_at: heartbeat_at)
-      end
+    def make_running_instance(idx, **kwargs)
+      qualifying_instance(idx, prefix: "cfg-node", **kwargs)
     end
 
     context "with a per-account required_count override lowering the bar to 1" do
       before do
         account.update!(settings: { "module_promotion_required_count" => 1 })
-        make_running_instance(0, heartbeat_at: (described_class::DWELL_TIME + 5.minutes).ago)
+        make_running_instance(0)
       end
 
       it "promotes a single-instance fleet" do
@@ -94,7 +99,12 @@ RSpec.describe System::Fleet::PromotionCriteria do
     context "with a per-account dwell override of 0 minutes" do
       before do
         account.update!(settings: { "module_promotion_dwell_minutes" => 0 })
-        described_class::REQUIRED_COUNT.times { |i| make_running_instance(i, heartbeat_at: 1.minute.ago) }
+        # No dwell stamp at all: a 0-minute override disables the dwell gate
+        # outright, exactly as it did before the anchor was fixed, so an
+        # instance that has never been stamped still qualifies.
+        described_class::REQUIRED_COUNT.times do |i|
+          make_running_instance(i, heartbeat_at: 1.minute.ago, first_seen_at: nil)
+        end
       end
 
       it "does not require any dwell time" do
@@ -107,7 +117,7 @@ RSpec.describe System::Fleet::PromotionCriteria do
       before do
         account.update!(settings: { "module_promotion_required_count" => 5 })
         mod.update!(config: { "module_promotion_required_count" => 1 })
-        make_running_instance(0, heartbeat_at: (described_class::DWELL_TIME + 5.minutes).ago)
+        make_running_instance(0)
       end
 
       it "uses the module override" do
@@ -120,7 +130,7 @@ RSpec.describe System::Fleet::PromotionCriteria do
     context "with a SiteSetting global override and no per-account/per-module value" do
       before do
         SiteSetting.set("module_promotion_required_count", 1, setting_type: "integer")
-        make_running_instance(0, heartbeat_at: (described_class::DWELL_TIME + 5.minutes).ago)
+        make_running_instance(0)
       end
 
       it "falls back to the global default" do
@@ -133,7 +143,7 @@ RSpec.describe System::Fleet::PromotionCriteria do
     context "with a required_count override of 0 (below the floor)" do
       before do
         account.update!(settings: { "module_promotion_required_count" => 0 })
-        make_running_instance(0, heartbeat_at: (described_class::DWELL_TIME + 5.minutes).ago)
+        make_running_instance(0)
       end
 
       it "clamps to a minimum of 1" do
@@ -148,10 +158,88 @@ RSpec.describe System::Fleet::PromotionCriteria do
         expect(described_class::REQUIRED_COUNT).to eq(3)
         expect(described_class::DWELL_TIME).to eq(30.minutes)
 
-        described_class::REQUIRED_COUNT.times { |i| make_running_instance(i, heartbeat_at: (described_class::DWELL_TIME + 5.minutes).ago) }
+        described_class::REQUIRED_COUNT.times { |i| make_running_instance(i) }
         result = described_class.evaluate(version: version)
         expect(result[:eligible]).to be true
         expect(result[:required_count]).to eq(3)
+      end
+    end
+  end
+
+  # IMP-249aa98969bd — the dwell anchor must measure how long the qualifying
+  # instances have been RUNNING the candidate digest, not how long ago they
+  # last spoke. `evaluate` used to anchor on `min(last_heartbeat_at)`, so
+  # clearing a 30-minute dwell required the stalest qualifying instance to
+  # have been silent for 30 minutes while still `status: "running"` — ten
+  # times InstanceStatusSensor::SILENT_THRESHOLD (3 minutes), the age at which
+  # the platform already raises `system.instance_silent`. The gate was
+  # anti-correlated with the health it exists to certify, and it failed in the
+  # direction that PROMOTES on unhealthy evidence.
+  #
+  # BOTH halves below are required. An oracle that only tests the stale case
+  # passes against the defect (failing closed on a meaningless anchor would
+  # leave a healthy fleet permanently ineligible instead).
+  describe "dwell anchors on time-running, not on silence" do
+    def dwell_instance(idx, **kwargs)
+      qualifying_instance(idx, prefix: "dwell-node", **kwargs)
+    end
+
+    context "a HEALTHY fleet running the candidate for longer than the dwell threshold" do
+      it "is eligible" do
+        described_class::REQUIRED_COUNT.times do |i|
+          dwell_instance(i, heartbeat_at: 5.seconds.ago, first_seen_at: 90.minutes.ago)
+        end
+
+        result = described_class.evaluate(version: version)
+        expect(result[:eligible]).to be true
+        expect(result[:running_count]).to eq(described_class::REQUIRED_COUNT)
+        expect(result[:dwell_time_minutes]).to be_within(1.0).of(90.0)
+      end
+    end
+
+    context "a fleet that has been SILENT for longer than the dwell threshold" do
+      it "does not satisfy dwell by staleness alone" do
+        described_class::REQUIRED_COUNT.times do |i|
+          dwell_instance(i, heartbeat_at: (described_class::DWELL_TIME + 5.minutes).ago,
+                            first_seen_at: nil)
+        end
+
+        result = described_class.evaluate(version: version)
+        expect(result[:eligible]).to be false
+      end
+    end
+
+    context "when one long-running instance has gone silent" do
+      it "refuses to promote on evidence the platform already treats as a fault" do
+        described_class::REQUIRED_COUNT.times { |i| dwell_instance(i) }
+        dwell_instance(99, heartbeat_at: 10.minutes.ago, first_seen_at: 90.minutes.ago)
+
+        result = described_class.evaluate(version: version)
+        expect(result[:eligible]).to be false
+        expect(result[:reason]).to match(/silent/)
+      end
+    end
+
+    context "when the newest qualifying instance has not yet dwelled" do
+      it "anchors on the SHORTEST dwell across the qualifying set" do
+        (described_class::REQUIRED_COUNT - 1).times { |i| dwell_instance(i, first_seen_at: 90.minutes.ago) }
+        dwell_instance(50, first_seen_at: 2.minutes.ago)
+
+        result = described_class.evaluate(version: version)
+        expect(result[:eligible]).to be false
+        expect(result[:reason]).to match(/dwell_time/)
+        expect(result[:dwell_time_minutes]).to be_within(1.0).of(2.0)
+      end
+    end
+
+    context "when a qualifying instance carries no first_seen_running_at stamp" do
+      it "is ineligible — an unstamped instance is not evidence of dwell" do
+        (described_class::REQUIRED_COUNT - 1).times { |i| dwell_instance(i) }
+        dwell_instance(51, first_seen_at: nil)
+
+        result = described_class.evaluate(version: version)
+        expect(result[:eligible]).to be false
+        expect(result[:reason]).to match(/first_seen_running_at/)
       end
     end
   end
