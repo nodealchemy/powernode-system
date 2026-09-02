@@ -14,7 +14,7 @@ This file is the index for AI sessions touching `extensions/system/`. Each domai
 | SDWAN (slices 1–9) | `docs/SDWAN_ARCHITECTURE.md` (compile pipeline), `docs/SDWAN_MANAGER_AGENT.md`, `docs/runbooks/sdwan-network-setup.md` | `app/models/sdwan/`, `app/services/sdwan/`, `app/controllers/api/v1/system/sdwan/` |
 | Service exposure (`Sdwan::Service`) | `docs/runbooks/publish-service.md` | `app/models/sdwan/service.rb`, `app/services/sdwan/service_exposure_writer.rb` (local `/svc/<slug>` + ForwardAuth), `app/controllers/api/v1/system/ingress/forward_auth_controller.rb`, `app/services/ai/tools/system_ingress_tool.rb`; federated facet = `Federation::ServiceOffering` |
 | Fleet autonomy + sensors | `docs/FLEET_SENSORS.md`, `docs/ARCHITECTURE.md` §4 | `app/services/system/fleet/sensors/`, `app/services/fleet_autonomy_service.rb`, `db/seeds/fleet_autonomy_agent.rb` |
-| Skill executors | `docs/SKILL_EXECUTORS.md` | `app/services/system/ai/skills/` (58 executor classes, 57 with `binds_to`), `db/seeds/system_skills_seed.rb` + `db/seeds/system_provisioning_skills_seed.rb` (BOTH seed `Ai::Skill` rows — check both before adding one) |
+| Skill executors | `docs/SKILL_EXECUTORS.md` | `app/services/system/ai/skills/` (59 executor classes, 58 with `binds_to`), `db/seeds/system_skills_seed.rb` + `db/seeds/system_provisioning_skills_seed.rb` + `db/seeds/system_dr_skills_seed.rb` (ALL THREE seed `Ai::Skill` rows — check all three before adding one; a slug must live in exactly ONE of them, since they all upsert by slug and the later file in `SYSTEM_SEED_FILES` silently wins) |
 | Disk image CI | `docs/DISK_IMAGE_CI.md` | `app/models/system/{disk_image_publication,disk_image_webhook}.rb`, `app/services/system/disk_image_*_service.rb` |
 | CI workers + Gitea Actions | (cross-cuts disk image CI) | `app/services/system/{worker_dispatch,execution_dispatcher}.rb` |
 | Tasks + autonomy reconcile | `docs/ARCHITECTURE.md` §4 | `app/models/system/task.rb`, `app/services/system/execution_dispatcher.rb` |
@@ -81,8 +81,8 @@ The full action catalog regenerates via `cd server && bundle exec rails mcp:gene
 
 ### When adding a new capability
 
-1. Always check existing skill executors before writing a new orchestration. 57 already cover most fleet/SDWAN/runtime/topology workflows. See `docs/SKILL_EXECUTORS.md`.
-2. New skills must have BOTH an executor at `app/services/system/ai/skills/<name>_executor.rb` AND an `Ai::Skill` record (seeded via `db/seeds/system_skills_seed.rb`).
+1. Always check existing skill executors before writing a new orchestration. 58 already cover most fleet/SDWAN/runtime/topology workflows. See `docs/SKILL_EXECUTORS.md`.
+2. New skills must have BOTH an executor at `app/services/system/ai/skills/<name>_executor.rb` AND an `Ai::Skill` record (seeded via one of the three skills seeds — see the Skill executors row above). Without the row, `SkillBindings.validate!` raises unrescued and zeroes every `Ai::AgentSkill`.
 3. New autonomy actions must have a `system.<action>` intervention policy entry in either `fleet_autonomy_agent.rb` or `system_runtime_manager_agent.rb`.
 4. Cross-account safety: use `find_or_create_by` with `account: account` scoping. The KG seeds + skill seeds follow this pattern.
 
@@ -114,7 +114,7 @@ This is a git submodule. Per root CLAUDE.md:
 - `docs/CLAUDE_TMUX_MODULE.md` — claude-tmux NodeModule: managed Claude Code CLI in a systemd-supervised tmux session, Vault-backed credential injection at boot, operator runbook
 - `docs/GROK_CLI_MODULE.md` — grok-cli NodeModule: xAI's Grok Build CLI on PATH plus a Vault-backed boot-time key fetch; sibling of claude-tmux, deliberately WITHOUT a supervised session (an always-on agent spends money while idle). Also documents the provider-general `config/ai_cli_credential` node_api endpoint and the per-provider account-fallback SiteSettings
 - `docs/USE_CASE_MATRIX.md` — what works / what doesn't / what to expect for 10 NodeInstance container use cases (READ FIRST when designing a deployment)
-- `docs/SKILL_EXECUTORS.md` — 57 executor reference; `docs/SKILL_EXECUTOR_CATALOG.md` is the auto-generated catalog (regenerate via `rails system:skills:generate_catalog` — never hand-edit)
+- `docs/SKILL_EXECUTORS.md` — 58 executor reference; `docs/SKILL_EXECUTOR_CATALOG.md` is the auto-generated catalog (regenerate via `rails system:skills:generate_catalog` — never hand-edit)
 - `docs/CONCIERGE_PROVISIONING_GUIDE.md` — operator guide for running a provisioning mission through the System Concierge (phase pipeline, inline approval card, monitoring)
 - `docs/INGRESS_TLS_GUIDE.md` — operator guide for ingress/TLS (Ingress page Routes + Expose-Service wizard, the VIP→port-map→ACME→Traefik expose lifecycle, DNS-01 credentials, staging-vs-prod issuers, split-brain DNS troubleshooting)
 - `docs/MISSION_COMPOSITION_ARCHITECTURE.md` — two composition paths (deterministic vs. LLM-general), hybrid routing, cross-step data flow, and the shared runner + approval gate
