@@ -39,13 +39,15 @@ module Ai
           name: "system_storage_owner",
           description: "StorageAssignment ownership management — assign, audit, inspect chown progress, retry failed chowns",
           parameters: {
-            action:                  { type: "string",  required: true },
+            action:                  { type: "string",  required: true, enum: action_definitions.keys,
+                                       description: "Action to perform" },
             storage_assignment_id:   { type: "string",  required: false },
-            owner_kind:              { type: "string",  required: false, description: "service_user | operator | nobody | root" },
+            owner_kind:              { type: "string",  required: false, enum: ::System::StorageAssignment::OWNER_KINDS,
+                                       description: "service_user | operator | nobody | root" },
             service_user_username:   { type: "string",  required: false },
             shared_group_groupname:  { type: "string",  required: false },
             node_instance_id:        { type: "string",  required: false },
-            chown_state:             { type: "string",  required: false },
+            chown_state:             { type: "string",  required: false, enum: ::System::StorageAssignment::CHOWN_STATES },
             force_complete:          { type: "boolean", required: false }
           }
         }
@@ -70,6 +72,7 @@ module Ai
               storage_assignment_id:  { type: "string", required: true,
                                          description: "UUID of the StorageAssignment whose owner is being set" },
               owner_kind:             { type: "string", required: true,
+                                         enum: ::System::StorageAssignment::OWNER_KINDS,
                                          description: "service_user | operator | nobody | root" },
               service_user_username:  { type: "string", required: false,
                                          description: "Required when owner_kind=service_user" },
@@ -87,12 +90,14 @@ module Ai
             DESC
             parameters: {
               owner_kind:            { type: "string", required: false,
+                                        enum: ::System::StorageAssignment::OWNER_KINDS,
                                         description: "Filter by owner kind: service_user | operator | nobody | root" },
               service_user_username: { type: "string", required: false,
                                         description: "Filter by the owning ServiceUser's username" },
               node_instance_id:      { type: "string", required: false,
                                         description: "Filter by the storage provider NodeInstance UUID" },
               chown_state:           { type: "string", required: false,
+                                        enum: ::System::StorageAssignment::CHOWN_STATES,
                                         description: "complete | pending | running | failed | manual_required" }
             }
           },
