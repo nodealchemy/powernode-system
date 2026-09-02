@@ -136,7 +136,10 @@ module System
     # Render each ModuleService row in the shape the agent's
     # internal/lifecycle package expects. `dependencies` carries
     # the names of services that must be `Type=notify`-up before
-    # this one starts; the agent topologically sorts on these.
+    # this one starts. The agent no longer sorts on this field: since
+    # IMP-c30612c52fa0 its topoSort walks ResolvedDependencyEdges(), i.e.
+    # `dependency_edges` below, falling back to these names only when no
+    # edges are present.
     #
     # `dependency_edges` carries the SAME edges plus each edge's
     # KIND, which the agent needs to decide whether the rendered
