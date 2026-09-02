@@ -105,7 +105,8 @@ Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented
 |---|---|
 | `system_list_instance_pools` | List InstancePools |
 | `system_get_instance_pool` | Fetch a pool + its members |
-| `system_create_instance_pool` | Create a new pool (target_size, min, max, region, type, template) |
+| `system_create_instance_pool` | Create a new pool (target_size, min, max, region, type, template). Approval-gated (`system.instance_pool_create`) — returns `pending: true` + a `deferred_operation_id` and no pool exists until approved |
+| `system_update_instance_pool` | Tune a pool (sizes, status, region/type, metadata). Partially approval-gated: a `target_size`/`max_size` INCREASE on `system.instance_pool_ceiling_raise` and `status: "archived"` on `system.instance_pool_archive` return `pending: true` + a `deferred_operation_id` and write nothing until approved; decreases, `min_size`, description, regions, metadata and `status` active/paused/draining apply inline |
 | `system_drain_instance_pool` | Stop replenishing + destroy/release members |
 | `system_delete_instance_pool` | Remove a drained pool (refuses while members are still attached) |
 | `system_acquire_pooled_instance` | Atomic claim of a `ready` member |

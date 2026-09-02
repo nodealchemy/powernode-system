@@ -217,34 +217,33 @@ module Api
         # weakest part of it, in two separate ways:
         #
         #   1. The ceiling is not immutable behind the gated verb — it is
-        #      gated on THIS ROUTE, which is a smaller claim. #update permits
-        #      :target_size, :max_size and :status, and until IMP-24daa05e7a22
-        #      applied all three inline: anyone holding
+        #      gated on the OPERATOR DOORS, which is a smaller claim. #update
+        #      permits :target_size, :max_size and :status, and until
+        #      IMP-24daa05e7a22 applied all three inline: anyone holding
         #      system.instances.control could raise the ceiling with no
         #      approval and let the next tick spend up to it, or PATCH
         #      "archived" and reproduce the GATED destroy. Increases and the
         #      archive transition now gate under
         #      system.instance_pool_ceiling_raise /
-        #      system.instance_pool_archive. Still ungated ON THIS ROUTE:
-        #      DECREASES, min_size, and status "paused"/"draining" — none of
-        #      which raise what a tick may spend. Still ungated ELSEWHERE, and
-        #      censused by file and count in
-        #      spec/lint/instance_pool_replenish_gating_spec.rb rather than
-        #      left to a reader's memory: SystemFleetTool's
-        #      system_update_instance_pool, System::Gitops::ApplyService#apply!
+        #      system.instance_pool_archive, and since IMP-067f39468350 the MCP
+        #      twin system_update_instance_pool resolves the SAME two
+        #      categories through Ai::Executors::DeferredToolCall — so this is
+        #      gated on BOTH the REST route and the MCP verb. Still ungated on
+        #      BOTH doors: DECREASES, min_size, and status
+        #      "paused"/"draining" — none of which raise what a tick may
+        #      spend. Still ungated ELSEWHERE, and censused by file and count
+        #      in spec/lint/instance_pool_replenish_gating_spec.rb rather than
+        #      left to a reader's memory: System::Gitops::ApplyService#apply!
         #      (POOL_SCALAR_KEYS carries target_size/max_size/status) and
         #      System::CiRunnerLeaseService. The gate narrows who can raise a
-        #      ceiling unattended; it does not make the column immutable. The
-        #      MCP half is filed as improvement
-        #      01a06317-5f42-7792-a393-ac7e702dcd62, not left to memory.
-        #   2. #create is gated on THIS route only. The MCP verb
-        #      system_create_instance_pool calls System::InstancePool.create!
-        #      directly: SystemFleetTool's only declaration carrying
-        #      action_category/executor_class/gate_context/on_proceed is
-        #      system_terminate_instance, so BaseTool#gated_action? is false
-        #      for every pool verb. A pool minted over MCP never had an
-        #      approved ceiling at all. That is a tracked gap in the
-        #      governance-registry rollout, not a per-pool decision.
+        #      ceiling unattended; it does not make the column immutable.
+        #   2. #create is gated on both doors too, as of IMP-067f39468350: the
+        #      MCP verb system_create_instance_pool used to call
+        #      System::InstancePool.create! directly, so a pool minted over MCP
+        #      never had an approved ceiling at all. It now declares
+        #      action_category/executor_class/gate_context/on_proceed and parks
+        #      under system.instance_pool_create like this route. GitOps apply
+        #      and the CI-runner lease can still mint or raise without one.
         #
         # WHAT A GATE HERE WOULD COST. This is the route
         # System::InstancePoolReplenisherJob

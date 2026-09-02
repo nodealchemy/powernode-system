@@ -52,26 +52,27 @@ module System
       #     spend up to the new one, and PATCH "archived" reproduced what the
       #     gated destroy does. An INCREASE to either size now gates under
       #     "system.instance_pool_ceiling_raise" and the archive transition
-      #     under "system.instance_pool_archive" — but ON THAT ROUTE ONLY.
-      #     Decreases, min_size and status "paused"/"draining" stay inline
-      #     there, and three other writers move the same columns with no
-      #     approval at all: SystemFleetTool's system_update_instance_pool,
-      #     System::Gitops::ApplyService#apply! (POOL_SCALAR_KEYS) and
-      #     System::CiRunnerLeaseService. All three are censused by file and
-      #     count in spec/lint/instance_pool_replenish_gating_spec.rb. The MCP
-      #     half is filed as improvement 01a06317-5f42-7792-a393-ac7e702dcd62.
-      #   * #create is gated on the REST route ONLY. The MCP verb
-      #     system_create_instance_pool calls System::InstancePool.create!
-      #     directly; SystemFleetTool's only declaration carrying
-      #     action_category/executor_class/gate_context/on_proceed is
-      #     system_terminate_instance, so BaseTool#gated_action? is false for
-      #     every pool verb and a pool minted over MCP never had an approved
-      #     ceiling. That is a tracked gap in the governance-registry rollout,
-      #     not a per-pool decision.
-      # #update was the verb worth gating, and is the verb whose REST route
-      # got gated — gating replenish catches the actuator and misses the
-      # decision. The MCP twin, GitOps apply and the CI-runner lease still
-      # reach the decision ungated.
+      #     under "system.instance_pool_archive" — on the REST route AND, since
+      #     IMP-067f39468350, on the MCP verb system_update_instance_pool,
+      #     which routes through the same two categories via
+      #     Ai::Executors::DeferredToolCall. Decreases, min_size and status
+      #     "paused"/"draining" stay inline on BOTH doors by operator
+      #     direction, and TWO writers still move the same columns with no
+      #     approval at all: System::Gitops::ApplyService#apply!
+      #     (POOL_SCALAR_KEYS) and System::CiRunnerLeaseService. Both are
+      #     censused by file and count in
+      #     spec/lint/instance_pool_replenish_gating_spec.rb.
+      #   * #create is gated on BOTH DOORS as of IMP-067f39468350 — the REST
+      #     route under "system.instance_pool_create" and the MCP verb
+      #     system_create_instance_pool under the same category — but a pool
+      #     can still be minted with no approved ceiling by GitOps apply and
+      #     the CI-runner lease, so "the spend was approved at pool-create
+      #     time" remains a claim about the operator doors, not about the
+      #     column. That is what keeps this bullet alive.
+      # #update was the verb worth gating, and both of its operator doors are
+      # gated now — gating replenish catches the actuator and misses the
+      # decision. GitOps apply and the CI-runner lease still reach the
+      # decision ungated.
       #
       # WHAT A GATE HERE WOULD COST. A require_approval gate on an unattended
       # 60 s cron would park one approval per pool per minute and stall

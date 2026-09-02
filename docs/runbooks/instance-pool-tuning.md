@@ -313,18 +313,21 @@ for any claimed members to finish their normal terminate, then delete.
 
 ## Governance — which pool verbs are gated, and which are not
 
-Pool verbs are **not** uniformly approval-gated, the split does not follow
-cost, and — the part that catches people — **every gate that exists sits on a
-REST route, not on the MCP verb this runbook tells you to use.** Know which is
-which before you assume an approval will stop something.
+Pool verbs are **not** uniformly approval-gated and the split does not follow
+cost. Since IMP-067f39468350 the two gates that matter for spend — pool
+**create** and the **ceiling raise / archive** PATCH — stand on *both* doors,
+the REST route and the MCP verb this runbook tells you to use. The rest still
+do not, and **delete is still gated on REST only** while the MCP verb is the
+more destructive of the two. Know which is which before you assume an approval
+will stop something.
 
 | Verb | Autonomy gate | Declared policy | What actually runs it |
 |---|---|---|---|
-| Create pool | **Gated on the REST route ONLY** — `Ai::GatedActions#gate_create!` | `system.instance_pool_create` → `require_approval` | `POST /api/v1/system/instance_pools` → `System::Executors::InstancePool::CreatePool`. The MCP verb `system_create_instance_pool` — the one Phase 1 above prescribes — is **ungated**: it calls `System::InstancePool.create!` directly |
+| Create pool | **Gated on both doors** — `Ai::GatedActions#gate_create!` (REST) and `declare_action` (MCP, IMP-067f39468350) | `system.instance_pool_create` → `require_approval` | `POST /api/v1/system/instance_pools` → `System::Executors::InstancePool::CreatePool`. The MCP verb `system_create_instance_pool` — the one Phase 1 above prescribes — parks under the same category and replays through `Ai::Executors::DeferredToolCall` |
 | Delete pool | **Gated on the REST route ONLY** — `gate!` | `system.instance_pool_delete` → `require_approval` | `DELETE /api/v1/system/instance_pools/:id` → `DeletePool`, whose `on_proceed` only sets `status: "archived"`. The MCP verb `system_delete_instance_pool` (Phase 5 above) is **ungated and strictly more destructive** — it calls `pool.destroy!` |
-| Update pool — ceiling raise | **Gated on the REST route ONLY** — `gate_update!` | `system.instance_pool_ceiling_raise` → `require_approval` | `PATCH /api/v1/system/instance_pools/:id` with a **higher** `target_size` or `max_size` → `System::Executors::InstancePool::UpdatePool`. The MCP verb `system_update_instance_pool` is **ungated** |
-| Update pool — archive | **Gated on the REST route ONLY** — `gate_update!` | `system.instance_pool_archive` → `require_approval` | `PATCH {pool: {status: "archived"}}` → `UpdatePool`. Same state the gated `destroy`'s `on_proceed` writes; same MCP hole |
-| Update pool — everything else | **Ungated** | `system.instance_pool_update` → `notify_and_proceed` (no gate site reads it) | Size **decreases**, `min_size`, `description`, regions, metadata, `status: "paused"`/`"draining"` → `@pool.update!` inline, and all of `system_update_instance_pool` |
+| Update pool — ceiling raise | **Gated on both doors** — `gate_update!` (REST) and `declare_action` (MCP, IMP-067f39468350) | `system.instance_pool_ceiling_raise` → `require_approval` | `PATCH /api/v1/system/instance_pools/:id` with a **higher** `target_size` or `max_size` → `System::Executors::InstancePool::UpdatePool`. `system_update_instance_pool` resolves the same category per payload and replays through `Ai::Executors::DeferredToolCall`. Both doors carry the **replay baseline**: an approval that lands after someone lowered `target_size`/`max_size` inline (decreases are ungated) is REFUSED rather than writing the old high number back — re-submit against current state |
+| Update pool — archive | **Gated on both doors** — `gate_update!` (REST) and `declare_action` (MCP) | `system.instance_pool_archive` → `require_approval` | `PATCH {pool: {status: "archived"}}` → `UpdatePool`, or `system_update_instance_pool` with `status: "archived"`. Same state the gated `destroy`'s `on_proceed` writes |
+| Update pool — everything else | **Ungated** | `system.instance_pool_update` → `notify_and_proceed` (no gate site reads it) | Size **decreases**, `min_size`, `description`, regions, metadata, `status: "paused"`/`"draining"` → `@pool.update!` inline, on **both** doors |
 | Replenish | **Ungated** | `system.instance_pool_replenish` → `auto_approve` | `POST .../:id/replenish` and `system_replenish_instance_pool`, both on `System::InstancePoolService.replenish!` |
 | Drain | **Ungated** | `system.instance_pool_drain` → `require_approval` | `POST .../:id/drain` and `system_drain_instance_pool`, both on `InstancePoolService.drain!` — the declared `require_approval` has no gate site to enforce it |
 | Recycle stale | **Ungated** | *(no declared category at all)* | `POST .../:id/recycle_stale` and `system_recycle_pool`, both on `InstancePoolService.recycle_stale_members!` — this one **terminates members** |
@@ -338,12 +341,17 @@ Two qualifications on the word "ungated", both of which shrink it further:
   passes with neither a gate nor a permission check. That short-circuit is
   deliberate and load-bearing (the cron has no user), but it means the 60 s
   path clears *both* controls, not just the gate.
-- **On MCP, only one fleet verb is gated at all.** `SystemFleetTool`'s single
-  `declare_action` carrying `action_category`/`executor_class`/`gate_context`/
-  `on_proceed` is `system_terminate_instance`; every pool verb is declared
-  `mutating: true` and nothing else, which leaves `BaseTool#gated_action?`
-  false. That is a known, tracked gap in the governance registry rollout, not
-  a per-pool decision — see the SCOPE note in `system_fleet_tool.rb`.
+- **On MCP, three fleet verbs are gated.** `SystemFleetTool`'s `declare_action`
+  calls carrying `action_category`/`executor_class`/`gate_context`/`on_proceed`
+  — the quartet `BaseTool#gated_action?` reads — are
+  `system_terminate_instance`, `system_create_instance_pool` and
+  `system_update_instance_pool` (IMP-067f39468350). Every OTHER pool verb is
+  declared `mutating: true` and nothing else, so `gated_action?` is false for
+  it: `system_delete_instance_pool`, `system_drain_instance_pool`,
+  `system_recycle_pool`, `system_replenish_instance_pool` and
+  `system_acquire_pooled_instance` still meet no gate. That remainder is a
+  known, tracked gap in the governance registry rollout, not a per-pool
+  decision — see the SCOPE note in `system_fleet_tool.rb`.
 
 A third qualification, on where you can *retune* any of this. The Autonomy
 modal edits `Ai::InterventionPolicy` rows, and since IMP-5a2b801f3386 the
@@ -389,17 +397,13 @@ two reasons:
    `status: "paused"`/`"draining"` stay inline, so `draining` still sidesteps
    the drain policy row.
 
-   The gate is on **one route**, not on the column. Three writers still move
-   `target_size`/`max_size`/`status` with no approval, and none of them is a
-   defect this change closed:
+   The gate is on the **operator doors**, not on the column. IMP-067f39468350
+   closed the MCP half — `system_create_instance_pool` and
+   `system_update_instance_pool` now park under the same categories as the
+   REST twins — but two writers still move
+   `target_size`/`max_size`/`status` with no approval, and neither is a defect
+   that change closed:
 
-   - every pool **MCP verb**. `system_create_instance_pool` calls
-     `System::InstancePool.create!` directly, so a pool minted there never had
-     an approved ceiling to begin with, and `system_update_instance_pool`
-     raises one without meeting the gate the REST route now enforces. This is
-     the remaining half of IMP-24daa05e7a22, filed as improvement
-     `01a06317-5f42-7792-a393-ac7e702dcd62` — tracked and *not fixed*, so do
-     not read the table's gated rows as covering the MCP path.
    - `System::Gitops::ApplyService#apply!`, whose `POOL_SCALAR_KEYS` include
      `target_size`, `min_size`, `max_size`, `lifecycle_class` and `status` — a
      GitOps sync raises a ceiling from a repo commit, reached from
@@ -407,10 +411,11 @@ two reasons:
    - `System::CiRunnerLeaseService`, which sets `target_size` from configured
      runner demand.
 
-   So read the table as "the REST PATCH is gated", not "the ceiling is
-   locked". `spec/lint/instance_pool_replenish_gating_spec.rb` censuses these
-   writers by file and count, so a fourth one reds rather than quietly
-   widening the surface.
+   So read the table as "both operator doors onto the PATCH are gated", not
+   "the ceiling is locked".
+   `spec/lint/instance_pool_replenish_gating_spec.rb` censuses these writers by
+   file and count, so a further one reds rather than quietly widening the
+   surface.
 
    Note what the gate does **not** depend on: `authorize_write!`'s
    `worker_authenticated?` short-circuit skips the **permission** check only.
@@ -418,7 +423,8 @@ two reasons:
    worker-JWT `PATCH` raising `target_size` parks exactly like an operator's.
 
    Replenish is the actuator, update is the decision — and it is the decision
-   the approval now stands in front of, on the REST route.
+   the approval now stands in front of, on both the REST route and the MCP
+   verb.
 2. **It runs unattended.** `System::InstancePoolReplenisherJob` POSTs the
    replenish route every 60 s for every pool it lists, which it fetches with
    `status=active,draining`. A `require_approval` gate there would park one
