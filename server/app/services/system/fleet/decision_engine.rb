@@ -140,8 +140,22 @@ module System
           skill: nil,
           action_category: "system.instance_reboot"
         },
+        # Node mTLS cert nearing expiry (CertificateExpirySensor).
+        #
+        # IMP-43e94c9d46d4: this comment used to say cert rotation was handled
+        # directly by a rotate method on NodeCertificate. No such method has
+        # ever existed — the model defines due_for_rotation?, revoke! and the
+        # predicates, and nothing else. The lane had no applier either, so every
+        # proceed returned "no applier" while the comment asserted the opposite.
+        #
+        # skill: nil stays. The remediation is model-side (see
+        # #rotate_node_certificate in REMEDIATION_APPLIERS) and there is
+        # deliberately no executor: re-issuing a node cert requires a CSR the
+        # AGENT generates, because the private key never leaves the node. The
+        # platform cannot mint a usable cert on its own, and the applier says
+        # so rather than pretending it converged.
         "system.cert_expiring" => {
-          skill: nil, # cert rotation is handled directly via NodeCertificate#rotate
+          skill: nil,
           action_category: "system.cert_rotate"
         },
         # Platform ACME cert expiry (CertExpirySensor) → platform_maintenance
@@ -590,6 +604,13 @@ module System
         },
         # Upstream package version drift → repository sync gate
         # (auto_approve in the fleet seed; dedup per package_repository_id).
+        #
+        # IMP-43e94c9d46d4: auto_approve with no applier meant every drifted
+        # link proceeded and re-synced NOTHING. #sync_package_repository is
+        # the applier; it goes through PackageRepositorySyncService.enqueue!,
+        # never .call — a full sync is a minutes-long, memory-heavy job and
+        # that service's own doc requires every non-worker entry point to
+        # enqueue.
         "system.package_drift_pressure" => {
           skill: nil,
           action_category: "system.package_repository.sync"
@@ -600,13 +621,21 @@ module System
           skill: nil,
           action_category: "system.storage_assignment_reconcile"
         },
-        # GitOps drift (GitopsDriftSensor) → notify-only gate. No skill and no
-        # REMEDIATION_APPLIER entry: the reconciler (System::Gitops::Reconciler,
-        # driven by SystemGitopsSyncJob) is what opens the proposals and applies
-        # auto_apply repos — the DecisionEngine's role here is purely to surface
-        # the drift through the autonomy gate (notify_and_proceed in the fleet
-        # seed) instead of dropping it as :skipped. Mirrors module_promotion_ready
-        # / instance_state_drifted (skill: nil, applier-less notification gates).
+        # GitOps drift (GitopsDriftSensor) → notify_and_proceed in the fleet
+        # seed. No skill: the reconciler (System::Gitops::Reconciler, driven by
+        # SystemGitopsSyncJob) is what diffs desired vs live and opens the
+        # proposals, so there is nothing for an executor to plan.
+        #
+        # IMP-43e94c9d46d4: this comment used to end "and no REMEDIATION_APPLIER
+        # entry ... the DecisionEngine's role here is purely to surface the
+        # drift". That made the lane a silent no-op the validator still scored.
+        # #apply_gitops_drift is the applier, and it is deliberately NARROW —
+        # it applies only proposals an operator ALREADY APPROVED and nothing
+        # implemented (Ai::AgentProposal#approve! sets status and stops; only
+        # the gitops_apply_proposal MCP tool ever ran ApplyService on that
+        # path). It never approves a pending_review proposal: that would
+        # autonomously bypass both the operator gate and the reconciler's
+        # destroy guard.
         "system.gitops.drift_detected" => {
           skill: nil,
           action_category: "system.gitops_drift_remediate"
@@ -668,12 +697,23 @@ module System
         # answers; a machine timeout can neither bury it nor count as consent.
         #
         # The flag is declared, never inferred: skill-less + applier-less does
-        # NOT imply advisory — cert_expiring and slo_violation are skill-less
-        # yet act through services outside this engine. (This list used to name
-        # module_promotion_ready and the project.* bindings too; both are now
-        # actuated by REMEDIATION_APPLIERS entries — IMP-41eb6ddbc490 and
-        # IMP-4f7f7a0c9d33 respectively.) Deriving the flag would silently
-        # change consent semantics for the genuinely externally-actuated kinds.
+        # NOT imply advisory. The example this comment used to give was false:
+        # it offered cert_expiring and slo_violation as skill-less lanes that
+        # actuated through some service elsewhere. Both actuated NOTHING
+        # anywhere (IMP-43e94c9d46d4; cert_expiring now has an applier and
+        # slo_violation is declared dormant in
+        # RemediationValidator::NON_REMEDIATING_SIGNAL_KINDS). The rule stands
+        # on its own terms: advisory changes CONSENT-BUDGET and dedup
+        # semantics, which is an orthogonal question to whether a lane
+        # actuates, so deriving one from the other would silently retune the
+        # consent ceiling of every applier-less kind.
+        #
+        # This kind is ALSO declared in NON_REMEDIATING_SIGNAL_KINDS. It is
+        # require_approval today, so record_proceeded! never sees it — but the
+        # policy row is operator-tunable, and a retune to notify_and_proceed
+        # would otherwise start scoring a gap that only clears when a human
+        # ships a module. The declaration is what makes the exemption survive
+        # that retune instead of depending on DB state.
         "system.capability_gap" => {
           skill: nil,
           action_category: "system.capability_gap_review",
@@ -1300,7 +1340,28 @@ module System
         # deferred lane does, and that row is the evidence an operator reads.
         "system.project_slo_violation" => { method: :propose_project_adaptation },
         "system.project_drift" => { method: :propose_project_adaptation },
-        "system.project_cost_breach" => { method: :propose_project_adaptation }
+        "system.project_cost_breach" => { method: :propose_project_adaptation },
+        # IMP-43e94c9d46d4 (APO-1d). Three routed lanes that actuated NOTHING
+        # and were not exempt. Same class as IMP-555e29eeb4ab /
+        # IMP-83471cc28e1a / IMP-41eb6ddbc490 above, but BE PRECISE about the
+        # blast radius, because it differs per lane and the earlier draft of
+        # this comment overstated it:
+        #
+        #   - system.package_drift_pressure (auto_approve) and
+        #     system.gitops.drift_detected (notify_and_proceed) reached the
+        #     PROCEED arm, so RemediationValidator#record_proceeded! minted a
+        #     pending outcome for work no code attempted, and three ineffective
+        #     settle windows fired a HIGH fleet.remediation_stuck.
+        #   - system.cert_expiring routes to system.cert_rotate, seeded
+        #     require_approval, so it never reached the proceed arm and
+        #     FleetAutonomyService#executed_remediation? already dropped its
+        #     applied:false on the approved arm. No false outcome, no false
+        #     escalation — the defect there was that an operator APPROVED a
+        #     rotation and nothing ran, while the binding comment named a
+        #     `rotate` method on NodeCertificate that has never existed.
+        "system.cert_expiring" => { method: :rotate_node_certificate },
+        "system.gitops.drift_detected" => { method: :apply_gitops_drift },
+        "system.package_drift_pressure" => { method: :sync_package_repository }
       }.freeze
 
       OPEN_TASK_STATUSES = %w[pending scheduled running].freeze
@@ -1317,6 +1378,185 @@ module System
       rescue StandardError => e
         Rails.logger.error("[FleetDecisionEngine] remediation apply failed: #{e.class}: #{e.message}")
         { applied: false, reason: e.message }
+      end
+
+      # IMP-43e94c9d46d4 — the system.cert_expiring applier.
+      #
+      # WHAT THE PLATFORM CAN AND CANNOT DO HERE, because the binding used to
+      # claim more than either half. A NodeCertificate's private key is
+      # generated ON THE NODE and never leaves it; InternalCaService only SIGNS
+      # a CSR the agent presents (NodeEnrollmentService#refresh!, POST
+      # node_api/enroll/refresh, driven by the agent's CertRotator). There is
+      # therefore no server-side re-issue — the platform cannot mint a
+      # certificate the node could actually use, and the rotate method the old
+      # binding comment named on NodeCertificate has never existed.
+      #
+      # What the platform CAN close is the loop the agent's own rotator leaves
+      # open. #refresh! deliberately leaves the superseded NodeCertificate row
+      # in place, and nothing revoked it: NodeCertificate#revoke! had ZERO
+      # application call sites, so CertificateExpirySensor kept firing on a row
+      # the node stopped using the moment it rotated. When a NEWER active cert
+      # exists for the same instance, the expiring one is spent — revoke it
+      # (CA first, then the row) and the fingerprint clears for the right
+      # reason.
+      #
+      # When no successor exists the cert IS the instance's live identity and
+      # the rotator has not run. Nothing on this side can actuate that, so this
+      # returns applied:false and says why; record_proceeded! then mints
+      # nothing instead of scoring a no-op into the LEARN step's ground truth.
+      def rotate_node_certificate(signal, _skill_result)
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        cert = ::System::NodeCertificate
+                 .joins(node_instance: :node)
+                 .where(system_nodes: { account_id: account.id })
+                 .find_by(id: payload["certificate_id"])
+        return { applied: false, reason: "certificate not found" } unless cert
+        return { applied: false, reason: "certificate already revoked" } if cert.revoked?
+
+        successor = ::System::NodeCertificate
+                      .active
+                      .where(node_instance_id: cert.node_instance_id)
+                      .where.not(id: cert.id)
+                      .where("not_after > ?", cert.not_after)
+                      .order(not_after: :desc)
+                      .first
+        unless successor
+          return { applied: false,
+                   reason: "cannot rotate server-side: the private key lives on the node, so only " \
+                           "the agent can present a CSR (node_api/enroll/refresh); this instance " \
+                           "has no newer certificate to supersede this one" }
+        end
+
+        revoke_at_ca(cert)
+        cert.revoke!(reason: "superseded by #{successor.serial}")
+        { applied: true, revoked_serial: cert.serial, superseded_by: successor.serial }
+      end
+
+      # Best-effort CA-side revocation. The ROW revocation is the load-bearing
+      # half — it is what CertificateExpirySensor and every model reader
+      # consult — so a sealed or unreachable Vault PKI must not leave the spent
+      # row un-revoked and the signal standing forever.
+      def revoke_at_ca(cert)
+        ::System::InternalCaService.revoke_certificate(serial: cert.serial)
+      rescue StandardError => e
+        Rails.logger.warn("[FleetDecisionEngine] CA revocation failed for serial=#{cert.serial}: " \
+                          "#{e.class}: #{e.message}")
+        nil
+      end
+
+      # Applied per tick, so one drifted repository cannot turn an autonomy
+      # tick into an unbounded apply loop. Mirrors the Reconciler's own
+      # MAX_PROPOSALS_PER_TICK cap on the authoring side.
+      GITOPS_APPLY_LIMIT = 10
+
+      # IMP-43e94c9d46d4 — the system.gitops.drift_detected applier.
+      #
+      # NARROW BY CONSTRUCTION. It applies ONLY proposals an operator already
+      # approved and that nothing implemented. That gap is real:
+      # Ai::AgentProposal#approve! just sets status/reviewed_by and returns,
+      # and the only other caller of Gitops::ApplyService on the approved path
+      # is the gitops_apply_proposal MCP tool, so an operator approving a
+      # GitOps proposal in /app/approvals left it approved-and-unapplied while
+      # the drift kept firing.
+      #
+      # It must NEVER approve a pending_review proposal. The Reconciler's
+      # auto-apply lane is the only thing allowed to act without a human, and
+      # it carries two gates this lane has no business re-deriving: the
+      # repository's own `auto_apply` opt-in, and the destroy guard
+      # (auto_appliable_diff? admits create/update only).
+      #
+      # WHICH IS WHY status:"approved" ALONE IS NOT THE FILTER. Reconciler
+      # #auto_apply_proposal MACHINE-approves — status "approved" with
+      # reviewed_by nil and impact_assessment["approved_by"] =
+      # "gitops_auto_apply" — and reverts to pending_review on apply failure
+      # inside a rescue, so a failed revert leaves an approved-looking row a
+      # status-only query would then re-apply unattended, outside both of
+      # those gates. reviewed_by_id is the discriminator: Ai::AgentProposal
+      # #approve! sets it to the approving user and the machine path
+      # explicitly nils it, so "a human decided this" is READ, never inferred.
+      def apply_gitops_drift(signal, _skill_result)
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        repo = ::System::GitopsRepository
+                 .where(account_id: account.id)
+                 .find_by(id: payload["repository_id"])
+        return { applied: false, reason: "gitops repository not found" } unless repo
+
+        proposals = ::Ai::AgentProposal
+                      .where(account_id: account.id, status: "approved")
+                      .where.not(reviewed_by_id: nil)
+                      .where("proposed_changes->>'source' = ?", "gitops")
+                      .where("proposed_changes->>'repository_id' = ?", repo.id.to_s)
+                      .order(created_at: :asc)
+                      .limit(GITOPS_APPLY_LIMIT)
+                      .to_a
+        if proposals.empty?
+          return { applied: false,
+                   reason: "no human-reviewed approved gitops proposal for repository #{repo.id} — " \
+                           "the drift stands until a person reviews it" }
+        end
+
+        applied_ids = []
+        failures = []
+        proposals.each do |proposal|
+          result = ::System::Gitops::ApplyService.apply!(proposal: proposal)
+          if result.ok?
+            applied_ids << proposal.id
+          else
+            failures << "#{proposal.id}: #{result.error}"
+          end
+        end
+
+        if applied_ids.empty?
+          return { applied: false, reason: "gitops apply failed — #{failures.join('; ')}" }
+        end
+
+        { applied: true, applied_proposal_ids: applied_ids,
+          failed_proposals: failures.presence }.compact
+      end
+
+      # IMP-43e94c9d46d4 — the system.package_drift_pressure applier.
+      #
+      # ENQUEUE, NEVER .call. PackageRepositorySyncService's own contract says
+      # every operator/API/MCP/agent entry point must use #enqueue!: a full
+      # sync is a minutes-long, memory-heavy job whose inline form inflates RSS
+      # past the puma worker recycler. This runs inside the autonomy tick, so
+      # it is exactly the caller that rule is written for.
+      #
+      # `accessible_to` rather than a bare account scope: a drifted link can
+      # point at a SHARED repository (account_id NULL), which an account-only
+      # lookup would report as "not found" forever.
+      #
+      # SAY THE CONSEQUENCE OUT LOUD: on a shared repository that means ONE
+      # account's autonomy tick enqueues a sync every account then reads, and
+      # mutates a row (sync_status/last_sync_error) they all see. That is
+      # intended — the drift it clears is equally fleet-wide, and a shared
+      # repo nobody may sync is a repo that stays drifted forever — but it is
+      # a cross-tenant side effect, so it is bounded rather than left open:
+      # the `syncing` guard below makes concurrent ticks idempotent (the
+      # second is a no-op, not a second job), and enqueue! is a metadata
+      # refresh, never a mutation of any account's own resources.
+      #
+      # The `syncing` guard has a KNOWN edge, stated rather than papered over:
+      # a wedged sync leaves the row `syncing`, so this returns applied:false
+      # forever — and since IMP-43e94c9d46d4 record_proceeded! refuses
+      # applied:false, nothing mints and nothing escalates. A wedged sync is
+      # already the PackageRepositorySyncService's own alarm to raise
+      # (last_sync_error / sync_status are operator-visible); inventing a
+      # second escalation here would score a lane that correctly declined.
+      def sync_package_repository(signal, _skill_result)
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        repo = ::System::PackageRepository
+                 .accessible_to(account)
+                 .find_by(id: payload["package_repository_id"])
+        return { applied: false, reason: "package repository not found" } unless repo
+        return { applied: false, reason: "package repository #{repo.id} is disabled" } unless repo.enabled?
+
+        if repo.sync_status.to_s == "syncing"
+          return { applied: false, reason: "package repository sync already in flight" }
+        end
+
+        ::System::PackageRepositorySyncService.enqueue!(repository: repo)
+        { applied: true, package_repository_id: repo.id, sync: "enqueued" }
       end
 
       # F3-07: re-run reconciliation for an assignment the sensor flagged as

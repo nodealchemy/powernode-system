@@ -35,10 +35,20 @@ module System
       # escalation (and forces require_approval) for a lane that never acted.
       #
       # DECLARED, never inferred — the same rule DecisionEngine states for
-      # its `advisory` flag. "Skill-less and applier-less" does NOT imply
-      # non-remediating: system.cert_rotate and the SLO categories are both
-      # and still actuate through services outside this engine. A lane earns
-      # its place here by being listed.
+      # its `advisory` flag. A lane earns its place here by being listed.
+      #
+      # IMP-43e94c9d46d4: the example this comment used to give was FALSE. It
+      # offered system.cert_rotate and the SLO categories as lanes that were
+      # skill-less and applier-less yet actuated through some service elsewhere.
+      # Neither actuated anywhere at all — and the sentence read as a reason not
+      # to look, so nothing did. Both are settled now:
+      # system.cert_expiring has a REMEDIATION_APPLIERS entry, and
+      # system.slo_violation is declared dormant in
+      # NON_REMEDIATING_SIGNAL_KINDS below. The DECLARED-never-inferred rule
+      # does not need a worked example to stand; it needs the two mechanisms
+      # (this list, and the applied:false refusal in #record_proceeded!) to
+      # cover every routed lane, which the equality oracle in
+      # spec/services/system/fleet/proceed_lane_actuation_spec.rb asserts.
       #
       #   system.observation                     — pure dashboard/MCP surface
       #                                            (boot-image drift, trading
@@ -142,6 +152,36 @@ module System
         system.module_promotion_investigate
       ].freeze
 
+      # The same exemption, keyed by SIGNAL KIND instead of action_category —
+      # for a dormant lane whose category is SHARED with lanes that do actuate.
+      #
+      # IMP-43e94c9d46d4. system.slo_violation routes to system.module_assign,
+      # and so do system.module_drift and system.config_drift, both of which
+      # dispatch a real reconcile task. Listing the CATEGORY would silently
+      # take those two out of the validate arc — the exemption's failure mode
+      # in reverse, and invisible, because nothing complains about a lane that
+      # stops being scored. So the dormant kind is named directly.
+      #
+      #   system.slo_violation  — the binding's skill is nil and no applier
+      #                           exists. The operator ruling of 2026-09-02
+      #                           left it that way: a rolling upgrade off an
+      #                           SLO breach is a plan a person approves, not
+      #                           an autonomous action off a timer. The lane
+      #                           reports; it does not remediate.
+      #   system.capability_gap — require_approval today, so record_proceeded!
+      #                           never sees it, and its own binding comment
+      #                           relies on that. But the policy row is
+      #                           operator-tunable: a retune to
+      #                           notify_and_proceed would start scoring a gap
+      #                           that clears only when a human ships a module,
+      #                           days later. Declared here so the exemption
+      #                           survives the retune instead of resting on DB
+      #                           state.
+      NON_REMEDIATING_SIGNAL_KINDS = %w[
+        system.slo_violation
+        system.capability_gap
+      ].freeze
+
       def initialize(account:, agent: nil)
         @account = account
         @agent = agent
@@ -168,6 +208,67 @@ module System
           # forced approvals. Skip them from the validate arc — see the
           # constant for the declared list and why it is a list, not a rule.
           next if NON_REMEDIATING_ACTION_CATEGORIES.include?(decision[:action_category].to_s)
+          # IMP-43e94c9d46d4 — the same exemption keyed by KIND, for a dormant
+          # lane sharing its category with lanes that actuate. See the constant.
+          next if NON_REMEDIATING_SIGNAL_KINDS.include?(decision[:signal_kind].to_s)
+          # IMP-43e94c9d46d4 — REFUSE applied:false. The applier's own answer
+          # outranks every list above it: "no applier for <kind>", a
+          # control-plane fence skip, a self-managed-target skip, "instance not
+          # found", apply_remediation!'s rescue. Each of those is a proceed
+          # that actuated NOTHING, and a pending outcome for one scores
+          # ineffective every settle window until three of them trip
+          # STUCK_STREAK_THRESHOLD into a HIGH fleet.remediation_stuck for work
+          # no code attempted — the F3-11 escalation firing at a gap in the
+          # ACT arm while reporting it as a failed remediation.
+          #
+          # This is the proceed-lane half of a rule the approved lane already
+          # had: FleetAutonomyService#executed_remediation? has refused
+          # applied:false since IMP-31f1e5f9b365, so a byte-identical applier
+          # result was scored on one lane and dropped on the other.
+          #
+          # TWO deliberate non-refusals, both matching that method exactly:
+          #   - a DECLARED convergence_deferred is applied:false yet IS an
+          #     execution; #validate_due! settles its row `inconclusive` and
+          #     that row is the evidence an operator reads.
+          #   - a decision carrying NO :remediation key at all is not an
+          #     applier verdict, so there is nothing to refuse. Only a
+          #     DECLARED false is refused, never an absent one.
+          #
+          # KNOWN CONSERVATIVE GAP, INHERITED DELIBERATELY, stated rather than
+          # discovered later. This refusal is not limited to the four lanes
+          # IMP-43e94c9d46d4 was raised for. SIX proceed-arm lanes have no
+          # REMEDIATION_APPLIERS entry yet DO actuate, because their bound
+          # SKILL is the actuation:
+          #
+          #   system.acme_cert_expiring            (system.acme_cert_rotate)
+          #   system.sdwan_peer_drift              (system.sdwan_peer_remediate)
+          #   system.sdwan_bgp_session_unhealthy   (system.sdwan_bgp_session_remediate)
+          #   system.sdwan_credential_expiring     (system.sdwan_credential_refresh)
+          #   system.federation_peer_liveness      (system.federation_peer_remediate)
+          #   system.module_critical_upgrade_ready (same category)
+          #
+          # Each executes its skill, then apply_remediation! returns
+          # applied:false/"no applier", so from here they now mint NOTHING and
+          # go unscored. That is a LOSS of measurement for six lanes, and it is
+          # the direction this file already chose on the approved arm:
+          # FleetAutonomyService#executed_remediation? has dropped exactly
+          # these since IMP-31f1e5f9b365 under this same reasoning — admitting
+          # them would mean INFERRING actuation from the presence of
+          # skill_result, the inference every other rule here refuses, and a
+          # wrong score is ground truth the LEARN step believes while a missing
+          # score is only a gap. The declared fix is unchanged and is NOT this
+          # change: those bindings should return an actuation marker of their
+          # own. Until they do, the two arms agree, which is the property
+          # IMP-43e94c9d46d4 was actually about.
+          #
+          # spec/services/system/fleet/proceed_lane_actuation_spec.rb PINS that
+          # list, so a seventh such lane fails a spec instead of silently
+          # joining the gap.
+          if decision[:remediation].is_a?(Hash) &&
+             decision[:remediation][:applied] == false &&
+             !deferred_convergence(decision)
+            next
+          end
           # IMP-4f7f7a0c9d33: same exemption class, different reason. A PROPOSAL
           # is not a remediation — the remediation is the EXECUTED plan. The
           # project.* adaptation lane composes a diff plan and deliberately stops,

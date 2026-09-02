@@ -661,14 +661,19 @@ RSpec.describe System::Fleet::DecisionEngine do
         expect(System::Task.where(account: account, command: "sync_modules")).to be_empty
       end
 
+      # IMP-43e94c9d46d4: this used to drive system.gitops.drift_detected,
+      # which now HAS an applier — so it exercised the applier-less branch by
+      # accident of that lane's gap rather than on purpose. system.slo_violation
+      # is the lane the 2026-09-02 operator ruling deliberately left dormant
+      # (skill: nil, no applier, declared in
+      # RemediationValidator::NON_REMEDIATING_SIGNAL_KINDS), so it is the
+      # stable subject for the no-applier fallback. It routes to
+      # system.module_assign, whose notify_and_proceed policy the enclosing
+      # `before` already seeds.
       it "records an unapplied proceed when no applier exists for the kind" do
-        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
-                                       action_category: "system.gitops_drift_remediate",
-                                       policy: "notify_and_proceed", is_active: true)
-
-        d = engine.decide(kind: "system.gitops.drift_detected", severity: :medium,
-                          payload: {},
-                          fingerprint: "gitops_drift:repo-1")
+        d = engine.decide(kind: "system.slo_violation", severity: :medium,
+                          payload: { "instance_id" => instance.id },
+                          fingerprint: "slo_violation:#{instance.id}")
 
         expect(d[:decision]).to eq(:proceed)
         expect(d[:remediation]).to include(applied: false)
