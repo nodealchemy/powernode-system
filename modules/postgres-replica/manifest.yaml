@@ -323,9 +323,38 @@ services:
     capabilities: []
     # TCP health probe deferred — see postgres-primary.
     metadata:
-      role: streaming_replica
+      pg_role: streaming_replica
       pg_version: "16"
+      pg_data: /var/lib/postgresql/16/replica
       notes: "Replication slot + primary connection string injected via virtio-fw-cfg at spawn time."
+      # APO-6 (DR-3) — THE PROMOTE CONTRACT. Until this key existed the module
+      # streamed from a parent primary and had no recovery path at all: a grep
+      # for promote/pg_promote/failover across both postgres manifests, the
+      # setup job (ClusterMemberPgReplicaSetupJob) and
+      # PlatformDeploymentOrchestrator returned nothing, so "the primary is
+      # gone" ended in a person with psql.
+      #
+      # DECLARED HERE, not hardcoded in the promoting service, because the data
+      # dir and the pg_ctl path are properties of THIS module — a module that
+      # moves to PG 17 or a different cluster name changes one manifest, not a
+      # Ruby constant on the control plane.
+      # System::Ai::Skills::PromoteReplicaExecutor resolves this key off the
+      # imported System::ModuleService row (metadata.pg_role == streaming_replica)
+      # and REFUSES the promote when it is absent, so the declaration is
+      # load-bearing rather than documentation.
+      #
+      # ONLY promote_command is load-bearing. pg_ctl promote is preferred over
+      # touching the trigger file because `-w` waits for the standby to finish
+      # its promotion, so the task's exit status is the promotion's outcome
+      # instead of "the file was created".
+      #
+      # promote_trigger_file below has NO CODE READER, deliberately and
+      # explicitly: it is an OPERATOR ESCAPE HATCH, the path to touch by hand
+      # on a node whose control path is down. Do not read it as a contract the
+      # control plane resolves — PromoteReplicaExecutor resolves pg_role,
+      # promote_command and (on the primary) fence_command, and nothing else.
+      promote_command: "/usr/lib/postgresql/16/bin/pg_ctl -D /var/lib/postgresql/16/replica promote -w -t 60"
+      promote_trigger_file: /var/lib/postgresql/16/replica/promote.signal
 
 dependencies:
   requires:

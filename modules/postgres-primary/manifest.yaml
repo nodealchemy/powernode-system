@@ -349,8 +349,42 @@ services:
     # systemd unit (future work) — model schema needs a TCP/exec method
     # before we can express it declaratively here.
     metadata:
+      pg_role: postgres_primary
       pg_data: /var/lib/postgresql/16/main
       pg_version: "16"
+      # APO-6 (DR-3) — THE FENCE CONTRACT, the other half of
+      # postgres-replica's promote_command.
+      #
+      # WHAT THE FENCE ACTUALLY IS. The DURABLE fence is the DB VIP cutover
+      # plus the stamp System::Ai::Skills::PromoteReplicaExecutor writes onto
+      # the cluster_member peer (cluster_pg.fenced_primary_instance_id): once
+      # the VIP names the promoted replica's SDWAN peer, nothing reaches this
+      # host as primary even if the VM comes back. That is the only fence that
+      # holds when the host is unreachable, which is the case a promote is
+      # for. This command is the BEST-EFFORT half — dispatched only while the
+      # provider still reports a VM object for the instance (status "error",
+      # not "terminated"), so a promote never mints a doomed task against a
+      # VM the provider has already destroyed.
+      #
+      # -m immediate, not -m fast: a fenced primary must stop accepting
+      # writes NOW. A clean shutdown that drains in-flight transactions is
+      # exactly the window in which a split brain writes.
+      #
+      # The old primary is NEVER auto-restarted as primary (operator ruling
+      # 2026-09-02). Bringing this host back means re-basing it as a replica
+      # of the promoted node, which is a separate, operator-initiated act.
+      #
+      # THE BINARY PATH IS /usr/lib/postgresql/16/bin/pg_ctl, matching the
+      # `files:` list above (/usr/lib/postgresql/16/** is delivered;
+      # /usr/bin/pg_ctl is NOT — the Debian postgresql-16 layout ships only
+      # /usr/bin/pg_ctlcluster in /usr/bin). A fence that cannot find its
+      # binary fails command-not-found, and because the dispatch is
+      # best-effort and never inspects the task outcome, it would fail
+      # SILENTLY while the ledger recorded fence_dispatched: true.
+      # NOTE: `stop_command` above still names /usr/bin/pg_ctl. That predates
+      # this change and is not touched here — it is the same suspected defect
+      # on the ordinary stop path and needs its own task.
+      fence_command: "/usr/lib/postgresql/16/bin/pg_ctl -D /var/lib/postgresql/16/main stop -m immediate"
 
 dependencies:
   requires:

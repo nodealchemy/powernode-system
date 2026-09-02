@@ -39,9 +39,16 @@ RSpec.describe "system_skills_seed — SkillBindings coverage" do
   # only the first file here would falsely report them missing and tempt
   # someone into duplicating them (both files upsert by slug, so the later one
   # wins and the duplicate becomes dead content).
+  #
+  # `system_dr_skills_seed.rb` is the THIRD file in that run (see
+  # SYSTEM_SEED_FILES in extensions/system/server/db/seeds.rb, which is the only
+  # place seed ORDER is declared). It is loaded here for the same reason the
+  # provisioning file is: the coverage invariant is a property of the whole run,
+  # and omitting a seed that DOES exist reports its slugs as missing.
   def load_skills_seeds!
     silence_warnings do
-      %w[system_skills_seed.rb system_provisioning_skills_seed.rb].each do |file|
+      %w[system_skills_seed.rb system_provisioning_skills_seed.rb
+         system_dr_skills_seed.rb].each do |file|
         load Rails.root.join("..", "extensions", "system", "server", "db", "seeds", file)
       end
     end

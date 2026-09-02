@@ -56,6 +56,7 @@ SYSTEM_SEED_FILES = %w[
   system_agent_fleet_mission_template.rb
   system_skills_seed.rb
   system_provisioning_skills_seed.rb
+  system_dr_skills_seed.rb
   system_skill_bindings_seed.rb
   system_kb_seed.rb
   node_module_catalog.rb
