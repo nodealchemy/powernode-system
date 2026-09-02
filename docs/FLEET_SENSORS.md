@@ -147,9 +147,12 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 ### `module_drift_sensor` — Module config drift
 
 **Source:** `module_drift_sensor.rb`
-**Watches:** `NodeInstance.running_module_digests` vs assigned module digests
+**Watches:** `NodeInstance.running_module_digests` vs assigned module digests, over every NON-TERMINATED instance
 **Threshold:** Any digest mismatch → `system.module_drift` signal
 **Signals:** `system.module_drift` — the only kind this sensor emits. No recovery counterpart exists; recovery is the fingerprint's absence on a later tick.
+
+**Coverage (IMP-f28b393916f3):** the sweep walks every NON-TERMINATED instance and cuts it twice before asking the drift question. First by status: drift is answered only for `System::NodeInstance::ACTIVE_STATUSES`, the same population `drift_check` assesses, so the autonomy lane and the maintenance verb cannot disagree about one fleet — an instance in `starting`/`stopping`/`rebooting`/`error` carries a digest map that is not evidence of anything. Second by whether the instance has ever reported: a `pending`/`provisioning`/`stopped` row with no `last_heartbeat_at` has an empty digest map by column DEFAULT, and answering "every assigned module is missing" for it would dispatch a `sync_modules` task to a node with no agent, so it lands in `not_reporting` instead (`running` is exempt — a live agent that has mounted nothing also persists an empty map, and the platform already calls that drift). Every emitted signal therefore carries `fleet_instance_count`, `fleet_assessed_count`, `fleet_not_reporting_count`, `fleet_not_assessed_count` and a `fleet_not_assessed_by_status` breakdown, so a reader can tell "all ten were asked" from "three were skipped". `terminated` is in neither bucket: that replica is gone, not skipped. **Known gap:** a tick that finds NO drift emits nothing and so discloses nothing. The right home for that is the tick's own `fleet.tick_complete` event — a `FleetEvent` emitted by `FleetAutonomyService` through `EventBroadcaster`, which needs no `DecisionEngine::SIGNAL_BINDINGS` entry and no intervention policy — but threading a per-sensor coverage map out of the sense pass is a change to `fleet_autonomy_service.rb`, outside IMP-f28b393916f3's scope.
+
 **Recommended remediation:** `drift_remediate` skill (Fleet Autonomy auto-runs with `notify_and_proceed`).
 
 ### `boot_image_drift_sensor` — Boot-image freshness drift
@@ -686,7 +689,7 @@ Seven AI agents seed intervention policies (action_category → policy mapping) 
 
 All policies decay to the agent's `trust_tier_minimum: monitored` condition — agents below trust threshold are auto-blocked regardless of policy.
 
-### Fleet Autonomy agent (58 policies)
+### Fleet Autonomy agent (56 policies)
 
 Source: `db/seeds/fleet_autonomy_agent.rb`. Approval chain: `Fleet Autonomy Actions` (4-hour timeout, `*` approver, sequential). **Note: as of 2026-05-10, CVE policies moved to `system_cve_responder_agent.rb`, the operator-initiated `sdwan.*` CRUD policies to `system_sdwan_manager_agent.rb`, and Disk Image policies to `system_disk_image_manager_agent.rb` — they no longer live here. Fleet Autonomy retains the 7 AUTONOMOUS `system.sdwan_*` remediation policies (peer remediate, key rotate, credential refresh, failover, user device revoke, BGP session remediate, VIP failover) plus later additions (`system.federation_peer_remediate`, `system.acme_cert_rotate`, `system.node_boot_image_drift`, `system.template_closure_apply`, `system.storage_assignment_reconcile`, `system.gitops_drift_remediate`, `system.disk_image_publication_investigate`, `system.sdwan_service_health_investigate`, `system.sdwan_ovn_deployment_investigate`, `system.sdwan_apply_investigate`, `system.sdwan_user_device_config_investigate`, `system.module_verify_investigate`, `system.sdwan_bgp_observation_investigate`, `system.task_backlog_investigate`, `system.node_lkg_investigate`, `system.module_promotion_investigate`) whose sensors also gate as this agent — which is why this count exceeds the categories tabulated below.**
 
@@ -714,7 +717,7 @@ Source: `db/seeds/fleet_autonomy_agent.rb`. Approval chain: `Fleet Autonomy Acti
 | `system.package_repository.sync` | `auto_approve` | Routine PackageRepository refresh |
 | `system.package_module.create` | `notify_and_proceed` | Materialises a NodeModule from PackageRepository |
 | `system.package_module.refresh` | `notify_and_proceed` | Re-resolves dependencies / re-validates manifest |
-| `system.architecture.propose` | `notify_and_proceed` | `suggest_architectures_for_fleet` skill emits proposals |
+| `system.architecture.propose` | `auto_approve` | `suggest_architectures_for_fleet` skill emits proposals |
 | `system.architecture.create` | `require_approval` | Catalog change — affects future provisioning |
 | `system.architecture.update` | `require_approval` | Catalog change |
 | `system.architecture.delete` | `require_approval` | Catalog change |
