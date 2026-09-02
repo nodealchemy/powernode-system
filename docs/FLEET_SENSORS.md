@@ -304,7 +304,7 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 ### `project_slo_sensor` — Project-scoped SLO monitoring
 
 **Source:** `project_slo_sensor.rb`
-**Watches:** Project-scoped rolling-window metrics (latency, error rate, cost guardrail, SDWAN throughput), read from `System::ProjectMetric` rows written each tick by `System::ProjectMetricsCollector`.
+**Watches:** Project-scoped rolling-window metrics (latency, availability, cpu/memory utilization, cost guardrail, SDWAN throughput), read from `System::ProjectMetric` rows written each tick by `System::ProjectMetricsCollector`.
 **Threshold:** Per-project SLO breach OR cost guardrail trip → typed signal (`system.project_slo_violation`, `system.project_drift`, `system.project_cost_breach`).
 **Signals:** `system.project_slo_violation`, `system.project_drift`, `system.project_cost_breach`
 **Recommended remediation:** None automated — feeds the project dashboard for operator review.
@@ -317,6 +317,16 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 | `p99_latency_ms` | `p99_latency_ms` | 250 (or `brief.latency_targets_ms.p99`) |
 | `cost_ceiling_usd` | `cost_usd_mtd` | none — declared-only (falls back to `brief.budget_cap_usd_monthly`) |
 | `min_throughput_bytes_per_s` | `sdwan_throughput_bytes_per_s` | **none — declared-only** |
+| `max_cpu_pct` | `cpu_pct` | **none — declared-only** |
+| `max_memory_pct` | `memory_pct` | **none — declared-only** |
+
+The two utilization CEILINGS (IMP-7684d3f8658a) resolve through `Ai::Mission#utilization_targets`, not through this sensor: mission `slo_targets` → the mission TEMPLATE's `default_configuration` → `Account#settings` → the `ai.provisioning.max_cpu_pct` / `ai.provisioning.max_memory_pct` SiteSettings. That is the same home as the scaling window (`#scaling_bounds`), so the sensor that fires and the composer that sizes the response read one number.
+
+They are evaluated LAST — `#slo_violation_signal` returns the FIRST violated metric, so latency, availability and a declared throughput floor still win — and a declaration the platform cannot use as a percentage (`0`, negative, `> 100`, non-numeric) resolves to NO ceiling and is logged, rather than to a wider default.
+
+**Turning these on is an operator decision with a cost.** Like `min_throughput_bytes_per_s` and unlike `availability_pct`, they ship with NO default: a project nobody declared a ceiling for is not checked, however hot it runs. That is deliberate. A `cpu_pct` violation maps to change_type `scale_horizontal`, which `System::AdaptationGate` seeds `auto_approve` against the mission's `watch_policies` window — and the seeded `system_provisioning` mission template that every Concierge-provisioned project inherits from declares `auto_scale_max_replicas: 5`, so `#scaling_bounds.auto_scale_out?` is **already true for a project that declared nothing itself**. A defaulted ceiling would therefore have opened an unattended, money-spending provision path across existing projects on the day it shipped.
+
+So: declare `max_cpu_pct` on one project to watch it, or set the `ai.provisioning.max_cpu_pct` SiteSetting to turn the check on for the whole fleet — and expect the fleet-wide form to make every project from the seeded template eligible for unattended scale-out at that ceiling. To get the signal without the actuation, clear `auto_scale_max_replicas` on the project (or its template) first.
 
 `min_throughput_bytes_per_s` (IMP-25e75f960dee) is a FLOOR on the mission's aggregate SDWAN fabric activity: the sum over the peers of the mission's provisioned instances of `(rx_bytes + tx_bytes)` divided by each peer's own observation interval (`counters_sampled_at`, stamped server-side at heartbeat receipt), from the per-peer WireGuard counters the node agent reports. Both directions of every endpoint are counted, so traffic between two of the mission's own instances contributes four times — it measures fabric activity, not distinct payload bytes. Declare it against that definition.
 
@@ -347,6 +357,8 @@ Two properties are deliberate and worth knowing before you rely on it:
 - **The population and the silence window are both `instance_status`'s**, the window resolved through `System::Fleet::SensorConfig` (`silent_threshold_seconds`, default 3 minutes), so this collector and `instance_status_sensor` cannot drift apart about which nodes should be answering or how long silence is tolerated. The window in force is stamped on each sample as `silent_threshold_seconds`. One deliberate difference remains: the sensor signals a never-heartbeat `running` instance as silent, while this metric excludes it (see the first bullet).
 
 Unlike `min_throughput_bytes_per_s`, `availability_pct` has a DEFAULT target (99.5), so wiring its producer made the check live for every active infrastructure mission: with two reporting replicas, one going silent reads as 50% and fires `system.project_slo_violation`. For missions whose nodes legitimately go quiet, raise the silence window or declare a lower `availability_pct` target.
+
+Every sampler contains its own failures (IMP-7684d3f8658a): a raise inside one metric's sampler is logged, recorded as that metric's `unavailable` sample, and the rest of the tick's batch still lands. Before that, one raising sampler took the mission's WHOLE batch for the tick — including `replica_count`, and therefore drift detection — because the only per-metric rescue was the throughput sampler's.
 
 The utilization samplers' staleness window — how recent a `runtime_metrics` observation must be to describe the node's current state — governs `memory_pct` and `cpu_pct` together and defaults to 10 minutes (20 consecutive missed heartbeats). Tune it deployment-wide with the `system.project_metrics.sample_freshness_seconds` SiteSetting.
 
