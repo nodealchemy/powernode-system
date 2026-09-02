@@ -107,10 +107,6 @@ module ToolEnumLint
       "CveOps::FeedIngestService writes whatever `source` the feed run names, " \
       "and the CVE drill seeds write \"DRILL\". nvd/ghsa/manual is a naming " \
       "CONVENTION, so an enum would forbid values the platform itself writes.",
-    ["Ai::Tools::SystemPackageRepositoryTool", "system_search_packages", "sort"] =>
-      "Inert: System::PackageSearchService reads `sort` only to echo it back " \
-      "in the result payload; no ordering branch consumes it, so there is no " \
-      "accepted set to pin. Queued separately as a behaviour gap."
   }.freeze
 
   Row = Struct.new(:tool, :action, :name, :spec, keyword_init: true) do
