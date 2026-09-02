@@ -50,4 +50,65 @@ RSpec.describe System::ProviderInstanceType, type: :model do
       end
     end
   end
+  # APO-2c — the pricing resolution core's money path reads. #price_in_region
+  # is consumed by Ai::Provisioning::CostEstimatorService for the operator's
+  # plan-time quote and #pricing_row_for by ProjectMetricsCollector for the
+  # month-to-date accrual; both were unpinned by any spec, so a later edit
+  # could change what an operator is quoted without going red.
+  describe "pricing resolution" do
+    let(:region) { create(:system_provider_region, account: account) }
+    let(:type)   { itype(hourly_price: 0.05, currency: "USD") }
+
+    def region_row(**attrs)
+      System::RegionInstanceType.create!(
+        provider_region: region, provider_instance_type: type, available: true, **attrs
+      )
+    end
+
+    it "falls back to the base row when the SKU has no row in that region" do
+      expect(type.pricing_row_for(region)).to eq(type)
+      expect(type.price_in_region(region)).to eq(0.05)
+    end
+
+    it "falls back to the base row when region is nil" do
+      expect(type.pricing_row_for(nil)).to eq(type)
+      expect(type.price_in_region(nil)).to eq(0.05)
+    end
+
+    # A region row without a rate is an AVAILABILITY row, not a price.
+    it "falls back to the base row when the region row carries no rate" do
+      region_row(hourly_price: nil)
+      expect(type.pricing_row_for(region)).to eq(type)
+      expect(type.price_in_region(region)).to eq(0.05)
+    end
+
+    it "prices from the region row when it carries a rate" do
+      row = region_row(hourly_price: 0.10)
+      expect(type.pricing_row_for(region)).to eq(row)
+      expect(type.price_in_region(region)).to eq(0.10)
+    end
+
+    # 0.0 is truthy in Ruby, so an explicit zero override is a DECLARED rate
+    # and must win over the base rate rather than falling through it. (Whether
+    # a zero is a real price is the CALLER's judgement — the accrual sampler
+    # treats it as an unpopulated row on a billed provider.)
+    it "honours an explicit zero override rather than falling through it" do
+      row = region_row(hourly_price: 0.0)
+      expect(type.pricing_row_for(region)).to eq(row)
+      expect(type.price_in_region(region)).to eq(0.0)
+    end
+
+    # The rate and the currency it is quoted in must come off ONE row.
+    it "answers #effective_currency on whichever row priced the SKU" do
+      expect(type.pricing_row_for(region).effective_currency).to eq("USD")
+      expect(itype(hourly_price: 0.05, currency: nil).effective_currency).to eq("USD")
+
+      eur = itype(hourly_price: 0.05, currency: "EUR")
+      expect(eur.effective_currency).to eq("EUR")
+
+      row = region_row(hourly_price: 0.10, currency: "EUR")
+      expect(type.pricing_row_for(region).effective_currency).to eq("EUR")
+      expect(row.effective_currency).to eq("EUR")
+    end
+  end
 end

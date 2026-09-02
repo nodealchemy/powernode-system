@@ -73,10 +73,34 @@ module System
       )
     end
 
+    # The catalog row that PRICES this SKU in `region`: the region override
+    # when it carries a rate of its own, otherwise this base row.
+    #
+    # ONE resolution, because a price and the currency it is quoted in must
+    # come from the SAME row. Reading the number from the region override and
+    # the currency from the base row (or the reverse) silently converts
+    # between them, and a per-region rate quoted in another currency is
+    # exactly where that would land. Both rows answer #hourly_price and
+    # #effective_currency, so callers can take the pair off one object.
+    #
+    # A region override with a NULL hourly_price is not a price — it is an
+    # availability row — so it falls through to the base rate, which is the
+    # behaviour #price_in_region has always had.
+    def pricing_row_for(region)
+      rit = region ? region_instance_types.find_by(provider_region: region) : nil
+      rit&.hourly_price ? rit : self
+    end
+
     # Get price for a specific region
     def price_in_region(region)
-      rit = region_instance_types.find_by(provider_region: region)
-      rit&.hourly_price || hourly_price
+      pricing_row_for(region).hourly_price
+    end
+
+    # The currency `hourly_price` is quoted in. Mirrors
+    # System::RegionInstanceType#effective_currency so the two pricing rows
+    # are interchangeable to a caller that resolved one via #pricing_row_for.
+    def effective_currency
+      currency.presence || "USD"
     end
   end
 end

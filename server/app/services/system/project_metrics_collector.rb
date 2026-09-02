@@ -8,12 +8,11 @@ module System
   # infrastructure mission. `ProjectSloSensor` then queries the latest rows
   # per mission to evaluate SLO/drift/cost signals.
   #
-  # The point of this slice is the **storage and query path** — production
-  # samplers (cloud-provider Prometheus scrapers, billing API exporters,
-  # NodeInstance health probes) will replace the stub-sampling logic with
-  # real telemetry. Until they land, the collector records placeholder zero
-  # values with a `note` field flagging the source as `stub` so dashboards
-  # don't mistake them for real measurements.
+  # A metric with no source behind it records an HONEST `unavailable` sample
+  # (observed nil, `source: "unavailable"`, a `note` saying why), never a
+  # placeholder zero — the sensors' `.present?` guards then skip it instead of
+  # reading a fabricated 0 as a real measurement. See #unavailable_sample; the
+  # per-metric list of what is wired and what is not lives on #sample_all.
   #
   # Usage:
   #   System::ProjectMetricsCollector.collect!(mission: mission)
@@ -76,6 +75,42 @@ module System
       # a moving target for one metric.
       "sdwan_throughput_bytes_per_s" => "utilization"
     }.freeze
+
+    # APO-2c — the currency `cost_usd_mtd` is denominated in. The metric name
+    # says usd, ProjectSloSensor compares it against `cost_ceiling_usd`, and
+    # the platform has no FX rates; a SKU priced in anything else is therefore
+    # a price this metric cannot carry, not a price to convert.
+    COST_CURRENCY = "USD"
+
+    # APO-2c — the replica statuses a provider actually CHARGES COMPUTE for.
+    # NodeInstance::LIVE_REPLICA_STATUSES is a CAPACITY scope, deliberately
+    # wide so replica_count and the utilization means describe one fleet; it
+    # also spans `pending`/`provisioning` (the VM may not exist at the provider
+    # yet) and `stopped` (powered off — no instance-hour charge). Billing those
+    # at the full catalog rate would OVERSTATE spend and fabricate exactly the
+    # breach this metric exists to report honestly: a fleet stopped on the 2nd
+    # TO SAVE MONEY would trip its own ceiling on the 30th. The transitional
+    # states DO bill — the VM exists and is powered on through them.
+    #
+    # A capacity scope is not a billing scope; reusing it for a money question
+    # is the category error, so the two sets are named separately.
+    COST_ACCRUING_STATUSES = %w[running starting stopping rebooting].freeze
+
+    COST_NO_LIVE_NOTE = "the mission has no live replicas to accrue cost for " \
+                        "(replica_count carries that fact)"
+    COST_UNPRICED_NOTE = "at least one accruing replica has no resolvable #{COST_CURRENCY} hourly " \
+                         "rate (no provider_instance_type, no hourly_price in the catalog, a rate " \
+                         "of 0 on a billed provider, or a rate quoted in another currency) " \
+                         "\u2014 a partial sum would understate month-to-date spend and suppress " \
+                         "a real ceiling breach"
+    # Published on every LIVE cost sample. The accrual's two blind spots are
+    # real and the operator must be able to see them: see #sample_cost_usd_mtd.
+    COST_ACCRUAL_NOTE = "month-to-date accrual over the replicas STANDING NOW in a billed state. " \
+                        "The platform records no instance state-transition history, so a replica " \
+                        "torn down earlier this month contributes nothing (under-count) and a " \
+                        "replica billed now that was stopped for part of the month is charged for " \
+                        "the whole window (over-count) \u2014 compare instance_count, " \
+                        "non_accruing_instance_count and provisioned_instance_count"
 
     # The metric this collector samples from Sdwan::Peer counters. Named once
     # so the sampler, the unit table and the state key cannot drift apart.
@@ -159,7 +194,11 @@ module System
     #     mission's live replicas — see #sample_availability_pct. This is the
     #     only sample that can tell DOWN from SLOW: a utilization metric of a
     #     node that stopped reporting merely goes stale.
-    #   - cost_usd_mtd: billing engine MTD aggregation
+    #   - cost_usd_mtd: WIRED (APO-2c), from the provider pricing catalog
+    #     multiplied by this month's accrued instance-hours — see
+    #     #sample_cost_usd_mtd. NOT a billing-engine invoice: the platform has
+    #     no billing engine, and this is the accrual an operator's declared
+    #     `cost_ceiling_usd` is checked against.
     def sample_all
       instance_ids = resolvable_instance_ids
       METRIC_TYPE_MAP.keys.each_with_object({}) do |metric_name, samples|
@@ -179,6 +218,7 @@ module System
       when "memory_pct"      then sample_memory_pct(instance_ids)
       when "cpu_pct"         then sample_cpu_pct(instance_ids)
       when "availability_pct" then sample_availability_pct(instance_ids)
+      when "cost_usd_mtd"     then sample_cost_usd_mtd(instance_ids)
       else unavailable_sample(metric_name)
       end
     end
@@ -597,6 +637,171 @@ module System
       )
     end
 
+    # APO-2c — cost_usd_mtd: this month's accrued spend for the mission,
+    # the input `system.project_cost_breach` never had. The signal's whole
+    # lane existed (ProjectSloSensor#cost_breach_signal, DecisionEngine's
+    # SIGNAL_BINDINGS row and its remediation applier) but nothing produced
+    # the observation, so `return nil if observed.nil?` meant no budget on any
+    # mission could ever trip it.
+    #
+    # WHAT THE NUMBER MEANS: sum over the mission's ACCRUING replicas of
+    # (that replica's USD hourly rate) x (its hours inside the current
+    # calendar month). It is an ACCRUAL computed from the provider pricing
+    # catalog, not an invoice — the platform has no billing engine, and an
+    # operator's `cost_ceiling_usd` is a declaration about this fleet's own
+    # spend, which is exactly what this measures.
+    #
+    # ONLY THE REPLICAS A PROVIDER CHARGES COMPUTE FOR (see
+    # COST_ACCRUING_STATUSES). The capacity scope .live_replicas is not a
+    # billing scope: it also holds `pending`/`provisioning` (no VM at the
+    # provider yet) and `stopped` (powered off), and charging those the full
+    # catalog rate would fabricate the very breach this metric is here to
+    # report honestly. Non-accruing replicas still ride the sample as
+    # `non_accruing_instance_count`, so the fleet view stays whole.
+    #
+    # WHAT IT CANNOT SEE, DISCLOSED ON EVERY LIVE SAMPLE (COST_ACCRUAL_NOTE).
+    # The platform records no instance state-transition history — no
+    # termination timestamp, no stop/start ledger; `updated_at` moves on every
+    # later write and dates nothing in particular. So the accrual is wrong in
+    # BOTH directions at the edges: a replica torn down earlier this month
+    # contributes nothing (under-count), and a replica billed now that spent
+    # part of the month stopped is charged for the whole window (over-count).
+    # It is therefore an ESTIMATE, not a bound, and it is not called one. The
+    # alternative — refusing to publish at all once the record is imperfect —
+    # would return the metric to permanent silence for every mission that has
+    # ever replaced or cycled an instance, i.e. reinstate the defect this
+    # sampler exists to fix. Closing either gap needs a state-transition
+    # timestamp on NodeInstance, at which point #billable_hours is the one
+    # place that changes.
+    #
+    # FULL COVERAGE OR NOTHING over the replicas it does bill, on the same
+    # rule as sample_sdwan_throughput and for the mirror-image reason. A
+    # ceiling breach fires on `observed > target`, so DROPPING an unpriced
+    # accruing replica from the sum can only ever lower it and therefore only
+    # ever SUPPRESS a real breach — silently, in the one case a budget guard
+    # is for. So an unpriced ACCRUING replica takes the whole sample to
+    # `unavailable` (the operator's fix is a catalog rate, and the count
+    # points at it), never to a partial number wearing `source: "live"`. A
+    # non-accruing replica is exempt: it contributes a real zero whatever the
+    # catalog says about its SKU, so its missing rate blanks nothing.
+    #
+    # A LOCAL-HYPERVISOR REPLICA IS A REAL ZERO, not an unknown: it accrues no
+    # provider charge, so it neither adds to the sum nor poisons it. Which
+    # providers those are is CORE's judgement
+    # (Ai::Provisioning::CostEstimatorService::LOCAL_PROVIDER_TYPES, which the
+    # plan-time quote already prices at zero), read rather than re-declared —
+    # two opinions about which hardware is free would let the forecast and the
+    # accrual disagree about the same fleet.
+    def sample_cost_usd_mtd(instance_ids)
+      return unavailable_sample("cost_usd_mtd", "mission has no resolvable instances") if instance_ids.empty?
+
+      instances = live_mission_instances(instance_ids)
+      accruing = instances.select { |instance| COST_ACCRUING_STATUSES.include?(instance.status.to_s) }
+      coverage = {
+        "instance_count" => instances.size,
+        "provisioned_instance_count" => instance_ids.size,
+        "non_accruing_instance_count" => instances.size - accruing.size
+      }
+      return unavailable_sample("cost_usd_mtd", COST_NO_LIVE_NOTE).merge(coverage) if instances.empty?
+
+      now = Time.current
+      window_start = now.beginning_of_month
+
+      unpriced = 0
+      total = accruing.sum do |instance|
+        hourly = hourly_rate_for(instance)
+        if hourly.nil?
+          unpriced += 1
+          next 0.0
+        end
+        hourly * billable_hours(instance, window_start, now)
+      end
+
+      coverage = coverage.merge(
+        "unpriced_instance_count" => unpriced,
+        "window_start" => window_start.iso8601
+      )
+
+      if unpriced.positive?
+        return unavailable_sample("cost_usd_mtd", COST_UNPRICED_NOTE).merge(coverage)
+      end
+
+      # `currency` rides only samples the metric could actually denominate: on
+      # an unavailable row there is no figure to denominate, and the non-USD
+      # case would be told in USD the very thing it could not be told in.
+      live_sample("cost_usd_mtd", total.round(2))
+        .merge(coverage)
+        .merge("currency" => COST_CURRENCY, "note" => COST_ACCRUAL_NOTE)
+    end
+
+    # Hours this instance has been accruing INSIDE the current month.
+    # `created_at` is the only start the platform records, clamped to the
+    # month boundary so an instance running since March bills 1st-to-now
+    # rather than its whole life. A start in the future (clock skew, a
+    # backdated fixture) bills nothing rather than a negative.
+    #
+    # Called only for a replica that is accruing NOW, and there is no ledger
+    # of when it started and stopped being so — a replica that was down for
+    # part of the month is billed for it. This method is the single place a
+    # state-transition timestamp would land; see #sample_cost_usd_mtd.
+    def billable_hours(instance, window_start, now)
+      started = instance.created_at
+      return 0.0 if started.nil?
+
+      from = [ started, window_start ].max
+      return 0.0 if from >= now
+
+      (now - from).to_f / 1.hour
+    end
+
+    # This instance's USD hourly rate, or nil when the catalog cannot price it
+    # — which takes the whole sample to `unavailable` (see the caller).
+    #
+    # Memoized per (SKU, region) pair: a homogeneous fleet is the normal case
+    # and #pricing_row_for issues a query, which would otherwise run once per
+    # replica on every 60s tick.
+    def hourly_rate_for(instance)
+      key = [ instance.provider_instance_type_id, instance.provider_region_id ]
+      @hourly_rates ||= {}
+      return @hourly_rates[key] if @hourly_rates.key?(key)
+
+      @hourly_rates[key] = resolve_hourly_rate(instance)
+    end
+
+    # ZERO IS NOT A PRICE on a billed provider. Compute costs something, so a
+    # 0 (or absent) rate is an unpopulated catalog row, and treating it as
+    # free would let a whole unpriced fleet report $0.00 as a LIVE reading —
+    # the fabricated zero every other sampler here refuses. Core's plan-time
+    # quote makes the same call (`compute_unpriced = compute_monthly <= 0`).
+    # The one legitimate zero is local hardware, handled above it.
+    def resolve_hourly_rate(instance)
+      type = instance.provider_instance_type
+      return nil unless type
+      return 0.0 if local_hardware?(type)
+
+      row = type.pricing_row_for(instance.provider_region)
+      return nil unless row
+      return nil unless row.effective_currency.to_s.casecmp(COST_CURRENCY).zero?
+
+      rate = row.hourly_price.to_f
+      rate.positive? ? rate : nil
+    rescue StandardError => e
+      Rails.logger.warn("[ProjectMetricsCollector] pricing lookup failed for instance=#{instance.id}: " \
+                        "#{e.class}: #{e.message}")
+      nil
+    end
+
+    def local_hardware?(type)
+      return false unless defined?(::Ai::Provisioning::CostEstimatorService)
+
+      provider = type.provider
+      return false unless provider
+
+      ::Ai::Provisioning::CostEstimatorService::LOCAL_PROVIDER_TYPES.include?(provider.provider_type.to_s)
+    rescue StandardError
+      false
+    end
+
     # The mission's live replicas, loaded ONCE per collect!.
     #
     # .live_replicas for the SAME reason sample_region_count shares it: a
@@ -604,7 +809,9 @@ module System
     # replica_count did not would describe two different fleets in the same
     # breath — and an out-of-memory node's last reading is exactly the one that
     # would skew a mean. .includes keeps available_memory_mb's
-    # provider_instance_type lookup off the 60s tick's N+1 path.
+    # provider_instance_type lookup — and, since APO-2c, the cost sampler's
+    # walk to that type's provider and to the instance's region — off the 60s
+    # tick's N+1 path.
     #
     # Memoized because three samplers now ask for the same set in one tick;
     # re-querying would also let them disagree about the fleet mid-tick. Keyed
@@ -615,7 +822,8 @@ module System
       @live_mission_instances[instance_ids] ||= ::System::NodeInstance
                                                .where(id: instance_ids)
                                                .live_replicas
-                                               .includes(:provider_instance_type)
+                                               .includes(:provider_region,
+                                                         provider_instance_type: :provider)
                                                .to_a
     end
 
