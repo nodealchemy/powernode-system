@@ -20,23 +20,25 @@ require "yaml"
 #     `lifecycle_class`; no serializer under server/app/serializers/ mentions it.
 #   * NOT FILTERABLE. `system_list_nodes` declares exactly one parameter,
 #     `template_id`, and `list_nodes` has exactly one where-clause.
-#   * BUT IT IS WRITTEN, and writing "nothing sets it" is the mistake this
-#     guard exists to stop — that exact sentence was wrong once already.
-#     `InstancePoolService#provision_warming_member!` creates each pool
-#     member's Node with `lifecycle_class: pool.lifecycle_class`, and
-#     System::InstancePool is CHECK-constrained to ephemeral|spot, so a pool
-#     member is never `persistent`. That path runs unattended
-#     (InstancePoolReplenisherJob, a 60s cron).
-#   * TWO MORE WRITERS, both already on the record — 9c7f7c00 named them in
-#     docs/runbooks/node-provisioning.md:145-149, and an earlier draft of this
-#     header wrongly claimed the orchestrator as a new find.
-#     PlatformDeploymentOrchestrator creates a Node with
-#     `lifecycle_class: "persistent"` and db/seeds/example_multi_tenant.rb
-#     writes the column directly; both write the DB default, so neither changes
-#     an observable. What is new here is not the writers but the ENUMERATION:
-#     "an InstancePool is the only writer" is false as stated, and the examples
-#     below are what keep the docs' "only path" sentence honest if a third
-#     writer appears.
+#   * AND, SINCE IMP-19843220ac68, NOT WRITTEN EITHER — but "nothing sets it"
+#     is still a sentence to write carefully, because it was wrong twice
+#     before. Until that change `InstancePoolService#provision_warming_member!`
+#     created each pool member's Node with `lifecycle_class:
+#     pool.lifecycle_class` (System::InstancePool being CHECK-constrained to
+#     ephemeral|spot, so a pool member was never `persistent`) on an unattended
+#     path — InstancePoolReplenisherJob, a 60s cron — and
+#     PlatformDeploymentOrchestrator wrote the literal "persistent". The
+#     wire-or-retire fork was settled as RETIRE: both writes are gone and the
+#     column is nullable with a NULL default, so a Node created today carries
+#     nil rather than a confident wrong answer. The examples below are the
+#     ENUMERATION that keeps that sentence honest — they redden if ANY writer
+#     reappears under server/app.
+#   * ONE WRITER SURVIVES, out of scope on purpose: db/seeds/example_multi_tenant.rb
+#     writes the column directly through find_or_initialize_by +
+#     assign_attributes, defaulted to "persistent". It is a dev seed, not an
+#     operator path, and it is swept by the column DROP (step 2) together with
+#     the CHECK constraint and the index. Its shape has its own example below,
+#     BECAUSE the create!-shaped scan cannot see it.
 #
 # GUARD SHAPE, and what it can and cannot see. Stated up front because the
 # spec this one sits beside failed in exactly this way: docs/tutorials/
@@ -289,11 +291,21 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
     end
   end
 
-  describe "the writers (why 'nothing sets it' is the wrong correction)" do
-    it "has the pool service creating each member Node with the pool's class" do
+  describe "the writers (there are none left in server/app)" do
+    # IMP-19843220ac68 retired the column: both application writers were
+    # stopped in the same change that made it nullable with a NULL default.
+    # This example is the inverse of the one it replaces, which asserted the
+    # pool service created each member with `lifecycle_class:
+    # pool.lifecycle_class`. The DB half — default gone, nil on create — is
+    # pinned by spec/models/system/node_lifecycle_class_retirement_spec.rb.
+    it "has the pool service creating each member Node without a lifecycle class" do
       src = self.class.read(ext_root, "server/app/services/system/instance_pool_service.rb")
       create = src[/::System::Node\.create!\((.*?)\n      \)/m, 1]
-      expect(create).to include("lifecycle_class: pool.lifecycle_class")
+      expect(create).not_to be_nil, "member constructor not found — this check is vacuous"
+      expect(create).not_to include("lifecycle_class")
+      # PRESENCE half: the pool stays reachable from the member, which is what
+      # makes dropping the copy safe rather than merely tidy.
+      expect(create).to include('"instance_pool_id" => pool.id')
     end
 
     it "constrains a pool to ephemeral|spot, and a Node to those plus persistent" do
@@ -303,34 +315,35 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
       expect(node[/LIFECYCLE_CLASSES = %w\[([^\]]+)\]/, 1].split).to eq(%w[persistent ephemeral spot])
     end
 
-    # The enumeration that keeps the docs' "only path" sentence honest. A THIRD
-    # writer reddens this and sends the author back to the prose.
+    # The enumeration that keeps the docs' "no path sets it" sentence honest. A
+    # NEW writer reddens this and sends the author back to the prose.
     #
     # Balanced-paren over the ARGUMENT LIST, not a file-level co-occurrence
     # test: the first draft of this example was file-level and named
     # system_fleet_tool.rb, which contains a `System::Node.create!` and a
     # `lifecycle_class:` that are in different methods and have nothing to do
     # with each other. `create_node` merges a six-field `params.slice` and sets
-    # the column on nothing.
-    it "has exactly two System::Node writers of the column in server/app" do
+    # the column on nothing. That parse is also why the RETIREMENT comments now
+    # sitting above both former writers — which name the column in prose — do
+    # not read as writes: they are outside the argument list.
+    it "has no System::Node writer of the column left in server/app" do
+      scanned = Dir.glob(File.join(ext_root, "server/app/**/*.rb")).sum do |f|
+        self.class.node_create_arguments(File.read(f)).length
+      end
+      expect(scanned).to be > 0, "no System::Node.create! sites found — this check is vacuous"
+
       files = Dir.glob(File.join(ext_root, "server/app/**/*.rb")).select do |f|
         self.class.node_create_arguments(File.read(f)).any? { |a| a.include?("lifecycle_class:") }
       end
-      expect(files.map { |f| f.sub("#{ext_root}/", "") }.sort).to eq(
-        %w[
-          server/app/services/system/instance_pool_service.rb
-          server/app/services/system/platform_deployment_orchestrator.rb
-        ]
-      )
-      # Read the CONSTRUCTOR ARGUMENTS, not the file. `expect(orch).to
-      # include('lifecycle_class: "persistent"')` was a file-level
-      # co-occurrence test — the very shape the comment above says it rejected
-      # — and survived the create! being changed to "spot" with "persistent"
-      # left behind in a comment.
+      expect(files.map { |f| f.sub("#{ext_root}/", "") }.sort).to eq([])
+
+      # Named individually: the orchestrator wrote the literal "persistent" —
+      # the old DB default, so it moved no observable — and a revert of that
+      # one line specifically must be reported by name, not as a count.
       orch = self.class.read(ext_root, "server/app/services/system/platform_deployment_orchestrator.rb")
-      args = self.class.node_create_arguments(orch).select { |a| a.include?("lifecycle_class:") }
-      expect(args.length).to eq(1)
-      expect(args.first[/lifecycle_class: "(\w+)"/, 1]).to eq("persistent")
+      orch_args = self.class.node_create_arguments(orch)
+      expect(orch_args).not_to be_empty, "orchestrator constructor not found — this check is vacuous"
+      expect(orch_args.select { |a| a.include?("lifecycle_class:") }).to be_empty
     end
 
     # The `create!` scan above cannot see an `assign_attributes` writer, and
@@ -399,11 +412,14 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
       # A pointer is not the thing it points at.
       expect(doc.lines.grep(/\A### How `lifecycle_class` is actually set\s*\z/).length).to eq(1)
       expect(self.class.absent(doc, [
-        /defaults to `persistent`/,
+        /nullable with no default/,
         /`System::InstancePool`/,
-        /instance_pool_service\.rb:1190-1206/,
+        /provision_warming_member!/,
         /InstancePoolReplenisherJob/,
-        /Nothing reads it/
+        /Nothing reads it/,
+        # The pairing is the whole point of the change: a reader who takes
+        # "stop the writes" without "remove the default" reintroduces the bug.
+        /removing the default in the same change/
       ])).to be_empty
     end
 
@@ -432,17 +448,20 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
 
     # M1 from review. The three containment patterns above all name `ephemeral`
     # or an imperative; NONE matches `Node.lifecycle_class = "persistent"`. So
-    # the two sites whose value happens to BE the default carried nothing but a
+    # the two sites whose value was the old DB default carried nothing but a
     # parenthetical, and deleting that parenthetical reddened nothing — leaving
     # a bare `Node.lifecycle_class = "persistent"` under a **Setup** heading,
     # which is an instruction again. Classifying them as descriptions is what
-    # left them unpinned, so the annotation itself is what gets pinned.
+    # left them unpinned, so the annotation itself is what gets pinned. The
+    # annotation's WORDING moved with IMP-19843220ac68 — "DB default" became
+    # "retired column", because there is no default any more and a pin that
+    # keeps mandating the old phrasing would keep a false claim in the doc.
     {
       "the Use Case 7 persistent assignment" => [
-        /^\s*Node\.lifecycle_class = "persistent"/, /DB default — nothing to set/
+        /^\s*Node\.lifecycle_class = "persistent"/, /retired column — nothing to set/
       ],
       "the Use Case 2 persistent bullet" => [
-        /^\/\/\s*- lifecycle_class: persistent/, /DB default — not settable, nothing to do/
+        /^\/\/\s*- lifecycle_class: persistent/, /retired column — not settable, nothing to do/
       ]
     }.each do |label, (site, annotation)|
       it "keeps #{label} annotated as a default, not a step" do

@@ -1187,20 +1187,25 @@ module System
       # pre-create it because provision_instance always creates a
       # fresh row (calling it on an existing instance would either
       # double-up or no-op, neither of which is what we want).
+      # THE MEMBER NODE NO LONGER CARRIES A COPY OF THE POOL'S CLASS.
+      # IMP-19843220ac68 retired `system_nodes.lifecycle_class`: this method
+      # used to write `pool.lifecycle_class` onto the member, which was legal
+      # only because System::InstancePool::LIFECYCLE_CLASSES is a strict subset
+      # of System::Node::LIFECYCLE_CLASSES (still guarded in
+      # spec/models/system/lifecycle_class_value_space_spec.rb, since the node
+      # CHECK constraint outlives this write by one deploy window). It was a
+      # SNAPSHOT, never a view — rotating pool.lifecycle_class afterwards
+      # (GitOps apply_pool "update" carries it) left the copy not refreshed on
+      # members already created — and nothing anywhere read it.
+      #
+      # The pool row is authoritative and stays reachable from the member
+      # through `config["instance_pool_id"]` below, which is the value any
+      # future lifecycle short-circuit must read. Do not reintroduce the copy;
+      # spec/models/system/node_lifecycle_class_retirement_spec.rb reddens on it.
       node = ::System::Node.create!(
         account: account,
         name: "#{pool.name}-pool-#{Time.current.to_i}-#{slot_index}",
         node_template: pool.node_template,
-        # The pool's class, copied onto the member Node. Two things about this
-        # copy. It is only legal because System::InstancePool::LIFECYCLE_CLASSES
-        # is a subset of System::Node::LIFECYCLE_CLASSES (guarded in
-        # spec/models/system/lifecycle_class_value_space_spec.rb) — the node
-        # column carries a CHECK constraint that a pool-only value would violate.
-        # And it is a SNAPSHOT: rotating pool.lifecycle_class later (GitOps
-        # apply_pool "update" permits it) leaves this value not refreshed on
-        # members already created, so nothing should treat a Node's copy as
-        # authoritative — read the pool.
-        lifecycle_class: pool.lifecycle_class,
         enabled: true,
         config: { "instance_pool_id" => pool.id }
       )

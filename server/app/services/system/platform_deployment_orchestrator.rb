@@ -231,13 +231,17 @@ module System
       return existing if existing
 
       auto_node_name = "#{params[:name]}-node-#{Time.current.to_i.to_s(36)}"
+      # No lifecycle attribute. IMP-19843220ac68 retired
+      # `system_nodes.lifecycle_class`; this call used to write the literal
+      # "persistent", which was the DB default and therefore moved nothing, and
+      # the column is now nullable with a NULL default so an auto-created Node
+      # simply asserts nothing about its lifetime. Nothing read the column.
       ::System::Node.create!(
         account: @account,
         node_template: template,
         name: auto_node_name,
         description: "Auto-created by PlatformDeploymentOrchestrator for deployment #{params[:name]}",
         enabled: true,
-        lifecycle_class: "persistent",
         config: {}
       )
     rescue ActiveRecord::RecordInvalid => e

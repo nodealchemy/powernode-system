@@ -5,20 +5,24 @@ require "rails_helper"
 # IMP-2fc66d5b7e00 — three tables carried a column called `lifecycle_class` and
 # the three did NOT share a value space:
 #
-#   system_nodes           persistent|ephemeral|spot   NOT NULL, default persistent, CHECK
+#   system_nodes           persistent|ephemeral|spot   nullable, NO default, CHECK
 #   system_instance_pools  ephemeral|spot              NOT NULL, default ephemeral,  CHECK
 #   system_node_instances  task_scoped (and NULL)      nullable, NO check constraint
 #
 # Two separate facts live here, and they have different verdicts.
 #
-# (1) NODE vs POOL is deliberate LAYERING, and it is load-bearing.
-#     `InstancePoolService#provision_warming_member!` writes
+# (1) NODE vs POOL was deliberate LAYERING, and it was load-bearing until
+#     IMP-19843220ac68. `InstancePoolService#provision_warming_member!` wrote
 #     `lifecycle_class: pool.lifecycle_class` onto the member's Node, so every
-#     value a pool may hold must ALSO be a value a Node may hold. That holds
-#     today, but nothing enforced it — two frozen literals in two files that
-#     happen to nest. A `persistent` pool is a contradiction (you do not warm
-#     and replenish a machine you intend to keep), so the pool set being a
-#     STRICT subset is correct; the missing part was the guard.
+#     value a pool may hold had to ALSO be a value a Node may hold — and
+#     nothing enforced it, just two frozen literals in two files that happened
+#     to nest. A `persistent` pool is a contradiction (you do not warm and
+#     replenish a machine you intend to keep), so the pool set being a STRICT
+#     subset is correct; the missing part was the guard. The COPY is now gone
+#     (the node column is being retired, step 1: writes stopped, default NULL),
+#     but the invariant is still required, because the node CHECK constraint
+#     and both constants outlive the write by one deploy window and a revert of
+#     the write must not find a narrowed node value space waiting for it.
 #
 # (2) NODE_INSTANCE was a DIFFERENT AXIS wearing the same name. `task_scoped`
 #     answers "why was this instance leased" (fulfillment reaper provenance),
@@ -33,14 +37,17 @@ require "rails_helper"
 #     spec/models/system/node_instance_lease_class_spec.rb, which must move
 #     with this file.
 #
-# THE NODE COLUMN IS A SNAPSHOT, NOT A VIEW — pinned below by execution. A
-# pool's `lifecycle_class` is rotatable after members exist (GitOps
-# `apply_pool` "update" carries it in POOL_SCALAR_KEYS), and rotating it does
-# NOT touch the copies already written onto member Nodes. So the Node column is
-# not an unwired intent record waiting for a consumer; where it is non-default
-# it is a denormalised duplicate that can already disagree with the row it was
-# copied from. Anything that ever wants to branch on a machine's lifecycle
-# should read the pool, which is authoritative.
+# THE NODE COLUMN WAS A SNAPSHOT, NOT A VIEW — pinned below by execution, and
+# the reason the retirement decision went the way it did. A pool's
+# `lifecycle_class` is rotatable after members exist (GitOps `apply_pool`
+# "update" carries it in POOL_SCALAR_KEYS), and rotating it does NOT touch
+# copies written onto member Nodes. So the Node column was never an unwired
+# intent record waiting for a consumer; where it was non-default it was a
+# denormalised duplicate that could already disagree with the row it came from.
+# Anything that wants to branch on a machine's lifecycle reads the pool, which
+# is authoritative and reachable from a member via config["instance_pool_id"].
+# The example below still drives the real rotation arm against a hand-built
+# member, because propagation added later would be just as wrong as the copy.
 #
 # WHAT THIS GUARD CAN SEE:
 #   - either model's LIFECYCLE_CLASSES drifting, by literal wire value (a
@@ -50,10 +57,12 @@ require "rails_helper"
 #   - a check constraint being widened, narrowed, or added to
 #     system_node_instances.lease_class;
 #   - `task_scoped` becoming acceptable to Node or InstancePool;
-#   - the pool→node copy silently becoming live: the snapshot example drives
+#   - a pool→node propagation being introduced: the snapshot example drives
 #     the REAL rotation arm, System::Gitops::ApplyService#apply_pool "update",
 #     so propagation added either there or as an InstancePool callback reddens
-#     it;
+#     it. (The create-time COPY it originally guarded is gone; that the member
+#     constructor no longer writes the column at all is pinned by
+#     spec/models/system/node_lifecycle_class_retirement_spec.rb.);
 #   - the divergence note being stripped from any of the four sites that
 #     define or write one of these columns.
 #
@@ -67,15 +76,15 @@ require "rails_helper"
 #   - anything about the Go agent or the frontend, neither of which mentions
 #     the column at all.
 #   - the member Node being created the way production creates it. The snapshot
-#     example hand-builds the member with the attributes
-#     `InstancePoolService#provision_warming_member!` writes, because that
-#     method synchronously provisions a cloud VM. The attributes it writes are
-#     pinned separately, by parsing the call, in
-#     spec/docs/node_lifecycle_class_docs_accuracy_spec.rb:294-296.
+#     example hand-builds a member carrying an explicit value, because
+#     `InstancePoolService#provision_warming_member!` synchronously provisions a
+#     cloud VM — and, since IMP-19843220ac68, no longer writes the column at
+#     all. What that method does write is pinned by parsing the call, in
+#     spec/models/system/node_lifecycle_class_retirement_spec.rb.
 #
-# SIBLING GUARD: spec/docs/node_lifecycle_class_docs_accuracy_spec.rb:299-303
-# pins the SAME two LIFECYCLE_CLASSES literals by parsing the source files.
-# Both files must move together when a value space legitimately changes.
+# SIBLING GUARD: spec/docs/node_lifecycle_class_docs_accuracy_spec.rb pins the
+# SAME two LIFECYCLE_CLASSES literals by parsing the source files. Both files
+# must move together when a value space legitimately changes.
 
 module LifecycleClassValueSpace
   SERVER_ROOT = File.expand_path("../../..", __dir__)
@@ -93,9 +102,14 @@ module LifecycleClassValueSpace
       anchor: "LIFECYCLE_CLASSES = %w[ephemeral spot].freeze",
       tokens: [ "system_nodes", "persistent", "System::Node::LIFECYCLE_CLASSES" ]
     },
+    # This site USED to be the pool->node copy itself
+    # (`lifecycle_class: pool.lifecycle_class,`). IMP-19843220ac68 retired the
+    # copy, so the anchor moved to the member-Node constructor it was an
+    # argument of — the place a reader would reintroduce it, and the place that
+    # now records why it must not be.
     "app/services/system/instance_pool_service.rb" => {
-      anchor: "lifecycle_class: pool.lifecycle_class,",
-      tokens: [ "System::Node::LIFECYCLE_CLASSES", "not refreshed" ]
+      anchor: "node = ::System::Node.create!(",
+      tokens: [ "System::Node::LIFECYCLE_CLASSES", "not refreshed", "IMP-19843220ac68" ]
     },
     "app/services/system/fulfillment_advance_orchestrator.rb" => {
       anchor: "attrs[:lease_class]",
@@ -192,7 +206,11 @@ RSpec.describe "lifecycle_class value spaces across system_nodes / system_instan
     end
   end
 
-  describe "the node/pool layering invariant that provision_warming_member! depends on" do
+  # The invariant provision_warming_member! USED to depend on. It outlives the
+  # copy: the node CHECK constraint and both constants survive step 1 of the
+  # retirement, so a narrowed node value space would be a landmine for any
+  # revert, and for the explicit writes specs and seeds still make.
+  describe "the node/pool layering invariant the retired member copy depended on" do
     it "keeps the pool value space a STRICT subset of the node value space" do
       pool_set = ::System::InstancePool::LIFECYCLE_CLASSES
       node_set = ::System::Node::LIFECYCLE_CLASSES
@@ -241,7 +259,7 @@ RSpec.describe "lifecycle_class value spaces across system_nodes / system_instan
     end
   end
 
-  describe "the node copy is a snapshot of the pool value, not a view of it" do
+  describe "a node value never follows the pool it was copied from" do
     let(:gitops_agent) { create(:ai_agent, account: account, slug: "gitops-#{SecureRandom.hex(4)}") }
 
     # The real rotation arm. REST (`instance_pools_controller` update_params)
@@ -249,7 +267,9 @@ RSpec.describe "lifecycle_class value spaces across system_nodes / system_instan
     # lifecycle_class on update, so an approved GitOps pool diff is the ONE
     # post-create path that can rotate a pool's class. Driving it — rather than
     # calling pool.update! — is what makes this example able to see propagation
-    # if someone later adds it inside apply_pool.
+    # if someone later adds it inside apply_pool. Production no longer creates
+    # such a copy at all; this pins that reviving the copy by the back door
+    # would be no better than the front one.
     def gitops_pool_update!(pool, lifecycle_class:)
       proposal = ::Ai::AgentProposal.create!(
         account: account, ai_agent_id: gitops_agent.id,
@@ -266,8 +286,8 @@ RSpec.describe "lifecycle_class value spaces across system_nodes / system_instan
 
     it "does not follow the pool when GitOps rotates the pool's lifecycle_class" do
       pool = pool!(lifecycle_class: "ephemeral")
-      # Built with the attributes provision_warming_member! writes; see the
-      # WHAT IT CANNOT SEE note above for why it is not driven through it.
+      # Hand-built with an explicit value — provision_warming_member! no longer
+      # writes one; see the WHAT IT CANNOT SEE note above.
       member = ::System::Node.create!(
         account: account,
         node_template: node_template,
