@@ -101,6 +101,14 @@ module Ai
         "system_instance_hold"          => "system.instances.control",
         "system_instance_release_hold"  => "system.instances.control",
         "system_drift_report"           => "system.node_instances.read",
+        # IMP-ca485128072e (APO-2e) — sensor thresholds are operator
+        # configuration for the fleet autonomy loop, so they take the fleet
+        # family: read on system.fleet.read (the same grant that shows fleet
+        # signals), write on system.fleet.manage. NOT system.fleet.autonomy —
+        # that name is catalogued worker-only, so an admin operator would be
+        # refused on the one surface built for them.
+        "system_get_sensor_config"      => "system.fleet.read",
+        "system_update_sensor_config"   => "system.fleet.manage",
         "system_list_tasks"             => "system.infra_tasks.read",
         "system_get_task"               => "system.infra_tasks.read",
 
@@ -496,6 +504,7 @@ module Ai
       declare_action "system_get_node", mutating: false
       declare_action "system_get_provider", mutating: false
       declare_action "system_get_silent_instances", mutating: false
+      declare_action "system_get_sensor_config", mutating: false
       declare_action "system_get_storage_migration", mutating: false
       declare_action "system_get_storage_recommendations", mutating: false
       declare_action "system_get_task", mutating: false
@@ -570,6 +579,7 @@ module Ai
       declare_action "system_update_node", mutating: true
       declare_action "system_update_provider", mutating: true
       declare_action "system_update_storage_recommendations", mutating: true
+      declare_action "system_update_sensor_config", mutating: true
       declare_action "system_update_template", mutating: true
       declare_action "system_update_template_module", mutating: true
       declare_action "system_update_volume", mutating: true
@@ -1465,9 +1475,27 @@ module Ai
             }
           },
           "system_get_silent_instances" => {
-            description: "List NodeInstances whose last_heartbeat_at is older than the SILENT_THRESHOLD (3 minutes), or null. Aligned with InstanceStatusSensor. Useful for fleet-health dashboards and pre-upgrade gates.",
+            description: "List NodeInstances whose last_heartbeat_at is older than this account's configured silent threshold (system_get_sensor_config -> instance_status.silent_threshold_seconds; 180s by default), or null. Reports the threshold it used. Useful for fleet-health dashboards and pre-upgrade gates.",
             parameters: {
-              threshold_seconds: { type: "integer", required: false, description: "Override the 3-minute default; useful for dashboards with custom alert thresholds" }
+              threshold_seconds: { type: "integer", required: false, description: "Ask a different question than the sensor does; omit to use the account's configured silent threshold" }
+            }
+          },
+          # IMP-ca485128072e (APO-2e) — the pair docs/FLEET_SENSORS.md has
+          # documented since the sensor section was written. Values are
+          # SECONDS throughout, so one verb describes every sensor without a
+          # per-key unit; the read reports defaults/overrides/effective
+          # separately so an operator can see which values they own.
+          "system_get_sensor_config" => {
+            description: "Read fleet sensor thresholds for this account: the class-constant defaults, the stored overrides, and the effective values in use. Omit `sensor` to list every configurable sensor. All values are seconds or plain counts.",
+            parameters: {
+              sensor: { type: "string", required: false, description: "Sensor key (e.g. instance_status, instance_unrecoverable). Omit to list every configurable sensor." }
+            }
+          },
+          "system_update_sensor_config" => {
+            description: "Set fleet sensor threshold overrides for this account. Partial merge — only supplied keys change; pass a key with null to drop the override and fall back to the platform default. Rejects keys the sensor does not declare and non-positive values. Example: { sensor: \"instance_status\", config: { silent_threshold_seconds: 600 } }.",
+            parameters: {
+              sensor: { type: "string", required: true, description: "Sensor key to tune (see system_get_sensor_config for the list and each sensor's declared keys)" },
+              config: { type: "object", required: true, description: "Threshold overrides to merge, e.g. { silent_threshold_seconds: 600 }. A null value removes that override." }
             }
           },
           "system_validate_module_manifest" => {
@@ -1941,6 +1969,9 @@ module Ai
         # Gap remediation slice 1 (Phase 4)
         when "system_drain_instance"           then drain_instance(params)
         when "system_get_silent_instances"     then get_silent_instances(params)
+        # IMP-ca485128072e (APO-2e) — operator-tunable sensor thresholds.
+        when "system_get_sensor_config"        then get_sensor_config(params)
+        when "system_update_sensor_config"     then update_sensor_config(params)
         when "system_validate_module_manifest" then validate_module_manifest(params)
         # Gap remediation slice 2 — CVE catalog + module assignment cleanup
         when "system_get_cve"                       then get_cve(params)
@@ -4504,6 +4535,89 @@ module Ai
         success_result(probe: out)
       end
 
+      # IMP-ca485128072e (APO-2e) — sensor threshold configuration.
+      #
+      # The sensor catalog is DERIVED from FleetAutonomyService::SENSORS, not
+      # restated here: a sensor absent from the tick registry never runs, so
+      # accepting a tuning for it would store configuration that can never
+      # take effect and would read, to an operator, exactly like one that did.
+      def configurable_sensors
+        ::System::Fleet::FleetAutonomyService::SENSORS.select do |klass|
+          klass.respond_to?(:default_thresholds) && klass.default_thresholds.present?
+        end
+      end
+
+      def sensor_config_view(klass)
+        {
+          sensor: klass.sensor_key,
+          sensor_class: klass.name.demodulize,
+          defaults: klass.default_thresholds,
+          overrides: ::System::Fleet::SensorConfig.config_for(account: @account, sensor: klass.sensor_key),
+          effective: klass.resolved_thresholds(account: @account)
+        }
+      end
+
+      def unknown_sensor_error(name)
+        error_result(
+          "Unknown sensor #{name.inspect}. Configurable sensors: " \
+          "#{configurable_sensors.map(&:sensor_key).sort.join(', ')}"
+        )
+      end
+
+      def get_sensor_config(params)
+        sensors = configurable_sensors
+        name = params[:sensor].to_s.strip
+
+        if name.present?
+          klass = sensors.find { |k| k.sensor_key == name }
+          return unknown_sensor_error(name) unless klass
+
+          sensors = [ klass ]
+        end
+
+        success_result(sensors: sensors.map { |klass| sensor_config_view(klass) })
+      end
+
+      def update_sensor_config(params)
+        name = params[:sensor].to_s.strip
+        klass = configurable_sensors.find { |k| k.sensor_key == name }
+        return unknown_sensor_error(name) unless klass
+
+        config = params[:config]
+        return error_result("config object is required") unless config.is_a?(Hash) && config.present?
+
+        # REJECT rather than ignore. A silently dropped key is the failure this
+        # whole task exists to remove: the doc promised
+        # `silent_threshold_minutes`, nothing implemented it, and an operator
+        # setting it would have seen a success with no effect.
+        declared = klass.default_thresholds.keys
+        unknown = config.keys.map(&:to_s) - declared
+        if unknown.any?
+          return error_result(
+            "#{klass.sensor_key} declares no threshold(s) #{unknown.sort.inspect}. " \
+            "Declared keys: #{declared.sort.inspect}"
+          )
+        end
+
+        # Same rule the resolver applies, from the same place — a value it
+        # would silently fall back on must not be storable as a tuning.
+        # A null is legal: it DROPS the override.
+        bad = config.reject do |_key, value|
+          value.nil? || !::System::Fleet::SensorConfig.coerce_threshold(value).nil?
+        end
+        if bad.any?
+          return error_result(
+            "Threshold values must be positive integers (or null to clear): " \
+            "#{bad.keys.sort.inspect}"
+          )
+        end
+
+        ::System::Fleet::SensorConfig.upsert_for(
+          account: @account, sensor: klass.sensor_key, config: config.to_h
+        )
+        success_result(sensor: sensor_config_view(klass))
+      end
+
       def get_storage_recommendations
         recs = ::System::Platform::StorageRecommendations.fetch(account: @account)
         success_result(recommendations: recs)
@@ -5469,10 +5583,24 @@ module Ai
       end
 
       # Returns NodeInstances whose last_heartbeat_at is older than the
-      # silent threshold, or null. Aligned with InstanceStatusSensor
-      # (default 3 minutes; configurable via threshold_seconds).
+      # silent threshold, or null. Aligned with InstanceStatusSensor: the
+      # default is that sensor's RESOLVED value for this account
+      # (`instance_status` / `silent_threshold_seconds`, 180s fallback), so
+      # tuning the sensor moves this action with it. An explicit
+      # `threshold_seconds` param still overrides.
       def get_silent_instances(params)
-        threshold = (params[:threshold_seconds] || 180).to_i
+        # IMP-ca485128072e — the DEFAULT is the account's resolved sensor
+        # threshold, not a literal. This action's description claims it is
+        # "aligned with InstanceStatusSensor"; a bare 180 agreed with that
+        # sensor's constant by coincidence and would report a different
+        # population from the one the sensor signals on the moment an operator
+        # tunes it. An explicit threshold_seconds still wins — a dashboard
+        # asking a different question is a legitimate caller.
+        threshold = (
+          params[:threshold_seconds] ||
+            ::System::Fleet::Sensors::InstanceStatusSensor
+              .resolved_threshold("silent_threshold_seconds", account: @account)
+        ).to_i
         cutoff = Time.current - threshold.seconds
         scope = account_instances.where(
           "last_heartbeat_at < ? OR last_heartbeat_at IS NULL", cutoff

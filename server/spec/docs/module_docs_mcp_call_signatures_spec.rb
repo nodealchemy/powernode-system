@@ -169,9 +169,9 @@ module ModuleDocsMcpCallSignatures
     # troubleshooting section prescribed platform.list_vault_credentials, a verb
     # in NEITHER registry, as the only diagnostic it offered for a failing sync;
     # a tree-wide sweep with this parser confirms it was the sole unlabelled
-    # nonexistent verb under docs/. The others are the sensor-config pair in
-    # FLEET_SENSORS.md, which the surrounding prose marks "aspirational" — both
-    # of which this parser now extracts (see ASPIRATIONAL_VERBS).
+    # nonexistent verb under docs/. The others were the sensor-config pair in
+    # FLEET_SENSORS.md, which the surrounding prose marked "aspirational";
+    # IMP-ca485128072e implemented both, so ASPIRATIONAL_VERBS is now empty.
     #
     # That gap is now closed at the root: IMP-2a5a9a0fed0a moved verb existence
     # OUT of this per-file allowlist and into the tree-wide sweep at the bottom
@@ -441,8 +441,8 @@ module ModuleDocsMcpCallSignatures
   # pass for the doc that carries it.
   #
   # An entry takes effect ONLY on a call site that is COMMENTED OUT
-  # (IMP-6f2ebf01424a). Every rationale here argues about a commented-out
-  # example, and none of them is an argument for exempting a live one: a live
+  # (IMP-6f2ebf01424a). Every rationale here must argue about a commented-out
+  # example; none can be an argument for exempting a live one: a live
   # call to a verb no registry implements PRESCRIBES the fiction rather than
   # describing it, and an operator copying it cannot run it at all. Adding an
   # entry for a live call site does not silence the sweep — it adds a second
@@ -461,9 +461,11 @@ module ModuleDocsMcpCallSignatures
   # its own filter, not evidence about the corpus — and ASPIRATIONAL_MCP.md
   # went on to cite that silence as proof it was empty. IMP-2b09c9f22bae
   # removed the filter (measured: the dropped lines carried 9 prefixed verbs,
-  # only 4 of them invisible anywhere else, of which 2 are registered and 2 are
-  # this pair — no new unknowns) and gave the script a catalogued-vs-unknown
-  # split, so it now SEES both sites and resolves them through the catalog.
+  # only 4 of them invisible anywhere else, of which 2 were registered and 2
+  # were the sensor-config pair then listed below — no new unknowns) and gave
+  # the script a catalogued-vs-unknown split, so it SAW both sites and resolved
+  # them through the catalog. That pair is now registered too (IMP-ca485128072e),
+  # so the catalog is empty and the script has nothing left to resolve.
   #
   # The two checkers still do not contain one another, so do not treat one
   # green as covering the other's ground. This sweep reads bare verbs the
@@ -472,46 +474,23 @@ module ModuleDocsMcpCallSignatures
   # bounded by this parser's brace balancing. What has changed is that the
   # aspirational REGISTER is now single-sourced here: add an entry to this
   # hash, and the oracle below tells you what the markdown must say.
-  ASPIRATIONAL_VERBS = {
-    # IMP-2a5a9a0fed0a. FLEET_SENSORS.md's "Configuring Sensor Thresholds"
-    # section shows a sensor-config read/write pair that no MCP verb provides.
-    # Both sites are commented out and carry an inline "aspirational" marker,
-    # under a ⚠️ line naming the real path ("edit Fleet::SensorConfig via Rails
-    # console or REST today"), and the prose below them says "Until those MCP
-    # wrappers ship". So the doc is not wrong about the platform — it is
-    # deliberately describing something that does not exist yet, which is the
-    # one thing this exemption is for. Being commented out is NOT what exempts
-    # it; a call on a `//` line is checked like any other (see extract_calls).
-    #
-    # These are the ONLY exemptions the tree-wide sweep needs. Measured
-    # 2026-08-31 on extensions/system 4d286116: 31 docs under docs/ contain a
-    # call this parser can extract, and across every verb they call, exactly
-    # two resolve in neither Ai::Tools::PlatformApiToolRegistry::TOOLS nor
-    # Ai::Introspection::McpToolRegistrar::INTROSPECTION_TOOLS — and both are
-    # this one pair, in this one section.
-    #
-    # That is a claim about CALL SITES this parser extracts, not a census of
-    # every unimplemented verb the docs name. A verb mentioned only in prose is
-    # outside every extractor here, and one exists:
-    # system_gitops_unregister_repository, docs/tutorials/10-gitops-fleet.md:385,
-    # labelled aspirational with a REST workaround exactly like this pair but
-    # written as a bare name in a shell comment. It is deliberately NOT listed
-    # below — an entry must match a call site or the staleness guard reddens it.
-    [ "docs/FLEET_SENSORS.md", "system_get_sensor_config" ] =>
-      "no MCP read verb for Fleet::SensorConfig; the doc says so and names the Rails/REST path",
-    # Its write sibling (FLEET_SENSORS.md:542), under the same ⚠️ line and the
-    # same "Until those MCP wrappers ship" prose.
-    #
-    # It was NOT listed here until IMP-f97c629e59d7, and not because anyone
-    # judged it differently: the parser could not yield it, so an entry would
-    # have failed the staleness guard below. Its argument literal spans several
-    # `//` comment lines, and balanced_body used to skip past the closing brace
-    # on the LAST of them and drop the call. Fixing that surfaced this site,
-    # which is what this entry is. The pair is now symmetric, as the prose
-    # always was.
-    [ "docs/FLEET_SENSORS.md", "system_update_sensor_config" ] =>
-      "no MCP write verb for Fleet::SensorConfig; same section, same ⚠️ line, same Rails/REST path"
-  }.freeze
+  # EMPTY as of IMP-ca485128072e (APO-2e), and reached the way the note below
+  # says it must be: by DELETING entries, each of which reddened its own
+  # self-retiring guard first. The pair that lived here —
+  # system_get_sensor_config / system_update_sensor_config, both in
+  # FLEET_SENSORS.md's "Configuring Sensor Thresholds" section — was
+  # implemented rather than re-argued. Both verbs are now registered in
+  # Ai::Tools::PlatformApiToolRegistry::TOOLS and backed by
+  # System::Fleet::SensorConfig, so their doc examples are LIVE calls and are
+  # checked like any other.
+  #
+  # Do not repopulate this to silence a red sweep. An entry is a claim that the
+  # PLATFORM does not implement a verb the doc describes; the remedies for a
+  # failing call site are, in order: fix the spelling, implement the verb, or
+  # withdraw the example. An entry is only for a doc that deliberately
+  # describes a capability that does not exist yet, and it exempts a
+  # COMMENTED-OUT site alone (see aspirational_exemption?).
+  ASPIRATIONAL_VERBS = {}.freeze
 
   # ── ASPIRATIONAL_MCP.md is DERIVED from this list, not restated beside it ──
   #
@@ -741,10 +720,14 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   # INSIDE the same `//` run is de-framed along with everything else and then
   # parsed as code. A withdrawal note under a commented-out example — this
   # repo's keep-it-visible convention — carrying a stray `}` would close the
-  # literal and contribute an English word as a key. Latent, not live: exactly
-  # one `//` run in the tree contains a platform call (FLEET_SENSORS.md
-  # 525-530) and it is clean. The raw scan must also have failed across the
-  # whole rest of the file for it to be reachable at all.
+  # literal and contribute an English word as a key. Latent, not live: as of
+  # IMP-ca485128072e, ZERO `//` runs in the tree contain a platform call —
+  # `command grep -rn "//[[:space:]]*platform\." extensions/system/docs/`
+  # returns only URL strings (DISK_IMAGE_CI.md and friends), no
+  # `platform.<verb>(` site. The last one was FLEET_SENSORS.md's aspirational
+  # sensor-config example, which that task made LIVE. The raw scan must also
+  # have failed across the whole rest of the file for this to be reachable at
+  # all.
   def self.comment_framed_region(text, open_index)
     line_end = text.index("\n", open_index) || text.length
     region = +text[open_index...line_end]
@@ -1893,9 +1876,14 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   # read comment_framed?, so a wrong flag defeats both at once. That predicate
   # is deliberately loose — it asks only whether the line opens with `//`, so a
   # line opening with a protocol-relative path would read as commented. No such
-  # site exists: swept 2026-08-31, 351 call sites tree-wide, exactly 3 report
-  # commented and all 3 are genuine (FLEET_SENSORS.md:541 and :542,
-  # node-provisioning.md:211).
+  # site exists: swept 2026-08-31, 351 call sites tree-wide, exactly 3 reported
+  # commented and all 3 were genuine (FLEET_SENSORS.md:541 and :542,
+  # node-provisioning.md:211). Re-swept for IMP-ca485128072e, which made the
+  # FLEET_SENSORS.md pair LIVE: the corpus now reports ZERO commented call
+  # sites, so `comment_framed?` is no longer exercised by real docs at all and
+  # the synthetic `zz_fixture` corpus below is its ONLY remaining pin. Do not
+  # delete that fixture on the grounds that nothing in the tree needs it —
+  # nothing in the tree needing it is precisely the state it covers.
   #
   # It also names the situation outright, because the failure the gate produces
   # ("calls a registered MCP verb") does not say that an exemption was

@@ -49,11 +49,6 @@ module System
 
         SIGNAL_KIND = "system.instance_unrecoverable"
 
-        # Read from InstanceStatusSensor rather than restated, so the two
-        # sensors cannot disagree about which instances are silent — this one
-        # exists to CLASSIFY that exact population.
-        SILENT_THRESHOLD = InstanceStatusSensor::SILENT_THRESHOLD
-
         # The DecisionEngine's presumed-dead reaper flips a silent `running`
         # instance to `error` at PRESUMED_DEAD_SILENCE_SECONDS (30 min) and
         # emits this kind. A reaped instance is the CANONICAL disaster-recovery
@@ -68,7 +63,13 @@ module System
         # like InstanceStateDriftSensor::MAX_PER_TICK). Applied AFTER the
         # emit-window exclusion below, so instances already carrying a live
         # replace proposal never consume a slot.
-        MAX_PER_TICK = (ENV["FLEET_UNRECOVERABLE_MAX_PER_TICK"] || 25).to_i
+        # IMP-ca485128072e (APO-2e) — the constant is the FALLBACK; the
+        # effective value resolves through BaseSensor.resolved_threshold. It
+        # used to read ENV["FLEET_UNRECOVERABLE_MAX_PER_TICK"], which is not
+        # operator configuration on this platform: the reconciler runs inside a
+        # module-composed systemd unit, so changing it meant a unit edit and a
+        # redeploy on every node, and no operator surface listed the name.
+        MAX_PER_TICK = 25
 
         # Emit-once-per-window. An unrecoverable instance STAYS unrecoverable —
         # the condition clears when a person replaces it, not inside any tick
@@ -77,20 +78,32 @@ module System
         # suppression reads the durable FleetEvent the DecisionEngine mints for
         # the signal, so it needs no sensor-side state and survives restarts.
         # It is enforced IN SQL, before MAX_PER_TICK (see #candidates).
-        EMIT_WINDOW_SECONDS = (ENV["FLEET_UNRECOVERABLE_EMIT_WINDOW_SECONDS"] || 3600).to_i
+        # Fallback; overridable per account as "emit_window_seconds".
+        EMIT_WINDOW_SECONDS = 3600
 
         # Consecutive ineffective instance_silent remediations before the
         # reboot lane is called exhausted. Deliberately BELOW
         # DecisionEngine::STUCK_STREAK_THRESHOLD (3): the generic stuck
         # escalation says "this remediation is not working" without saying
         # what to do instead, and this signal is the what-to-do-instead.
-        REBOOT_ATTEMPT_THRESHOLD = (ENV["FLEET_UNRECOVERABLE_REBOOT_ATTEMPTS"] || 2).to_i
+        # Fallback; overridable per account as "reboot_attempt_threshold".
+        REBOOT_ATTEMPT_THRESHOLD = 2
 
         # Provider-reported states from which a reboot cannot recover. A
         # `stopped` VM is deliberately NOT here — start is the legal, correct
         # remediation for it, and instance_state_drifted already converges the
         # model.
         TERMINAL_PROVIDER_STATES = %w[terminated error].freeze
+
+        # The tunable surface. silent_threshold_seconds is deliberately NOT
+        # here — see #silent_threshold_seconds below.
+        def self.default_thresholds
+          {
+            "max_per_tick" => MAX_PER_TICK,
+            "emit_window_seconds" => EMIT_WINDOW_SECONDS,
+            "reboot_attempt_threshold" => REBOOT_ATTEMPT_THRESHOLD
+          }
+        end
 
         def sense
           fence_to_control_plane(candidates)
@@ -102,11 +115,24 @@ module System
             # A random draw reaches every candidate within a bounded number of
             # ticks without one.
             .order(Arel.sql("random()"))
-            .limit(MAX_PER_TICK)
+            .limit(threshold("max_per_tick"))
             .filter_map { |inst| signal_for(inst) }
         end
 
         private
+
+        # IMP-ca485128072e — resolved from the INSTANCE_STATUS sensor's key,
+        # not this sensor's own, and replacing a
+        # `SILENT_THRESHOLD = InstanceStatusSensor::SILENT_THRESHOLD` alias
+        # that existed for the same reason: the two sensors must not disagree
+        # about which instances are silent, because this one exists to CLASSIFY
+        # that exact population. A second, separately tunable copy would
+        # reintroduce precisely that disagreement — so an operator who widens
+        # the silent window widens it for the classifier too, in one write.
+        def silent_threshold_seconds
+          @silent_threshold_seconds ||=
+            InstanceStatusSensor.resolved_threshold("silent_threshold_seconds", account: account)
+        end
 
         # The candidate population, narrowed IN SQL so MAX_PER_TICK bounds only
         # work that is still to be done. Both exclusions below MUST precede the
@@ -120,13 +146,13 @@ module System
             .where(system_nodes: { account_id: account.id })
             .where(
               "system_node_instances.last_heartbeat_at < ? OR system_node_instances.last_heartbeat_at IS NULL",
-              Time.current - SILENT_THRESHOLD
+              Time.current - silent_threshold_seconds.seconds
             )
             .where(in_scope_status_sql, account_id: account.id, presumed_dead: PRESUMED_DEAD_KIND)
             .where(
               outside_emit_window_sql,
               account_id: account.id, kind: SIGNAL_KIND,
-              since: Time.current - EMIT_WINDOW_SECONDS.seconds
+              since: Time.current - threshold("emit_window_seconds").seconds
             )
         end
 
@@ -175,7 +201,7 @@ module System
               node_id: instance.node_id,
               reason: reason,
               last_heartbeat_at: instance.last_heartbeat_at&.iso8601,
-              silent_threshold_seconds: SILENT_THRESHOLD.to_i
+              silent_threshold_seconds: silent_threshold_seconds
             }.merge(detail),
             fingerprint: "#{SIGNAL_KIND.delete_prefix('system.')}:#{instance.id}:#{reason}"
           )
@@ -266,7 +292,7 @@ module System
           streak = ::System::Fleet::RemediationOutcome.ineffective_streak(
             account: account, fingerprint: "instance_silent:#{instance.id}"
           )
-          return nil if streak < REBOOT_ATTEMPT_THRESHOLD
+          return nil if streak < threshold("reboot_attempt_threshold")
 
           [ "reboot_exhausted", { ineffective_streak: streak } ]
         rescue StandardError => e

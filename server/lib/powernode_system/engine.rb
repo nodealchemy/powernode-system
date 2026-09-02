@@ -219,6 +219,12 @@ module PowernodeSystem
                      grant: { system_worker: true }
           permission "system.fleet.read", "View fleet / concierge state",
                      grant: { admin: true }
+          # IMP-ca485128072e (APO-2e) — writing fleet autonomy configuration
+          # (today: sensor thresholds via system_update_sensor_config). NOT
+          # folded into system.fleet.autonomy, which is catalogued worker-only:
+          # this is the operator's own tuning surface, so an admin must hold it.
+          permission "system.fleet.manage", "Tune fleet autonomy configuration (sensor thresholds)",
+                     grant: { admin: true }
           permission "system.gitops.reconcile", "Trigger GitOps reconcile tick (worker, cron)",
                      grant: { system_worker: true }
           # IMP-e313a4a72309 — `admin` added, per an explicit operator decision

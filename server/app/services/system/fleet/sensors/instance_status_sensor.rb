@@ -19,10 +19,24 @@ module System
 
         # Conservative — assumes 30s heartbeat * 3 + 30s grace.
         # Tuned to agree with CapacityRecommendExecutor::SILENT_HEARTBEAT_AGE.
+        #
+        # THE FALLBACK, not the effective value: an account may override it
+        # through System::Fleet::SensorConfig (see .default_thresholds below).
+        # Callers outside a sense pass — PromotionCriteria's DWELL_TIME,
+        # CapacityRecommendExecutor — still read the constant, deliberately:
+        # they are stating a platform-wide default, not sensing one account.
         SILENT_THRESHOLD = 3.minutes
 
+        # IMP-ca485128072e (APO-2e) — the operator-tunable surface.
+        # Seconds, not minutes: every threshold on every sensor is stored in
+        # seconds so one MCP verb can describe them all without a per-key unit.
+        def self.default_thresholds
+          { "silent_threshold_seconds" => SILENT_THRESHOLD.to_i }
+        end
+
         def sense
-          cutoff = Time.current - SILENT_THRESHOLD
+          silent_threshold = threshold("silent_threshold_seconds")
+          cutoff = Time.current - silent_threshold.seconds
 
           # P2.5 gap #5 — stamp per-region health onto each cross-AZ pool so
           # InstancePoolService#pick_region_for_slot can skip degraded regions
@@ -44,7 +58,9 @@ module System
                 instance_id: inst.id,
                 node_id: inst.node_id,
                 last_heartbeat_at: inst.last_heartbeat_at&.iso8601,
-                threshold_seconds: SILENT_THRESHOLD.to_i
+                # The RESOLVED value, so an operator reading the signal sees
+                # the threshold it was actually measured against.
+                threshold_seconds: silent_threshold
               },
               fingerprint: "instance_silent:#{inst.id}"
             )
