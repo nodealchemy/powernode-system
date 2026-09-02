@@ -62,6 +62,35 @@ RSpec.describe "MCP tools/call — system_ingress_tool (expose_service_publicly 
   let(:manager) { user_with_permissions("system.ingress.read", "system.ingress.manage") }
   let(:account) { manager.account }
 
+  # APO-1c (IMP-7e2bdc1774e4). All three executors declare
+  # `requires_approval: true`, and BaseSkillExecutor#execute now honours it
+  # BEFORE #perform. This spec is about the TRANSPORT — Doorkeeper auth, the
+  # "platform." prefix, the tools/call envelope, permission resolution — so an
+  # operator policy puts the gate on its proceed branch and leaves those
+  # assertions measuring what they were written to measure. The two "approval
+  # gating" blocks below deliberately outrank this row to exercise the other
+  # branch. See spec/support/skill_gate_helpers.rb.
+  before do
+    auto_execute_skill_policy!(
+      account,
+      System::Ai::Skills::ExposeServicePubliclyExecutor,
+      System::Ai::Skills::ExposeServiceLocalExecutor,
+      System::Ai::Skills::ExposeServicePublicTcpExecutor
+    )
+  end
+
+  # Outranks the account-wide auto_approve above on Ai::InterventionPolicy
+  # #specificity_key's last element (priority) — every other element is equal
+  # between the two rows, so the winner is deterministic rather than
+  # insertion-ordered.
+  def require_approval_for!(executor_class)
+    ::Ai::InterventionPolicy.create!(
+      account: account, ai_agent_id: nil, scope: "global",
+      action_category: executor_class.action_category,
+      policy: "require_approval", priority: 50, is_active: true
+    )
+  end
+
   # ==========================================================================
   # expose_service_publicly
   # ==========================================================================
@@ -339,68 +368,70 @@ RSpec.describe "MCP tools/call — system_ingress_tool (expose_service_publicly 
       end
     end
 
-    # Approval gating — DOCUMENTS CURRENT BEHAVIOR, same pinning as the
-    # expose_service_publicly / expose_service_local block below (019f34a3:
-    # requires_approval is declared on the descriptor but nothing on this
-    # dispatch path enforces it — SystemIngressTool#call -> BaseSkillExecutor
-    # #execute never checks it or creates an Ai::ApprovalRequest).
-    describe "approval gating (documents current behavior — see 019f34a3)" do
-      it "executes system_expose_service_public_tcp immediately, with no ApprovalRequest created" do
+    # Approval gating. This block used to PIN THE DEFECT (019f34a3): both
+    # examples asserted the action ran immediately with no ApprovalRequest,
+    # because `requires_approval: true` on the descriptor was read by nobody.
+    # APO-1c (IMP-7e2bdc1774e4) made the flag real, so they are inverted here —
+    # the same two calls, asserting the gate now fires and the mutation does
+    # NOT land while the approval is parked.
+    describe "approval gating" do
+      before { require_approval_for!(System::Ai::Skills::ExposeServicePublicTcpExecutor) }
+
+      it "parks an approval for system_expose_service_public_tcp instead of exposing" do
         expect(System::Ai::Skills::ExposeServicePublicTcpExecutor.descriptor[:requires_approval]).to be true
         svc = create_tls_service!
 
         expect do
           call_tool("system_expose_service_public_tcp", { "service_id" => svc.id }, headers: headers_for(manager))
-        end.not_to change { ::Ai::ApprovalRequest.count }
+        end.to change { ::Ai::ApprovalRequest.count }.by(1)
 
-        body = json_response
-        expect(body["result"]).not_to have_key("isError")
-        expect(tool_payload(body)["success"]).to be true
+        payload = tool_payload(json_response)
+        expect(payload["success"]).to be false
+        expect(payload["error"]).to match(/approval required/i)
+        # The ROW, not the status: a gate that answers 202 while the write
+        # lands is the failure mode this asserts against.
+        expect(svc.reload.public_enabled).to be false
       end
 
-      it "executes system_unexpose_service_public_tcp immediately, with no ApprovalRequest created" do
+      it "parks an approval for system_unexpose_service_public_tcp instead of unexposing" do
         svc = create_tls_service!(public_enabled: true)
 
         expect do
           call_tool("system_unexpose_service_public_tcp", { "service_id" => svc.id }, headers: headers_for(manager))
-        end.not_to change { ::Ai::ApprovalRequest.count }
+        end.to change { ::Ai::ApprovalRequest.count }.by(1)
 
-        body = json_response
-        expect(body["result"]).not_to have_key("isError")
-        expect(tool_payload(body)["success"]).to be true
+        expect(tool_payload(json_response)["success"]).to be false
+        expect(svc.reload.public_enabled).to be true
       end
     end
   end
 
   # ==========================================================================
-  # Approval gating — DOCUMENTS A KNOWN GAP, does not assert desired behavior.
+  # Approval gating — the SAME two calls this block used to pin as ungated.
   #
-  # Both executors declare `requires_approval: true` in their skill_descriptor
+  # Both executors declare `requires_approval: true`
   # (expose_service_publicly_executor.rb:41, expose_service_local_executor.rb:41),
   # and every operator-facing runbook (docs/runbooks/expose-service.md,
   # publish-service.md, traefik-tcp-exposure-vs-dnat.md:62) describes both
-  # actions as "approval-gated". In practice, nothing on this MCP dispatch path
-  # (SystemIngressTool#call -> BaseSkillExecutor#execute) consults
-  # `requires_approval`, creates an Ai::ApprovalRequest, or defers execution —
-  # the only runtime consumer of that descriptor key is
-  # Ai::ConciergeToolBridge#auto_emit_confirmation, which only fires inside the
-  # LLM conversational loop (result hash requires_approval/confirmation keys),
-  # not tools/call. A permitted caller executes immediately today.
-  #
-  # This spec pins CURRENT behavior so a real fix surfaces as an intentional
-  # spec change rather than a silent regression either way. Discovered during
-  # campaign 019f3458 increment 2; it is not owned by increments 3-7 (those
-  # cover tcpfwd + ServiceRouteWriter + Path B + PortMapping hardening) — see
-  # the increment 2 completion report for the queueing disposition.
+  # actions as "approval-gated". Until APO-1c (IMP-7e2bdc1774e4) nothing on this
+  # dispatch path consulted the flag — SystemIngressTool#call ->
+  # BaseSkillExecutor#execute went straight to #perform — so this block existed
+  # to pin the GAP, with a note that a real fix should surface as an intentional
+  # spec change. This is that change: BaseSkillExecutor#execute now resolves
+  # Ai::InterventionPolicy before #perform, and these examples assert the
+  # runbooks' promise instead of contradicting it.
   # ==========================================================================
-  describe "approval gating (documents current behavior — see comment above)" do
+  describe "approval gating" do
     let(:network)  { create(:sdwan_network, account: account) }
     let(:hub_peer) { create(:sdwan_peer, network: network) }
     let(:backend)  { create(:sdwan_peer, network: network) }
 
-    it "executes system_expose_service_publicly immediately, with no ApprovalRequest created" do
+    it "parks an approval for system_expose_service_publicly instead of exposing" do
       expect(System::Ai::Skills::ExposeServicePubliclyExecutor.descriptor[:requires_approval]).to be true
+      require_approval_for!(System::Ai::Skills::ExposeServicePubliclyExecutor)
 
+      # Stubbed so a MISSING gate would still succeed loudly rather than fail
+      # for an unrelated reason — the assertion below has to be about the gate.
       allow_any_instance_of(::Ai::Tools::SdwanTool).to receive(:execute) do |_tool, params:|
         case params[:action]
         when "system_sdwan_create_virtual_ip"
@@ -418,15 +449,16 @@ RSpec.describe "MCP tools/call — system_ingress_tool (expose_service_publicly 
           "sdwan_network_id" => network.id, "sdwan_hub_peer_id" => hub_peer.id,
           "vip_cidr" => "fd00:beef::a/128", "target_peer_id" => backend.id, "backend_port" => 8080
         }, headers: headers_for(manager))
-      end.not_to change { ::Ai::ApprovalRequest.count }
+      end.to change { ::Ai::ApprovalRequest.count }.by(1)
 
-      body = json_response
-      expect(body["result"]).not_to have_key("isError")
-      expect(tool_payload(body)["success"]).to be true
+      payload = tool_payload(json_response)
+      expect(payload["success"]).to be false
+      expect(payload["error"]).to match(/approval required/i)
     end
 
-    it "executes system_expose_service_local immediately, with no ApprovalRequest created" do
+    it "parks an approval for system_expose_service_local instead of exposing" do
       expect(System::Ai::Skills::ExposeServiceLocalExecutor.descriptor[:requires_approval]).to be true
+      require_approval_for!(System::Ai::Skills::ExposeServiceLocalExecutor)
       allow(::Sdwan::ServiceExposureWriter).to receive(:write!)
         .and_return(output_path: "/tmp/local-services.yaml", route_count: 1)
 
@@ -434,11 +466,11 @@ RSpec.describe "MCP tools/call — system_ingress_tool (expose_service_publicly 
         call_tool("system_expose_service_local", {
           "slug" => "immediate-svc", "name" => "Immediate", "backend_host" => "10.0.0.9", "backend_port" => 80
         }, headers: headers_for(manager))
-      end.not_to change { ::Ai::ApprovalRequest.count }
+      end.to change { ::Ai::ApprovalRequest.count }.by(1)
 
-      body = json_response
-      expect(body["result"]).not_to have_key("isError")
-      expect(tool_payload(body)["success"]).to be true
+      expect(tool_payload(json_response)["success"]).to be false
+      # The write is what the gate exists to hold back — assert the ROW.
+      expect(::Sdwan::Service.where(account_id: account.id, slug: "immediate-svc")).to be_empty
     end
   end
 end

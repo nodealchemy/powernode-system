@@ -82,7 +82,89 @@ module System
           def binds_to(*agents)
             SkillBindings.register(self, agents: agents)
           end
+
+          # True when the descriptor asks for an approval gate. The predicate
+          # exists so `requires_approval` has exactly one reader
+          # (IMP-7e2bdc1774e4): before this, the flag was DECLARED and read by
+          # NOBODY.
+          #
+          # It reads the DESCRIPTOR, which is narrower than a grep for
+          # `requires_approval: true` under this directory: that grep returns 17
+          # files, but three of the hits are not descriptor keys —
+          # ScaleProjectExecutor (:501) and RollingModuleUpgradeExecutor (:169)
+          # put the flag on a RESULT payload ("travels with the RESULT", they
+          # both say) and template_approval_policy.rb is a policy class, not an
+          # executor. Fourteen executors actually declare the descriptor key,
+          # and those fourteen are what this gate covers.
+          def gate_required?
+            descriptor[:requires_approval] == true
+          end
+
+          # The Ai::InterventionPolicy category this executor's gate resolves.
+          #
+          # Declarable per-executor — `skill_descriptor(action_category: "...")`
+          # flows through `**extras`. DECLARE IT whenever the operator control
+          # for this action already exists under another name, so the gate and
+          # the modal resolve one row rather than two spellings of it. Two do:
+          # ServiceDiscoveryComposerExecutor (registered as
+          # system.service_discovery_compose, not ...composer) and
+          # BootImageDriftRolloutExecutor (the tick loop already gates it as
+          # system.node_boot_image_drift). Adding a second spelling instead is
+          # the exact defect IMP-eb60db901f5f cleaned up.
+          #
+          # Otherwise "<domain>.<skill name>". That derivation matches an
+          # existing registered category only where the descriptor name and the
+          # registered name coincide — system.multi_tenant_isolation is the one
+          # gated executor for which it did — so every other derived category
+          # had to be REGISTERED in lib/powernode_system/engine.rb for this gate
+          # to be tunable at all (see the note there: registration is what
+          # System::AutonomyActions#update passes, and what
+          # db/seeds/system_autonomy_orphan_cleanup.rb spares).
+          #
+          # A category NO active policy row matches resolves to
+          # Ai::InterventionPolicyService#default_policy, which is
+          # "require_approval" — so an executor that declares the flag and has
+          # no operator policy gates rather than proceeds. That is the fail-safe
+          # direction and it is what the descriptor already promised.
+          def action_category
+            descriptor[:action_category].presence ||
+              "#{descriptor[:domain]}.#{descriptor[:name]}"
+          end
+
+          # Ai::AutonomyGate replay entry point. Ai::DeferredOperation
+          # #execute_now! calls `executor_constant.execute(params,
+          # deferred_operation:)` both for a policy that auto-proceeds and,
+          # later, for one an approval chain released — so without this method
+          # every approval parked by #gate_action! would be a dead end.
+          #
+          # `gated: true` is what stops the replay from parking a SECOND
+          # approval for the decision that just completed.
+          def execute(params, deferred_operation:)
+            requested_by = deferred_operation.requested_by
+
+            built = new(account: deferred_operation.account,
+                        agent: deferred_operation.ai_agent,
+                        user: requested_by)
+
+            # A replay is a RESUMED EXTERNAL request, never an in-process system
+            # caller. Left alone, a userless origin — an MCP instance principal
+            # carries no User — would satisfy #internal_caller? on the way back
+            # and inherit the reconciler's in-process bypass for every tool the
+            # executor nests, re-opening IMP-0e6b216de843 through the approval
+            # door. Marking it instance-authorized keeps #internal_caller? false
+            # and re-arms Mcp::Principal's destructive deny overlay on the
+            # nested calls, which is the conservative direction and matches the
+            # posture the ORIGINAL call had.
+            built.instance_authorized = true if requested_by.nil?
+
+            built.execute(gated: true, **(params || {}).to_h.symbolize_keys)
+          end
         end
+
+        # Policy verdicts that mean "run it now". Same pair
+        # System::Fleet::DecisionEngine uses for the tick loop, so the two
+        # gates agree on what counts as automatic.
+        AUTO_EXECUTE_POLICIES = %w[auto_approve notify_and_proceed].freeze
 
         attr_reader :account, :agent, :user
 
@@ -101,6 +183,16 @@ module System
         attr_writer :instance_authorized
         attr_accessor :node_instance
 
+        # Set by #executor on every peer this executor nests. A nested peer is
+        # NOT an entry point: the operator-visible unit is the outermost call,
+        # and an approval parked halfway down a composition is worse than
+        # useless — Ai::DeferredOperation#execute_now! replays the CHILD alone,
+        # so the composer's remaining steps never run and the plan cannot be
+        # resumed by approving it. Nested peers therefore never park. They are
+        # still REFUSED by a `block` row on their own category, so an operator's
+        # hard "no" holds on the composed door as well as the direct one.
+        attr_writer :nested
+
         def initialize(account:, agent: nil, user: nil)
           raise ArgumentError, "account is required" if account.nil?
 
@@ -109,13 +201,34 @@ module System
           @user    = user
           @instance_authorized = false
           @node_instance = nil
+          @nested = false
         end
 
         # Public entry point. Validates required inputs against the descriptor,
-        # audit-logs start, dispatches to subclass `#perform`, audit-logs
-        # finish, and wraps any uncaught exception in a `failure(...)` result.
-        def execute(**inputs)
+        # resolves the approval gate, audit-logs start, dispatches to subclass
+        # `#perform`, audit-logs finish, and wraps any uncaught exception in a
+        # `failure(...)` result.
+        #
+        # `gated:` is the CALLER'S assertion that policy was already resolved
+        # for this invocation. System::Fleet::DecisionEngine resolves it itself
+        # before building the executor (#invoke_skill for a side-effectful
+        # binding, and #execute_approved! replaying an approved request), so
+        # those calls pass it and a second evaluation here would park an
+        # approval for a decision already made. The db/seeds/smoke_test_*
+        # scripts pass it too: an operator running a smoke seed by hand IS the
+        # decision. It is NOT a general escape hatch — every other door leaves
+        # it false. Bound as an explicit keyword so it never reaches
+        # #validate_inputs! or #perform.
+        def execute(gated: false, **inputs)
+          # Validation FIRST: a call that could only ever fail must not park an
+          # approval an operator then has to dispose of.
           validate_inputs!(inputs)
+
+          unless gated
+            gate = gate_action!(inputs)
+            return gate if gate
+          end
+
           audit_log_start(inputs)
           result = perform(**acceptable_inputs(inputs))
           audit_log_finish(result)
@@ -129,6 +242,133 @@ module System
         end
 
         protected
+
+        # THE APPROVAL GATE, evaluated BEFORE #perform (APO-1c,
+        # IMP-7e2bdc1774e4).
+        #
+        # Returns nil to let the run continue in-process, or the result hash the
+        # caller must return instead of performing. Never nil-on-refusal: an
+        # ambiguous return here would be a silent double execution.
+        #
+        # Why the verdict is resolved SEPARATELY from Ai::AutonomyGate.
+        # AutonomyGate decides AND executes — on auto_approve /
+        # notify_and_proceed it runs the operation through
+        # Ai::DeferredOperation#execute_now!, which rebuilds the executor from
+        # the stored row. A rebuild cannot carry the caller provenance THIS
+        # instance holds (`instance_authorized` / `node_instance`), and #tool
+        # reads exactly that to decide whether a nested tool gets the in-process
+        # bypass (IMP-0e6b216de843). Resolving the policy first keeps the common
+        # "policy says go" case on this instance with its provenance intact, and
+        # sends only the verdicts that need a durable, resumable row — approval
+        # and refusal — through the gate.
+        #
+        # Fail-safe by construction: anything that is not an explicit
+        # auto-execute verdict goes to the gate, including the "no policy row
+        # matched" default, so a NEW skill declaring requires_approval is gated
+        # from its first call rather than from whenever someone seeds a row.
+        def gate_action!(inputs)
+          return nil unless self.class.gate_required?
+
+          policy = resolved_policy
+          # An auto-execute verdict runs here, on THIS instance, without a
+          # durable row. Ai::AutonomyGate's own docstring says it writes an
+          # Ai::DeferredOperation "in every case (audit trail)"; that promise is
+          # about the gate, and this branch deliberately does not reach it, so
+          # the audit for an auto-approved skill run is the executor's own
+          # #audit_log_start / #audit_log_finish pair and NOT a row in the
+          # Autonomy deferred-operations view. Trading the row for the caller's
+          # provenance is the point — see the paragraph above.
+          return nil if AUTO_EXECUTE_POLICIES.include?(policy)
+
+          # A nested peer never parks (see attr_writer :nested). Only a `block`
+          # row still refuses, and it goes through the gate below so the refusal
+          # gets the same durable record a direct one does.
+          return nil if @nested && policy != "block"
+
+          category = self.class.action_category
+          result = ::Ai::AutonomyGate.evaluate(
+            action_category: category,
+            executor_class: self.class.name,
+            params: inputs,
+            account: @account,
+            agent: @agent,
+            requested_by: @user,
+            description: self.class.descriptor[:description]
+          )
+
+          case result.decision
+          when :proceed
+            # Reachable only when the gate's OWN resolution disagrees with
+            # #resolved_policy above — a policy row written between the two
+            # reads, or a scope this executor resolves differently. NOT the
+            # core-mode fall-through in
+            # Ai::AutonomyGate#require_approval_or_proceed: that arm is guarded
+            # on `defined?(::Ai::ApprovalChain)`, and Ai::ApprovalChain is a
+            # CORE model (server/app/models/ai/approval_chain.rb), so it is
+            # always loaded here. Handled rather than raised because the gate
+            # already RAN the operation through the class-level replay by the
+            # time it says :proceed — its result IS this call's, and dropping it
+            # would double-execute.
+            result.result.is_a?(Hash) ? result.result
+                                      : failure("Gate proceeded for #{category} but returned no executor result")
+          when :pending
+            failure(pending_message(category, result))
+          else
+            failure(result.error || "Action #{category} is blocked by policy")
+          end
+        end
+
+        # A MINIMAL envelope, and the identifiers in the message rather than
+        # beside it — deliberately, not for brevity.
+        #
+        # Ai::Provisioning::SkillCompositionRunner reads every NON-CONTROL key
+        # on a failure envelope as a resource this run created:
+        # #failure_outputs_from strips only success/error/message/errors/
+        # failures/partial, records whatever survives as the step's failure
+        # outputs, and #rollback_step! then hands those to the executor's
+        # rollback hook as kwargs before #mark_rolled_back stamps the step
+        # compensated. A parked approval created NOTHING, so surfacing
+        # `pending:` / `requires_approval:` / the two ids up here would fake
+        # compensation for a step that never ran — the exact hazard #failure's
+        # own docstring warns about ("Pass ONLY keys that actually hold ids").
+        #
+        # Extending core's ENVELOPE_CONTROL_KEYS would let the metadata ride
+        # structurally; until it does, the message is the channel every caller
+        # already renders.
+        #
+        # What this does NOT fix, stated so it is not mistaken for handled: a
+        # composed step that parks an approval is still recorded FAILED by
+        # SkillCompositionRunner and its plan settles as failed. The empty
+        # envelope keeps the compensation itself harmless — #rollback_step!
+        # finds no outputs, so a rollback hook with defaulted kwargs no-ops and
+        # the step is stamped `rolled_back(noop: true)`; siblings are never
+        # touched (#handle_failure compensates the failed step only). The
+        # missing piece is a SUSPENDED step state so approving the parked
+        # request resumes the plan instead of leaving a dead one behind. That is
+        # a core change to Ai::Provisioning::SkillCompositionRunner, not to this
+        # gate. RelocateWorkloadExecutor is the one gated skill an adaptation
+        # plan can name today (AdaptationProposerService::ADAPTATION_SKILLS, LLM
+        # path only — the deterministic composer cannot supply its eight
+        # inputs).
+        def pending_message(category, result)
+          id = result.approval_request&.id || result.deferred_operation&.id
+          base = "Approval required: #{category}"
+          id.present? ? "#{base} (approval_request #{id})" : base
+        end
+
+        # The policy verdict alone, with none of the gate's side effects.
+        def resolved_policy
+          ::Ai::InterventionPolicyService
+            .new(account: @account)
+            .resolve(action_category: self.class.action_category, agent: @agent, user: @user)[:policy].to_s
+        rescue StandardError => e
+          # FAIL CLOSED. An unresolvable policy is not permission — hand the
+          # call to the gate, which parks it where an operator can see it.
+          Rails.logger.error(
+            "[#{self.class.name}] policy resolution failed, gating: #{e.class}: #{e.message}"
+          )
+          "require_approval"
+        end
 
         # Subclasses MUST override. Receives the keyword args passed to
         # `execute`, sliced to the keywords the override declares (see
@@ -230,10 +470,30 @@ module System
         # Composers that nest other executors must not drop the instance
         # provenance one hop further down — that re-creates the same bypass
         # inside the child. (IMP-0e6b216de843)
+        # The nested marker travels with it (IMP-7e2bdc1774e4): a peer built
+        # here is a step of THIS run, not a door of its own, so it may be
+        # blocked by its own policy but never parks an approval. Marked
+        # unconditionally — an UNGATED composer nests just as inseparably as a
+        # gated one, and a child that parked under it would strand the composer
+        # mid-way with an approval whose replay rebuilds only the child.
         def executor(executor_class, **overrides)
-          mark_instance_provenance(
-            executor_class.new(account: @account, agent: @agent, user: @user, **overrides)
-          )
+          built = executor_class.new(account: @account, agent: @agent, user: @user, **overrides)
+          # Guarded exactly like #mark_instance_provenance below: a child that
+          # declares no gate has nothing to mark, and sending it the message
+          # anyway would widen what every composer's collaborators must accept
+          # for no behavioural gain.
+          built.nested = true if gate_declaring?(executor_class)
+          mark_instance_provenance(built)
+        end
+
+        # `gate_required?` reads the descriptor, and an intermediate base class
+        # (System::Ai::Skills::CrudFactory) deliberately raises there rather
+        # than returning nil — a composer nesting one must not blow up on the
+        # question.
+        def gate_declaring?(executor_class)
+          executor_class.respond_to?(:gate_required?) && executor_class.gate_required?
+        rescue NotImplementedError
+          false
         end
 
         # Guarded: touches nothing unless this executor is itself serving an

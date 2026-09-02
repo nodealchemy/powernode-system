@@ -183,8 +183,26 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
   # the correct failure (the bulk PATCH accepts those names too); it just needs
   # to be read as "who else registered this?", not as a bug here.
   it "registers no system category that nothing seeds, executes or gates" do
+    # The three composer categories, plus the eleven APO-1c skill categories
+    # (IMP-7e2bdc1774e4). Every one of the fourteen is backed by a
+    # System::Ai::Skills executor that declares `requires_approval: true` in its
+    # descriptor — BaseSkillExecutor#execute resolves the row before #perform —
+    # and none is seeded, because these skills reach an operator through the
+    # MCP / REST / Concierge doors rather than through an agent's seed. The
+    # engine's second `concat` names the executor behind each one.
     deliberately_unseeded = %w[
+      system.acme_certificate_provision
+      system.architecture_create
+      system.architecture_delete
+      system.architecture_update
+      system.expose_service_local
+      system.expose_service_public_tcp
+      system.expose_service_publicly
+      system.federation_acceptance
+      system.fulfill_capability_request
       system.multi_tenant_isolation
+      system.package_module_create
+      system.relocate_workload
       system.sdwan_federation_compose
       system.service_discovery_compose
     ].sort
@@ -197,6 +215,54 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
                                                               "Each one is a control PATCH /api/v1/system/autonomy will create a policy row for; " \
                                                               "a new entry needs a backing executor (and a note above), a removed entry needs " \
                                                               "this list updated."
+  end
+
+  # THIRD set — GATED (APO-1c, IMP-7e2bdc1774e4). Every executor that declares
+  # `requires_approval: true` in its descriptor now has its action_category
+  # resolved by System::Ai::Skills::BaseSkillExecutor#execute before #perform,
+  # and an unregistered category cannot be tuned through
+  # System::AutonomyActions#update — so the operator's only supported response
+  # to the gate is unavailable and the action is stuck at the
+  # require_approval default.
+  #
+  # This is a RATCHET, not a restatement of the seed scan: none of these
+  # fourteen categories is seeded, so the SEEDED example above cannot see them,
+  # and none of them is in SIGNAL_BINDINGS except through
+  # BootImageDriftRolloutExecutor, so the BOUND example cannot either. The next
+  # executor to declare the flag reds here unless its category is registered.
+  #
+  # Classes are derived from the FILES rather than from a constant list, so a
+  # new executor is covered without a second edit.
+  it "registers the action_category of every approval-gated skill executor" do
+    skills_dir = File.expand_path("../../../app/services/system/ai/skills", __dir__)
+
+    gated = Dir[File.join(skills_dir, "*.rb")].sort.filter_map do |path|
+      klass = begin
+        "System::Ai::Skills::#{File.basename(path, '.rb').camelize}".constantize
+      rescue NameError
+        nil
+      end
+      next unless klass.is_a?(Class) && klass < System::Ai::Skills::BaseSkillExecutor
+
+      # An intermediate base (System::Ai::Skills::CrudFactory) declares no
+      # descriptor of its own and RAISES on #descriptor by design — it is not an
+      # invocable skill and has no category to register.
+      begin
+        next unless klass.gate_required?
+      rescue NotImplementedError
+        next
+      end
+
+      [ klass.name, klass.action_category ]
+    end
+
+    expect(gated).not_to be_empty,
+                         "no gated executor found — the derivation broke, not the registration"
+
+    unregistered = gated.reject { |(_name, cat)| Ai::InterventionPolicy.category_registered?(cat) }
+
+    expect(unregistered).to be_empty,
+                            "these approval-gated executors resolve an UNREGISTERED action_category, so "                             "PATCH /api/v1/system/autonomy refuses to save a policy for them and the gate "                             "is stuck at the require_approval default: #{unregistered.inspect}. Register "                             "the category in lib/powernode_system/engine.rb (and add it to the "                             "deliberately_unseeded list above), or declare an existing registered category "                             "on the descriptor with `action_category:`."
   end
 
   # Coupling guard for the two halves of a category removal. Deleting a

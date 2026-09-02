@@ -96,8 +96,18 @@ vip_name = "expose-#{hostname}"
 ::Sdwan::VirtualIp.where(network: network, name: vip_name).destroy_all
 ::Sdwan::PortMapping.where(sdwan_network_id: network.id, name: "expose-#{hostname}-80").destroy_all
 
+# `gated: true` on every skill-executor call below — APO-1c (IMP-7e2bdc1774e4).
+# These executors declare `requires_approval: true`, and BaseSkillExecutor
+# #execute now resolves Ai::InterventionPolicy before #perform: on an install
+# with no policy row the category defaults to require_approval, so an ungated
+# call here would park an approval, return success: false, and abort the smoke
+# run on a policy verdict rather than on anything it was written to test. An
+# operator running this seed by hand IS the decision the gate exists to ask
+# for, so the smoke path asserts it the same way System::Fleet::DecisionEngine
+# does. Nothing else in the platform may pass this flag on an operator door.
 publicly_executor = ::System::Ai::Skills::ExposeServicePubliclyExecutor.new(account: account)
 result1 = publicly_executor.execute(
+  gated: true,
   service_hostname: hostname, service_protocol: "http",
   sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
   vip_cidr: "#{vip_prefix}::a/128",
@@ -124,6 +134,7 @@ puts "  ✓ Test 2: DNAT wiring correct — VIP holder=backend peer, :80 -> VIP:
 
 # Re-run: same hostname must reuse the VIP (idempotency — fix #1 regression guard).
 result2 = ::System::Ai::Skills::ExposeServicePubliclyExecutor.new(account: account).execute(
+  gated: true,
   service_hostname: hostname, service_protocol: "http",
   sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
   vip_cidr: "#{vip_prefix}::a/128",
@@ -156,6 +167,7 @@ begin
 
   local_executor = ::System::Ai::Skills::ExposeServiceLocalExecutor.new(account: account)
   result3 = local_executor.execute(
+    gated: true,
     slug: slug, name: "Smoke Ingress Service", protocol: "https",
     backend_host: "10.99.0.5", backend_port: 3000, auth_mode: "authenticated"
   )
@@ -176,6 +188,7 @@ begin
 
   # Re-expose the SAME existing service by id (update path, not create).
   result4 = ::System::Ai::Skills::ExposeServiceLocalExecutor.new(account: account).execute(
+    gated: true,
     service_id: service.id, auth_mode: "scoped", required_permission: "services.smoke.view"
   )
   abort("  ❌ Test 6 FAILED — re-expose returned success: false (#{result4[:error]})") unless result4[:success]

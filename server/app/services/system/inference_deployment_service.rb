@@ -144,7 +144,17 @@ module System
         composer.node_instance = @node_instance if @node_instance
       end
 
+      # `gated: true` — APO-1c (IMP-7e2bdc1774e4). ServiceDiscoveryComposerExecutor
+      # declares `requires_approval: true`, and BaseSkillExecutor#execute now
+      # resolves Ai::InterventionPolicy before #perform. This call is NOT a door
+      # of its own: it is the publication half of a deploy the caller already
+      # authorised, and the `return nil unless result[:success]` below would turn
+      # a parked approval into a SILENT SKIP — the exact symptom
+      # IMP-c2e3e5d3cff0 fixed here (see the comment above), reintroduced under
+      # a different cause. The operator decision that covers it is the
+      # deploy_inference_server call itself.
       result = composer.execute(
+        gated: true,
         service_name: "ollama-#{instance.name}",
         service_slug: "ollama-#{instance.id.to_s.delete('-')[0, 12]}",
         sdwan_network_id: sdwan_network_id, backend_peer_id: peer_id,

@@ -692,6 +692,66 @@ module PowernodeSystem
           system.service_discovery_compose
         ])
 
+        # APO-1c (IMP-7e2bdc1774e4) — the approval-gated SKILL categories.
+        #
+        # `requires_approval: true` on a skill descriptor used to be inert.
+        # System::Ai::Skills::BaseSkillExecutor#execute now resolves
+        # Ai::InterventionPolicy before #perform, and the category it resolves
+        # is `<domain>.<skill name>` (or an explicit `action_category:` on the
+        # descriptor). Fourteen executors declare the flag; two of them declare
+        # a category that is already here — ServiceDiscoveryComposerExecutor
+        # (system.service_discovery_compose, above) and
+        # BootImageDriftRolloutExecutor (system.node_boot_image_drift, derived
+        # from the DecisionEngine binding) — and MultiTenantIsolationExecutor's
+        # derived name was already listed. These eleven are the rest.
+        #
+        # Registering them is not cosmetic HERE either, and for a sharper reason
+        # than the block above: with no policy row an unconfigured category
+        # resolves to Ai::InterventionPolicyService#default_policy =
+        # require_approval, so each of these gates on its first call. Without
+        # the registration an operator cannot turn that off through any
+        # supported door — System::AutonomyActions#update refuses an
+        # unregistered category (autonomy_actions.rb, `category_registered?`)
+        # and db/seeds/system_autonomy_orphan_cleanup.rb DELETES rows under an
+        # owned prefix whose category is unregistered. A gate nobody can tune is
+        # an outage with a policy name on it.
+        #
+        # Seeded by nothing, deliberately, exactly like the three composer
+        # categories above: these reach an operator through the MCP/REST/
+        # Concierge doors rather than an agent seed, so there is no agent whose
+        # seed would own the row. Each is backed by an executor:
+        #
+        #   system.architecture_create        -> Skills::ArchitectureCreateExecutor
+        #   system.architecture_update        -> Skills::ArchitectureUpdateExecutor
+        #   system.architecture_delete        -> Skills::ArchitectureDeleteExecutor
+        #   system.acme_certificate_provision -> Skills::AcmeCertificateProvisionExecutor
+        #   system.expose_service_local       -> Skills::ExposeServiceLocalExecutor
+        #   system.expose_service_publicly    -> Skills::ExposeServicePubliclyExecutor
+        #   system.expose_service_public_tcp  -> Skills::ExposeServicePublicTcpExecutor
+        #   system.package_module_create      -> Skills::PackageModuleCreateExecutor
+        #   system.federation_acceptance      -> Skills::FederationAcceptanceExecutor
+        #   system.fulfill_capability_request -> Skills::FulfillCapabilityRequestExecutor
+        #   system.relocate_workload          -> Skills::RelocateWorkloadExecutor
+        #
+        # system.federation_acceptance is NOT a second spelling of
+        # sdwan.federation_peer_accept: that policy gates the STATUS TRANSITION
+        # alone (SdwanTool#accept_federation_peer, whose own description says so),
+        # while this skill runs the full accept chain — enroll, operator grant,
+        # bootstrap token, overlay attach, governance scan.
+        categories.concat(%w[
+          system.architecture_create
+          system.architecture_update
+          system.architecture_delete
+          system.acme_certificate_provision
+          system.expose_service_local
+          system.expose_service_publicly
+          system.expose_service_public_tcp
+          system.package_module_create
+          system.federation_acceptance
+          system.fulfill_capability_request
+          system.relocate_workload
+        ])
+
         # GitOps Reconciler domain — operator-initiated gitops actions, seeded
         # by db/seeds/system_gitops_reconciler_agent.rb. (The AUTONOMOUS
         # system.gitops_drift_remediate lives on Fleet Autonomy above, because

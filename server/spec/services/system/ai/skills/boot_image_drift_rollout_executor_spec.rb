@@ -7,6 +7,15 @@ require "rails_helper"
 # all drifted instances on a node platform.
 RSpec.describe System::Ai::Skills::BootImageDriftRolloutExecutor do
   let(:account) { create(:account) }
+
+  # APO-1c (IMP-7e2bdc1774e4). This executor declares `requires_approval: true`,
+  # and BaseSkillExecutor#execute now resolves Ai::InterventionPolicy BEFORE
+  # #perform — an unconfigured category defaults to require_approval, so every
+  # example below would park an approval instead of performing. These examples
+  # are about what #perform DOES, so an operator policy puts the gate on its
+  # proceed branch rather than removing it: the real entry point still runs.
+  # See spec/support/skill_gate_helpers.rb.
+  before { auto_execute_skill_policy!(account, described_class) }
   let(:platform_record) { create(:system_node_platform, account: account) }
   let(:template) { create(:system_node_template, account: account, node_platform: platform_record) }
   let(:user) { create(:user, account: account) }

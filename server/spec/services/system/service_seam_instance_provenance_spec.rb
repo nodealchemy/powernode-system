@@ -110,6 +110,28 @@ RSpec.describe "service-seam instance provenance", type: :service do
       expect(result).to eq(offering_id: "off-1", vip_address: "10.9.9.9")
     end
 
+    # APO-1c (IMP-7e2bdc1774e4). ServiceDiscoveryComposerExecutor declares
+    # `requires_approval: true`, and BaseSkillExecutor#execute now resolves
+    # Ai::InterventionPolicy before #perform. #compose_offering ends in
+    # `return nil unless result[:success]`, so an ungated call on an install
+    # with no policy row would turn a parked approval into a SILENT SKIP of the
+    # SDWAN publication — bit-for-bit the symptom IMP-c2e3e5d3cff0 fixed here.
+    # The seam is the publication half of an already-authorised deploy, not a
+    # door of its own, so it asserts `gated: true` the way the tick loop does.
+    #
+    # The spy cannot observe the gate (it is not a BaseSkillExecutor), so what
+    # is pinned here is the KEYWORD; what `gated: true` then does to the real
+    # gate is pinned in
+    # spec/services/system/ai/skills/base_skill_executor_gating_spec.rb.
+    it "stands the composer's approval gate down — the deploy already carried the decision" do
+      spy = composer_spy.new
+      allow(::System::Ai::Skills::ServiceDiscoveryComposerExecutor).to receive(:new).and_return(spy)
+
+      compose
+
+      expect(spy.calls.first[:gated]).to be true
+    end
+
     it "hands the composer the instance provenance when the caller is an instance" do
       spy = composer_spy.new
       allow(::System::Ai::Skills::ServiceDiscoveryComposerExecutor).to receive(:new).and_return(spy)

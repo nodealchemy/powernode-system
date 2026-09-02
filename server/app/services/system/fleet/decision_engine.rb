@@ -986,7 +986,12 @@ module System
           inputs = binding.fetch(:input_mapper).call(signal)
           if inputs
             executor = binding[:skill].new(account: account, agent: autonomy_service.agent, user: nil)
-            skill_result = executor.execute(**inputs)
+            # gated: true — the human approval this method is replaying IS the
+            # policy decision. BaseSkillExecutor gates on `requires_approval`
+            # itself now (IMP-7e2bdc1774e4), and without the opt-out a
+            # side-effectful skill would park a SECOND approval for the request
+            # an operator just released.
+            skill_result = executor.execute(gated: true, **inputs)
           end
         end
 
@@ -1295,7 +1300,19 @@ module System
         end
 
         executor = skill_class.new(account: account, agent: autonomy_service.agent, user: nil)
-        executor.execute(**inputs)
+        # The F3-06 resolution above IS this invocation's policy decision, taken
+        # against the SIGNAL's action_category. BaseSkillExecutor gates on
+        # `requires_approval` itself now (IMP-7e2bdc1774e4); letting it
+        # re-evaluate here would resolve a DIFFERENT category (the skill's) and
+        # park an approval on top of the verdict the engine already acted on.
+        #
+        # Passed as the SAME predicate the resolution is guarded on, not a bare
+        # `true`: the F3-06 block runs only for a side-effectful binding, so on a
+        # non-side-effectful one no policy has been resolved and there is nothing
+        # to stand the executor's own gate down for. No such binding names a
+        # gated executor today, which is exactly why an unconditional `true`
+        # would sit here undetected until one did.
+        executor.execute(gated: binding.fetch(:side_effectful), **inputs)
       rescue StandardError => e
         Rails.logger.error("[FleetDecisionEngine] skill invocation failed: #{e.class}: #{e.message}")
         { success: false, error: e.message }

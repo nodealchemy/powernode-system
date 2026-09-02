@@ -63,6 +63,17 @@ module System
           description: "Make a backend service discoverable across the fleet over the SDWAN overlay end-to-end — provisions a Virtual IP (auto-advertised via iBGP for in-overlay discovery), publishes a VIP-backed federation service-catalog offering for federated peers, regenerates the local Traefik routes, and OPTIONALLY publishes a public DNS record (A/AAAA/CNAME) for internet-facing names. Use this when an operator asks to 'make <service> discoverable', 'publish <service> to the service catalog', or 'advertise <service> to other sites'.",
           category: "devops",
           requires_approval: true,
+          # The operator control for this action already exists under a
+          # SHORTER name: lib/powernode_system/engine.rb registers
+          # system.service_discovery_compose (matching the MCP verb
+          # system_service_discovery_compose and SdwanTool#service_discovery_compose),
+          # and System::AutonomyActions maps that name into the "topology"
+          # family. Declaring it here keeps the APO-1c gate resolving the row an
+          # operator can actually author; the "<domain>.<name>" derivation would
+          # resolve system.service_discovery_composer, which is registered
+          # nowhere and would be a second spelling of the same capability
+          # (IMP-7e2bdc1774e4, IMP-eb60db901f5f).
+          action_category: "system.service_discovery_compose",
           invocation_mode: "one_shot",
           domain: "system",
           tags: %w[sdwan federation discovery service-catalog dns],

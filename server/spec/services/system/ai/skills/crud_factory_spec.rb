@@ -6,6 +6,22 @@ RSpec.describe System::Ai::Skills::CrudFactory do
   let(:account) { create(:account) }
   let(:tool_stub) { instance_double(::Ai::Tools::SystemArchitectureCatalogTool) }
 
+  # APO-1c (IMP-7e2bdc1774e4). All three architecture subclasses declare
+  # `requires_approval: true`, and BaseSkillExecutor#execute now resolves
+  # Ai::InterventionPolicy BEFORE #perform — an unconfigured category defaults
+  # to require_approval, so every delegation example below would park an
+  # approval instead of reaching the tool. These examples are about the CRUD
+  # DELEGATION, so an operator policy puts the gate on its proceed branch
+  # rather than removing it. See spec/support/skill_gate_helpers.rb.
+  before do
+    auto_execute_skill_policy!(
+      account,
+      System::Ai::Skills::ArchitectureCreateExecutor,
+      System::Ai::Skills::ArchitectureUpdateExecutor,
+      System::Ai::Skills::ArchitectureDeleteExecutor
+    )
+  end
+
   describe "ROUTES" do
     it "covers the architecture CRUD operations" do
       expect(described_class::ROUTES.keys).to contain_exactly(

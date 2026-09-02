@@ -9,6 +9,22 @@ RSpec.describe System::Fleet::DecisionEngine do
   let(:service)  { System::Fleet::FleetAutonomyService.new(account: account, agent: agent) }
   let(:engine)   { described_class.new(autonomy_service: service) }
 
+  # The `gated:` keyword on every executor invocation below is the tick loop's
+  # contract since APO-1c (IMP-7e2bdc1774e4): BaseSkillExecutor#execute resolves
+  # Ai::InterventionPolicy before #perform, and #execute_approved! (replaying an
+  # approved request) and #invoke_skill (the F3-06 pre-gate) have ALREADY
+  # resolved it — against the SIGNAL's action_category — by the time they build
+  # the executor. Without the opt-out a side-effectful skill would park an
+  # approval on top of the verdict this engine just acted on.
+  #
+  # It is `binding[:side_effectful]`, NOT a bare true, and the expectations
+  # below spell out which: #invoke_skill's policy resolution runs only inside
+  # `if binding.fetch(:side_effectful)`, so on a non-side-effectful binding
+  # (DriftRemediate, SdwanFailover, SdwanBgpSessionRemediate, CveResponse) no
+  # policy was resolved and there is nothing for the executor's own gate to
+  # stand down for. That is invisible today — none of those four declares
+  # `requires_approval` — which is exactly why the value is asserted here
+  # rather than left to a comment.
   describe "#decide" do
     context "with an unrecognized signal kind" do
       it "skips with reason" do
@@ -917,7 +933,7 @@ RSpec.describe System::Fleet::DecisionEngine do
                                        policy: "notify_and_proceed", is_active: true)
         executor = instance_double(System::Ai::Skills::SdwanPeerRemediateExecutor)
         allow(System::Ai::Skills::SdwanPeerRemediateExecutor).to receive(:new).and_return(executor)
-        expect(executor).to receive(:execute).with(peer_id: "peer-1")
+        expect(executor).to receive(:execute).with(gated: true, peer_id: "peer-1")
                                              .and_return({ success: true, data: { resolved: true } })
 
         d = engine.decide(kind: "system.sdwan_peer_drift", severity: :high,
@@ -930,7 +946,7 @@ RSpec.describe System::Fleet::DecisionEngine do
       it "invokes SdwanFailoverExecutor with the network_id" do
         executor = instance_double(System::Ai::Skills::SdwanFailoverExecutor)
         allow(System::Ai::Skills::SdwanFailoverExecutor).to receive(:new).and_return(executor)
-        expect(executor).to receive(:execute).with(network_id: "net-1")
+        expect(executor).to receive(:execute).with(gated: false, network_id: "net-1")
                                              .and_return({ success: true, data: {} })
 
         engine.decide(kind: "system.sdwan_hub_unreachable", severity: :critical,
@@ -942,7 +958,7 @@ RSpec.describe System::Fleet::DecisionEngine do
         executor = instance_double(System::Ai::Skills::SdwanBgpSessionRemediateExecutor)
         allow(System::Ai::Skills::SdwanBgpSessionRemediateExecutor).to receive(:new).and_return(executor)
         expect(executor).to receive(:execute)
-          .with(bgp_session_id: "bgp-1", peer_id: "peer-1", neighbor_address: "10.0.0.2")
+          .with(gated: false, bgp_session_id: "bgp-1", peer_id: "peer-1", neighbor_address: "10.0.0.2")
           .and_return({ success: true, data: {} })
 
         engine.decide(kind: "system.sdwan_bgp_session_unhealthy", severity: :high,
@@ -956,7 +972,7 @@ RSpec.describe System::Fleet::DecisionEngine do
         allow(System::Ai::Skills::SdwanVipFailoverExecutor).to receive(:new).and_return(executor)
         # No intervention policy row → resolves to the require_approval
         # default, so the side-effectful failover runs as a dry_run plan.
-        expect(executor).to receive(:execute).with(virtual_ip_id: "vip-1", dry_run: true)
+        expect(executor).to receive(:execute).with(gated: true, virtual_ip_id: "vip-1", dry_run: true)
                                              .and_return({ success: true, data: {} })
 
         engine.decide(kind: "system.sdwan_vip_unreachable", severity: :critical,
@@ -991,7 +1007,7 @@ RSpec.describe System::Fleet::DecisionEngine do
       it "invokes DriftRemediateExecutor with the instance resolved from instance_ids" do
         executor = instance_double(System::Ai::Skills::DriftRemediateExecutor)
         allow(System::Ai::Skills::DriftRemediateExecutor).to receive(:new).and_return(executor)
-        expect(executor).to receive(:execute).with(instance_id: instance.id)
+        expect(executor).to receive(:execute).with(gated: false, instance_id: instance.id)
                                              .and_return({ success: true, data: { resolved: true } })
 
         engine.decide(kind: "system.config_drift", severity: :medium,
@@ -1059,7 +1075,7 @@ RSpec.describe System::Fleet::DecisionEngine do
                                        policy: "notify_and_proceed", is_active: true)
         executor = instance_double(System::Ai::Skills::PlatformMaintenanceExecutor)
         allow(System::Ai::Skills::PlatformMaintenanceExecutor).to receive(:new).and_return(executor)
-        expect(executor).to receive(:execute).with(action: "cert_rotate", certificate_id: "cert-1")
+        expect(executor).to receive(:execute).with(gated: true, action: "cert_rotate", certificate_id: "cert-1")
                                              .and_return({ success: true, data: {} })
 
         d = engine.decide(kind: "system.acme_cert_expiring", severity: :medium,
@@ -1075,7 +1091,7 @@ RSpec.describe System::Fleet::DecisionEngine do
         executor = instance_double(System::Ai::Skills::FederationPeerRemediateExecutor)
         allow(System::Ai::Skills::FederationPeerRemediateExecutor).to receive(:new).and_return(executor)
         expect(executor).to receive(:execute)
-          .with(federation_peer_id: "fp-1", reason: "heartbeat_stale", dry_run: true)
+          .with(gated: true, federation_peer_id: "fp-1", reason: "heartbeat_stale", dry_run: true)
           .and_return({ success: true, data: { plan: "degrade" } })
 
         d = engine.decide(kind: "system.federation_peer_liveness", severity: :high,
@@ -1091,7 +1107,7 @@ RSpec.describe System::Fleet::DecisionEngine do
                                        policy: "require_approval", is_active: true)
         executor = instance_double(System::Ai::Skills::SdwanPeerRemediateExecutor)
         allow(System::Ai::Skills::SdwanPeerRemediateExecutor).to receive(:new).and_return(executor)
-        expect(executor).to receive(:execute).with(peer_id: "peer-9", dry_run: true)
+        expect(executor).to receive(:execute).with(gated: true, peer_id: "peer-9", dry_run: true)
                                              .and_return({ success: true, data: {} })
 
         engine.decide(kind: "system.sdwan_peer_drift", severity: :high,

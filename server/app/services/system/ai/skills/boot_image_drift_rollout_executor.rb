@@ -45,6 +45,14 @@ module System
             dispatched_task_ids: [ :string ], dispatch_errors: [ :object ]
           },
           requires_approval: true,
+          # System::Fleet::DecisionEngine already gates this executor's tick-loop
+          # door on system.node_boot_image_drift (SIGNAL_BINDINGS
+          # "system.boot_image_drift"), and that category is registered and
+          # seeded. Declaring it here makes the APO-1c gate on the DIRECT door
+          # resolve the same operator row instead of deriving a second spelling
+          # (system.boot_image_drift_rollout) for one capability
+          # (IMP-7e2bdc1774e4, IMP-eb60db901f5f).
+          action_category: "system.node_boot_image_drift",
           blast_radius: "reboots every drifted node on the platform, batch by batch"
         )
         binds_to "Fleet Autonomy"

@@ -1,5 +1,15 @@
 # frozen_string_literal: true
 
+# `gated: true` on every skill-executor call below — APO-1c (IMP-7e2bdc1774e4).
+# These executors declare `requires_approval: true`, and BaseSkillExecutor
+# #execute now resolves Ai::InterventionPolicy before #perform: on an install
+# with no policy row the category defaults to require_approval, so an ungated
+# call here would park an approval, return success: false, and abort the smoke
+# run on a policy verdict rather than on anything it was written to test. An
+# operator running this seed by hand IS the decision the gate exists to ask
+# for, so the smoke path asserts it the same way System::Fleet::DecisionEngine
+# does. Nothing else in the platform may pass this flag on an operator door.
+
 # System extension — end-to-end edge smoke across all six ingress/egress
 # exposure paths (campaign 019f3458 increment 10), grounded in
 # docs/runbooks/traefik-tcp-exposure-vs-dnat.md:
@@ -267,7 +277,9 @@ results.depth!("path_a", "c",
   "no live Traefik/kernel nft consumes them in this worktree")
 results.check("path_a", "Path A: create-and-expose (http, no ACME)") do
   executor = ::System::Ai::Skills::ExposeServicePubliclyExecutor.new(account: account)
+  # gated: true — see the APO-1c note at the head of this file.
   result = executor.execute(
+    gated: true,
     service_hostname: path_a_hostname, service_protocol: "http",
     sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
     vip_cidr: "#{vip_prefix}::a1/128",
@@ -514,7 +526,8 @@ path_b_services.each do |svc, shape|
   results.depth!("path_b_#{svc.slug}", "c", path_b_depth_note)
   results.check("path_b_#{svc.slug}", "Path B (#{svc.edge_mode}/#{svc.client_auth}): ExposeServicePublicTcpExecutor exposes #{svc.slug}") do
     executor = ::System::Ai::Skills::ExposeServicePublicTcpExecutor.new(account: account)
-    result = executor.execute(service_id: svc.id, enabled: true)
+    # gated: true — see the APO-1c note at the head of this file.
+    result = executor.execute(gated: true, service_id: svc.id, enabled: true)
     raise "execute returned success: false (#{result[:error]})" unless result[:success]
 
     written = scratch_dir.join("local-services-#{account.id}.yaml")
