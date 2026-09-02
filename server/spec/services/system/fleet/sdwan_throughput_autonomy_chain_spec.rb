@@ -9,8 +9,11 @@ require "rails_helper"
 # System::ProjectMetric::KNOWN_METRIC_NAMES had no slot to put them in.
 #
 # The failure mode this file exists to prevent is a HALF-LANDED chain: offer
-# 01a02bfb-84bd is the precedent, where ProjectSloSensor maps 5 of the 7
-# metric names so cpu_pct/memory_pct land dark however well they are produced.
+# 01a02bfb-84bd is the precedent, where ProjectSloSensor mapped 5 of the 7
+# metric names so cpu_pct/memory_pct landed dark however well they were
+# produced. (That instance was closed by IMP-7684d3f8658a, which wired both
+# utilization metrics through to a signal; it is cited here as the pattern,
+# not as an open defect.)
 # Each unit spec covers one link:
 #
 #   spec/models/sdwan/peer_spec.rb                       .counter_delta rules

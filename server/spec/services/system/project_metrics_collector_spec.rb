@@ -396,8 +396,9 @@ RSpec.describe System::ProjectMetricsCollector do
     end
 
     # IMP-25e75f960dee — the "lands dark" ratchet. Offer 01a02bfb-84bd is the
-    # precedent: ProjectSloSensor maps only 5 of the 7 KNOWN_METRIC_NAMES, so
-    # cpu_pct/memory_pct would land dark even if perfectly produced. The same
+    # precedent: ProjectSloSensor mapped only 5 of the 7 KNOWN_METRIC_NAMES, so
+    # cpu_pct/memory_pct landed dark even though they were perfectly produced —
+    # closed by IMP-7684d3f8658a, which wired both through to a signal. The same
     # divergence one step earlier — a name in the model's vocabulary that this
     # collector never samples, or a sampled name the model rejects — is
     # invisible to every other example in this file, because each one asserts

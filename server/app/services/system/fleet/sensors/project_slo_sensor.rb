@@ -33,6 +33,15 @@ module System
         DEFAULT_P99_LATENCY_MS    = 250
         DEFAULT_COST_CEILING_USD  = nil # falls back to brief.budget_cap_usd_monthly
 
+        # IMP-7684d3f8658a — the utilization metrics this sensor checks against
+        # a ceiling, in the order they are evaluated, mapped to the target key
+        # #extract_targets resolves from Ai::Mission#utilization_targets. CPU
+        # first: it is the metric a scale-out actually relieves.
+        UTILIZATION_METRICS = [
+          [ "cpu_pct", "max_cpu_pct" ],
+          [ "memory_pct", "max_memory_pct" ]
+        ].freeze
+
         # Severity scaling — breach % over target threshold.
         SEVERITY_THRESHOLDS = [
           [ 50.0, :critical ], # ≥50% above target → critical
@@ -42,8 +51,18 @@ module System
         ].freeze
 
         def sense
+          # `.includes` because #extract_targets walks each mission's
+          # utilization ladder, which touches the mission TEMPLATE and the
+          # ACCOUNT rungs — a bare relation makes that two extra SELECTs per
+          # mission per tick.
           missions = ::Ai::Mission
+            .includes(:mission_template, :account)
             .where(account_id: account.id, mission_type: "infrastructure", status: "active")
+
+          # The SiteSetting rung of that same ladder, read ONCE for the whole
+          # tick: it is a per-deployment value, and SiteSetting.get is an
+          # uncached find_by. See Ai::Mission.global_utilization_settings.
+          @global_utilization_settings = resolve_global_utilization_settings
 
           missions.find_each.flat_map { |m| evaluate_mission(m) }.compact
         rescue StandardError => e
@@ -92,7 +111,49 @@ module System
             # like cost_ceiling_usd — so a mission that says nothing keeps its
             # current behaviour byte for byte.
             "min_throughput_bytes_per_s" => slo["min_throughput_bytes_per_s"]&.to_f
+          }.merge(utilization_targets_for(mission))
+        end
+
+        # IMP-7684d3f8658a — the cpu / memory ceilings, read from the mission
+        # rather than re-derived here. `Ai::Mission#utilization_targets` is the
+        # bounds home APO-3a established, and it already resolves the whole
+        # ladder (the project's own `slo_targets` → its template →
+        # Account#settings → SiteSetting → constant). Re-reading `slo` here
+        # instead would give this sensor a private, shallower opinion of a
+        # project's declared ceiling than the model every other reader uses.
+        #
+        # nil for a metric means NO ceiling was usably declared and the metric
+        # is not checked at all — see Ai::Mission#resolved_utilization_target.
+        # `respond_to?` because a core without the targets (an older deploy of
+        # the model, or a mission double in a spec) must leave the sensor's
+        # existing metrics working rather than take the whole mission's
+        # evaluation down.
+        def utilization_targets_for(mission)
+          return {} unless mission.respond_to?(:utilization_targets)
+
+          targets = mission.utilization_targets(global_settings: @global_utilization_settings)
+          {
+            "max_cpu_pct" => targets.target_for("cpu_pct"),
+            "max_memory_pct" => targets.target_for("memory_pct")
           }
+        rescue StandardError => e
+          Rails.logger.warn("[ProjectSloSensor] utilization targets unresolved for " \
+                            "mission=#{mission.id}: #{e.class}: #{e.message}")
+          {}
+        end
+
+        # nil (not {}) when the hoist is unavailable — a core without it, or a
+        # read that failed — because nil means "not supplied" to the ladder,
+        # which then resolves the rung itself. An empty hash would instead
+        # assert "resolved, nothing set" and suppress a real SiteSetting.
+        def resolve_global_utilization_settings
+          return nil unless ::Ai::Mission.respond_to?(:global_utilization_settings)
+
+          ::Ai::Mission.global_utilization_settings
+        rescue StandardError => e
+          Rails.logger.warn("[ProjectSloSensor] global utilization settings unresolved: " \
+                            "#{e.class}: #{e.message}")
+          nil
         end
 
         # Pull the latest observation tuple. Production metrics live in
@@ -101,6 +162,16 @@ module System
         # without a metrics history fall back to the synthetic observation
         # blob on `configuration["latest_observations"]` — the M0/M1/M2
         # specs use this seam and must keep passing.
+        # The DB arm wins whenever it carries ANY real reading. Note that this
+        # test reads the MAPPED hash, so IMP-7684d3f8658a widened it: a mission
+        # whose only non-nil ProjectMetric rows are cpu_pct / memory_pct used to
+        # fall through to the synthetic config blob and now does not. That is
+        # the intended direction — the config seam is documented above as the
+        # fallback for a mission with NO metrics history, and a project the
+        # collector is measuring has one — but it is a real behaviour change for
+        # such a mission (a stale `latest_observations` latency or cost figure
+        # stops being reported), so it is stated here and pinned by an example
+        # in spec/services/system/fleet/sensors/project_slo_sensor_utilization_spec.rb.
         def sample_observations(mission)
           db_obs = sample_from_db(mission)
           return db_obs if db_obs && db_obs.values.any? { |v| !v.nil? }
@@ -139,7 +210,21 @@ module System
             # which is the exact breach the floor below fires on. The safe
             # navigation IS the oracle; see the mutation spec in
             # spec/services/system/fleet/sensors/project_slo_sensor_spec.rb.
-            "sdwan_throughput_bytes_per_s" => by_name["sdwan_throughput_bytes_per_s"]&.to_f
+            "sdwan_throughput_bytes_per_s" => by_name["sdwan_throughput_bytes_per_s"]&.to_f,
+            # IMP-7684d3f8658a — the two utilization metrics the collector has
+            # produced since APO-2a and this sensor never read.
+            #
+            # `&.to_f` for the same reason as every row above, but state the
+            # honest difference: on a CEILING the nil-vs-zero distinction is not
+            # currently observable in a signal — an unmeasured nil and a
+            # fabricated 0.0 both sit below every positive ceiling, and
+            # Ai::Mission never resolves a non-positive one. It is kept because
+            # this hash is the sensor's whole vocabulary of what was observed:
+            # a 0.0 standing in for "we could not see the fleet" is wrong for
+            # any reader that does not happen to be a ceiling comparison, and
+            # the throughput FLOOR one row up is exactly such a reader.
+            "cpu_pct" => by_name["cpu_pct"]&.to_f,
+            "memory_pct" => by_name["memory_pct"]&.to_f
           }
         rescue StandardError => e
           Rails.logger.warn("[ProjectSloSensor] DB metrics read failed for mission=#{mission.id}: #{e.message}")
@@ -159,7 +244,12 @@ module System
             # Same `&.` rule as the DB arm: a mission whose synthetic
             # observation blob omits throughput has not been measured, and
             # must not read as a floor breach.
-            "sdwan_throughput_bytes_per_s" => obs["sdwan_throughput_bytes_per_s"]&.to_f
+            "sdwan_throughput_bytes_per_s" => obs["sdwan_throughput_bytes_per_s"]&.to_f,
+            # Same `&.` rule again, and the same honest caveat as the DB arm:
+            # an observation blob that omits a utilization metric has not
+            # measured it, and nil is what this hash says about that.
+            "cpu_pct" => obs["cpu_pct"]&.to_f,
+            "memory_pct" => obs["memory_pct"]&.to_f
           }
         end
 
@@ -250,7 +340,57 @@ module System
             )
           end
 
+          # IMP-7684d3f8658a — the utilization ceilings, LAST in the chain.
+          # This method returns the FIRST violated metric, so appending rather
+          # than inserting keeps every signal a mission emits today byte for
+          # byte: a project that would have reported latency, availability or a
+          # throughput floor still reports it, and cpu/memory only speak when
+          # nothing louder did.
+          UTILIZATION_METRICS.each do |metric, target_key|
+            signal = utilization_signal(mission, targets, obs, correlation, metric, target_key)
+            return signal if signal
+          end
+
           nil
+        end
+
+        # A utilization CEILING breach: observed strictly above the declared
+        # (or defaulted) percentage.
+        #
+        # `.nil?`-explicit on both sides, never `.present?` — as a statement of
+        # intent, not because a signal can currently tell the two apart: on a
+        # ceiling an unmeasured nil and a fabricated 0.0 both sit below every
+        # positive target. What the explicit spelling buys is that the guard
+        # keeps meaning "unmeasured" if this ever grows a floor-shaped sibling,
+        # where the two answers diverge — which is exactly what happened to the
+        # throughput check one screen up.
+        #
+        # `target <= 0` is unreachable through Ai::Mission#utilization_targets,
+        # which resolves a non-positive declaration to nil. It is kept as the
+        # local statement of what this method needs: a ceiling of 0 would fire
+        # on every tick of every mission, so a future target source that does
+        # not share that rule cannot turn this into a flood.
+        def utilization_signal(mission, targets, obs, correlation, metric, target_key)
+          target = targets[target_key]
+          observed = obs[metric]
+          return nil if target.nil? || target <= 0
+          return nil if observed.nil? || observed <= target
+
+          breach_pct = pct_over(observed, target)
+          build_signal(
+            kind: "system.project_slo_violation",
+            severity: severity_for(breach_pct),
+            payload: {
+              mission_id: mission.id,
+              metric: metric,
+              observed: observed,
+              target: target,
+              breach_pct: breach_pct,
+              replica_count: obs["actual_replica_count"],
+              correlation_id: correlation
+            },
+            fingerprint: "project_slo_violation:#{mission.id}:#{metric}"
+          )
         end
 
         def drift_signal(mission, targets, obs, correlation)

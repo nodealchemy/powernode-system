@@ -78,11 +78,29 @@ RSpec.describe "FLEET_SENSORS.md signal kinds vs. the sensors that emit them" do
   # SiteSetting keys. Real, but assembled by interpolation in the sensors
   # (`"system.sdwan.ovn.#{key}"`), so no whole-key string literal exists to
   # match against.
-  SETTING_KEYS = %w[
+  INTERPOLATED_SETTING_KEYS = %w[
     system.sdwan.ovn.probe_denied_cidrs
     system.sdwan.ovn.stall_after_seconds
     system.project_metrics.sample_freshness_seconds
   ].freeze
+
+  # IMP-7684d3f8658a — the per-project utilization ceilings' platform-wide
+  # defaults. Also real, but declared on Ai::Mission in CORE, which is outside
+  # this corpus (extension server/app, server/lib, server/db/seeds), so no
+  # literal here can vouch for them either.
+  #
+  # They are NOT waved through on that account. An amnesty with no oracle is
+  # permanent — rename the constant in core and the doc would keep documenting
+  # a dead SiteSetting key with every check green. So each carries the
+  # declaration it claims to name, and the example below asserts the two agree.
+  # That is a STRONGER oracle than the source-literal scan ACTION_KINDS gets:
+  # it reads the live constant, not a string that happens to appear somewhere.
+  CORE_SETTING_KEYS = {
+    "ai.provisioning.max_cpu_pct" => %w[Ai::Mission MAX_CPU_PCT_SETTING],
+    "ai.provisioning.max_memory_pct" => %w[Ai::Mission MAX_MEMORY_PCT_SETTING]
+  }.freeze
+
+  SETTING_KEYS = (INTERPOLATED_SETTING_KEYS + CORE_SETTING_KEYS.keys).freeze
 
   # Action categories the DecisionEngine dispatches — NOT signals. A
   # `**Threshold:**` line may name one to draw exactly that contrast
@@ -361,6 +379,18 @@ RSpec.describe "FLEET_SENSORS.md signal kinds vs. the sensors that emit them" do
     ACTION_KINDS.each do |a|
       expect(source).to include(%("#{a}")),
         -> { "#{a} is classified as an action category but appears in no source string" }
+    end
+
+    # The core-declared SiteSetting keys, held to their own definition the same
+    # way. Nothing in this corpus can quote them, so the constant IS the
+    # evidence: if it is renamed or deleted, this is what goes red instead of
+    # the doc quietly outliving the setting it documents.
+    CORE_SETTING_KEYS.each do |key, (const_path, const_name)|
+      owner = Object.const_get(const_path)
+      expect(owner.const_defined?(const_name, false)).to be(true),
+        -> { "#{key} is classified as a core SiteSetting key, but #{const_path}::#{const_name} does not exist" }
+      expect(owner.const_get(const_name, false)).to eq(key),
+        -> { "#{const_path}::#{const_name} is #{owner.const_get(const_name, false).inspect}, not the documented #{key.inspect}" }
     end
 
     # …and whatever a line calls a "signal" must actually be one, whichever

@@ -315,10 +315,16 @@ RSpec.describe System::Fleet::Sensors::ProjectSloSensor do
   # ---------------------------------------------------------------------
   # IMP-25e75f960dee — sdwan_throughput_bytes_per_s floor.
   #
-  # The failure this whole block exists to prevent is offer 01a02bfb-84bd:
-  # the collector maps 7 metric names, this sensor reads 5, so cpu_pct and
-  # memory_pct land dark no matter how well they are produced. A metric that
-  # is sampled but never read lights nothing.
+  # The failure this whole block exists to prevent is offer 01a02bfb-84bd, as
+  # it stood then: the collector mapped 7 metric names, this sensor read 5, so
+  # cpu_pct and memory_pct landed dark no matter how well they were produced. A
+  # metric that is sampled but never read lights nothing.
+  #
+  # That specific gap is CLOSED — IMP-7684d3f8658a wired both utilization
+  # metrics through to a signal (see
+  # project_slo_sensor_utilization_spec.rb) — so the sensor now reads all 7.
+  # The ratchet stays because the SHAPE recurs: this block is the standing
+  # check that a metric the collector produces reaches a decision.
   # ---------------------------------------------------------------------
   describe "SDWAN throughput floor" do
     def write_metric(mission, metric_name, observed:, sampled_at: Time.current)

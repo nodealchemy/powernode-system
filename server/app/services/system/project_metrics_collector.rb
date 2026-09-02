@@ -211,6 +211,34 @@ module System
     # SLO sensor skips it instead of reading a fabricated zero as a real
     # measurement. Wiring a new real source is a one-branch change here.
     def sample_metric(metric_name, instance_ids)
+      sample_one(metric_name, instance_ids)
+    rescue StandardError => e
+      # IMP-7684d3f8658a — PER-METRIC CONTAINMENT, mirroring the rescue
+      # sample_sdwan_throughput has carried since IMP-25e75f960dee. Without it
+      # a raise anywhere in one sampler costs the mission its ENTIRE batch for
+      # the tick: sample_all has no rescue of its own and
+      # FleetAutonomyService#collect_project_metrics! only rescues per MISSION,
+      # so a single bad JSONB document or a pricing lookup blowing up took
+      # replica_count and region_count — and therefore drift detection — dark
+      # with it, silently.
+      #
+      # It sits on the DISPATCHER rather than being copied into each sampler so
+      # a metric wired later cannot be the one that forgets it. The sampler
+      # that owns extra state on failure still rescues internally
+      # (sample_sdwan_throughput unsets its counter-banking flag) and never
+      # reaches here.
+      #
+      # The result is the same honest `unavailable` sample an unwired metric
+      # records — observed nil, never a fabricated zero — so the sensors skip
+      # the metric for this tick instead of reading a failure as a measurement.
+      Rails.logger.warn(
+        "[ProjectMetricsCollector] #{metric_name} sampling failed for " \
+        "mission=#{@mission&.id}: #{e.class}: #{e.message}"
+      )
+      unavailable_sample(metric_name, "#{metric_name} sampling failed: #{e.class}")
+    end
+
+    def sample_one(metric_name, instance_ids)
       case metric_name
       when "replica_count" then sample_replica_count(instance_ids)
       when "region_count"  then sample_region_count(instance_ids)
