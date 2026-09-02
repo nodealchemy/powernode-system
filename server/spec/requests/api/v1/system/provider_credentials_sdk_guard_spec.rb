@@ -8,10 +8,10 @@ require "rails_helper"
 # system_create_provider_connection). ProviderCredentialsController's
 # auto-create-on-first-cred path did not: it minted a System::Provider row
 # for ANY type in System::Provider::PROVIDER_TYPES, so a credential POST was
-# a second way to obtain exactly the inoperable row those four refuse. It was
-# not the last one: REST ProvidersController#create/#update permits
-# :provider_type with no registry guard and is still open (out of scope here,
-# tracked separately).
+# a second way to obtain exactly the inoperable row those four refuse. The
+# REST operator CRUD (ProvidersController#create/#update) applies the same
+# predicate as of IMP-0ddfd8a60032; spec/lint/provider_type_writer_census_spec.rb
+# is the enumeration of record.
 #
 # The oracle is the ROW, not the status: this repo has shipped a guard that
 # rendered a refusal from an action body while the write still landed. The

@@ -196,10 +196,11 @@ module Api
         # build. This controller mints a System::Provider row as a side effect
         # of a credential POST, so without the same predicate it is a second
         # way to obtain exactly the inoperable row those doors refuse. It is
-        # NOT the last one: REST ProvidersController#create/#update
-        # (providers_controller.rb:25/37) permits :provider_type with no
-        # registry guard and is still open — tracked separately, out of scope
-        # for IMP-efc4b9c2d96b.
+        # The REST operator CRUD (ProvidersController#create/#update) applies
+        # the same predicate as of IMP-0ddfd8a60032, as does
+        # CredentialValidationService#sdk_refusal;
+        # spec/lint/provider_type_writer_census_spec.rb is the enumeration of
+        # record.
         #
         # @param provider_type [String]
         # @return [String, nil] refusal text naming the missing gem, or nil

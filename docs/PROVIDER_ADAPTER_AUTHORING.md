@@ -436,16 +436,19 @@ declared, the Registry:
   instead of letting the first call raise a bare `NameError` from inside the adapter.
 
 The provider/connection front doors refuse before writing anything: `system_create_provider` and
-`system_create_provider_connection` return an error result, and `POST`/`PATCH`
+`system_create_provider_connection` return an error result; `POST`/`PATCH`
 `/api/v1/system/provider_connections` return 422 (the `PATCH` guard matters because
-`connection_params` permits `:provider_id`). This is not an exhaustive claim about every write:
-`POST /api/v1/system/provider_credentials` still auto-creates a `System::Provider` row for any
-type in `System::Provider::PROVIDER_TYPES` — that row is inert, because every path that reaches an
-adapter goes through the registry guard above, and the BYOC credential probe itself uses hand-rolled
-HTTP (or `aws-sdk-core`, which *is* bundled), never the missing gem. The behaviour is covered by
-`spec/services/system/providers/sdk_availability_guard_spec.rb`, which drives the SDK constant in
-both directions with `hide_const`/`stub_const` so it holds under the default bundle *and* under the
-`provider-specs` lane described in §7.
+`connection_params` permits `:provider_id`); `POST`/`PATCH` `/api/v1/system/providers` return 422
+with code `PROVIDER_SDK_MISSING` (on `PATCH` only when `provider_type` actually changes, so a
+stranded row stays renameable and disableable); `POST /api/v1/system/provider_credentials` refuses
+before auto-creating a `System::Provider` row; and `System::CredentialValidationService` refuses
+before probing, because the BYOC probe reaches a bundled sibling gem (`aws-sdk-core` STS) and would
+otherwise report a false pass for a type every adapter call refuses. The authoritative enumeration
+of every `provider_type` writer and its guard is `spec/lint/provider_type_writer_census_spec.rb`,
+which fails when a writer appears that the census does not list. The registry predicate itself is
+covered by `spec/services/system/providers/sdk_availability_guard_spec.rb`, which drives the SDK
+constant in both directions with `hide_const`/`stub_const` so it holds under the default bundle
+*and* under the `provider-specs` lane described in §7.
 
 ---
 
