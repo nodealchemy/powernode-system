@@ -14,6 +14,16 @@ module Ai
       # mutating actions to higher levels.
       REQUIRED_PERMISSION = "system.nodes.read"
 
+      # IMP-40548751c199 — value sets this tool itself decides, named so the MCP
+      # `enum:` declarations below cite ONE definition instead of restating a
+      # list in description prose. Everything else enumerable on this surface
+      # cites the model/executor constant its dispatch actually validates on.
+      #
+      # VOLUME_TRANSPORTS is #create_volume's own allow-list (there is no
+      # ProviderVolume-side inclusion validator — the transport picks/creates a
+      # ProviderVolumeType, so the tool is the gate).
+      VOLUME_TRANSPORTS = %w[nfs iscsi smb block].freeze
+
       # How many of a build plan's excluded modules #dispatch_module_build_batch
       # samples into its result; excluded_count always carries the true total.
       EXCLUDED_MODULE_SAMPLE_LIMIT = 25
@@ -591,7 +601,8 @@ module Ai
           name: "system_fleet",
           description: "System extension fleet operations: nodes, instances, templates, modules, tasks, drift",
           parameters: {
-            action: { type: "string", required: true, description: "Action to perform" },
+            action: { type: "string", required: true, enum: action_definitions.keys,
+                     description: "Action to perform" },
             id: { type: "string", required: false, description: "Resource ID (context-dependent)" },
             name: { type: "string", required: false },
             template_id: { type: "string", required: false },
@@ -601,7 +612,9 @@ module Ai
             module_version_id: { type: "string", required: false },
             module_name: { type: "string", required: false, description: "Module slug as CI publishes it (system_module_publish_target)" },
             gitea_repo: { type: "string", required: false, description: "OCI repo full name; defaults to powernode/<module_name> (system_module_publish_target)" },
-            target_state: { type: "string", required: false, description: "Module promotion target: staging|blessed|live|retired" },
+            target_state: { type: "string", required: false, enum: ::System::NodeModuleVersion::PROMOTION_STATES,
+                            description: "Module promotion target — the set System::NodeModuleVersion#promote_to! accepts; " \
+                                         "which of them is reachable from the version's current state is governed by PROMOTION_TRANSITIONS" },
             provider_id: { type: "string", required: false },
             provider_region_id: { type: "string", required: false },
             provider_instance_type_id: { type: "string", required: false },
@@ -829,7 +842,8 @@ module Ai
             description: "Grant an instance-agent the MCP tool-name glob patterns it may invoke on the platform MCP (default-deny: an instance can call nothing until granted). Patterns match the 'platform.<tool>' name, e.g. 'platform.system_*_read' or 'platform.health'. mode: 'replace' (default) or 'add'. The instance must have announced as a peer.",
             parameters: {
               instance_id: { type: "string", required: true, description: "UUID of the instance (announced peer) to grant MCP tool access to" },
-              tool_patterns: { type: "array", required: true, description: "Glob patterns matching 'platform.<tool>' names the instance may invoke (e.g. ['platform.system_*_read'])" },
+              tool_patterns: { type: "array", required: true, items: { type: "string" },
+                              description: "Glob patterns matching 'platform.<tool>' names the instance may invoke (e.g. ['platform.system_*_read'])" },
               mode: { type: "string", required: false, description: "'replace' (default) to overwrite the grant list, or 'add' to append" }
             }
           },
@@ -837,7 +851,8 @@ module Ai
             description: "A2A: grant an instance-agent the peer skill-name glob patterns it may invoke on OTHER instances via agent-to-agent MCP (default-deny). Patterns match a peer's offered skill name, e.g. 'embed-*' or 'summarize'. mode: 'replace' (default) or 'add'. The instance must have announced as a peer.",
             parameters: {
               instance_id: { type: "string", required: true, description: "UUID of the instance (announced peer) to grant peer-skill call access to" },
-              skill_patterns: { type: "array", required: true, description: "Glob patterns matching peer-offered skill names the instance may invoke via A2A (e.g. ['embed-*', 'summarize'])" },
+              skill_patterns: { type: "array", required: true, items: { type: "string" },
+                               description: "Glob patterns matching peer-offered skill names the instance may invoke via A2A (e.g. ['embed-*', 'summarize'])" },
               mode: { type: "string", required: false, description: "'replace' (default) to overwrite the grant list, or 'add' to append" }
             }
           },
@@ -1025,7 +1040,8 @@ module Ai
           "system_compose_preview_template" => {
             description: "Design-time composition preview for a set of NodeModules — the same analysis the Visual Template Composer shows. Resolves the full dependency closure (explicit picks PLUS transitive requires/recommends) and returns the serialized modules, detected conflicts, footprint estimate, dependency graph, and resolver warnings/errors. Read-only: persists NOTHING, creates no template. Use it before system_create_template + system_assign_module_to_template to see conflicts the assignment path would refuse.",
             parameters: {
-              module_ids: { type: "array", required: true, description: "UUIDs of the NodeModules to compose (account-scoped). The operator's explicit picks — dependencies are resolved automatically and flagged auto_resolved in the response." }
+              module_ids: { type: "array", required: true, items: { type: "string" },
+                           description: "UUIDs of the NodeModules to compose (account-scoped). The operator's explicit picks — dependencies are resolved automatically and flagged auto_resolved in the response." }
             }
           },
 
@@ -1049,7 +1065,8 @@ module Ai
             parameters: {
               intent: { type: "string", required: true, description: "Free-text description of the capability/purpose the module should serve" },
               top_k: { type: "integer", required: false, description: "Max results to return (1-#{::System::CatalogDiscoveryService::MAX_TOP_K}, default #{::System::CatalogDiscoveryService::DEFAULT_TOP_K})" },
-              variety: { type: "string", required: false, description: "Restrict to a module variety: config | instance | subscription" },
+              variety: { type: "string", required: false, enum: ::System::NodeModule::VARIETIES,
+                        description: "Restrict to a module variety: config | instance | subscription" },
               platform_id: { type: "string", required: false, description: "Restrict to modules for a specific NodePlatform" },
               include_disabled: { type: "boolean", required: false, description: "Include disabled modules in the search (default false)" }
             }
@@ -1068,12 +1085,17 @@ module Ai
             # BEFORE calling, so the ladder/pointer split has to be stated here
             # too: correcting it only in the response teaches the caller after
             # it has already acted on "promote" meaning "ship it".
-            description: "Promote a NodeModuleVersion through its lifecycle (staging|blessed|live|retired). " \
+            description: "Promote a NodeModuleVersion through its lifecycle " \
+                         "(built | staging | blessed | live | retired). " \
                          "Advances promotion_state ONLY — it does not change which version the fleet serves " \
                          "(NodeModule#current_version_id); check promoted_to_current in the response.",
             parameters: {
               module_version_id: { type: "string", required: true, description: "UUID of the NodeModuleVersion to promote" },
-              target_state: { type: "string", required: true, description: "Target promotion state: staging | blessed | live | retired" }
+              target_state: { type: "string", required: true, enum: ::System::NodeModuleVersion::PROMOTION_STATES,
+                             description: "Target promotion state — one of System::NodeModuleVersion::PROMOTION_STATES " \
+                                          "(built | staging | blessed | live | retired). Which of them this version can " \
+                                          "actually reach is governed by PROMOTION_TRANSITIONS from its current state; " \
+                                          "'built' is reachable only back out of 'staging'." }
             }
           },
 
@@ -1154,7 +1176,7 @@ module Ai
                                description: "NodeTemplate to provision from (defaults to powernode-hub)." },
               parent_url: { type: "string", required: false,
                             description: "Federated-only — reachable URL of THIS platform. Supply it on the operator API path; federated mode is refused here." },
-              spawn_mode: { type: "string", required: false,
+              spawn_mode: { type: "string", required: false, enum: ::System::SpawnPlatformService::SPAWN_MODES,
                             description: "Federated-only — one of managed_child, autonomous_peer, cluster_member. Supply it on the operator API path; federated mode is refused here." },
               region: { type: "string", required: false, description: "Provider region to deploy the new platform into" },
               instance_size: { type: "string", required: false, description: "Instance size/SKU hint for the deployment's compute" },
@@ -1167,8 +1189,10 @@ module Ai
           "system_list_volumes" => {
             description: "List storage volumes for the current account. Filter by status (available/in-use/etc), transport (nfs/iscsi/block), or attached node_instance_id.",
             parameters: {
-              status: { type: "string", required: false, description: "Filter volumes by status (e.g. available, in-use)" },
-              transport: { type: "string", required: false, description: "Filter volumes by transport (nfs | iscsi | smb | block)" },
+              status: { type: "string", required: false, enum: ::System::ProviderVolume::STATUSES,
+                      description: "Filter volumes by status: creating | available | in-use | deleting | deleted | error" },
+              transport: { type: "string", required: false, enum: VOLUME_TRANSPORTS,
+                          description: "Filter volumes by transport (nfs | iscsi | smb | block)" },
               node_instance_id: { type: "string", required: false, description: "Filter to volumes attached to this NodeInstance UUID" },
               unattached_only: { type: "boolean", required: false, description: "When true, return only volumes not attached to any instance" }
             }
@@ -1183,7 +1207,8 @@ module Ai
               name: { type: "string", required: true, description: "Display name for the new ProviderVolume" },
               size_gb: { type: "integer", required: true, description: "Volume capacity in gigabytes" },
               volume_type_id: { type: "string", required: false, description: "ProviderVolumeType id (skip if transport given — we'll find/create the matching type)" },
-              transport: { type: "string", required: false, description: "nfs | iscsi | smb | block (default: block)" },
+              transport: { type: "string", required: false, enum: VOLUME_TRANSPORTS,
+                          description: "nfs | iscsi | smb | block (default: block)" },
               nfs_server: { type: "string", required: false, description: "Required for transport=nfs — hostname or IP" },
               nfs_export_path: { type: "string", required: false, description: "Required for transport=nfs — path on the server" },
               nfs_version: { type: "string", required: false, description: "Optional — 3 | 4.0 | 4.1 | 4.2 (default 4.1)" },
@@ -1323,7 +1348,8 @@ module Ai
           "system_platform_maintenance" => {
             description: "Wraps the platform_maintenance skill executor — op-discriminated: cert_status, cert_rotate, drift_check, health_check. Use `op:` for the sub-action; the MCP dispatcher already owns `action:`.",
             parameters: {
-              op: { type: "string", required: true, description: "cert_status | cert_rotate | drift_check | health_check" },
+              op: { type: "string", required: true, enum: ::System::Ai::Skills::PlatformMaintenanceExecutor::ACTIONS,
+                   description: "cert_status | cert_rotate | drift_check | health_check" },
               certificate_id: { type: "string", required: false, description: "UUID of the certificate to act on (for cert_status/cert_rotate)" },
               deployment_id: { type: "string", required: false, description: "UUID of the deployment to scope the maintenance op to" },
               renewal_window_days: { type: "integer", required: false, description: "Days-before-expiry window that flags a cert for rotation" }
@@ -1332,10 +1358,13 @@ module Ai
           "system_platform_resilience" => {
             description: "Wraps the platform_resilience skill executor — op-discriminated: drain_instance, scale, failover_check.",
             parameters: {
-              op: { type: "string", required: true, description: "drain_instance | scale | failover_check" },
+              op: { type: "string", required: true,
+                   enum: ::System::Ai::Skills::PlatformResilienceExecutor::ACTIONS,
+                   description: "drain_instance | scale | failover_check" },
               instance_id: { type: "string", required: false, description: "UUID of the instance to drain (for op=drain_instance)" },
               deployment_id: { type: "string", required: false, description: "UUID of the deployment to scale or check failover for" },
-              direction: { type: "string", required: false, description: "set | increment | decrement (for op=scale)" },
+              direction: { type: "string", required: false, enum: ::System::Ai::Skills::PlatformResilienceExecutor::SCALE_DIRECTIONS,
+                          description: "set | increment | decrement (for op=scale)" },
               target_replicas: { type: "integer", required: false, description: "Replica count for op=scale (used when direction=set)" },
               timeout_seconds: { type: "integer", required: false, description: "Timeout in seconds for the resilience operation" }
             }
@@ -1370,8 +1399,11 @@ module Ai
             description: "Triage a CVE entry against the fleet — risk-scored exposure list and remediation plan. Reads from System::CveExposure when persisted.",
             parameters: {
               cve_id: { type: "string", required: true, description: "Canonical CVE id (e.g. CVE-2026-12345) to triage against the fleet" },
-              severity: { type: "string", required: true, description: "CVE severity: critical | high | medium | low | unknown" },
-              affected_packages: { type: "array", required: true, description: "Affected package list, e.g. [{name: 'openssl', version: '<3.1.4'}, ...]" },
+              severity: { type: "string", required: true, enum: ::System::Cve::SEVERITIES,
+                         description: "CVE severity: critical | high | medium | low | unknown" },
+              affected_packages: { type: "array", required: true,
+                                  items: { type: "object", properties: { name: { type: "string" }, version: { type: "string" } } },
+                                  description: "Affected package list, e.g. [{name: 'openssl', version: '<3.1.4'}, ...]" },
               persist: { type: "boolean", required: false, description: "Persist a System::Cve row + exposures" }
             }
           },
@@ -1420,10 +1452,13 @@ module Ai
               target_size: { type: "integer", required: true, description: "Target number of warm+ready members" },
               min_size: { type: "integer", required: false, description: "Lower bound (default 0)" },
               max_size: { type: "integer", required: false, description: "Upper bound (default target+10)" },
-              lifecycle_class: { type: "string", required: false, description: "ephemeral|spot (default ephemeral)" },
+              lifecycle_class: { type: "string", required: false,
+                                 enum: ::System::InstancePool::LIFECYCLE_CLASSES,
+                                 description: "ephemeral | spot (default ephemeral)" },
               provider_region_id: { type: "string", required: false, description: "UUID of the ProviderRegion pool members are provisioned in (single-AZ default)" },
               provider_instance_type_id: { type: "string", required: false, description: "UUID of the ProviderInstanceType (SKU) pool members are provisioned as" },
-              preferred_regions: { type: "array", required: false, description: "Ordered list of ProviderRegion UUIDs for cross-AZ HA spread — replenishment round-robins members across them by slot and skips regions the sensor marks unhealthy. Overrides provider_region_id when set." }
+              preferred_regions: { type: "array", required: false, items: { type: "string" },
+                                  description: "Ordered list of ProviderRegion UUIDs for cross-AZ HA spread — replenishment round-robins members across them by slot and skips regions the sensor marks unhealthy. Overrides provider_region_id when set." }
             }
           },
           # F8-07 — REST update parity (instance_pools_controller update_params).
@@ -1438,10 +1473,12 @@ module Ai
               target_size: { type: "integer", required: false, description: "New target number of warm+ready members" },
               min_size: { type: "integer", required: false, description: "New lower bound on pool size" },
               max_size: { type: "integer", required: false, description: "New upper bound on pool size" },
-              status: { type: "string", required: false, description: "active | paused | archived" },
+              status: { type: "string", required: false, enum: ::System::InstancePool::STATUSES,
+                       description: "active | paused | draining | archived — the set System::InstancePool validates on" },
               provider_region_id: { type: "string", required: false, description: "UUID of the ProviderRegion to provision future members in" },
               provider_instance_type_id: { type: "string", required: false, description: "UUID of the ProviderInstanceType (SKU) for future members" },
-              preferred_regions: { type: "array", required: false, description: "Ordered list of ProviderRegion UUIDs for cross-AZ HA spread (replaces the pool's list; empty array clears it back to single-AZ)" },
+              preferred_regions: { type: "array", required: false, items: { type: "string" },
+                                  description: "Ordered list of ProviderRegion UUIDs for cross-AZ HA spread (replaces the pool's list; empty array clears it back to single-AZ)" },
               metadata: { type: "object", required: false, description: "Pool metadata hash (e.g. reuse_without_reset)" }
             }
           },
@@ -1454,7 +1491,9 @@ module Ai
             parameters: {
               pool_name: { type: "string", required: false, description: "Specific pool to acquire from" },
               pool_id: { type: "string", required: false, description: "Specific pool by ID" },
-              lifecycle_class: { type: "string", required: false, description: "Acquire from any matching pool when name/id absent (e.g. 'ephemeral')" }
+              lifecycle_class: { type: "string", required: false,
+                                 enum: ::System::InstancePool::LIFECYCLE_CLASSES,
+                                 description: "Acquire from any matching pool when name/id absent: ephemeral | spot" }
             }
           },
           "system_replenish_instance_pool" => {
@@ -1519,12 +1558,17 @@ module Ai
             description: "Manually inject a Cve row (typically for embargoed CVEs not yet in NVD, or for drill-mode runbooks). Idempotent via cve_id uniqueness — re-running updates fields. NOTE: Cve table is GLOBAL (not account-scoped) — created CVEs are visible to all accounts. Requires elevated system.fleet.autonomy permission.",
             parameters: {
               cve_id:            { type: "string", required: true,  description: "Canonical CVE id, format CVE-YYYY-NNNN (4+ digits). Drills should use high-numeric ids like CVE-2026-99001." },
-              severity:          { type: "string", required: true,  description: "critical|high|medium|low|unknown" },
+              severity:          { type: "string", required: true,  enum: ::System::Cve::SEVERITIES,
+                                   description: "critical | high | medium | low | unknown" },
               summary:           { type: "string", required: false, description: "Short human-readable summary of the CVE" },
-              affected_packages: { type: "array",  required: false, description: "[{name: 'openssl', version: '<3.1.4'}, ...]" },
+              affected_packages: { type: "array",  required: false,
+                                  items: { type: "object", properties: { name: { type: "string" }, version: { type: "string" } } },
+                                  description: "[{name: 'openssl', version: '<3.1.4'}, ...]" },
               published_at:      { type: "string", required: false, description: "ISO8601; defaults to now" },
               reference_url:     { type: "string", required: false, description: "URL to the CVE advisory / reference" },
-              feed_source:       { type: "string", required: false, description: "nvd|ghsa|manual (default manual)" }
+              feed_source:       { type: "string", required: false,
+                                   description: "Naming convention: nvd | ghsa | manual (default manual). Free-form and " \
+                                                "NOT validated — a feed run records its own source name." }
             }
           },
           "system_delete_cve" => {
@@ -1570,7 +1614,8 @@ module Ai
             description: "List DiskImagePublications for the account, optionally filtered by node_platform_id and/or status. Returns oldest-first by default.",
             parameters: {
               node_platform_id: { type: "string", required: false, description: "Filter publications to this NodePlatform UUID" },
-              status: { type: "string", required: false, description: "queued|verifying|published|failed|retired" },
+              status: { type: "string", required: false, enum: ::System::DiskImagePublication::STATUSES,
+                      description: "queued | awaiting_upload | verifying | published | failed | retired | purged" },
               limit: { type: "integer", required: false, description: "Default 50" }
             }
           },
@@ -1615,7 +1660,8 @@ module Ai
             parameters: {
               pool_name: { type: "string", required: false, description: "Builder InstancePool name to acquire from (e.g. 'ci-builders-amd64'). One of pool_name/pool_id is required." },
               pool_id: { type: "string", required: false, description: "Builder InstancePool id (alternative to pool_name)" },
-              purpose: { type: "string", required: false, description: "generic | module_build | disk_image_build (default generic) — selects the publish-arrival signal the reconciler waits on before release" },
+              purpose: { type: "string", required: false, enum: ::System::CiRunnerLease::PURPOSES,
+                        description: "generic | module_build | disk_image_build (default generic) — selects the publish-arrival signal the reconciler waits on before release" },
               workflow_run_id: { type: "integer", required: false, description: "Gitea workflow run id this lease serves (set by the build orchestrator; drives auto-release when the run completes)" },
               workflow_run_repo: { type: "string", required: false, description: "owner/repo of the workflow run (needed to poll run state when workflow_run_id is set)" },
               correlate_timeout: { type: "integer", required: false, description: "Seconds to wait for the runner to correlate before returning (default from SiteSetting; 0 = single attempt, the reconciler finishes async)" }
@@ -1631,7 +1677,8 @@ module Ai
           "system_list_ci_runner_leases" => {
             description: "List CI runner leases for the current account, optionally filtered by status or active-only.",
             parameters: {
-              status: { type: "string", required: false, description: "Filter to a single lease status (leased/registered/busy/releasing/released/errored)" },
+              status: { type: "string", required: false, enum: ::System::CiRunnerLease::STATUSES,
+                      description: "Filter to a single lease status: leased | registered | busy | releasing | released | errored" },
               active: { type: "boolean", required: false, description: "When true, return only active (non-terminal) leases" },
               limit: { type: "integer", required: false, description: "Max rows (default 50)" }
             }
@@ -1646,7 +1693,8 @@ module Ai
               base_sha: { type: "string", required: true, description: "Pre-push commit SHA (diff base) the planner compares from" },
               head_sha: { type: "string", required: true, description: "Post-push commit SHA (diff head); also the source of each build's short tag" },
               force_all: { type: "boolean", required: false, description: "Skip the diff and plan every module with a manifest (manual full rebuild / CVE-driven sweep). Default false." },
-              trigger: { type: "string", required: false, description: "push | manual | cve (default manual) — recorded on the batch for audit" },
+              trigger: { type: "string", required: false, enum: ::System::ModuleBuildBatch::TRIGGERS,
+                        description: "push | manual | cve | package (default manual) — recorded on the batch for audit" },
               source_repo: { type: "string", required: false, description: "\"<owner>/<repo>\" the base_sha..head_sha diff is taken against (default: the ci_build_source_repo manifest repo). Pass the CORE repo (e.g. powernode/powernode-platform) for a core-change build so the planner diffs the tree the change actually lives in. Getting this wrong can no longer plan 0 silently: the shas are usually absent from the other repo (the compare fails and the error names the repo it diffed), and a core range whose paths match no CORE_PATH_MODULES rule now raises rather than reporting a successful build of nothing. A core range touching only docs/CI hygiene still plans 0 legitimately." }
             }
           },
@@ -4349,8 +4397,8 @@ module Ai
 
       def create_volume(params)
         transport = (params[:transport].presence || "block").to_s
-        unless %w[nfs iscsi smb block].include?(transport)
-          return error_result("Invalid transport (allowed: nfs, iscsi, smb, block)")
+        unless VOLUME_TRANSPORTS.include?(transport)
+          return error_result("Invalid transport (allowed: #{VOLUME_TRANSPORTS.join(', ')})")
         end
 
         region = resolve_volume_region(params)
