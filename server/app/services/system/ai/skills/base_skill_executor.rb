@@ -38,6 +38,10 @@ module System
       #     end
       #   end
       class BaseSkillExecutor
+        # A third routing surface (ActionCategoryRouter contract; see
+        # System::Autonomy::ActionCategoryRouter::ROUTERS).
+        extend ::System::Autonomy::ActionCategoryRouter
+
         class << self
           # Declare the executor's descriptor at class scope. The hash gets
           # frozen + memoized; subclasses can read it via `.descriptor`.
@@ -98,6 +102,24 @@ module System
           # and those fourteen are what this gate covers.
           def gate_required?
             descriptor[:requires_approval] == true
+          end
+
+          # ActionCategoryRouter contract (APO-1c made this class a third
+          # routing surface: #gate_action! resolves ONE category per executor
+          # class). The routed set is every category a gate-required concrete
+          # executor resolves to, enumerated from disk rather than from
+          # `descendants` so the answer does not depend on what Zeitwerk has
+          # happened to load. Only BaseSkillExecutor itself answers this; a
+          # subclass is not a router.
+          def routed_action_categories
+            return [].freeze unless self == ::System::Ai::Skills::BaseSkillExecutor
+
+            Dir.glob(File.join(__dir__, "*_executor.rb")).sort.filter_map do |path|
+              klass = "System::Ai::Skills::#{File.basename(path, '.rb').camelize}".safe_constantize
+              next unless klass && klass < self && klass.respond_to?(:gate_required?) && klass.gate_required?
+
+              klass.action_category
+            end.uniq.freeze
           end
 
           # The Ai::InterventionPolicy category this executor's gate resolves.

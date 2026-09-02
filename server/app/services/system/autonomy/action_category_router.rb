@@ -56,6 +56,7 @@ module System
       ROUTERS = %w[
         System::AdaptationGate
         System::Fleet::DecisionEngine
+        System::Ai::Skills::BaseSkillExecutor
       ].freeze
 
       def self.routers
