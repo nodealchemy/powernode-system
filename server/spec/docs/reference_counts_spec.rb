@@ -137,8 +137,10 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
   # section name they are stated under. Twelve official agents; the Concierge
   # carries no policies. HIER-P2DECL: the four wave-1 managers and the
   # Topology Designer carry sets ahead of (managers) or independently of
-  # (Topology Designer, whose seed writes no policy row) their seed files —
-  # PolicyReconciler writes those sets once the agent exists.
+  # (Topology Designer) their seed files — PolicyReconciler writes those sets
+  # once the agent exists. HIER-P2F: the Topology Designer's seed now consumes
+  # TOPOLOGY_DESIGNER_POLICIES itself, like its siblings, so a first boot lands
+  # the rows without waiting for the next reconciler pass.
   let(:agent_policy_counts) do
     {
       "Fleet Autonomy"           => declared_keys("FLEET_AUTONOMY_POLICIES").size,
@@ -219,6 +221,25 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
     expect(stated).to eq(executor_files.size),
       "SKILL_EXECUTORS.md claims #{stated} `*_executor.rb` files; " \
       "#{skills_dir} actually has #{executor_files.size}"
+  end
+
+  # HIER-P2F review — the two CATALOG CITATIONS in the same prose ("the full
+  # <n>-executor list", "canonical list of all <n> executors") drifted 58 vs the
+  # header's 64 because nothing pinned them. They cite the same disk figure the
+  # header does, so they are pinned to the same oracle.
+  it "SKILL_EXECUTORS.md's catalog citations quote the concrete executor count" do
+    # Scoped to the two CITATION phrasings, not to any "<n>-executor" string:
+    # the same paragraph carries a deliberately historical clause ("summed to 54
+    # against a 57-executor list") describing a past state, which must not be
+    # rewritten to today's count.
+    cited = executors_doc_text.scan(
+      /full (\d+)-executor list with descriptor I\/O|canonical list of all (\d+) executors/
+    ).flatten.compact.map(&:to_i)
+    expect(cited).not_to be_empty,
+      "SKILL_EXECUTORS.md: neither catalog citation matched — the phrasing changed; update this regex"
+    expect(cited.uniq).to eq([ concrete_executor_files.size ]),
+      "SKILL_EXECUTORS.md cites #{cited.uniq.inspect} executors in its SKILL_EXECUTOR_CATALOG.md " \
+      "references; #{skills_dir} actually has #{concrete_executor_files.size}"
   end
 
   it "SKILL_EXECUTORS.md's concrete (binds_to-declaring) executor count matches disk" do
