@@ -180,7 +180,8 @@ module Sdwan
       def add_instance!(service:, instance:, weight: DEFAULT_WEIGHT)
         address = address_for(service, instance)
         if address.blank?
-          raise NoAddressError, "#{instance.name} (#{instance.id}) has no overlay peer address and "                                 "no vpn/private/public address to dial"
+          raise NoAddressError, "#{instance.name} (#{instance.id}) has no overlay peer address and " \
+                                "no vpn/private/public address to dial"
         end
 
         transaction do
@@ -217,10 +218,25 @@ module Sdwan
         host_rows_for(service, instance).each(&:destroy!)
       end
 
-      # Which of the instance's addresses THIS service dials: its peer address
-      # on the overlay network the service's existing backend already lives on
-      # (so a scaled set stays on one fabric), else the first address
-      # .instance_addresses prefers. nil when the instance has none.
+      # Which of the instance's addresses THIS service dials, in the order the
+      # set stays on ONE fabric:
+      #
+      #   1. the instance's peer address on the overlay network the service's
+      #      existing backend already lives on;
+      #   2. failing that, the instance's OWN address in the same column the
+      #      service's existing host-form backends are dialled on
+      #      (.backend_address_column);
+      #   3. failing that, the first address .instance_addresses prefers.
+      #
+      # Rung 2 exists because rung 1 only answers for a service whose host IS a
+      # peer's assigned_address. The commoner shape — a service dialling a
+      # replica's private IP — resolves no network, and rung 3 prefers the
+      # OVERLAY address, so a replica with a peer (which is every replica
+      # ProvisionFullStackExecutor makes with a network_id) joined a
+      # LAN-dialled service on the overlay: a MIXED-FABRIC round robin whose
+      # overlay half fails silently, health checking being off by default.
+      #
+      # nil when the instance has no address at all.
       def address_for(service, instance)
         network_id = backend_network_id(service)
         if network_id
@@ -229,7 +245,28 @@ module Sdwan
           return overlay if overlay.present?
         end
 
+        column = backend_address_column(service)
+        if column
+          same_form = host_only(instance.public_send(column))
+          return same_form if same_form.present?
+        end
+
         instance_addresses(instance).first
+      end
+
+      # True when `service` reaches `instance` ONLY through its LEGACY
+      # backend_host column, with no member row of its own left to serve it.
+      #
+      # The writer renders the legacy columns for an EMPTY set, so such a
+      # service keeps dialling the instance after it is terminated and no row
+      # removal can report that: .remove_instance! honestly returns [] because
+      # there was never a row. A producer that terminates the instance has to
+      # say so some other way.
+      def legacy_route_only?(service:, instance:)
+        return false if service.backend_vip_id.present?
+        return false unless instance_addresses(instance).include?(service.backend_host)
+
+        !where(sdwan_service_id: service.id).exists?
       end
 
       private
@@ -249,11 +286,20 @@ module Sdwan
         end.map(&:id)
       end
 
+      # HOST-FORM rows only (backend_vip_id nil). A row carrying a VIP resolves
+      # to the VIP's address through #address no matter what its backend_host
+      # column happens to hold — and a service constructed with BOTH columns
+      # (Sdwan::Service#backend_present needs only one, and
+      # SystemIngressTool#create_service passes both through) materialises
+      # exactly such a row. Selecting it by backend_host would let the
+      # instance-keyed producers drain and destroy a VIP-routed backend, which
+      # is the VIP move's job, not the set's.
       def host_rows_for(service, instance)
         addresses = instance_addresses(instance)
         return [] if addresses.empty?
 
-        service.backends.where(backend_host: addresses).order(:created_at).to_a
+        service.backends.where(backend_vip_id: nil, backend_host: addresses)
+               .order(:created_at).to_a
       end
 
       # The overlay network the service's backends live on: the backend VIP's,
@@ -279,9 +325,30 @@ module Sdwan
 
       # Every host-form address this service dials: its legacy column plus each
       # member row's. VIP-form members contribute nothing — their address is
-      # the VIP's, resolved separately.
+      # the VIP's, resolved separately — and neither does the legacy
+      # backend_host of a service that ALSO carries a backend_vip_id: such a
+      # service is VIP-routed (Sdwan::Service#backend_address returns the VIP),
+      # so reporting its host column here would hand a VIP-fronted service to
+      # the host-form producers and count one machine twice in the round robin.
       def host_forms_of(service)
-        ([ service.backend_host ] + service.backends.map(&:backend_host)).compact
+        legacy = service.backend_vip_id.present? ? nil : service.backend_host
+        rows   = service.backends.reject { |row| row.backend_vip_id.present? }.map(&:backend_host)
+        ([ legacy ] + rows).compact
+      end
+
+      # The System::NodeInstance address COLUMN the service's existing
+      # host-form backends are dialled on, when they are dialled on one at all
+      # (nil for an off-fleet host or a service with no host form). Preference
+      # order is INSTANCE_ADDRESS_COLUMNS'; account-scoped, because an address
+      # is only evidence of a fabric within the tenant that owns the service.
+      def backend_address_column(service)
+        hosts = host_forms_of(service).uniq
+        return nil if hosts.empty?
+
+        INSTANCE_ADDRESS_COLUMNS.find do |column|
+          ::System::NodeInstance.where(account_id: service.account_id)
+                                .where(column => hosts).exists?
+        end
       end
 
       # A bare host plus each masked spelling a peer row may carry it under.

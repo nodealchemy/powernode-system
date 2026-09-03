@@ -160,6 +160,29 @@ RSpec.describe "SystemIngressTool set_service_backends gating (APO-3d)" do
       expect(service.load_balanced_backends.map(&:address)).to eq([ "10.0.1.5" ])
     end
 
+    # REVIEW FINDING 1 (IMP-0c10b9fd5596). Draining EVERY member takes the
+    # service out of rotation: Sdwan::ServiceExposureWriter skips it and emits
+    # no router at all. This verb is the only producer that can reach that
+    # state deliberately, so it is the one place a caller can be told — a
+    # success envelope indistinguishable from "the set is serving" is the
+    # soft-fail-into-success shape the exposure executors guard against.
+    it "says the service is OUT OF ROTATION when the declared set is entirely draining" do
+      set!(backends: [ { backend_host: "10.0.1.5", backend_port: 3000, status: "draining" } ])
+      latest_deferred.execute_now!
+
+      expect(service.reload.fully_drained?).to be(true)
+      body = latest_deferred.reload.result.to_h.deep_symbolize_keys
+      expect(body.dig(:data, :out_of_rotation)).to be(true)
+    end
+
+    it "reports a serving set as IN rotation" do
+      set!
+      latest_deferred.execute_now!
+
+      body = latest_deferred.reload.result.to_h.deep_symbolize_keys
+      expect(body.dig(:data, :out_of_rotation)).to be(false)
+    end
+
     it "returns the set in the tool's own envelope on the proceed branch" do
       set!
       op = latest_deferred

@@ -154,6 +154,31 @@ RSpec.describe Sdwan::ServiceBackend, "producer API (APO-3d)", type: :model do
       expect(row.backend_host).to eq("fd00:abcd:1::6")
     end
 
+    # REVIEW FINDING 4 (IMP-0c10b9fd5596). .backend_network_id only resolves a
+    # network when one of the service's host forms IS a peer's assigned_address.
+    # A service dialling an instance's plain private IP resolves NOTHING, and
+    # the "first address" fallback prefers the OVERLAY peer address — so a
+    # replica that has a peer (every replica ProvisionFullStackExecutor makes
+    # with a network_id) joined a LAN-dialled service on the overlay fabric.
+    # Mixed-fabric round robin, and health checking is off by default, so half
+    # the requests fail with no signal.
+    it "adds the replica on the SAME instance address column the service's existing backend " \
+       "uses, not on the overlay, when the service dials a plain instance IP" do
+      seed = instance!(private_ip: "10.0.1.5")
+      create(:sdwan_peer, account: account, network: network, node_instance: seed,
+                          assigned_address: "fd00:abcd:1::5/128")
+      svc = service!(backend_host: "10.0.1.5", backend_port: 3000)
+
+      replica = instance!(private_ip: "10.0.1.6")
+      create(:sdwan_peer, account: account, network: network, node_instance: replica,
+                          assigned_address: "fd00:abcd:1::6/128")
+
+      row = described_class.add_instance!(service: svc, instance: replica)
+
+      expect(row.backend_host).to eq("10.0.1.6")
+      expect(svc.reload.load_balanced_backends.map(&:address)).to eq(%w[10.0.1.5 10.0.1.6])
+    end
+
     it "re-activates a draining row for the same address rather than minting a duplicate" do
       svc = service!(backend_host: "10.0.1.5")
       replica = instance!(private_ip: "10.0.1.6")
@@ -228,6 +253,35 @@ RSpec.describe Sdwan::ServiceBackend, "producer API (APO-3d)", type: :model do
 
       expect(svc.fully_drained?).to be(false)
       expect(svc.load_balanced_backends.map(&:address)).to eq([ "10.0.1.5" ])
+    end
+  end
+
+  # REVIEW FINDING 5 (IMP-0c10b9fd5596). Sdwan::Service#backend_present needs
+  # only ONE of backend_vip_id / backend_host, and SystemIngressTool#create_service
+  # passes both through, so a service carrying BOTH is constructible. Such a
+  # service is VIP-routed — #backend_address resolves the VIP — but the
+  # host-form lookups matched its backend_host anyway, so the producers drained
+  # and destroyed a row whose address is the VIP's, and replace added a
+  # host-form row beside it: the exact double-count the design forbids.
+  describe "a service carrying BOTH a backend VIP and a legacy host" do
+    let(:instance) { instance!(private_ip: "10.0.1.5") }
+    let!(:peer) { create(:sdwan_peer, account: account, network: network, node_instance: instance) }
+    let(:vip) { create(:sdwan_virtual_ip, network: network, account: account, holder_peer_ids: [ peer.id ]) }
+    let!(:svc) { service!(slug: "both", backend_vip: vip, backend_host: "10.0.1.5") }
+
+    it "is VIP-routed: no host-form producer claims it" do
+      expect(described_class.services_routed_to(account: account, instance: instance).map(&:id))
+        .to eq([ svc.id ])
+      expect(described_class.host_routed_services(account: account, instance: instance)).to be_empty
+    end
+
+    it "keeps its materialised VIP-form row when a producer drains or removes the instance" do
+      described_class.add_instance!(service: svc, instance: instance!(private_ip: "10.0.1.6"))
+
+      expect(described_class.drain_instance!(service: svc.reload, instance: instance)).to eq([])
+      expect(described_class.remove_instance!(service: svc.reload, instance: instance)).to eq([])
+      expect(svc.backends.reload.count).to eq(2)
+      expect(svc.backends.reload.map(&:status).uniq).to eq([ "active" ])
     end
   end
 end

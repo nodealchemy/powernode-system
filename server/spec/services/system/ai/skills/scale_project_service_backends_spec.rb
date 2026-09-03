@@ -164,6 +164,36 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor, "service backend mainte
     end
   end
 
+  # REVIEW FINDING 7 (IMP-0c10b9fd5596). add_replicas and add_region compose
+  # the SAME provision arm (#run_provision), so the join is not an add_replicas
+  # behaviour — it is a run_provision one. Pinned here because the class header
+  # and the runbook name only add_replicas, and a cross-region replica is
+  # exactly the case where joining the wrong fabric hurts.
+  describe "add_region" do
+    let(:next_ip) { [ 6 ] }
+
+    before do
+      allow(::System::ProvisioningService).to receive(:provision_instance) do |node:, **|
+        ip = "10.0.1.#{next_ip[0]}"
+        next_ip[0] += 1
+        instance = create(:system_node_instance, :running, node: node, private_ip_address: ip,
+                          provider_region: region, provider_instance_type: instance_type,
+                          name: "#{node.name}-instance")
+        ::System::Runtime::Result.ok(data: { instance: instance, cloud_instance_id: "ci-#{ip}" })
+      end
+    end
+
+    it "joins the new replica to the mission's service, same as add_replicas" do
+      r = exec.execute(project_id: mission.id, target_count: 1, scaling_strategy: "add_region",
+                       template_id: template.id, provider_region_id: region.id,
+                       provider_instance_type_id: instance_type.id)
+
+      expect(r[:success]).to be(true), "executor failed: #{r[:error]}"
+      expect(r[:data][:outputs][:sdwan_service_ids]).to eq([ service.id ])
+      expect(service.reload.load_balanced_backends.map(&:address)).to eq(%w[10.0.1.5 10.0.1.6])
+    end
+  end
+
   describe "remove_replicas" do
     let!(:newest) { replica!(private_ip: "10.0.1.6", minutes_old: 5) }
 

@@ -444,7 +444,8 @@ module Ai
       def get_service(params)
         svc = account_services.find(params[:service_id])
         success_result(service: serialize_service(svc), backends: serialize_backends(svc),
-                       load_balancer: svc.metadata.is_a?(Hash) ? svc.metadata["load_balancer"] : nil)
+                       load_balancer: svc.metadata.is_a?(Hash) ? svc.metadata["load_balancer"] : nil,
+                       out_of_rotation: svc.fully_drained?)
       end
 
       def update_service(params)
@@ -508,8 +509,15 @@ module Ai
 
         regen_reverse_proxy! if svc.local_enabled? || svc.public_enabled?
         svc.reload
+        # OUT OF ROTATION is reported, not inferred. Draining every member takes
+        # the service out of rotation — Sdwan::ServiceExposureWriter skips it
+        # and emits no router at all (drained_service_ids) — and this verb is
+        # the only producer that reaches that state deliberately. A success
+        # envelope indistinguishable from "the set is serving" is the
+        # soft-fail-into-success shape the exposure executors guard against.
         success_result(service: serialize_service(svc), backends: serialize_backends(svc),
-                       load_balancer: svc.metadata.is_a?(Hash) ? svc.metadata["load_balancer"] : nil)
+                       load_balancer: svc.metadata.is_a?(Hash) ? svc.metadata["load_balancer"] : nil,
+                       out_of_rotation: svc.fully_drained?)
       rescue ArgumentError => e
         error_result(e.message)
       end

@@ -65,10 +65,16 @@ module System
       # kept Traefik dialling a dead host. Both arms now maintain the set for
       # every service that routes to the mission's replicas
       # (Sdwan::ServiceBackend.services_routed_to) and regenerate the proxy:
-      # add_replicas joins each new replica, remove_replicas (and the rollback,
-      # through the same teardown) removes each victim's rows BEFORE the
-      # terminate takes its addresses away. A join that fails is a recorded
+      # the PROVISION arm joins each new replica, remove_replicas (and the
+      # rollback, through the same teardown) removes each victim's rows BEFORE
+      # the terminate takes its addresses away. A join that fails is a recorded
       # step failure (`partial`), never a silent one.
+      #
+      # The join belongs to #run_provision, so BOTH add_replicas and add_region
+      # do it — they differ only in region semantics and compose the same
+      # primitive. That is deliberate: a cross-region replica no service dials
+      # is the same defect as a same-region one, and .address_for keeps the
+      # newcomer on the fabric the service's existing backends already use.
       #
       # Reference: AI-Driven Provisioning plan — slice 8 (M2 adaptive
       # evolution); scale-in from the platform-evolution-loop charter (INC-4).
