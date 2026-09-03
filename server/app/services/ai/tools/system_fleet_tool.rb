@@ -2177,7 +2177,7 @@ module Ai
 
           # === Missing-features slice 6b — GitOps apply path ===
           "system_gitops_apply_proposal" => {
-            description: "Apply an approved GitOps proposal — executes the diff against the DB (creates/updates templates, modules, assignments). APPROVAL-GATED (system.gitops_apply_proposal): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is applied until an operator approves — do not retry and do not report the diff as applied on that response. Errors with stale_conflict if reality drifted post-proposal. v1 supports template/module/assignment kinds; destroy + provider_config remain follow-ups.",
+            description: "Apply an approved GitOps proposal — executes the diff against the DB (creates/updates templates, modules, assignments, instance pools, platform deployments). APPROVAL-GATED (system.gitops_apply_proposal): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is applied until an operator approves — do not retry and do not report the diff as applied on that response. Errors with stale_conflict if reality drifted post-proposal. v1 supports template/module/assignment/pool/platform kinds — create + update for all five, plus assignment destroy; template/module/pool/platform destroy returns an explicit not-yet-implemented error, and a provider_config diff is accepted as informational (logged, nothing written).",
             parameters: {
               proposal_id: { type: "string", required: true, description: "Ai::AgentProposal id (must be in 'approved' status with proposed_changes.source = 'gitops')" }
             }
