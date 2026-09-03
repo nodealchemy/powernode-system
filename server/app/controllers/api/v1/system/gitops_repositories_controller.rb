@@ -64,6 +64,25 @@ module Api
         def sync_now
           require_permission("system.gitops.sync")
 
+          # Refuse on a standby control plane BEFORE a run exists — the same
+          # contract the MCP twin system_gitops_sync_repository adopted under
+          # IMP-8ce4d88499a0. The reconciler's own fence performs nothing on
+          # standby and returns ok?: true, finalizing whatever run it was
+          # handed as "success" with a `skipped` note in diff_summary — the
+          # exact shape of a fully in-sync repository. This action used to
+          # mint that run and tell the operator to read the marker; a prose
+          # caveat is not a contract. Asking ControlPlaneRole here is the same
+          # authority the reconciler asks, not a second implementation of the
+          # rule. active? is false for :standby AND :gate_error, and neither
+          # asserts an active peer exists — only that this plane may not act.
+          unless ::System::Autonomy::ControlPlaneRole.active?
+            return render_error(
+              "standby control plane — this plane is not permitted to reconcile repository " \
+              "#{@repository.id} (not elected, or the quorum gate itself errored); reconcile not performed",
+              status: :conflict, code: "standby_control_plane"
+            )
+          end
+
           run = @repository.schedule_sync!
           # Synchronous reconciliation — small repos finish in <10s. Larger
           # repos should still be tolerable; if not, we'd dispatch to the
@@ -72,15 +91,29 @@ module Api
 
           # result.ok? — the Result struct's actual predicate; the success?
           # call here raised NoMethodError on every invocation from 2026-05-10
-          # until IMP-95198e6a57d3. diff_summary is surfaced so gate-skip
-          # markers (e.g. the dual-plane standby note) reach the operator.
-          render_success(
+          # until IMP-95198e6a57d3.
+          payload = {
             sync_run: serialize_run(run.reload),
             ok: result.ok?,
             diff_count: result.diff_count,
             proposal_ids: result.proposal_ids,
             diff_summary: result.diff_summary
-          )
+          }
+
+          # A reconcile that FAILED is a failure, and a failure must not ride
+          # the success channel (IMP-8ce4d88499a0, mirrored from the MCP
+          # twin). This used to render_success(ok: false, ...): the reason was
+          # in the payload while the one field a program branches on said the
+          # sync succeeded — and sync PRECEDES apply, so a caller reading a
+          # failed sync as success concluded the fleet matched the repository.
+          # The same fields, sync_run included, ride under `details` so the
+          # run is still reachable through GET sync_runs.
+          unless result.ok?
+            return render_error(result.error.presence || "reconcile failed",
+                                status: :unprocessable_content, details: payload)
+          end
+
+          render_success(**payload)
         end
 
         # GET /api/v1/system/gitops_repositories/:id/sync_runs

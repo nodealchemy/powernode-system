@@ -48,21 +48,44 @@ RSpec.describe "Operator API — GitOps sync_now", type: :request do
     expect(body.dig("data", "diff_count")).to eq(2)
   end
 
-  it "reports a failed reconcile without raising" do
+  # SWEEP-2026-09-03 (carried out of IMP-8ce4d88499a0, which fixed the MCP
+  # twin) — a reconcile that FAILED is a failure, and a failure must not ride
+  # the success channel. This action used to render_success(ok: false, ...):
+  # the reason sat in the payload while the one field a program branches on
+  # said the sync succeeded. Sync PRECEDES apply, so a caller that read a
+  # failed sync as success concluded the fleet matched the repository.
+  it "reports a failed reconcile as a failure, with the run id and reason, without raising" do
     stub_reconcile(result_with(ok: false, error: "clone failed"))
 
     post "/api/v1/system/gitops_repositories/#{repo.id}/sync_now", headers: headers
 
-    expect(response).to have_http_status(:ok)
-    expect(response.parsed_body.dig("data", "ok")).to be(false)
+    expect(response).to have_http_status(:unprocessable_content)
+    body = response.parsed_body
+    expect(body["success"]).to be(false)
+    expect(body["error"]).to include("clone failed")
+    expect(body.dig("details", "ok")).to be(false)
+    expect(body.dig("details", "sync_run", "id")).to eq(repo.sync_runs.order(:created_at).last.id)
   end
 
-  it "surfaces the standby skip marker to the operator" do
-    stub_reconcile(result_with(ok: true, diff_summary: "skipped: standby control plane"))
+  # Same task, same shape as the MCP verb: on a standby control plane the
+  # reconciler's own fence performs nothing and returns ok?: true with a
+  # `skipped` note — the exact shape of an in-sync repository — and this
+  # action minted a GitopsSyncRun finalized as "success" for a reconcile that
+  # never happened. Refuse BEFORE the run exists, on the same authority the
+  # reconciler asks (ControlPlaneRole), rather than asking the operator to
+  # sniff diff_summary for a marker.
+  it "refuses on a standby control plane before minting a sync run" do
+    allow(::System::Autonomy::ControlPlaneRole).to receive(:active?).and_return(false)
+    expect(::System::Gitops::Reconciler).not_to receive(:reconcile!)
 
-    post "/api/v1/system/gitops_repositories/#{repo.id}/sync_now", headers: headers
+    expect {
+      post "/api/v1/system/gitops_repositories/#{repo.id}/sync_now", headers: headers
+    }.not_to change(::System::GitopsSyncRun, :count)
 
-    expect(response).to have_http_status(:ok)
-    expect(response.parsed_body.dig("data", "diff_summary")).to match(/standby/)
+    expect(response).to have_http_status(:conflict)
+    body = response.parsed_body
+    expect(body["success"]).to be(false)
+    expect(body["code"]).to eq("standby_control_plane")
+    expect(body["error"]).to match(/standby control plane/)
   end
 end

@@ -440,6 +440,34 @@ module Ai
       # agree is pinned by
       # spec/services/ai/tools/system_fleet_gitops_apply_gating_spec.rb.
       GITOPS_APPLY_PROPOSAL_CATEGORY = "system.gitops_apply_proposal"
+      # SWEEP-2026-09-03 — the category system_gitops_register_repository
+      # gates on. Seeded require_approval in GITOPS_RECONCILER_POLICIES
+      # ("adds a new declarative source of truth") since the GitOps slice
+      # shipped and, exactly like the apply verb before IMP-0b4f18ae4384,
+      # evaluated by nothing: the declaration was `mutating: true` alone. A
+      # registered repository is the input to every later sync and apply, so
+      # a caller who could not apply a diff unattended could still add the
+      # source the diffs come from. Agreement with the seed is pinned by
+      # spec/services/ai/tools/system_fleet_gitops_register_gating_spec.rb.
+      # system_gitops_sync_repository stays `mutating:`-only ON PURPOSE: its
+      # seeded row is auto_approve on an agent-scoped set that binds only the
+      # GitOps Reconciler agent, which never calls the verb — gating it would
+      # park every operator sync behind the unmatched default, the opposite
+      # of the seed's intent. That wants the global-scope operator row
+      # IMP-0b4f18ae4384 left open, not a declaration here.
+      #
+      # SINGLE-DOOR ON PURPOSE, for now: the REST twin
+      # (Api::V1::System::GitopsRepositoriesController#create) still writes the
+      # row behind `system.gitops.write` alone and is NOT gated here. That is
+      # the asymmetry IMP-067f39468350 closed for instance pools by gating BOTH
+      # doors, and the rationale above ("the input to every later sync and
+      # apply") applies to either door — but a REST caller is a human operator
+      # holding an explicit permission, and with no global-scope operator row
+      # seeded (see the paragraph above) gating that door would park every
+      # console registration behind the unmatched require_approval default with
+      # no approver bound. Gate it in the same change that seeds that row, not
+      # before. Recorded so the gap is a decision rather than an omission.
+      GITOPS_REGISTER_REPOSITORY_CATEGORY = "system.gitops_register_repository"
       # The columns a "raise" is measured on — the two the replenish tick
       # spends up to. min_size is not one of them: it cannot raise the ceiling.
       POOL_CEILING_ATTRIBUTES     = %i[target_size max_size].freeze
@@ -639,7 +667,7 @@ module Ai
       # in the same change, so the verdict is visible and tunable in the
       # Autonomy modal rather than falling to the unmatched default. DECLARING
       # is not the same as HAVING: that modal's pivot is ROW-driven, so the
-      # row is written by db/seeds/system_volume_snapshot_policies.rb on a
+      # row is written by server/db/seeds/system_volume_snapshot_policies.rb on a
       # first boot and by System::Governance::PolicyReconciler
       # (`rake system:governance:reconcile`) on an install that had already
       # booted — without a writer the delete still parks, but on the unmatched
@@ -710,7 +738,12 @@ module Ai
                      on_proceed: :deferred_tool_call_result
       declare_action "system_gitops_get_drift_report", mutating: false
       declare_action "system_gitops_get_sync_run", mutating: false
-      declare_action "system_gitops_register_repository", mutating: true
+      declare_action "system_gitops_register_repository",
+                     mutating: true,
+                     action_category: GITOPS_REGISTER_REPOSITORY_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :gitops_register_repository_gate_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_gitops_sync_repository", mutating: true
       declare_action "system_grant_instance_mcp_tools", mutating: true
       declare_action "system_grant_instance_peer_skills", mutating: true
@@ -783,7 +816,10 @@ module Ai
       # #dr_lane_reap_by_instance_principal! because it asks the replace to
       # raise the very terminate the overlay denies. That method is still
       # enforced and still tested, but it is now defence in depth rather than
-      # the only brake on the reap-through-replace. See the note above it.
+      # the only PRINCIPAL-based brake on the reap-through-replace — the reap
+      # arm itself is separately gated under system.instance_reap
+      # (policy_declarations.rb, require_approval) for every caller, so it was
+      # never the only brake. See the note above it.
       declare_action "system_reap_instance",
                      mutating: true,
                      # Literal, not the executor's ACTION_CATEGORY: this runs at
@@ -2128,7 +2164,10 @@ module Ai
 
           # === Missing-features slice 6a — GitOps reconciler MCP surface ===
           "system_gitops_register_repository" => {
-            description: "Register a new GitopsRepository pointing at a git remote whose contents describe desired fleet state. The reconciler clones + pulls every 5 min by default; operator can trigger immediately via system_gitops_sync_repository.",
+            description: "Register a new GitopsRepository pointing at a git remote whose contents describe desired fleet state. The reconciler clones + pulls every 5 min by default; operator can trigger immediately via system_gitops_sync_repository. " \
+                         "APPROVAL-GATED (system.gitops_register_repository): when policy requires approval this returns " \
+                         "{pending: true} with an approval_request_id and NO repository is registered until an operator " \
+                         "approves — do not report a registered repository on that response.",
             parameters: {
               name:                  { type: "string",  required: true,  description: "Display name (must be unique within the account; max 64 chars)" },
               repo_url:              { type: "string",  required: true,  description: "HTTPS or SSH URL. Inline credentials (user:pass@) rejected — use vault_credential_path." },
@@ -3259,10 +3298,11 @@ module Ai
       #
       # update_columns, NOT update!: `config` is in NodeModule::VERSIONED_ATTRIBUTES,
       # so a normal save here fires after_update :auto_create_version, which would
-      # mint a second, artifact-less NodeModuleVersion and re-point current_version
-      # at it — immediately after the manifest import deliberately suppressed that
-      # very callback to snapshot one clean version. The audit stamp must not move
-      # the module's current version.
+      # mint a second, artifact-less NodeModuleVersion — immediately after the
+      # manifest import deliberately suppressed that very callback to snapshot
+      # one clean version. (Since IMP-b7abf6c777da #create_version no longer
+      # re-points current_version, so the pointer is safe either way; the
+      # spurious version row is not.) The audit stamp must not mint a version.
       def record_reuse_check(node_module, declaration)
         return if declaration.blank?
 
@@ -4181,8 +4221,11 @@ module Ai
       # at BaseTool#execute (#enforce_instance_deny_overlay!) before this class
       # is reached for one. Until that ruling the additive half matched no
       # pattern — right for what it does ALONE, it moves a workload and
-      # destroys nothing — and this method was the ONLY brake on `reap: true`
-      # for an instance principal: it asks the replace to raise the very
+      # destroys nothing — and this method was the only PRINCIPAL-based brake
+      # on `reap: true` for an instance principal (the reap arm is separately
+      # gated under system.instance_reap, require_approval, for every caller —
+      # the gate-context refusal was never the only brake): it asks the
+      # replace to raise the very
       # terminate the overlay refuses that principal, so permitting it would
       # re-open the denied door through the permitted one. That is exactly the
       # incoherence the overlay's own rationale names ("denying the reboot
@@ -4711,13 +4754,12 @@ module Ai
       #
       # promote_to_version! is the SANCTIONED writer of current_version_id and
       # the only one that arms a restart — not the only writer. This comment
-      # previously named TWO others; re-deriving the set from the COLUMN rather
-      # than from this list found SIX in total, the widest being
-      # ModuleVersionService#create_version, which NodeModule's
-      # `after_update :auto_create_version` callback invokes on any save
-      # touching VERSIONED_ATTRIBUTES. The executable census that now fails on a
-      # seventh is spec/lint/node_module_current_version_write_seam_spec.rb —
-      # read it rather than this sentence, which is the kind that goes stale.
+      # previously named TWO others, then SIX; both counts went stale
+      # (IMP-b7abf6c777da took ModuleVersionService#create_version out of the
+      # set — an ordinary spec edit no longer moves the pointer). The
+      # executable census, which fails on any writer it does not list, is
+      # spec/lint/node_module_current_version_write_seam_spec.rb — read it
+      # rather than a count here, which is the kind of sentence that goes stale.
       # That is why the fields below are read back from the row rather than
       # inferred from which method ran.
       #
@@ -6319,11 +6361,22 @@ module Ai
         text = raw.to_s.scrub("")
 
         # Bounding the redaction INPUT (rather than only its output) keeps a
-        # list call from running every pattern over 100 unbounded blobs. Safe
-        # because everything past `limit` is discarded anyway: a secret cut by
-        # this 4x slice lies far outside the returned window, since redaction
-        # can only grow a matched run by a small constant factor.
-        redacted = ::System::ShellOutputSanitizer.redact_text(text[0, limit * 4])
+        # list call from running every pattern over 100 unbounded blobs. It is
+        # NOT safe on its own: this comment used to say a secret cut by the 4x
+        # slice "lies far outside the returned window", which is false whenever
+        # redaction SHRINKS the head — a run of long token= values collapses to
+        # short markers and the fragment the slice left at ~limit*4 lands
+        # inside the window (measured: a 9-char credential fragment served
+        # over MCP, IMP-675ed7763230 review). So the trailing run the cut
+        # split is dropped — but only while enough text survives to fill the
+        # bound, since a whitespace-free body would otherwise be stripped to
+        # nothing (BaseSkillExecutor#audit_text, the same rule).
+        sliced = text[0, limit * 4]
+        if text.length > limit * 4
+          stripped = sliced.sub(/\S+\z/, "")
+          sliced = stripped if stripped.length >= limit
+        end
+        redacted = ::System::ShellOutputSanitizer.redact_text(sliced)
         return redacted if redacted.length <= limit
 
         "#{redacted[0, limit]}...[truncated]"
@@ -7541,9 +7594,11 @@ module Ai
       # non-empty artifact floor, core-provenance refusal) — each of which emits
       # system.module_promotion_withheld. Nothing here is limited to moving
       # BACKWARDS: THIS verb reaches promote_to_version! either way, so it arms
-      # a restart in both directions. That is a property of this verb, not of
-      # the column — the REST rollback route (node_modules#rollback) moves
-      # current_version_id through ModuleVersionService and arms nothing. See
+      # a restart in both directions. Since IMP-b7abf6c777da the REST rollback
+      # route (node_modules#rollback) reaches promote_to_version! too, so both
+      # rollback doors arm a restart; what distinguishes THIS verb is the
+      # rollback_usable? artifact floor it applies to the target below, which
+      # the REST route does not. The writer census is
       # spec/lint/node_module_current_version_write_seam_spec.rb.
       def rollback_module_version(params)
         module_id = params[:module_id].to_s
@@ -7693,7 +7748,13 @@ module Ai
       # === Missing-features slice 6a — GitOps reconciler MCP surface ===
 
       def gitops_register_repository(params)
-        repo = ::System::GitopsRepository.create!(
+        repo = ::System::GitopsRepository.create!(gitops_repository_attributes(params))
+
+        success_result(repository: serialize_gitops_repository(repo))
+      end
+
+      def gitops_repository_attributes(params)
+        {
           account: @account,
           name: params[:name],
           repo_url: params[:repo_url],
@@ -7702,9 +7763,30 @@ module Ai
           path_prefix: params[:path_prefix].presence || "",
           auto_apply: params[:auto_apply] == true,
           last_status: "pending"
-        )
+        }
+      end
 
-        success_result(repository: serialize_gitops_repository(repo))
+      # The gated register's context (SWEEP-2026-09-03). Validates the
+      # candidate FIRST — the same attributes #gitops_register_repository
+      # would insert — so a registration the model would refuse (inline
+      # credentials in the URL, a duplicate name) answers inline with the
+      # model's own message rather than parking an approval that could only
+      # fail on replay (BaseTool#run_through_autonomy_gate converts the raise
+      # to the error envelope). No source row exists yet, so the operation is
+      # anchored by the packed replay alone, as system_create_instance_pool's
+      # is. The description names the repository by its display name only —
+      # never the URL, which is the one param that can carry userinfo.
+      def gitops_register_repository_gate_context(params)
+        candidate = ::System::GitopsRepository.new(gitops_repository_attributes(params))
+        unless candidate.valid?
+          raise ArgumentError,
+                "gitops repository validation failed: #{candidate.errors.full_messages.to_sentence}"
+        end
+
+        deferred_tool_call_context(params).merge(
+          description: "Register GitOps repository '#{candidate.name}' (branch #{candidate.branch}) " \
+                       "— adds a declarative source of fleet state the reconciler syncs every 5 min"
+        )
       end
 
       def gitops_sync_repository(params)

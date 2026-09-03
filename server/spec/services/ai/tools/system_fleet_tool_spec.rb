@@ -3576,7 +3576,14 @@ end
 
   describe "Missing-features slice 6a — GitOps reconciler MCP surface" do
     describe "system_gitops_register_repository" do
+      # Since SWEEP-2026-09-03 this verb parks under
+      # system.gitops_register_repository (a registered repository is the input
+      # to every later sync and apply). The claim here is about the WRITE, so
+      # it opts into the :proceed branch the same way system_update_instance_pool
+      # does above; the gate itself is pinned in
+      # spec/services/ai/tools/system_fleet_gitops_register_gating_spec.rb.
       it "creates a GitopsRepository for the account" do
+        auto_approve_policy!
         r = call("system_gitops_register_repository",
                  name: "fleet-config",
                  repo_url: "https://example.com/fleet-config.git",

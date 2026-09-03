@@ -243,5 +243,32 @@ RSpec.describe Ai::Tools::SystemFleetTool, "task error_message serialization" do
       expect(get_task(task)[:data][:task][:error_message]).not_to include(tail_secret)
       expect(listed(task)[:error_message]).not_to include(tail_secret)
     end
+
+    # SWEEP-2026-09-03 (carried out of IMP-675ed7763230) — the 4x input slice
+    # can cut a secret in half, and the comment claimed the fragment was safe
+    # "because everything past `limit` is discarded anyway". That is false
+    # whenever redaction SHRINKS the head: a run of long token= values
+    # collapses to short markers, and the fragment the slice left at position
+    # ~limit*4 lands well inside the returned window. Same slice-boundary
+    # handling as BaseSkillExecutor#audit_text: drop the trailing run when
+    # enough text survives to fill the bound. Synthetic fixture.
+    it "does not serve the leading bytes of a secret the input slice cut in half" do
+      limit  = described_class::LIST_ERROR_MESSAGE_LIMIT
+      planted = "AKIAFAKEFAKEFAKEFAKE"
+      # 9 lines x 128 chars + 8 newlines = 1160; each line redacts to 16 chars,
+      # so the redacted head (~190 chars) sits well inside the 300-char window.
+      head = (1..9).map { |i| "token=#{'F' * 120}#{i.to_s.rjust(2, '0')}" }.join("\n")
+      filler = "build failed: stage-3 diagnostic" # 32
+      raw = "#{head}\n#{filler}  #{planted}\nmore"
+      # the cut (limit * 4 = 1200) lands 5 chars into the planted key
+      cut = raw[0, limit * 4]
+      expect(cut).to end_with(" #{planted[0, 5]}")
+
+      task = make_task(raw)
+      body = listed(task)[:error_message]
+
+      expect(body).not_to include(planted[0, 5])
+      expect(body).to include("build failed")
+    end
   end
 end
