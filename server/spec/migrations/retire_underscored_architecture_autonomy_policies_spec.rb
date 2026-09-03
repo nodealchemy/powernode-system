@@ -62,11 +62,11 @@ RSpec.describe RetireUnderscoredArchitectureAutonomyPolicies do
     it "leaves the surviving dotted rows and unrelated categories alone" do
       policy("system.architecture_delete")
       survivor = policy("system.architecture.delete")
-      bystander = policy("system.package_module_create")
+      bystander = policy("system.package_module.refresh")
 
       run_up
 
-      expect(categories_now).to eq(%w[system.architecture.delete system.package_module_create])
+      expect(categories_now).to eq(%w[system.architecture.delete system.package_module.refresh])
       expect(survivor.reload.policy).to eq("require_approval")
       expect(bystander.reload).to be_present
     end

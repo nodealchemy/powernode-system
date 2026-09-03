@@ -159,7 +159,7 @@ RSpec.describe CollectInertInstancePoolOperatorPolicies do
     end
 
     it "leaves unrelated categories alone" do
-      bystander = policy("system.package_module_create", verb: "require_approval")
+      bystander = policy("system.package_module.refresh", verb: "require_approval")
       seed_all_four
 
       run_up
