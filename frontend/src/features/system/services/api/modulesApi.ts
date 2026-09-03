@@ -16,6 +16,26 @@ import type {
   PaginationParams,
 } from './types';
 
+// Wire shape of POST /system/node_module_versions/:id/promote. The verdict
+// mirrors System::Fleet::PromotionCriteria#evaluate — `eligible` is always
+// present; the counts and dwell are present once the evaluation got far
+// enough to measure them (a version with no oci_digest carries only a reason).
+export interface SystemPromotionCriteriaVerdict {
+  eligible: boolean;
+  reason?: string;
+  running_count?: number;
+  required_count?: number;
+  dwell_time_minutes?: number;
+}
+
+export interface SystemModulePromoteResult {
+  node_module_version: SystemNodeModuleVersion;
+  /** Present only when the target state is criteria-gated. */
+  promotion_criteria?: SystemPromotionCriteriaVerdict;
+  /** Present only when the promote went ahead against an unmet verdict. */
+  promotion_criteria_warning?: string;
+}
+
 export interface ModuleFilters extends PaginationParams {
   variety?: 'config' | 'instance' | 'subscription';
   enabled?: boolean;
@@ -255,17 +275,28 @@ export const modulesApi = {
     };
   },
 
+  // Consult-and-WARN (IMP-d6826c872d88, operator ruling D17): a promote to a
+  // gated target state (today `blessed`) evaluates PromotionCriteria on the
+  // backend and never refuses; the envelope carries the verdict as
+  // `promotion_criteria` and, when the promote outran the evidence,
+  // `promotion_criteria_warning` (the backend also records the override as
+  // a `system.module_promotion_criteria_override` FleetEvent). Both fields
+  // are absent for an ungated target. Returning the whole envelope — not just
+  // the version — is what lets the panel show the warning (IMP-bdb650b82c65).
   promoteModuleVersion: async (
     versionId: string,
     targetState: SystemModulePromotionState
-  ): Promise<SystemNodeModuleVersion> => {
-    const response = await apiClient.post<ApiEnvelope<{
-      node_module_version: SystemNodeModuleVersion;
-    }>>(
+  ): Promise<SystemModulePromoteResult> => {
+    const response = await apiClient.post<ApiEnvelope<SystemModulePromoteResult>>(
       `/system/node_module_versions/${versionId}/promote`,
       { target_state: targetState },
     );
-    return extractData(response).node_module_version;
+    const data = extractData(response);
+    return {
+      node_module_version: data.node_module_version,
+      promotion_criteria: data.promotion_criteria,
+      promotion_criteria_warning: data.promotion_criteria_warning,
+    };
   },
 
   // ===== Per-node assignment toggle (IMP-3e9620967632) =====

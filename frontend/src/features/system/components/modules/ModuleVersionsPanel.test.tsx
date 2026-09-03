@@ -103,7 +103,9 @@ describe('ModuleVersionsPanel rendering', () => {
 
 describe('ModuleVersionsPanel promote', () => {
   it('promotes a built version to staging and refreshes', async () => {
-    mockPromoteModuleVersion.mockResolvedValue({ ...VERSION_BUILT, promotion_state: 'staging' });
+    mockPromoteModuleVersion.mockResolvedValue({
+      node_module_version: { ...VERSION_BUILT, promotion_state: 'staging' },
+    });
 
     render(<ModuleVersionsPanel moduleId="mod-a" canUpdate />);
     await screen.findByText('v2');
@@ -117,6 +119,63 @@ describe('ModuleVersionsPanel promote', () => {
     expect(mockAddNotification).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'success' })
     );
+    // An ungated promote carries no verdict, so nothing to warn about.
+    expect(mockAddNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning' })
+    );
+  });
+
+  // IMP-bdb650b82c65 — consult-and-WARN (operator ruling D17). The backend
+  // never refuses a manual promote; what it does is return
+  // `promotion_criteria_warning` when the fleet has not earned the rung. The
+  // panel must SHOW that, beside the success — otherwise the operator's only
+  // record of the override is a FleetEvent they did not know to look for.
+  it('shows the promotion-criteria warning when a gated promote outruns the evidence', async () => {
+    const VERSION_STAGING: SystemNodeModuleVersion = {
+      ...VERSION_BUILT,
+      id: 'ver-4',
+      version_number: 4,
+      promotion_state: 'staging',
+      staging_baked_at: '2026-07-02T00:00:00Z',
+    };
+    mockGetModuleVersions.mockResolvedValue({
+      versions: [VERSION_STAGING, VERSION_LIVE],
+      current_version_id: 'ver-1',
+      current_version_number: 1,
+    });
+    const warning =
+      'promoted to blessed despite unmet promotion criteria: running_count 0 < required 3';
+    mockPromoteModuleVersion.mockResolvedValue({
+      node_module_version: { ...VERSION_STAGING, promotion_state: 'blessed' },
+      promotion_criteria: {
+        eligible: false,
+        reason: 'running_count 0 < required 3',
+        running_count: 0,
+        required_count: 3,
+      },
+      promotion_criteria_warning: warning,
+    });
+
+    render(<ModuleVersionsPanel moduleId="mod-a" canUpdate />);
+    await screen.findByText('v4');
+
+    fireEvent.click(screen.getByTitle('Promote to blessed'));
+
+    await waitFor(() =>
+      expect(mockPromoteModuleVersion).toHaveBeenCalledWith('ver-4', 'blessed')
+    );
+    // The promotion still went through (never refuse) ...
+    expect(mockAddNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success' })
+    );
+    // ... and the override is surfaced, carrying the criteria's own reason.
+    expect(mockAddNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'warning',
+        message: expect.stringContaining('running_count 0 < required 3'),
+      })
+    );
+    await waitFor(() => expect(mockGetModuleVersions).toHaveBeenCalledTimes(2));
   });
 
   it('surfaces a rejected transition as an error notification', async () => {

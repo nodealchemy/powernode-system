@@ -1270,7 +1270,53 @@ describe('modulesApi.promoteModuleVersion', () => {
     expect(mockPost).toHaveBeenCalledWith('/system/node_module_versions/ver-2/promote', {
       target_state: 'staging',
     });
-    expect(result.promotion_state).toBe('staging');
+    expect(result.node_module_version.promotion_state).toBe('staging');
+    // An ungated target carries no verdict at all — the shape stays untouched.
+    expect(result.promotion_criteria).toBeUndefined();
+    expect(result.promotion_criteria_warning).toBeUndefined();
+  });
+
+  // IMP-bdb650b82c65 — the backend (IMP-d6826c872d88) consults PromotionCriteria
+  // on a gated promote and WARNS, never refuses (operator ruling D17): the
+  // envelope carries `promotion_criteria` and, when unmet,
+  // `promotion_criteria_warning`. Returning only node_module_version dropped
+  // both on the floor, so the panel could never show the warning.
+  it('returns the promotion_criteria verdict and warning alongside the version', async () => {
+    const blessed = {
+      id: 'ver-2',
+      node_module_id: 'mod-a',
+      version_number: 2,
+      promotion_state: 'blessed',
+      changelog: null,
+      staging_baked_at: '2026-07-23T00:00:00Z',
+      blessed_at: '2026-07-24T00:00:00Z',
+      live_at: null,
+      retired_at: null,
+      created_at: '2026-07-01T00:00:00Z',
+    };
+    const criteria = {
+      eligible: false,
+      reason: 'running_count 0 < required 3',
+      running_count: 0,
+      required_count: 3,
+    };
+    const warning = 'promoted to blessed despite unmet promotion criteria: running_count 0 < required 3';
+    mockPost.mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          node_module_version: blessed,
+          promotion_criteria: criteria,
+          promotion_criteria_warning: warning,
+        },
+      },
+    });
+
+    const result = await modulesApi.promoteModuleVersion('ver-2', 'blessed');
+
+    expect(result.node_module_version.promotion_state).toBe('blessed');
+    expect(result.promotion_criteria).toEqual(criteria);
+    expect(result.promotion_criteria_warning).toBe(warning);
   });
 });
 

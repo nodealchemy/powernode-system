@@ -73,11 +73,23 @@ export const ModuleVersionsPanel: React.FC<ModuleVersionsPanelProps> = ({
   ) => {
     setBusyVersionId(version.id);
     try {
-      await modulesApi.promoteModuleVersion(version.id, targetState);
+      const result = await modulesApi.promoteModuleVersion(version.id, targetState);
       addNotification({
         type: 'success',
         message: `v${version.version_number} promoted to ${targetState}`,
       });
+      // Consult-and-WARN (operator ruling D17): the backend never refuses a
+      // manual promote, but it evaluates PromotionCriteria for a gated target
+      // and says so when the fleet has not earned the rung. Surface that
+      // beside the success — the only other record is a FleetEvent
+      // (`system.module_promotion_criteria_override`) the operator would
+      // otherwise have to know to go looking for.
+      if (result.promotion_criteria_warning) {
+        addNotification({
+          type: 'warning',
+          message: `v${version.version_number} ${result.promotion_criteria_warning}`,
+        });
+      }
       void refresh();
     } catch (e) {
       addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Promotion failed' });
@@ -116,7 +128,9 @@ export const ModuleVersionsPanel: React.FC<ModuleVersionsPanelProps> = ({
       <p className="text-xs text-theme-secondary">
         Promotion lifecycle: built → staging → blessed → live → retired. The
         backend validates every transition; rollback snapshots the prior spec
-        as a new version and repoints the module at it.
+        as a new version and repoints the module at it. Promoting to blessed
+        consults the promotion criteria (instances running the version, dwell)
+        and warns — it never refuses — when the fleet has not yet earned it.
       </p>
 
       {loading ? (
