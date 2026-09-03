@@ -51,6 +51,12 @@ pool_policies = System::Governance::PolicyDeclarations::INSTANCE_POOL_POLICIES
 # operator can edit and nothing reads; `system.instance_pool_drain` showed an
 # approval requirement no code path enforced. The rationale, and which four
 # verbs qualify, is on INSTANCE_POOL_OPERATOR_GATED_KEYS.
+#
+# This seed never reaches an install that has already booted, so the rows a
+# FIRST boot wrote for the other four before that trim are collected once —
+# only where the verb still equals what was seeded — by
+# db/migrate/20260903033000_collect_inert_instance_pool_operator_policies.rb
+# (IMP-57a4b1ef94b3).
 operator_policies = System::Governance::PolicyDeclarations::INSTANCE_POOL_OPERATOR_POLICIES
 
 count = upsert_pool_policies_for_scope!(admin_account, operator_policies, scope: "global")

@@ -9,7 +9,10 @@
 # outside all three: `System::AutonomyActions#update` mints scope "global" with
 # a nil ai_agent_id whenever the Autonomy modal saves a control whose row
 # identity it could not recover, and system_instance_pool_policies.rb seeds that
-# same shape with no cleanup at all. A row in that gap whose category is later
+# same shape with no cleanup at all (the four REGISTERED-but-ungated rows it
+# used to write there were collected once, by migration 20260903033000 —
+# IMP-57a4b1ef94b3 — which this pass cannot reach: they are not deregistered).
+# A row in that gap whose category is later
 # deregistered is stranded — the modal still renders it, every save 422s on the
 # unknown category, and no seed re-run removes it.
 #
