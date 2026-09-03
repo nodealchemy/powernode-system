@@ -33,11 +33,28 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # either destructive, expensive, or operator-only.
 # `system_agent_hierarchy.rb` runs AFTER every agent seed and after
 # `system_skill_bindings_seed.rb`: it attaches every declared domain agent
-# (PolicyDeclarations::AGENT_IDENTITIES — seven seeded today, plus the four
-# wave-1 managers HIER-P2DECL declared ahead of their wave-2 seeds, which it
-# reports as skipped) under System Concierge and derives each delegation policy
-# from POLICY_SETS and the SkillBindings registry (HIER-P1), so every agent it
-# attaches must already exist.
+# (PolicyDeclarations::AGENT_IDENTITIES — all eleven seeded above; HIER-P2DECL
+# declared the four operations managers in wave 1 and HIER-P2B/P2C/P2D/P2E
+# seeded them in wave 2, so an "(agent absent)" skip line here now means a seed
+# above failed, not a pending wave) under System Concierge and derives each
+# delegation policy from POLICY_SETS and the SkillBindings registry (HIER-P1),
+# so every agent it attaches must already exist.
+#
+# POLICY-WRITE CONVENTION (HIER-P2SWEEP, driver ruling 2026-09-03):
+# System::Governance::PolicyReconciler is the SINGLE WRITER of declared
+# intervention-policy rows (POLICY_SETS × AGENT_IDENTITIES, every boot). An
+# agent seed writes identity, prompt, approval chain, trust, tool_access and
+# skills ONLY — the Supply Chain Manager seed is the reference shape (the only
+# agent seed that writes no row). Every other agent seed still upserts its
+# declared set at first boot (fleet_autonomy_agent and the system_{runtime_
+# manager,cve_responder,disk_image_manager,sdwan_manager,topology_designer,
+# gitops_reconciler,capacity_manager,storage_manager,ingress_manager}_agent
+# seeds, through AgentSetupHelpers.upsert_policies!), as do the four operator-
+# set policy seeds (system_{instance_pool,instance_cordon,volume_snapshot}_
+# policies, system_provisioning_intervention_policies). They are grandfathered
+# until the reconciler runs BEFORE them at first boot — a live install depends
+# on their idempotent upserts today; improvement 01a0696f-823f-7415-acc8-
+# a898facabff5 files the rewrite. Do not add a new one.
 # `system_autonomy_orphan_cleanup.rb` is last: a garbage-collection pass wants
 # to see every row the seeds above wrote. It is order-independent all the same
 # (its predicate is the boot category registry, not any seed's declarations) —

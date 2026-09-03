@@ -65,12 +65,13 @@ module System
       # in here by hand under the key "system-topology-designer" — HIER-P2F
       # aligned the SEED's source_key to the declared key "topology-designer",
       # so the source_key fallback resolves it too, not just the name+type
-      # primary path; the edge is the same edge) and the four wave-1
-      # managers (Capacity / Storage / Ingress / Supply Chain). Those four
-      # have NO seed until wave 2: they resolve to nothing, and an absent
-      # child is a "<key>(agent absent)" line in `skipped` — reported as drift
-      # by `drift`, never an error — so the next seed run after wave 2 lands
-      # writes their lineage + delegation rows with no further edit here.
+      # primary path; the edge is the same edge) and the four operations
+      # managers (Capacity / Storage / Ingress / Supply Chain — declared in
+      # wave 1, seeded in wave 2 by HIER-P2B/P2C/P2D/P2E). An absent child is
+      # a "<key>(agent absent)" line in `skipped` — reported as drift by
+      # `drift`, never an error — which is how an identity declared ahead of
+      # its seed gets its lineage + delegation rows on the first seed run
+      # after that seed lands, with no edit here.
       # Delegation defaults are the P1 ruling for every child: conservative,
       # max_depth 2, no delegate types (a leaf).
       CHILD_IDENTITIES = PolicyDeclarations::AGENT_IDENTITIES

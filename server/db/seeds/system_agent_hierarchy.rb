@@ -6,13 +6,14 @@ require_relative "concerns/agent_setup_helpers"
 # domain agents are its children: one active Ai::AgentLineage edge each
 # (spawn_reason "seed") and one Ai::DelegationPolicy row per agent. The
 # attach list is PolicyDeclarations::AGENT_IDENTITIES (through
-# HierarchyReconciler::CHILD_IDENTITIES): the seven seeded today (Fleet
+# HierarchyReconciler::CHILD_IDENTITIES): all eleven domain agents — Fleet
 # Autonomy, SDWAN Manager, CVE Responder, Disk Image Manager, Runtime Manager,
-# GitOps Reconciler, System Topology Designer) plus the four wave-1 managers
-# HIER-P2DECL declared (Capacity / Storage / Ingress / Supply Chain), which
-# have no seed until wave 2 — an agent that does not exist is reported below
-# as skipped, never raised, so this seed keeps passing between the waves and
-# attaches them on the first run after their seeds land.
+# GitOps Reconciler, System Topology Designer, and the four operations
+# managers HIER-P2DECL declared in wave 1 and HIER-P2B/P2C/P2D/P2E seeded in
+# wave 2 (Capacity / Storage / Ingress / Supply Chain). An agent that does not
+# exist is reported below as skipped, never raised (the P1 drift ruling), so a
+# future identity declared ahead of its seed keeps this seed passing and is
+# attached on the first run after that seed lands.
 #
 # The declarations and the writes live in System::Governance::HierarchyReconciler
 # (reconcile! here; `drift` is the read-only report the governance rake can

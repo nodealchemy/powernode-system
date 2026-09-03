@@ -31,16 +31,21 @@ module System
           "sdwan_manager"      => "SDWAN Manager",
           "disk_image_manager" => "Disk Image Manager",
           # HIER-P2A: added ahead of the skill re-binding increment (P2F) so a
-          # gitops executor can `binds_to "gitops_reconciler"`. No executor
-          # binds to it yet.
+          # gitops executor could `binds_to "gitops_reconciler"`. HIER-P2F
+          # landed the three binders: gitops_sync_repository,
+          # gitops_apply_proposal and gitops_register_repository all route
+          # through this slug now.
           "gitops_reconciler"  => "GitOps Reconciler",
           "topology_designer"  => "System Topology Designer",
-          # HIER-P2DECL: the four wave-1 operations managers, added with their
-          # policy sets (PolicyDeclarations::AGENT_IDENTITIES) ahead of the
-          # wave-2 seeds and executor re-binding. No executor binds to them
-          # yet; the alias targets are pinned to the declared identity names
-          # by policy_declarations_ownership_spec so a typo cannot bind to
-          # nobody.
+          # HIER-P2DECL: the four operations managers, added with their policy
+          # sets (PolicyDeclarations::AGENT_IDENTITIES) in wave 1; wave 2
+          # (HIER-P2B/P2C/P2D/P2E, 2026-09-03) seeded the agents and re-bound
+          # their executors — six capacity executors (+ attach_storage since
+          # HIER-P2SWEEP), restore_volume, the four ingress expose/ACME
+          # executors and the eight supply-chain executors bind through these
+          # slugs now. The alias targets are pinned to the declared identity
+          # names by policy_declarations_ownership_spec so a typo cannot bind
+          # to nobody.
           "capacity_manager"     => "Capacity Manager",
           "storage_manager"      => "Storage Manager",
           "ingress_manager"      => "Ingress Manager",

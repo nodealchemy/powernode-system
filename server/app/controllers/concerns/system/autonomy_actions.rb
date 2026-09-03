@@ -46,10 +46,11 @@ module System
     # `system.gitops_*` policies and this list was not extended with it
     # (IMP-e3a30e2dd5ee). System Topology Designer used to be absent for the
     # Concierge's reason and is listed since HIER-P2DECL, when it took the
-    # topology set (TOPOLOGY_DESIGNER_POLICIES); the four wave-1 managers are
-    # listed from the moment their sets are declared — the rows the
-    # reconciler writes for them the first boot after wave 2 seeds the agents
-    # must have a bucket waiting, not be dropped until someone remembers.
+    # topology set (TOPOLOGY_DESIGNER_POLICIES); the four operations managers
+    # were listed from the moment their sets were declared (wave 1), ahead of
+    # their wave-2 seeds — the rows the reconciler writes for them the first
+    # boot after the agent exists must have a bucket waiting, not be dropped
+    # until someone remembers.
     #
     # ORDER IS NOT SIGNIFICANT here, unlike DOMAIN_PREFIXES immediately below.
     # That map resolves with `find` on a string PREFIX, so an entry extending

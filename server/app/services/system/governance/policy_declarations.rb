@@ -325,12 +325,15 @@ module System
       # Designer (see the wave-1 block below PROVISIONING_CONDITION_OVERRIDES).
       # The groups stay as named constants so each agent set reads as "the
       # group plus what else it took", and the verbs did not move with the
-      # owner. The agents are SEEDED in wave 2; until then their sets skip in
+      # owner. The agents were SEEDED in wave 2 (HIER-P2B/P2C/P2D/P2E,
+      # 2026-09-03), so on a fresh install every set reconciles onto its
+      # owner at first boot. Only an established install whose first boot
+      # predates those seeds still shows the interim state: its sets skip in
       # PolicyReconciler ("agent absent") and the fleet tick gates their
       # bindings under Fleet Autonomy with a fleet.owner_agent_missing event
-      # (FleetAutonomyService#for_owner) — where an established install still
-      # holds the rows, because the reconciler moves nothing off a former
-      # owner until the new one exists.
+      # (FleetAutonomyService#for_owner) — where that install still holds the
+      # rows, because the reconciler moves nothing off a former owner until
+      # the new one exists — until the seeds are re-run there.
 
       # Capacity-shaped node-lifecycle keys: the DR replace/reap pair, the two
       # cost-bearing expansions, and workload relocation. instance_reboot /
@@ -421,14 +424,19 @@ module System
         # Package repository ingestion. Sync is routine + reversible (just
         # refreshes cached metadata); module creation is supply-chain critical
         # (operator audits each new package entering the fleet). The refresh row
-        # is DECLARED BUT UNREAD today: no DecisionEngine binding routes a signal
-        # to system.package_module.refresh (system.package_drift_pressure routes
-        # to package_repository.sync), and the only caller of
-        # PackageModuleRefreshExecutor is CveRemediationOrchestrationExecutor
-        # #dispatch_refreshes, which invokes it directly under the CVE lane's own
-        # gate. There is no CVE-flagged/non-CVE split anywhere — that claim was
-        # aspirational prose. The row stays so a future sensor-routed refresh
-        # lane starts at require_approval rather than the unmatched default.
+        # is DECLARED BUT UNREAD (re-verified 2026-09-03, HIER-P2SWEEP): no
+        # DecisionEngine binding routes a signal to
+        # system.package_module.refresh (system.package_drift_pressure routes
+        # to package_repository.sync); PackageModuleRefreshExecutor `binds_to`
+        # the Supply Chain Manager since HIER-P2E (plus System Concierge and
+        # CVE Responder) but declares `requires_approval: false`, so
+        # BaseSkillExecutor#gate_action! never resolves this category for it;
+        # and its only caller is CveRemediationOrchestrationExecutor
+        # #dispatch_refreshes, which invokes it directly under the CVE lane's
+        # own gate. There is no CVE-flagged/non-CVE split anywhere — that claim
+        # was aspirational prose. The row stays, on this agent, so a future
+        # sensor-routed refresh lane or a gated executor starts at
+        # require_approval rather than the unmatched default.
         "system.package_repository.sync" => "auto_approve",
         "system.package_module.create"   => "require_approval",
         "system.package_module.refresh"  => "require_approval",
@@ -1058,8 +1066,8 @@ module System
       # pair is ALSO declared on the Capacity Manager's agent set
       # (CAPACITY_MANAGER_POLICIES; this set is its twin — OPERATOR_TWINS): the
       # agent row resolves only when the reconciler is invoked AS that agent
-      # (an executor bound to it in wave 2), and no SIGNAL_BINDINGS entry
-      # routes to either key. The operator row stays the one an operator tunes.
+      # (PlatformResilienceExecutor, bound to it since HIER-P2B), and no
+      # SIGNAL_BINDINGS entry routes to either key. The operator row stays the one an operator tunes.
       PLATFORM_SCALING_POLICIES = {
         "system.platform.scale_out" => "auto_approve",
         "system.platform.scale_in" => "require_approval"
@@ -1085,7 +1093,7 @@ module System
       # this set is its twin — OPERATOR_TWINS, operator ruling: every
       # operator-only set gets an agent twin). What reads the agent row today:
       # the MCP verb when the caller is an agent principal (the Storage
-      # Manager, once wave 2 binds it). No SIGNAL_BINDINGS entry routes to it
+      # Manager, seeded by HIER-P2C). No SIGNAL_BINDINGS entry routes to it
       # yet — the snapshot schedule sensor (improvement
       # 01a065df-4ab7-7a04-8293-8069d805b0b1) must ask THIS category when it
       # lands, so one row governs a delete whichever door it arrives through
@@ -1160,9 +1168,13 @@ module System
       # that carries the same keys; all official agents are global seeded
       # canonicals under the System Concierge (HIER-P1).
       #
-      # THIS WAVE MOVES DECLARATIONS ONLY. The FOUR MANAGERS (identity,
-      # prompt, chain, trust, skills) are seeded in wave 2. Until then, for
-      # those four sets — and ONLY those four:
+      # WAVE 1 MOVED DECLARATIONS ONLY; WAVE 2 (HIER-P2B/P2C/P2D/P2E,
+      # 2026-09-03) SEEDED THE FOUR MANAGERS (identity, prompt, chain, trust,
+      # tool_access, skills) and re-bound their executors. On a fresh install
+      # every set below reconciles onto its owner at first boot. The interim
+      # state wave 1 designed for survives only on an established install
+      # whose first boot predates the wave-2 seeds, and only until the seeds
+      # are re-run there; for its four manager sets — and ONLY those four:
       #   * PolicyReconciler skips the set ("agent absent") and leaves the
       #     moved rows on Fleet Autonomy — it re-homes them, in place, the
       #     first reconcile after the agent exists (its FORMER_OWNERS map
@@ -1170,30 +1182,32 @@ module System
       #   * the fleet tick gates each re-pointed binding under Fleet Autonomy
       #     with a fleet.owner_agent_missing event, where those rows are.
       #
-      # THE TOPOLOGY DESIGNER IS THE EXCEPTION, and it is the one wave-1 owner
-      # that ALREADY EXISTS: db/seeds/system_topology_designer_agent.rb seeds
+      # THE TOPOLOGY DESIGNER WAS THE WAVE-1 EXCEPTION, the one owner that
+      # already existed: db/seeds/system_topology_designer_agent.rb seeds
       # name "System Topology Designer" / agent_type "assistant", exactly the
       # AGENT_IDENTITIES entry below, so AgentResolver resolves it and its set
-      # is NOT skipped. The first `rake system:governance:reconcile` after this
-      # wave deploys re-homes system.multi_tenant_isolation and
-      # system.service_discovery_compose off Fleet Autonomy onto it and CREATES
-      # system.sdwan_federation_compose. All three declare require_approval,
-      # which is also the unmatched default the composer executors resolved
-      # while those rows sat on an agent they never run as — so no verdict
-      # changes on a row nobody tuned. What DOES change: the three executors
-      # `binds_to "System Topology Designer"` and BaseSkillExecutor resolves
-      # the policy against the EXECUTING agent, so a Fleet Autonomy row an
-      # operator had TUNED (auto_approve, say) stops being invisible to them
-      # and starts applying — a loosening, on this wave alone.
-      # policy_reconciler_rehome_spec pins the move.
+      # was never skipped. The first `rake system:governance:reconcile` after
+      # wave 1 deployed re-homed system.multi_tenant_isolation and
+      # system.service_discovery_compose off Fleet Autonomy onto it and
+      # CREATED system.sdwan_federation_compose. All three declare
+      # require_approval, which is also the unmatched default the composer
+      # executors resolved while those rows sat on an agent they never run as
+      # — so no verdict changed on a row nobody tuned. What DID change: the
+      # three executors `binds_to "topology_designer"` and BaseSkillExecutor
+      # resolves the policy against the EXECUTING agent, so a Fleet Autonomy
+      # row an operator had TUNED (auto_approve, say) stopped being invisible
+      # to them and started applying — a loosening. Since HIER-P2F the
+      # Topology Designer seed also consumes TOPOLOGY_DESIGNER_POLICIES at
+      # first boot. policy_reconciler_rehome_spec pins the move, and pins that
+      # a fully seeded install skips NO set.
       #
-      # So an established install sees exactly those three rows change when
-      # this wave is deployed by itself; the other 33 of FORMER_OWNERS's 35
-      # wave-1 keys wait for wave 2.
-      # A FRESH install seeded between the waves has no row anywhere for the
-      # moved sensor-routed lanes (the Fleet Autonomy seed no longer declares
-      # them and no seed exists for the four managers) — wave 2's seeds close
-      # it.
+      # So an established install saw exactly those three rows change when
+      # wave 1 deployed alone; the other 33 of FORMER_OWNERS's 35 wave-1 keys
+      # re-home the first reconcile after the wave-2 seeds run there. A fresh
+      # install seeded before wave 2 had no row anywhere for the moved
+      # sensor-routed lanes (the Fleet Autonomy seed no longer declares them
+      # and no seed existed for the four managers) — wave 2's seeds closed
+      # that gap (routed_lane_policy_coherence_spec).
       #
       # WHAT IS AGENT-ROUTED, PER SET. Stated because the operator ruling's
       # "twin where a sensor or executor lane exists" is a fact about each key:
@@ -1295,13 +1309,15 @@ module System
       # source_key" — so an operator who renames one keeps a resolvable
       # declaration instead of silently losing its whole policy set.
       #
-      # HIER-P2DECL adds the four wave-1 managers (seeded in wave 2 — an
-      # identity here with no agent behind it is exactly the state
-      # PolicyReconciler reports as "<set>(agent absent)" and the tick warns
-      # about as fleet.owner_agent_missing) and the System Topology Designer,
-      # which is the EXISTING assistant: its seed carries source_key
-      # "system-topology-designer", so it resolves through the name+type
-      # primary path here, not the source_key fallback.
+      # HIER-P2DECL added the four operations managers (declared in wave 1,
+      # seeded in wave 2 by HIER-P2B/P2C/P2D/P2E — an identity here with no
+      # agent behind it is exactly the state PolicyReconciler reports as
+      # "<set>(agent absent)" and the tick warns about as
+      # fleet.owner_agent_missing, which on a seeded install means a seed
+      # failed) and the System Topology Designer, the EXISTING assistant.
+      # HIER-P2F aligned that seed's source_key to the key below
+      # ("topology-designer"; it was "system-topology-designer" until then, so
+      # only the name+type primary path resolved it) — now both paths do.
       AGENT_IDENTITIES = {
         "fleet-autonomy"       => { name: "Fleet Autonomy",           agent_type: "monitor" },
         "sdwan-manager"        => { name: "SDWAN Manager",            agent_type: "monitor" },

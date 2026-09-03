@@ -55,7 +55,19 @@ module System
           blast_radius: :low
         )
 
-        binds_to "Fleet Autonomy"
+        # HIER-P2SWEEP (driver ruling 2026-09-03): bound to the CAPACITY
+        # Manager, not the Storage Manager and no longer Fleet Autonomy. This
+        # executor runs DURING PROVISIONING — it is the provisioning mission's
+        # adaptive-evolution step (Ai::Provisioning::AdaptationProposerService;
+        # seeded by system_provisioning_skills_seed.rb under the `provisioning`
+        # subdomain) — and the Capacity Manager owns the provisioning step
+        # (PROVISIONING_POLICIES, scale_project, provision_full_stack). The
+        # Storage Manager owns the volume DATA plane (restore, snapshot delete,
+        # assignment reconcile), which a fresh attach is not. Fleet Autonomy
+        # declares no provisioning category since HIER-P2DECL, so a binding
+        # there would resolve any future gate against an agent that owns
+        # nothing this executor does.
+        binds_to "capacity_manager"
 
         # Rollback contract: detach (best-effort) and delete the volume(s).
         # node_instance_ids is forwarded by the runner but ignored — we do
