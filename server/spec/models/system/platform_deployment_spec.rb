@@ -105,4 +105,76 @@ RSpec.describe System::PlatformDeployment, type: :model do
       expect(described_class.new.metadata).to eq({})
     end
   end
+
+  # IMP-f986d379120a (bulk review D16). A platform deployment's replica window
+  # is the deployment-side twin of Ai::Mission#scaling_bounds (APO-3a): the
+  # number ReplicaReconciler may scale OUT to without a person looking. Same
+  # ladder shape and the same fail-closed reading — no ceiling declared
+  # anywhere means no unattended scale-out, never a wider default.
+  describe "#scaling_bounds" do
+    let(:account) { create(:account) }
+    let(:deployment) { create(:system_platform_deployment, account: account) }
+
+    it "returns a Ai::Mission::ScalingBounds so the reconciler and the composer speak one vocabulary" do
+      expect(deployment.scaling_bounds).to be_a(::Ai::Mission::ScalingBounds)
+    end
+
+    it "is fail-closed when nothing declares a ceiling: floor 1, no ceiling, not eligible" do
+      bounds = deployment.scaling_bounds
+
+      expect(bounds.min).to eq(described_class::DEFAULT_AUTO_SCALE_MIN_REPLICAS)
+      expect(bounds.max).to eq(described_class::DEFAULT_AUTO_SCALE_MAX_REPLICAS)
+      expect(bounds.ceiling_declared?).to be false
+      expect(bounds.auto_scale_out?).to be false
+    end
+
+    it "reads the window off the deployment's own metadata first" do
+      deployment.update!(metadata: { described_class::MIN_REPLICAS_METADATA_KEY => 2,
+                                     described_class::MAX_REPLICAS_METADATA_KEY => 6 })
+      SiteSetting.set(described_class::MAX_REPLICAS_SETTING, "99")
+
+      bounds = deployment.scaling_bounds
+
+      expect(bounds.min).to eq(2)
+      expect(bounds.max).to eq(6)
+      expect(bounds.permits_replica_count?(6)).to be true
+      expect(bounds.permits_replica_count?(7)).to be false
+    end
+
+    it "falls through to the account's settings, then the SiteSetting" do
+      account.update!(settings: { described_class::MAX_REPLICAS_SETTING => 4 })
+      SiteSetting.set(described_class::MAX_REPLICAS_SETTING, "8")
+      expect(deployment.scaling_bounds.max).to eq(4)
+
+      account.update!(settings: {})
+      expect(deployment.reload.scaling_bounds.max).to eq(8)
+    end
+
+    it "keys its SiteSettings under the platform namespace, not the project one" do
+      expect(described_class::MAX_REPLICAS_SETTING).to start_with("system.platform.")
+      expect(described_class::MIN_REPLICAS_SETTING).to start_with("system.platform.")
+      expect(described_class::MAX_REPLICAS_SETTING).not_to eq(::Ai::Mission::MAX_REPLICAS_SETTING)
+    end
+
+    it "treats an explicit zero on the deployment as 'no window here', never inheriting a wider default" do
+      deployment.update!(metadata: { described_class::MAX_REPLICAS_METADATA_KEY => 0 })
+      SiteSetting.set(described_class::MAX_REPLICAS_SETTING, "10")
+
+      expect(deployment.scaling_bounds.auto_scale_out?).to be false
+    end
+
+    it "clamps the floor UP to the platform minimum" do
+      deployment.update!(metadata: { described_class::MIN_REPLICAS_METADATA_KEY => 0,
+                                     described_class::MAX_REPLICAS_METADATA_KEY => 3 })
+
+      expect(deployment.scaling_bounds.min).to eq(described_class::DEFAULT_AUTO_SCALE_MIN_REPLICAS)
+    end
+
+    it "reads a floor above the ceiling as an empty window, not a guess" do
+      deployment.update!(metadata: { described_class::MIN_REPLICAS_METADATA_KEY => 5,
+                                     described_class::MAX_REPLICAS_METADATA_KEY => 3 })
+
+      expect(deployment.scaling_bounds.auto_scale_out?).to be false
+    end
+  end
 end

@@ -69,11 +69,23 @@ RSpec.describe System::Platform::ReplicaReconciler do
     end
   end
 
+  # A scale-out is released by an auto-executing system.platform.scale_out
+  # policy AND a declared window (IMP-f986d379120a); the examples below grant
+  # both so they can stay about the convergence arithmetic. The gate itself is
+  # pinned in its own describe block further down.
+  def release_scale_out!(ceiling:)
+    allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve) do |_svc, action_category:, **|
+      { policy: action_category == described_class::SCALE_OUT_ACTION_CATEGORY ? "auto_approve" : "block" }
+    end
+    deployment.update!(metadata: { ::System::PlatformDeployment::MAX_REPLICAS_METADATA_KEY => ceiling })
+  end
+
   describe "#reconcile! — scale out" do
     it "provisions the deficit and reports the new ids" do
       node
       live_instance!
       deployment.update!(target_replicas: 3)
+      release_scale_out!(ceiling: 3)
       stub_provision
 
       result = reconciler.reconcile!(deployment)
@@ -100,6 +112,7 @@ RSpec.describe System::Platform::ReplicaReconciler do
       node
       SiteSetting.set(described_class::MAX_DELTA_SETTING_KEY, "1")
       deployment.update!(target_replicas: 5)
+      release_scale_out!(ceiling: 5)
       stub_provision
 
       result = reconciler.reconcile!(deployment)
@@ -236,6 +249,7 @@ RSpec.describe System::Platform::ReplicaReconciler do
     it "provisions for a caller that holds system.instances.create" do
       node
       deployment.update!(target_replicas: 2)
+      release_scale_out!(ceiling: 2)
       stub_provision
 
       result = described_class.new(account: account, user: full).reconcile!(deployment)
@@ -287,6 +301,144 @@ RSpec.describe System::Platform::ReplicaReconciler do
       declared = ::System::Governance::PolicyDeclarations::POLICY_SETS
                    .flat_map { |set| set[:policies].keys }
       expect(declared).to include(described_class::SCALE_IN_ACTION_CATEGORY)
+    end
+  end
+
+  # IMP-f986d379120a (bulk review D16). Scale-OUT used to run on the caller's
+  # authority with NO policy category — the same shape as platform_deploy —
+  # while scale-in resolved system.platform.scale_in. With APO-3a's window in
+  # place it now resolves system.platform.scale_out and actuates only when the
+  # policy auto-executes AND the target sits inside the deployment's declared
+  # window (System::PlatformDeployment#scaling_bounds); otherwise it PARKS —
+  # provisions nothing, names the deficit and the reason — rather than
+  # clamping to the ceiling, which would silently rewrite the operator's number.
+  describe "#reconcile! — scale out is gated by system.platform.scale_out and the declared window" do
+    before do
+      node
+      live_instance!
+      deployment.update!(target_replicas: 3)
+    end
+
+    def scale_out_policy(policy)
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve) do |_svc, action_category:, **|
+        { policy: action_category == described_class::SCALE_OUT_ACTION_CATEGORY ? policy : "block" }
+      end
+    end
+
+    def declare_ceiling!(max)
+      deployment.update!(metadata: { ::System::PlatformDeployment::MAX_REPLICAS_METADATA_KEY => max })
+    end
+
+    it "declares the category so an operator can retune it in the Autonomy modal" do
+      declared = ::System::Governance::PolicyDeclarations::POLICY_SETS
+                   .flat_map { |set| set[:policies].keys }
+      expect(declared).to include(described_class::SCALE_OUT_ACTION_CATEGORY)
+    end
+
+    it "seeds the category to auto-execute, bounded by the window (auto_apply_within_bounds)" do
+      expect(::System::Governance::PolicyDeclarations::PLATFORM_SCALING_POLICIES
+               .fetch(described_class::SCALE_OUT_ACTION_CATEGORY)).to eq("auto_approve")
+    end
+
+    it "provisions when the policy auto-executes and the target sits inside the window" do
+      scale_out_policy("auto_approve")
+      declare_ceiling!(3)
+      stub_provision
+
+      result = reconciler.reconcile!(deployment)
+
+      expect(result.ok?).to be true
+      expect(result.provisioned_instance_ids.size).to eq(2)
+      expect(result.pending_provision_count).to eq(0)
+    end
+
+    it "parks under the absent-row default (require_approval), naming the category" do
+      declare_ceiling!(5)
+      expect(::System::ProvisioningService).not_to receive(:provision_instance)
+
+      result = reconciler.reconcile!(deployment)
+
+      expect(result.ok?).to be true
+      expect(result.provisioned_instance_ids).to be_empty
+      expect(result.pending_provision_count).to eq(2)
+      expect(result.actual_after).to eq(1)
+      expect(result.message).to include(described_class::SCALE_OUT_ACTION_CATEGORY)
+    end
+
+    it "parks when the policy blocks, even inside the window" do
+      scale_out_policy("block")
+      declare_ceiling!(5)
+      expect(::System::ProvisioningService).not_to receive(:provision_instance)
+
+      result = reconciler.reconcile!(deployment)
+
+      expect(result.provisioned_instance_ids).to be_empty
+      expect(result.pending_provision_count).to eq(2)
+      expect(result.message).to include(described_class::SCALE_OUT_ACTION_CATEGORY)
+    end
+
+    it "parks when NO ceiling is declared anywhere, even under auto_approve (fail closed)" do
+      scale_out_policy("auto_approve")
+      expect(::System::ProvisioningService).not_to receive(:provision_instance)
+
+      result = reconciler.reconcile!(deployment)
+
+      expect(result.ok?).to be true
+      expect(result.provisioned_instance_ids).to be_empty
+      expect(result.pending_provision_count).to eq(2)
+      # Distinguishing text, not /window/i: EVERY park message ends with the
+      # "only inside the deployment's declared window" boilerplate, so a loose
+      # regex here stays green when the ceiling branch is swapped for any other
+      # park reason.
+      expect(result.message).to match(/no auto-scale ceiling is declared/i)
+      expect(result.message).to include(::System::PlatformDeployment::MAX_REPLICAS_SETTING)
+    end
+
+    it "parks when the target is ABOVE the declared ceiling rather than clamping to it" do
+      scale_out_policy("auto_approve")
+      declare_ceiling!(2)
+      expect(::System::ProvisioningService).not_to receive(:provision_instance)
+
+      result = reconciler.reconcile!(deployment)
+
+      expect(result.provisioned_instance_ids).to be_empty
+      expect(result.pending_provision_count).to eq(2)
+      expect(result.message).to include("ceiling")
+    end
+
+    it "reads the window off the SiteSetting when the deployment declares none" do
+      scale_out_policy("auto_approve")
+      SiteSetting.set(::System::PlatformDeployment::MAX_REPLICAS_SETTING, "3")
+      stub_provision
+
+      result = reconciler.reconcile!(deployment)
+
+      expect(result.provisioned_instance_ids.size).to eq(2)
+    end
+
+    it "fails closed when policy resolution raises" do
+      declare_ceiling!(5)
+      allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_raise(StandardError, "boom")
+      expect(::System::ProvisioningService).not_to receive(:provision_instance)
+
+      result = reconciler.reconcile!(deployment)
+
+      expect(result.provisioned_instance_ids).to be_empty
+      expect(result.pending_provision_count).to eq(2)
+    end
+
+    # A structural refusal (nothing to provision onto) outranks a park: telling
+    # an operator to declare a window for a deployment that has no node would
+    # send them to the wrong control.
+    it "still refuses outright when there is no node, before consulting the gate" do
+      ::System::NodeInstance.where(node_id: node.id).delete_all
+      node.destroy!
+      scale_out_policy("auto_approve")
+
+      result = reconciler.reconcile!(deployment)
+
+      expect(result.ok?).to be false
+      expect(result.refused_reason).to eq(:no_provisioning_node)
     end
   end
 end

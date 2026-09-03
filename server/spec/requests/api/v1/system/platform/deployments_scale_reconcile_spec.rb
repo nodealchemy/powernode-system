@@ -41,8 +41,22 @@ RSpec.describe "Api::V1::System::Platform::Deployments scale reconcile", type: :
                                       headers: auth_headers_for(as), as: :json
   end
 
+  # IMP-f986d379120a: a scale-out is released by an auto-executing
+  # system.platform.scale_out policy AND a declared window. The REAL rows,
+  # not a stub — this spec is the panel's end-to-end path, and the policy
+  # resolution plus the SiteSetting rung of the window are part of it.
+  def release_scale_out!(ceiling:)
+    ::Ai::InterventionPolicy.create!(
+      account: account, scope: "global",
+      action_category: ::System::Platform::ReplicaReconciler::SCALE_OUT_ACTION_CATEGORY,
+      policy: "auto_approve", is_active: true, priority: 10
+    )
+    SiteSetting.set(::System::PlatformDeployment::MAX_REPLICAS_SETTING, ceiling.to_s)
+  end
+
   it "reconciles the live replica count after writing target_replicas" do
     live_instance!
+    release_scale_out!(ceiling: 3)
     stub_provision!
 
     patch_target(3)
@@ -59,6 +73,7 @@ RSpec.describe "Api::V1::System::Platform::Deployments scale reconcile", type: :
   it "applies the reconciler's per-pass clamp rather than provisioning the whole delta" do
     live_instance!
     SiteSetting.set(::System::Platform::ReplicaReconciler::MAX_DELTA_SETTING_KEY, "1")
+    release_scale_out!(ceiling: 5)
     stub_provision!
 
     patch_target(5)
@@ -67,6 +82,24 @@ RSpec.describe "Api::V1::System::Platform::Deployments scale reconcile", type: :
     reconciled = json_response_data["reconciled"]
     expect(reconciled["provisioned_instance_ids"].size).to eq(1)
     expect(reconciled["actual_after"]).to eq(2)
+  end
+
+  # The gate, seen from the panel: the write LANDS (the operator may declare
+  # the target) but nothing is provisioned until a window releases it, and
+  # the response says so rather than reporting the save as a scale.
+  it "writes the target but PARKS the scale-out when no window is declared" do
+    live_instance!
+    expect(::System::ProvisioningService).not_to receive(:provision_instance)
+
+    patch_target(3)
+
+    expect(response).to have_http_status(:ok)
+    expect(deployment.reload.target_replicas).to eq(3)
+    reconciled = json_response_data["reconciled"]
+    expect(reconciled["ok"]).to be true
+    expect(reconciled["provisioned_instance_ids"]).to be_empty
+    expect(reconciled["actual_after"]).to eq(1)
+    expect(reconciled["message"]).to match(/NOT provisioned/)
   end
 
   it "refuses the control plane's own hosting deployment WITHOUT writing target_replicas" do
@@ -114,6 +147,7 @@ RSpec.describe "Api::V1::System::Platform::Deployments scale reconcile", type: :
     it "still reconciles, so a clamped pass can be resumed" do
       live_instance!
       deployment.update!(target_replicas: 3)
+      release_scale_out!(ceiling: 3)
       stub_provision!
 
       patch_target(3)
