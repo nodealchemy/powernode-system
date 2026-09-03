@@ -157,6 +157,16 @@ module Ai
         "system_provision_instance"     => "system.instances.create",
         "system_terminate_instance"     => "system.instances.control",
         "system_destroy_instance"       => "system.instances.control",
+        # IMP-4e49eb79c5e0 — the disaster-recovery lane's two MCP doors.
+        # system.instances.control, the SAME grant terminate takes, for both
+        # halves: the reap IS a terminate, and the replace moves a live
+        # workload (volumes, SDWAN membership, VIP holders) off one instance
+        # onto another, which is a control-plane act on the failed instance
+        # rather than the creation of a new one — the replacement comes out of
+        # an already-provisioned warm pool, so nothing here mints capacity and
+        # system.instances.create would be the wrong family.
+        "system_replace_instance"       => "system.instances.control",
+        "system_reap_instance"          => "system.instances.control",
         # F4-08 — lifecycle control (start/stop/reboot): same level as
         # terminate, wraps InstanceControlService.
         "system_start_instance"         => "system.instances.control",
@@ -439,10 +449,12 @@ module Ai
       # consulted. On :proceed the response is what it always was
       # (`terminated: true` + the instance); on require_approval it parks.
       #
-      # SCOPE, stated so this is not read as more than it is. THREE verbs on
+      # SCOPE, stated so this is not read as more than it is. FIVE verbs on
       # this tool are gate-routed: system_terminate_instance (this one),
-      # plus system_create_instance_pool and system_update_instance_pool
-      # (IMP-067f39468350, declared below). The authoritative census is
+      # system_create_instance_pool and system_update_instance_pool
+      # (IMP-067f39468350, declared below), and system_replace_instance /
+      # system_reap_instance (IMP-4e49eb79c5e0, the DR lane's two doors, also
+      # below). The authoritative census is
       # server/spec/services/ai/tools/action_declaration_completeness_spec.rb
       # (GATE_ROUTED_ACTIONS) in core, which reds if this sentence and the
       # declarations drift apart. Nothing else on this tool meets a gate.
@@ -644,11 +656,70 @@ module Ai
       declare_action "system_provision_ci_worker", mutating: true
       declare_action "system_provision_instance", mutating: true
       declare_action "system_reap_agent_fleet", mutating: true
+      # IMP-4e49eb79c5e0 — THE DR LANE'S SECOND DOOR (the destructive half).
+      #
+      # APO-4 landed System::Ai::Skills::ReapInstanceExecutor behind the
+      # unrecoverable-instance sensor only, so the terminate of a failed
+      # instance whose workload had already moved was reachable from exactly
+      # one place: the autonomy lane noticing. An operator who already KNEW the
+      # box was dead had no verb at all.
+      #
+      # THE EXECUTOR IS THE REPLAY TARGET, not Ai::Executors::DeferredToolCall.
+      # The generic replay executor rebuilds this tool and re-invokes the
+      # action, which is right when the action BODY is the sole author of the
+      # write (the pool verbs). Here the skill executor is: it owns the
+      # provider terminate, the InstanceReplacementLedger idempotency on
+      # operation_id, and the FleetEvent the reap shares with the replace's
+      # correlation id. Naming it directly means the gate's :proceed branch and
+      # an operator's released approval run the SAME class the sensor lane
+      # runs, so this door cannot drift from that one.
+      #
+      # SAME category the executor gates itself on (system.instance_reap), so
+      # ONE operator-tuned policy row governs the terminate whether the sensor,
+      # a replace, or an operator over MCP asks for it. Deliberately NOT
+      # system.instance_replace: an operator who retunes the additive half to a
+      # proceeding verb must not thereby have auto-approved every terminate.
+      #
+      # A second, independent brake applies to this name and not to
+      # system_replace_instance: `*reap_*` is in
+      # Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS, so an INSTANCE principal is
+      # refused it outright by the deny overlay before any of this is reached
+      # (BaseTool#execute runs #enforce_instance_deny_overlay! first). The
+      # additive half matches no pattern and is therefore reachable by a
+      # granted instance, which is right for what it does ALONE — it parks an
+      # approval and moves a workload, it destroys nothing. `reap: true` is the
+      # exception and is refused for that principal in
+      # #dr_lane_reap_by_instance_principal!, because it asks the replace to
+      # raise the very terminate the overlay denies: permitting it would
+      # re-open the denied door through the permitted one. See the note there.
+      declare_action "system_reap_instance",
+                     mutating: true,
+                     # Literal, not the executor's ACTION_CATEGORY: this runs at
+                     # class-body evaluation and must not force an executor
+                     # autoload just to read a string. The gating spec asserts
+                     # the two agree.
+                     action_category: "system.instance_reap",
+                     executor_class: "System::Ai::Skills::ReapInstanceExecutor",
+                     gate_context: :reap_instance_gate_context,
+                     on_proceed: :dr_lane_gate_result
       declare_action "system_reboot_instance", mutating: true
       declare_action "system_recent_signals", mutating: false
       declare_action "system_recycle_pool", mutating: true
       declare_action "system_refresh_instance_modules", mutating: true
       declare_action "system_release_ci_runner", mutating: true
+      # IMP-4e49eb79c5e0 — THE DR LANE'S FIRST DOOR (the additive half).
+      # Acquires a warm pool member, moves the failed instance's volumes, VIPs
+      # and SDWAN membership onto it, and TERMINATES NOTHING — the reap is
+      # System::Ai::Skills::ReapInstanceExecutor's job, under its own category,
+      # asked for by `reap: true` and answered by a SECOND approval. Same
+      # executor-as-replay-target and same-category-as-the-executor reasoning
+      # as system_reap_instance above.
+      declare_action "system_replace_instance",
+                     mutating: true,
+                     action_category: "system.instance_replace",
+                     executor_class: "System::Ai::Skills::ReplaceInstanceExecutor",
+                     gate_context: :replace_instance_gate_context,
+                     on_proceed: :dr_lane_gate_result
       declare_action "system_replenish_instance_pool", mutating: true
       declare_action "system_report_storage_migration_progress", mutating: true
       declare_action "system_return_pooled_instance", mutating: true
@@ -1044,6 +1115,64 @@ module Ai
                          "an operator approves — do not report a completed termination on that response. " \
                          "Use system_destroy_instance to fully remove a registry row that has no live cloud resource.",
             parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to terminate (destroys the cloud resource)" } }
+          },
+          # IMP-4e49eb79c5e0 — the disaster-recovery lane, on demand.
+          #
+          # Both descriptions name their gate and the pending shape, because an
+          # agent reads the CATALOG and not the declaration: a gated verb whose
+          # description reads as a plain write is one an agent reports as
+          # completed on a {pending: true} envelope.
+          "system_replace_instance" => {
+            description: "Replace an unrecoverable NodeInstance with a warm pool member: claim the replacement, " \
+                         "reattach its volumes, re-enrol it on every SDWAN network the failed one held (inheriting " \
+                         "the failed peer's routing role, with the endpoint re-derived from the replacement's own " \
+                         "address) and move its VIP holdings. Does NOT terminate the failed instance — pass " \
+                         "reap: true to ask for that, which raises a SECOND, separately-gated approval. " \
+                         "REFUSED for a target that is still running and still reporting a heartbeat — this " \
+                         "lane is for an instance nothing can reach, not a way to stop a live one; pass " \
+                         "accept_running: true only to assert unrecoverability on evidence the platform " \
+                         "cannot see. " \
+                         "APPROVAL-GATED (system.instance_replace): when policy requires approval this returns " \
+                         "{pending: true} with an approval_request_id and NOTHING moves until an operator " \
+                         "approves — do not report a completed replacement on that response.",
+            parameters: {
+              instance_id: { type: "string", required: true,
+                             description: "UUID of the failed NodeInstance to replace (account-scoped)" },
+              operation_id: { type: "string", required: true,
+                              description: "Caller-chosen idempotency key. Every step is skipped if a FleetEvent already records it for this id, so a re-drive after a partial run does not claim a SECOND pool member. Reuse the SAME id when retrying one replacement." },
+              pool_id: { type: "string", required: false,
+                         description: "UUID of the InstancePool to draw the replacement from (defaults to the failed instance's own pool)" },
+              pool_name: { type: "string", required: false,
+                           description: "Pool by name, for a failed instance that is not itself a pool member" },
+              reason: { type: "string", required: false,
+                        description: "Why the instance is unrecoverable — carried onto every step's FleetEvent" },
+              reap: { type: "boolean", required: false,
+                      description: "Ask for the failed instance to be terminated once its workload has moved. Raises a SEPARATE approval under system.instance_reap; this verb never terminates anything itself. Refused for an MCP instance principal, which the deny overlay bars from system_reap_instance." },
+              accept_running: { type: "boolean", required: false,
+                                description: "Assert the target is unrecoverable even though it is still running and still reporting. Only for evidence the platform cannot see (a hypervisor console, a hardware fault) — the approval card records that the classification was ASSERTED rather than observed." },
+              dry_run: { type: "boolean", required: false,
+                         description: "Plan only — report what would move without claiming, attaching or enrolling. Gated identically: the gate is on the action category, not on the payload, so a dry run parks too." }
+            }
+          },
+          "system_reap_instance" => {
+            description: "Terminate an unrecoverable NodeInstance whose workload system_replace_instance has " \
+                         "already moved onto a pooled replacement — the DESTRUCTIVE half of a DR replace, gated " \
+                         "separately from it. Idempotent on operation_id. REFUSED for a target that is still " \
+                         "running and still reporting a heartbeat (pass accept_running: true to assert " \
+                         "otherwise); use system_terminate_instance to terminate a live instance. " \
+                         "APPROVAL-GATED (system.instance_reap): when policy requires approval this returns " \
+                         "{pending: true} with an approval_request_id and the instance is NOT terminated until " \
+                         "an operator approves — do not report a completed termination on that response.",
+            parameters: {
+              instance_id: { type: "string", required: true,
+                             description: "UUID of the FAILED NodeInstance to terminate — the one whose volumes and VIPs have already moved (account-scoped)" },
+              operation_id: { type: "string", required: true,
+                              description: "The replace's idempotency key. The terminate is skipped if a FleetEvent already records a reap for this id, so a double release cannot ask the provider to terminate twice." },
+              reason: { type: "string", required: false,
+                        description: "Why the instance is being reaped — carried onto the step's FleetEvent" },
+              accept_running: { type: "boolean", required: false,
+                                description: "Assert the target is unrecoverable even though it is still running and still reporting. The approval card records that the classification was ASSERTED rather than observed." }
+            }
           },
           # F4-08 — lifecycle control. Cloud + physical (SSH/IPMI) paths via
           # InstanceControlService; AASM start/stop/reboot events.
@@ -2106,6 +2235,12 @@ module Ai
         # Gate-routed (IMP-d410a587d6bf) — see declare_action at the top of the
         # class. This arm exists only so a direct #call fails loudly.
         when "system_terminate_instance"       then gate_routed_only("system_terminate_instance")
+        # Gate-routed (IMP-4e49eb79c5e0) — the DR lane's two doors. Same
+        # tripwire: reaching either arm means #call was invoked directly and
+        # would otherwise have run a replace, or a terminate, with no policy
+        # evaluation at all.
+        when "system_replace_instance"         then gate_routed_only("system_replace_instance")
+        when "system_reap_instance"            then gate_routed_only("system_reap_instance")
         when "system_start_instance"           then control_instance(params, "start")
         when "system_stop_instance"            then control_instance(params, "stop")
         when "system_reboot_instance"          then control_instance(params, "reboot")
@@ -3685,6 +3820,203 @@ module Ai
       def terminate_instance_terminated_result(params, _gate)
         instance = account_instances.find(params[:instance_id])
         success_result(terminated: true, instance: serialize_instance(instance.reload))
+      end
+
+      # === The DR lane's gate contexts (IMP-4e49eb79c5e0) ===
+      #
+      # Both resolve the target under the ACCOUNT scope first, so a
+      # cross-account id is refused BEFORE any operation is created rather than
+      # producing an approval card that names another tenant's instance.
+      # ActiveRecord::RecordNotFound is one of the two raises
+      # BaseTool#run_through_autonomy_gate converts to an error envelope. The
+      # executor re-resolves at approval time (its own #find_instance): the row
+      # can be re-parented between parking and approval, and the executor is
+      # the half that runs then.
+      #
+      # The executor_params are the SKILL's declared inputs, spelled exactly as
+      # its descriptor declares them — BaseSkillExecutor.execute symbolizes the
+      # stored hash and hands it to #perform, so a key this tool invents would
+      # be dropped by #acceptable_inputs and the approved operation would
+      # perform a DIFFERENT call from the one the card described.
+
+      def replace_instance_gate_context(params)
+        instance = dr_lane_instance(params)
+        reap = ::ActiveModel::Type::Boolean.new.cast(params[:reap]) || false
+        dr_lane_reap_by_instance_principal!(reap)
+
+        {
+          executor_params: {
+            instance_id: instance.id,
+            operation_id: dr_lane_operation_id(params),
+            pool_id: params[:pool_id].presence,
+            pool_name: params[:pool_name].presence,
+            reason: params[:reason].presence,
+            reap: reap,
+            dry_run: ::ActiveModel::Type::Boolean.new.cast(params[:dry_run]) || false
+          }.compact,
+          description: "Move the workload of instance '#{instance.name}' onto a pooled member — " \
+                       "#{dr_lane_liveness_phrase(instance)}",
+          source_type: instance.class.name,
+          source_id: instance.id
+        }
+      end
+
+      def reap_instance_gate_context(params)
+        instance = dr_lane_instance(params)
+
+        {
+          executor_params: {
+            instance_id: instance.id,
+            operation_id: dr_lane_operation_id(params),
+            reason: params[:reason].presence
+          }.compact,
+          description: "Terminate instance '#{instance.name}' after its workload moved to a " \
+                       "pooled replacement — #{dr_lane_liveness_phrase(instance)}",
+          source_type: instance.class.name,
+          source_id: instance.id
+        }
+      end
+
+      def dr_lane_instance(params)
+        instance = account_instances.find(params[:instance_id])
+        dr_lane_liveness_refusal!(instance, params)
+        instance
+      end
+
+      # === The DR lane's liveness precondition (IMP-4e49eb79c5e0 review) ===
+      #
+      # THE MCP DOOR REMOVED THE ONLY THING THAT ESTABLISHED THE TARGET WAS
+      # DEAD. Until these verbs existed, both executors were reachable from one
+      # place: System::Fleet::Sensors::InstanceUnrecoverableSensor deciding an
+      # instance was unrecoverable. Every surface — the skill descriptor, the
+      # action description, the approval card — says "unrecoverable", and the
+      # SENSOR was what made that true. A verb that resolves any account-scoped
+      # id and goes straight to detach/reattach volumes, move VIPs and (with
+      # reap) terminate would let a caller aim all of that at a HEALTHY,
+      # running instance while showing the operator a card asserting the
+      # classification as fact.
+      #
+      # This is a floor, not the sensor. Re-running #unrecoverable_reason here
+      # would be a second implementation of a three-way classification that
+      # probes the provider — expensive, and free to drift from the lane it is
+      # meant to agree with. What it refuses is the case the sensor can never
+      # produce: an instance that is running or starting AND has heartbeat
+      # inside the same silence window the sensor requires a candidate to be
+      # outside of (#candidates: `last_heartbeat_at < now - threshold OR NULL`,
+      # over statuses running/starting/error). A NULL heartbeat is deliberately
+      # allowed through — it is the sensor's own candidate shape.
+      #
+      # THE THRESHOLD IS THE ACCOUNT'S RESOLVED SENSOR THRESHOLD, not a
+      # literal, by the same seam and for the same reason as
+      # #get_silent_instances above: an operator who widens the sensor's
+      # silence window widens this door with it, so the two cannot come to
+      # disagree about which instances the DR lane is for.
+      #
+      # `accept_running: true` is the override, and it is deliberately an
+      # explicit acknowledgement rather than a permission tier: the legitimate
+      # caller is an operator who knows something the platform cannot see (a
+      # hypervisor console, a hardware fault) and is willing to say so. It is
+      # recorded in the card, so the approver sees that the classification was
+      # ASSERTED rather than observed.
+      DR_LANE_LIVE_STATUSES = %w[running starting].freeze
+
+      def dr_lane_liveness_refusal!(instance, params)
+        return if ::ActiveModel::Type::Boolean.new.cast(params[:accept_running])
+        return unless DR_LANE_LIVE_STATUSES.include?(instance.status.to_s)
+
+        heartbeat = instance.last_heartbeat_at
+        return if heartbeat.blank?
+        return if heartbeat < Time.current - dr_lane_silent_threshold_seconds.seconds
+
+        raise ArgumentError,
+              "Instance #{instance.id} is #{instance.status} and last reported " \
+              "#{heartbeat.iso8601} — inside the #{dr_lane_silent_threshold_seconds}s silence " \
+              "window InstanceUnrecoverableSensor requires a candidate to be outside of, so " \
+              "nothing has classified it unrecoverable. The DR lane moves a DEAD instance's " \
+              "workload; to stop or terminate a live one use system_stop_instance or " \
+              "system_terminate_instance. Pass accept_running: true to assert the instance is " \
+              "unrecoverable on evidence the platform cannot see — the approval card will say so."
+      end
+
+      def dr_lane_silent_threshold_seconds
+        @dr_lane_silent_threshold_seconds ||=
+          ::System::Fleet::Sensors::InstanceStatusSensor
+            .resolved_threshold("silent_threshold_seconds", account: @account).to_i
+      end
+
+      # What the approval card says about the target's OBSERVED state. The card
+      # must not assert a classification nobody made: either the platform can
+      # see the instance is not answering, or the caller has asserted it is
+      # unrecoverable and the approver is told that is what happened.
+      def dr_lane_liveness_phrase(instance)
+        heartbeat = instance.last_heartbeat_at
+        seen = heartbeat.present? ? "last seen #{heartbeat.iso8601}" : "never reported"
+
+        if DR_LANE_LIVE_STATUSES.include?(instance.status.to_s) && heartbeat.present? &&
+           heartbeat >= Time.current - dr_lane_silent_threshold_seconds.seconds
+          "CALLER ASSERTS it is unrecoverable (status: #{instance.status}, #{seen} — still reporting)"
+        else
+          "status: #{instance.status}, #{seen}"
+        end
+      end
+
+      # THE SECOND, INDEPENDENT BRAKE THE REAP HAS AND THE REPLACE DOES NOT.
+      #
+      # Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS denies an instance principal
+      # `*reap_*` and `*terminate*`, so system_reap_instance and
+      # system_terminate_instance never reach this class for one.
+      # system_replace_instance matches no pattern, which is right for what it
+      # does ALONE — it moves a workload and destroys nothing. `reap: true`
+      # changes that: it asks the replace to raise the very terminate the
+      # overlay refuses that principal, so permitting it here would re-open the
+      # denied door through the permitted one. That is exactly the incoherence
+      # the overlay's own rationale names ("denying the reboot while permitting
+      # the thing that causes one is incoherent", Mcp::Principal).
+      #
+      # Refused HERE rather than by widening DESTRUCTIVE_TOOL_PATTERNS because
+      # the additive half is legitimately reachable by a granted instance and a
+      # `*replace*` pattern would deny it wholesale. An instance principal that
+      # needs the terminate too asks for it as a SEPARATE system_reap_instance
+      # — and is refused that by the overlay, which is the answer.
+      def dr_lane_reap_by_instance_principal!(reap)
+        return unless reap
+        return unless instance_authorized?
+
+        raise ArgumentError,
+              "reap: true is refused for an instance principal: it raises a " \
+              "system.instance_reap terminate, and Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS " \
+              "denies this principal system_reap_instance outright. Drive the replace without " \
+              "it; the terminate is an operator's call."
+      end
+
+      # REQUIRED and validated, never defaulted. Both executors are idempotent
+      # ON this key — it is what their InstanceReplacementLedger reads to decide
+      # a step has already run — so minting one per call would let a retry after
+      # a timeout claim a SECOND pool member, and a replace and its reap that
+      # disagreed about the id would write two unrelated ledgers for one
+      # operation. ArgumentError is the other raise the gate seam converts, so a
+      # caller that omits it gets an error envelope rather than an approval that
+      # could only ever do the wrong thing.
+      def dr_lane_operation_id(params)
+        id = params[:operation_id].presence
+        return id.to_s if id
+
+        raise ArgumentError,
+              "operation_id is required: the replace and reap executors are idempotent on it, " \
+              "and an approval parked without one could not be told apart from a second replacement"
+      end
+
+      # :proceed serialization for both DR verbs. Ai::AutonomyGate has already
+      # run Ai::DeferredOperation#execute_now! on this branch, which invoked the
+      # skill executor — so this READS what it returned and must never repeat
+      # the work. The skill envelope ({success:, data:} / {success:, error:}) is
+      # the shape this tool's own #success_result / #error_result produce, so it
+      # is returned verbatim rather than re-wrapped: a replace driven over MCP
+      # reports exactly what the sensor lane records for the same run.
+      def dr_lane_gate_result(_params, gate_result)
+        return gate_result.result if gate_result.result.is_a?(::Hash)
+
+        success_result(replayed: true)
       end
 
       # Tripwire, not a reachable MCP path. #execute gates this action before

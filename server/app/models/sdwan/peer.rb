@@ -172,6 +172,85 @@ module Sdwan
       [ primary_endpoint, fallback_endpoint ].compact
     end
 
+    # ── deriving an endpoint from an INSTANCE's own addresses ──────────────
+    #
+    # IMP-4e49eb79c5e0. A DR replace re-enrols the failed instance's
+    # replacement on every network the dead peer held, inheriting the dead
+    # peer's routing attributes so a hub does not silently become a spoke
+    # (System::Ai::Skills::ReplaceInstanceExecutor#inherited_peer_attributes).
+    # The ENDPOINT columns cannot simply travel with them: they name the
+    # address of the instance that just died, so the replacement hub would
+    # advertise an address nothing answers on. Dropping them is worse —
+    # #hub_must_have_endpoint refuses a publicly_reachable peer with no
+    # endpoint, so the peer either fails to enrol or is demoted to a spoke
+    # every peer on the network still dials.
+    #
+    # This is the third option: re-derive the endpoint from the address the
+    # REPLACEMENT actually has.
+    #
+    # It lives on the model, not on the caller, because the model owns the
+    # family rules — #endpoint_host_v6_must_be_v6_or_hostname and its v4 twin
+    # decide which column a given string is legal in, and a caller that sorted
+    # the columns itself would be a second implementation of those validations,
+    # free to drift from them.
+    #
+    # ONE SOURCE WINS, public before private. An endpoint is what OTHER peers
+    # DIAL — #primary_endpoint and #fallback_endpoint are both published to
+    # every member of the network, and Sdwan::MembershipCredentialSigner emits
+    # them as `"kind" => "wan"` entries. A private (RFC1918/ULA) address is not
+    # a WAN endpoint: it is unreachable from outside the LAN at best, and at
+    # worst collides with the DIALLING peer's own 10.0.0.0/8. So the private
+    # address is a fallback for having NO public one — the internal-hub case,
+    # where the LAN address really is how the network reaches it — and never an
+    # additional advertised route alongside a public one.
+    #
+    # That deliberately declines to fill both family columns from a machine
+    # carrying one address of each family (public v6 + private v4). The
+    # v6-primary/v4-fallback topology #fallback_endpoint reads is a pair of
+    # PUBLIC addresses; synthesising it out of a public one and a LAN one
+    # publishes an address nothing off-net can dial. A dual-stack hub whose
+    # second public address lives outside these two columns needs an operator
+    # to set it, which is the same position the platform is in today.
+    #
+    # The PORT is a parameter rather than a derivation: it is network
+    # configuration (the WireGuard listener the whole network agreed on), not
+    # an attribute of the machine, so the caller carries forward whatever the
+    # peer being replaced used.
+    #
+    # Returns {} when the instance has no address at all. That is a real state
+    # — a pool member that has not been assigned an address yet — and the
+    # caller must be able to tell "nothing to derive" from a derivation,
+    # because the correct fallback there is the stale-but-visible inherited
+    # endpoint rather than a demoted hub.
+    ENDPOINT_SOURCE_ADDRESSES = %i[public_ip_address private_ip_address].freeze
+
+    def self.endpoint_attributes_for(node_instance:, port:)
+      # A host with no port is not an endpoint — #primary_endpoint says so —
+      # so refuse to build a half of one rather than emit columns the caller
+      # would have to re-check.
+      return {} if node_instance.nil? || port.blank?
+
+      host = ENDPOINT_SOURCE_ADDRESSES
+               .lazy
+               .filter_map { |source| node_instance.public_send(source).presence }
+               .first
+      return {} if host.nil?
+
+      { endpoint_column_for(host) => host, endpoint_port: port }
+    end
+
+    # Which column a host string is legal in, by the SAME tests the validators
+    # apply. A hostname is admitted by both split columns, so it goes to the
+    # legacy #endpoint_host, whose family #legacy_endpoint_family infers the
+    # same way — putting a name in a family-specific column would assert a
+    # family the name does not carry.
+    def self.endpoint_column_for(host)
+      return :endpoint_host_v6 if host.include?(":")
+      return :endpoint_host_v4 if host.match?(/\A(\d{1,3}\.){3}\d{1,3}\z/)
+
+      :endpoint_host
+    end
+
     # Pure "host:port" formatter, bracketing the host only when it is an IPv6
     # LITERAL. Shared by the operator-facing #endpoint_display AND the peer
     # serializers' effective_endpoint — one function, so a readability edit to

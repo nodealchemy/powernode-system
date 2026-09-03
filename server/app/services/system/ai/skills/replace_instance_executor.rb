@@ -87,7 +87,7 @@ module System
 
         skill_descriptor(
           name: "replace_instance",
-          description: "Replace an unrecoverable NodeInstance with a warm pool member: acquire the replacement, reattach its volumes, re-enrol it on every SDWAN network the failed one held (inheriting the failed peer's routing attributes, not the schema defaults), and move its VIPs. The terminate of the failed instance is a SEPARATE approval, performed by ReapInstanceExecutor.",
+          description: "Replace an unrecoverable NodeInstance with a warm pool member: acquire the replacement, reattach its volumes, re-enrol it on every SDWAN network the failed one held (inheriting the failed peer's routing ROLE rather than the schema defaults, with the endpoint re-derived from the replacement's own address so a replacement hub is not left advertising the dead instance's), and move its VIPs. The terminate of the failed instance is a SEPARATE approval, performed by ReapInstanceExecutor.",
           category: "fleet",
           inputs: {
             instance_id: { type: "string", required: true,
@@ -389,7 +389,7 @@ module System
 
             begin
               fresh = ::Sdwan::PeerEnroller.call(network: network, node_instance: replacement,
-                                                 **inherited_peer_attributes(peer))
+                                                 **inherited_peer_attributes(peer, replacement))
               enrolled[peer.id] = fresh.id
             rescue StandardError => e
               errors << { "step" => "enrol_peer", "network_id" => network.id,
@@ -409,25 +409,82 @@ module System
         # peer. "Re-enrol it on every network the failed one held" has to mean
         # the peer's ROLE, not just its membership.
         #
-        # The ENDPOINT columns travel too, deliberately, even though they name
-        # the dead instance's address: dropping them while keeping
-        # publicly_reachable is a validation failure (Sdwan::Peer
-        # #hub_must_have_endpoint), and dropping BOTH silently demotes a hub
-        # every spoke on the network dials. An inherited endpoint is stale and
-        # visible; a demoted hub is neither. #compact leaves an unset column
+        # The ENDPOINT is the one attribute that must NOT be inherited
+        # verbatim — see #endpoint_attributes. #compact leaves an unset column
         # unset so the enroller's own default still applies.
-        def inherited_peer_attributes(peer)
+        def inherited_peer_attributes(peer, replacement)
           {
             publicly_reachable: peer.publicly_reachable,
             bgp_route_reflector_client: peer.bgp_route_reflector_client,
             capabilities: peer.capabilities || {},
             lan_subnets: Array(peer.lan_subnets),
+            listen_port: peer.listen_port
+          }.compact.merge(endpoint_attributes(peer, replacement))
+        end
+
+        # THE ENDPOINT IS RE-DERIVED, not inherited (IMP-4e49eb79c5e0).
+        #
+        # endpoint_host/_v4/_v6 name the address of the instance that just
+        # died. Copying them across leaves the replacement hub advertising an
+        # address nothing answers on — visible, but wrong on the data plane
+        # from the moment of enrolment. Dropping them is worse: Sdwan::Peer
+        # #hub_must_have_endpoint refuses a publicly_reachable peer with no
+        # endpoint, so the hub either fails to enrol or is demoted to a spoke
+        # that every peer on the network still dials.
+        #
+        # Sdwan::Peer.endpoint_attributes_for is the third option: the
+        # replacement has addresses of its own, and taking over the dead one's
+        # role is precisely what this operation is doing. The model owns the
+        # derivation because it owns the family rules the columns validate on.
+        #
+        # THE RETURNED HASH IS AUTHORITATIVE over all four columns. It is
+        # merged over a base that no longer carries any of them, so a derived
+        # v4 address cannot be shadowed by the dead peer's leftover v6 host —
+        # #primary_endpoint prefers v6, so a partial derivation would hand
+        # every dialling peer the dead address while looking correct in the
+        # column the fix was written for.
+        #
+        # THREE fallbacks, in order:
+        #
+        #   * a peer advertising a HOSTNAME keeps it verbatim. The premise of
+        #     the whole re-derivation — "these columns name the address of the
+        #     instance that just died" — is false for a name: a DNS record is
+        #     the standard way to make a hub replaceable, and it points at
+        #     whatever the operator repoints it at. Overwriting it with the
+        #     replacement's literal would DEFEAT that failover, and silently:
+        #     the pool member's address is ephemeral, so the fabric would be
+        #     pinned to an address the next replace invalidates again. The
+        #     classification is Sdwan::Peer.endpoint_column_for, the same one
+        #     the derivation uses, so "is this a name" is decided in exactly
+        #     one place.
+        #   * a peer that did not ADVERTISE an endpoint keeps none. The test is
+        #     the model's own #primary_endpoint — host AND port — not "any of
+        #     the four columns is set: a spoke advertises no endpoint on
+        #     purpose, and a half-filled pair (a host with no port, a port with
+        #     no host) is not an endpoint either. Deriving for those would mint
+        #     a working listener where there had been none, which is a topology
+        #     change this operation is not entitled to make.
+        #   * a replacement with no address of its own yet keeps the INHERITED
+        #     endpoint. That is the old behaviour, and it is the right floor:
+        #     stale-and-visible beats a demoted hub, and enrolment must not
+        #     fail because a pool member has not been addressed yet.
+        #
+        # The PORT is carried, never derived — it is the listener the network
+        # agreed on, not an attribute of the machine.
+        def endpoint_attributes(peer, replacement)
+          inherited = {
             endpoint_host: peer.endpoint_host,
             endpoint_host_v6: peer.endpoint_host_v6,
             endpoint_host_v4: peer.endpoint_host_v4,
-            endpoint_port: peer.endpoint_port,
-            listen_port: peer.listen_port
+            endpoint_port: peer.endpoint_port
           }.compact
+          advertised = peer.primary_endpoint
+          return inherited if advertised.nil?
+          return inherited if ::Sdwan::Peer.endpoint_column_for(advertised[:host]) == :endpoint_host
+
+          derived = ::Sdwan::Peer.endpoint_attributes_for(node_instance: replacement,
+                                                          port: advertised[:port])
+          derived.presence || inherited
         end
 
         # SUBSTITUTION, not #failover!. failover! promotes a STANDBY off the
