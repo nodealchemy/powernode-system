@@ -264,9 +264,10 @@ RSpec.describe System::Ai::Skills::ReplaceInstanceExecutor, type: :service do
       expect(binding[:action_category]).to eq("system.instance_replace")
     end
 
-    it "declares the reap category so an operator can tune it separately" do
-      expect(System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES)
+    it "declares the reap category so an operator can tune it separately (Capacity Manager since HIER-P2DECL)" do
+      expect(System::Governance::PolicyDeclarations::CAPACITY_MANAGER_POLICIES)
         .to include("system.instance_reap" => "require_approval")
+      expect(System::Governance::PolicyDeclarations.owner_of("system.instance_reap")).to eq("capacity-manager")
     end
   end
 

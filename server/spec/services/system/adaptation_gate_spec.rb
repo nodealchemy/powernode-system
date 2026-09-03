@@ -189,6 +189,65 @@ RSpec.describe System::AdaptationGate do
       expect(disposition[:authority]).to eq("policy")
     end
 
+    # HIER-P2DECL: project.* is declared on the Capacity Manager, so the gate
+    # is that agent's — chain, policy row and the agent_id on the request —
+    # reached through FleetAutonomyService#for_owner exactly as the three
+    # project_* signal bindings are. The examples above keep the row on Fleet
+    # Autonomy with no Capacity Manager seeded, which is the wave-1 fallback
+    # (Fleet Autonomy gates, with a fleet.owner_agent_missing event).
+    describe "the declared owner (Capacity Manager)" do
+      let!(:capacity) do
+        identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch("capacity-manager")
+        create(:ai_agent, account: account, agent_type: identity[:agent_type], name: identity[:name],
+                          source_key: "capacity-manager")
+      end
+      let!(:capacity_chain) do
+        create(:ai_approval_chain, account: account,
+               trigger_type: "autonomy_action", name: "Capacity Manager Actions")
+      end
+
+      it "routes to the Capacity Manager's chain from the Capacity Manager's row, not Fleet Autonomy's" do
+        # The row is on the OWNER; a Fleet-Autonomy row for the same category
+        # would be the decoy the reconciler re-homes.
+        Ai::InterventionPolicy.create!(
+          account: account, ai_agent_id: capacity.id, scope: "agent",
+          action_category: "project.scale_horizontal", policy: "require_approval", priority: 100, is_active: true
+        )
+
+        answer = disposition
+
+        expect(answer[:disposition]).to eq("routed")
+        request = Ai::ApprovalRequest.find(answer[:approval_request_id])
+        expect(request.approval_chain_id).to eq(capacity_chain.id)
+        expect(request.request_data["agent_id"]).to eq(capacity.id)
+        expect(request.request_data["agent_key"]).to eq("capacity-manager")
+        expect(System::FleetEvent.where(account: account,
+                                        kind: System::Fleet::FleetAutonomyService::OWNER_MISSING_EVENT_KIND)).to be_empty
+      end
+
+      it "no longer reads a row left on Fleet Autonomy once the owner exists (policy_missing, not the tuned verb)" do
+        policy!("notify_and_proceed") # on Fleet Autonomy — the former owner
+
+        answer = disposition
+
+        expect(answer[:disposition]).to eq("routed")
+        expect(answer[:cause]).to eq(described_class::CAUSE_POLICY_MISSING)
+        expect(answer[:detail]).to include("Capacity Manager")
+      end
+    end
+
+    it "emits the owner-missing event and gates under Fleet Autonomy while the Capacity Manager is unseeded" do
+      policy!("require_approval")
+
+      disposition
+
+      warned = System::FleetEvent.where(account: account,
+                                        kind: System::Fleet::FleetAutonomyService::OWNER_MISSING_EVENT_KIND)
+      expect(warned.count).to eq(1)
+      expect(warned.last.payload).to include("owner" => "capacity-manager", "fallback_agent_id" => agent.id)
+      expect(Ai::ApprovalRequest.where(account: account).first.approval_chain_id).to eq(chain.id)
+    end
+
     it "returns nil when no Fleet Autonomy agent is seeded — core parks the plan" do
       # An account with agents but no Fleet Autonomy one: there is no gate to
       # ask, so the honest answer is "I cannot say", and core parks rather than

@@ -20,8 +20,10 @@ require "spec_helper"
 # the count of sensors actually registered in FleetAutonomyService::SENSORS,
 # the exact (ordered) list of sensor class names named in the doc's
 # inventory sentence, every per-agent "(N policies)" heading, seed bullet and
-# the eight-agent total against the key counts of the PolicyDeclarations
-# constants (HIER-P2A — before that only Fleet Autonomy's heading was pinned),
+# the twelve-agent total against the key counts of the PolicyDeclarations
+# constants (HIER-P2A — before that only Fleet Autonomy's heading was pinned;
+# HIER-P2DECL added the four wave-1 managers and the Topology Designer, and
+# the per-manager operator guides),
 # CLAUDE.md's per-agent policy counts, CLAUDE.md's three separate citations
 # of the executor count (the table cell's total-files/concrete-classes pair,
 # the "already cover" convention line, and the Related Docs line), CLAUDE.md's
@@ -131,27 +133,44 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
 
   let(:seeded_policy_keys) { declared_keys("FLEET_AUTONOMY_POLICIES") }
 
-  # The per-agent seed sets, keyed by the FLEET_SENSORS.md bullet / section
-  # name they are stated under. Eight seeded agents; two carry no policies.
+  # The per-agent declared sets, keyed by the FLEET_SENSORS.md bullet /
+  # section name they are stated under. Twelve official agents; the Concierge
+  # carries no policies. HIER-P2DECL: the four wave-1 managers and the
+  # Topology Designer carry sets ahead of (managers) or independently of
+  # (Topology Designer, whose seed writes no policy row) their seed files —
+  # PolicyReconciler writes those sets once the agent exists.
   let(:agent_policy_counts) do
     {
-      "Fleet Autonomy"     => declared_keys("FLEET_AUTONOMY_POLICIES").size,
-      "Runtime Manager"    => declared_keys("RUNTIME_MANAGER_POLICIES").size,
-      "CVE Responder"      => declared_keys("CVE_RESPONDER_POLICIES").size,
-      "SDWAN Manager"      => declared_keys("SDWAN_MANAGER_POLICIES").size,
-      "Disk Image Manager" => declared_keys("DISK_IMAGE_MANAGER_POLICIES").size,
-      "GitOps Reconciler"  => declared_keys("GITOPS_RECONCILER_POLICIES").size
+      "Fleet Autonomy"           => declared_keys("FLEET_AUTONOMY_POLICIES").size,
+      "Runtime Manager"          => declared_keys("RUNTIME_MANAGER_POLICIES").size,
+      "CVE Responder"            => declared_keys("CVE_RESPONDER_POLICIES").size,
+      "SDWAN Manager"            => declared_keys("SDWAN_MANAGER_POLICIES").size,
+      "Disk Image Manager"       => declared_keys("DISK_IMAGE_MANAGER_POLICIES").size,
+      "GitOps Reconciler"        => declared_keys("GITOPS_RECONCILER_POLICIES").size,
+      "Capacity Manager"         => declared_keys("CAPACITY_MANAGER_POLICIES").size,
+      "Storage Manager"          => declared_keys("STORAGE_MANAGER_POLICIES").size,
+      "Ingress Manager"          => declared_keys("INGRESS_MANAGER_POLICIES").size,
+      "Supply Chain Manager"     => declared_keys("SUPPLY_CHAIN_MANAGER_POLICIES").size,
+      "System Topology Designer" => declared_keys("TOPOLOGY_DESIGNER_POLICIES").size
     }
   end
 
+  # nil = no seed file yet (wave 2); the FLEET_SENSORS.md bullet is then keyed
+  # on the agent name and "wave 2" rather than on a seed path, so the doc
+  # cannot name a file that is not on disk.
   let(:agent_seed_files) do
     {
-      "Fleet Autonomy"     => "fleet_autonomy_agent.rb",
-      "Runtime Manager"    => "system_runtime_manager_agent.rb",
-      "CVE Responder"      => "system_cve_responder_agent.rb",
-      "SDWAN Manager"      => "system_sdwan_manager_agent.rb",
-      "Disk Image Manager" => "system_disk_image_manager_agent.rb",
-      "GitOps Reconciler"  => "system_gitops_reconciler_agent.rb"
+      "Fleet Autonomy"           => "fleet_autonomy_agent.rb",
+      "Runtime Manager"          => "system_runtime_manager_agent.rb",
+      "CVE Responder"            => "system_cve_responder_agent.rb",
+      "SDWAN Manager"            => "system_sdwan_manager_agent.rb",
+      "Disk Image Manager"       => "system_disk_image_manager_agent.rb",
+      "GitOps Reconciler"        => "system_gitops_reconciler_agent.rb",
+      "System Topology Designer" => "system_topology_designer_agent.rb",
+      "Capacity Manager"         => nil,
+      "Storage Manager"          => nil,
+      "Ingress Manager"          => nil,
+      "Supply Chain Manager"     => nil
     }
   end
 
@@ -263,14 +282,25 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
       "#{declarations_path}'s FLEET_AUTONOMY_POLICIES actually has #{seeded_policy_keys.size} keys"
   end
 
-  # The scan's own integrity: FLEET_AUTONOMY_POLICIES is a literal MERGED with
-  # four named groups (HIER-P2A), so a scan that stopped at the literal would
-  # under-count silently and every count below would pin the wrong figure.
-  it "expands the merged sub-hashes when scanning FLEET_AUTONOMY_POLICIES (guards the scan from under-counting)" do
-    groups = %w[CAPACITY_POLICY_KEYS STORAGE_POLICY_KEYS INGRESS_POLICY_KEYS SUPPLY_CHAIN_POLICY_KEYS]
-    group_keys = groups.flat_map { |g| declared_keys(g) }
-    expect(group_keys).not_to be_empty
-    expect(seeded_policy_keys).to include(*group_keys)
+  # The scan's own integrity: the manager sets are named groups MERGED with
+  # other constants (HIER-P2A carved the groups; HIER-P2DECL lifted them), so
+  # a scan that stopped at the literal would under-count silently and every
+  # count below would pin the wrong figure.
+  it "expands the merged sub-hashes when scanning the manager sets (guards the scan from under-counting)" do
+    expect(declared_keys("CAPACITY_MANAGER_POLICIES")).to match_array(
+      %w[CAPACITY_POLICY_KEYS INSTANCE_POOL_POLICIES PROVISIONING_POLICIES
+         PLATFORM_SCALING_POLICIES INSTANCE_CORDON_OPERATOR_POLICIES].flat_map { |g| declared_keys(g) }
+    )
+    expect(declared_keys("STORAGE_MANAGER_POLICIES"))
+      .to match_array(declared_keys("STORAGE_POLICY_KEYS") + declared_keys("VOLUME_SNAPSHOT_OPERATOR_POLICIES"))
+    expect(declared_keys("INGRESS_MANAGER_POLICIES"))
+      .to match_array(declared_keys("INGRESS_POLICY_KEYS") + %w[system.service_backends_update])
+    expect(declared_keys("SUPPLY_CHAIN_MANAGER_POLICIES")).to match_array(declared_keys("SUPPLY_CHAIN_POLICY_KEYS"))
+    expect(declared_keys("SUPPLY_CHAIN_MANAGER_POLICIES")).not_to be_empty
+    # And Fleet Autonomy no longer carries any of the lifted groups.
+    lifted = %w[CAPACITY_POLICY_KEYS STORAGE_POLICY_KEYS INGRESS_POLICY_KEYS SUPPLY_CHAIN_POLICY_KEYS]
+             .flat_map { |g| declared_keys(g) }
+    expect(seeded_policy_keys & lifted).to eq([])
     expect(declared_keys("SDWAN_MANAGER_POLICIES"))
       .to match_array(declared_keys("SDWAN_OPERATOR_POLICIES") + declared_keys("SDWAN_REMEDIATION_POLICIES"))
   end
@@ -285,13 +315,14 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
   it "FLEET_SENSORS.md's per-agent seed bullets match the PolicyDeclarations sets" do
     agent_policy_counts.each do |agent, actual|
       file = agent_seed_files.fetch(agent)
-      stated = doc_number(
-        sensors_doc_text,
-        /`db\/seeds\/#{Regexp.escape(file)}` — \*\*(\d+) policies\*\*/,
-        "#{agent} seed bullet count", sensors_doc_path
-      )
+      pattern = if file
+        /`db\/seeds\/#{Regexp.escape(file)}` — \*\*(\d+) policies\*\*/
+      else
+        /- \*\*#{Regexp.escape(agent)}\*\* \(wave 2[^\n]*?\*\*(\d+) policies\*\*/
+      end
+      stated = doc_number(sensors_doc_text, pattern, "#{agent} seed bullet count", sensors_doc_path)
       expect(stated).to eq(actual),
-        "FLEET_SENSORS.md's bullet for #{file} claims #{stated} policies; the declared set has #{actual}"
+        "FLEET_SENSORS.md's bullet for #{file || agent} claims #{stated} policies; the declared set has #{actual}"
     end
   end
 
@@ -307,14 +338,14 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
     end
   end
 
-  it "FLEET_SENSORS.md's eight-agent total is the sum of the per-agent sets" do
+  it "FLEET_SENSORS.md's twelve-agent total is the sum of the per-agent sets" do
     stated = doc_number(
       sensors_doc_text,
-      /\*\*= (\d+) action-category policies across the eight system-extension agents\*\*/,
-      "eight-agent policy total", sensors_doc_path
+      /\*\*= (\d+) action-category policies across the twelve system-extension agents\*\*/,
+      "twelve-agent policy total", sensors_doc_path
     )
     expect(stated).to eq(agent_policy_counts.values.sum),
-      "FLEET_SENSORS.md's total claims #{stated}; the six policy-carrying sets sum to #{agent_policy_counts.values.sum}"
+      "FLEET_SENSORS.md's total claims #{stated}; the eleven policy-carrying sets sum to #{agent_policy_counts.values.sum}"
   end
 
   # The per-agent OPERATOR GUIDES carry the same numbers as CLAUDE.md and
@@ -360,6 +391,39 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
     expect(missing).to be_empty,
       "DISK_IMAGE_MANAGER_AGENT.md's policy table has no row for #{missing.join(', ')} " \
       "(table rows found: #{table_keys.size}, declared: #{declared.size})"
+  end
+
+  # HIER-P2DECL: the four wave-1 managers each get an operator guide carrying
+  # the policy table wave 2 fills in, pinned the same way the Disk Image table
+  # is — the count AND every declared key as a table row. Keys here include
+  # dotted (`system.package_module.create`, `system.platform.scale_out`) and
+  # core-namespaced (`project.*`) categories, so the row pattern is wider than
+  # the disk-image one.
+  {
+    "Capacity Manager"     => [ "CAPACITY_MANAGER_AGENT.md",     "CAPACITY_MANAGER_POLICIES" ],
+    "Storage Manager"      => [ "STORAGE_MANAGER_AGENT.md",      "STORAGE_MANAGER_POLICIES" ],
+    "Ingress Manager"      => [ "INGRESS_MANAGER_AGENT.md",      "INGRESS_MANAGER_POLICIES" ],
+    "Supply Chain Manager" => [ "SUPPLY_CHAIN_MANAGER_AGENT.md", "SUPPLY_CHAIN_MANAGER_POLICIES" ]
+  }.each do |agent, (doc, constant)|
+    it "#{doc} states the #{agent}'s policy count correctly, and its table lists every declared key" do
+      guide_path = File.join(ext_root, "docs", doc)
+      guide_text = File.read(guide_path)
+      declared = declared_keys(constant)
+      expect(declared).not_to be_empty
+
+      expect(doc_number(guide_text, /ships with \*\*(\d+) intervention policies\*\*/,
+                        "#{agent} guide total", guide_path)).to eq(declared.size)
+
+      # A category always carries a dot (system.x, project.x); the guide's
+      # sensor map names sensors in the same column position, which do not.
+      table_keys = guide_text.scan(/^\| `([a-z][a-z0-9_]*\.[a-z0-9_.]+)` \|/).flatten
+      missing = declared - table_keys
+      expect(missing).to be_empty,
+        "#{doc}'s policy table has no row for #{missing.join(', ')} " \
+        "(table rows found: #{table_keys.size}, declared: #{declared.size})"
+      extra = table_keys - declared
+      expect(extra).to be_empty, "#{doc}'s policy table names keys the set does not declare: #{extra.join(', ')}"
+    end
   end
 
   it "CLAUDE.md's agent roster states each agent's intervention-policy count correctly" do

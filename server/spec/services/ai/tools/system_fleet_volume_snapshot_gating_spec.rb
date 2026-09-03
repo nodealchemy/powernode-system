@@ -80,10 +80,13 @@ RSpec.describe "SystemFleetTool volume-snapshot delete gating (IMP-e025722ef14e)
       declared = ::System::Governance::PolicyDeclarations::VOLUME_SNAPSHOT_OPERATOR_POLICIES
       expect(declared.fetch(category)).to eq("require_approval")
 
-      set = ::System::Governance::PolicyDeclarations::POLICY_SETS.find { |s| s[:policies].key?(category) }
-      expect(set).to be_present, "no POLICY_SETS entry carries #{category}"
-      expect(set[:agent_key]).to be_nil
-      expect(set[:scope]).to eq("global")
+      sets = ::System::Governance::PolicyDeclarations::POLICY_SETS.select { |s| s[:policies].key?(category) }
+      operator = sets.find { |s| s[:agent_key].nil? }
+      expect(operator).to be_present, "no operator-shape POLICY_SETS entry carries #{category}"
+      expect(operator[:scope]).to eq("global")
+      # HIER-P2DECL: the operator set keeps this row AND has an agent twin.
+      expect(sets.map { |s| s[:agent_key] }).to contain_exactly(nil, "storage-manager")
+      expect(::System::Governance::PolicyDeclarations::OPERATOR_TWINS.fetch(operator[:key])).to eq("storage-manager")
     end
 
     it "registers the category so the Autonomy modal can save a row for it" do

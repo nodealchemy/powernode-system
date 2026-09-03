@@ -20,12 +20,21 @@ require "rails_helper"
 # view and its own `agents` list deny exist. The guard below is therefore about
 # the CONSTANT tracking its source of truth, not about a broken panel.
 #
-# The oracle is DERIVED from the seed files rather than restated as a second
-# literal, for the reason the sibling autonomy_domain_pivot_spec.rb derives its
-# category set the same way: a list that drifted once will drift again, and an
-# oracle that is itself a hand-maintained copy drifts with it. What it derives
-# is the set of agents the seeds write scope-"agent" policy rows for — which is
-# exactly the population `by_agent_pivot` must bucket.
+# The oracle is DERIVED rather than restated as a second literal, for the
+# reason the sibling autonomy_domain_pivot_spec.rb derives its category set the
+# same way: a list that drifted once will drift again, and an oracle that is
+# itself a hand-maintained copy drifts with it.
+#
+# WHAT IT DERIVES FROM (HIER-P2DECL): the DECLARATIONS —
+# PolicyDeclarations::POLICY_SETS × AGENT_IDENTITIES, every agent that keys an
+# agent-scoped set. That is the population PolicyReconciler writes agent-scoped
+# rows for on every boot, which since HIER-P2A is the writer of record; the
+# seed files are the first-boot copy of the same declarations, and since wave 1
+# they LAG them by design (the four managers' sets are declared before their
+# seeds exist, so the pivot has a bucket waiting the first boot after wave 2).
+# The seed scan is KEPT as the second direction: every agent a seed writes
+# agent-scoped rows for must be a declared owner, or the seed is writing rows
+# the reconciler and the tick do not know about.
 #
 # Deriving the ORACLE, not the CONSTANT. The constant stays a literal on
 # purpose: the two sound runtime sources are both wrong here. Reading db/seeds
@@ -82,32 +91,54 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
       .sort
   end
 
+  # The population the reconciler writes agent-scoped rows for: the name of
+  # every agent that keys an agent-scoped POLICY_SETS entry.
+  let(:declared_policy_agents) do
+    d = System::Governance::PolicyDeclarations
+    d::POLICY_SETS.select { |set| set[:scope] == "agent" && set[:agent_key] }
+                  .map { |set| d::AGENT_IDENTITIES.fetch(set[:agent_key])[:name] }
+                  .uniq
+                  .sort
+  end
+
   def payload
     get "/api/v1/system/autonomy", headers: auth_headers_for(read_user)
     expect(response).to have_http_status(:ok)
     json_response_data
   end
 
-  it "declares a bucket for every agent the seeds bind agent-scoped policies to" do
-    missing = seeded_policy_agents - System::AutonomyActions::SYSTEM_AGENT_NAMES
+  it "declares a bucket for every agent the declarations bind an agent-scoped set to" do
+    missing = declared_policy_agents - System::AutonomyActions::SYSTEM_AGENT_NAMES
 
     expect(missing).to be_empty,
-                       "#{missing.size} agent(s) carry seeded agent-scoped intervention policies but have no " \
-                       "SYSTEM_AGENT_NAMES entry, so `by_agent` builds no bucket for them and drops their rows " \
-                       "from the pivot: #{missing.join(', ')}"
+                       "#{missing.size} agent(s) key an agent-scoped PolicyDeclarations set but have no " \
+                       "SYSTEM_AGENT_NAMES entry, so `by_agent` builds no bucket for them and drops the rows " \
+                       "PolicyReconciler writes for them: #{missing.join(', ')}"
   end
 
-  # The other direction, and the reason the fix is not "add all eight seeded
-  # agents". System Concierge (`assistant`, chat) and System Topology Designer
-  # (`assistant`, compose) carry NO intervention policies — their seeds never
-  # write a policy row — so listing either would ship a permanently empty
-  # bucket and an agent the operator has nothing to configure.
-  it "declares no agent the seeds bind no agent-scoped policy to" do
-    empty = System::AutonomyActions::SYSTEM_AGENT_NAMES - seeded_policy_agents
+  # The other direction, and the reason the fix is not "add every seeded
+  # agent". System Concierge (`assistant`, chat) carries NO intervention
+  # policies — no set declares it and its seed never writes a policy row — so
+  # listing it would ship a permanently empty bucket and an agent the operator
+  # has nothing to configure.
+  it "declares no agent the declarations bind no agent-scoped set to" do
+    empty = System::AutonomyActions::SYSTEM_AGENT_NAMES - declared_policy_agents
 
     expect(empty).to be_empty,
-                     "#{empty.size} SYSTEM_AGENT_NAMES entry(ies) have no seeded agent-scoped policy, so " \
+                     "#{empty.size} SYSTEM_AGENT_NAMES entry(ies) key no agent-scoped PolicyDeclarations set, so " \
                      "`by_agent` ships a permanently empty bucket for them: #{empty.join(', ')}"
+  end
+
+  # The seeds are the first-boot copy of the same declarations and may LAG
+  # them (wave-1 managers declared, seeded in wave 2) but must never LEAD
+  # them: a seed writing agent-scoped rows for an agent no set declares is
+  # writing rows the reconciler cannot reconcile and the tick never gates by.
+  it "seeds agent-scoped policies only for declared agents" do
+    undeclared = seeded_policy_agents - declared_policy_agents
+
+    expect(undeclared).to be_empty,
+                          "#{undeclared.size} seed file agent(s) get agent-scoped rows but key no " \
+                          "PolicyDeclarations set: #{undeclared.join(', ')}"
   end
 
   # The EFFECT, through the real endpoint. The two examples above compare a
@@ -118,7 +149,7 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
   # defect is rows disappearing between two views of one payload, and that
   # phrasing survives a rename or a reordering of the buckets.
   it "keeps every agent-scoped row — the pivot drops none of them" do
-    agents = seeded_policy_agents.to_h { |name| [ name, create(:ai_agent, account: account, name: name) ] }
+    agents = declared_policy_agents.to_h { |name| [ name, create(:ai_agent, account: account, name: name) ] }
 
     rows = agents.values.map do |agent|
       Ai::InterventionPolicy.create!(
@@ -137,16 +168,16 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
 
     # Positive twin: the pivot is populated and keyed by agent name, so the
     # emptiness above is a real agreement and not a pivot that returned nothing.
-    expect(pivot["by_agent"].keys).to include(*seeded_policy_agents)
+    expect(pivot["by_agent"].keys).to include(*declared_policy_agents)
   end
 
   # The endpoint's `agents` list is built from the same constant, and an agent
   # missing from it is missing its trust tier and autonomy config for any
   # client that reads the list rather than the rows.
-  it "serializes every seeded system agent in the payload's agents list" do
-    seeded_policy_agents.each { |name| create(:ai_agent, account: account, name: name) }
+  it "serializes every declared system agent in the payload's agents list" do
+    declared_policy_agents.each { |name| create(:ai_agent, account: account, name: name) }
 
-    expect(payload["agents"].map { |a| a["name"] }).to match_array(seeded_policy_agents)
+    expect(payload["agents"].map { |a| a["name"] }).to match_array(declared_policy_agents)
   end
 
   # The derivation's OWN integrity, which the two set comparisons cannot see.
@@ -184,6 +215,15 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
   it "has real inputs (guards the examples above from passing vacuously)" do
     expect(seeded_policy_agents.size).to be >= 6
     expect(seeded_policy_agents).to include("Fleet Autonomy", "GitOps Reconciler", "SDWAN Manager")
+    expect(declared_policy_agents.size).to be >= 11
+    expect(declared_policy_agents).to include("Capacity Manager", "System Topology Designer")
+    # The declarations LEAD the seeds by exactly the wave-2 agents: the four
+    # managers (no seed yet) and the Topology Designer (its seed writes no
+    # policy row; the reconciler writes its set). When wave 2 lands, this
+    # shrinks — update it, do not widen it.
+    expect(declared_policy_agents - seeded_policy_agents).to match_array(
+      [ "Capacity Manager", "Storage Manager", "Ingress Manager", "Supply Chain Manager", "System Topology Designer" ]
+    )
 
     # The identifier-resolution branch specifically: the GitOps Reconciler seed
     # passes a local variable to `find_or_initialize_global_agent`, so a scan

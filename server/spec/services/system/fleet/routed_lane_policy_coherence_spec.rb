@@ -77,7 +77,23 @@ RSpec.describe "routed lane / intervention policy coherence" do
     system_sdwan_manager_agent
     system_gitops_reconciler_agent
     system_disk_image_manager_agent
+    system_topology_designer_agent
   ].freeze
+
+  # HIER-P2DECL: the boot that this spec models is seeds + PolicyReconciler —
+  # the reconciler is what writes a declared set onto its agent on every boot
+  # (and re-homes the rows wave 1 moved off Fleet Autonomy), and the four
+  # wave-1 managers have NO seed until wave 2. So the declared identities no
+  # seed produced are stubbed as the bare agents wave 2 will seed, and the
+  # reconciler runs once, exactly as it does at boot. Without the stubs the
+  # moved sensor-routed lanes (instance_replace, storage_assignment_reconcile,
+  # package_repository.sync, project.adapt / cost_control) have a row NOWHERE
+  # on a fresh install seeded between the waves — the tick's fallback gate
+  # finds nothing on Fleet Autonomy either, because its seed no longer
+  # declares them. An ESTABLISHED install still holds them on Fleet Autonomy;
+  # the fresh-install gap is wave 2's to close, and this spec must not hide
+  # it, so it is asserted below by name rather than papered over.
+  WAVE_2_STUBS = %w[capacity-manager storage-manager ingress-manager supply-chain-manager].freeze
 
   # agent_setup_helpers#bootstrap_admin_context! resolves the account by name
   # (falling back to Account.first), then requires an admin user and an
@@ -90,8 +106,23 @@ RSpec.describe "routed lane / intervention policy coherence" do
     end
   end
 
+  def stub_wave_2_agents!
+    WAVE_2_STUBS.each do |key|
+      identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch(key)
+      next if ::Ai::Agent.resolve_for(account.id, name: identity[:name], agent_type: identity[:agent_type])
+
+      create(:ai_agent, account: account, name: identity[:name], agent_type: identity[:agent_type], source_key: key)
+    end
+  end
+
+  def boot!
+    stub_wave_2_agents!
+    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+  end
+
   def policies_for(agent_name)
-    a = ::Ai::Agent.resolve_for(account.id, name: agent_name, agent_type: "monitor")
+    identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.values.find { |i| i[:name] == agent_name }
+    a = ::Ai::Agent.resolve_for(account.id, name: agent_name, agent_type: identity ? identity[:agent_type] : "monitor")
     return [] unless a
 
     ::Ai::InterventionPolicy
@@ -106,6 +137,7 @@ RSpec.describe "routed lane / intervention policy coherence" do
   # reads, so asserting against it is asserting against what actually blocks.
   it "seeds an intervention policy row for EVERY action_category the platform routes to" do
     expect(agent).to be_present, "Fleet Autonomy agent was not seeded"
+    boot!
 
     routed = System::Autonomy::ActionCategoryRouter.routed_action_categories
     expect(routed).not_to be_empty
@@ -149,11 +181,54 @@ RSpec.describe "routed lane / intervention policy coherence" do
     expect(policies_for("Fleet Autonomy")).not_to include("system.sdwan_peer_remediate")
   end
 
+  # HIER-P2DECL: the wave-1 owners, and the rows the reconciler writes for
+  # them once the agent exists.
+  it "derives the wave-1 owners for the lanes moved off Fleet Autonomy and reconciles them there" do
+    boot!
+
+    expect(owner_name_for("system.instance_replace")).to eq("Capacity Manager")
+    expect(owner_name_for("project.adapt")).to eq("Capacity Manager")
+    expect(owner_name_for("system.storage_assignment_reconcile")).to eq("Storage Manager")
+    expect(owner_name_for("system.package_repository.sync")).to eq("Supply Chain Manager")
+    expect(owner_name_for("system.expose_service_local")).to eq("Ingress Manager")
+    expect(owner_name_for("system.sdwan_federation_compose")).to eq("System Topology Designer")
+
+    expect(policies_for("Capacity Manager")).to include("system.instance_replace", "project.adapt",
+                                                        "system.instance_pool_create")
+    expect(policies_for("Storage Manager")).to include("system.storage_assignment_reconcile")
+    expect(policies_for("Supply Chain Manager")).to include("system.package_repository.sync")
+    expect(policies_for("System Topology Designer")).to include("system.sdwan_federation_compose")
+    # The provisioning seed wrote project.* onto Fleet Autonomy; the
+    # reconciler RE-HOMED them (no duplicate left behind).
+    expect(policies_for("Fleet Autonomy")).not_to include("project.adapt", "system.instance_replace")
+  end
+
+  # THE FRESH-INSTALL GAP, stated by name so it cannot be forgotten: with the
+  # wave-1 agents absent (seeds only, no stubs), the moved sensor-routed lanes
+  # have no row on any agent — the Fleet Autonomy seed no longer declares them
+  # and their owners do not exist to reconcile onto. An established install is
+  # unaffected (its rows stay on Fleet Autonomy, where the tick's fallback
+  # gate reads them — sensor_owner_gating_spec). Wave 2's seeds close this;
+  # when they land, this example should start FAILING and be deleted.
+  it "leaves the moved sensor-routed lanes rowless on a fresh install seeded between the waves (wave 2 closes it)" do
+    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+
+    rowless = %w[system.instance_replace system.storage_assignment_reconcile system.package_repository.sync]
+    rowless.each do |category|
+      expect(::Ai::InterventionPolicy.where(account: account, action_category: category)).to be_empty,
+        "#{category} has a row on a fresh install — wave 2 landed; delete this example"
+    end
+    # project.* are the exception: their seed still writes them onto Fleet
+    # Autonomy, so the fallback gate does find them.
+    expect(policies_for("Fleet Autonomy")).to include("project.adapt")
+  end
+
   # The gate's own view, not ours — proves the routed set is reachable through
   # the exact predicate that blocks, rather than through a query we wrote to
   # agree with ourselves. Per OWNER gate: the tick asks
   # FleetAutonomyService#for_owner(owner) and that gate's #permitted_actions.
   it "makes every routed category permitted from the gate's own perspective" do
+    boot!
     service = System::Fleet::FleetAutonomyService.new(account: account, agent: agent)
     fleet_gated = System::Autonomy::ActionCategoryRouter.routed_action_categories - CVE_GATED
 

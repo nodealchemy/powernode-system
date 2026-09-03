@@ -25,6 +25,13 @@ module SystemAgentHierarchySeeds
     "Runtime Manager", "GitOps Reconciler", "System Topology Designer"
   ].freeze
 
+  # HIER-P2DECL declared the four wave-1 managers on the attach list ahead of
+  # their seeds (wave 2). Until those land, every seed run reports them as
+  # skipped — DRIFT by the P1 ruling, never an error — and attaches nothing
+  # for them. When wave 2 seeds them, move each into AGENT_SEEDS/DOMAIN_AGENTS
+  # and delete it here.
+  WAVE_2_KEYS = %w[capacity-manager storage-manager ingress-manager supply-chain-manager].freeze
+
   CORE_ROOT_SLUG = "powernode-assistant"
 end
 
@@ -89,6 +96,12 @@ RSpec.describe "system_agent_hierarchy seed" do
 
       rootless = Ai::Agent.global.where(parent_agent_id: nil).pluck(:name)
       expect(rootless).to eq([ "System Concierge" ])
+    end
+
+    it "reports the four wave-1 managers as skipped (drift), not as an error, until wave 2 seeds them" do
+      result = System::Governance::HierarchyReconciler.new(account: account).reconcile!
+      expect(result.skipped).to match_array(SystemAgentHierarchySeeds::WAVE_2_KEYS.map { |k| "#{k}(agent absent)" })
+      expect(result.attached).to eq(domain_agents.size + 1)
     end
 
     it "is idempotent: a re-run adds no edge and no policy" do
@@ -159,12 +172,39 @@ RSpec.describe "system_agent_hierarchy seed" do
   end
 
   describe "drift report" do
-    it "is clean after the seed" do
+    # Not CLEAN after the seed any more: the four wave-1 managers are declared
+    # and unseeded, so the report is drifted by exactly their skipped lines
+    # and nothing else — no missing edge, no missing policy.
+    it "is clean but for the unseeded wave-1 managers after the seed" do
       seed_all!
 
       report = reconciler.drift
-      expect(report).not_to be_drifted
+      expect(report).to be_drifted
+      expect(report.skipped).to match_array(SystemAgentHierarchySeeds::WAVE_2_KEYS.map { |k| "#{k}(agent absent)" })
+      expect(report.missing_edges).to be_empty
+      expect(report.missing_policies).to be_empty
       expect(report.present.size).to eq(domain_agents.size + 1)
+    end
+
+    it "attaches a wave-1 manager on the first run after its agent exists, with the P1 leaf delegation" do
+      seed_all!
+      identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch("capacity-manager")
+      capacity = Ai::Agent.create!(
+        name: identity[:name], agent_type: identity[:agent_type], source_key: "capacity-manager",
+        status: "active", account: nil, creator: user, provider: provider,
+        system_prompt: "stub for the wave-2 seed"
+      )
+
+      load_seed!("system_agent_hierarchy.rb")
+
+      expect(Ai::AgentLineage.for_child(capacity.id).active.pluck(:parent_agent_id)).to eq([ root.id ])
+      policy = policy_for(capacity)
+      expect(policy.inheritance_policy).to eq("conservative")
+      expect(policy.max_depth).to eq(2)
+      expect(policy.allowed_delegate_types).to eq([])
+      expect(reconciler.drift.skipped).to match_array(
+        (SystemAgentHierarchySeeds::WAVE_2_KEYS - %w[capacity-manager]).map { |k| "#{k}(agent absent)" }
+      )
     end
 
     it "names a terminated edge and a deleted policy" do
@@ -178,9 +218,12 @@ RSpec.describe "system_agent_hierarchy seed" do
       expect(report.missing_edges).to eq([ "system-concierge/cve-responder" ])
       expect(report.missing_policies).to eq([ "sdwan-manager" ])
 
-      # and reconcile! repairs exactly that
+      # and reconcile! repairs exactly that (the wave-1 skips remain)
       reconciler.reconcile!
-      expect(reconciler.drift).not_to be_drifted
+      after = reconciler.drift
+      expect(after.missing_edges).to be_empty
+      expect(after.missing_policies).to be_empty
+      expect(after.skipped).to match_array(SystemAgentHierarchySeeds::WAVE_2_KEYS.map { |k| "#{k}(agent absent)" })
     end
 
     it "treats an unseeded agent as drift, not as clean" do
@@ -190,7 +233,9 @@ RSpec.describe "system_agent_hierarchy seed" do
 
       report = reconciler.drift
       expect(report).to be_drifted
-      expect(report.skipped).to eq([ "cve-responder(agent absent)" ])
+      expect(report.skipped).to include("cve-responder(agent absent)")
+      expect(report.skipped - SystemAgentHierarchySeeds::WAVE_2_KEYS.map { |k| "#{k}(agent absent)" })
+        .to eq([ "cve-responder(agent absent)" ])
       expect(report.missing_edges).to be_empty
     end
 
@@ -200,7 +245,8 @@ RSpec.describe "system_agent_hierarchy seed" do
 
       report = reconciler.drift
       expect(report).to be_drifted
-      expect(report.skipped).to eq([ "core-concierge(agent absent)" ])
+      expect(report.skipped - SystemAgentHierarchySeeds::WAVE_2_KEYS.map { |k| "#{k}(agent absent)" })
+        .to eq([ "core-concierge(agent absent)" ])
       expect(report.missing_edges).to be_empty
     end
 

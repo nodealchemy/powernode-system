@@ -74,14 +74,18 @@ RSpec.describe "SystemIngressTool set_service_backends gating (APO-3d)" do
     # register_categories! never registered it, so the verdict fell to the
     # unmatched default (require_approval — the right answer) while
     # System::AutonomyActions#update rejected every operator edit to it. The
-    # control was correct and invisible. Declared beside its ingress siblings.
+    # control was correct and invisible. Declared beside its ingress siblings —
+    # on the Ingress Manager since HIER-P2DECL (INGRESS_MANAGER_POLICIES; it
+    # travels with the ingress writer), no longer on Fleet Autonomy.
     it "is declared require_approval beside the ingress rows and registered for the Autonomy modal" do
       category = Ai::Tools::SystemIngressTool::SERVICE_BACKENDS_CATEGORY
-      declared = ::System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES
+      declared = ::System::Governance::PolicyDeclarations::INGRESS_MANAGER_POLICIES
 
       expect(declared.fetch(category, nil)).to eq("require_approval"),
-        "#{category} is not declared in FLEET_AUTONOMY_POLICIES"
+        "#{category} is not declared in INGRESS_MANAGER_POLICIES"
       expect(declared).to include("system.expose_service_local")
+      expect(::System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES).not_to have_key(category)
+      expect(::System::Governance::PolicyDeclarations.owner_of(category)).to eq("ingress-manager")
       expect(Ai::InterventionPolicy.category_registered?(category)).to be(true)
     end
   end

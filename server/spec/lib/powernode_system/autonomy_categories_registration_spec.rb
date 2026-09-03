@@ -154,14 +154,13 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
   # seed because no executor backed it, and left the registration standing.
   #
   # The remainder is PINNED rather than derived because "has a backing
-  # executor" is not mechanically decidable from here. All three that remain are
-  # registered on purpose — they reach an operator through the Concierge/MCP
-  # path rather than through an agent seed, and the engine says so above their
-  # `concat`:
-  #
-  #   system.sdwan_federation_compose  -> Skills::SdwanFederationComposeExecutor
-  #   system.multi_tenant_isolation    -> Skills::MultiTenantIsolationExecutor
-  #   system.service_discovery_compose -> Skills::ServiceDiscoveryComposerExecutor
+  # executor" is not mechanically decidable from here. It is EMPTY since
+  # HIER-P2DECL: the last member, system.sdwan_federation_compose
+  # (Skills::SdwanFederationComposeExecutor), is declared on the System
+  # Topology Designer's set beside its two composer siblings
+  # (PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES), and the engine's
+  # explicit concat for the trio is gone — every extension category now
+  # arrives through the derivation over POLICY_SETS.
   #
   # This list held three more until IMP-eb60db901f5f — runtime_docker_host_
   # provision / _decommission and runtime_k8s_cluster_create — annotated here
@@ -200,9 +199,7 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
     # operator control with no row behind it until someone creates one. These
     # reach an operator through the MCP / REST / Concierge doors rather than
     # through an agent's seed; the engine names the executor behind each.
-    deliberately_unseeded = %w[
-      system.sdwan_federation_compose
-    ].sort
+    deliberately_unseeded = [].sort
 
     extension_registered = Ai::InterventionPolicy.registered_categories
                                                  .select { |cat| cat.start_with?("system.", "sdwan.") }

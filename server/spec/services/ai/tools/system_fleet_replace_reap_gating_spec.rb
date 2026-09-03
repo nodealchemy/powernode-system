@@ -194,8 +194,8 @@ RSpec.describe "SystemFleetTool replace/reap MCP verbs (IMP-4e49eb79c5e0)" do
       end
     end
 
-    it "gates on categories the platform actually declares" do
-      declared = System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES
+    it "gates on categories the platform actually declares (on the Capacity Manager since HIER-P2DECL)" do
+      declared = System::Governance::PolicyDeclarations::CAPACITY_MANAGER_POLICIES
 
       aggregate_failures do
         expect(declared).to include("system.instance_replace")

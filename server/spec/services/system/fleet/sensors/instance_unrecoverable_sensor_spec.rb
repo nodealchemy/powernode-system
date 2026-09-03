@@ -388,19 +388,24 @@ RSpec.describe System::Fleet::Sensors::InstanceUnrecoverableSensor do
       expect(binding[:action_category]).not_to eq(silent[:action_category])
     end
 
-    it "is seeded require_approval — a replace is never autonomous" do
-      expect(System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES["system.instance_replace"])
+    it "is seeded require_approval — a replace is never autonomous (on the Capacity Manager since HIER-P2DECL)" do
+      expect(System::Governance::PolicyDeclarations::CAPACITY_MANAGER_POLICIES["system.instance_replace"])
         .to eq("require_approval")
+      expect(System::Governance::PolicyDeclarations.owner_of("system.instance_replace")).to eq("capacity-manager")
+      expect(System::Fleet::DecisionEngine.owner_for(
+        System::Fleet::DecisionEngine::SIGNAL_BINDINGS["system.instance_unrecoverable"]
+      )).to eq("capacity-manager")
     end
 
     # The reconciler is what lands the row on an install whose first boot
     # predates this lane: db:seed is first-boot-only, so a declared-but-
     # unreconciled category blocks every signal at the policy_missing gate.
-    it "is reconciled onto a RUNNING install by the absence-only reconciler" do
+    it "is reconciled onto a RUNNING install by the absence-only reconciler, onto the Capacity Manager" do
       create(:user, account: account)
-      agent = Ai::Agent.resolve_for(account.id, name: "Fleet Autonomy", agent_type: "monitor") ||
-              create(:ai_agent, account: account, agent_type: "monitor", name: "Fleet Autonomy",
-                                source_key: "fleet-autonomy")
+      identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch("capacity-manager")
+      agent = Ai::Agent.resolve_for(account.id, name: identity[:name], agent_type: identity[:agent_type]) ||
+              create(:ai_agent, account: account, agent_type: identity[:agent_type], name: identity[:name],
+                                source_key: "capacity-manager")
       expect(agent).to be_present
 
       System::Governance::PolicyReconciler.new(account: account).reconcile!

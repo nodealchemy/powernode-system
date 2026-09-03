@@ -115,7 +115,8 @@ RSpec.describe "PowernodeSystem autonomy category spelling uniqueness", type: :l
     end
 
     it "resolves a category the seeded policy declarations actually declare" do
-      declared = System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES.keys
+      # On the Supply Chain Manager since HIER-P2DECL (packages + architecture).
+      declared = System::Governance::PolicyDeclarations::SUPPLY_CHAIN_MANAGER_POLICIES.keys
 
       expect(declared).to include(*executors.values)
     end

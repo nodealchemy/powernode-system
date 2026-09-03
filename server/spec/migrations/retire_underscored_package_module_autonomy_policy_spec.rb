@@ -11,7 +11,7 @@ require Rails.root.join(
 # `system.package_module_create` was declared in
 # System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES from ext
 # commit 73f2c8f7, which is an ancestor of origin/develop — so a running
-# install that booted (or that ran `rake governance:reconcile`) after that
+# install that booted (or that ran `rake system:governance:reconcile`) after that
 # commit HAS the row. Dropping the declaration stops it being created and
 # strands the ones that exist: PolicyReconciler is absence-only, db/seeds is
 # first-boot-only, and the orphan-cleanup seed is admin-account-only. The

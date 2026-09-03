@@ -102,7 +102,98 @@ RSpec.describe "fleet sensor ownership (DecisionEngine owner gating)" do
       owners = System::Fleet::DecisionEngine::SIGNAL_BINDINGS.values
                                                             .map { |b| System::Fleet::DecisionEngine.owner_for(b) }
                                                             .uniq
-      expect(owners).to include("fleet-autonomy", "sdwan-manager", "gitops-reconciler", "disk-image-manager")
+      expect(owners).to include("fleet-autonomy", "sdwan-manager", "gitops-reconciler", "disk-image-manager",
+                                "capacity-manager", "storage-manager", "supply-chain-manager")
+    end
+
+    # HIER-P2DECL — the bindings whose category moved to a wave-1 manager.
+    # Capacity: the DR replace lane and the three project.* adaptation kinds.
+    # Storage: the assignment-drift lane. Supply chain: package drift. Ingress
+    # and topology own NO sensor-routed category today — their rows gate the
+    # executor/MCP doors only — and that is asserted rather than assumed.
+    it "reassigns the capacity, storage and supply-chain bindings to the wave-1 managers" do
+      bindings = System::Fleet::DecisionEngine::SIGNAL_BINDINGS
+      owner = ->(kind) { System::Fleet::DecisionEngine.owner_for(bindings.fetch(kind)) }
+
+      expect(owner.call("system.instance_unrecoverable")).to eq("capacity-manager")
+      expect(owner.call("system.project_slo_violation")).to eq("capacity-manager")
+      expect(owner.call("system.project_drift")).to eq("capacity-manager")
+      expect(owner.call("system.project_cost_breach")).to eq("capacity-manager")
+      expect(owner.call("system.storage_assignment_drift")).to eq("storage-manager")
+      expect(owner.call("system.package_drift_pressure")).to eq("supply-chain-manager")
+
+      # The remediation core stays: a silent instance is reprovisioned/rebooted
+      # under Fleet Autonomy, and the replica-lag observation too.
+      expect(owner.call("system.instance_silent")).to eq("fleet-autonomy")
+      expect(owner.call("system.instance_state_drifted")).to eq("fleet-autonomy")
+      expect(owner.call("system.replica_lag_unsafe")).to eq("fleet-autonomy")
+    end
+
+    it "routes no signal to an Ingress Manager or Topology Designer category (their rows gate the executor doors)" do
+      routed = System::Fleet::DecisionEngine::SIGNAL_BINDINGS.values.map { |b| b[:action_category] }
+      d = System::Governance::PolicyDeclarations
+      expect(routed & d::INGRESS_MANAGER_POLICIES.keys).to eq([])
+      expect(routed & d::TOPOLOGY_DESIGNER_POLICIES.keys).to eq([])
+    end
+  end
+
+  # HIER-P2DECL — this lane moves declarations before wave 2 seeds the agents,
+  # so the tick must keep working with the new owners ABSENT. An established
+  # install still has the moved rows on Fleet Autonomy (the reconciler skips a
+  # set whose agent is absent and never moves a row off its former owner
+  # until the new one exists), so the fallback gate finds them there.
+  describe "a wave-1 owner that is not seeded yet" do
+    def decide_storage_drift(suffix = "1")
+      engine.decide(kind: "system.storage_assignment_drift", severity: :medium,
+                    payload: { "storage_assignment_id" => "sa-#{suffix}" },
+                    fingerprint: "storage_assignment_drift:sa-#{suffix}")
+    end
+
+    it "gates a storage-manager-owned binding under Fleet Autonomy with the fleet.owner_agent_missing event" do
+      fleet_chain = chain!("Fleet Autonomy Actions")
+      policy!(fleet, "system.storage_assignment_reconcile", "require_approval")
+
+      d = decide_storage_drift
+
+      expect(d[:decision]).to eq(:pending)
+      expect(d[:agent_id]).to eq(fleet.id)
+      expect(d[:decision_record].approval_chain_id).to eq(fleet_chain.id)
+
+      warned = System::FleetEvent.where(account: account,
+                                        kind: System::Fleet::FleetAutonomyService::OWNER_MISSING_EVENT_KIND)
+      expect(warned.count).to eq(1)
+      expect(warned.last.payload).to include("owner" => "storage-manager", "fallback_agent_id" => fleet.id)
+    end
+
+    it "gates it under the Storage Manager once a stub agent with that identity exists" do
+      identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch("storage-manager")
+      storage = create(:ai_agent, account: account, agent_type: identity[:agent_type], name: identity[:name],
+                                  source_key: "storage-manager")
+      chain!("Fleet Autonomy Actions")
+      storage_chain = chain!("Storage Manager Actions")
+      # The row is where the reconciler puts it once the agent exists — on the owner.
+      policy!(storage, "system.storage_assignment_reconcile", "require_approval")
+
+      d = decide_storage_drift("2")
+
+      expect(d[:decision]).to eq(:pending)
+      expect(d[:agent_id]).to eq(storage.id)
+      expect(d[:owner]).to eq("storage-manager")
+      expect(d[:decision_record].approval_chain_id).to eq(storage_chain.id)
+      expect(d[:decision_record].request_data["agent_key"]).to eq("storage-manager")
+      expect(System::FleetEvent.where(account: account,
+                                      kind: System::Fleet::FleetAutonomyService::OWNER_MISSING_EVENT_KIND).count).to eq(0)
+    end
+
+    it "gates the capacity-owned replace lane under the Capacity Manager when present, else Fleet Autonomy" do
+      identity = System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch("capacity-manager")
+      capacity = create(:ai_agent, account: account, agent_type: identity[:agent_type], name: identity[:name],
+                                   source_key: "capacity-manager")
+      expect(service.for_owner("capacity-manager").agent).to eq(capacity)
+
+      absent = System::Fleet::FleetAutonomyService.new(account: account, agent: fleet)
+      capacity.destroy!
+      expect(absent.for_owner("capacity-manager")).to be(absent)
     end
   end
 

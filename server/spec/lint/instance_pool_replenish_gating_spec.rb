@@ -511,7 +511,7 @@ RSpec.describe "instance-pool replenish gating asymmetry", type: :lint do
       row for a category no gate site passes is a control an operator can edit
       that no code path reads — the same shape RUNTIME_OPERATOR_GATED_KEYS was
       introduced to avoid (IMP-9b9653e6514e). They remain declared and remain
-      on Fleet Autonomy's agent-scoped set.
+      on the agent-scoped set — the Capacity Manager's since HIER-P2DECL.
 
       So moving a verb INTO this list means withdrawing its operator row, and
       moving one OUT (giving it a gate site) means adding it back to

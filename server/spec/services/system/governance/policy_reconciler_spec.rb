@@ -178,7 +178,7 @@ RSpec.describe System::Governance::PolicyReconciler do
 
         result = reconciler.reconcile!
 
-        # Only the fleet agent exists here, so the other five sets skip by
+        # Only the fleet agent exists here, so every other agent set skips by
         # design; what matters is that THIS set did not skip on the rename.
         expect(result.skipped_sets).not_to include(a_string_matching(/fleet-autonomy/))
         expect(agent_row("system.cert_rotate")).to be_present
@@ -186,9 +186,17 @@ RSpec.describe System::Governance::PolicyReconciler do
 
       # A set-level condition cannot express this one; without a per-category
       # override slot it flattens to the default and the window disappears.
+      # The override rides on the capacity-manager set since HIER-P2DECL (the
+      # project.* keys moved there from the old "provisioning" set), so the
+      # row is read off the Capacity Manager.
       it "applies the per-category conditions override" do
+        capacity = create(:ai_agent, account: account, name: "Capacity Manager",
+                                     agent_type: "monitor", source_key: "capacity-manager")
         reconciler.reconcile!
-        row = agent_row("project.scale_horizontal")
+        row = Ai::InterventionPolicy.find_by(account: account, scope: "agent",
+                                             ai_agent_id: capacity.id, action_category: "project.scale_horizontal")
+        expect(row).to be_present
+        expect(agent_row("project.scale_horizontal")).to be_nil
 
         expect(row.conditions).to eq(
           "trust_tier_minimum" => "monitored",
