@@ -2525,6 +2525,73 @@ module Ai
       # above does not cover it.
       rescue ::System::Autonomy::SelfManagementFence::SelfManagementViolation => e
         error_result(e.message).merge(refusal_code: "self_management_violation", retryable: false)
+      # === The rest of the surface (IMP-d2f87ffa8733) ===
+      #
+      # The two arms above covered one verb. This `case` dispatches ~140, so the
+      # question was which OTHER custom StandardError subclasses can still reach
+      # here. Answered by walking every `when` arm through the tool's helpers
+      # into the services it calls and reading each entry point — NOT by
+      # grepping declarations: of 68+ `< StandardError` classes under this
+      # extension's app/services, nearly all are converted to a Result by the
+      # service that raises them (ManifestImportService::ImportError,
+      # Gitops::ApplyService::*, Gitops::RepoSyncService::CredentialShapeError,
+      # VolumeManagementService::VolumeError, ModuleBuildDispatchService::
+      # DispatchError, everything behind BaseSkillExecutor#execute), or are
+      # rescued in the action body that calls them (CloneError, DeploymentError,
+      # FleetError, EmbeddingUnavailable, PoolError+, LeaseError+,
+      # PlanningError, ReplayBaselineError). Exactly four propagate, listed
+      # below with their single raise site each; all four are refusals. The
+      # enumeration and the not-in-scope reasoning are pinned in
+      # spec/requests/api/v1/mcp/system_fleet_tool_refusal_surface_spec.rb.
+      #
+      # Disk-image publication guards: System::Executors::Base#call (base.rb:
+      # 140-142) logs and RE-RAISES, so the executor's own promotable? check
+      # arrives here as an exception from system_set_default_disk_image_
+      # publication (promote_publication.rb:21) and system_revert_disk_image
+      # (rollback_publication.rb:22). Both action bodies pre-check a SUBSET of
+      # #promotable?, but the two halves are reachable by DIFFERENT routes and
+      # this comment used to overstate the first one.
+      #
+      # ROLLBACK, outright: revert_disk_image pre-checks purged? and
+      # file_object_id only, so a :queued or :verifying row that carries an
+      # artifact passes and is refused by the guard's status check — an
+      # ordinary caller-reachable state.
+      #
+      # PROMOTE, by RACE: set_default_disk_image_publication pre-checks
+      # status == "published", and on a published row published_at is
+      # structurally present (DiskImagePublication#promotable?'s own comment
+      # traces the transition graph for that) while file_object_id goes nil
+      # only through purge!'s shared-FileObject sweep, which #purge! argues
+      # cannot arise today. What actually reaches the guard is therefore the
+      # row changing between the tool's read and the executor's own `find` —
+      # a concurrent purge/retire sweep — i.e. exactly the "re-checked at the
+      # moment of mutation" case the RollbackPublication class comment
+      # documents (it names the same re-check for an approved
+      # DeferredOperation minted before the target was purged).
+      #
+      # Either way the guard fires on a row the caller cannot argue with: a
+      # retry does not make it promotable. Two classes, one condition, one
+      # code.
+      rescue ::System::Executors::DiskImage::PromotePublication::UnpromotablePublicationError,
+             ::System::Executors::DiskImage::RollbackPublication::UnpromotablePublicationError => e
+        error_result(e.message).merge(refusal_code: "publication_unpromotable", retryable: false)
+      # Identity allocation: ManifestImportService#import! rescues only
+      # ImportError and RecordInvalid (manifest_import_service.rb:227-230), and
+      # #apply_identities (:985, :994) calls the allocators past both. Each
+      # raises from exactly one site (group_allocator.rb:68, user_allocator.rb:
+      # 75) when the fixed ServiceGroup::GID_MIN..GID_MAX / ServiceUser::UID_MIN
+      # ..UID_MAX range has no free id for the manifest's groups:/users:. The
+      # message names the range; the fix is an operator draining identities or
+      # trimming the manifest, and an identical retry re-raises identically —
+      # which is the loop this task closes. Reached from system_create_module
+      # and system_update_module. Note the transaction inside import! rolls the
+      # identity rows back, but create_module's node_module.save! ran BEFORE
+      # import_module_manifest and its destroy-on-failure branch only sees a
+      # returned Result, not a raise — so on create the module row survives the
+      # refusal (pre-existing; not changed here).
+      rescue ::System::Identity::GroupAllocator::CapacityExhausted,
+             ::System::Identity::UserAllocator::CapacityExhausted => e
+        error_result(e.message).merge(refusal_code: "identity_capacity_exhausted", retryable: false)
       end
 
       private
