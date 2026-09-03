@@ -106,11 +106,31 @@ hands it the whole ring the moment the VIP fails over onto it.
 
 | Producer | What it does to the set |
 |---|---|
-| `scale_project` **add_replicas** | Every new replica joins each service the mission's existing replicas already back **by address** (materialising the legacy backend as the first row; a VIP-fronted service is left alone). Reported under `outputs.sdwan_service_ids` / `sdwan_service_backend_ids`; a dry run lists `join_service_backends` actions. A join that fails is a `partial` step failure, never silent. |
+| `scale_project` **add_replicas** / **add_region** | Every new replica joins each service the mission's existing replicas already back **by address** (materialising the legacy backend as the first row; a VIP-fronted service is left alone). Reported under `outputs.sdwan_service_ids` / `sdwan_service_backend_ids`; a dry run lists `join_service_backends` actions. A join that fails is a `partial` step failure, never silent. |
 | `scale_project` **remove_replicas** (and its rollback) | Each victim's host-form rows are removed **before** the terminate takes its addresses away (`outputs.removed_sdwan_service_backend_ids`; dry run lists `leave_service_backends`). One proxy regen for the whole scale-in, not one per victim. |
 | `replace_instance` (DR) | The replacement joins every service that dialled the failed instance **by address**, over the same overlay network; the dead member is **drained**, not removed. A VIP-backed service is left to the VIP move. Idempotent on `operation_id` (`rehome_service_backends` step); previewed as `would_rehome_service_ids`. |
-| `reap_instance` (DR) | The dead instance's rows are removed before the terminate (`removed_sdwan_service_backend_ids`). |
-| `system_set_service_backends` (MCP) | Declarative: the `backends` list becomes the set — matched by address + port, updated in place, absent members removed, `[]` clears the set. Also writes the per-service overrides (`load_balancer`). **Approval-gated** under `system.service_backends_update` (DeferredToolCall replay); the call returns a pending envelope until released. |
+| `reap_instance` (DR) | The dead instance's rows are removed before the terminate (`removed_sdwan_service_backend_ids`). A service that routes to it through its **legacy column** has no row to remove; those are reported under `stranded_sdwan_service_ids` — the route outlives the instance and needs repointing or unpublishing by hand. |
+| `system_set_service_backends` (MCP) | Declarative: the `backends` list becomes the set — matched by address + port, updated in place, absent members removed, `[]` clears the set. Also writes the per-service overrides (`load_balancer`). **Approval-gated** under `system.service_backends_update` (DeferredToolCall replay); the call returns a pending envelope until released. Answers with `out_of_rotation: true` when the set it just wrote is entirely draining. |
+
+**Which address a producer dials** (`Sdwan::ServiceBackend.address_for`), in
+order:
+
+1. the instance's SDWAN peer address on the overlay network the service's
+   existing backend already lives on;
+2. else the instance's own address in the **same column** the service's
+   existing host-form backends use (`vpn_ip_address` / `private_ip_address` /
+   `public_ip_address`);
+3. else the first address the instance has, overlay peer address first.
+
+Rung 2 is what keeps a LAN-dialled service on the LAN. Rung 1 only answers when
+the service's host *is* a peer address; without rung 2 a replica that has a peer
+— every replica provisioned with a `network_id` — would join a service dialling
+a private IP on the overlay instead, and with health checking off by default
+half the requests would fail with no signal.
+
+A service carrying **both** a `backend_vip_id` and a `backend_host` is
+VIP-routed (`#backend_address` resolves the VIP): the host-form producers leave
+it, and its rows, alone.
 
 Every producer regenerates the account's Traefik file when it changes a set;
 a regen failure is recorded (executor failure entry / tool error) and the
@@ -127,6 +147,12 @@ system_set_service_backends
 Keep the original backend **listed** while rebuilding a set: an all-draining
 set is a skipped service (above), and an empty set returns to the legacy
 column.
+
+> **Known gap.** `system_expose_service_local` does **not** yet read the
+> writer's `drained_service_ids`: exposing a service whose set is entirely
+> draining returns success with a `local_url` even though no router was
+> written. Check `out_of_rotation` on `system_get_service` /
+> `system_set_service_backends` until that executor reads the key.
 
 Health-check defaults resolve through `Sdwan::ServiceLoadBalancing`, in order:
 the service's own `metadata["load_balancer"][<key>]`, then the account's
