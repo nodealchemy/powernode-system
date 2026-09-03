@@ -257,9 +257,13 @@ module InstancePoolReplenishGatingGuard
       count: 2,
       why: "GitOps sync: `InstancePool.create!` and `pool.update!(updates)` over " \
            "POOL_SCALAR_KEYS, which include target_size, min_size, max_size, " \
-           "lifecycle_class and status. Reached from system_gitops_apply_proposal " \
-           "and from Decision::Engine, neither of which is a gate site — so a " \
-           "repo commit raises a ceiling with no approval."
+           "lifecycle_class and status. The MCP door system_gitops_apply_proposal " \
+           "now gates under system.gitops_apply_proposal (IMP-0b4f18ae4384); the " \
+           "callers that still reach apply! with no approval are " \
+           "System::Gitops::Reconciler#auto_apply_proposal (under the repository's " \
+           "own auto_apply opt-in) and System::Fleet::DecisionEngine#apply_gitops_drift " \
+           "(under system.gitops_drift_remediate, seeded notify_and_proceed) — so a " \
+           "repo commit on an auto_apply repo still raises a ceiling with no approval."
     },
     "app/services/system/instance_pool_service.rb" => {
       count: 2,

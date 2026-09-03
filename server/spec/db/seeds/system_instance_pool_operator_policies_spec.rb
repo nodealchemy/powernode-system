@@ -38,12 +38,14 @@ require "rails_helper"
 #
 # WHAT NEITHER WRITER DOES IS DELETE. Both examples below assert that the four
 # ungated categories are never CREATED at the operator shape; neither asserts
-# they are absent from an install that already has them, because the fix cannot
-# make that true. db:seed is first-boot only and PolicyReconciler is create-only
-# by explicit design, so an already-booted install keeps the four rows its first
-# boot wrote. That residue is filed separately as improvement
-# 01a063db-c869-7117-b7f6-f88b7061ab4a — see the note on
-# PolicyDeclarations::INSTANCE_POOL_OPERATOR_GATED_KEYS for why no existing
+# they are absent from an install that already has them, because neither
+# writer can make that true. db:seed is first-boot only and PolicyReconciler is
+# create-only by explicit design, so an already-booted install kept the four
+# rows its first boot wrote until the one-shot collection landed:
+# db/migrate/20260903033000_collect_inert_instance_pool_operator_policies.rb
+# (IMP-57a4b1ef94b3, closing improvement 01a063db-c869-7117-b7f6-f88b7061ab4a)
+# deletes them once on the next deploy migrate — see the note on
+# PolicyDeclarations::INSTANCE_POOL_OPERATOR_GATED_KEYS for why no RECURRING
 # sweep collects this row shape.
 RSpec.describe "instance-pool operator-path intervention policies" do
   let!(:account)  { create(:account, name: "Powernode Admin") }

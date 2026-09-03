@@ -1247,10 +1247,16 @@ RSpec.describe "target_cluster_id docs vs. what the agent actually sends" do
     #     capability that does not exist. At the site tier it waits 600s for
     #     `node_count >= 3` (:91-96), which cannot happen.
     #
-    #     NOTHING IS FILED for any of these as of this commit. Stated plainly
+    #     NOTHING WAS FILED for any of these as of that commit. Stated plainly
     #     because the Phase 3 deferral above names IMP-a5f236e8cc56, and an
     #     unnamed "tracked separately" beside a named one reads as tracked
-    #     when it is not.
+    #     when it is not. SINCE THEN: IMP-d21a5d321a1f / IMP-c4fac10a72b6 took
+    #     the family — the `k3s-server` seed description was corrected
+    #     (a3c4c66d), and k3s_single_server_docs_accuracy_spec.rb now guards
+    #     the matrix and sweeps the tree for the etcd control-plane wording;
+    #     SWEEP-2026-09-03 corrected the remaining doc copies listed above.
+    #     The enumeration is kept as the record of what this spec found, not
+    #     as a list of open sites.
     def self.phase4_region(doc)
       doc[/^## Phase 4 .*?(?=^## Phase 5 )/m].to_s
     end

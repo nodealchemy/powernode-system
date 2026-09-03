@@ -150,7 +150,7 @@ module GateComposedTaskCategories
     },
     {
       file: "app/services/system/governance/policy_declarations.rb",
-      line: 217,
+      line: 253,
       source: '"system.task.#{command}"',
       # NOT a gate site: it composes the category NAME the seed, PolicyReconciler
       # and the engine's registration all consume, and calls no gate. Enumerated
@@ -171,7 +171,7 @@ module GateComposedTaskCategories
     },
     {
       file: "app/services/ai/tools/system_fleet_tool.rb",
-      line: 368,
+      line: 562,
       source: 'action_category: "system.task.terminate"',
       # NOT ExecuteTask. This arm replays System::Executors::TerminateInstance,
       # which calls ProvisioningService directly and inserts no System::Task —

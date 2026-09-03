@@ -269,7 +269,11 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
         plan = { total_instances: 5,
                  affected_instance_ids: %w[i-1 i-2 i-3 i-4 i-5],
                  estimated_total_seconds: 600, requires_approval: true }
+        # caller_correlation_id= — BaseSkillExecutor#build_nested_executor
+        # assigns it on EVERY nested executor (APO-2d); the double predated
+        # that writer and rejected the message.
         rmu = instance_double(::System::Ai::Skills::RollingModuleUpgradeExecutor,
+                              "caller_correlation_id=": nil,
                               execute: { success: true, data: plan })
         allow(::System::Ai::Skills::RollingModuleUpgradeExecutor).to receive(:new).and_return(rmu)
 
