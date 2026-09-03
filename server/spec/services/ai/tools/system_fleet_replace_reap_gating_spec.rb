@@ -393,7 +393,16 @@ RSpec.describe "SystemFleetTool replace/reap MCP verbs (IMP-4e49eb79c5e0)" do
     end
   end
 
-  # THE ASYMMETRY BETWEEN THE TWO VERBS, pinned rather than left incidental.
+  # BOTH DR VERBS ARE OFF-LIMITS TO AN INSTANCE PRINCIPAL, pinned rather than
+  # left incidental. This block used to pin the ASYMMETRY between them: the
+  # reap was denied by Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS and the
+  # additive half was not, so the only refusal of reap-through-replace lived in
+  # the gate context. IMP-4d6423bf4eb3 (operator ruling R5, 2026-09-03) added
+  # `*replace_instance*` to that list, so the overlay now refuses the whole DR
+  # lane to an instance principal and the gate-context brake became defence in
+  # depth. The two layers are pinned SEPARATELY below — the overlay through
+  # #execute, the brake by a direct call — so neither one's coverage depends on
+  # the other still being there.
   describe "an MCP instance principal" do
     let(:instance_tool) do
       t = Ai::Tools::SystemFleetTool.new(account: account, user: nil)
@@ -401,38 +410,80 @@ RSpec.describe "SystemFleetTool replace/reap MCP verbs (IMP-4e49eb79c5e0)" do
       t
     end
 
-    # The overlay is the authority for the destructive half; this asserts the
-    # premise the refusal below is built on rather than assuming it.
+    # The overlay is the authority for both halves; these assert the premise
+    # the refusals below are built on rather than assuming it.
     it "is denied system_reap_instance outright by the deny overlay" do
       expect(Mcp::Principal.destructive_tool?("system_reap_instance")).to be(true)
     end
 
-    # ...and matches no pattern for the additive half, which is why the refusal
-    # of `reap: true` has to live in the gate context.
-    it "is not denied system_replace_instance by the deny overlay" do
-      expect(Mcp::Principal.destructive_tool?("system_replace_instance")).to be(false)
+    it "is denied system_replace_instance outright by the deny overlay" do
+      expect(Mcp::Principal.destructive_tool?("system_replace_instance")).to be(true)
     end
 
-    it "may drive a plain replace" do
+    # The overlay refuses by RAISING out of BaseTool#execute, before the tool's
+    # own #call or gate context is reached, so there is no result envelope to
+    # inspect — the assertion is the raise plus the absence of a parked
+    # operation.
+    it "is refused a plain replace at the deny overlay, and parks nothing" do
       expect {
-        result = instance_tool.execute(params: { action: "system_replace_instance",
-                                                 instance_id: failed.id,
-                                                 operation_id: "inst-1" })
-        expect(result[:success]).to be(true)
-      }.to change(::Ai::DeferredOperation, :count).by(1)
+        expect {
+          instance_tool.execute(params: { action: "system_replace_instance",
+                                          instance_id: failed.id,
+                                          operation_id: "inst-1" })
+        }.to raise_error(Mcp::ProtocolService::PermissionDeniedError, /destroy-shaped/)
+      }.not_to change(::Ai::DeferredOperation, :count)
     end
 
     # `reap: true` asks the replace to raise the very terminate the overlay
-    # refuses this principal. Permitting it would re-open the denied door
-    # through the permitted one.
-    it "cannot reach the terminate through the replace" do
+    # refuses this principal. It never gets that far now: the verb itself is
+    # denied.
+    it "is refused a reap-through-replace at the same door, and terminates nothing" do
       expect {
-        result = instance_tool.execute(params: { action: "system_replace_instance",
-                                                 instance_id: failed.id,
-                                                 operation_id: "inst-2", reap: true })
-        expect(result[:success]).to be(false)
-        expect(result[:error]).to match(/instance principal/i)
+        expect {
+          instance_tool.execute(params: { action: "system_replace_instance",
+                                          instance_id: failed.id,
+                                          operation_id: "inst-2", reap: true })
+        }.to raise_error(Mcp::ProtocolService::PermissionDeniedError, /destroy-shaped/)
       }.not_to change(::Ai::DeferredOperation, :count)
+
+      expect(provider).not_to have_received(:terminate_instance)
+    end
+
+    # THE SECOND LAYER, exercised directly. #dr_lane_reap_by_instance_principal!
+    # is unreachable through MCP while the overlay names `*replace_instance*`,
+    # which is exactly why it is called here rather than through #execute: if it
+    # were only covered through the tool's public door, narrowing the overlay
+    # later would silently drop its coverage along with its enforcement, and
+    # reap-through-replace would be restored with a green suite. Calling it
+    # directly keeps the brake pinned on its own terms.
+    describe "#dr_lane_reap_by_instance_principal! (defence in depth)" do
+      it "refuses reap: true for an instance principal even when reached directly" do
+        expect { instance_tool.send(:dr_lane_reap_by_instance_principal!, true) }
+          .to raise_error(ArgumentError, /instance principal/i)
+      end
+
+      it "permits a replace that does not ask for the reap" do
+        expect { instance_tool.send(:dr_lane_reap_by_instance_principal!, false) }
+          .not_to raise_error
+      end
+
+      it "does not refuse a user principal asking for the reap" do
+        expect { tool.send(:dr_lane_reap_by_instance_principal!, true) }
+          .not_to raise_error
+      end
+    end
+  end
+
+  # The contrast the overlay draws is between PRINCIPALS, not between verbs: a
+  # user principal with the per-action permission still parks an ordinary DR
+  # replace. Without this the examples above would also pass if the replace had
+  # simply stopped working for everybody.
+  describe "a user principal, for contrast" do
+    it "may still drive a plain replace" do
+      expect {
+        result = replace!
+        expect(result[:success]).to be(true)
+      }.to change(::Ai::DeferredOperation, :count).by(1)
     end
   end
 

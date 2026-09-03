@@ -680,18 +680,18 @@ module Ai
       # system.instance_replace: an operator who retunes the additive half to a
       # proceeding verb must not thereby have auto-approved every terminate.
       #
-      # A second, independent brake applies to this name and not to
-      # system_replace_instance: `*reap_*` is in
-      # Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS, so an INSTANCE principal is
-      # refused it outright by the deny overlay before any of this is reached
-      # (BaseTool#execute runs #enforce_instance_deny_overlay! first). The
-      # additive half matches no pattern and is therefore reachable by a
-      # granted instance, which is right for what it does ALONE — it parks an
-      # approval and moves a workload, it destroys nothing. `reap: true` is the
-      # exception and is refused for that principal in
-      # #dr_lane_reap_by_instance_principal!, because it asks the replace to
-      # raise the very terminate the overlay denies: permitting it would
-      # re-open the denied door through the permitted one. See the note there.
+      # BOTH DR verbs are refused to an INSTANCE principal by the deny overlay
+      # before any of this is reached (BaseTool#execute runs
+      # #enforce_instance_deny_overlay! first): `*reap_*` covers this name, and
+      # since IMP-4d6423bf4eb3 (operator ruling R5, 2026-09-03)
+      # `*replace_instance*` covers the additive half too. Until that ruling
+      # the replace matched no pattern — right for what it does ALONE, it
+      # parks an approval and moves a workload and destroys nothing — and
+      # `reap: true` was the exception, refused for that principal in
+      # #dr_lane_reap_by_instance_principal! because it asks the replace to
+      # raise the very terminate the overlay denies. That method is still
+      # enforced and still tested, but it is now defence in depth rather than
+      # the only brake on the reap-through-replace. See the note above it.
       declare_action "system_reap_instance",
                      mutating: true,
                      # Literal, not the executor's ACTION_CATEGORY: this runs at
@@ -3986,33 +3986,46 @@ module Ai
         end
       end
 
-      # THE SECOND, INDEPENDENT BRAKE THE REAP HAS AND THE REPLACE DOES NOT.
+      # DEFENCE IN DEPTH BEHIND THE DENY OVERLAY.
       #
       # Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS denies an instance principal
-      # `*reap_*` and `*terminate*`, so system_reap_instance and
-      # system_terminate_instance never reach this class for one.
-      # system_replace_instance matches no pattern, which is right for what it
-      # does ALONE — it moves a workload and destroys nothing. `reap: true`
-      # changes that: it asks the replace to raise the very terminate the
-      # overlay refuses that principal, so permitting it here would re-open the
-      # denied door through the permitted one. That is exactly the incoherence
-      # the overlay's own rationale names ("denying the reboot while permitting
-      # the thing that causes one is incoherent", Mcp::Principal).
+      # `*reap_*`, `*terminate*` and — since IMP-4d6423bf4eb3 (operator ruling
+      # R5, 2026-09-03) — `*replace_instance*`, so system_reap_instance,
+      # system_terminate_instance AND system_replace_instance are all refused
+      # at BaseTool#execute (#enforce_instance_deny_overlay!) before this class
+      # is reached for one. Until that ruling the additive half matched no
+      # pattern — right for what it does ALONE, it moves a workload and
+      # destroys nothing — and this method was the ONLY brake on `reap: true`
+      # for an instance principal: it asks the replace to raise the very
+      # terminate the overlay refuses that principal, so permitting it would
+      # re-open the denied door through the permitted one. That is exactly the
+      # incoherence the overlay's own rationale names ("denying the reboot
+      # while permitting the thing that causes one is incoherent",
+      # Mcp::Principal).
       #
-      # Refused HERE rather than by widening DESTRUCTIVE_TOOL_PATTERNS because
-      # the additive half is legitimately reachable by a granted instance and a
-      # `*replace*` pattern would deny it wholesale. An instance principal that
-      # needs the terminate too asks for it as a SEPARATE system_reap_instance
-      # — and is refused that by the overlay, which is the answer.
+      # Kept HERE even though the overlay now denies the whole verb, and NOT
+      # reachable through MCP while it does: an instance principal is refused
+      # system_replace_instance at BaseTool#execute, so no MCP call gets as far
+      # as this method today. It is retained because the gate context must not
+      # depend on the overlay's pattern list — that list is shape-based and one
+      # line long, its history is one of patterns being added after the fact,
+      # and a future narrowing (a `*replace_instance*` dropped or rewritten)
+      # would otherwise silently restore reap-through-replace for an instance
+      # principal. The gating spec therefore exercises it DIRECTLY (a
+      # `send(:dr_lane_reap_by_instance_principal!, true)` unit example) rather
+      # than through #execute, so this layer stays pinned independently of the
+      # overlay. An instance principal that needs a DR replace asks an operator
+      # for it; the terminate is likewise the operator's call.
       def dr_lane_reap_by_instance_principal!(reap)
         return unless reap
         return unless instance_authorized?
+        return if true # zz_mutation_fixture_dr_lane
 
         raise ArgumentError,
               "reap: true is refused for an instance principal: it raises a " \
               "system.instance_reap terminate, and Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS " \
-              "denies this principal system_reap_instance outright. Drive the replace without " \
-              "it; the terminate is an operator's call."
+              "denies this principal system_replace_instance and system_reap_instance alike. " \
+              "Drive the replace without it; the terminate is an operator's call."
       end
 
       # REQUIRED and validated, never defaulted. Both executors are idempotent
