@@ -374,7 +374,18 @@ module System
         # applier exists and none can, because the LKG is frozen on the node's
         # own disk). Runs HERE because this tick gates as the Fleet Autonomy
         # agent, which is the agent its policy is declared on.
-        ::System::Fleet::Sensors::BootLkgArmSensor
+        ::System::Fleet::Sensors::BootLkgArmSensor,
+        # IMP-5b38cd356010 (APO-6b) — the replication-lag SAMPLER for the
+        # postgres cluster_member lane. PromoteReplicaExecutor's data-loss
+        # gate reads cluster_pg.replication_lag_bytes / lag_sampled_at off the
+        # cluster_member peer and nothing wrote them, so every promote was
+        # waiver-only. This sensor reads pg_stat_replication on the platform's
+        # own connection (the primary every cluster_member child streams
+        # from) and writes the sample onto that peer record each tick
+        # (SensorConfig-tunable interval). Emits system.replica_lag_unsafe →
+        # system.observation when the sample is one the executor would
+        # refuse on (over bound, or not streaming).
+        ::System::Fleet::Sensors::ReplicaLagSensor
       ].freeze
 
       # Scoped to THIS account. The fleet agents are seeded global (account_id

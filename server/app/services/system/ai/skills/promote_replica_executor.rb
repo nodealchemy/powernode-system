@@ -81,33 +81,26 @@ module System
         # PolicyDeclarations entry and Ai::AutonomyGate must all resolve the
         # SAME spelling.
         #
-        # OUTSTANDING (IMP-93b83b5c82d8) — this category is NOT yet declared
-        # in System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES,
-        # and that file was owned by a concurrent change when this shipped.
-        # The runtime direction is fail-safe — Ai::InterventionPolicyService
-        # #default_policy is require_approval, so an unrowed category gates
-        # rather than proceeds — but System::Autonomy::ActionCategoryRouter
-        # reports the lane as MISCONFIGURED (a gate-required executor is in the
-        # routed set), and FleetAutonomyService#gate_action! blocks it with
-        # GATE_POLICY_MISSING rather than parking a card an operator can see.
+        # DECLARED since IMP-93b83b5c82d8 (commit 1df6f589), NOT by APO-6b:
+        # the category has its row in
+        # System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES —
         #
-        # THE FIX IS TWO EDITS, not one line — do not land only the first:
+        #     "system.replica_promote"         => "require_approval",
         #
-        #   1. add to FLEET_AUTONOMY_POLICIES, next to system.instance_replace /
-        #      system.instance_reap, which this lane is the DR sibling of:
+        # next to system.instance_replace / system.instance_reap, which this
+        # lane is the DR sibling of — and docs/FLEET_SENSORS.md's
+        # "### Fleet Autonomy agent (N policies)" heading counts it, which is
+        # what spec/docs/reference_counts_spec.rb pins. So
+        # System::Autonomy::ActionCategoryRouter sees a declared routed lane
+        # and FleetAutonomyService#gate_action! parks an operator-visible card
+        # instead of failing GATE_POLICY_MISSING.
         #
-        #          "system.replica_promote"        => "require_approval",
-        #
-        #   2. bump the policy COUNT in the heading
-        #      docs/FLEET_SENSORS.md "### Fleet Autonomy agent (N policies)".
-        #      spec/docs/reference_counts_spec.rb pins that number against the
-        #      hash's key count, so edit (1) alone reds a THIRD spec.
-        #
-        # Until both land, two specs red on exactly this name —
-        # spec/services/system/fleet/routed_lane_policy_coherence_spec.rb and
-        # spec/lib/powernode_system/autonomy_categories_registration_spec.rb —
-        # and re-seeding fleet_autonomy_agent.rb is required on an
-        # already-running host (db:seed is first-boot-only).
+        # STILL OPERATIONALLY TRUE: a declaration is not a seeded row.
+        # Re-seeding fleet_autonomy_agent.rb is required on an already-running
+        # host — db:seed is first-boot-only, so a live fleet that predates the
+        # declaration has no intervention policy for this name and falls back
+        # to Ai::InterventionPolicyService#default_policy (require_approval,
+        # fail-safe, but no tunable row an operator can find).
         ACTION_CATEGORY = "system.replica_promote"
 
         # Event kind prefix — one kind per step, all carrying the payload's
@@ -116,21 +109,22 @@ module System
         EVENT_PREFIX = "system.replica_promote"
 
         # The replication record ClusterMemberPgReplicaSetupService stamps onto
-        # the cluster_member peer, and the two keys inside it a lag sampler
-        # must maintain.
+        # the cluster_member peer, and the two keys inside it the lag sampler
+        # maintains.
         #
-        # NO SAMPLER EXISTS YET, and that is a shipped fact, not a hedge:
-        #   command grep -rniE "replication_lag_bytes|lag_sampled_at|\
-        #     pg_last_wal|replay_lag|pg_current_wal" --include=*.rb \
-        #     --include=*.go --include=*.yaml --include=*.ts --include=*.tsx \
-        #     server worker extensions frontend | wc -l
-        # returns nothing outside this class and its spec (2026-09-02). So the
-        # AUTO arm of the operator ruling is INERT as shipped: with no sample,
-        # #lag_refusal refuses, and the only reachable path is an operator
-        # passing accept_data_loss: true. That is a refusal rather than a false
-        # success, but it means DR-3 lands WAIVER-ONLY until a sampler writes
-        # these two keys (a periodic read of pg_stat_replication on the
-        # primary; System::Fleet::ReplicaReconciler is its natural home).
+        # THE SAMPLER is System::Fleet::Sensors::ReplicaLagSensor
+        # (IMP-5b38cd356010, APO-6b), on the Fleet Autonomy tick: it reads
+        # pg_stat_replication on the platform's own connection — the primary
+        # every cluster_member child streams from, the same connection
+        # PgReplicaSetupService created the slot on — and writes these two
+        # keys onto the peer at a SensorConfig-tunable interval (default 60s,
+        # inside the DEFAULT_LAG_SAMPLE_MAX_AGE window below). When this class
+        # first shipped nothing wrote them, so #lag_refusal refused every real
+        # promote and DR-3 was waiver-only; with the sampler in the tick the
+        # AUTO arm of the operator ruling is reachable. The sampler never
+        # writes a sample it did not take (a replica that is not streaming
+        # leaves the last sample to age out), which is what makes the
+        # absence-and-staleness-are-refusals rule below safe.
         CLUSTER_PG_KEY  = "cluster_pg"
 
         # System::SpawnPlatformService's record of WHICH NodeInstance the
@@ -397,10 +391,22 @@ module System
           "promote anyway and accept the unreplicated writes."
         end
 
-        # THE PEER ↔ CLUSTER LINK. System::ClusterMember::PgReplicaSetupService
-        # is the only writer of `cluster_pg` and it refuses any peer whose
-        # spawn_role is not "parent", so a peer with another role cannot be
-        # carrying a legitimate lag sample no matter what its metadata says.
+        # THE PEER ↔ CLUSTER LINK. `cluster_pg` has THREE writers, and the role
+        # guard below holds because every one of them applies the same
+        # parent-only filter — not because any one of them is the sole writer:
+        #
+        #   * System::ClusterMember::PgReplicaSetupService CREATES the record
+        #     and refuses any peer whose spawn_role is not "parent";
+        #   * System::Fleet::Sensors::ReplicaLagSensor SAMPLES into it, and its
+        #     candidate scope is spawn_mode "cluster_member" AND spawn_role
+        #     "parent" (replica_lag_sensor.rb #candidates);
+        #   * #stamp_promotion! below STAMPS it, only after this very guard.
+        #
+        # So a peer with another role cannot be carrying a legitimate lag
+        # sample no matter what its metadata says. THAT INVARIANT IS THE
+        # SENSOR'S FILTER AS MUCH AS THE SETUP SERVICE'S: widening either
+        # population to a non-parent peer falsifies this guard's premise and
+        # the refusal text it prints, so widen neither without revisiting both.
         # System::SpawnPlatformService stamps `metadata.node_instance_id` with
         # the spawned CHILD's NodeInstance — the replica — so that key is the
         # peer's statement of which host it describes.
@@ -419,9 +425,11 @@ module System
 
           unless peer.spawn_role.to_s == "parent"
             return "Refusing to promote: peer #{peer.id} has spawn_role " \
-                   "#{peer.spawn_role.inspect}, and System::ClusterMember::PgReplicaSetupService — " \
-                   "the only writer of #{CLUSTER_PG_KEY} — only ever prepares a \"parent\" peer. " \
-                   "This peer cannot be carrying this cluster's replication record."
+                   "#{peer.spawn_role.inspect}, and every writer of #{CLUSTER_PG_KEY} — " \
+                   "System::ClusterMember::PgReplicaSetupService, which prepares it, and " \
+                   "System::Fleet::Sensors::ReplicaLagSensor, which samples into it — only ever " \
+                   "touches a \"parent\" peer. This peer cannot be carrying this cluster's " \
+                   "replication record."
           end
 
           declared = peer.metadata.is_a?(Hash) ? peer.metadata[PEER_INSTANCE_KEY].to_s : ""

@@ -793,6 +793,22 @@ module System
           skill: nil,
           action_category: "system.capability_gap_review",
           advisory: true
+        },
+        # IMP-5b38cd356010 (APO-6b) — ReplicaLagSensor. The sample it just
+        # wrote onto the cluster_member peer is one PromoteReplicaExecutor's
+        # data-loss gate would REFUSE on (over the DB-resolved bound, or the
+        # replica is not streaming at all), so the cluster has silently lost
+        # its usable failover target. No applier, by design: the safe answers
+        # to a lagging replica are "wait" and "look at the primary's write
+        # load", both a person's, and a promote is only ever an answer to a
+        # DEAD primary. Observation-level; the payload stamps
+        # federation_peer_id (never module_id), so the consent budget is not
+        # in play and `advisory` would be inert here. A dedicated notify-level
+        # category needs a PolicyDeclarations entry and is the recorded
+        # follow-up.
+        "system.replica_lag_unsafe" => {
+          skill: nil,
+          action_category: "system.observation"
         }
       }.freeze
 
