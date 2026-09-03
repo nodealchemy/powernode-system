@@ -28,6 +28,20 @@ function statusVariant(status: string): 'success' | 'danger' | 'warning' | 'seco
   }
 }
 
+// The sync_now failure envelopes, in the operator's words rather than axios'.
+// 409 `standby_control_plane` means this plane is not elected to reconcile
+// (nothing was attempted); 422 carries the reconcile's own reason in `error`.
+function syncErrorMessage(e: unknown, repoName: string): string {
+  const body = (e as { response?: { data?: { error?: string; code?: string } } })?.response?.data;
+  if (body?.code === 'standby_control_plane') {
+    return `Cannot reconcile "${repoName}" — this control plane is on standby and did not run`;
+  }
+  if (body?.error) {
+    return `Reconcile of "${repoName}" failed — ${body.error}`;
+  }
+  return e instanceof Error ? e.message : 'Sync failed';
+}
+
 export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
@@ -88,27 +102,40 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
     return () => onActionsReady?.(null);
   }, [onActionsReady]);
 
+  // SWEEP-2026-09-03 — the sync_now REST contract changed underneath this
+  // handler: a FAILED reconcile is now 422 (the reason in `error`, the run
+  // under `details.sync_run`) and a standby control plane is 409
+  // `standby_control_plane` with NO run minted, so `syncNow` REJECTS on both.
+  // A resolved promise therefore always means ok, and the old
+  // `result.ok === false` warning branch is unreachable. The failure path has
+  // to read the server's own reason out of the rejection — otherwise the
+  // operator sees axios' "Request failed with status code 422" and never
+  // learns why — and a failed reconcile still minted a run, so the list and
+  // the cached run history are refreshed on both paths.
   const handleSyncNow = useCallback(async (repo: SystemGitopsRepository) => {
     setSyncingId(repo.id);
-    try {
-      const result = await gitopsApi.syncNow(repo.id);
-      addNotification({
-        type: result.ok ? 'success' : 'warning',
-        message: result.ok
-          ? `Reconciled "${repo.name}" — ${result.diff_count} diff(s), ${result.proposal_ids.length} proposal(s)`
-          : `Reconcile of "${repo.name}" completed with errors`,
-      });
+    // Invalidates cached sync-run history so an expanded row reflects the tick
+    // (refetch now if open, else on next expand).
+    const refreshAfterTick = () => {
       void refresh();
-      // The just-fired tick added a new sync run — invalidate cached history so
-      // an expanded row reflects it (refetch now if open, else on next expand).
       setSyncRuns(prev => {
         const next = { ...prev };
         delete next[repo.id];
         return next;
       });
       if (expandedIds.has(repo.id)) void loadSyncRuns(repo.id);
+    };
+
+    try {
+      const result = await gitopsApi.syncNow(repo.id);
+      addNotification({
+        type: 'success',
+        message: `Reconciled "${repo.name}" — ${result.diff_count} diff(s), ${result.proposal_ids.length} proposal(s)`,
+      });
+      refreshAfterTick();
     } catch (e) {
-      addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Sync failed' });
+      addNotification({ type: 'error', message: syncErrorMessage(e, repo.name) });
+      refreshAfterTick();
     } finally {
       setSyncingId(null);
     }

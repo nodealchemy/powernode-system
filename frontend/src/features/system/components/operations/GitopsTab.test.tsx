@@ -148,13 +148,6 @@ const SYNC_RESULT_OK: SystemGitopsSyncResult = {
   proposal_ids: ['prop-1', 'prop-2'],
 };
 
-const SYNC_RESULT_WARN: SystemGitopsSyncResult = {
-  sync_run: { ...SYNC_RUN_1, status: 'partial' },
-  ok: false,
-  diff_count: 1,
-  proposal_ids: [],
-};
-
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -455,19 +448,66 @@ describe('GitopsTab', () => {
     );
   });
 
-  it('shows a warning notification when sync completes with errors (ok=false)', async () => {
+  // SWEEP-2026-09-03 — a failed reconcile no longer resolves with ok=false;
+  // the route answers 422 with the reason in `error`, so syncNow REJECTS and
+  // the operator must be shown the SERVER's reason, not axios' status line.
+  it('surfaces the server reason when a reconcile fails (422)', async () => {
     mockGitopsApiList.mockResolvedValue(listEnvelope([REPO_A]));
-    mockGitopsApiSyncNow.mockResolvedValue(SYNC_RESULT_WARN);
+    mockGitopsApiSyncNow.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 422'), {
+        response: { status: 422, data: { success: false, error: 'clone failed: authentication required' } },
+      }),
+    );
     renderTab();
 
     fireEvent.click(await waitFor(() => screen.getByTitle('Sync now')));
 
     await waitFor(() =>
       expect(mockAddNotification).toHaveBeenCalledWith({
-        type: 'warning',
-        message: 'Reconcile of "fleet-desired-state" completed with errors',
+        type: 'error',
+        message: 'Reconcile of "fleet-desired-state" failed — clone failed: authentication required',
       }),
     );
+  });
+
+  // 409 standby_control_plane — nothing was attempted, and the message has to
+  // say so rather than reading as a reconcile that went wrong.
+  it('names a standby control plane rather than reporting a failed reconcile (409)', async () => {
+    mockGitopsApiList.mockResolvedValue(listEnvelope([REPO_A]));
+    mockGitopsApiSyncNow.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 409'), {
+        response: {
+          status: 409,
+          data: { success: false, error: 'standby control plane', code: 'standby_control_plane' },
+        },
+      }),
+    );
+    renderTab();
+
+    fireEvent.click(await waitFor(() => screen.getByTitle('Sync now')));
+
+    await waitFor(() =>
+      expect(mockAddNotification).toHaveBeenCalledWith({
+        type: 'error',
+        message: 'Cannot reconcile "fleet-desired-state" — this control plane is on standby and did not run',
+      }),
+    );
+  });
+
+  // A failed reconcile still minted a run, so the list refresh must happen on
+  // the failure path too — it used to run only after a resolved promise.
+  it('refreshes the repository list after a FAILED sync', async () => {
+    mockGitopsApiList.mockResolvedValue(listEnvelope([REPO_A]));
+    mockGitopsApiSyncNow.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 422'), {
+        response: { status: 422, data: { success: false, error: 'clone failed' } },
+      }),
+    );
+    renderTab();
+
+    fireEvent.click(await waitFor(() => screen.getByTitle('Sync now')));
+
+    await waitFor(() => expect(mockGitopsApiList).toHaveBeenCalledTimes(2));
   });
 
   it('shows an error notification when sync throws', async () => {
