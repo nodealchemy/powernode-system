@@ -83,7 +83,7 @@ listed in [Pass 1](#pass-1--single-node-qemu).
 | `smoke_test_disk_image_build_to_publication.rb` | 8 | P2.15c | Disk-image CI webhook round-trip: HMAC-signed POST → DiskImagePublication upserted with matching git_sha + sha256; bad-sig correctly rejected with 200 status=error | no |
 | `smoke_test_flannel_over_sdwan.rb` | 8 | K3s overlay | Sdwan::Network pod_subnet_prefix + flannel cluster bootstrap → cluster.metadata["pod_cidr"] stamped + SubnetAdvertisement(source: "pod_subnet") created + bootstrap_config returns flannel_iface/flannel_backend=host-gw/cluster_cidr | no |
 | `smoke_test_k3s_site_bootstrap.rb` | 9 | K3s lifecycle ph.1 | SDWAN network + pod_subnet_prefix + k3s-server bootstrap + VIP + SubnetAdvertisement; site-parameterizable via `SMOKE_K3S_SITE=a\|b` | site+ (db tier: synth) |
-| `smoke_test_k3s_ha_control_plane.rb` | 9 | K3s lifecycle ph.2 | 3-server HA cluster + VIP failover candidates + synthetic `VirtualIp#failover!` | site+ (db tier: synth) |
+| `smoke_test_k3s_ha_control_plane.rb` | 9 | K3s lifecycle ph.2 | Synthetic 3-server VIP-failover drill: `register_node_join!(role: "server")` called directly at the service layer + `VirtualIp#failover!`. **An HA control plane is NOT IMPLEMENTED** (a second `k3s-server` bootstraps a separate cluster — [`runbooks/multi-cluster-k3s.md`](./runbooks/multi-cluster-k3s.md) Phase 4); a green run evidences `VirtualIp` bookkeeping only, and the site+ `node_count >= 3` wait cannot be met | site+ (db tier: synth) |
 | `smoke_test_k3s_agent_join.rb` | 9 | K3s lifecycle ph.3 | 2 k3s-agents join via target_cluster_id + CniProfileMismatch negative test. **At the default db tier the drill passes `target_cluster_id` into `join_request!` at the service layer (`smoke_test_k3s_agent_join.rb:100`), bypassing the agent** — a green run evidences the wired platform half only, not the operator path, which is [NOT IMPLEMENTED](./USE_CASE_MATRIX.md#use-case-3--multi-cluster-k3s--not-implemented) | site+ (db tier: synth) |
 | `smoke_test_k3s_pod_plane.rb` | 9 | K3s lifecycle ph.4 | runtime bootstrap_config payload + (site+) nginx deploy + tcpdump on wg-sdwan-* | site+ (db tier: contract only) |
 | `smoke_test_k3s_federation.rb` | 9 | K3s lifecycle ph.5 | System::FederationPeer propose/accept incl. the single-use acceptance-token round-trip (Site A ↔ Site B) + cross-site API plane | full (below full: skip-clean) |
@@ -392,7 +392,7 @@ operator-visible APIs evolve.
 ## Pass 9 — K3s full-lifecycle smoke
 
 Tier-gated end-to-end smoke that exercises the full K3s + SDWAN capability
-surface: bootstrap, HA control plane with VIP failover, agent join,
+surface: bootstrap, a synthetic VIP-failover drill (no HA control plane exists — see the Pass 9 table note), agent join,
 flannel-over-SDWAN pod plane, cross-site federation, rolling module
 upgrade, CVE drill, and drain + reprovision. Operates in operator-driven
 mode at db tier (no VMs, ~5 min) and agent-driven mode at single+ tiers

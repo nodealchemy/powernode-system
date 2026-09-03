@@ -62,7 +62,7 @@ all `wait_until` timeouts accordingly.
 |---|---|---|---|
 | `db` (default) | ~5 min | ~0 GB VM RAM | Operator-driven flow: state machines, executors, plan generation, instrumentation |
 | `single` | ~15 min | ~4 GB | + Real LocalQemu boot + agent enrollment + on-VM k3s install |
-| `site` | ~45 min | ~12 GB | + HA control plane + 2 agents + kubectl + tcpdump on wg-sdwan-* |
+| `site` | ~45 min | ~12 GB | + synthetic VIP-failover drill (no HA control plane exists — see Phase 2) + 2 agents + kubectl + tcpdump on wg-sdwan-* |
 | `full` | ~90 min | ~24 GB | + Site B mirror + cross-site federation |
 
 Each tier is a superset of the prior. Set `SMOKE_K3S_LEVEL=<tier>`; lower
@@ -142,7 +142,7 @@ sourced from `pod_subnet`.
 **Validates:** flannel-over-SDWAN feature wiring + slice 3 VIP allocation +
 pod_subnet_prefix → SubnetAdvertisement chain.
 
-#### Phase 2 — HA control plane
+#### Phase 2 — VIP-failover drill (synthetic; there is no HA control plane)
 
 ```bash
 SMOKE_K3S_LEVEL=db SMOKE_K3S_SITE=a bundle exec rails runner \
@@ -153,8 +153,17 @@ Adds 2 more k3s-server NodeInstances, registers them via
 `register_node_join!(role: "server")`, and verifies the VIP's
 `failover_holder_peer_ids` list grows to 2. Triggers a synthetic VIP
 failover via `Sdwan::VirtualIp#failover!(reason: "manual_failover")` and
-asserts the primary holder changes to one of the HA peers, with the old
+asserts the primary holder changes to one of the added peers, with the old
 primary moving to the failover list.
+
+> **Not a capability proof.** An HA control plane (Phase 4) is NOT
+> IMPLEMENTED — a second `k3s-server` bootstraps a *separate* cluster and
+> never joins the first (see [`multi-cluster-k3s.md`](./multi-cluster-k3s.md)).
+> At the db tier this drill calls `register_node_join!` directly, synthesizing
+> a server join the platform never performs, so what it asserts is
+> `Sdwan::VirtualIp`'s failover *bookkeeping*, not a K3s property. At site+
+> tiers its `node_count >= 3` wait cannot be met. Read a green db-tier run as
+> "VIP holder rows flip", nothing more.
 
 > **Honest expectation:** the smoke asserts the failover *bookkeeping*
 > (holder rows flip) — it does **not** measure the wall-clock convergence

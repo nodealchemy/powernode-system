@@ -507,7 +507,9 @@ security:
 
 ### Example 4 — K3s server module
 
-A cluster-control-plane module that exposes the K8s API. (`k3s-server` bootstraps its own cluster and never issues a `join_request`, so `target_cluster_id` does not apply to it — an HA server still registers against a cluster on `phase=ready`, but only the one it bootstrapped. On `k3s-agent` workers the field is [NOT IMPLEMENTED](./CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--not-implemented) on the agent side.)
+A cluster-control-plane module that exposes the K8s API. (`k3s-server` bootstraps its own cluster and never issues a `join_request`, so `target_cluster_id` does not apply to it — every server registers on `phase=ready` against the one cluster it bootstrapped; there is no HA control plane for a second server to join. On `k3s-agent` workers the field is [NOT IMPLEMENTED](./CONTAINER_RUNTIMES.md#multi-cluster-routing-via-target_cluster_id--not-implemented) on the agent side.)
+
+> **This is an example, not the shipped module.** The manifest below starts k3s with `--cluster-init` (embedded etcd), so its description is true *of this example*. The shipped `k3s-server` module (`server/db/seeds/k3s_modules.rb`) runs **without** `--cluster-init` on the SQLite datastore and never forms an HA control plane — copy this example verbatim and you get a different module from the one the platform seeds (see [`runbooks/multi-cluster-k3s.md`](./runbooks/multi-cluster-k3s.md), Phase 4).
 
 ```yaml
 schema_version: 1

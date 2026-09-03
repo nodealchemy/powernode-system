@@ -162,7 +162,7 @@ See [`docs/runbooks/README.md`](./docs/runbooks/README.md) for the full index wi
 | [`docs/runbooks/acme-issuance.md`](./docs/runbooks/acme-issuance.md) | ACME DNS-01 cert lifecycle: provider setup, issue, renew, revoke, endpoint failover |
 | [`docs/runbooks/acme-smoke.md`](./docs/runbooks/acme-smoke.md) | P2.5.7 acceptance smoke test (6 scenarios) |
 | [`docs/runbooks/instance-pool-tuning.md`](./docs/runbooks/instance-pool-tuning.md) | Pool sizing, reaping, draining, troubleshooting |
-| [`docs/runbooks/multi-cluster-k3s.md`](./docs/runbooks/multi-cluster-k3s.md) | Multi-cluster K3s with `target_cluster_id` + HA control plane |
+| [`docs/runbooks/multi-cluster-k3s.md`](./docs/runbooks/multi-cluster-k3s.md) | Multi-cluster K3s with `target_cluster_id` (an HA control plane is NOT IMPLEMENTED — see the runbook banner) |
 | [`docs/runbooks/disk-image-ci.md`](./docs/runbooks/disk-image-ci.md) | Disk image build + signing + publication operator workflow |
 | [`docs/runbooks/federation-setup.md`](./docs/runbooks/federation-setup.md) | Multi-region / multi-account federation peering |
 | [`docs/runbooks/federation-troubleshooting.md`](./docs/runbooks/federation-troubleshooting.md) | Diagnosing federation peering failures |
@@ -253,9 +253,11 @@ viewer in active sweep).
 
 ### Recent shipments (May 2026)
 
-- **Slice 3** — first-class `Sdwan::VirtualIp` with cluster `api_endpoint`
-  VIP failover (bootstrap-node loss → automatic VIP failover to next
-  `k3s-server` holder; kubectl + worker `K3S_URL` survive the transition)
+- **Slice 3** — first-class `Sdwan::VirtualIp` (primary + failover holders)
+  backing the cluster `api_endpoint`. Failover between holders is real for
+  ordinary peers; for the API VIP there is no second `k3s-server` holder to
+  fail over to, because an HA control plane is NOT IMPLEMENTED (a second
+  server bootstraps a separate cluster — see `docs/runbooks/multi-cluster-k3s.md`)
 - **Slice 7** — pre-warmed `System::InstancePool` with atomic acquisition
   + reaper auto-replenishment; cuts ephemeral provisioning latency from
   5–10 min cold-boot to <30 s claim

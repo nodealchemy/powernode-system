@@ -2,7 +2,7 @@
 
 > Status: active
 
-System extension support for managed Docker daemons (Phase 1) and K3s Kubernetes clusters (Phase 2). Phase 3 will add kubeadm + HA control plane.
+System extension support for managed Docker daemons (Phase 1) and K3s Kubernetes clusters (Phase 2). kubeadm modules are NOT IMPLEMENTED (`server/db/seeds/k3s_modules.rb` and the runtime handshake still name a "Phase 3" for them), and an HA control plane is NOT IMPLEMENTED with K3s HA parked — a second `k3s-server` bootstraps a separate cluster rather than joining the first (see [`runbooks/multi-cluster-k3s.md`](./runbooks/multi-cluster-k3s.md), Phase 4).
 
 ## Architecture (one-paragraph summary)
 

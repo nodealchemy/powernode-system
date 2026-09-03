@@ -435,10 +435,13 @@ otherwise bootstraps normally.
   multiple clusters with per-tenant networks; `target_cluster_id` and
   cross-tenant trust boundaries.
 - **[`runbooks/multi-cluster-k3s.md`](../runbooks/multi-cluster-k3s.md)** —
-  patterns for production multi-cluster: HA control plane (≥3 servers),
-  zone-aware scheduling, kubeconfig distribution.
+  multi-cluster operator workflows: VIP-backed `api_endpoint`, kubeconfig
+  retrieval, cross-cluster patterns — and the banner stating that an HA
+  control plane (Phase 4) is NOT IMPLEMENTED: a second `k3s-server`
+  bootstraps a separate cluster, it does not join the first.
 - **[`CONTAINER_RUNTIMES.md`](../CONTAINER_RUNTIMES.md)** — Phase 2 K3s
-  full lifecycle reference + Phase 3 (kubeadm HA control plane) roadmap.
+  full lifecycle reference (kubeadm modules are not implemented, and an HA
+  control plane is not implemented with K3s HA parked).
 - **[`SMOKE_TEST.md`](../SMOKE_TEST.md) Pass 2** — `smoke_test_k3s_runtime.rb`
   and `smoke_test_ovn_k8s_cni.rb` exercise the same handshake at the
   platform layer without a live K3s install.

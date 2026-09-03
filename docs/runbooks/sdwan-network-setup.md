@@ -86,7 +86,7 @@ platform.system_sdwan_create_virtual_ip({
   network_id: "<network-id>",
   name: "k3s-api",
   primary_holder_peer_id: "<peer-id-of-k3s-server-bootstrap-node>",
-  failover_holder_peer_ids: ["<peer-id-of-k3s-server-2>", "<peer-id-of-k3s-server-3>"],
+  failover_holder_peer_ids: ["<peer-id-of-standby-holder-a>", "<peer-id-of-standby-holder-b>"],
   anycast: false                       // false = single-holder; true = anycast
 })
 // → { virtual_ip: { id, address: "fd00:abcd:1::100", primary_holder_peer_id, ... } }
@@ -108,7 +108,7 @@ platform.system_sdwan_failover_virtual_ip({
 // → { resolved: false, previous_holder: ..., new_holder: ..., dry_run: true }
 ```
 
-**Anti-pattern:** single-server K3s clusters cannot use VIP failover — slice 3 requires ≥2 servers. The VIP exists but failover is no-op when only one candidate remains.
+**Reality check for the cluster `api_endpoint` VIP:** every K3s cluster the platform bootstraps is single-server — an HA control plane (Phase 4) is NOT IMPLEMENTED, and a second `k3s-server` bootstraps a *separate* cluster rather than joining the first (see [`multi-cluster-k3s.md`](./multi-cluster-k3s.md)). So there is no second `k3s-server` holder for the API VIP to fail over to; failover is a no-op when only one candidate remains. VIP failover is real for any VIP whose holders are ordinary peers (≥2 holders).
 
 ## Phase 4 — Port mappings (inbound traffic) ✅
 
