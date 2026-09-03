@@ -16,14 +16,6 @@ module System
     # .unconfirmed): the same task's migration resolved the pre-existing
     # keyword-only rows, and a `resolved` row still appears in
     # system_get_cve_exposure's per-module `states` breakdown.
-    #
-    # ONE reader does not honour the exclusion: System::Fleet::Sensors::
-    # PackageDriftSensor#cve_flagged? tests `CveExposure...exists?` with no
-    # state predicate at all, so any row — suspected or resolved — still
-    # raises a package-drift signal's severity. That is pre-existing (keyword
-    # rows were `open` before this change, and flagged then too) and left
-    # alone here; governance/policy_declarations.rb already describes it as
-    # reading "an open CveExposure", which it does not.
     STATES = %w[open suspected remediating resolved wont_fix].freeze
 
     # How the row was matched (ExposureCalculator stamps it):
@@ -54,8 +46,9 @@ module System
     scope :remediating,  -> { where(state: "remediating") }
     scope :resolved,     -> { where(state: "resolved") }
     # Deliberately NOT including `suspected`: this is the scope the autonomy
-    # lanes read (CriticalUpgradeAvailableSensor, the orchestrator's
-    # transition), and a suspicion is not theirs to act on.
+    # lanes read (CriticalUpgradeAvailableSensor, Fleet's PackageDriftSensor
+    # severity boost, the orchestrator's transition), and a suspicion is not
+    # theirs to act on.
     scope :unresolved,   -> { where(state: %w[open remediating]) }
 
     # Evidence, not state. `unconfirmed` is the set the exposure counts leave
