@@ -111,12 +111,18 @@ require "rails_helper"
 #     Prior drift filed separately and still open: 02-first-module.md and
 #     module-authoring.md both document version fields the serializer does not
 #     emit.
-#   * Whether the values are MEANINGFUL. Since IMP-389daefb3ab4 a value's
-#     SHAPE is checked against the declared type — an object where a scalar is
-#     declared is the "nested it under an extra key" mistake — but nothing
-#     reads the value itself, and the keys INSIDE an object literal are still
-#     unchecked, because no tool declares a nested schema to check them
-#     against. See shape_mismatches.
+#   * Whether the values are MEANINGFUL, in the sense of naming things that
+#     exist. Since IMP-389daefb3ab4 a value's SHAPE is checked against the
+#     declared type — an object where a scalar is declared is the "nested it
+#     under an extra key" mistake (shape_mismatches) — and since
+#     IMP-369a059ad631 the value itself is checked wherever the DECLARATION
+#     constrains it: a closed `enum`, the keys of a nested `properties`, the
+#     type and enum of an array's `items` (schema_violations). What stays
+#     unchecked is everything the declaration leaves open — a free-text
+#     `name:`, an id placeholder, and the inner grammar of the 161 parameters
+#     that declare `type: "object"` with no nested schema at all (re-swept
+#     2026-09-03; see top_level_entries for the parse and the seven that now
+#     do declare one).
 #   * Prose mentions of a verb with no call site, and — for the PARAMETER
 #     checks only — docs outside COVERED_DOCS/COVERED_CALLS. Verb EXISTENCE is
 #     swept tree-wide and ungated; see the sweep at the bottom of this file for
@@ -587,7 +593,8 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
 
   # Extract `platform.<verb>({ ... })` calls, returning
   # [verb, top_level_entries, line_number, elides_arguments?, commented_out?],
-  # where top_level_entries is [[key, value_shape], ...].
+  # where top_level_entries is [[key, value_shape, value_literal], ...] (the
+  # literal is nil for an elided or shorthand value).
   # Brace/bracket depth aware, string aware, and skips `//`
   # comments INSIDE an argument literal, so a nested `options: { ... }`
   # contributes only `options` and a `// → { ... }` response comment is not
@@ -749,7 +756,10 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   end
 
   # The same scan, keeping each key's VALUE SHAPE — :object, :array, :scalar,
-  # :elided (the value is `...`) or :shorthand (no `:` at all).
+  # :elided (the value is `...`) or :shorthand (no `:` at all) — and, since
+  # IMP-369a059ad631, the value LITERAL beside it, for the declared-schema
+  # family. Entries are therefore [key, shape, literal]; the two families that
+  # predate the literal destructure the first two and ignore it.
   #
   # The keys alone were all this parser kept (IMP-389daefb3ab4), so a doc could
   # write an object where the tool declares a string and nothing looked: the
@@ -757,32 +767,48 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   # never examined. Measured before this: nesting the REQUIRED node_platform_id
   # inside an object in template-authoring.md left the suite at 0 failures.
   #
-  # Shape is as far as it goes, and the limit is not laziness. Checking nested
-  # KEYS needs a nested declaration to check them against, and none exists.
-  # Swept 2026-08-31 across every tool directory INCLUDING extensions/private:
-  # 172 parameters declare `type: "object"`, and not one of them carries a
-  # nested `properties:` — `object` is where every object declaration stops,
-  # with the inner grammar (fleet_spec, reuse_check, recommends_override,
-  # config) written only in the parameter's English description.
+  # Shape WAS as far as it went, and the limit was not laziness: checking
+  # nested KEYS needs a nested declaration to check them against. Swept
+  # 2026-08-31 across every tool directory INCLUDING extensions/private, 172
+  # parameters declared `type: "object"` and not one carried a nested
+  # `properties:` — `object` was where every object declaration stopped, with
+  # the inner grammar (fleet_spec, reuse_check, recommends_override, config)
+  # written only in the parameter's English description.
   #
-  # The census is the weaker argument, though, and it is not absolute: nested
-  # schemas are not wholly absent from the tree — trading_simulation_tool.rb
-  # declares `items: { type: "string" }` on two ARRAY parameters, which is an
-  # element type, not an object's keys, and so is no oracle for the
-  # `config:`/`metadata:` nesting this finding is about.
+  # BOTH halves of that argument expired on 2026-09-02, and the second half is
+  # why this one is not a hypothetical widening:
   #
-  # The structural argument this check was built on has EXPIRED: until
-  # IMP-e809396f9eda (2026-09-02) MCP's schema synthesizer emitted only
-  # `{"type", "description"}` per parameter, so a nested schema could never
-  # reach the wire and a per-key nested check had nothing to compare against.
-  # The synthesizer now carries `enum`, `items`, `default` and nested
-  # `properties` through Ai::Tools::ParameterSchema (parameter_schema.rb,
-  # called from mcp_platform_tool_registrar.rb#convert_to_json_schema and the
-  # streamable-HTTP controller). So this top-level-only check is now the
-  # WEAKER of the two possible oracles; widening it to nested keys is filed
-  # as a follow-up (campaign-apo, "widen call-signature check to nested
-  # schema keys") rather than done here, because that widening changes what
-  # every covered doc is held to and deserves its own red-first run.
+  #   * IMP-e809396f9eda (core fbae03c80) made Ai::Tools::ParameterSchema
+  #     carry `enum`, `items`, `default` and nested `properties` onto the
+  #     wire, so a nested declaration now REACHES the client whose view a doc
+  #     example is judged against.
+  #   * IMP-40548751c199 (8fc46991) wrote the first nested declarations in the
+  #     tree. sdwan_tool.rb now carries `properties:` on seven object
+  #     parameters: src_selector/dst_selector in the tool-level `definition`
+  #     bag (:309, :311), on system_sdwan_create_firewall_rule (:419, :422)
+  #     and on system_sdwan_update_firewall_rule (:441, :444), plus public_dns
+  #     on system_service_discovery_compose (:617), whose record_type carries
+  #     a nested enum. Those are what the nested arm of schema_violations runs
+  #     against on real declarations — 05-multi-cluster-k3s.md's two firewall
+  #     examples reach the selector pair.
+  #
+  # Re-swept 2026-09-03 with a balanced-brace parse of the declaration sites
+  # (not a token grep), over the same three tool directories: 172 object-typed
+  # sites still, of which those 7 are parameters with a nested schema, 4 are
+  # the tool-level `parameters: { type: "object", properties: {} }` envelope,
+  # and 161 are parameters that still declare nothing to look with.
+  #
+  # IMP-369a059ad631 closed the gap the passthrough opened: the third element
+  # of each entry is the value as WRITTEN, and schema_violations checks it
+  # against the schema an operator's client receives. What is scoped where:
+  # this method still reads only the TOP-LEVEL key set, which is what the
+  # unknown-key and required-parameter families consume and what the
+  # paragraphs above describe; nested keys are reached from the literal,
+  # against a nested declaration, and only where one exists.
+  #
+  # So the census above is no longer the reason nothing looks inside an object
+  # — it is now the measure of how much of the tree still declares nothing to
+  # look with.
   def self.top_level_entries(body)
     keys = []
     depth = 0
@@ -807,7 +833,8 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
         at_key_position = true
       elsif depth.zero? && at_key_position && ch.match?(/[A-Za-z_]/)
         ident = body[i..].match(/\A[A-Za-z_][A-Za-z0-9_]*/)[0]
-        keys << [ ident, value_shape(body, i + ident.length) ]
+        after = i + ident.length
+        keys << [ ident, value_shape(body, after), value_literal(body, after) ]
         at_key_position = false
         i += ident.length
         next
@@ -831,9 +858,26 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   # as :elided on the leading dot — a misnomer, and harmless, because both are
   # skipped by shape_mismatches.
   def self.value_shape(body, after_ident)
+    i = value_start(body, after_ident)
+    return :shorthand if i.nil?
+
+    case body[i]
+    when "{" then :object
+    when "[" then :array
+    when "." then :elided
+    when nil then :shorthand
+    else :scalar
+    end
+  end
+
+  # Index of the first character of the value, or nil when there is no `:` —
+  # shared by value_shape and value_literal so the two cannot disagree about
+  # where a value starts. May return body.length, which both read as "nothing
+  # to look at".
+  def self.value_start(body, after_ident)
     i = after_ident
     i += 1 while i < body.length && body[i].match?(/\s/)
-    return :shorthand unless body[i] == ":"
+    return nil unless body[i] == ":"
 
     i += 1
     loop do
@@ -842,13 +886,45 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
 
       i = body.index("\n", i) || body.length
     end
+    i
+  end
+
+  # The value as WRITTEN, for the declared-schema family: the text strictly
+  # inside the braces for an object or array literal, the trimmed token for a
+  # scalar, nil where value_shape says :shorthand or :elided.
+  #
+  # Object and array literals are read through scan_balanced — the same walker
+  # extract_calls uses on the argument list — so a nested literal is stepped
+  # over whole and a truncated one yields nil rather than a stitched-together
+  # body. A scalar ends at the first top-level `,` or `//`, which is where the
+  # next key or a trailing comment begins.
+  def self.value_literal(body, after_ident)
+    i = value_start(body, after_ident)
+    return nil if i.nil? || i >= body.length
+
     case body[i]
-    when "{" then :object
-    when "[" then :array
-    when "." then :elided
-    when nil then :shorthand
-    else :scalar
+    when "{", "[" then scan_balanced(body, i)
+    when "." then nil
+    else scalar_literal(body, i)
     end
+  end
+
+  def self.scalar_literal(body, start)
+    i = start
+    in_string = nil
+    while i < body.length
+      ch = body[i]
+      if in_string
+        i += 2 and next if ch == "\\"
+        in_string = nil if ch == in_string
+      elsif ch == '"' || ch == "'" || ch == "`"
+        in_string = ch
+      elsif ch == "," || (ch == "/" && body[i + 1] == "/")
+        break
+      end
+      i += 1
+    end
+    body[start...i].strip
   end
 
   # True when the example deliberately ELIDES arguments: a bare `...`, or a `//`
@@ -994,6 +1070,264 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
     end
   end
 
+  # verb => { name => the full JSON Schema property }, which is the object an
+  # operator's MCP client actually receives — built through core's
+  # Ai::Tools::ParameterSchema (parameter_schema.rb), the seam
+  # McpPlatformToolRegistrar#convert_to_json_schema and the streamable-HTTP
+  # controller both emit through.
+  #
+  # Deliberately NOT a third hand-rolled read of the declaration beside
+  # declared_parameters and declared_types. Those two answer questions the
+  # authoring DSL states directly ("required?", "what type?"). This one needs
+  # the CONVERTED shape — `items` defaulted for a bare array, a nested
+  # `required:` ARRAY carried through while the per-parameter required FLAG is
+  # hoisted away — and re-deriving that here would be a fourth copy of exactly
+  # the conversion that seam exists to unify, free to drift from the wire the
+  # way the two copies before it did. The per-site example pins this resolver's
+  # parameter set against declared_parameters', so the three cannot disagree in
+  # silence.
+  def self.declared_property_schemas(verb)
+    schemas_from_tool_registry(verb) || schemas_from_introspection_registry(verb)
+  end
+
+  def self.schemas_from_tool_registry(verb)
+    klass_name = Ai::Tools::PlatformApiToolRegistry::TOOLS[verb]
+    return nil if klass_name.nil?
+
+    definition = klass_name.constantize.action_definitions[verb]
+    return nil if definition.nil?
+
+    Ai::Tools::ParameterSchema.build(definition[:parameters])["properties"]
+  end
+
+  def self.schemas_from_introspection_registry(verb)
+    tool = Ai::Introspection::McpToolRegistrar::INTROSPECTION_TOOLS
+           .find { |t| t[:id] == "platform.#{verb}" }
+    return nil if tool.nil?
+
+    Ai::Tools::ParameterSchema.build(tool[:input_schema] || {})["properties"]
+  end
+
+  # Documented values the DECLARED SCHEMA rejects (IMP-369a059ad631), as
+  # "<key>: ..." / "<key>.<nested> ..." strings. `prefix` is the path already
+  # walked, so a nested report names the whole path rather than a bare key.
+  #
+  # Says nothing about a key the tool does not declare (that is the
+  # unknown-key example's business, and reporting it here would double every
+  # such failure), nor about a value the doc did not write out.
+  def self.schema_violations(entries, schemas, prefix = "")
+    entries.flat_map do |key, shape, literal|
+      schema = schemas[key]
+      next [] unless schema.is_a?(Hash)
+      next [] if literal.nil? || shape == :elided || shape == :shorthand
+
+      property_violations("#{prefix}#{key}", schema, shape, literal)
+    end
+  end
+
+  # One value against one property schema. Each arm is guarded by the keyword
+  # being DECLARED: an object with no nested `properties` and an array whose
+  # `items` say only "string" constrain nothing, and inventing a constraint
+  # there would flag every open-ended `config:`/`metadata:` in the tree.
+  def self.property_violations(label, schema, shape, literal)
+    case shape
+    when :scalar then enum_violations(label, schema["enum"], literal)
+    when :object then nested_key_violations(label, schema["properties"], literal)
+    when :array  then element_violations(label, schema["items"], literal)
+    else []
+    end
+  end
+
+  # A closed value set, checked only against a value the doc actually WROTE:
+  # a quoted string literal that is not a placeholder. Everything else is
+  # skipped, and the skips are the point —
+  #
+  #   * `"<version-id>"` and friends are how these runbooks write "your value
+  #     here". Flagging one would tell the author of a correct example to paste
+  #     a live id into a doc, which is the opposite of what it is for.
+  #   * a bare identifier is a JS variable the surrounding prose defines, not a
+  #     literal the doc asserts, so there is nothing to compare to the set.
+  def self.enum_violations(label, enum, literal)
+    return [] if enum.blank?
+
+    value = quoted_string(literal)
+    return [] if value.nil? || placeholder?(value)
+
+    allowed = Array(enum).map(&:to_s)
+    return [] if allowed.include?(value)
+
+    [ "#{label}: #{value.inspect} is not one of #{allowed.inspect}" ]
+  end
+
+  # The string a literal spells, or nil when it is not a plain string literal.
+  # A second quote of the same kind inside the match means the "literal" is an
+  # expression (`"a" + b + "c"`), which asserts nothing checkable.
+  def self.quoted_string(literal)
+    match = literal.match(/\A(["'`])(.*)\1\z/m)
+    return nil if match.nil? || match[2].include?(match[1])
+
+    match[2]
+  end
+
+  # "your value here", in the three spellings these docs use.
+  def self.placeholder?(value)
+    value.empty? || value.include?("<") || value.include?("...") || value.include?("${")
+  end
+
+  # Keys inside an object literal, against the nested schema — the check the
+  # top-level unknown-key example makes one level up. Recurses, so a closed
+  # value set declared on a nested key is reached too.
+  def self.nested_key_violations(label, properties, inner_body)
+    return [] unless nested_properties?(properties)
+
+    nested = top_level_entries(inner_body)
+    undeclared = nested.map(&:first) - properties.keys
+    undeclared.map { |key|
+      "#{label}.#{key} is not declared (declared: #{properties.keys.sort.inspect})"
+    } + schema_violations(nested, properties, "#{label}.")
+  end
+
+  # Array elements against `items`. The element TYPE is compared through
+  # shape_mismatches rather than a second rule of its own — the asymmetry it
+  # encodes (an array where a scalar is declared is accepted, because live
+  # parameters declare `string` and take an encoded array) is as true of an
+  # element as of a top-level value.
+  #
+  # `{"type" => "string"}` is skipped outright: that is exactly what
+  # ParameterSchema fills in for an array whose declaration said nothing about
+  # its elements (DEFAULT_ARRAY_ITEMS), and it is indistinguishable on the wire
+  # from a tool that wrote the same thing by hand. Enforcing it would report
+  # the first doc to put an object into an otherwise-undeclared array as
+  # violating a rule nobody authored — and would contradict constrained_keys,
+  # which applies the same test and refuses to count such a site as material.
+  # The two MUST agree: a site counted as having no oracle must not be a site
+  # this can fail.
+  def self.element_violations(label, items, inner_body)
+    return [] unless items.is_a?(Hash)
+    return [] if items == Ai::Tools::ParameterSchema::DEFAULT_ARRAY_ITEMS
+
+    elements = array_elements(inner_body)
+    labelled = elements.each_with_index.map { |(shape, _literal), index| [ "#{label}[#{index}]", shape ] }
+    declared = labelled.to_h { |name, _shape| [ name, items["type"].to_s ] }
+
+    shape_mismatches(labelled, declared) +
+      elements.each_with_index.flat_map { |(shape, literal), index|
+        property_violations("#{label}[#{index}]", items, shape, literal)
+      }
+  end
+
+  # [shape, literal] for each top-level element of an array literal's inner
+  # text. Same scanner discipline as top_level_entries: strings and comments
+  # are not element boundaries, and nested literals are stepped over whole.
+  def self.array_elements(body)
+    pieces = []
+    depth = 0
+    i = 0
+    start = 0
+    in_string = nil
+    while i < body.length
+      ch = body[i]
+      if in_string
+        i += 2 and next if ch == "\\"
+        in_string = nil if ch == in_string
+      elsif ch == '"' || ch == "'" || ch == "`"
+        in_string = ch
+      elsif ch == "/" && body[i + 1] == "/"
+        i = body.index("\n", i) || body.length
+        next
+      elsif ch == "{" || ch == "["
+        depth += 1
+      elsif ch == "}" || ch == "]"
+        depth -= 1
+      elsif depth.zero? && ch == ","
+        pieces << body[start...i]
+        start = i + 1
+      end
+      i += 1
+    end
+    pieces << body[start..].to_s
+    pieces.filter_map { |piece| element_value(piece) }
+  end
+
+  # [shape, literal] for one element's text, or nil when there is nothing to
+  # check: a trailing comma, a comment-only line, or an `...` elision.
+  def self.element_value(text)
+    stripped = strip_line_comments(text).strip
+    return nil if stripped.empty? || stripped.start_with?(".")
+
+    case stripped[0]
+    when "{", "["
+      inner = scan_balanced(stripped, 0)
+      inner.nil? ? nil : [ stripped[0] == "{" ? :object : :array, inner ]
+    else
+      [ :scalar, stripped ]
+    end
+  end
+
+  def self.strip_line_comments(text)
+    out = +""
+    i = 0
+    in_string = nil
+    while i < text.length
+      ch = text[i]
+      if in_string
+        if ch == "\\"
+          out << text[i, 2].to_s
+          i += 2
+          next
+        end
+        in_string = nil if ch == in_string
+      elsif ch == '"' || ch == "'" || ch == "`"
+        in_string = ch
+      elsif ch == "/" && text[i + 1] == "/"
+        i = text.index("\n", i) || text.length
+        next
+      end
+      out << ch
+      i += 1
+    end
+    out
+  end
+
+  # Keys at a call site whose declaration actually CONSTRAINS the documented
+  # value. Every covered doc satisfies the schema check today, so its per-site
+  # examples are green whether the oracle has material or not; this is what the
+  # anti-vacuity example at the bottom of the file counts.
+  #
+  # `items: { "type" => "string" }` does not count: that is
+  # ParameterSchema::DEFAULT_ARRAY_ITEMS, filled in for an array that declared
+  # nothing, so counting it would report material nobody wrote.
+  # A DECLARED `enum` is not on its own material: enum_violations compares only
+  # a plain quoted string that is not a placeholder, so a site documenting
+  # `target_state: "<state>"` has an oracle that can never fire. Counting it
+  # would let the anti-vacuity example stay green while every enum comparison
+  # in the tree is skipped — the exact state that example exists to detect. So
+  # each arm here asks for a literal its own rule would actually evaluate.
+  def self.constrained_keys(entries, schemas)
+    entries.filter_map do |key, shape, literal|
+      schema = schemas[key]
+      next if !schema.is_a?(Hash) || literal.nil?
+
+      items = schema["items"]
+      key if (shape == :scalar && schema.key?("enum") && enum_evaluable?(literal)) ||
+             (shape == :object && nested_properties?(schema["properties"])) ||
+             (shape == :array && items.is_a?(Hash) &&
+               ((items.key?("enum") && array_elements(literal).any? { |_element_shape, element| enum_evaluable?(element) }) ||
+                nested_properties?(items["properties"])))
+    end
+  end
+
+  # The two predicates constrained_keys and the rules share, so the "is there
+  # material here" answer cannot drift from the "would this be checked" one.
+  def self.enum_evaluable?(literal)
+    value = quoted_string(literal)
+    !value.nil? && !placeholder?(value)
+  end
+
+  def self.nested_properties?(properties)
+    properties.is_a?(Hash) && properties.any?
+  end
+
   def self.from_tool_registry(verb)
     klass_name = Ai::Tools::PlatformApiToolRegistry::TOOLS[verb]
     return nil if klass_name.nil?
@@ -1063,6 +1397,10 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   # underlying finding reddens the example below and forces its removal.
   known_broken = ModuleDocsMcpCallSignatures::KNOWN_BROKEN
   exercised_exclusions = []
+
+  # Call sites whose declared schema actually CONSTRAINS a documented value —
+  # see the anti-vacuity example at the bottom of this file.
+  schema_oracle_sites = []
 
   # A whole-file target carries no verb filter; a COVERED_CALLS target carries
   # the verbs it pins and ignores every other call in that file.
@@ -1465,10 +1803,10 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
   describe "value shapes" do
     shaped = top_level_entries('a: { x: 1 }, b: [ 1 ], c: "s", d: ..., e, f: // note' + "\n" + ' { y: 2 }')
 
-    it "reads each key's value shape" do
+    it "reads each key's value shape, and the literal under it" do
       expect(shaped).to eq(
-        [ [ "a", :object ], [ "b", :array ], [ "c", :scalar ],
-          [ "d", :elided ], [ "e", :shorthand ], [ "f", :object ] ]
+        [ [ "a", :object, " x: 1 " ], [ "b", :array, " 1 " ], [ "c", :scalar, '"s"' ],
+          [ "d", :elided, nil ], [ "e", :shorthand, nil ], [ "f", :object, " y: 2 " ] ]
       )
     end
 
@@ -1524,6 +1862,194 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
     # scalar TYPES would flag prose rather than defects.
     it "does not compare scalar types to each other" do
       expect(scalar_type_pair).to be_empty
+    end
+  end
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Declared SCHEMA: closed value sets and nested keys (IMP-369a059ad631).
+  #
+  # The shape family above stops at the shape of a TOP-LEVEL value, and that
+  # was the strongest oracle available while MCP's synthesizer emitted only
+  # `{"type", "description"}` per parameter: a doc could not be held to an
+  # `enum` or a nested `properties` that never reached the client. Since
+  # IMP-e809396f9eda core's Ai::Tools::ParameterSchema carries `enum`, `items`,
+  # `default` and nested `properties` onto the wire, so the schema an operator
+  # RECEIVES is the contract, and a doc example passing an out-of-enum value or
+  # a mistyped array element was the weaker of the two oracles this file could
+  # run. This family closes that gap, ADDITIVELY — the unknown-key,
+  # required-parameter and shape families are untouched, and a parameter that
+  # declares neither a closed set nor a nested schema is still checked exactly
+  # as before.
+  #
+  # The oracle is built through ParameterSchema itself rather than re-read off
+  # the declaration (see declared_property_schemas): the wire schema is what an
+  # operator's client enforces, and rebuilding the conversion here would be a
+  # second copy of exactly the conversion that seam exists to unify.
+  #
+  # Fixture data, for the reason the shape family is: every covered doc is
+  # clean today, so the examples generated from real call sites are all green
+  # and can prove nothing about the rule. That the rule is LIVE on real
+  # declarations is a separate claim, pinned by "checks at least one covered
+  # call site against a closed value set or a nested schema" at the bottom of
+  # this file.
+  describe "declared schema (closed value sets and nested keys)" do
+    promotion = { "target_state" => { "type" => "string", "enum" => %w[built staging blessed live retired] } }
+    selector  = { "src_selector" => { "type" => "object", "properties" => {
+      "peer_id" => { "type" => "string" },
+      "mode"    => { "type" => "string", "enum" => %w[strict loose] }
+    } } }
+    open_object = { "config" => { "type" => "object", "additionalProperties" => true } }
+    # ParameterSchema never SYNTHESIZES this one — it fills `additionalProperties`
+    # for a bare object and leaves `properties` off — so it reaches the wire only
+    # when a tool declares `properties: {}` outright. An empty declaration
+    # declares nothing, and checking keys against an empty set would reject
+    # every one of them.
+    empty_properties = { "config" => { "type" => "object", "properties" => {} } }
+    scope_list  = { "scopes" => { "type" => "array", "items" => { "type" => "string", "enum" => %w[read write] } } }
+    package_list = { "packages" => { "type" => "array", "items" => { "type" => "object", "properties" => {
+      "name" => { "type" => "string" }, "version" => { "type" => "string" }
+    } } } }
+    untyped_list = { "tags" => { "type" => "array", "items" => { "type" => "string" } } }
+
+    enum_ok          = schema_violations([ [ "target_state", :scalar, '"live"' ] ], promotion)
+    enum_bad         = schema_violations([ [ "target_state", :scalar, '"promoted"' ] ], promotion)
+    enum_placeholder = schema_violations([ [ "target_state", :scalar, '"<state>"' ] ], promotion)
+    enum_unquoted    = schema_violations([ [ "target_state", :scalar, "targetState" ] ], promotion)
+    enum_elided      = schema_violations([ [ "target_state", :elided, nil ] ], promotion)
+    enum_undeclared  = schema_violations([ [ "target_state", :scalar, '"promoted"' ] ], {})
+    no_enum_declared = schema_violations([ [ "name", :scalar, '"anything at all"' ] ], { "name" => { "type" => "string" } })
+
+    nested_ok        = schema_violations([ [ "src_selector", :object, ' peer_id: "<id>" ' ] ], selector)
+    nested_unknown   = schema_violations([ [ "src_selector", :object, ' kind: "vip" ' ] ], selector)
+    nested_enum_bad  = schema_violations([ [ "src_selector", :object, ' mode: "exact" ' ] ], selector)
+    nested_open      = schema_violations([ [ "config", :object, ' whatever: 1 ' ] ], open_object)
+    nested_empty     = schema_violations([ [ "config", :object, ' whatever: 1 ' ] ], empty_properties)
+
+    array_enum_ok    = schema_violations([ [ "scopes", :array, ' "read", "write" ' ] ], scope_list)
+    array_enum_bad   = schema_violations([ [ "scopes", :array, ' "read", "delete" ' ] ], scope_list)
+    array_shape_bad  = schema_violations([ [ "packages", :array, ' "openssl" ' ] ], package_list)
+    array_nested_bad = schema_violations([ [ "packages", :array, ' { name: "openssl", release: "3" } ' ] ], package_list)
+    array_untyped    = schema_violations([ [ "tags", :array, ' "anything" ' ] ], untyped_list)
+    array_default_obj = schema_violations([ [ "tags", :array, ' { name: "x" } ' ] ], untyped_list)
+
+    material_real        = constrained_keys([ [ "target_state", :scalar, '"live"' ] ], promotion)
+    material_placeholder = constrained_keys([ [ "target_state", :scalar, '"<state>"' ] ], promotion)
+    material_unquoted    = constrained_keys([ [ "target_state", :scalar, "targetState" ] ], promotion)
+    material_default_arr = constrained_keys([ [ "tags", :array, ' "anything" ' ] ], untyped_list)
+
+    it "accepts a documented value that is in the declared enum" do
+      expect(enum_ok).to be_empty
+    end
+
+    it "reports a documented value the declared enum does not allow" do
+      expect(enum_bad).to eq([ 'target_state: "promoted" is not one of ["built", "staging", "blessed", "live", "retired"]' ])
+    end
+
+    # Docs write `"<state>"` where a real value goes. Flagging a placeholder
+    # would tell the author of a correct example to paste a live value into a
+    # runbook, which is the opposite of what these docs are for.
+    it "says nothing about a placeholder value" do
+      expect(enum_placeholder).to be_empty
+    end
+
+    # An unquoted token is a JS identifier the surrounding prose defines, not a
+    # literal the doc is asserting — there is nothing to compare to the set.
+    it "says nothing about an unquoted value" do
+      expect(enum_unquoted).to be_empty
+    end
+
+    it "says nothing about an elided value" do
+      expect(enum_elided).to be_empty
+    end
+
+    # An unknown key is the unknown-key example's business; reporting it here
+    # would double every such failure, exactly as it would in shape_mismatches.
+    it "says nothing about a key the tool does not declare" do
+      expect(enum_undeclared).to be_empty
+    end
+
+    it "says nothing about a value whose parameter declares no closed set" do
+      expect(no_enum_declared).to be_empty
+    end
+
+    it "accepts an object literal whose keys the nested schema declares" do
+      expect(nested_ok).to be_empty
+    end
+
+    it "reports a key the nested schema does not declare" do
+      expect(nested_unknown).to eq([ 'src_selector.kind is not declared (declared: ["mode", "peer_id"])' ])
+    end
+
+    it "reaches a closed value set declared INSIDE a nested object" do
+      expect(nested_enum_bad).to eq([ 'src_selector.mode: "exact" is not one of ["strict", "loose"]' ])
+    end
+
+    # 161 parameters in the tree declare `type: "object"` with no `properties`
+    # (re-swept 2026-09-03), and their inner grammar lives only in the
+    # description prose. An object
+    # that declares no nested schema is still unguarded, and saying so is the
+    # point: this family adds an oracle where one exists, it does not invent one.
+    it "says nothing about an object that declares no nested schema" do
+      expect(nested_open).to be_empty
+    end
+
+    it "says nothing about an object whose nested schema is declared EMPTY" do
+      expect(nested_empty).to be_empty
+    end
+
+    it "accepts array elements that are in the declared items enum" do
+      expect(array_enum_ok).to be_empty
+    end
+
+    it "reports an array element outside the declared items enum" do
+      expect(array_enum_bad).to eq([ 'scopes[1]: "delete" is not one of ["read", "write"]' ])
+    end
+
+    it "reports an array element of the wrong shape for its declared items type" do
+      expect(array_shape_bad).to eq([ "packages[0]: declared object, got scalar" ])
+    end
+
+    it "reaches the nested keys of an OBJECT array element" do
+      expect(array_nested_bad).to eq([ 'packages[0].release is not declared (declared: ["name", "version"])' ])
+    end
+
+    # `items: { type: "string" }` is what ParameterSchema fills in for an array
+    # that declares nothing (DEFAULT_ARRAY_ITEMS), so treating it as a
+    # constraint would flag every array in the tree on the strength of a
+    # default nobody wrote.
+    it "says nothing about elements of an array whose items declare only a scalar type" do
+      expect(array_untyped).to be_empty
+    end
+
+    # The same default, with an OBJECT element — the case the type comparison
+    # would otherwise fail. `{"type" => "string"}` is what ParameterSchema
+    # synthesizes for an array that declared nothing, so failing here would
+    # report a violation of a rule no tool wrote, on a site constrained_keys
+    # simultaneously reports as having no oracle at all.
+    it "says nothing about an OBJECT element of an array whose items are the synthesized default" do
+      expect(array_default_obj).to be_empty
+    end
+
+    # Anti-vacuity's own anti-vacuity. constrained_keys answers "is there
+    # material here", and it has to answer it the way the rules would: a
+    # declared `enum` whose documented value is a placeholder or a bare
+    # identifier is never compared, so a tree in that state must NOT read as
+    # material. Mutating the enum arm back to a bare `schema.key?("enum")`
+    # kills the two skip examples below.
+    it "counts a site whose enum value the rule would actually compare" do
+      expect(material_real).to eq([ "target_state" ])
+    end
+
+    it "does not count a site whose enum value is a placeholder" do
+      expect(material_placeholder).to be_empty
+    end
+
+    it "does not count a site whose enum value is an unquoted identifier" do
+      expect(material_unquoted).to be_empty
+    end
+
+    it "does not count an array whose items are the synthesized default" do
+      expect(material_default_arr).to be_empty
     end
   end
 
@@ -1688,8 +2214,44 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
             "#{relative_path}:#{line} calls #{verb} with #{mismatched.inspect}. An object " \
             "where a scalar is declared usually means the example nested the value under " \
             "an extra key; a scalar where an object is declared means the opposite. Note " \
-            "that only the SHAPE is checked — no tool in the platform declares a nested " \
-            "schema, so the keys INSIDE an object literal are still unguarded."
+            "that this example checks only the top-level SHAPE — the value itself and " \
+            "the keys inside an object literal are the declared-schema example's business."
+          )
+        end
+
+        # IMP-369a059ad631. The two examples above stop at the top-level key
+        # set and the top-level value SHAPE, which is everything MCP's schema
+        # synthesizer could support while it emitted `{"type", "description"}`
+        # and dropped the rest. Since IMP-e809396f9eda it carries `enum`,
+        # `items` and nested `properties` through to the client, so a doc that
+        # passes an out-of-enum value, an array element of the wrong type or a
+        # key no nested schema declares is now checkable — and was green until
+        # this example existed.
+        schemas = declared_property_schemas(verb)
+        schema_gaps = schema_violations(entries, schemas)
+        constrained = constrained_keys(entries, schemas)
+        schema_oracle_sites << "#{relative_path}:#{line} #{verb} (#{constrained.sort.join(', ')})" if constrained.any?
+
+        it "#{verb} at line #{line} passes values the tool's declared SCHEMA allows" do
+          # Same anti-vacuity claim the shape example makes, against the third
+          # resolver: declared_property_schemas builds the WIRE schema through
+          # Ai::Tools::ParameterSchema, and a parameter set that disagrees with
+          # declared_parameters means this example is reading a different
+          # declaration from the two above it.
+          expect(schemas.keys).to(
+            match_array(declared.keys),
+            "#{verb}: declared_property_schemas sees #{schemas.keys.sort.inspect} but " \
+            "declared_parameters sees #{declared.keys.sort.inspect}. The two resolvers " \
+            "disagree, so the schema check below is reading a different parameter set."
+          )
+
+          expect(schema_gaps).to(
+            be_empty,
+            "#{relative_path}:#{line} calls #{verb} with #{schema_gaps.inspect}. The " \
+            "declared schema — the one an operator's MCP client receives — rejects these: " \
+            "a value outside a closed `enum`, a key no nested `properties` declares, or an " \
+            "array element of the wrong type. Correct the example, or widen the tool's " \
+            "declaration if the doc is right and the declaration is not."
           )
         end
 
@@ -1985,6 +2547,22 @@ RSpec.describe "module docs: MCP worked examples vs. declared tool parameters" d
         "is what every entry here is."
       )
     end
+  end
+
+  # Anti-vacuity for the declared-schema family (IMP-369a059ad631). Every
+  # covered doc satisfies it today, so all of its per-site examples are green
+  # and a resolver that silently returned {} — or a widening that only ever
+  # looked at parameters declaring nothing — would read exactly the same. This
+  # asserts the oracle has MATERIAL: at least one covered call site documents a
+  # value the declaration actually constrains.
+  it "checks at least one covered call site against a closed value set or a nested schema" do
+    expect(schema_oracle_sites).not_to(
+      be_empty,
+      "No covered call site passes a value whose declared schema constrains it — no " \
+      "`enum`, no nested `properties`, no constraining `items`. The declared-schema " \
+      "examples are then all vacuous. Either the covered docs stopped documenting such a " \
+      "value, or declared_property_schemas has stopped resolving one."
+    )
   end
 
   # Without this, a KNOWN_BROKEN entry can rot silently. Deleting the offending
