@@ -258,8 +258,11 @@ module System
         # provider error can be megabytes, and error text routinely carries the
         # very operator material the input redaction above exists to keep out
         # (ActiveRecord::StatementInvalid carries bound SQL values; an HTTP
-        # client error carries the URL). Truncation is a bound, not a redaction
-        # — the untruncated text stays on the Rails.logger line beside it.
+        # client error carries the URL, userinfo and query string included).
+        # Truncation is a bound, not a redaction, so #audit_text also runs the
+        # extension's shell-output sanitizer over the text BEFORE bounding it
+        # (IMP-675ed7763230) — the unredacted, untruncated text stays on the
+        # Rails.logger line beside it.
         # 500 matches the platform's existing bound for exception text on an
         # event payload (System::NodeModuleAssignment#emit_registration_failure).
         AUDIT_TEXT_LIMIT = 500
@@ -663,13 +666,52 @@ module System
                             "error_class" => exc.class.name, "error" => audit_text(exc.message))
         end
 
-        # Bounds one free-form string on its way into a persisted, broadcast
-        # payload. nil in, nil out, so the .compact in #emit_audit_event! still
-        # drops the key entirely rather than storing an empty string.
+        # Scrubs, then bounds, one free-form string on its way into a persisted,
+        # broadcast payload. nil in, nil out, so the .compact in
+        # #emit_audit_event! still drops the key entirely rather than storing
+        # an empty string.
+        #
+        # Same recipe as SystemFleetTool#task_error_message, for the same
+        # reason: this is text a provider SDK, an HTTP client or a shell wrote,
+        # not text the platform authored, and the input redaction in
+        # #audit_log_start is only worth anything if the credential it kept out
+        # of `input_keys` cannot come straight back in through the message the
+        # failed call raised with it.
+        #
+        # ORDER MATTERS. Redact FIRST, then apply the limit, so a secret that
+        # straddles the 500-char cut is gone from the bounded copy rather than
+        # leaving its leading bytes behind.
+        #
+        # The redaction INPUT is bounded too (4x the output limit), so a
+        # megabyte-sized provider error does not run every pattern over the
+        # whole blob. That slice needs its own care, and NOT for the reason
+        # you would guess: redaction SHRINKS text far more than it grows it
+        # (a 1.5KB PEM block collapses to "[REDACTED]"), so bytes that started
+        # past the 2000-char slice CAN end up inside the persisted 500-char
+        # window — while the slice already cut them, unscanned. A secret
+        # straddling the slice boundary would then be persisted as a
+        # fixed-width fragment the patterns never got to see whole. So when
+        # the slice actually cut something, drop the trailing partial token:
+        # it is by construction incomplete, and the alternative is emitting
+        # the first N bytes of an unmatched credential.
+        #
+        # force_encoding + .scrub("") because the sanitizer's patterns raise
+        # ArgumentError on invalid UTF-8, and #audit_log_error runs INSIDE
+        # #execute's rescue — a raise here would escape #execute with the
+        # audit half-written. The force_encoding is load-bearing on its own:
+        # an ASCII-8BIT message (every byte "valid" in that encoding) makes
+        # .scrub a no-op, and those bytes then fail the jsonb persist, which
+        # #emit_audit_event! swallows — dropping the durable record for
+        # exactly the failures whose text is least trusted.
         def audit_text(value)
           return nil if value.nil?
 
-          value.to_s.truncate(AUDIT_TEXT_LIMIT)
+          text = value.to_s.dup.force_encoding(Encoding::UTF_8).scrub("")
+          sliced = text[0, AUDIT_TEXT_LIMIT * 4]
+          sliced = sliced.sub(/\S+\z/, "") if text.length > AUDIT_TEXT_LIMIT * 4
+          ::System::ShellOutputSanitizer
+            .redact_text(sliced)
+            .truncate(AUDIT_TEXT_LIMIT)
         end
 
         # Groups the start/finish|failed pair of ONE #execute call. Lazily

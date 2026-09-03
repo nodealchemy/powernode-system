@@ -201,6 +201,177 @@ RSpec.describe "notify lanes and skill executions leave a durable operator recor
       expect(failed.payload["error_class"]).to eq("ArgumentError")
     end
 
+    # IMP-675ed7763230. Input VALUES never reach the payload (keys only, above),
+    # but the failure path copied exc.message verbatim, and a provider SDK or
+    # HTTP client routinely embeds the credential in the message it raises:
+    # the clone URL with its userinfo, the request URL with its query-string
+    # token, the header it sent. Bounding the text to AUDIT_TEXT_LIMIT is not
+    # a redaction, so the material the input redaction kept out came straight
+    # back in through the error string — persisted to system_fleet_events and
+    # broadcast on the account channel. Asserted by CONTAINMENT on the secret
+    # bytes so the assertion survives any change to the redaction marker.
+    describe "secret shapes in free-form error text" do
+      let(:userinfo_secret) { "ghp_9f8e7d6c5b4a3928170605abcdefabcdefab" }
+      let(:query_secret)    { "qs-4d2c1b0a9f8e7d6c5b4a3928170605" }
+      let(:bearer_secret)   { "brr-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6" }
+      let(:leaky_message) do
+        "GET https://ci:#{userinfo_secret}@git.example.test/repo.git?access_token=#{query_secret} " \
+          "with Authorization: Bearer #{bearer_secret} failed: 401"
+      end
+
+      def raising_class(message)
+        Class.new(described_class) do
+          skill_descriptor(name: "imp675_leaky_error", description: "for spec", category: "fleet",
+                           inputs: {}, outputs: {})
+
+          protected
+
+          define_method(:perform) { raise ArgumentError, message }
+        end
+      end
+
+      it "scrubs credential shapes out of a raised exception's message before persisting it" do
+        raising_class(leaky_message).new(account: account).execute
+
+        failed = events(described_class::EVENT_KIND_FAILED).first
+        expect(failed).to be_present
+        persisted = failed.payload["error"]
+        expect(persisted).not_to include(userinfo_secret)
+        expect(persisted).not_to include(query_secret)
+        expect(persisted).not_to include(bearer_secret)
+        # Still diagnosable: the scheme, host and the HTTP status survive.
+        expect(persisted).to include("https://ci:")
+        expect(persisted).to include("git.example.test")
+        expect(persisted).to include("401")
+        expect(failed.payload["error_class"]).to eq("ArgumentError")
+      end
+
+      it "scrubs the broadcast copy as well as the persisted one" do
+        broadcast = nil
+        allow(ActionCable.server).to receive(:broadcast) do |channel, payload|
+          broadcast = payload if channel == "system_fleet:#{account.id}" &&
+                                 payload[:kind] == described_class::EVENT_KIND_FAILED
+        end
+
+        raising_class(leaky_message).new(account: account).execute
+
+        expect(broadcast).to be_present
+        wire = broadcast.to_json
+        expect(wire).not_to include(userinfo_secret)
+        expect(wire).not_to include(query_secret)
+        expect(wire).not_to include(bearer_secret)
+      end
+
+      it "scrubs a failure RESULT's error string on the finish event too" do
+        message = leaky_message
+        klass = Class.new(described_class) do
+          skill_descriptor(name: "imp675_leaky_result", description: "for spec", category: "fleet",
+                           inputs: {}, outputs: {})
+
+          protected
+
+          define_method(:perform) { failure(message) }
+        end
+
+        klass.new(account: account).execute
+
+        finished = events(described_class::EVENT_KIND_FINISHED).first
+        expect(finished.payload["success"]).to be(false)
+        expect(finished.payload["error"]).not_to include(userinfo_secret)
+        expect(finished.payload["error"]).not_to include(query_secret)
+        expect(finished.payload["error"]).not_to include(bearer_secret)
+      end
+
+      # ORDER oracle: redact, THEN bound. A secret that straddles the
+      # AUDIT_TEXT_LIMIT cut would leave its leading bytes behind if the text
+      # were truncated first and only then scrubbed. The shape is deliberately
+      # FIXED-WIDTH (an AWS access key id: AKIA + 16 chars, word-bounded): a
+      # `token=...` shape would not discriminate, because the sanitizer's
+      # key=value pattern still matches the clipped 11-char tail and a
+      # truncate-first mutant would pass. A clipped AKIA fragment matches
+      # nothing, so it leaks under the wrong order and only the wrong order.
+      it "redacts before it truncates, so a secret straddling the cut leaves no fragment" do
+        secret  = "AKIAABCDEFGHIJKLMNOP"
+        # 484 + " " + 20 = 505: String#truncate keeps 497 chars + "...", so a
+        # truncate-first pass would keep "AKIAABCDEFGH" (12 chars) verbatim.
+        message = ("x" * (described_class::AUDIT_TEXT_LIMIT - 16)) + " #{secret}"
+
+        raising_class(message).new(account: account).execute
+
+        persisted = events(described_class::EVENT_KIND_FAILED).first.payload["error"]
+        expect(persisted.length).to be <= described_class::AUDIT_TEXT_LIMIT
+        expect(persisted).not_to include(secret[0, 12])
+      end
+
+      # SLICE oracle, the order oracle's twin one layer up. #audit_text only
+      # runs the patterns over the first 4x AUDIT_TEXT_LIMIT chars so a
+      # megabyte provider error does not cost a full scan. The trap is that
+      # redaction SHRINKS text far more than it grows it — a PEM block
+      # collapses to "[REDACTED]" — so bytes that started PAST the slice can
+      # land inside the persisted 500-char window even though the slice cut
+      # them before any pattern ran. A fixed-width secret straddling that cut
+      # is then persisted as an unmatched fragment. The fixture puts a PEM
+      # (which collapses ~1.5KB to 10 chars) ahead of an AKIA token positioned
+      # so exactly 9 of its 20 chars fall on the near side of the slice.
+      it "leaves no fragment of a secret straddling the redaction-input slice" do
+        limit  = described_class::AUDIT_TEXT_LIMIT
+        slice  = limit * 4
+        secret = "AKIAZZZZZZZZZZZZZZZZ"
+        pem_body = (["MIIEowIBAAKCAQEAxGqQnMHYQm0lWJ9d3cVfLpQ8ZzYqR1sTnUvWxYz0AbCdEfGh"] * 23).join("\n")
+        pem = "-----BEGIN RSA PRIVATE KEY-----\n#{pem_body}\n-----END RSA PRIVATE KEY-----"
+        filler = slice - pem.length - 10
+        # Fixture preconditions: the secret really does straddle the slice, and
+        # what survives redaction really does fit under the limit (otherwise
+        # the truncate, not the fix, would be what hides the fragment).
+        expect(filler).to be_positive
+        expect(filler + secret.length).to be < limit
+        message = pem + ("y" * filler) + " #{secret}"
+        expect(message.length).to be > slice
+
+        raising_class(message).new(account: account).execute
+
+        persisted = events(described_class::EVENT_KIND_FAILED).first.payload["error"]
+        expect(persisted.length).to be < limit, "fixture must not be saved by the truncate"
+        expect(persisted).not_to include(secret[0, 9])
+      end
+
+      # The scrubber's patterns raise ArgumentError on invalid UTF-8, and
+      # #audit_log_error runs INSIDE #execute's rescue — a raise there would
+      # escape #execute with the audit half-written. Provider errors are not
+      # text the platform authored, so the bytes must be scrubbed first.
+      it "survives an exception message that is not valid UTF-8" do
+        message = "provider said \xFF\xFE no token=abcdefghijklmnop".dup.force_encoding("UTF-8")
+        expect(message.valid_encoding?).to be(false)
+
+        result = nil
+        expect { result = raising_class(message).new(account: account).execute }.not_to raise_error
+        expect(result[:success]).to be(false)
+
+        failed = events(described_class::EVENT_KIND_FAILED).first
+        expect(failed).to be_present, "expected the failure to still leave a durable FleetEvent"
+        expect(failed.payload["error"]).not_to include("abcdefghijklmnop")
+      end
+
+      # The BINARY twin of the case above, and the one String#scrub alone does
+      # not close: every byte is "valid" in ASCII-8BIT, so .scrub is a no-op
+      # and the bytes sail through to the jsonb persist, which rejects them —
+      # and #emit_audit_event! swallows that, dropping the durable row for
+      # precisely the least-trusted failures. Only a force_encoding to UTF-8
+      # ahead of the scrub gives those bytes to the scrubber at all.
+      it "survives an exception message carrying binary (ASCII-8BIT) bytes" do
+        message = "provider said \xC3\x28 no token=abcdefghijklmnop".dup.force_encoding("ASCII-8BIT")
+        expect(message.valid_encoding?).to be(true), "fixture must be VALID as binary, else it proves nothing"
+
+        result = nil
+        expect { result = raising_class(message).new(account: account).execute }.not_to raise_error
+        expect(result[:success]).to be(false)
+
+        failed = events(described_class::EVENT_KIND_FAILED).first
+        expect(failed).to be_present, "expected the binary failure to still leave a durable FleetEvent"
+        expect(failed.payload["error"]).not_to include("abcdefghijklmnop")
+      end
+    end
+
     # A skill dispatched from a fleet tick belongs in the tick's correlation
     # walk. Without this seam the audit rows are unreachable from
     # system_inspect_correlation on the decision that ordered them, which is the
