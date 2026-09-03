@@ -60,7 +60,7 @@ Every action requires a permission grant on the calling user/agent. Permissions 
 
 ## Action catalog
 
-### `system_*` — Fleet, lifecycle, modules, storage, architecture, GitOps, CI workers, disk image CI, providers, topology, ingress, GPU/inference, agent-fleet, A2A (132 actions)
+### `system_*` — Fleet, lifecycle, modules, storage, architecture, GitOps, CI workers, disk image CI, providers, topology, ingress, GPU/inference, agent-fleet, A2A (134 actions)
 
 Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented) plus the managed-Docker, package-repository, architecture-catalog, disk-image, ingress, storage-owner, and agent-fleet tool classes. The registry routing lives in the parent (`platform_api_tool_registry.rb`); the tool-class implementations live in the extension under `server/app/services/ai/tools/`.
 
@@ -75,6 +75,8 @@ Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented
 | `system_get_instance` | Fetch NodeInstance details (status, last_heartbeat, running modules) | operator, agent |
 | `system_provision_instance` | Trigger provider VM creation; creates Task; returns NodeInstance | operator, agent |
 | `system_terminate_instance` | Destroy provider VM; cascade-FK cleanup | operator, agent |
+| `system_replace_instance` | DR: move an unrecoverable instance's volumes, SDWAN membership and VIPs onto a warm pool member. Approval-gated (`system.instance_replace`); terminates nothing — pass `reap: true` for a SECOND, separately-gated terminate. Refused for a target still running and still reporting unless `accept_running: true` | operator, agent |
+| `system_reap_instance` | DR: terminate the unrecoverable instance whose workload `system_replace_instance` has already moved. Approval-gated (`system.instance_reap`); denied outright to MCP instance principals by the deny overlay | operator |
 | `system_drift_report` | Compare running module digests vs assigned modules | operator, agent |
 
 #### Templates + modules
