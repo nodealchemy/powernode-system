@@ -365,3 +365,49 @@ func TestEveryRuleRefusesTheEmptyValue(t *testing.T) {
 		mustRefuse(t, name+" on empty", rule("field", ""))
 	}
 }
+
+// InstalledUnit is the membership half of the lifecycle handler's rule: the
+// name must be a unit FILE this node's own agent materialised, sitting as a
+// regular file directly in the unit directory. The refusals below are each a
+// way for a name to pass every syntactic rule and still not be one of ours.
+func TestInstalledUnit(t *testing.T) {
+	dir := t.TempDir()
+	ours := "powernode-019f7cb5-3858-7caa-aa9f-51629dc8e573-rails.service"
+	if err := os.WriteFile(filepath.Join(dir, ours), []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink of the right name pointing at a real unit is not something
+	// lifecycle.AttachServices writes (it uses os.WriteFile), so it is refused
+	// even though systemctl would happily follow it.
+	if err := os.Symlink(filepath.Join(dir, ours), filepath.Join(dir, "powernode-m-link.service")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "powernode-m-dir.service"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mustAccept(t, "installed", InstalledUnit("unit", ours, dir))
+
+	for name, v := range map[string]string{
+		// Present on every node under /usr/lib/systemd/system, but not in the
+		// directory lifecycle writes to, so not module-generated.
+		"distro unit": "sshd.service",
+		"agent's own": "powernode-agent.service",
+		"not present": "powernode-019f7cb5-3858-7caa-aa9f-51629dc8e573-sidekiq.service",
+		"symlink":     "powernode-m-link.service",
+		"directory":   "powernode-m-dir.service",
+		"empty":       "",
+		"dot":         ".",
+		"parent":      "..",
+	} {
+		mustRefuse(t, name, InstalledUnit("unit", v, dir))
+	}
+
+	// Fail closed on a missing or unset directory. An unset dir would make
+	// filepath.Join probe a RELATIVE path in the agent's working directory —
+	// so the test stands IN the directory holding the unit, where the only
+	// thing between the name and an acceptance is the empty-dir guard.
+	mustRefuse(t, "absent dir", InstalledUnit("unit", ours, filepath.Join(dir, "nope")))
+	t.Chdir(dir)
+	mustRefuse(t, "empty dir", InstalledUnit("unit", ours, ""))
+}

@@ -10,27 +10,70 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 	"github.com/nodealchemy/powernode-system/agent/internal/systemd"
+	"github.com/nodealchemy/powernode-system/agent/internal/taskguard"
 )
 
-// LifecycleHandler dispatches start/stop/restart/reboot/terminate
-// against a unit identified by task.Options["unit"]. Defers to
+// LifecycleHandler dispatches start/stop/restart against ONE unit this
+// node's agent generated, identified by task.Options["unit"]. Defers to
 // systemd.Action / systemd.IsActive for the actual shell-out.
 type LifecycleHandler struct {
 	deps tasks.Dependencies
 	verb systemd.ActionVerb
 }
 
+// The two fixed halves of lifecycle.UnitName's format,
+// "powernode-<module-id>-<service>.service". TestManagedUnitShapeMatches-
+// LifecycleGenerator pins them against the generator itself.
+const (
+	managedUnitPrefix = "powernode-"
+	managedUnitSuffix = ".service"
+)
+
+// validateUnit is the ONE place options["unit"] is checked before it reaches
+// systemctl as root. See package taskguard for why this lives at the agent:
+// the node API serves every pending task on the instance to the agent, and
+// TasksController#create permits options: {} as free-form JSONB, so the value
+// is chosen by whoever holds system.infra_tasks.create — an AI agent included.
+//
+// Three rules, composed in this order and each doing one job:
+//
+//   - UnitName confines the value to a single ".service" filename: no
+//     separator, no "..", no control character, so the Join below cannot be
+//     steered out of the unit directory.
+//   - NamePrefix requires lifecycle.UnitName's "powernode-" stamp.
+//   - InstalledUnit requires a regular file of that exact name in
+//     lifecycle.UnitDir() — the set lifecycle.AttachServices materialised on
+//     THIS node. This is what separates a module unit from sshd.service,
+//     powernode-agent.service, or any other legal unit the agent never wrote.
+//
+// The only in-process producer, System::RestartAfterUpdate#enqueue_restart!,
+// names RestartAfterUpdate.unit_name(target.id, service) for a module attached
+// to the node, which is exactly a name AttachServices wrote; the acceptance
+// half of lifecycle_guard_test.go generates its fixtures through
+// lifecycle.AttachServicesMode for that reason rather than from literals.
+func validateUnit(unit string) error {
+	if err := taskguard.UnitName("unit", unit, managedUnitSuffix); err != nil {
+		return err
+	}
+	if err := taskguard.NamePrefix("unit", unit, managedUnitPrefix); err != nil {
+		return err
+	}
+	return taskguard.InstalledUnit("unit", unit, lifecycle.UnitDir())
+}
+
 // Execute runs the configured systemctl verb against the unit named
-// in task.Options["unit"]. Returns the resulting unit state.
+// in task.Options["unit"]. Returns the resulting unit state. Refuses,
+// before any systemctl call (the idempotency probe included), a unit
+// that is not one this node's agent generated.
 func (h *LifecycleHandler) Execute(ctx context.Context, task *tasks.Task) (tasks.Result, error) {
 	unit, _ := task.Options["unit"].(string)
-	if unit == "" {
-		return nil, errors.New("lifecycle: options.unit required")
+	if err := validateUnit(unit); err != nil {
+		return nil, fmt.Errorf("lifecycle %s: %w", h.verb, err)
 	}
 
 	// Idempotency: short-circuit when already in the desired state.

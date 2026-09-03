@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -184,6 +185,35 @@ func UnitName(field, name string, allowedSuffixes ...string) error {
 func NamePrefix(field, s, prefix string) error {
 	if !strings.HasPrefix(s, prefix) || len(s) == len(prefix) {
 		return refuse(field, "must begin with "+prefix, s)
+	}
+	return nil
+}
+
+// InstalledUnit accepts a unit name only when a regular FILE of exactly that
+// name sits directly in dir — the unit directory this node's own agent
+// materialises module services into (lifecycle.AttachServices writes each
+// unit there with os.WriteFile and DetachServices removes it). It is the
+// membership half of the lifecycle handler's rule: UnitName and NamePrefix
+// say what a module-generated name LOOKS like; this says the node actually
+// generated it. A name that is merely a legal unit — sshd.service under
+// /usr/lib, the agent's own powernode-agent.service, or a persist.mount — is
+// refused, because none of them is one the agent wrote.
+//
+// A regular file, not "exists": a symlink of the right name is something
+// systemctl would follow but not something AttachServices produces. The check
+// is deliberately the only rule here; it presumes `name` is one path component
+// (UnitName's allow-list is what guarantees filepath.Join cannot leave dir),
+// so compose it AFTER UnitName rather than duplicating that guard.
+//
+// Fails closed on an empty dir — filepath.Join("", name) is a RELATIVE path
+// that would probe the agent's working directory instead of the unit tree.
+func InstalledUnit(field, name, dir string) error {
+	if dir == "" {
+		return refuse(field, "has no unit directory to be checked against", name)
+	}
+	st, err := os.Lstat(filepath.Join(dir, name))
+	if err != nil || !st.Mode().IsRegular() {
+		return refuse(field, "is not a unit this node's agent generated", name)
 	}
 	return nil
 }
