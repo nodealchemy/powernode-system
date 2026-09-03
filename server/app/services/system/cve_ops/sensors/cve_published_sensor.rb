@@ -10,15 +10,42 @@ module System
       # decision.
       #
       # Dedup at the engine level uses fingerprint `cve_pub:<cve_id>` with the
-      # standard 600s TTL. Beyond that window the engine re-routes and the
-      # orchestration executor's pending/recently-rejected ApprovalRequest
-      # check absorbs the repeat without duplicate work.
+      # standard 600s TTL. Beyond that window the engine re-routes the signal
+      # and the orchestration re-runs: `open_operator_request?` covers only
+      # the require_approval path, so under notify_and_proceed nothing absorbs
+      # the repeat (see the orchestrator's header, IMP-9b8d774298d5).
+      #
+      # DETECTION WINDOW (IMP-60717919d4a0). This sensor selects only
+      # exposures with `detected_at` inside #detection_lookback, and
+      # `detected_at` is written ONCE (ExposureCalculator: `row.detected_at ||
+      # Time.current`) and never refreshed on a re-match. So an exposure left
+      # `open` leaves this sensor's view a window after first detection
+      # whether or not anything ever remediated it — the autonomy lane is a
+      # fresh-detection lane by construction, not a standing alarm. What keeps
+      # an aged, still-open exposure reachable by an operator is
+      # System::CveOps::AgedExposureEscalator, which the CVE Responder tick
+      # runs against the SAME window and which emits one durable
+      # `cve_responder.exposure_aged_out` FleetEvent per CVE per window,
+      # correlated to `cve_pub:<cve_id>`. Widening the window here widens both.
+      #
+      # The window is operator configuration, resolved per tick through
+      # System::CveOps::TunableSetting: per-account
+      # `Account#settings[ACCOUNT_DETECTION_LOOKBACK_KEY]`, then the
+      # deployment-wide SiteSetting `DETECTION_LOOKBACK_SETTING_KEY`, then
+      # DEFAULT_DETECTION_LOOKBACK_HOURS. That is the shape
+      # ModulePromotionBacklogSensor#lag_seconds uses — NOT BaseSensor's
+      # SensorConfig seam, which the CVE sensors are deliberately outside of
+      # (see TunableSetting's header for why, and for what it does reuse from
+      # that seam). It was previously an ENV read baked into a class constant
+      # at boot.
       #
       # Lives in `System::CveOps::Sensors` (not `System::Fleet::Sensors`) so
       # the Fleet Autonomy tick's SENSORS constant doesn't sweep it up; the
       # CVE Responder owns this sensor exclusively via its own SENSORS list.
       class CvePublishedSensor < ::System::Fleet::Sensors::BaseSensor
-        DETECTION_LOOKBACK = (ENV["CVE_RESPONDER_DETECTION_LOOKBACK_HOURS"] || 24).to_i.hours
+        DEFAULT_DETECTION_LOOKBACK_HOURS = 24
+        DETECTION_LOOKBACK_SETTING_KEY   = "system.cve_responder.detection_lookback_hours"
+        ACCOUNT_DETECTION_LOOKBACK_KEY   = "cve_responder_detection_lookback_hours"
 
         ELIGIBLE_SEVERITIES = %w[critical high].freeze
 
@@ -31,11 +58,30 @@ module System
             .where(system_node_modules: { account_id: account.id })
             .where(state: "open")
             .where(system_cves: { severity: ELIGIBLE_SEVERITIES })
-            .where("system_cve_exposures.detected_at > ?", DETECTION_LOOKBACK.ago)
+            .where("system_cve_exposures.detected_at > ?", detection_lookback.ago)
             .preload(:cve, node_module_version: :node_module)
             .to_a
 
           rows.group_by(&:cve).map { |cve, exposures| signal_for(cve, exposures) }
+        end
+
+        # Memoized for the life of ONE sensor instance (one tick), like
+        # BaseSensor#threshold: a sense pass must not straddle a mid-tick
+        # config change. Public so the CVE Responder tick can hand the SAME
+        # resolved window to AgedExposureEscalator instead of resolving a
+        # second one — the two lanes are complements of one window, and two
+        # reads can leave a gap or an overlap between them.
+        #
+        # Fails to the constant, never to nil and never by raising, for any
+        # value that is not a positive integer at every rung — `0` would read
+        # as "never look at anything".
+        def detection_lookback
+          @detection_lookback ||= ::System::CveOps::TunableSetting.resolve(
+            account: account,
+            account_key: ACCOUNT_DETECTION_LOOKBACK_KEY,
+            site_setting_key: DETECTION_LOOKBACK_SETTING_KEY,
+            default: DEFAULT_DETECTION_LOOKBACK_HOURS
+          ).hours
         end
 
         private

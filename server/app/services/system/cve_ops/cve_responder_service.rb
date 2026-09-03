@@ -81,13 +81,15 @@ module System
         decisions = engine.decide_all(signals)
         ::System::CveOps::LearningExtractor.record_tick!(account: account, decisions: decisions)
         emit_pressure!(decisions)
+        aged_out_count = escalate_aged_exposures!
 
         emit_event(
           kind: "cve_responder.tick_complete",
           payload: {
             signal_count: signals.size,
             decision_count: decisions.size,
-            by_decision: decisions.group_by { |d| d[:decision] }.transform_values(&:size)
+            by_decision: decisions.group_by { |d| d[:decision] }.transform_values(&:size),
+            aged_out_count: aged_out_count
           },
           correlation_id: tick_correlation
         )
@@ -98,6 +100,7 @@ module System
           decision_count: decisions.size,
           by_kind: decisions.group_by { |d| d[:signal_kind] }.transform_values(&:size),
           by_decision: decisions.group_by { |d| d[:decision] }.transform_values(&:size),
+          aged_out_count: aged_out_count,
           correlation_id: tick_correlation
         }
       end
@@ -105,11 +108,28 @@ module System
       def collect_signals
         signals = []
         SENSORS.each do |sensor_class|
-          signals.concat(sensor_class.new(account: account).sense)
+          signals.concat(sensor_instance(sensor_class).sense)
         rescue StandardError => e
           Rails.logger.error("[CveResponder] sensor #{sensor_class.name} failed: #{e.message}")
         end
         signals
+      end
+
+      # ONE instance per sensor class per tick — this service is constructed
+      # per tick, like #permitted_actions' memo.
+      #
+      # IMP-60717919d4a0: sensors memoize their resolved configuration for the
+      # life of one instance precisely so a sense pass cannot straddle a
+      # mid-tick config change (BaseSensor#threshold,
+      # CvePublishedSensor#detection_lookback). Constructing a second
+      # CvePublishedSensor later in the same tick to ask it for the detection
+      # window re-read that config and defeated the guarantee: a change landing
+      # between the two reads left a gap (window widened) or an overlap
+      # (narrowed) between the fresh lane and the aged lane, which are
+      # complements of ONE window.
+      def sensor_instance(sensor_class)
+        @sensor_instances ||= {}
+        @sensor_instances[sensor_class] ||= sensor_class.new(account: account)
       end
 
       # Scoped to THIS account. CVE Responder is seeded as a GLOBAL agent
@@ -279,22 +299,69 @@ module System
           exposure_ids: Array(metadata_value(metadata, "exposure_ids"))
         )
 
+        ok = result[:success] == true
+        skipped_reason = result.dig(:data, :skipped_reason)
+        # IMP-60717919d4a0 — the orchestrator's failure message names the
+        # module, the candidate version and the legal next promotion rung
+        # (IMP-9b8d774298d5), and this is its ONLY production caller: a log
+        # line that said `ok=false` and an event with no error field threw
+        # all of that away. Bounded and redacted on the way into a persisted,
+        # broadcast payload for the same reason BaseSkillExecutor#audit_text
+        # bounds its own copy — the text may relay a provider SDK's or an HTTP
+        # client's message, not only platform-authored prose.
+        error_text = ok ? nil : bounded_error_text(result[:error])
+
         Rails.logger.info(
           "[CveResponder] inline dispatch cve=#{cve_id} action=#{action_category} " \
-          "ok=#{result[:success]} refreshes=#{Array(result.dig(:data, :refresh_dispatches)).size}"
+          "ok=#{ok} refreshes=#{Array(result.dig(:data, :refresh_dispatches)).size}" \
+          "#{" skipped_reason=#{skipped_reason}" if skipped_reason.present?}" \
+          "#{" error=#{error_text}" if error_text.present?}"
         )
 
         emit_event(
           kind: "cve_responder.inline_dispatch",
+          # A dispatch that did not work is not routine telemetry — an operator
+          # filtering the low band would never see it (same band choice as
+          # BaseSkillExecutor#audit_log_finish).
+          severity: ok ? :low : :medium,
+          # Same correlation walk as the decision this dispatch belongs to:
+          # DecisionEngine stamps the signal fingerprint on the metadata, and
+          # the sensor's key is deterministic, so the fallback lands in the
+          # same chain when a caller carried none.
+          correlation_id: metadata_value(metadata, "signal_fingerprint").presence || "cve_pub:#{cve_id}",
           payload: {
             cve_id: cve_id,
             action_category: action_category,
-            ok: result[:success] == true,
+            ok: ok,
+            error: error_text,
+            skipped_reason: skipped_reason,
+            remediation_dispatched: result.dig(:data, :remediation_dispatched),
             refresh_count: Array(result.dig(:data, :refresh_dispatches)).size,
             rolling_upgrade_count: Array(result.dig(:data, :rolling_upgrade_plans)).size,
             exposures_remediating: result.dig(:data, :exposures_remediating)
-          }
+          }.compact
         )
+      end
+
+      # Redact FIRST, then bound: a secret straddling the cut must be gone from
+      # the bounded copy, not left as its leading bytes. nil in, nil out so
+      # `.compact` drops the key.
+      #
+      # This is a COPY of BaseSkillExecutor#audit_text's body, not a call to
+      # it: that method is private on a class this lane may not edit, so the
+      # rule now has two homes and they must be kept in step. The bound itself
+      # IS shared (BaseSkillExecutor::AUDIT_TEXT_LIMIT). Unifying them —
+      # a module-level `bound_audit_text` on BaseSkillExecutor, or a small
+      # System::AuditText helper both call — needs an edit to that file and is
+      # recorded as follow-up work.
+      def bounded_error_text(value)
+        return nil if value.blank?
+
+        text = value.to_s.dup.force_encoding(Encoding::UTF_8).scrub("")
+        limit = ::System::Ai::Skills::BaseSkillExecutor::AUDIT_TEXT_LIMIT
+        sliced = text[0, limit * 4]
+        sliced = sliced.sub(/\S+\z/, "") if text.length > limit * 4
+        ::System::ShellOutputSanitizer.redact_text(sliced).truncate(limit)
       end
 
       # Normalizes the two payload shapes to a list of CVE ids. Returns
@@ -475,13 +542,29 @@ module System
           .first
       end
 
-      def emit_event(kind:, payload:, correlation_id: nil)
+      # IMP-60717919d4a0 — the standing alarm for exposures CvePublishedSensor
+      # no longer sees. That sensor is a fresh-detection lane bounded by its
+      # window; an exposure still `open` past it would otherwise never be
+      # mentioned again. Runs against the sensor's OWN resolved window so the
+      # two lanes are complementary by construction (fresh → decisions; aged →
+      # one durable FleetEvent per CVE per window). Never takes the tick down:
+      # the decisions above are already made, and a failure here is logged at
+      # error so it is not silent.
+      def escalate_aged_exposures!
+        lookback = sensor_instance(::System::CveOps::Sensors::CvePublishedSensor).detection_lookback
+        ::System::CveOps::AgedExposureEscalator.new(account: account, lookback: lookback).escalate!
+      rescue StandardError => e
+        Rails.logger.error("[CveResponder] aged-exposure escalation failed: #{e.class}: #{e.message}")
+        0
+      end
+
+      def emit_event(kind:, payload:, correlation_id: nil, severity: :low)
         return unless defined?(::System::Fleet::EventBroadcaster)
 
         ::System::Fleet::EventBroadcaster.emit!(
           account: account,
           kind: kind,
-          severity: :low,
+          severity: severity,
           payload: payload,
           source: "cve_responder",
           correlation_id: correlation_id

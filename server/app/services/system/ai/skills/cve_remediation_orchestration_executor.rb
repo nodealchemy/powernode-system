@@ -38,10 +38,18 @@ module System
       #     tick, after which CvePublishedSensor was quiet forever. Now the
       #     exposure stays `open`, so that sensor re-emits `cve_pub:<cve_id>`
       #     each tick past its 600s dedup TTL and — under notify_and_proceed —
-      #     re-runs this whole orchestration roughly every 10 minutes until an
-      #     operator acts. That repetition IS the alarm; it has no backoff, and
-      #     `open_operator_request?` does not absorb it because that only
-      #     covers the require_approval path.
+      #     re-runs this whole orchestration roughly every 10 minutes, with no
+      #     backoff; `open_operator_request?` does not absorb it because that
+      #     only covers the require_approval path.
+      #   - IMP-60717919d4a0 — that repetition is NOT a standing alarm, and
+      #     an earlier version of this note wrongly said it ran "until an
+      #     operator acts". CvePublishedSensor selects `detected_at` inside
+      #     its detection window (24h default, SiteSetting-resolved), and
+      #     `detected_at` is never refreshed, so the re-runs stop after one
+      #     window whether or not anyone acted. Past the window the exposure
+      #     stays visible through System::CveOps::AgedExposureEscalator's
+      #     `cve_responder.exposure_aged_out` FleetEvent (one per CVE per
+      #     window, run from the CVE Responder tick).
       #
       # Why this exists (separate from CveResponseExecutor):
       #   CveResponseExecutor is a *planner* — it returns a plan but doesn't
@@ -183,8 +191,11 @@ module System
           # ok:false on its `cve_responder.inline_dispatch` FleetEvent instead
           # of an unqualified success over an empty run. That caller logs and
           # emits — it does not retry — so `failure` here costs no retry storm.
-          # (That FleetEvent kind currently has no consumer, so the operator's
-          # real surfaces are the error string and the still-open exposure.)
+          # Since IMP-60717919d4a0 the caller also carries this message on
+          # that event (`payload.error`, severity medium, correlated to
+          # `cve_pub:<cve_id>`) and on its log line, so the string below IS
+          # what an operator reads; before that it was dropped on the only
+          # production path.
           # Partial progress stays `success`: something IS in flight, and the
           # blocked module is still named in skipped_modules.
           #
