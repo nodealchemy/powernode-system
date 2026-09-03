@@ -220,7 +220,13 @@ system_expose_service_local
 ```
 
 This is **approval-gated** — via the Concierge it raises an inline Approve/Reject
-card (skill **Expose Service Locally**) before it runs.
+card (skill **Expose Service Locally**) before it runs. The gate is
+`system.expose_service_local`, owned by the **Ingress Manager** since HIER-P2DECL
+(seeded in wave 2, HIER-P2D — [`../INGRESS_MANAGER_AGENT.md`](../INGRESS_MANAGER_AGENT.md)),
+as are the public expose verbs, ACME issuance and `system.service_backends_update`;
+an approval parks on the `Ingress Manager Actions` chain (4h, reject on timeout).
+Tune the verb on that agent's row — not on Fleet Autonomy, which no longer
+carries it.
 
 **Option B — create first, expose later:**
 
@@ -235,6 +241,9 @@ system_expose_service_local  service_id: <id>  auth_mode: scoped  required_permi
 - `system_update_service` — change name/protocol/status/backend (identity + plumbing
   only; it will **not** flip `local_enabled` — exposure semantics are owned by the
   approval-gated expose action). Regenerates the proxy if the service is exposed.
+  It *can* repoint the backend of a live exposed service with no approval, which is
+  why it is an **operator** door: the Ingress Manager agent is not granted it and
+  repoints through the gated `system_set_service_backends` instead.
 - `system_unexpose_service_local` — fail-safe **off** (no approval); keeps the record.
 - `system_set_service_backends` — the load-balanced backend set + per-service
   overrides (approval-gated, see *Who maintains the set* above).

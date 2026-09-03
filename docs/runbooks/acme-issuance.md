@@ -22,6 +22,20 @@ engineers, security operators.
 > [MCP tool catalog](../../../../docs/reference/auto/mcp-tools.md)). The REST
 > API (`/api/v1/system/acme_certificates`, `/api/v1/system/acme_dns_credentials`)
 > and the operator UI remain available for the same operations.
+>
+> **Owning agents (HIER-P2D):** issuance (`system_acme_provision_certificate`,
+> gate `system.acme_certificate_provision`, `require_approval`) is the
+> **Ingress Manager**'s — the agent that owns the exposure the certificate
+> serves ([`../INGRESS_MANAGER_AGENT.md`](../INGRESS_MANAGER_AGENT.md)).
+> Renewal is **Fleet Autonomy**'s: `CertExpirySensor` runs on the fleet tick and
+> its `system.acme_cert_expiring` binding fires the `platform_maintenance`
+> `cert_rotate` sweep under `system.acme_cert_rotate` (`notify_and_proceed`) —
+> a fleet-health remediation over certificates the platform already holds, with
+> no issuance decision in it, which is why it did not move with the ingress group.
+> The Ingress Manager holds **neither** `system_acme_renew_certificate`,
+> `system_acme_revoke_certificate` **nor** `system_acme_create_dns_credential`:
+> all three are `mutating: true` with no `action_category`, so no intervention
+> policy covers them — Step 4 and Step 5 below stay operator/UI procedures.
 
 ## Architecture summary
 
