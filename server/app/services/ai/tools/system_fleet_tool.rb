@@ -417,6 +417,17 @@ module Ai
       # gives; that the two agree is pinned by
       # spec/services/ai/tools/system_fleet_volume_snapshot_gating_spec.rb.
       VOLUME_SNAPSHOT_DELETE_CATEGORY = "system.volume_snapshot_delete"
+      # IMP-0b4f18ae4384 — the category system_gitops_apply_proposal gates
+      # on. Already seeded, unlike the two above: System::Governance::
+      # PolicyDeclarations::GITOPS_RECONCILER_POLICIES has carried it as
+      # require_approval ("applies a diff to live fleet state") since the
+      # GitOps slice shipped, and nothing evaluated it — the verb's
+      # declaration was `mutating: true` alone, so BaseTool#gated_action? was
+      # false and #execute went straight to #call. Restated here for the
+      # class-body-evaluation reason POOL_CREATE_CATEGORY gives; that the two
+      # agree is pinned by
+      # spec/services/ai/tools/system_fleet_gitops_apply_gating_spec.rb.
+      GITOPS_APPLY_PROPOSAL_CATEGORY = "system.gitops_apply_proposal"
       # The columns a "raise" is measured on — the two the replenish tick
       # spends up to. min_size is not one of them: it cannot raise the ceiling.
       POOL_CEILING_ATTRIBUTES     = %i[target_size max_size].freeze
@@ -458,12 +469,13 @@ module Ai
       # consulted. On :proceed the response is what it always was
       # (`terminated: true` + the instance); on require_approval it parks.
       #
-      # SCOPE, stated so this is not read as more than it is. FIVE verbs on
+      # SCOPE, stated so this is not read as more than it is. SEVEN verbs on
       # this tool are gate-routed: system_terminate_instance (this one),
       # system_create_instance_pool and system_update_instance_pool
-      # (IMP-067f39468350, declared below), and system_replace_instance /
+      # (IMP-067f39468350, declared below), system_replace_instance /
       # system_reap_instance (IMP-4e49eb79c5e0, the DR lane's two doors, also
-      # below). The authoritative census is
+      # below), system_delete_volume_snapshot (IMP-e025722ef14e) and
+      # system_gitops_apply_proposal (IMP-0b4f18ae4384). The authoritative census is
       # server/spec/services/ai/tools/action_declaration_completeness_spec.rb
       # (GATE_ROUTED_ACTIONS) in core, which reds if this sentence and the
       # declarations drift apart. Nothing else on this tool meets a gate.
@@ -636,7 +648,36 @@ module Ai
       declare_action "system_get_task", mutating: false
       declare_action "system_get_template", mutating: false
       declare_action "system_get_volume", mutating: false
-      declare_action "system_gitops_apply_proposal", mutating: true
+      # IMP-0b4f18ae4384 — THE ONE GITOPS WRITE THAT REACHES LIVE FLEET STATE.
+      # System::Gitops::ApplyService turns an approved Ai::AgentProposal into
+      # template/module/assignment/pool/platform rows. The seeded
+      # GITOPS_RECONCILER_POLICIES row for this category read as an approval
+      # gate in the Autonomy modal while `mutating: true` alone armed nothing:
+      # a self-describing control that suppressed its own audit. Same shape as
+      # system_delete_volume_snapshot above — the generic replay executor, and
+      # a gate context that resolves the proposal under the account BEFORE
+      # parking so an unknown or foreign id keeps its inline error instead of
+      # becoming an approval that could only ever fail.
+      #
+      # The AgentProposal's own approve step is a DIFFERENT gate: it decides
+      # whether the diff is wanted; this one decides whether an agent may
+      # write it.
+      #
+      # THE DOOR CENSUS, so this is not read as more than it is. Three call
+      # sites reach ApplyService.apply!; this declaration gates ONE of them.
+      # System::Gitops::Reconciler#auto_apply_proposal (reconciler.rb:216)
+      # calls it directly under the repository's own auto_apply opt-in, and
+      # System::Fleet::DecisionEngine#apply_gitops_drift (decision_engine.rb:
+      # 1610) calls it directly for proposals a human already approved, under
+      # the DIFFERENT category system.gitops_drift_remediate (seeded
+      # notify_and_proceed, i.e. no approval). Both sit below this chokepoint;
+      # closing them is not this increment.
+      declare_action "system_gitops_apply_proposal",
+                     mutating: true,
+                     action_category: GITOPS_APPLY_PROPOSAL_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :gitops_apply_proposal_gate_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_gitops_get_drift_report", mutating: false
       declare_action "system_gitops_get_sync_run", mutating: false
       declare_action "system_gitops_register_repository", mutating: true
@@ -2086,7 +2127,7 @@ module Ai
 
           # === Missing-features slice 6b — GitOps apply path ===
           "system_gitops_apply_proposal" => {
-            description: "Apply an approved GitOps proposal — executes the diff against the DB (creates/updates templates, modules, assignments). Errors with stale_conflict if reality drifted post-proposal. v1 supports template/module/assignment kinds; destroy + provider_config remain follow-ups.",
+            description: "Apply an approved GitOps proposal — executes the diff against the DB (creates/updates templates, modules, assignments). APPROVAL-GATED (system.gitops_apply_proposal): when policy requires approval this returns {pending: true} with a deferred_operation_id and NOTHING is applied until an operator approves — do not retry and do not report the diff as applied on that response. Errors with stale_conflict if reality drifted post-proposal. v1 supports template/module/assignment kinds; destroy + provider_config remain follow-ups.",
             parameters: {
               proposal_id: { type: "string", required: true, description: "Ai::AgentProposal id (must be in 'approved' status with proposed_changes.source = 'gitops')" }
             }
@@ -7626,6 +7667,31 @@ module Ai
           failed[:data][:stale_conflict] = true if result.stale_conflict
           failed
         end
+      end
+
+      # The gated apply's context (IMP-0b4f18ae4384). The generic
+      # BaseTool#deferred_tool_call_context packs the replay and refuses an
+      # unattributed caller; this resolves the proposal under the account
+      # FIRST — the same scoped `find` #gitops_apply_proposal opens with, so
+      # an unknown or foreign id answers with the identical RecordNotFound
+      # message rather than parking an approval an operator then has to
+      # dispose of (BaseTool#run_through_autonomy_gate converts that raise to
+      # the error envelope). ApplyService's own preconditions (status,
+      # source, diff shape) are deliberately NOT re-derived here: they are
+      # evaluated at apply time on replay, and a proposal's status can
+      # legitimately change between the park and the approval.
+      # source_type/source_id anchor the operation to the row — that is what
+      # arms Ai::DeferredOperation#assert_source_within_account! — and the
+      # description names the proposal the operator is being asked to write
+      # to the fleet: row values, never caller-supplied ones.
+      def gitops_apply_proposal_gate_context(params)
+        proposal = ::Ai::AgentProposal.where(account_id: @account.id).find(params[:proposal_id])
+
+        deferred_tool_call_context(params).merge(
+          source_type: "Ai::AgentProposal",
+          source_id: proposal.id,
+          description: "Apply GitOps proposal '#{proposal.title}' — writes the proposed diff to live fleet state"
+        )
       end
 
       # === Provider catalog ===

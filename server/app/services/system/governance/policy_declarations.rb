@@ -873,6 +873,20 @@ module System
         "system.disk_image_webhook_rotate_secret" => "notify_and_proceed" # invalidates old, but recoverable
       }.freeze
 
+      # system.gitops_apply_proposal is EVALUATED by Ai::Tools::SystemFleetTool's
+      # declare_action on system_gitops_apply_proposal (IMP-0b4f18ae4384) —
+      # the verb parks through Ai::AutonomyGate on the generic replay
+      # executor. Until that declaration it was decoration: a row an operator
+      # could read and tune that no gate ever consulted. This set is written
+      # at scope "agent" against the GitOps Reconciler, so it binds only a
+      # call made AS that agent — and the reconciler's own auto_apply lane
+      # calls System::Gitops::ApplyService directly rather than the MCP verb,
+      # so in practice every caller that meets the new gate (an operator, or
+      # any other agent) resolves the unmatched default, which is
+      # require_approval. Tuning this row is therefore not yet the operator
+      # control it reads as; an operator-shape (scope "global") set is the
+      # follow-up. The two siblings are declared `mutating:` only and meet no
+      # gate.
       GITOPS_RECONCILER_POLICIES = {
         "system.gitops_apply_proposal"      => "require_approval",  # applies a diff to live fleet state
         "system.gitops_register_repository" => "require_approval",  # adds a new declarative source of truth

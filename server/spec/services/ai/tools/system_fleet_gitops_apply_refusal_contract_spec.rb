@@ -31,7 +31,10 @@ require "rails_helper"
 # would prove neither.
 RSpec.describe Ai::Tools::SystemFleetTool, "GitOps apply refusal contract (IMP-4a3a45df69bc)" do
   let(:account) { create(:account) }
-  let(:operator) { create(:user, account: account, permissions: [ "system.modules.update" ]) }
+  # system.nodes.read is the tool floor Ai::Executors::DeferredToolCall
+  # re-asks for before replaying the call (IMP-0b4f18ae4384 gated the verb;
+  # see system_fleet_gitops_apply_gating_spec.rb).
+  let(:operator) { create(:user, account: account, permissions: %w[system.nodes.read system.modules.update]) }
   let(:agent) { create(:ai_agent, account: account) }
   let(:platform) { create(:system_node_platform, account: account) }
 
@@ -55,6 +58,15 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps apply refusal contract (IMP-4
         diff: diff, source: source,
         repository_id: gitops_repo.id, commit_sha: "abc123"
       }
+    )
+  end
+
+  # IMP-0b4f18ae4384 — the verb is approval-gated; this spec is about the
+  # envelope the APPLY returns, so it opts into the :proceed branch, where the
+  # replay's result is handed back verbatim.
+  before do
+    allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+      { policy: "auto_approve", channels: [], conditions: {}, record: nil }
     )
   end
 

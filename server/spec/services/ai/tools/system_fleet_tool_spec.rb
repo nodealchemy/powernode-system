@@ -4076,6 +4076,11 @@ end
   end
 
   describe "Missing-features slice 6b — GitOps apply path" do
+    # IMP-0b4f18ae4384 — the verb is approval-gated; these examples assert
+    # the APPLIED state, so they opt into the :proceed branch. The gate
+    # itself is pinned in system_fleet_gitops_apply_gating_spec.rb.
+    before { auto_approve_policy! }
+
     let!(:gitops_repo) do
       ::System::GitopsRepository.create!(
         account: account, name: "apply-test",
