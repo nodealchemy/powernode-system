@@ -52,7 +52,13 @@ module System
           }
         )
 
-        binds_to "Fleet Autonomy", "System Concierge"
+        # HIER-P2D: issuance is the Ingress Manager's (system.acme_certificate_provision
+        # moved off Fleet Autonomy with the ingress group). Fleet Autonomy is
+        # dropped: no SIGNAL_BINDINGS entry routes to this executor — the
+        # sensor-routed system.acme_cert_rotate renewal lane fires
+        # PlatformMaintenanceExecutor and stays Fleet Autonomy's. System
+        # Concierge keeps the operator-chat door.
+        binds_to "ingress_manager", "System Concierge"
 
         protected
 
