@@ -439,6 +439,50 @@ if [ "$needs_parent" = "1" ]; then
     printf 'core_source_remote=%s\n' "${parent_host}/${parent_path}"
   } > /tmp/parent-provenance.env
   echo "[stage-1.5] core provenance: ${core_source_sha} from ${parent_host}/${parent_path}"
+
+  # --- BEGIN build identity (BUILD_INFO.json) ---
+  # What the running platform can truthfully say about itself. The staged
+  # server/worker trees ship WITHOUT .git (see the rsync --exclude below), so
+  # Powernode::Version's `git rev-parse` is structurally "unknown" on a node,
+  # and the Vite bundle is static files behind Caddy with no runtime env at
+  # all. This file is the ONE carrier for both: it is copied into
+  # /opt/powernode/{server,worker}/BUILD_INFO.json and exported as
+  # POWERNODE_BUILD_INFO_JSON to the frontend build (vite.config.ts bakes it
+  # into the __BUILD_INFO__ define).
+  #
+  # `release` is deliberately strict: an exact X.Y.Z tag (no "v" prefix —
+  # CLAUDE.md's convention) that equals the VERSION file AND refs/heads/master
+  # pointing at this very commit. A hotfix on master past the tag, a develop
+  # build, or a build of a tag whose VERSION file disagrees all display the
+  # 7-char sha instead. The parent clone is depth-1 and detached, so branch
+  # and tag are read from the remote's refs (ls-remote), never from the
+  # checkout; output is never echoed because the origin URL can carry a token.
+  build_version="$(tr -d '[:space:]' < /tmp/parent/VERSION 2>/dev/null || true)"
+  [ -n "$build_version" ] || build_version="0.0.0"
+  build_short_sha="$(printf '%s' "$core_source_sha" | cut -c1-7)"
+  remote_refs="$(git -C /tmp/parent ls-remote --heads --tags origin 2>/dev/null || true)"
+  build_tag="$(printf '%s\n' "$remote_refs" | awk -v s="$core_source_sha" '$1==s && $2 ~ /^refs\/tags\// { t=$2; sub("^refs/tags/","",t); sub("\\^\\{\\}$","",t); print t }' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+  master_sha="$(printf '%s\n' "$remote_refs" | awk '$2=="refs/heads/master" {print $1}' | head -1)"
+  branch_candidates="$(printf '%s\n' "$remote_refs" | awk -v s="$core_source_sha" '$1==s && $2 ~ /^refs\/heads\// { b=$2; sub("^refs/heads/","",b); print b }')"
+  if printf '%s\n' "$branch_candidates" | grep -qx master; then
+    build_branch=master
+  elif printf '%s\n' "$branch_candidates" | grep -qx develop; then
+    build_branch=develop
+  else
+    build_branch="$(printf '%s\n' "$branch_candidates" | head -1)"
+  fi
+  [ -n "$build_branch" ] || build_branch="unknown"
+  build_release=false
+  if [ -n "$build_tag" ] && [ "$build_tag" = "$build_version" ] && [ -n "$master_sha" ] && [ "$master_sha" = "$core_source_sha" ]; then
+    build_release=true
+  fi
+  build_built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{"version":"%s","sha":"%s","short_sha":"%s","branch":"%s","tag":%s,"release":%s,"built_at":"%s","source":"module-build"}\n' \
+    "$build_version" "$core_source_sha" "$build_short_sha" "$build_branch" \
+    "$( [ -n "$build_tag" ] && printf '"%s"' "$build_tag" || printf null )" "$build_release" "$build_built_at" \
+    > /tmp/parent-build-info.json
+  echo "[stage-1.5] build identity: version=${build_version} sha=${build_short_sha} branch=${build_branch} tag=${build_tag:-none} release=${build_release}"
+  # --- END build identity ---
   # --- END core-source provenance capture ---
 fi
 
@@ -618,6 +662,8 @@ case "$MODULE" in
       --exclude='.git' --exclude='node_modules' --exclude='tmp' \
       --exclude='log' --exclude='coverage' --exclude='extensions' \
       /tmp/parent/server/ /tmp/fat/opt/powernode/server/
+    # Build identity for Powernode::Version (see the BUILD_INFO block above).
+    [ -f /tmp/parent-build-info.json ] && cp /tmp/parent-build-info.json /tmp/fat/opt/powernode/server/BUILD_INFO.json
     # extensions_loader_helper.rb is required by the Gemfile
     cp /tmp/parent/extensions_loader_helper.rb /tmp/fat/opt/powernode/extensions_loader_helper.rb
     # Startup scripts (powernode-backend.sh etc.)
@@ -662,6 +708,7 @@ case "$MODULE" in
     rsync -a \
       --exclude='.git' --exclude='node_modules' --exclude='tmp' --exclude='log' \
       /tmp/parent/worker/ /tmp/fat/opt/powernode/worker/
+    [ -f /tmp/parent-build-info.json ] && cp /tmp/parent-build-info.json /tmp/fat/opt/powernode/worker/BUILD_INFO.json
 
     # --- Vendor worker gems offline (same rationale as hub-backend) ---
     # The worker Gemfile has no extension path gems, so its lock is
@@ -770,6 +817,12 @@ case "$MODULE" in
         # the block above found no extension source to stage).
         if [ -d /tmp/parent/extensions/system/frontend ]; then
           ln -sfn ../../../frontend/node_modules /tmp/parent/extensions/system/frontend/node_modules
+        fi
+        # Build identity for the __BUILD_INFO__ define (vite.config.ts); the
+        # bundle is static files behind Caddy, so build time is the only time.
+        if [ -f /tmp/parent-build-info.json ]; then
+          POWERNODE_BUILD_INFO_JSON="$(cat /tmp/parent-build-info.json)"
+          export POWERNODE_BUILD_INFO_JSON
         fi
         npm run build
       ) 1>&2; then
