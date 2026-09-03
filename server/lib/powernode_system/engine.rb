@@ -595,6 +595,41 @@ module PowernodeSystem
       end
     end
 
+    # HIER-P2F (the HIER-P1B open question) — register this extension's
+    # policy-domain table with core's Claude-export seam.
+    #
+    # Ai::ClaudeExport::PolicyDomains answers "which DOMAIN owns this
+    # intervention-policy category" for two core consumers: the Claude Code
+    # skeleton exporter (Ai::ClaudeExport::AgentSkeletonSync, whose routing
+    # descriptions list an agent's policy domains as triggers) and the router's
+    # domain dimension. Core cannot name System::AutonomyActions::DOMAIN_PREFIXES
+    # (Extension Isolation), so until now it fell back to a leading-token
+    # heuristic — "system.instance_pool_replenish" read as "instance",
+    # "system.sdwan_federation_compose" as "sdwan" rather than "topology". This
+    # hands it the real table, in the table's own first-match-wins order.
+    #
+    # `config.to_prepare`, not `after_initialize`, for the same reason the
+    # autonomy_categories block below uses it (IMP-8d444c6437a3): PolicyDomains
+    # is an autoloaded core module whose registry is a module ivar, so a
+    # dev-mode reload empties it; to_prepare re-registers after every reload.
+    # Guarded per DOMAIN so a prepare cycle that did NOT reload the module
+    # (registry intact) does not append a second copy of every entry.
+    initializer "powernode_system.claude_export_policy_domains", after: :load_config_initializers do
+      config.to_prepare do
+        next unless defined?(::Ai::ClaudeExport::PolicyDomains)
+        next unless defined?(::System::AutonomyActions)
+
+        registered = ::Ai::ClaudeExport::PolicyDomains.registered.map(&:first)
+        ::System::AutonomyActions::DOMAIN_PREFIXES.each do |domain, prefixes|
+          next if registered.include?(domain)
+
+          ::Ai::ClaudeExport::PolicyDomains.register(domain, prefixes)
+        end
+      rescue StandardError => e
+        Rails.logger.warn "[PowernodeSystem] Could not register Claude-export policy domains: #{e.message}"
+      end
+    end
+
     # IMP-8880bc817ea3 — OVN container-fabric hook. Core fires :created /
     # :removed for every Devops::DockerContainer record from its
     # ContainerLifecycleRegistry seam (no-op in core mode); this registers the
