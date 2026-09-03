@@ -27,6 +27,7 @@ begin
     created_by_account = {}
     skipped_by_account = {}
     shadowed_by_account = {}
+    rehomed_by_account = {}
     failed = []
 
     Account.find_each do |account|
@@ -38,6 +39,7 @@ begin
         created_by_account[account.id] = result.created_categories if result.changed?
         skipped_by_account[account.id] = result.skipped_sets if result.skipped_sets.any?
         shadowed_by_account[account.id] = result.shadowed if result.shadowed.any?
+        rehomed_by_account[account.id] = result.rehomed if result.rehomed.any?
       rescue StandardError => e
         # One bad account must not stop the rest.
         failed << { account_id: account.id, error: "#{e.class}: #{e.message}" }
@@ -48,10 +50,19 @@ begin
     # ALWAYS printed, including the created=0 steady state.
     warn "[governance-reconcile] accounts=#{accounts} created=#{created_total} " \
          "already_present=#{present_total} skipped_sets=#{skipped_by_account.values.sum(&:size)} " \
-         "shadowed=#{shadowed_by_account.values.sum(&:size)} failed=#{failed.size}"
+         "shadowed=#{shadowed_by_account.values.sum(&:size)} " \
+         "rehomed=#{rehomed_by_account.values.sum(&:size)} failed=#{failed.size}"
 
     created_by_account.each do |account_id, categories|
       warn "[governance-reconcile]   account #{account_id} created: #{categories.join(', ')}"
+    end
+
+    # A re-homed row MOVED agent (HIER-P2A): its declared owner changed and
+    # the reconciler updated ai_agent_id in place, verb and tuning preserved,
+    # with an AuditLog row. Named per row because it is the one mutation here
+    # that touches an existing row an operator may have tuned.
+    rehomed_by_account.each do |account_id, rows|
+      warn "[governance-reconcile]   account #{account_id} re-homed onto declared owner: #{rows.join(', ')}"
     end
 
     # A skipped set is a whole policy group NOT reconciled — most likely its

@@ -9,8 +9,10 @@ require Rails.root.join(
 #
 # Dropping system.architecture_<verb> from PolicyDeclarations stops the rows
 # being CREATED. It does nothing about the ones every running install already
-# has: PolicyReconciler is absence-only (creates a missing declared row, never
-# updates or deletes), and db/seeds runs on first boot only. So the disposition
+# has: PolicyReconciler is absence-only (creates a missing declared row; since
+# HIER-P2A it also re-homes one whose declared OWNER changed, rewriting
+# ai_agent_id alone — it never touches a verb and never deletes), and db/seeds
+# runs on first boot only. So the disposition
 # is SWEEP, and the sweep is this migration — which means the migration, not
 # the constant, is what an operator's install actually executes.
 #

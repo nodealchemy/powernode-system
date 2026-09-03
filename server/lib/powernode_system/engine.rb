@@ -570,7 +570,8 @@ module PowernodeSystem
         ::AuditActions.register_actions(
           "system",
           ::System::LifecycleAuditable::AUDITED_ACTIONS +
-            ::System::InternalCaService::AUDITED_ACTIONS
+            ::System::InternalCaService::AUDITED_ACTIONS +
+            ::System::Governance::PolicyReconciler::AUDITED_ACTIONS
         )
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not register audit actions: #{e.message}"
@@ -688,8 +689,9 @@ module PowernodeSystem
         # them validates uniformly.
         #
         # Only the three COMPOSE categories are listed here now:
-        # system.federation_peer_remediate is declared on Fleet Autonomy and so
-        # arrives through the derivation above. Of the three, only
+        # system.federation_peer_remediate is declared on the SDWAN Manager
+        # (PolicyDeclarations::SDWAN_REMEDIATION_POLICIES, since HIER-P2A) and
+        # so arrives through the derivation above. Of the three, only
         # system.sdwan_federation_compose is declared by NO policy set — the
         # explicit name below is its sole registration. The other two are no
         # longer in that position: the branch-health pass of 2026-09-02
@@ -762,8 +764,10 @@ module PowernodeSystem
 
         # GitOps Reconciler domain — operator-initiated gitops actions, seeded
         # by db/seeds/system_gitops_reconciler_agent.rb. (The AUTONOMOUS
-        # system.gitops_drift_remediate lives on Fleet Autonomy above, because
-        # GitopsDriftSensor runs in FleetAutonomyService::SENSORS.)
+        # system.gitops_drift_remediate is declared HERE too since HIER-P2A:
+        # GitopsDriftSensor still runs on the Fleet Autonomy tick, but its
+        # DecisionEngine binding declares owner: "gitops-reconciler", so the
+        # decision gates under this agent's row.)
 
         # CVE Responder domain
 

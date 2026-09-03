@@ -27,9 +27,12 @@ namespace :system do
         if result.shadowed.any?
           puts "  [#{account.id}] now shadowing a global row: #{result.shadowed.join(', ')}"
         end
+        if result.rehomed.any?
+          puts "  [#{account.id}] re-homed #{result.rehomed.size} onto their declared owner: #{result.rehomed.join(', ')}"
+        end
         next unless result.changed?
 
-        puts "  [#{account.id}] created #{result.created}: #{result.created_categories.join(', ')}"
+        puts "  [#{account.id}] created #{result.created}: #{result.created_categories.join(', ')}" if result.created.positive?
       end
 
       puts(total.zero? ? "✅ Governance policies already in sync" : "✅ Governance reconcile created #{total} row(s)")

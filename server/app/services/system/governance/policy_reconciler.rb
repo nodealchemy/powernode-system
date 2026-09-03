@@ -64,10 +64,44 @@ module System
     #
     # What it still cannot do is override intent: absence-only means an
     # operator's tuned row is never touched, and nothing here deletes.
+    #
+    # THE ONE EXCEPTION TO "NEVER TOUCH AN EXISTING ROW": RE-HOMING ---------
+    # (HIER-P2A.) A declared key can MOVE from agent A's set to agent B's — the
+    # 14 SDWAN remediation rows moved from Fleet Autonomy to SDWAN Manager once
+    # the fleet tick learned to gate each binding under its declared owner. On
+    # an established install that leaves the row on A, possibly with an
+    # operator-tuned verb, possibly deactivated. Absence-only would create a
+    # fresh DEFAULT row on B (the operator's tuning lost on the agent that now
+    # decides) and leave the tuned one stale on A (a decoy on the agent that no
+    # longer reads it). So when B lacks a declared key and A — a DECLARED agent
+    # whose sets no longer declare that key — has it, the row is RE-HOMED:
+    # ai_agent_id updated in place, verb / is_active / conditions / priority
+    # PRESERVED, an AuditLog row written. Still never a verb change, still
+    # never a delete. Idempotent: once moved, the row is simply present on B.
+    #
+    # WHAT THIS PROTECTS, EXACTLY. The candidate test is structural, not a
+    # record of who created the row: it is re-homable when it sits on a
+    # DECLARED agent (one in AGENT_IDENTITIES) whose sets no longer declare
+    # that category. So a row on an agent OUTSIDE AGENT_IDENTITIES is never
+    # touched. That is not the same claim as "an operator's own row is never
+    # touched": System::AutonomyActions#update takes an arbitrary agent_id and
+    # does not check that the agent declares the category, so an operator CAN
+    # hold an agent-shape row on one of the declared agents, and if the
+    # declared owner happens to lack that row it will be moved. The AuditLog
+    # row is the record of that; narrowing the candidate to an explicit
+    # former-owner map is the fix if it ever bites.
     class PolicyReconciler
+      # The audit action every re-home writes. Registered into the core
+      # AuditActions seam by lib/powernode_system/engine.rb beside the
+      # lifecycle and CA audit vocabularies; AuditLog#action validates against
+      # that union, so an unregistered token would make every re-home raise —
+      # and roll back — rather than land unrecorded.
+      REHOME_AUDIT_ACTION = "system.intervention_policy.rehomed"
+      AUDITED_ACTIONS = [ REHOME_AUDIT_ACTION ].freeze
+
       Result = Struct.new(:created, :already_present, :created_categories,
-                          :skipped_sets, :shadowed, keyword_init: true) do
-        def changed? = created.positive?
+                          :skipped_sets, :shadowed, :rehomed, keyword_init: true) do
+        def changed? = created.positive? || Array(rehomed).any?
       end
 
       DriftReport = Struct.new(:missing, :present, :skipped_sets, keyword_init: true) do
@@ -86,15 +120,25 @@ module System
         # That is the flagship scenario the reconciler was built for, and it was
         # the one it stayed silent about.
         def drifted? = missing.any? || skipped_sets.any?
+
+        # The subset of `missing` that reconcile! would satisfy by MOVING an
+        # existing row from its former owner rather than creating one — named
+        # so an operator reading the report before a deploy knows which of
+        # their tuned rows are about to change agent.
+        def rehomable = missing.select(&:rehome_from)
       end
 
       # One declared row that the database lacks. `to_s` is what the rake task
       # and the boot summary print, so it names the SET as well as the category
       # — the same category is declared by more than one set (instance-pool
       # declares eight at the agent shape and its gated four at the operator
-      # shape) and "which one is missing" is the whole question.
-      MissingRow = Struct.new(:set_key, :action_category, :policy, keyword_init: true) do
-        def to_s = "#{set_key}/#{action_category}"
+      # shape) and "which one is missing" is the whole question. `rehome_from`
+      # is the NAME of the former-owner agent still holding the row, when one
+      # does.
+      MissingRow = Struct.new(:set_key, :action_category, :policy, :rehome_from, keyword_init: true) do
+        def to_s
+          rehome_from ? "#{set_key}/#{action_category} (re-home from #{rehome_from})" : "#{set_key}/#{action_category}"
+        end
       end
 
       def initialize(account:, logger: Rails.logger)
@@ -107,6 +151,7 @@ module System
       def reconcile!
         created = []
         shadowed = []
+        rehomed = []
         present = 0
         skipped = []
 
@@ -121,6 +166,18 @@ module System
             if existing.include?(action_category)
               present += 1
               next
+            end
+
+            if (stale = rehomable_row(set, agent, action_category))
+              # Name the FORMER owner before the move: rehome! rewrites
+              # ai_agent_id, and every arm of stale_owner_name keys off that
+              # column, so reading it afterwards reports the destination.
+              former_owner = stale_owner_name(stale)
+
+              if rehome!(stale, set, agent)
+                rehomed << "#{set[:key]}/#{action_category} (from #{former_owner})"
+                next
+              end
             end
 
             ::Ai::InterventionPolicy.create!(
@@ -155,13 +212,20 @@ module System
             "for account #{@account.id}: #{created.join(', ')}"
           )
         end
+        unless rehomed.empty?
+          @logger.info(
+            "[GovernanceReconciler] re-homed #{rehomed.size} policy row(s) onto their declared owner " \
+            "for account #{@account.id}: #{rehomed.join(', ')}"
+          )
+        end
 
         Result.new(
           created: created.size,
           already_present: present,
           created_categories: created,
           skipped_sets: skipped,
-          shadowed: shadowed
+          shadowed: shadowed,
+          rehomed: rehomed
         )
       end
 
@@ -190,7 +254,9 @@ module System
             if existing.include?(action_category)
               present << "#{set[:key]}/#{action_category}"
             else
-              missing << MissingRow.new(set_key: set[:key], action_category: action_category, policy: verb)
+              stale = rehomable_row(set, agent, action_category)
+              missing << MissingRow.new(set_key: set[:key], action_category: action_category, policy: verb,
+                                        rehome_from: (stale_owner_name(stale) if stale))
             end
           end
         end
@@ -232,34 +298,124 @@ module System
       end
 
       # Resolve EXACTLY as the runtime does, or the rows land on an agent the
-      # gate never reads.
-      #
-      # `Ai::Agent.resolve_for` is override-aware: an account's own clone of a
-      # seeded agent WINS over the global row (`account_override_first`). Every
-      # gate site resolves that way — FleetAutonomyService.tick!, the CVE
-      # responder, and the tools. A bare `find_by(source_key:)` here has no
-      # account filter and no override precedence, so on any account holding an
-      # override it wrote rows against the GLOBAL agent id while the gate asked
-      # the OVERRIDE id: rows nothing reads, and a drift report that says
-      # "present" forever. That is the same defect class as reimplementing a
-      # resolution rule in ad-hoc SQL — the copy drifts from the original.
-      #
-      # source_key stays as a FALLBACK only, for an agent an operator renamed.
-      # It rescues less than it appears to: the runtime resolves by NAME, so a
-      # renamed agent has already killed its own tick ("agent not seeded") and
-      # these rows are staged for whenever the name is restored. Resolving the
-      # RUNTIME by source_key is the real fix and is not this class's to make.
+      # gate never reads. The rule lives in System::Governance::AgentResolver
+      # and is shared with FleetAutonomyService#for_owner — the reader — so the
+      # writer and the reader cannot drift apart (they did: a bare
+      # `find_by(source_key:)` here wrote rows against the GLOBAL agent id while
+      # the gate asked the account's OVERRIDE id, and the drift report said
+      # "present" forever).
       #
       # Memoized per (account, key) — the same agent backs several sets.
       def resolve_agent(agent_key)
         @agents ||= {}
         return @agents[agent_key] if @agents.key?(agent_key)
 
-        identity = PolicyDeclarations::AGENT_IDENTITIES[agent_key]
-        @agents[agent_key] =
-          (identity && ::Ai::Agent.resolve_for(@account.id, name: identity[:name],
-                                                            agent_type: identity[:agent_type])) ||
-          ::Ai::Agent.find_by(source_key: agent_key)
+        @agents[agent_key] = AgentResolver.resolve(account_id: @account.id, agent_key: agent_key)
+      end
+
+      # ---- re-homing ----------------------------------------------------------
+
+      # The row a FORMER owner still holds for a key now declared on `agent`,
+      # or nil. A former owner is a DECLARED agent (one of AGENT_IDENTITIES,
+      # resolved the same way) whose agent-scoped sets no longer declare the
+      # category; a row on any other agent is an operator's own and is never a
+      # candidate. Only agent-shape rows (scope "agent", no user) qualify — an
+      # operator-shape row is a different audience, not a former home.
+      #
+      # Deterministic: the oldest candidate wins. Two former owners holding the
+      # same key is not a state the declarations can produce (a category is
+      # declared on one agent), so a second candidate would be operator-made
+      # and is left where it is.
+      def rehomable_row(set, agent, action_category)
+        return nil unless set[:scope] == "agent" && agent
+
+        ::Ai::InterventionPolicy
+          .where(account: @account, scope: "agent", user_id: nil, action_category: action_category)
+          .where.not(ai_agent_id: [ nil, agent.id ])
+          .order(:created_at, :id)
+          .detect { |row| former_owner_key(row.ai_agent_id, action_category) }
+      end
+
+      # The declared key of the agent holding `agent_id`, when that agent's own
+      # sets do NOT declare `action_category` any more; nil otherwise.
+      def former_owner_key(agent_id, action_category)
+        key = declared_agent_ids[agent_id]
+        return nil unless key
+        return nil if declared_categories_for(key).include?(action_category)
+
+        key
+      end
+
+      # ai_agent_id → agent_key for every declared agent that resolves on this
+      # account. Built lazily from the same resolver the sets use.
+      def declared_agent_ids
+        @declared_agent_ids ||= PolicyDeclarations::AGENT_IDENTITIES.keys.each_with_object({}) do |key, ids|
+          resolved = resolve_agent(key)
+          ids[resolved.id] = key if resolved
+        end
+      end
+
+      def declared_categories_for(agent_key)
+        @declared_categories_for ||= Hash.new do |memo, key|
+          memo[key] = PolicyDeclarations::POLICY_SETS
+            .select { |s| s[:scope] == "agent" && s[:agent_key] == key }
+            .flat_map { |s| s[:policies].keys }
+            .to_set
+        end
+        @declared_categories_for[agent_key]
+      end
+
+      def stale_owner_name(row)
+        return nil unless row
+
+        row.agent&.name || declared_agent_ids[row.ai_agent_id] || row.ai_agent_id
+      end
+
+      # Move ONE row onto its declared owner, atomically with its audit row.
+      # Returns true on success; false (logged at error level) when either
+      # write fails, in which case the caller falls through to creating a
+      # fresh row on the owner exactly as before — the stale row stays where
+      # it was and the next drift report names it again. Preserves every
+      # attribute except ai_agent_id: the verb, is_active, conditions and
+      # priority are the operator's intent and travel with the row.
+      def rehome!(row, set, agent)
+        old_agent_id = row.ai_agent_id
+        old_key = declared_agent_ids[old_agent_id]
+
+        ::Ai::InterventionPolicy.transaction do
+          row.update!(ai_agent_id: agent.id)
+          write_rehome_audit!(row, set, old_agent_id, old_key, agent)
+        end
+        true
+      rescue StandardError => e
+        @logger.error(
+          "[GovernanceReconciler] could not re-home #{set[:key]}/#{row.action_category} " \
+          "from agent #{old_agent_id} to #{agent.id} for account #{@account.id}: #{e.class}: #{e.message}"
+        )
+        false
+      end
+
+      def write_rehome_audit!(row, set, old_agent_id, old_key, agent)
+        return unless defined?(::AuditLog)
+
+        ::AuditLog.log_action(
+          action: REHOME_AUDIT_ACTION,
+          resource: row,
+          user: nil,
+          account: @account,
+          old_values: { "ai_agent_id" => old_agent_id, "agent_key" => old_key },
+          new_values: { "ai_agent_id" => agent.id, "agent_key" => set[:agent_key] },
+          source: "system",
+          severity: "medium",
+          risk_level: "medium",
+          metadata: {
+            "set_key" => set[:key],
+            "action_category" => row.action_category,
+            "policy" => row.policy,
+            "is_active" => row.is_active,
+            "reason" => "declared owner changed; row re-homed by PolicyReconciler"
+          }
+        )
       end
 
       def existing_categories(set, agent)

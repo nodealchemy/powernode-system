@@ -26,7 +26,10 @@
 #   * db:seed runs on FIRST BOOT ONLY (rails-start.sh marker), so nothing in
 #     db/seeds reaches an install that is already up.
 #   * System::Governance::PolicyReconciler is ABSENCE-ONLY by design: it
-#     creates a declared row that is missing and never updates or deletes one.
+#     creates a declared row that is missing and never deletes one. (Since
+#     HIER-P2A it has ONE update arm — the owner re-home, which rewrites
+#     ai_agent_id and nothing else, and only when the declared owner of a key
+#     changed. It still never touches a verb, and it cannot remove a row.)
 #     Dropping the declaration strands the row rather than removing it.
 #   * db/seeds/system_autonomy_orphan_cleanup.rb would collect it on the ADMIN
 #     ACCOUNT ONLY, and it is a seed, so the first point applies regardless.

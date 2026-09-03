@@ -18,8 +18,11 @@
 #     db/seeds reaches an install that is already up — which is every install
 #     that has the rows.
 #   * System::Governance::PolicyReconciler is ABSENCE-ONLY by design: it creates
-#     a declared row that is missing and never updates or deletes one. Dropping
-#     the declaration therefore strands the row rather than removing it.
+#     a declared row that is missing and never deletes one. (Since HIER-P2A it
+#     has ONE update arm — the owner re-home, which rewrites ai_agent_id only,
+#     for a key whose declared owner changed. It never touches a verb and never
+#     removes a row.) Dropping the declaration therefore strands the row rather
+#     than removing it.
 #   * db/seeds/system_autonomy_orphan_cleanup.rb would collect them on the ADMIN
 #     ACCOUNT ONLY — it resolves System::Seeds::AgentSetupHelpers.admin_account
 #     and passes `account:` to both its count query and

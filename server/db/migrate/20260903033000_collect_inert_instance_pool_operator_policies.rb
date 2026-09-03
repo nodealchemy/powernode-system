@@ -19,8 +19,11 @@
 #     seed never reaches an install that is already up — which is every
 #     install that has the rows, this platform's own hub included.
 #   * System::Governance::PolicyReconciler is ABSENCE-ONLY by design: it
-#     creates a declared row that is missing and never updates or deletes one.
-#     Withdrawing the declaration therefore strands the rows.
+#     creates a declared row that is missing and never deletes one. (Since
+#     HIER-P2A it has ONE update arm — the owner re-home, which rewrites
+#     ai_agent_id only, for a key whose declared owner changed. It never
+#     touches a verb and never removes a row.) Withdrawing the declaration
+#     therefore strands the rows.
 #   * System::Seeds::AgentSetupHelpers.clean_stale_operator_policies! keys on
 #     scope "action_type"; these rows are scope "global".
 #   * db/seeds/system_autonomy_orphan_cleanup.rb collects only DEREGISTERED
