@@ -12,9 +12,13 @@ module System
       #     fingerprint: "stable-key" # used by DecisionEngine to dedup repeats
       #   }
       #
-      # Sensors are pure read-side: they may not mutate the database. The
-      # DecisionEngine is responsible for routing the signal to a skill and
-      # gating it via FleetAutonomyService.
+      # Sensors are read-side: they must not actuate or write anything a
+      # skill would (the DecisionEngine routes the signal to a skill and gates
+      # it via FleetAutonomyService). The one sanctioned write is a sensor
+      # persisting the SAMPLE it just took so a consumer can read it later —
+      # ReplicaLagSensor writes cluster_pg.replication_lag_bytes for
+      # PromoteReplicaExecutor's data-loss gate (IMP-5b38cd356010); it never
+      # manufactures a reading it did not take.
       class BaseSensor
         # IMP-ca485128072e (APO-2e) — the ONE threshold resolution seam.
         #

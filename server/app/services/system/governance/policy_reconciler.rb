@@ -74,16 +74,14 @@ module System
         # A SKIPPED set is drift, not a neutral outcome. An install that enables
         # this extension AFTER its first boot never seeds the agents (db:seed is
         # first-boot only — the whole argument this class exists for), so every
-        # agent set skips — 136 declared rows across 8 of the 13 sets, out of
-        # 207 declared in total. Counting only `missing` reported that install
-        # as CLEAN: the skipped set contributes no missing rows precisely
-        # because it was never examined. (Both figures are sums over
-        # PolicyDeclarations and move with it — they were "119 of 191" until
-        # APO-3b added platform-scaling and IMP-5a2b801f3386 trimmed the
-        # instance-pool OPERATOR set to its gated four; the prose those
-        # replaced said "~168 of 195", which did not match the constants even
-        # before IMP-944567d41689 shrank the manual set from 27 rows to 20.
-        # Recount, do not adjust: nothing asserts these.)
+        # agent set skips — the eight agent-keyed sets, which hold roughly
+        # two-thirds of every row PolicyDeclarations declares. Counting only
+        # `missing` reported that install as CLEAN: the skipped set contributes
+        # no missing rows precisely because it was never examined. (No literal
+        # counts here on purpose: they are sums over PolicyDeclarations and
+        # moved four times in a week — "~168 of 195", "119 of 191", "136 of
+        # 207", "133 of 206" — each revision leaving the previous one wrong;
+        # sum `POLICY_SETS` when a figure is needed; nothing asserts it.)
         #
         # That is the flagship scenario the reconciler was built for, and it was
         # the one it stayed silent about.

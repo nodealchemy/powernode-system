@@ -430,7 +430,9 @@ declared, the Registry:
 - **omits** the type from `Registry.available_providers` (`registered_providers` still lists every
   mapped type, operable or not);
 - answers `Registry.sdk_available?(type)` / `Registry.missing_sdk_gem(type)` /
-  `Registry.sdk_missing_message(type)`;
+  `Registry.sdk_missing_message(type)`, and folds them into the one refusal seam every
+  writer door is required to call: `Registry.sdk_refusal(type)` returns `nil` for a blank,
+  unmapped or operable type and the operator-actionable message otherwise;
 - raises `Registry::ProviderSdkMissingError` — a **subclass of `UnknownProviderError`**, so
   `with_adapter` and every existing rescue turn it into a `Runtime::Result.err` naming the gem —
   instead of letting the first call raise a bare `NameError` from inside the adapter.

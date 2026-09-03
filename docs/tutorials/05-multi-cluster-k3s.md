@@ -109,7 +109,7 @@ access.
 today nothing supplies it.** Two corrections to what this page used to say:
 
 - **Omitting it does not silently pick a cluster.** `resolve_membership_cluster!`
-  refuses to auto-select among several: with more than one active cluster and no
+  refuses to auto-select among several: with more than one non-error cluster and no
   `target_cluster_id` the join raises `AmbiguousClusterError` and the platform
   emits `system.k3s_ambiguous_cluster_join_refused` at severity `high`
   (`kubernetes_cluster_provisioner_service.rb:329`). The single-cluster fallback
@@ -290,13 +290,13 @@ platform.system_assign_module_to_template({
 |---|---|
 | `system_create_template({ module_assignments: [{ module_name, config }] })` | `module_assignments` is **not declared** and is dropped, and the call also omitted the required `node_platform_id`, so it failed validation outright. There is no inline form; the two-verb sequence above is the supported way, and it is the same one Step 3 and [Troubleshooting](#troubleshooting) already use. The nested `module_name` was wrong for a second reason: `system_assign_module_to_template` takes the NodeModule **UUID**. |
 | `system_update_instance({ instance_id, node_template_id })` | Same withdrawal as Step 3 — `node_template_id` is not declared by this verb and is dropped. |
-| "worker joins **cluster B**, not cluster A" | Not reachable. `config.target_cluster_id` is stored on the join, but nothing carries it to the node: `k3sd.ModulesAPI` hands the K3s reconcilers module **names** only, and `AgentManager.TargetClusterID` has no writer. The worker's `JoinRequest` therefore always sends an empty target, and with two active clusters the platform **refuses** the join. |
+| "worker joins **cluster B**, not cluster A" | Not reachable. `config.target_cluster_id` is stored on the join, but nothing carries it to the node: `k3sd.ModulesAPI` hands the K3s reconcilers module **names** only, and `AgentManager.TargetClusterID` has no writer. The worker's `JoinRequest` therefore always sends an empty target, and with two non-error clusters (this tutorial's are both `bootstrapping`) the platform **refuses** the join. |
 
 **Corrected — omitting `target_cluster_id` refuses, it does not guess.**
 Earlier revisions said the worker "joins whichever cluster the platform's first
 lookup returns" and that the agent posts a warning event
 `system.k3s.handshake.join_target_ambiguous`. Neither is true. With more than
-one active cluster and no target, `resolve_membership_cluster!` raises
+one non-error cluster and no target, `resolve_membership_cluster!` raises
 `AmbiguousClusterError` — the join fails — and the emitted kind is
 `system.k3s_ambiguous_cluster_join_refused` (severity `high`), not a handshake
 warning. That behaviour is strictly safer than what was documented, but it does
@@ -438,7 +438,7 @@ platform.system_delete_template({ template_id: "<tenant-b-k3s-worker-template-id
 ## Troubleshooting
 
 **Worker did not join at all, `system.k3s_ambiguous_cluster_join_refused` in
-the event stream** — this is the expected outcome with two active clusters, not
+the event stream** — this is the expected outcome with two non-error clusters, not
 a misconfiguration you can correct. See Step 4: the join carries no
 `target_cluster_id` because nothing on the agent supplies one, and the platform
 refuses rather than guessing. Setting `config.target_cluster_id` on the

@@ -31,17 +31,13 @@ module System
       #
       # WHAT IT WRITES, AND WHY A SENSOR WRITES AT ALL. This is the ONE
       # SANCTIONED EXCEPTION to the read-side rule, and it is a closed one:
-      # BaseSensor's class comment still states that rule without qualification
-      # ("Sensors are pure read-side: they may not mutate the database") and
-      # the sibling sensors restate it as binding — StorageAssignmentDriftSensor
-      # after being rewritten for breaking it. Do not read this class as
-      # licence to write from any other sensor. The exception is recorded in
-      # docs/FLEET_SENSORS.md ("Adding a New Sensor"); amending BaseSensor's
-      # own comment to name it is the outstanding half, DEFERRED rather than
-      # blocked — this change adds a new sensor and deliberately edits none of
-      # the shared sensor scaffolding — so until that amendment lands, the doc
-      # and this block are where the exception is written down. A reader who
-      # arrives at BaseSensor's unqualified rule first is not being misled by
+      # BaseSensor's class comment names it (a sensor may persist the SAMPLE
+      # it just took, nothing else) and the sibling sensors restate the rule
+      # as binding — StorageAssignmentDriftSensor after being rewritten for
+      # breaking it. Do not read this class as licence to write from any other
+      # sensor. The exception is also recorded in docs/FLEET_SENSORS.md
+      # ("Adding a New Sensor"), which is where the next one would be argued
+      # for. A reader who arrives at BaseSensor's rule first is not being misled by
       # it: the rule still binds every other sensor.
       #
       # It is sanctioned because this sensor is a SAMPLER (operator direction,

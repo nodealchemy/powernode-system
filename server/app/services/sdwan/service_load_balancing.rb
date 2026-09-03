@@ -27,9 +27,11 @@ module Sdwan
   # metadata, the account's settings, or the SiteSetting, in that order of
   # precedence.
   #
-  # NOTE (APO-3c): no API or MCP verb writes Sdwan::Service#metadata or the
-  # backend set yet — tier 1 is rails-console-only until APO-4 lands the
-  # producer. Tiers 2 and 3 are reachable today.
+  # NOTE (APO-3c/APO-4): every tier is reachable. `system_set_service_backends`
+  # (Ai::Tools::SystemIngressTool, IMP-0c10b9fd5596) writes the backend set AND
+  # the per-service `metadata["load_balancer"]` overrides that tier 1 reads;
+  # it is the only MCP door onto either. Tiers 2 and 3 are the account
+  # settings and the SiteSetting.
   module ServiceLoadBalancing
     SETTING_PREFIX = "system.sdwan.service_load_balancing"
 

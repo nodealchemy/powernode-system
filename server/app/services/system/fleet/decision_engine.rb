@@ -285,9 +285,10 @@ module System
         # doc guards both went green — the precise failure mode this sensor was
         # built to catch, reproduced one layer up. (Be accurate about the
         # notify half: notify_and_proceed's extra step is
-        # FleetAutonomyService#notify_action, which today is a Rails.logger
-        # line, not an operator notification. The tunable policy row is the
-        # load-bearing difference, not a page.)
+        # FleetAutonomyService#notify_action, which writes a durable
+        # NOTIFY_EVENT_KIND FleetEvent broadcast on the account's fleet channel
+        # plus a Rails.logger line — a record, not a page. The tunable policy
+        # row is the load-bearing difference.)
         #
         # Listed in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES:
         # a stall stands until a person acts, so its fingerprint would

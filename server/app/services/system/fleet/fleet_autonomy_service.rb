@@ -48,7 +48,8 @@ module System
       # Scope, precisely: every lane routed through #gate_action! below. It is
       # NOT a platform-wide statement — System::CveOps::CveResponderService
       # carries its own `notify_and_proceed` arm and its own #notify_action,
-      # which is still a log line only (tracked separately).
+      # which since IMP-0de0a6b4db59 emits the same NOTIFY_EVENT_KIND FleetEvent
+      # (source "cve_responder") beside its log line.
       #
       # The log line stays: it is the only record left when the events table is
       # the thing that is broken.

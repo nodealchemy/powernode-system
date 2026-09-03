@@ -62,17 +62,15 @@ module System
       # this same set; System::Fleet::ManualPromotionAdvisory (the operator REST
       # promote and its MCP twin) WARNS on it.
       #
-      # This is NOT yet the single definition: module_promotion_service.rb still
-      # carries its own `target_state == "blessed"` literal (that file is out of
-      # IMP-d6826c872d88's scope, so it was left alone rather than edited
-      # blind). What this constant is, today, is the shared NAME the two manual
-      # paths use instead of each restating the automated lane's rule — pinned
-      # equal to that literal by the equality oracle in
-      # spec/services/system/fleet/manual_promotion_advisory_spec.rb, which
-      # drives the real service over every target state and asserts the states
-      # it refuses on are exactly the states this constant names. Collapsing
-      # the service onto PromotionCriteria.gates? is a one-line follow-up that
-      # oracle will keep honest.
+      # This IS the single definition. IMP-d6826c872d88 introduced it as the
+      # shared NAME for the two manual paths while module_promotion_service.rb
+      # still carried its own `target_state == "blessed"` literal;
+      # IMP-bdb650b82c65 collapsed the service onto PromotionCriteria.gates?,
+      # and spec/services/system/fleet/module_promotion_service_spec.rb now
+      # stubs this constant and scans the service source for any surviving
+      # target-state literal. manual_promotion_advisory_spec.rb still drives
+      # the real service over every target state and asserts the states it
+      # refuses on are exactly the states this constant names.
       GATED_TARGET_STATES = %w[blessed].freeze
 
       module_function
