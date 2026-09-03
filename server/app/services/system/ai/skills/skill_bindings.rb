@@ -30,6 +30,10 @@ module System
           "cve_responder"      => "CVE Responder",
           "sdwan_manager"      => "SDWAN Manager",
           "disk_image_manager" => "Disk Image Manager",
+          # HIER-P2A: added ahead of the skill re-binding increment (P2F) so a
+          # gitops executor can `binds_to "gitops_reconciler"`. No executor
+          # binds to it yet.
+          "gitops_reconciler"  => "GitOps Reconciler",
           "topology_designer"  => "System Topology Designer"
         }.freeze
 

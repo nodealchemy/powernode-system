@@ -20,7 +20,21 @@ module System
       # that tells a routed-but-unseeded lane from an ordinary refusal.
       include ::System::Autonomy::RoutedLaneGuard
 
-      attr_reader :account, :agent, :role
+      attr_reader :account, :agent, :role, :owner_key
+
+      # The agent_key (PolicyDeclarations::AGENT_IDENTITIES) every sensor-routed
+      # binding gates under unless it declares another owner. The tick service
+      # IS this owner; every other owner is reached through #for_owner.
+      DEFAULT_OWNER = "fleet-autonomy"
+
+      # Emitted ONCE per tick service per owner key when a binding's declared
+      # owner agent does not resolve on the account. The decision then gates
+      # under the tick agent (Fleet Autonomy) — where PolicyReconciler leaves
+      # the rows when the target agent is absent — so a sensor is never
+      # silently dropped, but an operator can see that the specialist the
+      # policy set names is missing. Medium, not low: this is a seeded-agent
+      # gap, not routine telemetry.
+      OWNER_MISSING_EVENT_KIND = "fleet.owner_agent_missing"
 
       # Actions that represent fleet-wide advancement (live promotion,
       # fleet upgrade roll, region expansion). These get the longer TTL
@@ -59,17 +73,46 @@ module System
       # same value as System::Ai::Skills::BaseSkillExecutor::AUDIT_TEXT_LIMIT.
       NOTIFY_SUMMARY_LIMIT = 500
 
-      def initialize(account:, agent:, role: nil)
+      def initialize(account:, agent:, role: nil, owner_key: DEFAULT_OWNER)
         @account = account
         @agent = agent
         @role = role
+        @owner_key = owner_key.presence || DEFAULT_OWNER
         @policy_service = ::Ai::InterventionPolicyService.new(account: account)
+        @owner_gates = {}
+      end
+
+      # HIER-P2A — the gate for a binding whose declared `owner:` is
+      # `owner_key`. Returns this service for its own owner, otherwise a
+      # sibling FleetAutonomyService whose `agent` is the OWNER agent, so that
+      # everything keyed on `agent` here — #permitted_actions, policy
+      # resolution, the approval chain, the agent_id on the ApprovalRequest,
+      # the notify event's attribution — follows the owner without a second
+      # code path. Memoized per owner key for the life of the tick.
+      #
+      # The owner is resolved through System::Governance::AgentResolver — the
+      # SAME rule PolicyReconciler writes rows with — so the rows land where
+      # this gate looks, override-aware. A key that resolves to no agent falls
+      # back to THIS service with one OWNER_MISSING_EVENT_KIND event: the
+      # reconciler skips a set whose agent is absent and leaves any existing
+      # rows on their former owner, so gating here is where those rows are.
+      def for_owner(owner_key)
+        key = owner_key.presence || DEFAULT_OWNER
+        return self if key == @owner_key
+
+        @owner_gates[key] ||= build_owner_gate(key)
       end
 
       # Class-level entry point for the periodic reconcile tick. Finds the
       # fleet autonomy agent for the account, runs every sensor, routes
       # signals through the DecisionEngine, and records outcomes via the
       # LearningExtractor. Returns a structured tick summary.
+      #
+      # HIER-P2A: this agent RUNS the sensors; it does not gate every decision.
+      # Each binding gates under its declared owner via #for_owner — SDWAN
+      # Manager for the sdwan_* remediations, GitOps Reconciler for gitops
+      # drift, Disk Image Manager for the publication streak — and under this
+      # agent by default.
       def self.tick!(account:, control_plane_reading: nil)
         agent = ::Ai::Agent.resolve_for(account.id, name: "Fleet Autonomy", agent_type: "monitor")&.tap { |a| a.resolving_account = account }
         return { ok: false, reason: "Fleet Autonomy agent not seeded for account" } unless agent
@@ -310,15 +353,13 @@ module System
         # → storage_assignment_reconcile gate.
         ::System::Fleet::Sensors::StorageAssignmentDriftSensor,
         # DK3 of the disk-image-CI restoration — a platform whose last N
-        # publications all failed. Pragmatic placement: this is disk-image
-        # domain (normally Disk Image Manager's queue), but it fires here
-        # because Fleet Autonomy's SENSORS array is the only sensor tick
-        # that runs today; a dedicated DiskImageOps tick is a noted
-        # follow-up if/when Disk Image Manager grows its own sense pass.
-        # Mirrors the GitopsDriftSensor precedent (surfaced signal without
-        # owning the tick it runs in) → system.disk_image_publication_investigate
-        # gate, which is seeded on THIS agent (fleet_autonomy_agent.rb) for
-        # the same reason federation_peer_remediate/sdwan_* live there.
+        # publications all failed. Disk-image domain, run on THIS tick because
+        # it is the only sensor tick that runs today — but since HIER-P2A its
+        # binding declares `owner: "disk-image-manager"`, so the decision is
+        # gated under Disk Image Manager (its policy row, its chain, its
+        # attribution) rather than under the agent running the tick. Same
+        # shape as GitopsDriftSensor (owner gitops-reconciler) and the
+        # sdwan_* sensors (owner sdwan-manager).
         ::System::Fleet::Sensors::DiskImagePublicationFailureStreakSensor,
         # IMP-c7d663f24a0b — the first SERVICE-level SDWAN sensor. The other
         # five sdwan_* sensors answer "is the pipe up?"; this one correlates
@@ -373,8 +414,8 @@ module System
         # the absence of an alarm. Emits system.node_lkg_unarmed /
         # system.node_lkg_stale -> system.node_lkg_investigate (notify-only; no
         # applier exists and none can, because the LKG is frozen on the node's
-        # own disk). Runs HERE because this tick gates as the Fleet Autonomy
-        # agent, which is the agent its policy is declared on.
+        # own disk). Its binding keeps the default owner (fleet-autonomy),
+        # which is the agent its policy is declared on.
         ::System::Fleet::Sensors::BootLkgArmSensor,
         # IMP-5b38cd356010 (APO-6b) — the replication-lag SAMPLER for the
         # postgres cluster_member lane. PromoteReplicaExecutor's data-loss
@@ -794,7 +835,13 @@ module System
           "payload" => metadata.deep_stringify_keys,
           "reasoning" => reasoning.deep_stringify_keys,
           "temporal_context" => temporal_context.deep_stringify_keys,
-          "agent_role" => @role
+          "agent_role" => @role,
+          # HIER-P2A — the agent this request was gated UNDER (the binding's
+          # owner), so the approval UI and the audit trail attribute a request
+          # to SDWAN Manager when SDWAN Manager decided it, not to the agent
+          # whose tick happened to run the sensor.
+          "agent_id" => @agent&.id,
+          "agent_key" => @owner_key
         }
 
         # Specific dedup based on the action's natural key (instance/template/module/cve).
@@ -1094,16 +1141,56 @@ module System
           .exists?
       end
 
+      # The chain a pending request is minted on. HIER-P2A: the OWNER agent's
+      # own chain first — every agent seed creates one named "<Agent> Actions"
+      # (SDWAN Manager Actions, GitOps Reconciler Actions, ...), which is what
+      # gives each domain an independently pausable queue — then the fleet
+      # chain, then any active autonomy chain, exactly as before.
       def fleet_approval_chain
         # Ai::ApprovalChain is a business-extension model; in core mode there's
         # no chain to resolve, so callers fall through to auto-proceed
         # semantics (matches AutonomyGate#require_approval_or_proceed).
         return nil unless defined?(::Ai::ApprovalChain)
-        @fleet_approval_chain ||= ::Ai::ApprovalChain
-          .where(account: @account, trigger_type: "autonomy_action", status: "active")
-          .find_by("name ILIKE ?", "%fleet%") ||
-          ::Ai::ApprovalChain.where(account: @account, trigger_type: "autonomy_action",
-                                    status: "active").first
+        @fleet_approval_chain ||= begin
+          active = ::Ai::ApprovalChain.where(account: @account, trigger_type: "autonomy_action", status: "active")
+          owner_name = @agent&.name.to_s
+          (owner_name.present? && active.find_by("name ILIKE ?", "%#{::Ai::ApprovalChain.sanitize_sql_like(owner_name)}%")) ||
+            active.find_by("name ILIKE ?", "%fleet%") ||
+            active.first
+        end
+      end
+
+      # HIER-P2A — see #for_owner.
+      def build_owner_gate(key)
+        owner_agent = ::System::Governance::AgentResolver.resolve(account_id: account.id, agent_key: key)
+        return self if owner_agent && owner_agent.id == agent&.id
+
+        unless owner_agent
+          warn_owner_missing(key)
+          return self
+        end
+
+        owner_agent.resolving_account = account if owner_agent.respond_to?(:resolving_account=)
+        self.class.new(account: account, agent: owner_agent, role: role, owner_key: key)
+      end
+
+      def warn_owner_missing(key)
+        Rails.logger.warn(
+          "[FleetAutonomy] owner agent '#{key}' is not seeded for account #{account.id}; " \
+          "gating its bindings under '#{agent&.name}' (#{@owner_key}) instead"
+        )
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: account,
+          kind: OWNER_MISSING_EVENT_KIND,
+          severity: :medium,
+          source: "fleet_autonomy",
+          payload: {
+            "owner" => key,
+            "fallback_agent_id" => agent&.id,
+            "fallback_agent_key" => @owner_key,
+            "summary" => "declared owner agent '#{key}' not found; its sensor lanes gate under #{agent&.name}"
+          }
+        )
       end
     end
   end

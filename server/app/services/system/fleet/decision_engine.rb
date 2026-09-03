@@ -360,6 +360,7 @@ module System
         "system.sdwan_peer_drift" => {
           skill: ::System::Ai::Skills::SdwanPeerRemediateExecutor,
           action_category: "system.sdwan_peer_remediate",
+          owner: "sdwan-manager",
           side_effectful: true, # rotates the peer keypair
           dry_run_supported: true,
           input_mapper: ->(signal) { { peer_id: signal.dig(:payload, "peer_id") } }
@@ -367,6 +368,7 @@ module System
         "system.sdwan_hub_unreachable" => {
           skill: ::System::Ai::Skills::SdwanFailoverExecutor,
           action_category: "system.sdwan_failover",
+          owner: "sdwan-manager",
           # Executor defaults to dry_run: true — returns the candidate-spoke
           # plan for the approval request; the operator promotes.
           side_effectful: false,
@@ -379,6 +381,7 @@ module System
         "system.sdwan_bgp_session_unhealthy" => {
           skill: ::System::Ai::Skills::SdwanBgpSessionRemediateExecutor,
           action_category: "system.sdwan_bgp_session_remediate",
+          owner: "sdwan-manager",
           side_effectful: false, # executor defaults to dry_run: true (plan only)
           input_mapper: ->(signal) {
             { bgp_session_id: signal.dig(:payload, "bgp_session_id"),
@@ -413,11 +416,13 @@ module System
         # fleet.remediation_stuck escalation.
         "system.sdwan_bgp_observation_unattributable" => {
           skill: nil,
-          action_category: "system.sdwan_bgp_observation_investigate"
+          action_category: "system.sdwan_bgp_observation_investigate",
+          owner: "sdwan-manager"
         },
         "system.sdwan_bgp_observation_not_measured" => {
           skill: nil,
-          action_category: "system.sdwan_bgp_observation_investigate"
+          action_category: "system.sdwan_bgp_observation_investigate",
+          owner: "sdwan-manager"
         },
         # IMP-c7d663f24a0b — SdwanServiceHealthSensor. Both kinds are
         # notify-level with skill: nil, deliberately: the sensor's whole point
@@ -439,11 +444,13 @@ module System
         # best.
         "system.sdwan_service_silent" => {
           skill: nil,
-          action_category: "system.sdwan_service_health_investigate"
+          action_category: "system.sdwan_service_health_investigate",
+          owner: "sdwan-manager"
         },
         "system.sdwan_portmap_orphaned" => {
           skill: nil,
-          action_category: "system.sdwan_service_health_investigate"
+          action_category: "system.sdwan_service_health_investigate",
+          owner: "sdwan-manager"
         },
         # IMP-57e9a90598ee — SdwanOvnDeploymentHealthSensor. Both kinds are
         # notify-level with skill: nil under ONE dedicated category, the
@@ -457,11 +464,13 @@ module System
         # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
         "system.sdwan_ovn_deployment_degraded" => {
           skill: nil,
-          action_category: "system.sdwan_ovn_deployment_investigate"
+          action_category: "system.sdwan_ovn_deployment_investigate",
+          owner: "sdwan-manager"
         },
         "system.sdwan_ovn_activation_stalled" => {
           skill: nil,
-          action_category: "system.sdwan_ovn_deployment_investigate"
+          action_category: "system.sdwan_ovn_deployment_investigate",
+          owner: "sdwan-manager"
         },
         # IMP-da1b772c2596 — SdwanApplyHealthSensor. The agent's OBSERVED
         # apply outcome, which nothing on the server read until now: a node
@@ -483,11 +492,13 @@ module System
         # standing-fingerprint reason recorded there.
         "system.sdwan_apply_failed" => {
           skill: nil,
-          action_category: "system.sdwan_apply_investigate"
+          action_category: "system.sdwan_apply_investigate",
+          owner: "sdwan-manager"
         },
         "system.sdwan_apply_not_measured" => {
           skill: nil,
-          action_category: "system.sdwan_apply_investigate"
+          action_category: "system.sdwan_apply_investigate",
+          owner: "sdwan-manager"
         },
         # IMP-7034199a5a19 — SdwanUserDeviceConfigStalenessSensor. A user
         # device's WireGuard config is rendered ONCE, at download time, and the
@@ -509,7 +520,8 @@ module System
         # standing-fingerprint reason recorded there.
         "system.sdwan_user_device_config_stale" => {
           skill: nil,
-          action_category: "system.sdwan_user_device_config_investigate"
+          action_category: "system.sdwan_user_device_config_investigate",
+          owner: "sdwan-manager"
         },
         # IMP-3855ff9908f2 — ModuleVerifyFailedSensor. The manifest's `verify:`
         # block asserts a RESOLVED PATH (never mere existence) in BOTH a login
@@ -585,6 +597,7 @@ module System
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
           action_category: "system.sdwan_vip_failover",
+          owner: "sdwan-manager",
           side_effectful: true, # promotes a failover holder
           dry_run_supported: true,
           input_mapper: ->(signal) { { virtual_ip_id: signal.dig(:payload, "virtual_ip_id") } }
@@ -627,12 +640,14 @@ module System
         "system.cve_critical_published" => {
           skill: ::System::Ai::Skills::CveResponseExecutor,
           action_category: "system.cve_remediate",
+          owner: "cve-responder",
           side_effectful: false, # side-effect-free triage planner
           input_mapper: CVE_RESPONSE_INPUTS
         },
         "system.module_critical_upgrade_ready" => {
           skill: ::System::Ai::Skills::CveResponseExecutor,
           action_category: "system.module_critical_upgrade_ready",
+          owner: "cve-responder",
           side_effectful: false, # side-effect-free triage planner
           input_mapper: CVE_RESPONSE_INPUTS
         },
@@ -646,6 +661,7 @@ module System
         "system.federation_peer_liveness" => {
           skill: ::System::Ai::Skills::FederationPeerRemediateExecutor,
           action_category: "system.federation_peer_remediate",
+          owner: "sdwan-manager",
           side_effectful: true, # re-handshakes/degrades the peer
           dry_run_supported: true,
           input_mapper: ->(signal) {
@@ -668,6 +684,7 @@ module System
         "system.sdwan_credential_expiring" => {
           skill: ::System::Ai::Skills::SdwanCredentialRefreshExecutor,
           action_category: "system.sdwan_credential_refresh",
+          owner: "sdwan-manager",
           side_effectful: true, # issues + supersedes a membership credential
           dry_run_supported: true,
           input_mapper: ->(signal) { { peer_id: signal.dig(:payload, "peer_id") } }
@@ -714,18 +731,21 @@ module System
         # destroy guard.
         "system.gitops.drift_detected" => {
           skill: nil,
-          action_category: "system.gitops_drift_remediate"
+          action_category: "system.gitops_drift_remediate",
+          owner: "gitops-reconciler"
         },
         # DK3 — DiskImagePublicationFailureStreakSensor. No remediation
         # applier: a broken CI pipeline needs operator investigation, not
-        # an automated retry. notify_and_proceed (seeded on Fleet Autonomy,
-        # not Disk Image Manager, since the sensor fires from THIS agent's
-        # tick) surfaces the streak instead of dropping it as :skipped for
-        # lack of a binding — mirrors sdwan_credential_refresh_stalled
-        # (an automated path already failed upstream; surface, don't retry).
+        # an automated retry. notify_and_proceed surfaces the streak instead
+        # of dropping it as :skipped for lack of a binding — mirrors
+        # sdwan_credential_refresh_stalled (an automated path already failed
+        # upstream; surface, don't retry). Gated under Disk Image Manager
+        # (owner below; the row is in DISK_IMAGE_MANAGER_POLICIES) although
+        # the sensor fires from the fleet tick — HIER-P2A.
         "system.disk_image_publication_failure_streak" => {
           skill: nil,
-          action_category: "system.disk_image_publication_investigate"
+          action_category: "system.disk_image_publication_investigate",
+          owner: "disk-image-manager"
         },
         # IMP-4019664a524b — CapabilityGapSensor. A `capability:<tag>`
         # requirement no module on the account can satisfy. The sensor has
@@ -830,6 +850,29 @@ module System
       # in no signal binding.
       def self.routed_action_categories
         SIGNAL_BINDINGS.values.filter_map { |b| b[:action_category] }.uniq.freeze
+      end
+
+      # HIER-P2A — WHO GATES A BINDING.
+      #
+      # Every sensor runs on the Fleet Autonomy tick, but a decision is gated
+      # under the agent whose policy set DECLARES the binding's action_category
+      # (PolicyDeclarations.owner_of). Each binding names that agent with
+      # `owner: "<agent_key>"`; a binding that names none gates under the tick
+      # agent. The owner lives on the BINDING and not on the SENSORS entry
+      # because ownership is a property of the action category — the thing a
+      # policy row is keyed on — and one sensor can emit kinds that land on
+      # different owners: SdwanBgpSessionHealthSensor routes
+      # sdwan_bgp_session_unhealthy to SDWAN Manager's remediation row and
+      # sdwan_bgp_session_stale to Fleet Autonomy's system.observation row.
+      #
+      # sensor_owner_gating_spec pins owner_for(binding) ==
+      # PolicyDeclarations.owner_of(binding[:action_category]) for EVERY binding:
+      # declaring a category on one agent and gating it under another is the
+      # old "row the tick never reads" defect, one layer over.
+      DEFAULT_OWNER = ::System::Fleet::FleetAutonomyService::DEFAULT_OWNER
+
+      def self.owner_for(binding)
+        binding[:owner].presence || DEFAULT_OWNER
       end
 
 
@@ -964,9 +1007,10 @@ module System
           return decision
         end
 
-        skill_result = invoke_skill(binding, signal) if binding[:skill]
+        gate = gate_for(binding)
+        skill_result = invoke_skill(binding, signal, gate) if binding[:skill]
 
-        gate_result = autonomy_service.gate_action!(
+        gate_result = gate.gate_action!(
           binding[:action_category],
           metadata: skill_metadata_payload(signal, skill_result),
           reasoning: { summary: build_summary(signal, skill_result) },
@@ -980,6 +1024,10 @@ module System
           signal_kind: signal.kind,
           fingerprint: signal.fingerprint, # self-improvement: the validate-step match key
           action_category: binding[:action_category],
+          # HIER-P2A — which agent DECIDED. Rides into the decision event so the
+          # attribution on the wire matches the policy row that resolved.
+          owner: self.class.owner_for(binding),
+          agent_id: gate.agent&.id,
           skill_result: skill_result
         )
         decision[:remediation] = apply_remediation!(signal, skill_result) if gate_result[:decision] == :proceed
@@ -990,6 +1038,19 @@ module System
       # Process a list of signals; returns the array of decisions.
       def decide_all(signals)
         Array(signals).map { |s| decide(s) }
+      end
+
+      # HIER-P2A — the gate a binding is decided under: the autonomy service
+      # for the binding's declared owner (FleetAutonomyService#for_owner,
+      # memoized per owner for the tick), or the tick's own service when it
+      # does not speak owners. That second arm is CveResponderService, which
+      # drives this engine over CVE signals only and gates as the CVE Responder
+      # — the owner every CVE binding declares — so there is nothing to
+      # re-resolve there.
+      def gate_for(binding)
+        return autonomy_service unless autonomy_service.respond_to?(:for_owner)
+
+        autonomy_service.for_owner(self.class.owner_for(binding))
       end
 
       # Reconstruct the signal an approved request was minted for, from the
@@ -1043,7 +1104,8 @@ module System
         if binding && binding[:skill] && binding[:side_effectful]
           inputs = binding.fetch(:input_mapper).call(signal)
           if inputs
-            executor = binding[:skill].new(account: account, agent: autonomy_service.agent, user: nil)
+            # HIER-P2A — replayed AS the owner that gated the request.
+            executor = binding[:skill].new(account: account, agent: gate_for(binding).agent, user: nil)
             # gated: true — the human approval this method is replaying IS the
             # policy decision. BaseSkillExecutor gates on `requires_approval`
             # itself now (IMP-7e2bdc1774e4), and without the opt-out a
@@ -1261,7 +1323,8 @@ module System
         # The per-assignment detail is still emitted: emit_signal! above is
         # untouched, and each fingerprint still records its own
         # decision.awaiting_operator carrying its own correlation_id.
-        if autonomy_service.open_operator_request?(binding[:action_category], metadata: metadata)
+        gate = gate_for(binding)
+        if gate.open_operator_request?(binding[:action_category], metadata: metadata)
           record_decision!(signal)
           return {
             decision: :awaiting_operator,
@@ -1295,7 +1358,7 @@ module System
           correlation_id: signal.fingerprint
         )
 
-        gate_result = autonomy_service.gate_action!(
+        gate_result = gate.gate_action!(
           binding[:action_category],
           metadata: metadata,
           reasoning: {
@@ -1321,6 +1384,8 @@ module System
           signal_kind: signal.kind,
           fingerprint: signal.fingerprint,
           action_category: binding[:action_category],
+          owner: self.class.owner_for(binding),
+          agent_id: gate.agent&.id,
           remediation_stuck: true,
           ineffective_streak: streak,
           convergence_deferred: deferred
@@ -1337,7 +1402,7 @@ module System
       # side_effectful tag, so a mis-declared binding surfaces as an error
       # in the decision record instead of an executor that silently never
       # runs (F3-04) or one that acts before the gate (F3-06).
-      def invoke_skill(binding, signal)
+      def invoke_skill(binding, signal, gate = gate_for(binding))
         skill_class = binding[:skill]
         return nil unless skill_class
 
@@ -1346,9 +1411,10 @@ module System
 
         # F3-06: resolve the policy BEFORE invoking so require_approval and
         # block actually prevent the action instead of merely re-labelling
-        # an action that already happened.
+        # an action that already happened. Resolved on the OWNER's gate
+        # (HIER-P2A), the same one #decide hands the action to.
         if binding.fetch(:side_effectful)
-          policy = autonomy_service.policy_for(binding[:action_category])&.dig(:policy)
+          policy = gate.policy_for(binding[:action_category])&.dig(:policy)
           unless AUTO_EXECUTE_POLICIES.include?(policy)
             # Plan-only fallback: produce the dry_run plan for the approval
             # request when the executor supports it; otherwise skip.
@@ -1357,7 +1423,7 @@ module System
           end
         end
 
-        executor = skill_class.new(account: account, agent: autonomy_service.agent, user: nil)
+        executor = skill_class.new(account: account, agent: gate.agent, user: nil)
         # The F3-06 resolution above IS this invocation's policy decision, taken
         # against the SIGNAL's action_category. BaseSkillExecutor gates on
         # `requires_approval` itself now (IMP-7e2bdc1774e4); letting it

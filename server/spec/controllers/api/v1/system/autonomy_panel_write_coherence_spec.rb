@@ -6,11 +6,18 @@ require "rails_helper"
 #
 # The finding was that SystemSettingsPanel.tsx listed the 7 autonomous
 # `system.sdwan_*` categories under a hand-maintained `agentName: 'SDWAN
-# Manager'` while the seeds bind them to Fleet Autonomy, so an operator toggle
+# Manager'` while the seeds bound them to Fleet Autonomy, so an operator toggle
 # upserted a row the sensor path never resolves. IMP-0874acd5b50c already
 # deleted that literal — the panel now groups by the server's own
 # `agent_bucket` — which fixes the READ. This file guards the other end: that
 # the row an operator edits is the row that then decides.
+#
+# HIER-P2A inverted WHICH agent that is: the six autonomous categories are now
+# declared on the SDWAN Manager set (PolicyDeclarations::SDWAN_REMEDIATION_POLICIES)
+# and the fleet tick gates their bindings under the SDWAN Manager
+# (`owner: "sdwan-manager"`), so the row the panel must edit — and the row
+# that decides — is the SDWAN Manager's. The property under test is unchanged;
+# the agent it names moved.
 #
 # Two things make a write decorative, and only the first is about grouping:
 #
@@ -48,10 +55,11 @@ RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request
   let!(:fleet_agent) { create(:ai_agent, account: account, name: "Fleet Autonomy") }
   let!(:sdwan_agent) { create(:ai_agent, account: account, name: "SDWAN Manager") }
 
-  # Pinned literally, not derived from db/seeds/fleet_autonomy_agent.rb. WHICH
-  # agent these seven bind is the entire finding, so an oracle that read it back
-  # out of the seed file would move with the thing under test and certify any
-  # relocation as correct.
+  # Pinned literally, not derived from PolicyDeclarations. WHICH agent these
+  # bind is the entire finding, so an oracle that read it back out of the
+  # declarations would move with the thing under test and certify any
+  # relocation as correct. (The relocation HIER-P2A made is asserted below, by
+  # name, in both directions.)
   #
   # A `let` rather than a constant: a constant declared inside a describe block
   # lands on Object, and this suite has been bitten by two files clobbering one
@@ -89,7 +97,7 @@ RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request
   end
 
   before do
-    autonomous_sdwan_categories.each { |c| seed_agent_policy!(c, fleet_agent) }
+    autonomous_sdwan_categories.each { |c| seed_agent_policy!(c, sdwan_agent) }
     seed_agent_policy!("sdwan.peer_delete", sdwan_agent, policy: "require_approval")
     seed_operator_policy!("sdwan.network_create")
   end
@@ -199,7 +207,7 @@ RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request
 
   # The seven the finding named. Kept separate from the derived sweep above
   # because the sweep proves coherence for whatever the pivot happens to ship,
-  # and this proves the pivot ships THESE under Fleet Autonomy.
+  # and this proves the pivot ships THESE under the SDWAN Manager (HIER-P2A).
   describe "the 6 autonomous system.sdwan_* categories" do
     # The finding's actual subject, and the one thing the two examples below
     # CANNOT see: they assert against rows this file's own `before` block
@@ -212,32 +220,36 @@ RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request
     # the constants is strictly stronger than the regex was: it cannot be
     # defeated by reformatting, and it still matches definitions rather than the
     # prose in either file's NOTE comment, both of which name all seven.
-    it "are declared on Fleet Autonomy and absent from the SDWAN Manager set" do
+    it "are declared on the SDWAN Manager AGENT set, absent from Fleet Autonomy and from the operator set" do
       fleet = System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES.keys
       manager = System::Governance::PolicyDeclarations::SDWAN_MANAGER_POLICIES.keys
+      operator = System::Governance::PolicyDeclarations::SDWAN_OPERATOR_POLICIES.keys
 
       # Positive control: the SDWAN Manager set really does own the operator
-      # CRUD verbs. Without it, an empty set would satisfy the exclusion below
-      # for the wrong reason.
+      # CRUD verbs too. Without it, a set holding only the six would satisfy
+      # the inclusion below for the wrong reason.
       expect(manager).to include("sdwan.peer_delete", "sdwan.network_create")
 
-      expect(fleet).to include(*autonomous_sdwan_categories)
-      expect(manager & autonomous_sdwan_categories).to be_empty,
-                                                       "the autonomous system.sdwan_* remediations are back on the SDWAN Manager seed. " \
-                                                       "FleetAutonomyService::SENSORS gates them as Fleet Autonomy, so rows scoped to " \
-                                                       "SDWAN Manager are never resolved by the sensor path."
+      expect(manager).to include(*autonomous_sdwan_categories)
+      expect(fleet & autonomous_sdwan_categories).to be_empty,
+                                                     "the autonomous system.sdwan_* remediations are back on Fleet Autonomy. " \
+                                                     "Their bindings declare owner sdwan-manager, so rows scoped to Fleet " \
+                                                     "Autonomy are never resolved by the sensor path."
+      expect(operator & autonomous_sdwan_categories).to be_empty,
+                                                        "a sensor-routed remediation leaked into the operator-shape set; no " \
+                                                        "operator door issues one, so that row would be a control nothing reads"
     end
 
-    it "are rendered under Fleet Autonomy, not SDWAN Manager" do
+    it "are rendered under SDWAN Manager, not Fleet Autonomy" do
       buckets = panel_rows
         .select { |r| autonomous_sdwan_categories.include?(r["action_category"]) }
         .to_h { |r| [ r["action_category"], r["agent_bucket"] ] }
 
       expect(buckets.keys).to match_array(autonomous_sdwan_categories)
-      expect(buckets.values.uniq).to eq([ "Fleet Autonomy" ])
+      expect(buckets.values.uniq).to eq([ "SDWAN Manager" ])
     end
 
-    it "binds the Fleet Autonomy sensor path after an operator edit" do
+    it "binds the SDWAN Manager sensor path after an operator edit" do
       row = panel_rows.find { |r| r["action_category"] == "system.sdwan_peer_remediate" }
       patch_autonomy(update_body_for(row, "auto_approve"))
       expect(response).to have_http_status(:ok)
@@ -260,8 +272,10 @@ RSpec.describe "Api::V1::System::Autonomy panel write coherence", type: :request
       global_row = Ai::InterventionPolicy.find_by(account: account, action_category: category, scope: "global")
       expect(global_row).to be_present, "expected the identity-less write to have landed a scope-global row"
 
+      # Resolved as the SDWAN Manager — the agent the seed row binds and the
+      # owner the fleet tick gates this category under (HIER-P2A).
       effective = Ai::InterventionPolicyService.new(account: account)
-        .resolve(action_category: category, agent: fleet_agent)[:policy]
+        .resolve(action_category: category, agent: sdwan_agent)[:policy]
 
       expect(effective).to eq("notify_and_proceed"),
                            "a scope-global row outranked the agent-scoped seed row; specificity_key is " \

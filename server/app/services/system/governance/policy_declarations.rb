@@ -285,241 +285,49 @@ module System
       # emergency trust demotion knocks out agent and operator rows together.
       DEFAULT_TRUST_CONDITIONS = { "trust_tier_minimum" => "monitored" }.freeze
 
-      FLEET_AUTONOMY_POLICIES = {
-        # Node-cert rotation has NO server-side actuator: NodeEnrollmentService
-        # refresh requires the on-node agent's CSR (private keys never leave the
-        # node), so the platform cannot rotate autonomously. require_approval
-        # keeps each expiring cert visible as an operator work item instead of a
-        # proceed lane that silently does nothing (audit F3-03).
-        "system.cert_rotate"             => "require_approval",
+      # ================================================================
+      # WHO GATES A SENSOR-ROUTED ROW (HIER-P2A)
+      # ================================================================
+      # Every sensor still runs on the Fleet Autonomy tick
+      # (FleetAutonomyService::SENSORS), but a decision is no longer gated
+      # against the agent RUNNING that tick. Each DecisionEngine::SIGNAL_BINDINGS
+      # entry declares the `owner:` of its action_category — an
+      # AGENT_IDENTITIES source_key, default "fleet-autonomy" — and the tick
+      # resolves that agent (FleetAutonomyService#for_owner, override-aware, the
+      # same resolution PolicyReconciler uses so rows land where the gate
+      # looks) and gates the decision under it: policy lookup, approval chain,
+      # executor agent, event attribution and the agent_id on the
+      # ApprovalRequest all follow the owner. A missing owner falls back to
+      # Fleet Autonomy with a WARN event.
+      #
+      # THE INVARIANT, pinned by
+      # spec/services/system/fleet/sensor_owner_gating_spec.rb: a binding's
+      # owner IS the agent whose agent-scoped set below declares its
+      # action_category (`PolicyDeclarations.owner_of`). Declaring a category on
+      # one agent and gating it under another is the old defect — a row the
+      # tick never reads — one layer over.
+      #
+      # So the mechanical reason the 14 system.sdwan_* / system.federation_*
+      # remediation rows, system.gitops_drift_remediate and
+      # system.disk_image_publication_investigate all had to sit in this set
+      # ("gate_action! resolves policies against the agent running the tick")
+      # is gone, and they now live on SDWAN Manager, GitOps Reconciler and
+      # Disk Image Manager respectively. PolicyReconciler RE-HOMES an existing
+      # row whose declared owner changed (ai_agent_id updated in place, verb /
+      # is_active / conditions / priority preserved, audit row written) rather
+      # than creating a fresh one and leaving the tuned one stale.
+      #
+      # What is still here is grouped into named sub-hashes so the next
+      # increments (Capacity / Storage / Ingress / Supply Chain managers,
+      # HIER-P2B..E) can lift a whole domain into its new agent's set with a
+      # one-line change: move the constant into the new set, and re-point the
+      # bindings' `owner:`. The verbs do not move with the owner.
 
-        # Platform ACME cert renewal (CertExpirySensor → platform_maintenance
-        # cert_rotate). notify_and_proceed: renewal is reversible/low-blast-radius
-        # but can fail on CA/DNS-01 issues, so an operator should be informed.
-        "system.acme_cert_rotate"        => "notify_and_proceed",
-
-        # Phase 3 (Federation & Multi-Site) — federation peer liveness remediation
-        # (FederationPeerLivenessSensor → system.federation_peer_remediate). This
-        # policy MUST live on Fleet Autonomy, not SDWAN Manager: the sensor runs in
-        # FleetAutonomyService::SENSORS, whose tick! gates as the "Fleet Autonomy"
-        # agent, so gate_action! resolves permitted_actions against THIS agent.
-        # Re-handshake / degrade / alert is low-to-medium blast radius and the
-        # dedup TTL self-throttles repeat firings → notify_and_proceed.
-        "system.federation_peer_remediate" => "notify_and_proceed",
-
-        # Phase 3 (SDWAN autonomous remediation) — the 6 system.sdwan_* actions below
-        # were MOVED here from system_sdwan_manager_agent.rb. Like
-        # federation_peer_remediate, they fire from FleetAutonomyService::SENSORS,
-        # whose tick! gates as the "Fleet Autonomy" agent — so gate_action! resolves
-        # these policies against THIS agent. Seeded on SDWAN Manager they were
-        # stranded (silently 'not_permitted') in the sensor path. The operator-
-        # initiated sdwan.* CRUD policies stay on SDWAN Manager (gated via
-        # Ai::AutonomyGate as that agent). Autonomy levels preserved from the prior
-        # SDWAN Manager seed.
-        #
-        # IMP-17bc5546009a (2026-08-21): a 7th, system.sdwan_route_policy_audit, was
-        # seeded here too but DELETED outright — no sensor emitted it, no
-        # DecisionEngine binding routed to it, and no executor carried the category,
-        # so it was a permanently no-op auto_approve row. A real compiled-policy-vs-
-        # FRR-observed drift sensor is a deliberate future build, not something to
-        # back into because this row existed; see FleetAutonomyService#dedup_key_for
-        # spec for the pinned removal.
-        "system.sdwan_peer_remediate"        => "notify_and_proceed",
-        # NOTE: no signal routes here since IMP-df40782d3f4d moved
-        # system.sdwan_credential_expiring to system.sdwan_credential_refresh
-        # below. Kept seeded + registered (subset invariant allows a category
-        # without a producer) so live rows stay operator-tunable and a future
-        # true key-TTL lane inherits its recorded intent.
-        "system.sdwan_key_rotate"            => "auto_approve",
-        "system.sdwan_failover"              => "require_approval",
-        "system.sdwan_user_device_revoke"    => "require_approval",
-        "system.sdwan_bgp_session_remediate" => "notify_and_proceed",
-        "system.sdwan_vip_failover"          => "require_approval",
-
-        # IMP-df40782d3f4d — system.sdwan_credential_expiring routes here now:
-        # a server-side MembershipCredential re-issue (SdwanCredentialRefreshExecutor
-        # → MembershipCredentialSigner.ensure_fresh!), NOT a key rotation — rotating
-        # the WG key revoked the active pubkey and cut the still-working tunnel of
-        # exactly the not-polling peer whose MC was aging out. notify_and_proceed:
-        # the refresh itself is benign and idempotent, but an MC can only near
-        # expiry when the agent has stopped pulling, and the operator should see
-        # that degraded control channel rather than have it silently patched over.
-        # Seeded HERE (not SDWAN Manager) for the same mechanical reason as the 7
-        # actions above — the sensor fires from FleetAutonomyService::SENSORS,
-        # which gates as THIS agent.
-        "system.sdwan_credential_refresh"    => "notify_and_proceed",
-        # IMP-c7d663f24a0b — SdwanServiceHealthSensor (sdwan_service_silent +
-        # sdwan_portmap_orphaned). notify_and_proceed: notify-level first, no
-        # auto-remediation until the signal quality is proven in the field.
-        #
-        # Seeded HERE rather than on the SDWAN Manager agent for the same mechanical
-        # reason recorded in the NOTE at the bottom of this file — the sensor fires
-        # from FleetAutonomyService::SENSORS, and #permitted_actions resolves
-        # policies with `where(ai_agent_id: agent.id)` against the agent running the
-        # tick. A policy on SDWAN Manager is invisible to that lookup, so
-        # gate_action! would return :blocked/"not_permitted" and every signal this
-        # sensor produces would die at the gate — a sensor inert at its far end.
-        # Same placement as federation_peer_remediate / gitops_drift_remediate /
-        # disk_image_publication_investigate.
-        #
-        # TRAP, if you add another notify-level category: this one PROCEEDS but never
-        # actuates (skill: nil in SIGNAL_BINDINGS, no REMEDIATION_APPLIERS entry), and
-        # RemediationValidator opens a pending RemediationOutcome for every proceeded
-        # decision. Nothing ever clears it — the triggering condition ends when a
-        # person fixes the workload, not inside the 90s SETTLE_WINDOW — so it scores
-        # ineffective every window until the F3-11 streak manufactures a FALSE
-        # fleet.remediation_stuck HIGH escalation and forces require_approval on a
-        # lane that never acted. That is why the category is also listed in
-        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES. Membership there is
-        # DECLARED, never inferred, so a new notify-only category must be added by
-        # hand or it ships this failure mode.
-        #
-        # IMP-43e94c9d46d4: the parenthetical here used to offer system.cert_rotate
-        # and the SLO categories as lanes that actuated somewhere else. They did
-        # not — both were proceed lanes that actuated NOTHING, and this sentence
-        # was one of three copies telling readers not to check. cert_rotate now has
-        # a REMEDIATION_APPLIERS entry and system.slo_violation is declared in
-        # RemediationValidator::NON_REMEDIATING_SIGNAL_KINDS. Add a category here
-        # ONLY when its lane genuinely proceeds without actuating; the equality
-        # oracle in spec/services/system/fleet/proceed_lane_actuation_spec.rb is
-        # what refuses a silent lane in either direction.
-        "system.sdwan_service_health_investigate" => "notify_and_proceed",
-
-        # IMP-57e9a90598ee — SdwanOvnDeploymentHealthSensor (ovn deployment
-        # degraded / activation stalled). Seeded HERE because the sensor fires from
-        # FleetAutonomyService::SENSORS, which gates as THIS agent (see the
-        # sdwan_service_health_investigate note above — a policy on SDWAN Manager
-        # would be invisible to this tick and every signal would die at the gate).
-        #
-        # notify_and_proceed, never auto_approve: the lane has NO applier by design
-        # — the degraded component is the operator's own OVN control plane (northd,
-        # NB/SB DBs), which the platform does not provision — so "proceed" means
-        # "notify the operator" and nothing else. Also listed in
-        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES so the persistent
-        # fingerprint cannot manufacture false remediation_stuck escalations.
-        "system.sdwan_ovn_deployment_investigate" => "notify_and_proceed",
-
-        # IMP-2f34679b6b73 — SdwanBgpSessionHealthSensor's attribution family (a BGP
-        # report the platform could not attribute to the network it arrived under, or
-        # one the agent disclaimed). Seeded HERE for the same reason as the two
-        # categories above: the sensor fires from FleetAutonomyService::SENSORS and
-        # gates as THIS agent, so a policy anywhere else is invisible to the tick and
-        # every signal dies at the gate.
-        #
-        # notify_and_proceed, never auto_approve: the condition is an ABSENCE of a
-        # measurement, and the whole point of surfacing it is that an operator learns
-        # the host is running an agent that polls FRR without naming a VRF. There is
-        # no applier — "proceed" means "notify" — so the category is also in
-        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
-        "system.sdwan_bgp_observation_investigate" => "notify_and_proceed",
-
-        # IMP-da1b772c2596 — SdwanApplyHealthSensor (sdwan_apply_failed +
-        # sdwan_apply_not_measured): the agent's OBSERVED per-subsystem apply
-        # outcome, which nothing on the server consumed before this. Seeded HERE for
-        # the same mechanical reason as the three categories above — the sensor
-        # fires from FleetAutonomyService::SENSORS and gates as THIS agent, so a
-        # policy on SDWAN Manager would be invisible to the tick and every signal
-        # would die at the gate.
-        #
-        # notify_and_proceed, never auto_approve: there is NO applier and can be
-        # none — a failed apply is a kernel-side refusal the agent already retries
-        # on every tick, so re-serving the same config remediates nothing. "Proceed"
-        # means "notify the operator". Also in
-        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because a
-        # persistently failing applier holds one fingerprint indefinitely.
-        "system.sdwan_apply_investigate" => "notify_and_proceed",
-
-        # IMP-7034199a5a19 — SdwanUserDeviceConfigStalenessSensor. An issued user
-        # device's config is rendered once and never re-pulled, so a VIP, a peer
-        # lan_subnet, or a federation prefix added afterwards is missing from every
-        # config already in the field. Seeded HERE for the same mechanical reason as
-        # the categories above — the sensor fires from FleetAutonomyService::SENSORS
-        # and gates as THIS agent, so a policy on SDWAN Manager would be invisible to
-        # the tick and every signal would die at the gate.
-        #
-        # notify_and_proceed, never auto_approve: there is NO applier and can be none
-        # — the drifted artefact is a text file on a user's laptop. "Proceed" means
-        # "notify the operator", who re-issues the device. Also in
-        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
-        # fingerprint stands until a human acts.
-        "system.sdwan_user_device_config_investigate" => "notify_and_proceed",
-
-        # IMP-3855ff9908f2 — ModuleVerifyFailedSensor (module_verify_failed +
-        # module_verify_not_measured): the agent's OBSERVED answer to "does this
-        # node actually provide what the module declares", which nothing produced
-        # before this. Seeded HERE for the same mechanical reason as the categories
-        # above — the sensor fires from FleetAutonomyService::SENSORS and gates as
-        # THIS agent, so a policy anywhere else is invisible to the tick and every
-        # signal would die at the gate.
-        #
-        # notify_and_proceed, never auto_approve: there is NO applier and can be
-        # none — a failed probe means the node's filesystem or PATH disagrees with
-        # the manifest (a wrong artifact, a shadowing package, a profile script
-        # reordering PATH), and re-serving the same module fixes none of them. In
-        # the gitleaks v4 incident the artifact the platform would re-serve was the
-        # empty one. "Proceed" means "notify the operator". Also in
-        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
-        # fingerprint stands until a human changes an artifact or an image.
-        "system.module_verify_investigate" => "notify_and_proceed",
-
-        # IMP-a8f9fa74284d — BootLkgArmSensor (node_lkg_unarmed +
-        # node_lkg_stale): whether a live node is armed with a valid
-        # last-known-good composition. System::BootLkgStateWriter has derived
-        # that answer on every heartbeat since IMP-b8d5cfa33b79 and nothing
-        # asked. Seeded HERE for the same mechanical reason as the categories
-        # above — the sensor fires from FleetAutonomyService::SENSORS and gates
-        # as THIS agent, so a policy anywhere else is invisible to the tick and
-        # every signal would die at the gate.
-        #
-        # notify_and_proceed, never auto_approve: there is NO applier and can be
-        # none — the LKG is frozen on the node's own disk by the agent at boot,
-        # and nothing the platform dispatches re-arms it. "Proceed" means
-        # "notify the operator", who restores or re-captures it. Also in
-        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
-        # fingerprint stands until a person acts — and on a fleet still running
-        # pre-boot/LKG agents it stands indefinitely.
-        "system.node_lkg_investigate" => "notify_and_proceed",
-
-        # StuckTaskBacklogSensor — "tasks are piling up behind the janitor". Seeded
-        # HERE for the same mechanical reason as the categories above: the sensor
-        # fires from FleetAutonomyService::SENSORS and gates as THIS agent, so a
-        # policy anywhere else is invisible to the tick and every signal dies at the
-        # gate.
-        #
-        # notify_and_proceed, never auto_approve: there is no applier and can be
-        # none. The causes are an empty scope, a stopped worker, a broken seam — none
-        # repairable by anything the platform can dispatch. "Proceed" means "reach an
-        # operator". Also in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES,
-        # because the fingerprint stands until a person fixes the janitor.
-        "system.task_backlog_investigate" => "notify_and_proceed",
-
-        # ModulePromotionBacklogSensor — "a newer usable version exists and the
-        # fleet is still running the old one". Seeded HERE for the same
-        # mechanical reason as the categories above: the sensor fires from
-        # FleetAutonomyService::SENSORS and gates as THIS agent, so a policy
-        # declared on any other agent is invisible to the tick and every signal
-        # dies at the gate.
-        #
-        # notify_and_proceed, never auto_approve, and there is deliberately no
-        # applier — promoting the stalled version is precisely what a gate, a
-        # broken publish chain or a deliberate hold has already declined to do.
-        # What the notify verb actually buys is a SEPARATELY TUNABLE, operator-
-        # facing policy row (this constant is also what registers the category
-        # for the Autonomy modal) rather than folding the stall into the silent
-        # auto-approved bucket. Be precise about the rest: gate_action!'s extra
-        # step for this verb is FleetAutonomyService#notify_action, which today
-        # only writes a Rails.logger line — it is not an operator page. Also in
-        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
-        # fingerprint stands until a person promotes, withdraws or fixes it.
-        "system.module_promotion_investigate" => "notify_and_proceed",
-
-        # Read/notify
-        "system.module_assign"           => "notify_and_proceed",
-        "system.instance_reboot"         => "notify_and_proceed",
-
-        # Sensitive — require_approval
-        "system.instance_reprovision"    => "require_approval",
-        "system.instance_terminate"      => "require_approval",
+      # Capacity-shaped node-lifecycle keys: the DR replace/reap pair, the two
+      # cost-bearing expansions, and workload relocation. instance_reboot /
+      # _reprovision / _terminate stay in the core literal below — they are
+      # remediation lanes for a silent or compromised instance, not capacity.
+      CAPACITY_POLICY_KEYS = {
         # IMP-e2f53e87d090 (APO-2b) — the disaster-recovery lane.
         # InstanceUnrecoverableSensor emits system.instance_unrecoverable for a
         # silent instance a reboot demonstrably cannot recover (the VM is
@@ -553,69 +361,37 @@ module System
         # routed set — the row exists so the terminate is an operator-visible,
         # separately tunable control rather than an unrowed default.
         "system.instance_reap"           => "require_approval",
-        "system.replica_promote"         => "require_approval",
-        "system.cert_revoke"             => "require_approval",
-        "system.module_promote_to_live"  => "require_approval",
-        "system.fleet_rolling_upgrade"   => "require_approval",
-        # Campaign 019f505f inc 4 — BootImageDriftSensor → BootImageDriftRolloutExecutor.
-        # Seeded HERE (Fleet Autonomy), not Disk Image Manager, because the sensor fires
-        # from FleetAutonomyService::SENSORS and gates as THIS agent (same reason
-        # system.disk_image_publication_investigate lives here). A fleet-wide in-place
-        # reboot rollout is high blast radius → require_approval; the executor plans
-        # canary-first and dispatches the batch on approval.
-        "system.node_boot_image_drift"   => "require_approval",
-        # Campaign 019f6084 §2.4.3 — TemplateClosureDriftSensor → apply the
-        # template's current closure onto an already-provisioned instance
-        # (TemplateApplyService#apply! + sync_modules, or a rolling-reprovision
-        # flag for pivot-booted instances). Seeded require_approval as a
-        # baseline, but DecisionEngine#force_policy_for pins it there regardless:
-        # the sensor only ever fires for an instance that already exists on the
-        # template, so TemplateApprovalPolicy's blast-radius classification is
-        # never the "nothing provisioned" case — a manifest change is about to
-        # propagate to live fleet, same rationale as node_boot_image_drift above.
-        "system.template_closure_apply"  => "require_approval",
         "system.region_expansion"        => "require_approval",
         "system.capacity_resize"         => "require_approval",
+        "system.relocate_workload"       => "require_approval"
+      }.freeze
 
-        # Stale BGP observations are pure observation — no remediation; the
-        # `observation` action_category collects them for dashboards without
-        # entering the approval pipeline.
-        "system.observation"             => "auto_approve",
-
+      STORAGE_POLICY_KEYS = {
         # Stale storage assignment re-reconciliation (StorageAssignmentDriftSensor,
         # audit F3-07). notify_and_proceed: it re-runs the same reconciliation the
         # assignment's own after_commit would — reversible and low blast radius —
         # but the operator should see that the safety net is firing.
         "system.storage_assignment_reconcile" => "notify_and_proceed",
+        "system.restore_volume"               => "require_approval"
+      }.freeze
 
-        # GitOps drift surfaced by GitopsDriftSensor (in FleetAutonomyService::SENSORS,
-        # so it gates as THIS agent — same reason federation_peer_remediate and the
-        # autonomous sdwan_* policies live here, not on the GitOps Reconciler agent
-        # that authors the proposals). notify_and_proceed: drift is informational
-        # (the reconciler opens proposals for the actual apply); without this binding
-        # the signal was classified :skipped and never reached the operator. Deduped
-        # per repo+revision fingerprint, so a standing drift notifies once per TTL.
-        "system.gitops_drift_remediate" => "notify_and_proceed",
+      # === Gated skill executors (APO-1c, IMP-7e2bdc1774e4) ==================
+      # Every executor declaring `requires_approval: true` resolves one of
+      # these before #perform, on MCP, REST and Concierge alike. Seeded at
+      # the SAME verdict the resolver would default to for an unseeded
+      # category (require_approval), so landing these rows changes no
+      # behaviour: it makes the verdict VISIBLE in the Autonomy modal and
+      # TUNABLE through PATCH /api/v1/system/autonomy, and satisfies
+      # routed_lane_policy_coherence_spec — BaseSkillExecutor is a declared
+      # ActionCategoryRouter, so its categories are routed categories.
+      INGRESS_POLICY_KEYS = {
+        "system.acme_certificate_provision" => "require_approval",
+        "system.expose_service_local"       => "require_approval",
+        "system.expose_service_public_tcp"  => "require_approval",
+        "system.expose_service_publicly"    => "require_approval"
+      }.freeze
 
-        # DK3 of the disk-image-CI restoration — DiskImagePublicationFailureStreakSensor
-        # lives in FleetAutonomyService::SENSORS (not Disk Image Manager's own tick),
-        # so it gates as THIS agent — same reason federation_peer_remediate /
-        # gitops_drift_remediate / sdwan_* live here rather than on their specialist
-        # agent. notify_and_proceed: no auto-remediation exists (a broken CI pipeline
-        # needs operator investigation), this only surfaces the streak; deduped
-        # per-platform via the sensor's fingerprint.
-        "system.disk_image_publication_investigate" => "notify_and_proceed",
-
-        # IMP-4019664a524b — CapabilityGapSensor (in FleetAutonomyService::SENSORS,
-        # so it gates as THIS agent, same reason as the three above). require_approval
-        # is the disposition, not a placeholder: the gap's only remediation is
-        # AUTHORING a module, which must pass the R1/R2/R3 reuse gate
-        # (docs/runbooks/module-authoring.md Phase 0), so the operator queue IS the
-        # destination. It also keeps #decide at :pending, which RemediationValidator
-        # never snapshots — a gap that stands until someone ships a module would
-        # otherwise score ineffective forever and trip a false remediation_stuck.
-        "system.capability_gap_review" => "require_approval",
-
+      SUPPLY_CHAIN_POLICY_KEYS = {
         # Package repository ingestion. Sync is routine + reversible (just
         # refreshes cached metadata); module creation is supply-chain critical
         # (operator audits each new package entering the fleet). The refresh row
@@ -636,86 +412,279 @@ module System
         # gate. Direct CRUD requires approval — even with system.architectures.manage,
         # mutating the catalog surfaces for operator confirmation because it
         # affects every account's available platforms.
-        "system.architecture.propose" => "auto_approve",
-        "system.architecture.create"  => "require_approval",
-        "system.architecture.update"  => "require_approval",
-        "system.architecture.delete"  => "require_approval",
-
-        # NOTE: Operator-initiated SDWAN CRUD policies (sdwan.*) live on
-        # system_sdwan_manager_agent.rb (2026-05-10) — they gate via Ai::AutonomyGate
-        # as the SDWAN Manager agent. The 7 AUTONOMOUS system.sdwan_* remediation
-        # policies were moved back HERE (above), because they fire from the sensor
-        # path which gates as Fleet Autonomy.
-        # NOTE: CVE policies moved to system_cve_responder_agent.rb (2026-05-10).
-        # NOTE: Disk Image policies moved to system_disk_image_manager_agent.rb (2026-05-10).
-        # The 5-agent split keeps per-domain approval queues independent and lets
-        # operators pause one domain (e.g. SDWAN during a maintenance window)
-        # without halting fleet ops.
-
-        # === Gated skill executors (APO-1c, IMP-7e2bdc1774e4) ==================
-        # Every executor declaring `requires_approval: true` resolves one of
-        # these before #perform, on MCP, REST and Concierge alike. Seeded at
-        # the SAME verdict the resolver would default to for an unseeded
-        # category (require_approval), so landing these rows changes no
-        # behaviour: it makes the verdict VISIBLE in the Autonomy modal and
-        # TUNABLE through PATCH /api/v1/system/autonomy, and satisfies
-        # routed_lane_policy_coherence_spec — BaseSkillExecutor is a declared
-        # ActionCategoryRouter, so its categories are routed categories.
         #
         # ABSENT and must not be re-added (IMP-51e5c6184ae4, IMP-2effedffc990):
         # system.architecture_create / _update / _delete and
         # system.package_module_create. Those four were the DERIVED
-        # "<domain>.<skill name>" categories of gated executors, seeded here
-        # beside the dotted rows the same executors' actions already had
-        # ("system.architecture.create" and siblings, and
-        # "system.package_module.create", declared above). Two rows over one
-        # action are two controls: an operator who tuned the dotted one did not
-        # tune the executor's gate. The executors now DECLARE `action_category:`
-        # on the dotted spelling, so there is nothing left to seed here — see
+        # "<domain>.<skill name>" categories of gated executors, seeded beside
+        # the dotted rows the same executors' actions already had. Two rows
+        # over one action are two controls: an operator who tuned the dotted
+        # one did not tune the executor's gate. The executors now DECLARE
+        # `action_category:` on the dotted spelling, so there is nothing left
+        # to seed — see
         # spec/lib/powernode_system/autonomy_category_spelling_uniqueness_spec.rb.
-        "system.acme_certificate_provision" => "require_approval",
-        "system.expose_service_local"       => "require_approval",
-        "system.expose_service_public_tcp"  => "require_approval",
-        "system.expose_service_publicly"    => "require_approval",
+        "system.architecture.propose" => "auto_approve",
+        "system.architecture.create"  => "require_approval",
+        "system.architecture.update"  => "require_approval",
+        "system.architecture.delete"  => "require_approval"
+      }.freeze
+
+      FLEET_AUTONOMY_POLICIES = {
+        # Node-cert rotation has NO server-side actuator: NodeEnrollmentService
+        # refresh requires the on-node agent's CSR (private keys never leave the
+        # node), so the platform cannot rotate autonomously. require_approval
+        # keeps each expiring cert visible as an operator work item instead of a
+        # proceed lane that silently does nothing (audit F3-03).
+        "system.cert_rotate"             => "require_approval",
+
+        # Platform ACME cert renewal (CertExpirySensor → platform_maintenance
+        # cert_rotate). notify_and_proceed: renewal is reversible/low-blast-radius
+        # but can fail on CA/DNS-01 issues, so an operator should be informed.
+        "system.acme_cert_rotate"        => "notify_and_proceed",
+
+        # IMP-3855ff9908f2 — ModuleVerifyFailedSensor (module_verify_failed +
+        # module_verify_not_measured): the agent's OBSERVED answer to "does this
+        # node actually provide what the module declares", which nothing produced
+        # before this.
+        #
+        # notify_and_proceed, never auto_approve: there is NO applier and can be
+        # none — a failed probe means the node's filesystem or PATH disagrees with
+        # the manifest (a wrong artifact, a shadowing package, a profile script
+        # reordering PATH), and re-serving the same module fixes none of them. In
+        # the gitleaks v4 incident the artifact the platform would re-serve was the
+        # empty one. "Proceed" means "notify the operator". Also in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
+        # fingerprint stands until a human changes an artifact or an image.
+        #
+        # TRAP, if you add another notify-level category: a lane that PROCEEDS
+        # but never actuates (skill: nil in SIGNAL_BINDINGS, no
+        # REMEDIATION_APPLIERS entry) opens a pending RemediationOutcome for
+        # every proceeded decision, and nothing ever clears it — the triggering
+        # condition ends when a person acts, not inside the 90s SETTLE_WINDOW —
+        # so it scores ineffective every window until the F3-11 streak
+        # manufactures a FALSE fleet.remediation_stuck HIGH escalation and forces
+        # require_approval on a lane that never acted. Membership in
+        # NON_REMEDIATING_ACTION_CATEGORIES is DECLARED, never inferred, so a new
+        # notify-only category must be added by hand or it ships this failure
+        # mode. The equality oracle in
+        # spec/services/system/fleet/proceed_lane_actuation_spec.rb refuses a
+        # silent lane in either direction.
+        "system.module_verify_investigate" => "notify_and_proceed",
+
+        # IMP-a8f9fa74284d — BootLkgArmSensor (node_lkg_unarmed +
+        # node_lkg_stale): whether a live node is armed with a valid
+        # last-known-good composition. System::BootLkgStateWriter has derived
+        # that answer on every heartbeat since IMP-b8d5cfa33b79 and nothing
+        # asked.
+        #
+        # notify_and_proceed, never auto_approve: there is NO applier and can be
+        # none — the LKG is frozen on the node's own disk by the agent at boot,
+        # and nothing the platform dispatches re-arms it. "Proceed" means
+        # "notify the operator", who restores or re-captures it. Also in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
+        # fingerprint stands until a person acts — and on a fleet still running
+        # pre-boot/LKG agents it stands indefinitely.
+        "system.node_lkg_investigate" => "notify_and_proceed",
+
+        # StuckTaskBacklogSensor — "tasks are piling up behind the janitor".
+        #
+        # notify_and_proceed, never auto_approve: there is no applier and can be
+        # none. The causes are an empty scope, a stopped worker, a broken seam — none
+        # repairable by anything the platform can dispatch. "Proceed" means "reach an
+        # operator". Also in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES,
+        # because the fingerprint stands until a person fixes the janitor.
+        "system.task_backlog_investigate" => "notify_and_proceed",
+
+        # ModulePromotionBacklogSensor — "a newer usable version exists and the
+        # fleet is still running the old one".
+        #
+        # notify_and_proceed, never auto_approve, and there is deliberately no
+        # applier — promoting the stalled version is precisely what a gate, a
+        # broken publish chain or a deliberate hold has already declined to do.
+        # What the notify verb actually buys is a SEPARATELY TUNABLE, operator-
+        # facing policy row (this constant is also what registers the category
+        # for the Autonomy modal) rather than folding the stall into the silent
+        # auto-approved bucket. Be precise about the rest: gate_action!'s extra
+        # step for this verb is FleetAutonomyService#notify_action, which writes
+        # a durable NOTIFY_EVENT_KIND FleetEvent plus a Rails.logger line — it
+        # is not an operator page. Also in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES, because the
+        # fingerprint stands until a person promotes, withdraws or fixes it.
+        "system.module_promotion_investigate" => "notify_and_proceed",
+
+        # Read/notify
+        "system.module_assign"           => "notify_and_proceed",
+        "system.instance_reboot"         => "notify_and_proceed",
+
+        # Sensitive — require_approval
+        "system.instance_reprovision"    => "require_approval",
+        "system.instance_terminate"      => "require_approval",
+        "system.replica_promote"         => "require_approval",
+        "system.cert_revoke"             => "require_approval",
+        "system.module_promote_to_live"  => "require_approval",
+        "system.fleet_rolling_upgrade"   => "require_approval",
+        # Campaign 019f505f inc 4 — BootImageDriftSensor → BootImageDriftRolloutExecutor.
+        # Declared on Fleet Autonomy, not Disk Image Manager: a fleet-wide
+        # in-place reboot rollout is a fleet operation, and high blast radius →
+        # require_approval; the executor plans canary-first and dispatches the
+        # batch on approval.
+        "system.node_boot_image_drift"   => "require_approval",
+        # Campaign 019f6084 §2.4.3 — TemplateClosureDriftSensor → apply the
+        # template's current closure onto an already-provisioned instance
+        # (TemplateApplyService#apply! + sync_modules, or a rolling-reprovision
+        # flag for pivot-booted instances). Seeded require_approval as a
+        # baseline, but DecisionEngine#force_policy_for pins it there regardless:
+        # the sensor only ever fires for an instance that already exists on the
+        # template, so TemplateApprovalPolicy's blast-radius classification is
+        # never the "nothing provisioned" case — a manifest change is about to
+        # propagate to live fleet, same rationale as node_boot_image_drift above.
+        "system.template_closure_apply"  => "require_approval",
+
+        # Stale BGP observations are pure observation — no remediation; the
+        # `observation` action_category collects them for dashboards without
+        # entering the approval pipeline. Several SDWAN sensors route their
+        # observation-only kinds here (sdwan_bgp_session_stale,
+        # sdwan_credential_refresh_stalled) while their remediation kinds gate
+        # under SDWAN Manager — ownership follows the CATEGORY, not the sensor.
+        "system.observation"             => "auto_approve",
+
+        # IMP-4019664a524b — CapabilityGapSensor. require_approval is the
+        # disposition, not a placeholder: the gap's only remediation is
+        # AUTHORING a module, which must pass the R1/R2/R3 reuse gate
+        # (docs/runbooks/module-authoring.md Phase 0), so the operator queue IS the
+        # destination. It also keeps #decide at :pending, which RemediationValidator
+        # never snapshots — a gap that stands until someone ships a module would
+        # otherwise score ineffective forever and trip a false remediation_stuck.
+        "system.capability_gap_review" => "require_approval",
+
         # The category system_set_service_backends gates on
         # (Ai::Tools::SystemIngressTool::SERVICE_BACKENDS_CATEGORY, IMP-0c10b9fd5596).
         # It was gated before it was declared: the verdict already fell to the
         # unmatched default (require_approval), but the engine registers only
         # declared categories, so System::AutonomyActions#update refused every
         # operator edit to it — a correct control nobody could see or tune.
+        # Deliberately NOT in INGRESS_POLICY_KEYS (HIER-P2A ruling: it stays
+        # where it is); HIER-P2D decides whether it travels with the ingress
+        # group when that group is lifted onto an Ingress Manager. Note the
+        # two axes are independent and must not be read as one answer: OWNERSHIP
+        # (which agent's set declares it, and therefore which agent gates it) is
+        # Fleet Autonomy and undecided past that; the UI DOMAIN it is bucketed
+        # under in System::AutonomyActions::DOMAIN_PREFIXES is "ingress", which
+        # only says where an operator finds the row in the Autonomy panel. The
+        # pivot files it beside the ingress rows because it would otherwise
+        # strand in the "other" catch-all the panel drops.
         "system.service_backends_update"    => "require_approval",
-        "system.federation_acceptance"      => "require_approval",
+        # Gated skill executors (APO-1c) that are neither ingress nor supply
+        # chain — see INGRESS_POLICY_KEYS for the rationale that applies to all
+        # of them.
         "system.fulfill_capability_request" => "require_approval",
         "system.multi_tenant_isolation"     => "require_approval",
-        "system.relocate_workload"          => "require_approval",
-        "system.service_discovery_compose"  => "require_approval",
-        "system.restore_volume"             => "require_approval",
+        "system.service_discovery_compose"  => "require_approval"
+      }.merge(CAPACITY_POLICY_KEYS, STORAGE_POLICY_KEYS, INGRESS_POLICY_KEYS, SUPPLY_CHAIN_POLICY_KEYS).freeze
+
+      # The AUTONOMOUS SDWAN / federation remediation rows, gated under SDWAN
+      # Manager by the fleet tick (the sensors run on Fleet Autonomy's tick; the
+      # bindings declare `owner: "sdwan-manager"` — see the note above
+      # CAPACITY_POLICY_KEYS). Agent set ONLY — but be precise about WHY, because
+      # the rule does not generalise from the shape: 13 of the 14 are
+      # sensor-routed, so no operator door issues them at all. The 14th,
+      # system.federation_acceptance, has NO SIGNAL_BINDINGS entry and no sensor
+      # — it is an operator/Concierge-driven gated skill executor
+      # (FederationAcceptanceExecutor) grouped here because it is SDWAN-domain,
+      # and seeded agent-shape because the agent that ACTS on it is the SDWAN
+      # Manager. "Sensor-routed ⇒ agent shape only" is therefore not a rule you
+      # can apply in reverse when deciding whether a new member needs an
+      # operator row.
+      #
+      # HISTORY. These lived on the SDWAN Manager seed in the 2026-05-10 split,
+      # were MOVED to Fleet Autonomy because #gate_action! resolved every policy
+      # against the agent running the tick (a row here was silently
+      # 'not_permitted' in the sensor path), and moved BACK here in HIER-P2A once
+      # the tick learned to gate each binding under its declared owner. Verbs are
+      # unchanged across all three moves. IMP-17bc5546009a: a 7th early member,
+      # system.sdwan_route_policy_audit, was DELETED outright (2026-08-21) — no
+      # sensor emitted it, no binding routed to it, no executor carried it.
+      SDWAN_REMEDIATION_POLICIES = {
+        # Phase 3 (Federation & Multi-Site) — federation peer liveness remediation
+        # (FederationPeerLivenessSensor → system.federation_peer_remediate).
+        # Re-handshake / degrade / alert is low-to-medium blast radius and the
+        # dedup TTL self-throttles repeat firings → notify_and_proceed.
+        "system.federation_peer_remediate" => "notify_and_proceed",
+
+        # Phase 3 (SDWAN autonomous remediation). Autonomy levels preserved from
+        # the original SDWAN Manager seed.
+        "system.sdwan_peer_remediate"        => "notify_and_proceed",
+        # NOTE: no signal routes here since IMP-df40782d3f4d moved
+        # system.sdwan_credential_expiring to system.sdwan_credential_refresh
+        # below. Kept seeded + registered (subset invariant allows a category
+        # without a producer) so live rows stay operator-tunable and a future
+        # true key-TTL lane inherits its recorded intent.
+        "system.sdwan_key_rotate"            => "auto_approve",
+        "system.sdwan_failover"              => "require_approval",
+        "system.sdwan_user_device_revoke"    => "require_approval",
+        "system.sdwan_bgp_session_remediate" => "notify_and_proceed",
+        "system.sdwan_vip_failover"          => "require_approval",
+
+        # IMP-df40782d3f4d — system.sdwan_credential_expiring routes here now:
+        # a server-side MembershipCredential re-issue (SdwanCredentialRefreshExecutor
+        # → MembershipCredentialSigner.ensure_fresh!), NOT a key rotation — rotating
+        # the WG key revoked the active pubkey and cut the still-working tunnel of
+        # exactly the not-polling peer whose MC was aging out. notify_and_proceed:
+        # the refresh itself is benign and idempotent, but an MC can only near
+        # expiry when the agent has stopped pulling, and the operator should see
+        # that degraded control channel rather than have it silently patched over.
+        "system.sdwan_credential_refresh"    => "notify_and_proceed",
+
+        # The four notify-only SDWAN investigate lanes. Each PROCEEDS but never
+        # actuates (skill: nil, no REMEDIATION_APPLIERS entry), so each is also
+        # listed in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES —
+        # see the TRAP note on system.module_verify_investigate in
+        # FLEET_AUTONOMY_POLICIES for why that membership is load-bearing.
+        #
+        # IMP-c7d663f24a0b — SdwanServiceHealthSensor (sdwan_service_silent +
+        # sdwan_portmap_orphaned). Notify-level first, no auto-remediation until
+        # the signal quality is proven in the field.
+        "system.sdwan_service_health_investigate" => "notify_and_proceed",
+        # IMP-57e9a90598ee — SdwanOvnDeploymentHealthSensor (ovn deployment
+        # degraded / activation stalled). NO applier by design — the degraded
+        # component is the operator's own OVN control plane (northd, NB/SB DBs),
+        # which the platform does not provision — so "proceed" means "notify the
+        # operator" and nothing else.
+        "system.sdwan_ovn_deployment_investigate" => "notify_and_proceed",
+        # IMP-2f34679b6b73 — SdwanBgpSessionHealthSensor's attribution family (a
+        # BGP report the platform could not attribute to the network it arrived
+        # under, or one the agent disclaimed). The condition is an ABSENCE of a
+        # measurement; the point of surfacing it is that an operator learns the
+        # host is running an agent that polls FRR without naming a VRF.
+        "system.sdwan_bgp_observation_investigate" => "notify_and_proceed",
+        # IMP-da1b772c2596 — SdwanApplyHealthSensor (sdwan_apply_failed +
+        # sdwan_apply_not_measured): the agent's OBSERVED per-subsystem apply
+        # outcome. NO applier and can be none — a failed apply is a kernel-side
+        # refusal the agent already retries on every tick, so re-serving the same
+        # config remediates nothing.
+        "system.sdwan_apply_investigate" => "notify_and_proceed",
+        # IMP-7034199a5a19 — SdwanUserDeviceConfigStalenessSensor. An issued user
+        # device's config is rendered once and never re-pulled, so a VIP, a peer
+        # lan_subnet, or a federation prefix added afterwards is missing from
+        # every config already in the field. NO applier and can be none — the
+        # drifted artefact is a text file on a user's laptop; the operator
+        # re-issues the device.
+        "system.sdwan_user_device_config_investigate" => "notify_and_proceed",
+
+        # Gated skill executor (APO-1c, IMP-7e2bdc1774e4) — cross-instance
+        # peering acceptance is always sensitive; seeded at the resolver's own
+        # unseeded default so landing the row changes nothing but visibility.
+        "system.federation_acceptance"      => "require_approval"
       }.freeze
 
-      SDWAN_MANAGER_POLICIES = {
-        # NOTE: 6 autonomous SDWAN remediation actions (system.sdwan_peer_remediate,
-        # system.sdwan_key_rotate, system.sdwan_failover, system.sdwan_user_device_revoke,
-        # system.sdwan_bgp_session_remediate, system.sdwan_vip_failover) were MOVED to
-        # fleet_autonomy_agent.rb. Those actions fire from FleetAutonomyService::SENSORS,
-        # whose tick! gates as the "Fleet Autonomy" agent, so gate_action! resolves the
-        # policy against THAT agent — seeding them here left them stranded (silently
-        # 'not_permitted') in the sensor path. This mirrors the
-        # system.federation_peer_remediate move.
-        #
-        # IMP-17bc5546009a: a 7th, system.sdwan_route_policy_audit, moved alongside
-        # them but was later DELETED outright (2026-08-21) — it had no sensor, no
-        # DecisionEngine binding, and no executor, so it was a seeded no-op on either
-        # agent. Not re-added here; see fleet_autonomy_agent.rb's history for the
-        # removal.
-        #
-        # Only operator-initiated sdwan.* CRUD policies remain here.
-        #
-        # This table is seeded TWICE, against two different audiences (see the
-        # operator upsert below): once agent-scoped, which is what an agent dispatch
-        # resolves against, and once agent-less, which is what an operator HTTP
-        # request resolves against. The verbs below are the single recorded intent for
-        # both — do not fork them.
-
+      # Operator-initiated sdwan.* CRUD. This table is seeded TWICE, against two
+      # different audiences: once agent-scoped as part of SDWAN_MANAGER_POLICIES
+      # (what an agent dispatch resolves against) and once agent-less as the
+      # "sdwan-operator" set (what an operator HTTP request resolves against —
+      # see the operator upsert in db/seeds/system_sdwan_manager_agent.rb). The
+      # verbs below are the single recorded intent for both — do not fork them.
+      # The remediation rows above are NOT part of the operator audience.
+      SDWAN_OPERATOR_POLICIES = {
         # Operator-initiated network ops (newly gated 2026-05-10)
         "sdwan.network_create"              => "notify_and_proceed",
         "sdwan.network_update"              => "notify_and_proceed",
@@ -862,6 +831,11 @@ module System
         "sdwan.federation_peer_data_residency" => "require_approval"
       }.freeze
 
+      # The SDWAN Manager AGENT set: operator CRUD + the sensor-routed
+      # remediations. 57 keys. POLICY_SETS binds this at scope "agent" and
+      # SDWAN_OPERATOR_POLICIES alone at scope "action_type".
+      SDWAN_MANAGER_POLICIES = SDWAN_OPERATOR_POLICIES.merge(SDWAN_REMEDIATION_POLICIES).freeze
+
       CVE_RESPONDER_POLICIES = {
         "system.cve_remediate"               => "require_approval",   # patch strategy needs operator review
         "system.cve_sbom_ingest"             => "auto_approve",       # importing inventory is read-shape
@@ -883,7 +857,18 @@ module System
         "system.disk_image_retention_update"      => "auto_approve",      # GC config, low-risk
         "system.disk_image_webhook_trigger"       => "notify_and_proceed", # webhook ingest
         "system.disk_image_webhook_revoke"        => "require_approval",  # cuts active CI integration
-        "system.disk_image_webhook_rotate_secret" => "notify_and_proceed" # invalidates old, but recoverable
+        "system.disk_image_webhook_rotate_secret" => "notify_and_proceed", # invalidates old, but recoverable
+
+        # DK3 of the disk-image-CI restoration — DiskImagePublicationFailureStreakSensor
+        # (a platform whose last N publications all failed). The sensor runs on
+        # Fleet Autonomy's tick, and its binding declares `owner:
+        # "disk-image-manager"`, so the tick gates it HERE (HIER-P2A; it was
+        # declared on Fleet Autonomy while the tick could only gate as the
+        # agent running it). notify_and_proceed: no auto-remediation exists (a
+        # broken CI pipeline needs operator investigation), this only surfaces
+        # the streak; deduped per-platform via the sensor's fingerprint. Also in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
+        "system.disk_image_publication_investigate" => "notify_and_proceed"
       }.freeze
 
       # system.gitops_apply_proposal is EVALUATED by Ai::Tools::SystemFleetTool's
@@ -900,10 +885,20 @@ module System
       # control it reads as; an operator-shape (scope "global") set is the
       # follow-up. The two siblings are declared `mutating:` only and meet no
       # gate.
+      #
+      # system.gitops_drift_remediate is the AUTONOMOUS row: GitopsDriftSensor
+      # runs on Fleet Autonomy's tick and its binding declares `owner:
+      # "gitops-reconciler"`, so the tick gates it HERE (HIER-P2A; it was
+      # declared on Fleet Autonomy while the tick could only gate as the agent
+      # running it). notify_and_proceed: drift is informational (the reconciler
+      # opens proposals for the actual apply); without this binding the signal
+      # was classified :skipped and never reached the operator. Deduped per
+      # repo+revision fingerprint, so a standing drift notifies once per TTL.
       GITOPS_RECONCILER_POLICIES = {
         "system.gitops_apply_proposal"      => "require_approval",  # applies a diff to live fleet state
         "system.gitops_register_repository" => "require_approval",  # adds a new declarative source of truth
-        "system.gitops_sync_repository"     => "auto_approve"       # read-side: refresh the diff, no mutation
+        "system.gitops_sync_repository"     => "auto_approve",      # read-side: refresh the diff, no mutation
+        "system.gitops_drift_remediate"     => "notify_and_proceed" # sensor-routed drift notification
       }.freeze
 
       RUNTIME_MANAGER_POLICIES = {
@@ -1172,7 +1167,7 @@ module System
           priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: PROVISIONING_POLICIES,
           condition_overrides: PROVISIONING_CONDITION_OVERRIDES },
         { key: "sdwan-operator",     agent_key: nil,                  scope: "action_type",
-          priority: 5,  conditions: DEFAULT_TRUST_CONDITIONS, policies: SDWAN_MANAGER_POLICIES },
+          priority: 5,  conditions: DEFAULT_TRUST_CONDITIONS, policies: SDWAN_OPERATOR_POLICIES },
         { key: "runtime-operator",   agent_key: nil,                  scope: "action_type",
           priority: 5,  conditions: DEFAULT_TRUST_CONDITIONS, policies: RUNTIME_OPERATOR_POLICIES },
         { key: "instance-pool-operator", agent_key: nil,              scope: "global",
@@ -1184,6 +1179,26 @@ module System
         { key: "instance-cordon-operator", agent_key: nil,            scope: "global",
           priority: 5,  conditions: {}, policies: INSTANCE_CORDON_OPERATOR_POLICIES }
       ].freeze
+
+      # action_category → the source_key of the agent whose AGENT-SCOPED set
+      # declares it (HIER-P2A). This is the single answer to "which agent gates
+      # this sensor-routed category": DecisionEngine::SIGNAL_BINDINGS declares
+      # each binding's `owner:` and sensor_owner_gating_spec pins that the two
+      # agree, and PolicyReconciler uses it to tell a row whose owner CHANGED
+      # (re-home) from a row an operator put on an agent of their own (leave).
+      #
+      # nil for a category no agent set declares — operator-only sets
+      # (volume-snapshot, cordon, platform-scaling, manual operations) and
+      # unknown names alike. Unambiguous by construction: no category is
+      # declared on two agents (policy_declarations_ownership_spec pins it).
+      AGENT_SET_OWNERS = POLICY_SETS
+        .select { |set| set[:scope] == "agent" && set[:agent_key] }
+        .each_with_object({}) { |set, owners| set[:policies].each_key { |c| owners[c] ||= set[:agent_key] } }
+        .freeze
+
+      def self.owner_of(action_category)
+        AGENT_SET_OWNERS[action_category.to_s]
+      end
     end
   end
 end

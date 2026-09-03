@@ -327,15 +327,20 @@ RSpec.describe System::Fleet::Sensors::SdwanApplyHealthSensor do
     # NOT system.observation: the fleet seed maps that category to
     # auto_approve, which collects for dashboards without ever reaching an
     # operator — the silent downgrade this lane must not inherit.
-    it "seeds the gate policy on the agent that runs the sense pass" do
+    it "declares the gate policy on the agent that OWNS the binding (SDWAN Manager since HIER-P2A)" do
       # Read the DECLARATION, not the seed text. These policy sets moved out
       # of fleet_autonomy_agent.rb into System::Governance::PolicyDeclarations
       # so the boot reconciler can assert them against a RUNNING database;
-      # the seed now consumes that constant. Grepping the seed file for a
-      # literal tested a string that no longer lives there, while the
-      # property it cares about moved with the constant.
-      expect(System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES)
+      # the seed now consumes that constant. The sensor still runs on the
+      # Fleet Autonomy tick, but the tick gates the binding under its declared
+      # owner, so the row lives on SDWAN Manager — and sensor_owner_gating_spec
+      # pins that the binding's owner and the declaring set agree.
+      expect(System::Governance::PolicyDeclarations::SDWAN_MANAGER_POLICIES)
         .to include("system.sdwan_apply_investigate" => "notify_and_proceed")
+      expect(System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES)
+        .not_to have_key("system.sdwan_apply_investigate")
+      entry = System::Fleet::DecisionEngine::SIGNAL_BINDINGS.fetch("system.sdwan_apply_failed")
+      expect(System::Fleet::DecisionEngine.owner_for(entry)).to eq("sdwan-manager")
     end
 
     # Membership here is DECLARED, never inferred. Without it the standing

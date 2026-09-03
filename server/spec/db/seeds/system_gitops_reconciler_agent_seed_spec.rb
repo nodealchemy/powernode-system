@@ -9,7 +9,9 @@ require "rails_helper"
 #   1. the seed creates the named agent with the expected posture, and
 #   2. the reconciler resolves IT (not an arbitrary agent) as the author, and
 #   3. the autonomous drift signal is wired through the DecisionEngine to a
-#      Fleet-Autonomy-owned policy (the sensor gates as Fleet Autonomy).
+#      policy THIS agent owns (HIER-P2A: the sensor runs on the fleet tick,
+#      but its binding declares `owner: "gitops-reconciler"` and the tick
+#      gates it under this agent).
 RSpec.describe "system_gitops_reconciler_agent seed" do
   def load_seed!(file)
     silence_warnings do
@@ -63,17 +65,22 @@ RSpec.describe "system_gitops_reconciler_agent seed" do
       expect(categories).to eq(
         "system.gitops_apply_proposal"      => "require_approval",
         "system.gitops_register_repository" => "require_approval",
-        "system.gitops_sync_repository"     => "auto_approve"
+        "system.gitops_sync_repository"     => "auto_approve",
+        "system.gitops_drift_remediate"     => "notify_and_proceed"
       )
     end
 
-    it "does NOT own the autonomous drift-remediation policy (that gates as Fleet Autonomy)" do
+    it "OWNS the autonomous drift-remediation policy (HIER-P2A) and Fleet Autonomy no longer declares it" do
       expect(
         Ai::InterventionPolicy.exists?(
           account: account, ai_agent_id: agent.id,
           action_category: "system.gitops_drift_remediate"
         )
-      ).to be false
+      ).to be true
+      expect(System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES)
+        .not_to have_key("system.gitops_drift_remediate")
+      binding = System::Fleet::DecisionEngine::SIGNAL_BINDINGS.fetch("system.gitops.drift_detected")
+      expect(System::Fleet::DecisionEngine.owner_for(binding)).to eq("gitops-reconciler")
     end
 
     it "creates its own approval chain" do
@@ -110,14 +117,23 @@ RSpec.describe "system_gitops_reconciler_agent seed" do
     end
   end
 
-  describe "the autonomous policy on Fleet Autonomy" do
-    it "places system.gitops_drift_remediate on the Fleet Autonomy agent" do
+  # HIER-P2A: the autonomous row moved with its owner. The Fleet Autonomy seed
+  # no longer writes it, and the GitOps Reconciler seed does — asserted from
+  # the ROWS each seed leaves, not from the declarations.
+  describe "the autonomous policy's home" do
+    it "is written by the GitOps Reconciler seed and NOT by the Fleet Autonomy seed" do
       load_seed!("fleet_autonomy_agent.rb")
       fleet = Ai::Agent.global.find_by(name: "Fleet Autonomy")
       expect(fleet).to be_present
 
-      policy = Ai::InterventionPolicy.find_by(
+      expect(Ai::InterventionPolicy.find_by(
         account: account, ai_agent_id: fleet.id, scope: "agent",
+        action_category: "system.gitops_drift_remediate"
+      )).to be_nil
+
+      load_seed!("system_gitops_reconciler_agent.rb")
+      policy = Ai::InterventionPolicy.find_by(
+        account: account, ai_agent_id: agent.id, scope: "agent",
         action_category: "system.gitops_drift_remediate"
       )
       expect(policy).to be_present

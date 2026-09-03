@@ -79,6 +79,9 @@ module System
         end
 
         # Emit a decision event. Decision class is :proceeded|:pending|:blocked|:deduped|:skipped.
+        # `agent_id` / `owner` are the agent the decision was GATED UNDER
+        # (HIER-P2A — the binding's declared owner, not the agent whose tick ran
+        # the sensor); absent on decisions that never reached a gate.
         def emit_decision!(account:, decision:, signal:, correlation_id: nil)
           decision_kind = "decision.#{decision[:decision]}"
           emit!(
@@ -89,8 +92,10 @@ module System
               source_signal_kind: signal.kind,
               source_signal_fingerprint: signal.fingerprint,
               action_category: decision[:action_category],
-              gate: decision[:gate]
-            },
+              gate: decision[:gate],
+              agent_id: decision[:agent_id],
+              owner: decision[:owner]
+            }.compact,
             source: "decision_engine",
             correlation_id: correlation_id || signal.fingerprint,
             **resource_refs_from_payload(signal.payload)

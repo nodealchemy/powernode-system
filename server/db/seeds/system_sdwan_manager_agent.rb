@@ -90,7 +90,18 @@ puts "  ✅ SDWAN Manager agent: #{sdwan_agent.previously_new_record? ? 'created
 
 # Declared set now lives in System::Governance::PolicyDeclarations so the reconciler can
 # assert it against a RUNNING database without executing this seed.
+#
+# TWO constants, two audiences (HIER-P2A). The AGENT set is operator CRUD plus
+# the 14 sensor-routed system.sdwan_* / system.federation_* remediation rows —
+# the fleet tick gates those under THIS agent now (each binding declares
+# `owner: "sdwan-manager"`), so they live here again instead of on Fleet
+# Autonomy. The OPERATOR set below is the 43 CRUD keys only. 13 of the 14
+# remediations are sensor-routed, so no operator door issues them; the 14th,
+# system.federation_acceptance, is a Concierge/MCP-driven gated executor whose
+# ACTING agent is this one — either way the acting principal is the agent, so
+# no operator-shape row is written for any of them.
 sdwan_policies = System::Governance::PolicyDeclarations::SDWAN_MANAGER_POLICIES
+sdwan_operator_policies = System::Governance::PolicyDeclarations::SDWAN_OPERATOR_POLICIES
 
 count = System::Seeds::AgentSetupHelpers.upsert_policies!(
   account: admin_account, agent: sdwan_agent,
@@ -147,14 +158,14 @@ puts "  ✅ SDWAN Manager policies: #{count} changed (#{sdwan_policies.size} tot
 # default until an operator configures policies for it.
 operator_count = System::Seeds::AgentSetupHelpers.upsert_operator_policies!(
   account: admin_account,
-  definitions: sdwan_policies
+  definitions: sdwan_operator_policies
 )
 System::Seeds::AgentSetupHelpers.clean_stale_operator_policies!(
   account: admin_account,
-  keep_keys: sdwan_policies.keys,
+  keep_keys: sdwan_operator_policies.keys,
   owned_prefixes: [ "sdwan." ]
 )
-puts "  ✅ SDWAN operator-path policies: #{operator_count} changed (#{sdwan_policies.size} total)"
+puts "  ✅ SDWAN operator-path policies: #{operator_count} changed (#{sdwan_operator_policies.size} total)"
 
 sdwan_chain = Ai::ApprovalChain.find_or_initialize_by(
   account: admin_account,

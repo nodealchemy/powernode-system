@@ -17,18 +17,18 @@ require_relative "concerns/agent_setup_helpers"
 #   stable author. The Reconciler service resolves it by name (kept in sync
 #   with NAME below).
 #
-# AUTONOMOUS vs OPERATOR ownership (mirrors the 2026-05-10 SDWAN split):
+# AUTONOMOUS and OPERATOR ownership both live HERE (HIER-P2A):
 #   - The AUTONOMOUS drift signal (`system.gitops.drift_detected`, emitted by
-#     FleetAutonomyService::SENSORS → GitopsDriftSensor) gates as the
-#     "Fleet Autonomy" agent — so its `system.gitops_drift_remediate` policy
-#     lives in fleet_autonomy_agent.rb, NOT here (same reason the autonomous
-#     system.sdwan_* remediations live on Fleet Autonomy).
+#     GitopsDriftSensor on the Fleet Autonomy tick) is gated under THIS agent —
+#     its DecisionEngine binding declares `owner: "gitops-reconciler"` — so its
+#     `system.gitops_drift_remediate` policy is declared in
+#     GITOPS_RECONCILER_POLICIES. (Until HIER-P2A the tick could only gate as
+#     the agent running it, which is why the row sat on Fleet Autonomy.)
 #   - The OPERATOR-initiated GitOps actions (apply a proposal, register a repo,
-#     trigger a sync — the `system_gitops_*` MCP surface) are owned HERE, giving
-#     the domain a dedicated approval queue an operator can pause independently
-#     (e.g. freeze GitOps applies during a maintenance window without halting
-#     the rest of fleet autonomy). This matches how SDWAN Manager owns operator
-#     `sdwan.*` CRUD while Fleet Autonomy owns the autonomous remediations.
+#     trigger a sync — the `system_gitops_*` MCP surface) are owned here too,
+#     giving the domain a dedicated approval queue an operator can pause
+#     independently (e.g. freeze GitOps applies during a maintenance window
+#     without halting the rest of fleet autonomy).
 
 puts "\n  Seeding GitOps Reconciler agent + policies..."
 
@@ -120,10 +120,9 @@ puts "  ✅ GitOps Reconciler agent: #{gitops_agent.previously_new_record? ? 'cr
 # ── Operator-initiated GitOps action policies ─────────────────────────────
 #
 # These own the `system.gitops_*` operator surface (the `system_gitops_*` MCP
-# actions). They mirror SDWAN Manager's operator-CRUD ownership: the action
+# actions) AND the sensor-routed `system.gitops_drift_remediate` row: the action
 # vocabulary + approval posture is declared on the owning agent so the GitOps
-# queue is independently pause-able. (The AUTONOMOUS drift remediation policy
-# lives on Fleet Autonomy — see header.)
+# queue is independently pause-able (see header).
 # Declared set now lives in System::Governance::PolicyDeclarations so the reconciler can
 # assert it against a RUNNING database without executing this seed.
 gitops_policies = System::Governance::PolicyDeclarations::GITOPS_RECONCILER_POLICIES

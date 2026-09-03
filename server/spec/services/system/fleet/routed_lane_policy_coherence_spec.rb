@@ -30,26 +30,36 @@ require "rails_helper"
 RSpec.describe "routed lane / intervention policy coherence" do
   let(:account) { create(:account) }
 
-  # The sense pass runs under ONE agent, so a policy seeded onto a DIFFERENT
-  # agent is invisible to it — the trap the seed comments repeatedly warn about.
+  # The sense pass runs under ONE agent (the tick agent), but since HIER-P2A a
+  # decision is gated under the agent that OWNS the binding's action_category
+  # (FleetAutonomyService#for_owner), so a policy row must sit on the OWNER —
+  # a row on any other agent is invisible to the gate that needs it.
   let(:agent) do
     ::Ai::Agent.resolve_for(account.id, name: "Fleet Autonomy", agent_type: "monitor")
   end
 
-  # A routed lane is gated by whichever autonomy service runs the sensor that
-  # emits it, and there are TWO. FleetAutonomyService::SENSORS gates as "Fleet
-  # Autonomy"; System::CveOps::CveResponderService runs the CVE sensors on its
-  # own tick, builds its own DecisionEngine, and gates as "CVE Responder". A
-  # policy on the wrong agent is invisible to the tick that needs it — the trap
-  # the seed files repeatedly warn about.
-  #
-  # So the CVE lanes are not EXEMPT here, they are RE-HOMED: listing one below
-  # does not excuse it, it only moves which agent must carry the row, and that
-  # is asserted just as strictly. Nothing can be silenced by adding it to a list.
+  # A routed lane is gated by the agent its declared policy set names:
+  # `PolicyDeclarations.owner_of(category)` — Fleet Autonomy by default, SDWAN
+  # Manager for the sdwan_* / federation_* remediations, GitOps Reconciler for
+  # gitops drift, Disk Image Manager for the publication streak, and CVE
+  # Responder for the two CVE lanes (System::CveOps::CveResponderService runs
+  # the CVE sensors on its own tick and gates as that agent). The owner is
+  # DERIVED, never listed here: nothing can be silenced by adding it to a list,
+  # and sensor_owner_gating_spec pins that every binding's `owner:` equals this
+  # derivation.
   CVE_GATED = %w[
     system.cve_remediate
     system.module_critical_upgrade_ready
   ].freeze
+
+  def owner_key_for(category)
+    System::Governance::PolicyDeclarations.owner_of(category) ||
+      System::Fleet::FleetAutonomyService::DEFAULT_OWNER
+  end
+
+  def owner_name_for(category)
+    System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch(owner_key_for(category))[:name]
+  end
 
   # The REAL seeds are loaded, not a hand-built set of policies. That is the
   # whole point: this must fail when a lane is declared in code and no seed
@@ -59,10 +69,14 @@ RSpec.describe "routed lane / intervention policy coherence" do
   # Fleet-Autonomy-scoped policies are split across TWO files — the agent seed
   # and the provisioning policy seed (which writes project.* onto the SAME
   # agent). Loading only one produced four false positives on the first run.
+  # Every owner agent's seed is loaded, because every owner must carry its rows.
   SEEDS = %w[
     fleet_autonomy_agent
     system_provisioning_intervention_policies
     system_cve_responder_agent
+    system_sdwan_manager_agent
+    system_gitops_reconciler_agent
+    system_disk_image_manager_agent
   ].freeze
 
   # agent_setup_helpers#bootstrap_admin_context! resolves the account by name
@@ -96,16 +110,10 @@ RSpec.describe "routed lane / intervention policy coherence" do
     routed = System::Autonomy::ActionCategoryRouter.routed_action_categories
     expect(routed).not_to be_empty
 
-    fleet_seeded = policies_for("Fleet Autonomy")
-    cve_seeded   = policies_for("CVE Responder")
+    seeded = Hash.new { |memo, name| memo[name] = policies_for(name) }
 
-    missing = routed.reject do |category|
-      if CVE_GATED.include?(category)
-        cve_seeded.include?(category)
-      else
-        fleet_seeded.include?(category)
-      end
-    end
+    missing = routed.reject { |category| seeded[owner_name_for(category)].include?(category) }
+                    .map { |category| "#{category} (owner: #{owner_name_for(category)})" }
 
     expect(missing).to be_empty, <<~MSG
       These action_categories are ROUTED by a declared
@@ -121,27 +129,47 @@ RSpec.describe "routed lane / intervention policy coherence" do
     MSG
   end
 
-  # Guards the re-homing list itself. A category parked in CVE_GATED must
-  # genuinely be carried by the CVE Responder agent, so the list can never be
+  # Guards the derivation itself. The CVE lanes must genuinely be carried by
+  # the CVE Responder agent and derive to it, so the owner rule can never be
   # used to silence a lane — only to move which agent is responsible for it.
-  it "actually seeds every re-homed CVE lane onto the CVE Responder agent" do
+  it "actually seeds every CVE lane onto the CVE Responder agent, and derives that owner" do
     expect(policies_for("CVE Responder")).to include(*CVE_GATED)
+    CVE_GATED.each { |category| expect(owner_name_for(category)).to eq("CVE Responder") }
+  end
+
+  # HIER-P2A: the derivation really moves lanes off Fleet Autonomy. Without
+  # this, an owner_of that answered fleet-autonomy for everything would keep
+  # the sweep above green while the tick gated the sdwan lanes against rows
+  # that are not there.
+  it "derives specialist owners for the re-homed lanes and seeds them there" do
+    expect(owner_name_for("system.sdwan_peer_remediate")).to eq("SDWAN Manager")
+    expect(owner_name_for("system.gitops_drift_remediate")).to eq("GitOps Reconciler")
+    expect(owner_name_for("system.disk_image_publication_investigate")).to eq("Disk Image Manager")
+    expect(policies_for("SDWAN Manager")).to include("system.sdwan_peer_remediate")
+    expect(policies_for("Fleet Autonomy")).not_to include("system.sdwan_peer_remediate")
   end
 
   # The gate's own view, not ours — proves the routed set is reachable through
   # the exact predicate that blocks, rather than through a query we wrote to
-  # agree with ourselves.
+  # agree with ourselves. Per OWNER gate: the tick asks
+  # FleetAutonomyService#for_owner(owner) and that gate's #permitted_actions.
   it "makes every routed category permitted from the gate's own perspective" do
     service = System::Fleet::FleetAutonomyService.new(account: account, agent: agent)
-    permitted = service.send(:permitted_actions)
     fleet_gated = System::Autonomy::ActionCategoryRouter.routed_action_categories - CVE_GATED
 
-    expect(fleet_gated - permitted).to be_empty
+    unpermitted = fleet_gated.reject do |category|
+      service.for_owner(owner_key_for(category)).send(:permitted_actions).include?(category)
+    end
+
+    expect(unpermitted).to be_empty
   end
 
   describe "a missing row is reported as MISCONFIGURATION, not as a policy decision" do
+    # A Fleet-Autonomy-owned lane, so the tick agent's own gate is the one that
+    # reports it.
     let(:routed_category) do
-      (System::Autonomy::ActionCategoryRouter.routed_action_categories - CVE_GATED).first
+      (System::Autonomy::ActionCategoryRouter.routed_action_categories - CVE_GATED)
+        .find { |category| owner_key_for(category) == System::Fleet::FleetAutonomyService::DEFAULT_OWNER }
     end
 
     it "blocks with the policy_missing gate and logs at error level" do

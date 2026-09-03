@@ -212,11 +212,12 @@ RSpec.describe System::Fleet::Sensors::ModulePromotionBacklogSensor do
         .to eq("notify_and_proceed")
     end
 
-    # Seeded on Fleet Autonomy specifically: `gate_action!` resolves policies
-    # with `where(ai_agent_id: agent.id)` against the agent running the tick,
-    # so a policy declared on any other agent is invisible to this signal and
-    # every one of them dies at the gate.
-    it "seeds the gate policy on the agent that runs the sense pass" do
+    # Declared on Fleet Autonomy specifically: since HIER-P2A the gate resolves
+    # policies against the binding's DECLARED OWNER, and this binding takes the
+    # default owner ("fleet-autonomy"). A policy declared on any other agent is
+    # invisible to this signal and every one of them dies at the gate — moving
+    # it means moving the declaration AND the binding's `owner:` together.
+    it "declares the gate policy on the agent that OWNS the binding" do
       expect(System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES)
         .to include("system.module_promotion_investigate" => "notify_and_proceed")
     end

@@ -418,18 +418,26 @@ RSpec.describe System::Fleet::Sensors::SdwanServiceHealthSensor do
       end
     end
 
-    # The policy must be seeded on the agent that RUNS the tick — Fleet
-    # Autonomy resolves policies with where(ai_agent_id: agent.id), so a
-    # policy on any other agent leaves gate_action! returning :blocked.
-    it "seeds the gate policy on the agent that runs the sense pass" do
+    # The policy must be declared on the agent that OWNS the binding. Until
+    # HIER-P2A that was necessarily the agent running the tick (gate_action!
+    # resolved policies with where(ai_agent_id: agent.id) against it); now
+    # FleetAutonomyService#for_owner gates under the binding's declared owner,
+    # so the row must live there instead — a row on any OTHER agent is the
+    # one that leaves the gate blocked.
+    it "declares the gate policy on the agent that OWNS the binding (SDWAN Manager since HIER-P2A)" do
       # Read the DECLARATION, not the seed text. These policy sets moved out
       # of fleet_autonomy_agent.rb into System::Governance::PolicyDeclarations
       # so the boot reconciler can assert them against a RUNNING database;
-      # the seed now consumes that constant. Grepping the seed file for a
-      # literal tested a string that no longer lives there, while the
-      # property it cares about moved with the constant.
-      expect(System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES)
+      # the seed now consumes that constant. The sensor still runs on the
+      # Fleet Autonomy tick, but the tick gates the binding under its declared
+      # owner, so the row lives on SDWAN Manager — and sensor_owner_gating_spec
+      # pins that the binding's owner and the declaring set agree.
+      expect(System::Governance::PolicyDeclarations::SDWAN_MANAGER_POLICIES)
         .to include("system.sdwan_service_health_investigate" => "notify_and_proceed")
+      expect(System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES)
+        .not_to have_key("system.sdwan_service_health_investigate")
+      entry = System::Fleet::DecisionEngine::SIGNAL_BINDINGS.fetch("system.sdwan_service_silent")
+      expect(System::Fleet::DecisionEngine.owner_for(entry)).to eq("sdwan-manager")
     end
 
     # The third end of the lane, and the least obvious. notify_and_proceed
