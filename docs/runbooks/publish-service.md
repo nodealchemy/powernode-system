@@ -72,21 +72,54 @@ service: loadBalancer
 
 - **A service with no backend set renders exactly as before, byte for byte** —
   no weights, no health check, one server. Nothing backfills a row for the
-  legacy columns, so no existing service changes shape until someone adds one.
-- **Draining every member is NOT how you take a service out of rotation.** The
-  active set is then empty and the writer falls back to the service's *legacy*
-  `backend_host`/`backend_vip` columns — which, after a replace-instance cycle,
-  may name a host that no longer answers. To stop routing, clear
-  `local_enabled`/`public_enabled`; the writer skips a disabled service.
+  legacy columns on its own; the first producer write (below) copies the
+  legacy backend into a row of its own before adding a second member, so the
+  original backend keeps its share.
+- **Draining every member takes the service OUT OF ROTATION** (operator ruling
+  2026-09-02, APO-3d). A set whose members are all `draining` resolves to no
+  backends and the writer **skips the service** — it is reported under
+  `drained_service_ids` (its own key, separate from the `skipped_service_ids`
+  "no host/cert resolvable" list) and logged, never rendered with an empty
+  server list.
+  This replaced the earlier fallback to the service's *legacy*
+  `backend_host`/`backend_vip` columns, which after a replace-instance cycle
+  named precisely the host that died. An *empty* set (no rows at all) is a
+  different state and still renders the legacy backend. To stop routing
+  without a set, clear `local_enabled`/`public_enabled` as before.
 - **The public TCP (Path B) facet fans out too**, but round robin only: Traefik's
   TCP servers load balancer has no per-server weight (WRR there is a
   service-level construct) and no health check on the vendored build.
 
-> **No API or MCP verb writes the backend set or a service's `metadata` yet.**
-> This increment (APO-3c) ships the load-balancing *capability*; the producer —
-> replace-instance and scale-out maintaining the set — is APO-4. Until then a
-> backend set and the per-service overrides below are **rails-console only**.
-> The account and SiteSetting tiers *are* reachable today.
+#### Who maintains the set (APO-3d)
+
+The set is maintained **automatically** by the fleet executors and
+**declaratively** by one MCP verb. A service is "routed to" an instance when
+its legacy `backend_host`, a member row, or a backend VIP one of the instance's
+SDWAN peers holds names that instance (`Sdwan::ServiceBackend.services_routed_to`).
+
+| Producer | What it does to the set |
+|---|---|
+| `scale_project` **add_replicas** | Every new replica joins each service the mission's existing replicas already back (materialising the legacy backend as the first row). Reported under `outputs.sdwan_service_ids` / `sdwan_service_backend_ids`; a dry run lists `join_service_backends` actions. A join that fails is a `partial` step failure, never silent. |
+| `scale_project` **remove_replicas** (and its rollback) | Each victim's host-form rows are removed **before** the terminate takes its addresses away (`outputs.removed_sdwan_service_backend_ids`; dry run lists `leave_service_backends`). |
+| `replace_instance` (DR) | The replacement joins every service that dialled the failed instance **by address**, over the same overlay network; the dead member is **drained**, not removed. A VIP-backed service is left to the VIP move. Idempotent on `operation_id` (`rehome_service_backends` step); previewed as `would_rehome_service_ids`. |
+| `reap_instance` (DR) | The dead instance's rows are removed before the terminate (`removed_sdwan_service_backend_ids`). |
+| `system_set_service_backends` (MCP) | Declarative: the `backends` list becomes the set — matched by address + port, updated in place, absent members removed, `[]` clears the set. Also writes the per-service overrides (`load_balancer`). **Approval-gated** under `system.service_backends_update` (DeferredToolCall replay); the call returns a pending envelope until released. |
+
+Every producer regenerates the account's Traefik file when it changes a set;
+a regen failure is recorded (executor failure entry / tool error) and the
+stale file is repaired by `system_reverse_proxy_compose`.
+
+```
+system_set_service_backends
+  service_id: <id>
+  backends: [ { backend_host: 10.20.0.11, backend_port: 3000 },
+              { backend_host: 10.20.0.12, backend_port: 3000, weight: 2 } ]
+  load_balancer: { health_check_enabled: true, health_check_path: "/-/ready" }
+```
+
+Keep the original backend **listed** while rebuilding a set: an all-draining
+set is a skipped service (above), and an empty set returns to the legacy
+column.
 
 Health-check defaults resolve through `Sdwan::ServiceLoadBalancing`, in order:
 the service's own `metadata["load_balancer"][<key>]`, then the account's
@@ -106,12 +139,12 @@ the wrong path does not degrade a scaled service — it takes the whole service
 dark, which is worse than the single unchecked backend it replaced. A
 health-check path is also not a deployment-wide fact: Grafana answers
 `/api/health`, Rails `/up`, a bare exporter `/`. So turn it on where you know the
-path, e.g. per service:
+path, e.g. per service through the gated verb (`load_balancer` above; a `null`
+value clears a key):
 
-```ruby
-svc.update!(metadata: svc.metadata.merge(
-  "load_balancer" => { "health_check_enabled" => true, "health_check_path" => "/-/ready" }
-))
+```
+system_set_service_backends  service_id: <id>  backends: [ …the current set… ]
+  load_balancer: { health_check_enabled: true, health_check_path: "/-/ready" }
 ```
 
 or deployment-wide once every scaled backend agrees on one:
@@ -170,6 +203,9 @@ system_expose_service_local  service_id: <id>  auth_mode: scoped  required_permi
   only; it will **not** flip `local_enabled` — exposure semantics are owned by the
   approval-gated expose action). Regenerates the proxy if the service is exposed.
 - `system_unexpose_service_local` — fail-safe **off** (no approval); keeps the record.
+- `system_set_service_backends` — the load-balanced backend set + per-service
+  overrides (approval-gated, see *Who maintains the set* above).
+- `system_get_service` — now also returns `backends` and `load_balancer`.
 - `system_delete_service` — removes the service (and its route if it was exposed).
 
 ## Verify
@@ -194,7 +230,7 @@ Force a regen without an executor: `./scripts/manage-proxy-hosts.sh sync-traefik
 |---------|-------------|
 | `/svc/<slug>` returns the SPA (200 HTML) instead of the backend | No `localsvc-*` router — service not `local_enabled`, or regen didn't run. Re-run expose or `sync-traefik`. |
 | Route doesn't appear for ~1–2s after a change | Traefik file-watch reload lag — normal; poll again. |
-| Service silently skipped (no router) | No host resolvable — the service has no `local_certificate` **and** the account has no valid cert. A hostless `PathPrefix` router would hijack `/svc/<slug>` on every host, so the writer skips it with a logged warning. Assign a `certificate_id` or issue an account cert. |
+| Service silently skipped (no router) | No host resolvable — the service has no `local_certificate` **and** the account has no valid cert. A hostless `PathPrefix` router would hijack `/svc/<slug>` on every host, so the writer skips it with a logged warning. Assign a `certificate_id` or issue an account cert. **Or** every member of its backend set is `draining` (the log line says so): re-activate a member via `system_set_service_backends`, or clear the set with `backends: []` to return to the legacy backend. |
 | `scoped` service rejects everyone (403) | The user lacks `local_required_permission` and isn't in `local_required_group`. |
 | Wrong dynamic dir | The writer resolves `POWERNODE_TRAEFIK_DYNAMIC_DIR` → `/etc/traefik/dynamic` → `Rails.root/tmp/traefik/<env>/dynamic`. It must match the **running** proxy's dir. |
 
