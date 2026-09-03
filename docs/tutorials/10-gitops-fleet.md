@@ -76,7 +76,7 @@ standard proposal review queue, not a per-action autonomy policy.
 | Compute diff against current state | Shipped (`DiffEngine`) |
 | Reconciler opens proposals per change | Shipped (`Reconciler`) |
 | MCP actions: list_repositories / get_repository / register / sync / get_sync_run / get_drift_report / apply_proposal | Shipped (gap remediation slices closed; the two reads under IMP-f07be27ba0b0) |
-| Proposal-apply path (post-approval execution) | Shipped for `template` / `module` / `assignment` / `pool` / `platform` create+update via `system_gitops_apply_proposal`; **destroy + provider_config remain follow-ups** |
+| Proposal-apply path (post-approval execution) | Shipped for `template` / `module` / `assignment` / `pool` / `platform` create+update via `system_gitops_apply_proposal`, plus an operator-approved `assignment` destroy; **`template` / `module` / `pool` / `platform` destroy remains a follow-up, `provider_config` is informational** |
 | Reconciler-driven auto-apply (`repository.auto_apply`) | Shipped — auto-approves + applies non-destructive (create / update) diffs, gated by the kill-switch + per-tick cap; destroys always stay manual |
 | Drift sensor (alert when reality drifts from git) | Shipped (`GitopsDriftSensor`, registered in `FleetAutonomyService::SENSORS`; emits `system.gitops.drift_detected`) |
 | Operator UI for diff review + approval | Partial — generic `ApprovalRequest` UI works; GitOps-specific drill-in panel forthcoming |
@@ -84,10 +84,13 @@ standard proposal review queue, not a per-action autonomy policy.
 GitOps applies the **create/update** path for `template`, `module`,
 `assignment`, `pool` and `platform` — either once an operator approves the proposal, or
 automatically on an `auto_apply` repo (see "Auto-apply"). The
-**conservative v1 gap** is deliberate: resource **destroy** and
-`provider_config` changes are never auto-applied — review the drift and
-remove resources manually so a stray `fleet.yaml` edit can never delete
-fleet infrastructure unattended.
+**conservative v1 gap** is deliberate: a **destroy** diff is never
+auto-applied — the reconciler always leaves it for review — and on
+operator approval only an `assignment` destroy is executed. Destroying a
+`template`, `module`, `pool` or `platform` returns an explicit
+not-yet-implemented error, and `provider_config` diffs are informational
+(logged, nothing written), so those resources are removed manually and a
+stray `fleet.yaml` edit can never delete fleet infrastructure unattended.
 
 ### Auto-apply
 
@@ -402,15 +405,17 @@ topology are never in the diff: provision those with the standard actions
 (`system_create_node`, `system_sdwan_create_network`, …) outside the GitOps
 loop.
 
-**v1-conservative gap — destroy + provider_config are NOT auto-applied.**
-`system_gitops_apply_proposal` supports `template` / `module` /
-`assignment` / `pool` / `platform` create+update only. Resource **deletion** and
-`provider_config` changes still require a deliberate manual action so a
-stray `fleet.yaml` edit can never tear down fleet infrastructure
-unattended:
+**v1-conservative gap — destroys are never auto-applied.**
+`system_gitops_apply_proposal` applies `template` / `module` /
+`assignment` / `pool` / `platform` create+update, plus an
+operator-approved `assignment` destroy. Destroying a `template`,
+`module`, `pool` or `platform` returns an explicit not-yet-implemented
+error and `provider_config` diffs are informational, so tearing those
+down still requires a deliberate manual action and a stray `fleet.yaml`
+edit can never tear down fleet infrastructure unattended:
 
 ```javascript
-// Deletes proposed by the diff are review-only — remove the resource yourself:
+// A template/module/pool/platform delete is never applied — remove the resource yourself:
 platform.system_delete_node({ node_id: "<node-id>" })   // explicit, operator-initiated
 ```
 
