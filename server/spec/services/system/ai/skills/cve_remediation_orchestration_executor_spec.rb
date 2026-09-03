@@ -523,6 +523,47 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
       end
     end
 
+    # IMP-7bba0413c36a — a keyword-only match has no version evidence and is
+    # minted `suspected`. It is outside the default exposure selection (the
+    # triage reads open/remediating rows) and outside #transition_exposures
+    # (`unresolved` scope) even when a caller names it explicitly.
+    describe "suspected (keyword-only) exposures" do
+      let!(:qemu_mod) do
+        create(:system_node_module, account: account, node_platform: platform,
+               category: category, variety: "subscription", name: "qemu-guest-agent")
+      end
+      let!(:qemu_v1) { create(:system_node_module_version, node_module: qemu_mod, version_number: 1) }
+      let!(:qemu_link) do
+        create(:system_package_module_link,
+               node_module: qemu_mod, package_repository: repo,
+               package_name: "qemu-guest-agent", package_version: "8.0", architecture: "amd64")
+      end
+      let!(:suspected) do
+        ::System::CveExposure.create!(
+          cve: cve, node_module_version: qemu_v1, package_name: "qemu",
+          package_version: nil, match_method: "keyword", state: "suspected", detected_at: Time.current
+        )
+      end
+
+      it "leaves the suspected module out of the default (triage-derived) module set" do
+        r = executor.execute(cve_id: "CVE-2026-50001")
+        expect(r[:success]).to be true
+        dispatched = r[:data][:refresh_dispatches].map { |d| d[:node_module_id] }
+        expect(dispatched).to include(openssl_mod.id)
+        expect(dispatched).not_to include(qemu_mod.id)
+        expect(suspected.reload.state).to eq("suspected")
+      end
+
+      it "does not transition a suspected row even when the caller names it and its module explicitly" do
+        r = executor.execute(cve_id: "CVE-2026-50001",
+                             affected_module_ids: [ qemu_mod.id ], exposure_ids: [ suspected.id ])
+        expect(r[:success]).to be true
+        expect(r[:data][:refresh_dispatches].map { |d| d[:node_module_id] }).to include(qemu_mod.id)
+        expect(r.dig(:data, :exposures_remediating)).to eq(0)
+        expect(suspected.reload.state).to eq("suspected")
+      end
+    end
+
     it "is idempotent for already-remediating exposures" do
       exposure.update!(state: "remediating")
       r = executor.execute(cve_id: "CVE-2026-50001", exposure_ids: [ exposure.id ])

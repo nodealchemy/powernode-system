@@ -1811,7 +1811,7 @@ module Ai
 
           # === CVE triage (M-D2-2 partial) ===
           "system_cve_triage" => {
-            description: "Triage a CVE entry against the fleet — risk-scored exposure list and remediation plan. Reads from System::CveExposure when persisted: only open/remediating rows count; a `suspected` row (keyword-only match — the CVE's package NAME appears in the module's name/repo, with no version evidence) is left out of exposed_modules and the risk score and reported as suspected_exposure_count, and the executor does not fall back to its own keyword stub once a Cve row exists.",
+            description: "Triage a CVE entry against the fleet — risk-scored exposure list and remediation plan. Reads from System::CveExposure when persisted: only open/remediating rows that an SBOM version match confirmed count. A keyword-only row (the CVE's package NAME appears in the module's name/repo, with no version evidence) is left out of exposed_modules and the risk score in every state and reported as suspected_exposure_count. Once a Cve row exists the executor never falls back to its own keyword stub — that stub is the same name overlap, so on a calculator FAILURE it reports exposure_source `exposure_calculation_failed` with an empty list rather than re-minting those matches.",
             parameters: {
               cve_id: { type: "string", required: true, description: "Canonical CVE id (e.g. CVE-2026-12345) to triage against the fleet" },
               severity: { type: "string", required: true, enum: ::System::Cve::SEVERITIES,
@@ -1997,7 +1997,7 @@ module Ai
             parameters: { cve_id: { type: "string", required: true, description: "Canonical CVE id, format CVE-YYYY-NNNN (4+ digits)" } }
           },
           "system_get_cve_exposure" => {
-            description: "Fetch the exposure breakdown for a CVE — exposed modules + per-module assignment counts, account-scoped via CveExposure → NodeModuleVersion → NodeModule. exposed_modules / exposed_module_count / exposed_instance_count cover open, remediating, resolved and wont_fix rows (per-module `states` breaks them down); a `suspected` row — a keyword-only match with no version evidence, the state the calculator mints when a module has no SBOM — is NEVER counted there and is returned separately as suspected_exposure_count + suspected_modules. A suspected row becomes open only when an SBOM version match confirms it.",
+            description: "Fetch the exposure breakdown for a CVE — exposed modules + per-module assignment counts, account-scoped via CveExposure → NodeModuleVersion → NodeModule. The split is on match EVIDENCE, not on state: exposed_modules / exposed_module_count / exposed_instance_count cover only SBOM-matched (version-confirmed) rows, in every state — open, remediating, resolved and wont_fix (per-module `states` breaks them down). A keyword-only row — the CVE's package NAME found in the module's name/repo, no version evidence, what the calculator falls back to when a module has no SBOM — is NEVER counted there in ANY state, and is returned separately as suspected_exposure_count + suspected_modules (each with its own `states`). Such a row is minted `suspected` and becomes `open` only when an SBOM version match confirms it.",
             parameters: { cve_id: { type: "string", required: true, description: "Canonical CVE id (e.g. CVE-2026-12345) to compute account exposure for" } }
           },
           "system_create_cve" => {
@@ -7077,13 +7077,20 @@ module Ai
                        .where(system_node_modules: { account_id: @account.id })
                        .includes(node_module_version: :node_module)
 
-        # IMP-7bba0413c36a — a `suspected` row is a keyword-only match with no
-        # version evidence (the calculator's fallback for a module without an
-        # SBOM). It is a suspicion, not an exposure: reported on its own below,
+        # IMP-7bba0413c36a — a keyword-only match carries NO version evidence
+        # (the calculator's fallback for a module without an SBOM): the CVE's
+        # package name appears in the module's name/repo and nothing else.
+        # It is a suspicion, not an exposure — reported on its own below,
         # never in the exposed_* counts. Every open critical exposure on the
         # 2026-09-03 control plane was one of these (2009 CVEs matched on the
         # names qemu-guest-agent and nginx).
-        confirmed, suspected = exposures.to_a.partition { |e| !e.suspected? }
+        #
+        # The split is on EVIDENCE, not on the `suspected` state: exposed_*
+        # deliberately covers resolved and wont_fix rows too, and the same
+        # task's migration resolved every pre-existing keyword-only row — so a
+        # state-keyed split would still have answered exposed_module_count 3
+        # for those qemu modules. A keyword row is unconfirmed in every state.
+        confirmed, suspected = exposures.to_a.partition(&:sbom_matched?)
 
         # Group by module for the operator-friendly aggregate shape.
         by_module = confirmed.group_by { |e| e.node_module_version.node_module }
@@ -7103,7 +7110,8 @@ module Ai
             id: mod.id,
             name: mod.name,
             version_number: exps.first.node_module_version.version_number,
-            package_names: exps.map(&:package_name).uniq
+            package_names: exps.map(&:package_name).uniq,
+            states: exps.group_by(&:state).transform_values(&:size)
           }
         end
 

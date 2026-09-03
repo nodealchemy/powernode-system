@@ -38,6 +38,7 @@ function stateVariant(state: SystemCveExposureState): 'danger' | 'warning' | 'su
       return 'warning';
     case 'resolved':
       return 'success';
+    case 'suspected':
     case 'wont_fix':
     default:
       return 'secondary';
@@ -46,6 +47,7 @@ function stateVariant(state: SystemCveExposureState): 'danger' | 'warning' | 'su
 
 const STATE_LABELS: Record<SystemCveExposureState, string> = {
   open: 'Open',
+  suspected: 'Suspected',
   remediating: 'Remediating',
   resolved: 'Resolved',
   wont_fix: "Won't fix",

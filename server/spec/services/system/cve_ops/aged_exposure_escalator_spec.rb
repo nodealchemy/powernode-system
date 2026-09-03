@@ -4,9 +4,11 @@ require "rails_helper"
 
 # IMP-60717919d4a0 — the alarm for an unremediated critical/high exposure used
 # to EXPIRE: CvePublishedSensor selects `detected_at > lookback.ago`, and
-# `detected_at` is written once (ExposureCalculator: `row.detected_at ||
-# Time.current`) and never refreshed, so an exposure left `open` fell out of
-# the sensor's view a day after first detection and was never mentioned again.
+# `detected_at` is written once (CveExposure#record_match) and refreshed only
+# when an sbom match confirms a row that had no version evidence
+# (IMP-7bba0413c36a), never by an ordinary re-match — so an exposure left
+# `open` fell out of the sensor's view a day after first detection and was
+# never mentioned again.
 #
 # This is the surface that keeps it reachable: one durable, broadcast
 # FleetEvent per CVE per window (`cve_responder.exposure_aged_out`), correlated
@@ -109,6 +111,18 @@ RSpec.describe System::CveOps::AgedExposureEscalator do
     make_exposure(cve: cve, state: "remediating")
     make_exposure(cve: cve, state: "resolved", package_name: "openssl-libs")
     expect(escalator.escalate!).to eq(0)
+  end
+
+  # IMP-7bba0413c36a — a keyword-only match has no version evidence and is
+  # minted `suspected`; it is not an open exposure, so it never ages out.
+  it "ignores suspected (keyword-only) exposures however old" do
+    cve = make_cve(cve_id: "CVE-2009-3616")
+    ::System::CveExposure.create!(
+      cve: cve, node_module_version: node_module_version, package_name: "qemu",
+      package_version: nil, match_method: "keyword", state: "suspected", detected_at: 30.days.ago
+    )
+    expect(escalator.escalate!).to eq(0)
+    expect(aged_out_events).to be_empty
   end
 
   it "ignores low/medium severity CVEs" do

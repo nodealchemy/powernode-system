@@ -142,6 +142,34 @@ RSpec.describe System::CveOps::CveResponderService, "operator visibility" do
       expect(complete.payload["aged_out_count"]).to eq(1)
     end
 
+    # IMP-7bba0413c36a — a keyword-only match has no version evidence and is
+    # minted `suspected`: neither the fresh lane (CvePublishedSensor) nor the
+    # aged lane (AgedExposureEscalator) may act on it, so a tick over nothing
+    # but suspected rows senses nothing, dispatches nothing and escalates
+    # nothing — whether the row is fresh or long past the window.
+    it "senses, dispatches and escalates nothing for suspected (keyword-only) exposures" do
+      cve = ::System::Cve.create!(
+        cve_id: "CVE-2009-3616", severity: "critical",
+        affected_packages: [ { "name" => "qemu", "version" => "*" } ],
+        summary: "name-only", feed_source: "TEST", published_at: Time.utc(2009, 10, 9)
+      )
+      [ Time.current, 48.hours.ago ].each_with_index do |detected_at, i|
+        ::System::CveExposure.create!(
+          cve: cve, node_module_version: node_module_version, package_name: "qemu-#{i}",
+          package_version: nil, match_method: "keyword", state: "suspected", detected_at: detected_at
+        )
+      end
+
+      result = service.tick!
+
+      expect(result[:ok]).to be true
+      expect(result[:signal_count]).to eq(0)
+      expect(result[:decision_count]).to eq(0)
+      expect(result[:aged_out_count]).to eq(0)
+      expect(inline_dispatch_event).to be_nil
+      expect(::System::FleetEvent.where(account_id: account.id, kind: "cve_responder.exposure_aged_out")).to be_empty
+    end
+
     # IMP-60717919d4a0 (review) — the fresh lane and the aged lane are
     # complements of ONE window. Resolving it twice in a tick lets a config
     # change land between them and open a gap (widened) or an overlap

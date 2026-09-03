@@ -820,7 +820,10 @@ export interface SystemGitopsSyncResult {
 // through node_module_version → node_module. The CVE Responder agent owns
 // remediation; this surface is read-only (index/show).
 
-export type SystemCveExposureState = 'open' | 'remediating' | 'resolved' | 'wont_fix';
+// `suspected` (IMP-7bba0413c36a) is a keyword-only match: the CVE's package
+// NAME appears in the module's name/repo with no version evidence. The API
+// serves these rows like any other; they are not exposure.
+export type SystemCveExposureState = 'open' | 'suspected' | 'remediating' | 'resolved' | 'wont_fix';
 
 export interface SystemCveDetail {
   id: string;

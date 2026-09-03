@@ -52,6 +52,7 @@ RSpec.describe System::CveOps::ExposureCalculator do
         expect(exposure).to be_present
         expect(exposure.package_version).to eq("3.0.5")
         expect(exposure.state).to eq("open")
+        expect(exposure.match_method).to eq("sbom")
       end
     end
 
@@ -127,14 +128,19 @@ RSpec.describe System::CveOps::ExposureCalculator do
         )
       end
 
-      it "still finds the legacy module via keyword fallback (false-positive-prone but safety net)" do
+      it "still finds the legacy module via keyword fallback, but only as a suspected row (IMP-7bba0413c36a)" do
         result = described_class.calculate!(cve: cve, account: account)
 
         expect(result.ok?).to be true
         expect(result.keyword_fallback_count).to be > 0
-        # The legacy module's name contains "openssl" — keyword match.
+        # The legacy module's name contains "openssl" — keyword match. A
+        # name-only hit carries no version evidence, so it is recorded as
+        # `suspected` / match_method keyword and is NOT an open exposure.
         legacy_exposure = System::CveExposure.find_by(node_module_version: legacy_version)
         expect(legacy_exposure).to be_present
+        expect(legacy_exposure.state).to eq("suspected")
+        expect(legacy_exposure.match_method).to eq("keyword")
+        expect(legacy_exposure.package_version).to be_blank
       end
     end
 

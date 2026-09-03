@@ -32,14 +32,34 @@ FactoryBot.define do
     association :node_module_version, factory: :system_node_module_version
     sequence(:package_name) { |n| "package-#{n}" }
     package_version { "3.1.3" }
+    match_method { "sbom" }
     state { "open" }
     detected_at { 1.hour.ago }
     metadata { {} }
+
+    # IMP-7bba0413c36a — a keyword-only hit: no version evidence, so it is a
+    # suspicion rather than an exposure and sits outside every autonomy lane.
+    trait :suspected do
+      package_version { nil }
+      match_method { "keyword" }
+      state { "suspected" }
+    end
 
     trait :resolved do
       state { "resolved" }
       resolved_at { 5.minutes.ago }
       resolution_note { "Upgraded to fixed version" }
+    end
+
+    # A row the IMP-7bba0413c36a migration resolved for lack of version
+    # evidence — a SUPPRESSION, not an operator decision, so an SBOM match
+    # re-opens it (CveExposure#record_match).
+    trait :keyword_false_positive do
+      package_version { nil }
+      match_method { "keyword" }
+      state { "resolved" }
+      resolved_at { 5.minutes.ago }
+      resolution_note { System::CveExposure::KEYWORD_FALSE_POSITIVE_NOTE }
     end
 
     trait :remediating do

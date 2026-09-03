@@ -17,8 +17,12 @@ module System
       #
       # DETECTION WINDOW (IMP-60717919d4a0). This sensor selects only
       # exposures with `detected_at` inside #detection_lookback, and
-      # `detected_at` is written ONCE (ExposureCalculator: `row.detected_at ||
-      # Time.current`) and never refreshed on a re-match. So an exposure left
+      # `detected_at` is written once (CveExposure#record_match) and refreshed
+      # on exactly ONE re-match: an sbom match confirming a row that had no
+      # version evidence — a `suspected` row, or one this task's migration
+      # resolved as a keyword false positive (IMP-7bba0413c36a). That
+      # confirmation IS the detection, and re-enters this window deliberately;
+      # nothing else re-stamps it. So an exposure left
       # `open` leaves this sensor's view a window after first detection
       # whether or not anything ever remediated it — the autonomy lane is a
       # fresh-detection lane by construction, not a standing alarm. What keeps
@@ -53,6 +57,10 @@ module System
           return [] unless defined?(::System::CveExposure)
           return [] unless defined?(::System::Cve)
 
+          # `state: "open"` only — `remediating` is the orchestrator's silence
+          # and `suspected` (IMP-7bba0413c36a: a keyword-only match with no
+          # version evidence) is not an exposure at all until an SBOM match
+          # flips it to open.
           rows = ::System::CveExposure
             .joins(:cve, node_module_version: :node_module)
             .where(system_node_modules: { account_id: account.id })

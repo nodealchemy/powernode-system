@@ -11,12 +11,42 @@ module System
     # to the v0 keyword stub for artifacts without an ingested SBOM (e.g.,
     # legacy / pre-SBOM-pipeline modules).
     #
+    # **Evidence (IMP-7bba0413c36a)**: every row is stamped with the matcher
+    # that produced it (`match_method`: sbom | keyword). An SBOM match carries
+    # version evidence and is minted `open`. A keyword match carries NONE — a
+    # package name found in the module's name/repo says nothing about which
+    # version the module ships — so it is minted `suspected`, a state every
+    # exposure count and every autonomy lane leaves out; it becomes `open`
+    # only when a later SBOM match on the same row confirms it. A keyword
+    # match on a CVE published more than #keyword_match_max_age_days before
+    # the module's first version is not minted at all: that is the shape of
+    # every open critical exposure on the 2026-09-03 control plane (2009 CVEs
+    # matched on the names qemu-guest-agent and nginx, NVD version "*").
+    #
     # Reference: Golden Eclipse plan M-D2-2; comprehensive stabilization
     # sweep P4.
     class ExposureCalculator
       Result = Struct.new(:ok?, :exposures_created, :exposures_updated,
                           :sbom_match_count, :keyword_fallback_count,
+                          :keyword_age_skipped_count,
                           :error, keyword_init: true)
+
+      # How far a CVE's published_at may PRECEDE the module's first version
+      # before a keyword hit is discarded rather than minted as suspected.
+      #
+      # 730 days (two years), because the only evidence a name-only match has
+      # is temporal, and two years is the longest an upstream fix plausibly
+      # takes to reach anything a module could have been built from: distro
+      # stable branches backport a published fix within weeks to months, and
+      # the slowest LTS cadence in common use (Debian stable, Ubuntu LTS) is
+      # two years between releases. A module whose first version was built
+      # more than two years after the CVE was published pulled packages that
+      # had been fixed for at least one full release cycle — the keyword hit
+      # is a name collision, not a suspicion. Operators with a longer supply
+      # chain widen it through the SiteSetting.
+      DEFAULT_KEYWORD_MATCH_MAX_AGE_DAYS = 730
+      KEYWORD_MATCH_MAX_AGE_SETTING_KEY  = "system.cve.keyword_match_max_age_days"
+      ACCOUNT_KEYWORD_MATCH_MAX_AGE_KEY  = "cve_keyword_match_max_age_days"
 
       def self.calculate!(cve:, account:)
         new.calculate!(cve: cve, account: account)
@@ -26,6 +56,10 @@ module System
         raise ArgumentError, "cve required" unless cve.is_a?(::System::Cve)
         raise ArgumentError, "account required" unless account
 
+        @account = account
+        @first_version_at = {}
+        @keyword_match_max_age_days = nil
+
         affected = cve.normalized_affected_packages
         package_names = affected.map { |p| p["name"].to_s.downcase }.compact_blank
 
@@ -33,13 +67,20 @@ module System
         exposures_updated = 0
         sbom_match_count = 0
         keyword_fallback_count = 0
+        keyword_age_skipped_count = 0
 
         ::System::NodeModuleVersion
           .joins(node_module: :account)
           .where(accounts: { id: account.id })
-          .includes(:module_artifacts)
+          .includes(:module_artifacts, :node_module)
           .find_each do |version|
             matches, source = match_for_version(version, affected, package_names)
+
+            if source == :keyword && matches.any? && keyword_match_too_old?(cve, version)
+              keyword_age_skipped_count += matches.size
+              next
+            end
+
             sbom_match_count += matches.size if source == :sbom
             keyword_fallback_count += matches.size if source == :keyword
 
@@ -49,11 +90,8 @@ module System
                 node_module_version: version,
                 package_name: match[:package_name]
               )
-              row.assign_attributes(
-                package_version: match[:package_version],
-                state: row.state.presence || "open",
-                detected_at: row.detected_at || Time.current
-              )
+              row.record_match(match_method: source.to_s, package_version: match[:package_version])
+
               if row.new_record?
                 row.save!
                 exposures_created += 1
@@ -69,12 +107,13 @@ module System
           exposures_created: exposures_created,
           exposures_updated: exposures_updated,
           sbom_match_count: sbom_match_count,
-          keyword_fallback_count: keyword_fallback_count
+          keyword_fallback_count: keyword_fallback_count,
+          keyword_age_skipped_count: keyword_age_skipped_count
         )
       rescue StandardError => e
         Rails.logger.error("[ExposureCalculator] #{e.class}: #{e.message}")
         Result.new(ok?: false, error: e.message, exposures_created: 0, exposures_updated: 0,
-                   sbom_match_count: 0, keyword_fallback_count: 0)
+                   sbom_match_count: 0, keyword_fallback_count: 0, keyword_age_skipped_count: 0)
       end
 
       private
@@ -122,14 +161,49 @@ module System
       end
 
       # v0 fallback: name keyword overlap against module name + repo. No
-      # version-range awareness — flags ANY version of the named package.
-      # Acceptable as a safety net but generates false positives.
+      # version-range awareness — flags ANY version of the named package,
+      # which is why the caller mints these as `suspected`
+      # (CveExposure#record_match) and discards the ones that fail
+      # #keyword_match_too_old?.
       def match_via_keywords(version, package_names)
         haystack = "#{version.node_module&.name} #{version.node_module&.gitea_repo_full_name}".downcase
         package_names.filter_map do |pname|
           next unless haystack.include?(pname)
           { package_name: pname, package_version: nil }
         end
+      end
+
+      # A CVE published more than the window BEFORE the module's first version
+      # cannot plausibly be shipped by it (see DEFAULT_KEYWORD_MATCH_MAX_AGE_
+      # DAYS). A CVE with no published_at cannot be judged and is still minted
+      # (as suspected). The window is resolved once per calculate! pass and
+      # the module's first-version timestamp once per module.
+      def keyword_match_too_old?(cve, version)
+        published = cve.published_at
+        return false unless published
+
+        first_at = first_version_at(version.node_module)
+        return false unless first_at
+
+        published < first_at - keyword_match_max_age_days.days
+      end
+
+      def first_version_at(node_module)
+        return nil unless node_module
+
+        @first_version_at.fetch(node_module.id) do
+          @first_version_at[node_module.id] =
+            node_module.versions.minimum(:created_at) || node_module.created_at
+        end
+      end
+
+      def keyword_match_max_age_days
+        @keyword_match_max_age_days ||= ::System::CveOps::TunableSetting.resolve(
+          account: @account,
+          account_key: ACCOUNT_KEYWORD_MATCH_MAX_AGE_KEY,
+          site_setting_key: KEYWORD_MATCH_MAX_AGE_SETTING_KEY,
+          default: DEFAULT_KEYWORD_MATCH_MAX_AGE_DAYS
+        )
       end
     end
   end

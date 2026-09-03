@@ -2877,7 +2877,8 @@ end
       let!(:exposure) do
         ::System::CveExposure.create!(
           cve: cve, node_module_version: version,
-          package_name: "openssl", state: "open"
+          package_name: "openssl", package_version: "3.1.3",
+          match_method: "sbom", state: "open"
         )
       end
 
@@ -2896,7 +2897,8 @@ end
                           name: "openssl-other")
         other_version = create(:system_node_module_version, node_module: other_mod)
         ::System::CveExposure.create!(cve: cve, node_module_version: other_version,
-                                      package_name: "openssl", state: "open")
+                                      package_name: "openssl", package_version: "3.1.3",
+                                      match_method: "sbom", state: "open")
 
         r = call("system_get_cve_exposure", cve_id: cve_id)
         names = r[:data][:exposed_modules].map { |m| m[:name] }
@@ -2908,6 +2910,73 @@ end
         ::System::CveExposure.where(cve_id: cve.id).destroy_all
         r = call("system_get_cve_exposure", cve_id: cve_id)
         expect(r[:data][:exposed_module_count]).to eq(0)
+      end
+
+      # IMP-7bba0413c36a — a keyword-only match (no version evidence) is a
+      # `suspected` row: reported on its own, never counted as exposure.
+      it "reports a suspected (keyword-only) row separately and never counts it as exposure" do
+        qemu_mod = create(:system_node_module, account: account, category: category,
+                          name: "qemu-guest-agent", variety: "subscription")
+        qemu_version = create(:system_node_module_version, node_module: qemu_mod)
+        create(:system_cve_exposure, :suspected, cve: cve, node_module_version: qemu_version, package_name: "qemu")
+
+        r = call("system_get_cve_exposure", cve_id: cve_id)
+        expect(r[:success]).to be true
+        names = r[:data][:exposed_modules].map { |m| m[:name] }
+        expect(names).to eq([ "openssl-base" ])
+        expect(r[:data][:exposed_module_count]).to eq(1)
+        expect(r[:data][:exposed_instance_count]).to eq(1)
+        expect(r[:data][:suspected_exposure_count]).to eq(1)
+        expect(r[:data][:suspected_modules].map { |m| m[:name] }).to eq([ "qemu-guest-agent" ])
+        expect(r[:data][:suspected_modules].first[:package_names]).to eq([ "qemu" ])
+      end
+
+      # IMP-7bba0413c36a (review) — the rows this task was filed about are
+      # `resolved` after part 4's migration, and exposed_modules counts
+      # resolved rows. Keying the exclusion on state alone therefore left
+      # `system_get_cve_exposure(CVE-2009-3616)` still answering
+      # exposed_module_count 3 for the three qemu-guest-agent modules. The
+      # exclusion keys on EVIDENCE: a keyword row is unconfirmed in every
+      # state.
+      it "keeps a keyword-only row out of the exposure counts in every state, not only suspected" do
+        qemu_mod = create(:system_node_module, account: account, category: category,
+                          name: "qemu-guest-agent", variety: "subscription")
+        qemu_version = create(:system_node_module_version, node_module: qemu_mod)
+        create(:system_cve_exposure, :keyword_false_positive, cve: cve,
+               node_module_version: qemu_version, package_name: "qemu-guest-agent")
+
+        r = call("system_get_cve_exposure", cve_id: cve_id)
+        expect(r[:success]).to be true
+        expect(r[:data][:exposed_modules].map { |m| m[:name] }).to eq([ "openssl-base" ])
+        expect(r[:data][:exposed_module_count]).to eq(1)
+        expect(r[:data][:suspected_exposure_count]).to eq(1)
+        suspected = r[:data][:suspected_modules].first
+        expect(suspected[:name]).to eq("qemu-guest-agent")
+        expect(suspected[:states]).to eq({ "resolved" => 1 })
+      end
+    end
+
+    describe "system_cve_triage" do
+      # IMP-7bba0413c36a — the persisted rows ARE the answer once a Cve row
+      # exists and the calculator ran: a suspected row is left out of the
+      # risk-scored list, and the executor must not fall back to its own
+      # keyword stub, which would re-mint the same name-only false positive.
+      it "excludes suspected rows from the risk-scored exposure list and does not fall back to the keyword stub" do
+        mod = create(:system_node_module, account: account, category: category,
+                     name: "openssl-base", variety: "subscription")
+        create(:system_node_module_version, node_module: mod)
+        node = create(:system_node, account: account, node_template: template, name: "n1")
+        ::System::NodeModuleAssignment.create!(node: node, node_module: mod, enabled: true, priority: 0)
+
+        r = call("system_cve_triage", cve_id: cve_id, severity: "critical",
+                 affected_packages: [ { name: "openssl", version: "<3.1.4" } ])
+        expect(r[:success]).to be true
+        expect(r[:data][:exposure_source]).to eq("persisted")
+        expect(r[:data][:exposed_modules]).to be_empty
+        expect(r[:data][:exposed_instance_count]).to eq(0)
+        expect(r[:data][:risk_score]).to eq(0)
+        expect(r[:data][:suspected_exposure_count]).to eq(1)
+        expect(::System::CveExposure.suspected.where(cve: cve).count).to eq(1)
       end
     end
 

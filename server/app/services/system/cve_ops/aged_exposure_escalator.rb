@@ -6,8 +6,10 @@ module System
     # could not clear.
     #
     # CvePublishedSensor is a FRESH-DETECTION lane: it selects `detected_at`
-    # inside its window, and `detected_at` is written once and never refreshed
-    # (ExposureCalculator). An open critical/high exposure therefore re-runs
+    # inside its window, and `detected_at` is written once and refreshed only
+    # when an sbom match CONFIRMS a row that had no version evidence
+    # (CveExposure#record_match, IMP-7bba0413c36a) — never by an ordinary
+    # re-match. An open critical/high exposure therefore re-runs
     # orchestration for one window (~144 ticks at the 600s dedup TTL over
     # 24h) and then leaves the sensor's view for good — a day of churn and
     # then silence, with the exposure still open. CriticalUpgradeAvailableSensor
@@ -132,6 +134,9 @@ module System
           .to_a
       end
 
+      # `state: "open"` only. `suspected` (IMP-7bba0413c36a — a keyword-only
+      # match with no version evidence) is deliberately outside this lane: a
+      # suspicion does not age into an alarm, it waits for an SBOM match.
       def aged_scope
         ::System::CveExposure
           .joins(:cve, node_module_version: :node_module)

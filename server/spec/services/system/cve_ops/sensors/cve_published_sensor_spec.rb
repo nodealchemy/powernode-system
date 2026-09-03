@@ -78,6 +78,17 @@ RSpec.describe System::CveOps::Sensors::CvePublishedSensor do
       expect(sensor.sense).to eq([])
     end
 
+    # IMP-7bba0413c36a — a keyword-only match has no version evidence and is
+    # minted `suspected`, outside this lane by construction.
+    it "skips suspected (keyword-only) exposures even when fresh and critical" do
+      cve = make_cve(cve_id: "CVE-2009-3616", severity: "critical")
+      ::System::CveExposure.create!(
+        cve: cve, node_module_version: node_module_version, package_name: "qemu",
+        package_version: nil, match_method: "keyword", state: "suspected", detected_at: Time.current
+      )
+      expect(sensor.sense).to eq([])
+    end
+
     it "skips exposures detected before the lookback window" do
       cve = make_cve(cve_id: "CVE-2026-90005", severity: "critical")
       make_exposure(cve: cve, detected_at: 48.hours.ago)

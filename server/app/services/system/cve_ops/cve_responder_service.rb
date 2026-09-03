@@ -41,6 +41,11 @@ module System
 
       SOURCE_TYPE = "system_cve_responder"
 
+      # Both sensors read exposures by state (`open` / `unresolved`), so a
+      # `suspected` row — a keyword-only match with no version evidence
+      # (IMP-7bba0413c36a) — reaches neither this tick's decisions nor its
+      # inline dispatch nor #escalate_aged_exposures!. The auto lanes act on
+      # evidence, not on a name collision.
       SENSORS = [
         ::System::CveOps::Sensors::CvePublishedSensor,
         ::System::CveOps::Sensors::CriticalUpgradeAvailableSensor

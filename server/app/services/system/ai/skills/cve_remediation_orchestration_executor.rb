@@ -59,8 +59,11 @@ module System
       #     an earlier version of this note wrongly said it ran "until an
       #     operator acts". CvePublishedSensor selects `detected_at` inside
       #     its detection window (24h default, SiteSetting-resolved), and
-      #     `detected_at` is never refreshed, so the re-runs stop after one
-      #     window whether or not anyone acted. Past the window the exposure
+      #     `detected_at` is refreshed only when an sbom match confirms a row
+      #     that had no version evidence (CveExposure#record_match,
+      #     IMP-7bba0413c36a) — never by an ordinary re-match — so the re-runs
+      #     stop after one window whether or not anyone acted. Past the window
+      #     the exposure
       #     stays visible through System::CveOps::AgedExposureEscalator's
       #     `cve_responder.exposure_aged_out` FleetEvent (one per CVE per
       #     window, run from the CVE Responder tick).
@@ -241,6 +244,10 @@ module System
 
         private
 
+        # The default set is the triage's exposed_modules, which
+        # CveResponseExecutor builds from `unresolved` rows only: a
+        # `suspected` row (keyword-only, no version evidence —
+        # IMP-7bba0413c36a) never selects a module here.
         def resolve_module_ids(explicit_ids, triage_data)
           return Array(explicit_ids).map(&:to_s).uniq if explicit_ids.present?
 
@@ -526,6 +533,10 @@ module System
         # `open` — zero `remediating`, `resolved` or `wont_fix` rows, so nothing
         # is parked today. A resolver (the missing #resolve! caller) is a CVE-lane
         # design change and is deliberately NOT introduced here.
+        #
+        # `unresolved` is open + remediating. A `suspected` row is outside it by
+        # design (IMP-7bba0413c36a): even a caller that names one explicitly
+        # cannot move it to `remediating` — nothing was dispatched on evidence.
         def transition_exposures(cve, explicit_ids, remediated_module_ids)
           scope = ::System::CveExposure.unresolved.where(cve: cve)
           scope = scope.where(id: explicit_ids) if explicit_ids.present?

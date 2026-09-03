@@ -12,6 +12,11 @@ module System
       # exposure_calculator service); this executor's interface is stable so
       # the M-D2-2 calculator can be swapped in without changing callers.
       #
+      # With a persisted Cve the calculator's rows are read instead, and a
+      # keyword-only row (no version evidence — IMP-7bba0413c36a) is reported
+      # as `suspected_exposure_count`, never as exposure, whatever state it is
+      # in.
+      #
       # Reference: Golden Eclipse plan M6 — Skills catalog (cve_response row).
       class CveResponseExecutor < BaseSkillExecutor
         SEVERITY_WEIGHT = {
@@ -26,6 +31,15 @@ module System
         # the medium=30 weight in mind: any single critical or any 2+ high-
         # severity exposures pushes us above this floor.
         AUTO_GATE_RISK_THRESHOLD = 50
+
+        # Operator-facing gloss per exposure_source (see
+        # #resolve_exposed_modules for what each one means).
+        EXPOSURE_SOURCE_NOTES = {
+          "persisted" => "exposures from System::CveExposure rows (keyword-only rows, which carry no version evidence, excluded)",
+          "exposure_calculation_failed" => "exposure calculation failed — reporting NO exposure rather than the v0 keyword-overlap stub, whose name-only matches are the ones this lane excludes",
+          "module_lookup_failed" => "module lookup failed — no exposure could be computed",
+          "keyword_stub" => "v0 keyword-overlap stub — persist via CveResponseExecutor#execute(..., persist: true)"
+        }.freeze
 
         skill_descriptor(
           name: "cve_response",
@@ -66,7 +80,7 @@ module System
           # Prefer persisted CveExposure rows if a Cve record exists for
           # this cve_id. Fall back to the keyword-overlap stub when there's
           # no DB record (e.g., transient/manual triage).
-          exposed_modules, source = resolve_exposed_modules(cve_id, severity_norm, packages, summary, persist)
+          exposed_modules, source, suspected_count = resolve_exposed_modules(cve_id, severity_norm, packages, summary, persist)
           exposed_instance_count = exposed_modules.sum { |m| m[:assignment_count].to_i }
 
           risk_score = compute_risk_score(weight, exposed_modules.size, exposed_instance_count)
@@ -82,14 +96,34 @@ module System
             remediation_plan: plan,
             requires_approval: gate_for(severity_norm, risk_score),
             exposure_source: source,
-            note: source == "persisted" ? "exposures from System::CveExposure rows" : "v0 keyword-overlap stub — persist via CveResponseExecutor#execute(..., persist: true)"
+            # IMP-7bba0413c36a — keyword-only rows (no version evidence) are
+            # minted `suspected`, left out of exposed_modules and the risk
+            # score in every state, and counted here so the operator knows
+            # they exist.
+            suspected_exposure_count: suspected_count,
+            note: EXPOSURE_SOURCE_NOTES.fetch(source, EXPOSURE_SOURCE_NOTES["keyword_stub"])
           )
         end
 
         private
 
-        # Returns [exposed_modules, source_label]. Source = "persisted" when
-        # System::CveExposure rows are read; "keyword_stub" otherwise.
+        # Returns [exposed_modules, source_label, suspected_count]. Source =
+        # "persisted" when System::CveExposure rows are read,
+        # "exposure_calculation_failed" when the calculator raised,
+        # "keyword_stub" when there is no Cve row at all.
+        #
+        # IMP-7bba0413c36a — once a Cve row exists, the persisted rows ARE the
+        # answer, even when there are none. This used to fall through to the
+        # keyword stub whenever the persisted set was empty, and the stub is
+        # the same name-overlap the calculator now mints as `suspected`
+        # precisely so it is NOT counted: falling through would put every
+        # excluded false positive straight back into the risk-scored list.
+        #
+        # That is true of a calculator FAILURE too — arguably more so, since a
+        # degraded run is exactly when a name-only answer looks like a real
+        # one. So a failure fails CLOSED: an empty list under its own source
+        # label, not the stub. The stub remains for the no-DB-record case
+        # (transient / manual triage) only.
         def resolve_exposed_modules(cve_id, severity, packages, summary, persist)
           cve_record = find_or_create_cve(cve_id, severity, packages, summary, persist)
 
@@ -97,35 +131,42 @@ module System
           if cve_record
             calc = ::System::CveOps::ExposureCalculator.calculate!(cve: cve_record, account: @account)
             if calc.ok?
-              exposures = ::System::CveExposure
-                .where(cve: cve_record, state: %w[open remediating])
+              account_rows = ::System::CveExposure
+                .where(cve: cve_record)
                 .joins(node_module_version: :node_module)
                 .where(system_node_modules: { account_id: @account.id })
+              # Evidence, not state: a keyword row has no version evidence in
+              # ANY state, and this task's migration left the pre-existing
+              # ones `resolved` rather than `suspected`.
+              exposures = account_rows.unresolved.version_confirmed
+              suspected_count = account_rows.unconfirmed.count
 
-              if exposures.any?
-                rows = exposures.includes(node_module_version: :node_module).group_by { |e| e.node_module_version.node_module }
-                return [
-                  rows.map do |mod, exps|
-                    {
-                      module_id: mod.id,
-                      name: mod.name,
-                      matched_packages: exps.map(&:package_name).uniq,
-                      assignment_count: mod.node_module_assignments.count,
-                      current_version_id: mod.current_version_id,
-                      exposure_ids: exps.map(&:id)
-                    }
-                  end,
-                  "persisted"
-                ]
-              end
+              rows = exposures.includes(node_module_version: :node_module).group_by { |e| e.node_module_version.node_module }
+              return [
+                rows.map do |mod, exps|
+                  {
+                    module_id: mod.id,
+                    name: mod.name,
+                    matched_packages: exps.map(&:package_name).uniq,
+                    assignment_count: mod.node_module_assignments.count,
+                    current_version_id: mod.current_version_id,
+                    exposure_ids: exps.map(&:id)
+                  }
+                end,
+                "persisted",
+                suspected_count
+              ]
             end
+
+            # Calculator failed. Fail closed — see the header.
+            return [ [], "exposure_calculation_failed", 0 ]
           end
 
-          # Fall through to the keyword stub.
+          # No Cve row at all. Fall through to the keyword stub.
           modules_resp = tool(::Ai::Tools::SystemFleetTool).execute(params: { action: "system_list_modules" })
-          return [ [], "module_lookup_failed" ] unless modules_resp[:success]
+          return [ [], "module_lookup_failed", 0 ] unless modules_resp[:success]
 
-          [ score_exposed_modules(modules_resp[:data][:modules], packages), "keyword_stub" ]
+          [ score_exposed_modules(modules_resp[:data][:modules], packages), "keyword_stub", 0 ]
         end
 
         def find_or_create_cve(cve_id, severity, packages, summary, persist)
