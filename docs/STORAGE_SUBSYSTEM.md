@@ -389,8 +389,8 @@ state) with it — an instance-level verb, not this one.
 |--------|---------|------------|
 | `system_snapshot_volume` | Snapshot a volume via its provider | `volume_id`, `name`, `description` |
 | `system_list_volume_snapshots` | List a volume's snapshots, newest first | `volume_id` |
-| `system_delete_volume_snapshot` | **DESTROYS a restore point** — provider delete then row drop | `id` |
-| `system_restore_volume_snapshot` | Restore a volume from a completed snapshot — read `restored_in_place` | `id` |
+| `system_delete_volume_snapshot` | **DESTROYS a restore point** — approval-gated; provider delete then row drop | `id` |
+| `system_restore_volume_snapshot` | Restore a volume from a completed snapshot — read `restored_in_place` | `id`, `swap_into_place` |
 
 **Restore is not one thing**, and every surface reports which it got.
 `BaseProvider#volume_snapshot_restore_mode` declares it:
@@ -413,12 +413,42 @@ REST twins: `POST /provider_volumes/:id/snapshot`, `GET
 `requires_approval: true`, declares **no** rollback (a restore has no inverse)
 and takes a pre-restore snapshot first by default.
 
-Snapshot **delete** is not approval-gated yet: the MCP verbs carry the APO-1a
-declaration shape (`mutating:` only), so the only control on a delete is the
-`system.volumes.delete` permission. The gate needs an intervention-policy row
-plus an executor to replay — see the declaration comment in
-`app/services/ai/tools/system_fleet_tool.rb` (improvement
-`01a06378-12ff-74c6-a8ba-430cc1b50f45`).
+Snapshot **delete** is approval-gated (IMP-e025722ef14e): the MCP verb
+declares the full gate quartet on `Ai::Executors::DeferredToolCall` under
+`system.volume_snapshot_delete`, declared in
+`System::Governance::PolicyDeclarations::VOLUME_SNAPSHOT_OPERATOR_POLICIES`
+(operator scope, `require_approval`; the row itself is written by
+`db/seeds/system_volume_snapshot_policies.rb` on a first boot and by the
+governance reconciler — `rake system:governance:reconcile` — on an install that
+had already booted, since the Autonomy modal's pivot is row-driven and a
+declaration alone shows nothing). A pending response means nothing was deleted; on
+approval the same action body is replayed as the original principal. Create,
+list and restore keep the APO-1a `mutating:`-only shape.
+
+A **copy restore can be swapped into place**: `swap_into_place: true` (on the
+MCP verb, the skill executor and `VolumeManagementService.restore_snapshot`)
+detaches the source from its instance and attaches the recorded copy at the
+same device, reporting `swapped: true`. It is opt-in because it detaches a
+live disk; by default both volumes are left where they are. A swap that fails
+midway is reported as a failure naming the stage (`swap_stage: "detach"` — the
+source is still attached — or `"attach"` — the source is now detached and the
+copy unattached), with the copy still named so it cannot become an untracked
+orphan. It is skipped, and says so (`swap_skipped`), on an in-place restore or
+when the source was not attached.
+
+A project's **snapshot schedule** is declared on its mission
+(`watch_policies.snapshot_interval_hours` / `snapshot_retention_count`,
+resolved through the same template → account → `SiteSetting`
+`ai.provisioning.snapshot_*` ladder as the scaling window, both defaulting to
+0 = off) and evaluated by `VolumeManagementService.snapshot_schedule_for`,
+which names the volumes DUE a snapshot and the completed snapshots beyond
+retention that are PRUNABLE. **No fleet sensor emits from it yet** — until one
+is registered in `FleetAutonomyService::SENSORS` (with pruning routed through
+the same `system.volume_snapshot_delete` gate as the verb), a declared
+schedule is evaluated only by whoever calls the service, so setting
+`snapshot_interval_hours` on a project does **not** yet cause snapshots to be
+taken. That sensor is tracked as improvement
+`01a065df-4ab7-7a04-8293-8069d805b0b1`.
 
 ### Migration lifecycle
 

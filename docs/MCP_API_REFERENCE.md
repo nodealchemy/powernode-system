@@ -239,13 +239,17 @@ recording a restore point that does not exist. See
 |---|---|---|
 | `system_snapshot_volume` | Snapshot a ProviderVolume through its provider; refuses where unsupported | operator, agent |
 | `system_list_volume_snapshots` | List a volume's snapshots, newest first (`reconcile:true` checks each against the provider) | operator, agent |
-| `system_delete_volume_snapshot` | **DESTROYS a restore point** — provider delete first, row dropped only on confirmation | operator |
-| `system_restore_volume_snapshot` | Restore from a completed snapshot; read `restored_in_place` (false ⇒ a **new** volume holds the data) | operator |
+| `system_delete_volume_snapshot` | **DESTROYS a restore point** — approval-gated (`system.volume_snapshot_delete`); provider delete first, row dropped only on confirmation | operator |
+| `system_restore_volume_snapshot` | Restore from a completed snapshot; read `restored_in_place` (false ⇒ a **new** volume holds the data; `swap_into_place:true` swaps it onto the source's instance and device) | operator |
 
 **Permissions:** `system.volumes.snapshot` (create), `system.volumes.read`
 (list), `system.volumes.delete` (delete), `system.volumes.manage` (restore).
-Delete is **not** approval-gated yet — see the declaration comment in
-`system_fleet_tool.rb` (improvement `01a06378-12ff-74c6-a8ba-430cc1b50f45`).
+Delete is additionally **approval-gated**: it parks under
+`system.volume_snapshot_delete` (an operator-scope policy row — `require_approval`,
+seeded on a first boot and minted by `rake system:governance:reconcile` on an
+install that had already booted, tunable in the Autonomy modal's storage domain) and is
+replayed by `Ai::Executors::DeferredToolCall` as the original principal once
+an operator approves — a `{pending: true}` response means nothing was deleted.
 
 **Storage migration (zero-downtime data moves between providers):**
 
