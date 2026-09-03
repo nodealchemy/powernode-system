@@ -337,8 +337,19 @@ module Ai
             description: "Set a service's load-balanced backend set DECLARATIVELY: the `backends` list becomes the set (members are matched by address + port and updated in place, members absent from the list are removed, an empty list returns the service to its single legacy backend). Optionally sets the per-service load-balancer overrides (metadata.load_balancer: health_check_enabled/path/interval/timeout; a null value clears that override). Regenerates the reverse proxy when the service is exposed. Approval-gated under #{SERVICE_BACKENDS_CATEGORY}: unless policy auto-approves, the call returns a pending envelope (deferred_operation_id) and the set is written when the approval is released. Draining EVERY member takes the service out of rotation (the writer skips it); to keep serving from the original backend while you rebuild the set, keep it listed as an active member.",
             parameters: {
               service_id:    { type: "string", required: true, description: "Sdwan::Service id" },
-              backends:      { type: "array",  required: true, items: { type: "object" },
-                               description: "Desired members, each { backend_host | backend_vip_id, backend_port (1-65535, required), weight (1-1000, default 1), status (active | draining, default active) }. Empty array clears the set." },
+              backends:      { type: "array",  required: true,
+                               items: {
+                                 type: "object",
+                                 properties: {
+                                   backend_host:   { type: "string",  description: "Instance address of the member (give this OR backend_vip_id, never both)" },
+                                   backend_vip_id: { type: "string",  description: "Sdwan::VirtualIp id the member is reached through (give this OR backend_host)" },
+                                   backend_port:   { type: "integer", minimum: 1, maximum: 65535, description: "Port the member listens on" },
+                                   weight:         { type: "integer", minimum: 1, maximum: 1000, default: 1, description: "Relative load-balancing weight" },
+                                   status:         { type: "string",  enum: ::Sdwan::ServiceBackend::STATUSES, default: "active", description: "A draining member stays in the set but takes no new traffic" }
+                                 },
+                                 required: [ "backend_port" ]
+                               },
+                               description: "Desired members. Each names the member by backend_host or by backend_vip_id, plus backend_port (required), an optional weight and an optional status (see the items schema for the accepted values). Empty array clears the set." },
               load_balancer: { type: "object", required: false,
                                description: "Per-service overrides: { health_check_enabled: boolean, health_check_path: string, health_check_interval: e.g. \"10s\", health_check_timeout: e.g. \"3s\" }. Keys given are merged; null removes a key. Health checking is opt-in — a check on the wrong path takes the whole service dark." }
             }
