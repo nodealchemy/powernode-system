@@ -92,11 +92,11 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps apply refusal contract (IMP-4
     it "names the conflict in the payload" do
       r = apply(proposal)
 
-      # Substring, not equality: the message is currently "template  no longer
-      # exists" — ApplyService interpolates diff[:resource_id] (symbol) into a
-      # JSONB hash that reloads string-keyed, so the id is a hole. Filed
-      # separately; pinning the full string here would assert the defect.
+      # The message names the drifted id (IMP-54f9a053ad27): ApplyService reads
+      # the string key of the JSONB-reloaded diff, so the operator is told WHAT
+      # drifted, not just that something did.
       expect(r[:error]).to include("no longer exists")
+      expect(r[:error]).to include(doomed_template.id)
       expect(r.dig(:data, :stale_conflict)).to be true
       expect(r.dig(:data, :applied)).to be false
       expect(r.dig(:data, :proposal_id)).to eq(proposal.id)
