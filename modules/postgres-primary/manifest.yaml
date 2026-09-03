@@ -333,7 +333,14 @@ services:
     # Runs as root so it can mkdir + chown /var/lib/postgresql before
     # dropping to the postgres user via runuser.
     start_command: "/usr/local/bin/postgres-start.sh"
-    stop_command: "/usr/bin/pg_ctl -D /var/lib/postgresql/16/main stop -m fast"
+    # /usr/lib/postgresql/16/bin/pg_ctl, NOT /usr/bin/pg_ctl: the Debian
+    # postgresql-16 layout ships only pg_ctlcluster in /usr/bin, and this
+    # module's file_spec carves /usr/lib/postgresql/16/** and never
+    # /usr/bin/pg_ctl — so the old path failed command-not-found and systemd
+    # fell back to SIGTERM, a different shutdown than the `-m fast` asked
+    # for (IMP-5b38cd356010; the same defect fence_command below had).
+    # Pinned by server/spec/schema/postgres_manifest_command_paths_spec.rb.
+    stop_command: "/usr/lib/postgresql/16/bin/pg_ctl -D /var/lib/postgresql/16/main stop -m fast"
     restart_policy: always
     user: root
     # No working_directory: the data dir (/var/lib/postgresql) does not exist
@@ -381,9 +388,8 @@ services:
       # binary fails command-not-found, and because the dispatch is
       # best-effort and never inspects the task outcome, it would fail
       # SILENTLY while the ledger recorded fence_dispatched: true.
-      # NOTE: `stop_command` above still names /usr/bin/pg_ctl. That predates
-      # this change and is not touched here — it is the same suspected defect
-      # on the ordinary stop path and needs its own task.
+      # `stop_command` above had the same defect (it named /usr/bin/pg_ctl
+      # when this key was written) and was corrected in IMP-5b38cd356010.
       fence_command: "/usr/lib/postgresql/16/bin/pg_ctl -D /var/lib/postgresql/16/main stop -m immediate"
 
 dependencies:
