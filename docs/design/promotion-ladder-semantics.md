@@ -157,9 +157,11 @@ alone.
 
 **Option (a) is out of scope for this task** and is not implemented here — it changes how
 every deployment ships and needs operator sign-off. It is also the option this data
-argues hardest against right now: `PromotionCriteria` has never executed against
-production data (§4), so wiring it as a *gate* would make its first live evaluation the
-thing standing between a build and the fleet.
+argues hardest against right now: the automated lane has never decided anything on a
+`PromotionCriteria` verdict — with the sensor's scope resting empty (§4), the criteria
+run on real versions only as the manual-path advisory (§4.1) — so wiring them as a *gate*
+would make their first *deciding* evaluation the thing standing between a build and the
+fleet.
 
 **Option (b) is rejected**, and this is the substantive call. It reads as the tidy answer
 — the pointer is the actuator, so make the ladder inert prose — but one consumer needs a
@@ -286,17 +288,30 @@ answer standing unexamined.
 
 ### 4.1 Precondition before the lane is trusted: a shadow-mode pass
 
-`PromotionCriteria.evaluate` has never run against production data. Its first real
-execution must not be an execution that decides something. Before any change that makes
-the lane load-bearing:
+`PromotionCriteria.evaluate` runs against production data today, but only as an
+**advisory on the manual paths** (IMP-d6826c872d88, operator ruling D17 — consult and
+warn, never refuse): every `POST /node_module_versions/:id/promote` and
+`system_promote_module_version` to a gated target state (`GATED_TARGET_STATES`, today
+`blessed`) evaluates the criteria through `System::Fleet::ManualPromotionAdvisory`,
+returns the verdict as `promotion_criteria`, and — when the operator promotes past an
+unmet verdict — persists it as a `system.module_promotion_criteria_override` `FleetEvent`
+carrying `module_name`, `version_number`, `target_state`, `reason`, `running_count`,
+`required_count`, `dwell_time_minutes` and the actor. What has still never happened is an **automated** decision on that verdict: the
+sensor → `DecisionEngine` → `ModulePromotionService` lane has never acted on the
+criteria, and its first deciding execution must not be the one that decides something.
+Before any change that makes the lane load-bearing:
 
-1. Run `PromotionCriteria.evaluate` over real versions and **record** `{eligible:,
-   reason:, running_count:, required_count:, dwell_time_minutes:}` without emitting a
-   signal or promoting anything.
+1. Read the recorded verdicts — the `system.module_promotion_criteria_override` events,
+   and the `promotion_criteria` field in the promote responses — for `{eligible:,
+   reason:, running_count:, required_count:, dwell_time_minutes:}`. That IS the
+   shadow-mode record this section used to ask for; nothing needs to be run by hand
+   unless no manual blessing has happened since the advisory shipped.
 2. Confirm the thresholds are satisfiable on this fleet at all. They probably are not
    today: `REQUIRED_COUNT` defaults to 3 (`promotion_criteria.rb:45`) against a fleet of
-   1-2 instances. The dwell anchor is `NodeInstance#first_seen_running_at_for` — when the
-   instance first reported the candidate digest while `running` — taken across the
+   1-2 instances — which is also why the override event fires on **every** manual
+   blessing of such a fleet until the thresholds are lowered. The dwell anchor is
+   `NodeInstance#first_seen_running_at_for` — when the instance first reported the
+   candidate digest while `running` — taken across the
    qualifying set at its most recent stamp, so all of them must have been running the
    candidate for the full window; a qualifying instance with a stale heartbeat makes the
    version ineligible outright. (Before IMP-249aa98969bd the anchor was

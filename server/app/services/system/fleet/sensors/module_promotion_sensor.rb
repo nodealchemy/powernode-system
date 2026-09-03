@@ -27,10 +27,17 @@ module System
       # transitive deps. Deleting this sensor would leave `blessed` reachable
       # by hand alone.
       #
-      # PromotionCriteria has never evaluated production data, and on a 1-2
-      # instance fleet its defaults probably cannot pass at all. Run the
-      # shadow-mode pass in that note's section 4.1 before making this lane
-      # load-bearing.
+      # PromotionCriteria IS exercised on production data — with this scope
+      # empty, only by the manual paths: since IMP-d6826c872d88 every promote to a
+      # gated target state (the REST promote and system_promote_module_version)
+      # runs it through ManualPromotionAdvisory as an advisory — the verdict
+      # comes back in the response and an unmet verdict is persisted as a
+      # `system.module_promotion_criteria_override` FleetEvent. What has still
+      # never happened is an AUTOMATED decision on its verdict, and on a 1-2
+      # instance fleet the default REQUIRED_COUNT cannot pass at all, so that
+      # event fires on every manual blessing there. Those events are the
+      # shadow-mode data section 4.1 of that note asks for; read them before
+      # making this lane load-bearing.
       class ModulePromotionSensor < BaseSensor
         def sense
           ::System::NodeModuleVersion
