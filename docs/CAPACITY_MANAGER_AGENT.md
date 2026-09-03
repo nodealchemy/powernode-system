@@ -75,7 +75,7 @@ K3s → **Runtime Manager**; operator chat and platform deploy → **System Conc
 
 ## Skills
 
-Six executors bind to the agent (`binds_to "capacity_manager"` — the
+Seven executors bind to the agent (`binds_to "capacity_manager"` — the
 `SkillBindings::AGENT_ALIASES` slug; `system_skill_bindings_seed.rb` materialises the
 `Ai::AgentSkill` rows and deletes drift):
 
@@ -86,6 +86,7 @@ Six executors bind to the agent (`binds_to "capacity_manager"` — the
 | `system-relocate-workload` | `RelocateWorkloadExecutor` | `system.relocate_workload` (require_approval) | Fleet Autonomy |
 | `system-scale-project` | `ScaleProjectExecutor` | dispatched by `System::AdaptationGate` under `project.scale_horizontal` (auto within the `auto_apply_window`); `remove_replicas` is approval-gated by the result envelope | Fleet Autonomy |
 | `system-provision-full-stack` | `ProvisionFullStackExecutor` | the composer `scale_project` / `relocate_workload` call | Fleet Autonomy |
+| `system-attach-storage` | `AttachStorageExecutor` | ungated (`requires_approval: false`, `blast_radius: :low`, rollback detaches + deletes the volume); the provisioning mission's adaptive-evolution step — it runs DURING PROVISIONING, which is why it is here and not on the Storage Manager (volume data plane) | Fleet Autonomy (HIER-P2SWEEP) |
 | `system-platform-resilience` | `PlatformResilienceExecutor` | `scale` resolves `system.platform.scale_out` / `scale_in` through `ReplicaReconciler` against the executing agent; `drain_instance` is the cordon + stop | System Concierge (kept — the operator chat door) |
 
 Not moved: `promote_replica` (`system.replica_promote` stays a Fleet Autonomy category) and

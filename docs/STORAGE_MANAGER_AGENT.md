@@ -83,7 +83,7 @@ See [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) for sensor implementation details.
 |---|---|---|
 | `system-restore-volume` | `RestoreVolumeExecutor` | `system.restore_volume` (`require_approval`, `blast_radius: :high`, no rollback — the pre-restore snapshot is the only way back) |
 
-`system-attach-storage` (`AttachStorageExecutor`) stays bound to Fleet Autonomy: it is a provisioning-adaptation step (`Ai::Provisioning::AdaptationProposerService`, the provisioning mission template's `execute` phase), seeded by `system_provisioning_skills_seed.rb` under the `provisioning` subdomain, not a storage data-protection verb.
+`system-attach-storage` (`AttachStorageExecutor`) is NOT bound here — it binds to the **Capacity Manager** (HIER-P2SWEEP, driver ruling; it was Fleet Autonomy's until then): it is a provisioning-adaptation step (`Ai::Provisioning::AdaptationProposerService`, the provisioning mission template's `execute` phase), seeded by `system_provisioning_skills_seed.rb` under the `provisioning` subdomain, so it runs during provisioning under the agent that owns the provisioning step. This agent owns the volume DATA plane — restore, snapshot delete, assignment reconcile — not a fresh attach.
 
 ---
 
