@@ -370,6 +370,31 @@ RSpec.describe "notify lanes and skill executions leave a durable operator recor
         expect(failed).to be_present, "expected the binary failure to still leave a durable FleetEvent"
         expect(failed.payload["error"]).not_to include("abcdefghijklmnop")
       end
+
+      # The slice guard's OWN failure mode, and the one that costs the operator
+      # the whole record rather than a fragment of one. Dropping the token the
+      # slice cut in half is `sub(/\S+\z/, "")`, which removes the trailing RUN
+      # — and a machine-generated body (minified JSON, a base64 blob, a stack
+      # frame path) can be one unbroken run for the entire slice. Strip that
+      # and the persisted `error` is the empty string: the durable operator
+      # record this whole lane exists to create, gone, for exactly the class of
+      # provider error most likely to be long.
+      it "still persists a diagnosable reason when the slice holds no whitespace at all" do
+        slice = described_class::AUDIT_TEXT_LIMIT * 4
+        # No space anywhere in the first `slice` characters, and longer than
+        # the slice, so the cut fires and the trailing run IS the whole slice.
+        message = 'Faraday::TooManyRequestsError:{"errors":[{"status":"429",' \
+                  '"code":"rate_limit_exceeded","resource":"provider-alpha","detail":"' +
+                  ("abcdefghijklmnopqrstuvwxyz" * 100) + '"}]}'
+        expect(message.length).to be > slice
+        expect(message[0, slice]).not_to include(" ")
+
+        raising_class(message).new(account: account).execute
+
+        persisted = events(described_class::EVENT_KIND_FAILED).first.payload["error"]
+        expect(persisted).to be_present, "a whitespace-free provider body must still leave a reason"
+        expect(persisted).to include("rate_limit_exceeded")
+      end
     end
 
     # A skill dispatched from a fleet tick belongs in the tick's correlation

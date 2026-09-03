@@ -261,8 +261,11 @@ module System
         # client error carries the URL, userinfo and query string included).
         # Truncation is a bound, not a redaction, so #audit_text also runs the
         # extension's shell-output sanitizer over the text BEFORE bounding it
-        # (IMP-675ed7763230) — the unredacted, untruncated text stays on the
-        # Rails.logger line beside it.
+        # (IMP-675ed7763230). The Rails.logger lines beside it still write the
+        # raw text; that is a KNOWN REMAINING GAP, not a sanctioned exemption
+        # — ShellOutputSanitizer exists to keep this material out of the log
+        # too — and is out of scope here only because this task's finding is
+        # the persisted/broadcast payload.
         # 500 matches the platform's existing bound for exception text on an
         # event payload (System::NodeModuleAssignment#emit_registration_failure).
         AUDIT_TEXT_LIMIT = 500
@@ -671,8 +674,10 @@ module System
         # #emit_audit_event! still drops the key entirely rather than storing
         # an empty string.
         #
-        # Same recipe as SystemFleetTool#task_error_message, for the same
-        # reason: this is text a provider SDK, an HTTP client or a shell wrote,
+        # A HARDENED variant of SystemFleetTool#task_error_message — same
+        # reason, not the same body: that one is redact + a raw `[0, limit]`
+        # cut, with no encoding repair and no slice-boundary handling. Same
+        # reason, because this is text a provider SDK, an HTTP client or a shell wrote,
         # not text the platform authored, and the input redaction in
         # #audit_log_start is only worth anything if the credential it kept out
         # of `input_keys` cannot come straight back in through the message the
@@ -695,6 +700,14 @@ module System
         # it is by construction incomplete, and the alternative is emitting
         # the first N bytes of an unmatched credential.
         #
+        # That drop removes the trailing RUN, not a token, and a
+        # machine-generated body (minified JSON, a base64 blob) can be ONE
+        # unbroken run for the whole slice — stripping which leaves the
+        # operator an empty `error`, the very record this lane exists to
+        # create. So it only applies while enough text survives to fill the
+        # bound; below that the unstripped slice is kept, where the fragment
+        # sits >1500 chars in and the truncate never reaches it anyway.
+        #
         # force_encoding + .scrub("") because the sanitizer's patterns raise
         # ArgumentError on invalid UTF-8, and #audit_log_error runs INSIDE
         # #execute's rescue — a raise here would escape #execute with the
@@ -708,7 +721,10 @@ module System
 
           text = value.to_s.dup.force_encoding(Encoding::UTF_8).scrub("")
           sliced = text[0, AUDIT_TEXT_LIMIT * 4]
-          sliced = sliced.sub(/\S+\z/, "") if text.length > AUDIT_TEXT_LIMIT * 4
+          if text.length > AUDIT_TEXT_LIMIT * 4
+            stripped = sliced.sub(/\S+\z/, "")
+            sliced = stripped if stripped.length >= AUDIT_TEXT_LIMIT
+          end
           ::System::ShellOutputSanitizer
             .redact_text(sliced)
             .truncate(AUDIT_TEXT_LIMIT)
