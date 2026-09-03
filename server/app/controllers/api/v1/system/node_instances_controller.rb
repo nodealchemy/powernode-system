@@ -306,10 +306,25 @@ module Api
         end
 
         def instance_params
-          params.require(:node_instance).permit(
+          require_object_root(:node_instance).permit(
             :name, :description, :variety, :status, :key,
             :private_ip_address, :public_ip_address, :vpn_ip_address
           )
+        end
+
+        # `params.require` hands back whatever NON-BLANK value sits under the
+        # key, so a String / Array / scalar root came back as itself and the
+        # `.permit` on it was a NoMethodError — a 500 through the StandardError
+        # rescue (IMP-f9a184e832ac). Only an object can be permitted; any other
+        # root is the same request defect as an absent one and is reported the
+        # same way: ActionController::ParameterMissing, which the ApiResponse
+        # base rescue renders as 400 PARAMETER_MISSING. Raising (not rendering)
+        # matters — it unwinds the action before `update`/`build` runs.
+        def require_object_root(key)
+          root = params.require(key)
+          return root if root.is_a?(ActionController::Parameters)
+
+          raise ActionController::ParameterMissing.new(key, params.keys)
         end
 
         # `config` is handled OUTSIDE the permit list on purpose
@@ -324,9 +339,9 @@ module Api
         # `config` at all yields [nil, nil] — silence is not a refusal.
         #
         # A malformed root (`node_instance` absent, or not an object) yields
-        # [nil, nil] too, so the existing `params.require` in #instance_params
-        # stays the one place that reports it. Digging into a String root here
-        # would raise NoMethodError and turn today's 400 into a 500.
+        # [nil, nil] too, so #require_object_root (via #instance_params) stays
+        # the one place that reports it, as a 400. Digging into a String root
+        # here would raise NoMethodError and make it a 500 again.
         def config_document_or_refusal
           root = params[:node_instance]
           return [ nil, nil ] unless root.is_a?(ActionController::Parameters) || root.is_a?(Hash)

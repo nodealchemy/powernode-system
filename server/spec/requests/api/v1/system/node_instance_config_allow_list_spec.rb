@@ -91,26 +91,48 @@ RSpec.describe "System::NodeInstance config allow-list (REST writers)", type: :r
       expect(instance.reload.config["runtime_metrics"]).to eq(telemetry)
     end
 
-    # THE ALLOW-LIST CHECK RUNS BEFORE THE STRONG-PARAMS `require`, so it has to
-    # be careful about a malformed root: `params.dig(:node_instance, :config)`
-    # on a String root raises NoMethodError inside the CHECK, which would move
-    # the failure from the params layer into the new code and read as a bug
-    # this change introduced.
+    # IMP-f9a184e832ac — a MALFORMED ROOT is a 400, never a 500.
     #
-    # This pins that the outcome is UNCHANGED, and it is an honest record of a
-    # PRE-EXISTING defect rather than an endorsement: a String root reaches
-    # `params.require(:node_instance).permit(...)`, which is a NoMethodError on
-    # String and a 500. That is the behaviour on HEAD, it is not this task's
-    # finding, and narrowing it is a separate change. The ROW is the assertion
-    # that matters here — whatever the params layer does with the root, the
-    # allow-list path must not have written anything.
-    it "does not write, and does not change the outcome, for a malformed node_instance root" do
+    # `params.require(:node_instance)` hands back whatever non-blank value
+    # sits under the key: a String root ("x") came back as a String, `.permit`
+    # was a NoMethodError on it, and the ApiResponse StandardError rescue
+    # turned that into a 500. IMP-1b65222b8d5f pinned that outcome honestly as
+    # pre-existing; the operator ruling (2026-09-03) is to fix it. Only an
+    # object can be permitted, so anything else under the root is reported the
+    # way an ABSENT root already was: ActionController::ParameterMissing, which
+    # the base rescue renders as 400 PARAMETER_MISSING.
+    #
+    # The ROW is still asserted: the refusal has to halt before any write.
+    it "refuses a String node_instance root with 400, not 500, and writes nothing" do
       put "/api/v1/system/nodes/#{node.id}/node_instances/#{instance.id}",
           params: { node_instance: "not-an-object" },
           headers: auth_headers_for(user), as: :json
 
+      expect(response).to have_http_status(:bad_request)
+      expect(response.parsed_body["code"]).to eq("PARAMETER_MISSING")
+      expect(response.parsed_body["error"]).to include("node_instance")
       expect(instance.reload.config["runtime_metrics"]).to eq(telemetry)
-      expect(response).to have_http_status(:internal_server_error)
+    end
+
+    it "refuses an Array node_instance root with 400, not 500" do
+      put "/api/v1/system/nodes/#{node.id}/node_instances/#{instance.id}",
+          params: { node_instance: [ { name: "smuggled" } ] },
+          headers: auth_headers_for(user), as: :json
+
+      expect(response).to have_http_status(:bad_request)
+      expect(response.parsed_body["code"]).to eq("PARAMETER_MISSING")
+      expect(instance.reload.name).not_to eq("smuggled")
+    end
+
+    it "refuses a create whose node_instance root is not an object with 400, inserting nothing" do
+      expect do
+        post "/api/v1/system/nodes/#{node.id}/node_instances",
+             params: { node_instance: "zz-string-root" },
+             headers: auth_headers_for(user), as: :json
+      end.not_to change(::System::NodeInstance, :count)
+
+      expect(response).to have_http_status(:bad_request)
+      expect(response.parsed_body["code"]).to eq("PARAMETER_MISSING")
     end
 
     it "still updates the scalar columns when no config is supplied" do
@@ -190,6 +212,29 @@ RSpec.describe "System::NodeInstance config allow-list (REST writers)", type: :r
 
       expect(response).to have_http_status(:unprocessable_content)
       expect(::System::NodeInstance.where(name: "zz-worker-refused").count).to eq(0)
+    end
+
+    # IMP-f9a184e832ac — the worker twin: a malformed `instance` root is a 400.
+    it "refuses an update whose instance root is a String with 400, not 500, and writes nothing" do
+      put "/api/v1/system/worker_api/node_instances/#{instance.id}",
+          params: { instance: "not-an-object" },
+          headers: headers, as: :json
+
+      expect(response).to have_http_status(:bad_request)
+      expect(response.parsed_body["code"]).to eq("PARAMETER_MISSING")
+      expect(response.parsed_body["error"]).to include("instance")
+      expect(instance.reload.config["runtime_metrics"]).to eq(telemetry)
+    end
+
+    it "refuses a create whose instance root is a String with 400, inserting nothing" do
+      expect do
+        post "/api/v1/system/worker_api/node_instances",
+             params: { node_id: node.id, instance: "zz-string-root" },
+             headers: headers, as: :json
+      end.not_to change(::System::NodeInstance, :count)
+
+      expect(response).to have_http_status(:bad_request)
+      expect(response.parsed_body["code"]).to eq("PARAMETER_MISSING")
     end
   end
 end

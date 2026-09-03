@@ -170,7 +170,7 @@ module Api
           end
 
           def instance_params
-            params.require(:instance).permit(
+            require_object_root(:instance).permit(
               :name, :variety, :status,
               :provider_region_id, :provider_instance_type_id,
               :provider_availability_zone_id,
@@ -180,11 +180,27 @@ module Api
           end
 
           def instance_update_params
-            params.require(:instance).permit(
+            require_object_root(:instance).permit(
               :status,
               :private_ip_address, :public_ip_address,
               :cloud_instance_id
             )
+          end
+
+          # `params.require` hands back whatever NON-BLANK value sits under the
+          # key, so a String / Array / scalar root came back as itself and the
+          # `.permit` on it was a NoMethodError — a 500 through the
+          # StandardError rescue (IMP-f9a184e832ac). Only an object can be
+          # permitted; any other root is the same request defect as an absent
+          # one and is reported the same way: ActionController::ParameterMissing,
+          # which the ApiResponse base rescue renders as 400 PARAMETER_MISSING.
+          # Raising (not rendering) matters — it unwinds the action before
+          # `update`/`build` runs.
+          def require_object_root(key)
+            root = params.require(key)
+            return root if root.is_a?(ActionController::Parameters)
+
+            raise ActionController::ParameterMissing.new(key, params.keys)
           end
 
           # `config` is deliberately absent from BOTH permit lists above
@@ -196,8 +212,9 @@ module Api
           #
           # Returns [document_or_nil, refusal_message_or_nil]. No `config` in
           # the body yields [nil, nil] — and so does a malformed `instance`
-          # root, leaving the `params.require` in the permit helpers as the one
-          # place that reports that (digging into a String root would raise).
+          # root, leaving #require_object_root (via the permit helpers) as the
+          # one place that reports that, as a 400 (digging into a String root
+          # here would raise, and make it a 500 again).
           def config_document_or_refusal
             root = params[:instance]
             return [ nil, nil ] unless root.is_a?(ActionController::Parameters) || root.is_a?(Hash)
