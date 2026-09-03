@@ -41,7 +41,8 @@ require "rails_helper"
 #          What clients actually receive for `outputSchema`, on BOTH transports,
 #          is verb-independent by construction:
 #            * streamable HTTP — the transport real MCP clients use — never
-#              calls `build_manifest`. `decorate_tool_entry` takes an
+#              calls `build_manifest`. `Mcp::ToolCatalog#decorate_tool_entry`
+#              (moved off the controller by IMP-7e84ae0ccc91) takes an
 #              `output_schema:` keyword from its caller — the platform family
 #              passes `McpPlatformToolRegistrar.default_output_schema`, the
 #              introspection family passes `GENERIC_OBJECT_SCHEMA` — for
@@ -60,7 +61,7 @@ require "rails_helper"
 #          This is not a parsing problem — the thing being compared against
 #          does not exist. The tripwire below pins the declaration side and the
 #          ActionCable manifest. It deliberately does NOT pin
-#          `decorate_tool_entry`: its `output_schema:` is chosen per family by
+#          `Mcp::ToolCatalog#decorate_tool_entry`: its `output_schema:` is chosen per family by
 #          the caller, not derived from the tool, so it is verb-independent by
 #          construction rather than by coincidence, and
 #          pinning three lines that would have to be rewritten to do damage
