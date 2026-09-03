@@ -98,6 +98,37 @@ RSpec.describe System::ModulePublicationProcessor do
       expect(event.payload["promoted"]).to eq(true)
     end
 
+    # IMP-e2c2da99b4b5: a publish through the default (non-native) ingest
+    # path must carry a NON-nil fs-verity root into both the denormalized
+    # column and the artifacts JSONB the agent reads
+    # (node_module_node_api_serializer: artifact["fsverity_root"]). The root
+    # arrives on the OCI manifest annotation io.powernode.fsverity_root_hash,
+    # which push.sh now stamps; this pins the processor's side of that
+    # channel so a regression on either side is visible here.
+    # CONTRACT pin: the manifest is stubbed, so this passed before the
+    # push.sh fix too. The regression pin for the producer half is
+    # spec/scripts/module_build_fsverity_annotation_spec.rb.
+    it "records a non-nil fsverity root on the version and in artifacts.erofs on a default-path publish" do
+      root = "sha256:#{'d4' * 32}"
+      System::ModuleOciIngestService.adapter.stub_manifest = {
+        per_arch_descriptors: [ {
+          architecture:       "amd64",
+          oci_digest:         "sha256:#{'e' * 64}",
+          media_type:         ::System::ModuleArtifact::DEFAULT_MEDIA_TYPE,
+          size_bytes:         6_066_176,
+          fsverity_root_hash: root,
+          built_at:           Time.current
+        } ]
+      }
+
+      result = described_class.process!(node_module: node_module, tag: "fsv0001")
+
+      expect(result.ok?).to be true
+      version = result.node_module_version.reload
+      expect(version.fsverity_root_hash).to eq(root)
+      expect(version.artifacts.dig("erofs", "fsverity_root")).to eq(root)
+    end
+
     it "does not promote when ingest fails, regardless of the promote: flag" do
       System::ModuleOciIngestService.adapter.stub_manifest = { error: "registry returned 500" }
 

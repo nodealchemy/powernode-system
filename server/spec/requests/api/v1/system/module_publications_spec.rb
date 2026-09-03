@@ -357,4 +357,63 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
              "expected the CI worker's account #{account.name.inspect} (#{account.id})"
     end
   end
+  # IMP-e2c2da99b4b5 — the platform-CI publish path is THIS controller (the
+  # build-platform-modules workflow POSTs here); it never reaches
+  # ModulePublicationProcessor / ModuleOciIngestService, which were the only
+  # writers of NodeModuleVersion#fsverity_root_hash. So the workflow computed
+  # the fs-verity root, shipped it as artifacts.erofs.fsverity_root, and the
+  # column stayed nil for every platform module — making the agent's fs-verity
+  # mount gate (fail-closed on an empty root) unusable fleet-wide.
+  describe "fs-verity root denormalization onto the version column" do
+    let(:real_root) { "sha256:#{'ab' * 32}" }
+
+    it "writes the notify payload's fsverity root to NodeModuleVersion#fsverity_root_hash" do
+      body = base_body.merge(
+        artifacts: artifacts.deep_merge(erofs: { fsverity_root: real_root })
+      )
+
+      post "/api/v1/system/module_publications", params: body.to_json, headers: bearer
+
+      expect(response).to have_http_status(:ok)
+      version = node_module.versions.order(:created_at).last
+      expect(version.fsverity_root_hash).to eq(real_root),
+             "the publish recorded #{version.fsverity_root_hash.inspect}; the agent's mount gate reads this " \
+             "column (via ModuleVersionService/compliance) and refuses to mount on a nil root"
+      # The agent-facing JSONB key keeps carrying it too — the column is a
+      # denormalization, not a move.
+      expect(version.artifacts.dig("erofs", "fsverity_root")).to eq(real_root)
+    end
+
+    it "leaves the column nil rather than persisting a malformed root" do
+      body = base_body.merge(
+        artifacts: artifacts.deep_merge(erofs: { fsverity_root: "fsverity: command not found" })
+      )
+
+      post "/api/v1/system/module_publications", params: body.to_json, headers: bearer
+
+      expect(response).to have_http_status(:ok)
+      version = node_module.versions.order(:created_at).last
+      expect(version.fsverity_root_hash).to be_nil
+      # The publish still succeeds: fs-verity is opt-in fleet-wide, so a
+      # missing root must not block shipping the module.
+      expect(version.artifacts.dig("erofs", "oci_ref")).to be_present
+    end
+
+    it "never overwrites an already-published root with nil when the root goes missing" do
+      post "/api/v1/system/module_publications", params: base_body.to_json, headers: bearer
+      expect(response).to have_http_status(:ok)
+      version = node_module.versions.order(:created_at).last
+      expect(version.fsverity_root_hash).to be_present
+
+      # Same module@tag re-notified (a CI retry) without the root.
+      republish = base_body.merge(
+        artifacts: { erofs: artifacts[:erofs].except(:fsverity_root) }
+      )
+      post "/api/v1/system/module_publications", params: republish.to_json, headers: bearer
+
+      expect(response).to have_http_status(:ok)
+      expect(version.reload.fsverity_root_hash).to be_present,
+             "a rootless re-notify nulled a root the previous publish had established"
+    end
+  end
 end

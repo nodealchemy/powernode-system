@@ -410,8 +410,14 @@ module System
     # inert return as "those paths are safe". The Gitea-Actions build
     # (.gitea/workflows/build-platform-modules.yaml) runs the same stage15.sh +
     # push.sh, so ITS artifacts carry the same core_source_sha annotation, but it
-    # publishes through worker_api/module_publications_controller with no batch —
-    # hence no expectation to compare against, and it auto-promotes ungated.
+    # never reaches this service at all: its notify step POSTs to
+    # /api/v1/system/module_publications (build-platform-modules.yaml:483 →
+    # routes.rb:19 → Api::V1::System::ModulePublicationsController#create), which
+    # writes the version + promotes directly and calls only this class's
+    # predicates. So there is no ingest, no batch, no expectation to compare
+    # against, and it auto-promotes ungated. (Corrected 2026-09-03: this comment
+    # previously named worker_api/module_publications_controller, which is the
+    # ASYNC hop the Gitea PUSH webhook uses — a different producer.)
     # Closing it needs (a) ingest! to surface oci_annotations the way
     # ingest_native! now does, and (b) a publish-time source for the expected core
     # ref, since there is no dispatch record to carry one.

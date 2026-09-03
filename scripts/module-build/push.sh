@@ -319,6 +319,41 @@ if [[ -f /tmp/parent-provenance.env ]]; then
 fi
 # --- END core-source provenance annotations ---
 
+# --- BEGIN fsverity root annotation ---
+# fs-verity Merkle root of the erofs blob (IMP-e2c2da99b4b5). stage2-carve.sh
+# computes it (`fsverity digest --hash-alg=sha256`) into the .erofs.meta
+# sidecar pushed as a layer above — but the platform's ingest side reads the
+# root ONLY from this MANIFEST annotation (ModuleOciIngestService::
+# OrasOciAdapter#fetch_manifest / #fetch_manifest_single_arch), which until
+# now only the module-repo template workflow emitted. Without it every
+# platform module ingested through `ingest!` recorded
+# ModuleArtifact.fsverity_root_hash = nil, and the agent's fs-verity gate
+# (reconcile.go mountModuleArtifact) fails CLOSED on an empty root, so
+# enabling fs-verity would have refused exactly these mounts.
+#
+# The value is stamped only when present. An empty
+# `io.powernode.fsverity_root_hash=` reads as an answer downstream (the agent
+# would compare against ""), so a missing root is a loud warning and an
+# ABSENT annotation — the same shape the sibling apt/build-inputs hashes use.
+# The reachable half of that is an EMPTY root: stage2-carve.sh does not check
+# `fsverity digest`'s exit status, so a digest failure leaves fsverity_root=
+# blank in the sidecar. The missing-FILE half is belt-and-braces — the sidecar
+# is also pushed as a layer (ORAS_PUSH_ARGS above), so its absence already
+# fails `oras push` a few lines down.
+EROFS_FSVERITY_ROOT=""
+if [[ -f "/tmp/$MODULE.erofs.meta" ]]; then
+  EROFS_FSVERITY_ROOT=$(sed -n 's/^fsverity_root=//p' "/tmp/$MODULE.erofs.meta" | head -n1)
+fi
+if [[ -n "$EROFS_FSVERITY_ROOT" ]]; then
+  echo "[push] fsverity_root for $MODULE: $EROFS_FSVERITY_ROOT"
+  ORAS_PUSH_ARGS+=(--annotation "io.powernode.fsverity_root_hash=${EROFS_FSVERITY_ROOT}")
+else
+  echo "[push] WARNING: no fsverity_root in /tmp/$MODULE.erofs.meta — pushing $MODULE WITHOUT" \
+       "io.powernode.fsverity_root_hash; ingest will record a nil root and the agent's" \
+       "fs-verity gate refuses this module while fs-verity is enabled" >&2
+fi
+# --- END fsverity root annotation ---
+
 oras push "${ORAS_PUSH_ARGS[@]}"
 
 # Also tag this build as `:latest` so the drift-check's

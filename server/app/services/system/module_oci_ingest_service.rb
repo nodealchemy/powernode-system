@@ -780,9 +780,14 @@ module System
       end
 
       # push.sh doesn't set a platform/architecture annotation on its
-      # single-arch pushes (confirmed: only org.opencontainers.image.created,
-      # org.powernode.built_from_sha, org.powernode.packages-sha256 are set),
-      # so there's no signal to read it from. The bootstrap CI runners that
+      # single-arch pushes. Its seven `--annotation` flags are the
+      # org.powernode.* provenance/hash set and — since IMP-e2c2da99b4b5 —
+      # io.powernode.fsverity_root_hash; none of them names an architecture
+      # (`command grep -n -- --annotation scripts/module-build/push.sh`, 7
+      # hits, 0 mentioning a platform). Anything under org.opencontainers.*
+      # on these manifests comes from oras itself, not from push.sh. So
+      # there's no signal to read an architecture from. The bootstrap CI
+      # runners that
       # invoke push.sh build for amd64 — same fallback default already used
       # by ModuleOciIngestService#native_arch for the sibling native-ingest
       # path when no architecture is supplied.

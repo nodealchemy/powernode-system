@@ -37,7 +37,7 @@ module Api
       #     }
       #   }
       #
-      # Three side effects on a successful publish:
+      # Four side effects on a successful publish:
       #   1. NodeModuleVersion row created with the artifacts payload.
       #   2. NodeModule + ModuleService rows re-synced from
       #      manifest_yaml_b64 via ManifestImportService — keeps
@@ -48,9 +48,24 @@ module Api
       #      layer digest itself (oras push only emits the artifact
       #      digest), but the agent needs the layer digest to address
       #      the blob during pull + verify.
+      #   4. NodeModuleVersion.fsverity_root_hash denormalized from
+      #      artifacts.erofs.fsverity_root when it is well-formed — the
+      #      agent's fs-verity mount gate and every reader downstream of it
+      #      (ModuleVersionService rollback clones, SystemFleetTool,
+      #      compliance snapshots) read the COLUMN, not the JSONB.
       class ModulePublicationsController < ApplicationController
         skip_before_action :authenticate_request, raise: false
         skip_before_action :verify_authenticity_token, raise: false
+
+        # Shape of a usable fs-verity Merkle root, as `fsverity digest
+        # --hash-alg=sha256` prints it (scripts/module-build/stage2-carve.sh)
+        # and as the on-node FsVerifier#Digest reads it back before comparing:
+        # "<alg>:<hex>", never a bare hex string. Anything else is a build-side
+        # bug (an empty capture, an error message, a truncated line) and is
+        # refused rather than persisted — see the fail-closed note in #create.
+        # sha512 is accepted too: fsverity-utils supports it and a future
+        # --hash-alg change should not silently start dropping roots.
+        FSVERITY_ROOT_SHAPE = /\A(?:sha256:\h{64}|sha512:\h{128})\z/
 
         def create
           unless valid_ci_bearer?
@@ -138,7 +153,46 @@ module Api
                 "media_type" => erofs_layer[:media_type]
               )
             end
-            version.update_columns(artifacts: normalized)
+            # Side effect 4 (IMP-e2c2da99b4b5) — denormalize the fs-verity
+            # Merkle root onto the version COLUMN, not just the artifacts
+            # JSONB. This is the production platform-CI path: the workflow
+            # computes the root from the .erofs.meta sidecar and ships it as
+            # artifacts.erofs.fsverity_root, and until now the only writer of
+            # NodeModuleVersion#fsverity_root_hash was the ingest!/ingest_native!
+            # processor path, which this controller never invokes. So every
+            # platform module published through CI carried a nil column, which
+            # ModuleVersionService propagates into rollback clones and
+            # SystemFleetTool/compliance snapshots report as "no fs-verity".
+            #
+            # Fail closed, two ways: an absent or malformed root is NEVER
+            # written (a nil/garbage column reads to the agent's mount gate as
+            # "unverified" — refusing the mount is the safe answer, silently
+            # recording junk is not), and a root that fails the shape check
+            # never clobbers a root a previous publish already established for
+            # this version. Publishing itself is not blocked on it: fs-verity
+            # is opt-in fleet-wide (ReconcilerConfig.Fsverity defaults off),
+            # so refusing the publish outright would make it mandatory — a
+            # policy change well beyond carrying the value through.
+            fsverity_root = normalized.dig("erofs", "fsverity_root").to_s.strip
+            if fsverity_root.match?(FSVERITY_ROOT_SHAPE)
+              version.update_columns(artifacts: normalized, fsverity_root_hash: fsverity_root)
+            else
+              if version.fsverity_root_hash.present?
+                Rails.logger.error(
+                  "[ModulePublicationsController] #{module_name}@#{tag}: notify payload carries no usable " \
+                  "artifacts.erofs.fsverity_root (#{fsverity_root.presence.inspect}); KEEPING the previously " \
+                  "published root on version #{version.id} rather than nulling it."
+                )
+              else
+                Rails.logger.error(
+                  "[ModulePublicationsController] #{module_name}@#{tag}: notify payload carries no usable " \
+                  "artifacts.erofs.fsverity_root (#{fsverity_root.presence.inspect}); version #{version.id} " \
+                  "is published WITHOUT an fs-verity root and the agent will refuse to mount it while " \
+                  "fs-verity is enabled."
+                )
+              end
+              version.update_columns(artifacts: normalized)
+            end
           else
             Rails.logger.warn "[ModulePublicationsController] empty artifacts hash for #{module_name}@#{tag}"
           end

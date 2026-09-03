@@ -40,6 +40,36 @@ RSpec.describe System::ModuleOciIngestService do
       expect(version.vex_uri).to eq("#{oci_ref}.vex")
     end
 
+    # IMP-e2c2da99b4b5: the platform pipeline's single-arch shape (one amd64
+    # descriptor synthesized from the erofs layer + manifest annotations).
+    # Pins that the root on the descriptor reaches BOTH the ModuleArtifact row
+    # and the denormalized NodeModuleVersion column — the value the fleet tool,
+    # compliance snapshot and rollback clone read.
+    # CONTRACT pin, not a regression pin: the descriptor is stubbed, so this
+    # stays green with the push.sh half reverted. The regression pins are
+    # spec/scripts/module_build_fsverity_annotation_spec.rb (push.sh stamps
+    # the annotation) and spec/requests/api/v1/system/module_publications_spec.rb
+    # (the platform-CI notify path writes the column).
+    it "denormalizes a single-arch descriptor's fsverity_root_hash onto the artifact and the version" do
+      root = "sha256:#{'b2' * 32}"
+      described_class.adapter.stub_manifest = {
+        per_arch_descriptors: [ {
+          architecture:       "amd64",
+          oci_digest:         "sha256:#{'c' * 64}",
+          media_type:         ::System::ModuleArtifact::DEFAULT_MEDIA_TYPE,
+          size_bytes:         6_066_176,
+          fsverity_root_hash: root,
+          built_at:           Time.current
+        } ]
+      }
+
+      result = described_class.ingest!(node_module_version: version, oci_ref: oci_ref)
+
+      expect(result.ok?).to be true
+      expect(result.module_artifacts.map(&:fsverity_root_hash)).to eq([ root ])
+      expect(version.reload.fsverity_root_hash).to eq(root)
+    end
+
     it "is idempotent — running twice updates instead of duplicating" do
       described_class.ingest!(node_module_version: version, oci_ref: oci_ref)
       described_class.ingest!(node_module_version: version, oci_ref: oci_ref)
@@ -383,6 +413,40 @@ RSpec.describe System::ModuleOciIngestService do
       expect(descriptor[:media_type]).to eq("application/vnd.powernode.erofs")
       expect(descriptor[:size_bytes]).to eq(6_066_176)
       expect(descriptor[:built_at]).to eq(Time.parse("2026-07-20T19:33:54Z"))
+    end
+
+    # IMP-e2c2da99b4b5: push.sh now stamps io.powernode.fsverity_root_hash on
+    # its single-arch push (read from the .erofs.meta sidecar stage2 wrote).
+    # This is the other half of that channel: the manifest-level annotation
+    # must land on the synthesized descriptor, so `ingest!` denormalizes a
+    # NON-nil root onto ModuleArtifact + NodeModuleVersion.fsverity_root_hash.
+    # Before push.sh stamped it, this read nil for every platform module.
+    it "carries io.powernode.fsverity_root_hash from a single-arch manifest's annotations" do
+      root = "sha256:#{'a1' * 32}"
+      single_arch = {
+        schemaVersion: 2,
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        artifactType: "application/vnd.powernode.module.v1",
+        layers: [
+          {
+            mediaType: "application/vnd.powernode.erofs",
+            digest: "sha256:#{Digest::SHA256.hexdigest('erofs')}",
+            size: 6_066_176
+          }
+        ],
+        annotations: {
+          "org.opencontainers.image.created" => "2026-07-20T19:33:54Z",
+          "org.powernode.built_from_sha" => "97f36eb7ccb170a0111370f549830dcc6b2af221",
+          "io.powernode.fsverity_root_hash" => root
+        }
+      }.to_json
+      allow(Open3).to receive(:capture3)
+        .with({}, "oras", "manifest", "fetch", oci_ref)
+        .and_return([ single_arch, "", status_double(true) ])
+
+      result = adapter.fetch_manifest(oci_ref)
+      expect(result[:error]).to be_nil
+      expect(result[:per_arch_descriptors].first[:fsverity_root_hash]).to eq(root)
     end
 
     it "fails clearly when a single-arch manifest has no erofs layer at all" do
