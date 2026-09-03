@@ -449,6 +449,16 @@ module System
     scope :in_any_pool, -> { where.not(instance_pool_id: nil) }
     scope :not_in_pool, -> { where(instance_pool_id: nil) }
 
+    # IMP-c9adb5a71dca — the cordon marker (`config["cordon"]`, see
+    # System::InstanceCordonService) read through its single author. Every
+    # reader that is not the allocator's own pool_state fence — the replica
+    # reconciler's live count and victim order, #mark_pool_ready!,
+    # InstancePoolService#release! — comes through here, so the marker's
+    # shape is defined in ONE file. The scopes are the SQL twins of
+    # #cordoned?; instance_cordon_service_spec pins that they agree.
+    scope :cordoned,     -> { ::System::InstanceCordonService.cordoned_relation(all) }
+    scope :not_cordoned, -> { ::System::InstanceCordonService.not_cordoned_relation(all) }
+
     # Variety predicates
     VARIETIES.each do |variety_name|
       define_method("#{variety_name}?") { variety == variety_name }
@@ -461,6 +471,12 @@ module System
 
     def in_pool?
       instance_pool_id.present?
+    end
+
+    # True when an operator has placed a cordon on this instance
+    # (system_cordon_instance). See the .cordoned / .not_cordoned scopes.
+    def cordoned?
+      ::System::InstanceCordonService.cordoned?(self)
     end
 
     # Server-side SDWAN reachability gate for pool promotion (native-CI pool
@@ -599,11 +615,25 @@ module System
     # inputs (git.powernode.org) — or if a build-critical module the node is
     # assigned is not yet composed (#required_modules_composed?), so it must
     # stay "warming" until it can.
+    #
+    # IMP-c9adb5a71dca — a CORDONED warming member is never admitted: the
+    # heartbeat that would have promoted it lands it on "draining" instead
+    # (InstanceCordonService.fence_admission!, which also records "ready" as
+    # the state an uncordon restores), and this returns false so the caller
+    # emits no member_ready event for a member that is not ready. The cordon
+    # pre-flight refuses a warming member today, so this arm is reached only
+    # by a marker that arrived another way — but an admission writer that
+    # trusted the pre-flight would be exactly the "read in none" defect the
+    # marker was designed against.
     def mark_pool_ready!
       return false unless in_pool?
       return false unless pool_state == "warming"
       return false unless sdwan_overlay_ready?
       return false unless required_modules_composed?
+      if cordoned?
+        ::System::InstanceCordonService.fence_admission!(self, from: "warming")
+        return false
+      end
       update!(pool_state: "ready")
       true
     end

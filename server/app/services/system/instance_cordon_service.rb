@@ -42,22 +42,31 @@ module System
   #   claimed  — already un-acquirable, and both release paths
   #              (system_return_pooled_instance, AgentFleetMissionService
   #              #reap_member!) guard on pool_state == "claimed", so flipping
-  #              it would strand the member. Marker only. NOTE: a claimed
-  #              member returned through the reuse_without_reset opt-in
-  #              re-enters the allocator as "ready" — release! does not read
-  #              the marker (that is InstancePoolService's file to change).
-  #              The default "recycled" disposition terminates it instead.
+  #              it would strand the member. Marker only. When its consumer
+  #              returns it, the default "recycled" disposition terminates it;
+  #              on a pool opted into reuse_without_reset,
+  #              InstancePoolService#release! reads the marker and hands the
+  #              member to #fence_admission! (pool_state "draining",
+  #              disposition "cordoned") instead of re-marking it "ready"
+  #              (IMP-c9adb5a71dca).
   #   draining — already fenced by someone else's write. Marker only, and the
   #              uncordon will not restore it (pool_state_before "draining").
-  #   warming / errored — REFUSED. NodeInstance#promote_pool_ready! flips a
-  #              warming member to "ready" on its next heartbeat, straight
-  #              past the marker; an errored member is on its way out. A
-  #              cordon that would be silently undone is worse than a refused
-  #              one.
+  #   warming / errored — REFUSED. A warming member is not acquirable yet, and
+  #              this service does not pre-cordon a member ahead of its
+  #              admission; an errored member is on its way out. (Should a
+  #              marker reach a warming member by another route,
+  #              NodeInstance#mark_pool_ready! honours it: the heartbeat
+  #              promotion lands on "draining" via #fence_admission!, never on
+  #              "ready" — IMP-c9adb5a71dca.)
   #
   # A non-pool instance gets the marker alone (`not_pooled`): there is no
-  # allocator to fence it out of. System::Platform::ReplicaReconciler and the
-  # node_api task lease do not read the marker today (recorded on the task).
+  # allocator to fence it out of. The marker's readers beyond acquire! all go
+  # through the ONE predicate this service owns — NodeInstance#cordoned? and
+  # the .cordoned / .not_cordoned scopes (#cordoned_relation /
+  # #not_cordoned_relation below): System::Platform::ReplicaReconciler keeps a
+  # cordoned replica OUT of the live count (so it provisions a replacement)
+  # and takes it FIRST as a scale-in victim (IMP-c9adb5a71dca). The node_api
+  # task lease does not read the marker (recorded on the task).
   #
   # The fence write is CONDITIONAL (update_all ... where pool_state: "ready"):
   # acquire! claims under a row lock, and a plain update! after a stale read
@@ -101,6 +110,57 @@ module System
       value.is_a?(Hash) ? value : nil
     end
 
+    # SQL twins of .cordoned?, for the readers that count or order in the
+    # database (ReplicaReconciler#live_scope / #scale_in). Same shape as the
+    # Ruby predicate — a Hash under CONFIG_KEY — so the two cannot disagree
+    # on a row. `jsonb_typeof` of a missing key is NULL, which is why the
+    # negation is COALESCEd rather than written as `<>`: a plain `NOT (NULL)`
+    # would drop every un-cordoned row from the "not cordoned" scope.
+    def self.cordoned_relation(relation)
+      relation.where(marker_present_sql, key: CONFIG_KEY)
+    end
+
+    def self.not_cordoned_relation(relation)
+      relation.where("NOT COALESCE(#{marker_present_sql}, false)", key: CONFIG_KEY)
+    end
+
+    def self.marker_present_sql
+      "jsonb_typeof(#{::System::NodeInstance.quoted_table_name}.config -> :key) = 'object'"
+    end
+    private_class_method :marker_present_sql
+
+    # Called by the two writers that ADMIT a member to the acquirable set —
+    # NodeInstance#mark_pool_ready! (warming → ready on heartbeat) and
+    # InstancePoolService#release! on a reuse_without_reset pool (claimed →
+    # ready) — when the member they are about to admit is cordoned. Fences it
+    # to "draining" instead (conditional on the pool_state the caller saw, the
+    # same optimistic write as #fence!) and re-records the marker's restore
+    # target as "ready": ready is the state the admission would have produced,
+    # so it is what #uncordon! hands back. The two writes are one transaction
+    # for the reason #cordon! gives — a fence with no restore target is a
+    # member nothing can re-admit except by hand.
+    #
+    # Returns true when the member was fenced, false when it was not cordoned
+    # or its pool_state moved before the flip (the caller then re-reads).
+    def self.fence_admission!(instance, from:)
+      marker = marker(instance)
+      return false unless marker && instance.in_pool?
+
+      fenced = false
+      ::ActiveRecord::Base.transaction do
+        flipped = ::System::NodeInstance.where(id: instance.id, pool_state: from)
+                                        .update_all(pool_state: "draining", pool_acquired_at: nil,
+                                                    updated_at: Time.current)
+        instance.reload
+        next unless flipped.positive?
+
+        instance.merge_config!({ CONFIG_KEY => marker.merge("pool_state_before" => "ready") })
+        fenced = true
+      end
+      Rails.logger.info("[InstanceCordonService] #{instance.id} fenced at admission (#{from} → draining) under its cordon") if fenced
+      fenced
+    end
+
     # PRE-FLIGHT REFUSALS, exposed so the approval gate can ask them BEFORE
     # parking: an approval-gated verb never reaches #cordon! until an
     # operator approves, and an approval for a cordon that could only ever be
@@ -137,8 +197,8 @@ module System
       case instance.pool_state
       when "ready", "claimed", "draining" then nil
       when "warming"
-        "#{instance.name} is a warming pool member: promote_pool_ready! would re-admit it to the " \
-          "allocator on its next heartbeat, behind the cordon. Wait for it to reach ready, or drain it."
+        "#{instance.name} is a warming pool member: it is not acquirable yet, and a cordon is not " \
+          "placed ahead of a member's admission. Wait for it to reach ready, or drain it."
       else
         "#{instance.name} is a pool member in pool_state #{instance.pool_state.inspect}, which the " \
           "allocator already never hands out and the reaper is retiring; there is nothing to cordon"
@@ -280,13 +340,16 @@ module System
       when "claimed"
         "#{instance.name} cordoned. It is CLAIMED by a consumer, so it was not flipped — it is " \
         "already un-acquirable. When its consumer returns it, the default recycled disposition " \
-        "terminates it; only a pool opted into reuse_without_reset would re-admit it."
+        "terminates it; on a pool opted into reuse_without_reset it is fenced (pool_state=draining) " \
+        "instead of re-admitted, and system_uncordon_instance restores it."
       when "already_fenced"
         "#{instance.name} cordoned. Its pool_state was already draining (a drain or recycle is in " \
         "flight), so nothing was flipped and an uncordon will not restore it to ready."
       else
         "#{instance.name} cordoned. It is not a pool member, so no allocator was fenced; the marker " \
-        "is visible on system_get_instance as `cordon`."
+        "is visible on system_get_instance as `cordon`. If a platform deployment owns this " \
+        "instance, System::Platform::ReplicaReconciler honours the marker: it is left out of the " \
+        "live count (so target_replicas provisions a replacement) and is the first scale-in victim."
       end
     end
 

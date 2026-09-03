@@ -185,9 +185,13 @@ module System
     # metadata["reuse_without_reset"] — appropriate only when every consumer
     # of the pool is in the same trust domain.
     #
-    # Returns "reused" (opt-in path: member back to ready, TTL anchor reset)
-    # or "recycled" (default path), or "errored" when the recycle's terminate
-    # failed. Callers own the claimed-state guard.
+    # Returns "reused" (opt-in path: member back to ready, TTL anchor reset),
+    # "recycled" (default path), "errored" when the recycle's terminate
+    # failed, or "cordoned" (IMP-c9adb5a71dca — the opt-in path found the
+    # member cordoned and fenced it to draining instead of re-admitting it).
+    # Callers own the claimed-state guard. AgentFleetMissionService#reap_member!
+    # passes the disposition straight through as a persisted mission action
+    # label, so "cordoned" surfaces there too.
     #
     # IMP-68403ec0358d — this is also where the claim ledger is CLOSED. The
     # attribution has to be read back AFTER the release, which is exactly what
@@ -195,7 +199,7 @@ module System
     # pool_acquired_at, so anything stamped on the row at acquire time is gone
     # the moment the member is returned. #record_release! copies the
     # attribution onto the closing record so the release row answers "who used
-    # this" on its own, and it fires on ALL THREE dispositions — including
+    # this" on its own, and it fires on EVERY disposition — including
     # "errored", where the member rests with a VM that may still exist and
     # still bill, which is the single case attribution matters most for.
     def release!(instance:, pool:)
@@ -243,6 +247,23 @@ module System
         # re-granted (recoverable), never that it can act beyond what its new
         # acquirer expects (not recoverable).
         reset_granted_mcp_tools!(instance, pool: pool)
+
+        # IMP-c9adb5a71dca — a CORDONED member is not re-admitted. The two
+        # revokes above still ran on purpose: an uncordon later hands this
+        # member to a new acquirer, and the prior consumer's key and grant
+        # must not ride along. fence_admission! flips claimed → draining and
+        # records "ready" as the state the uncordon restores. The flip is
+        # conditional on "claimed"; losing it means the pool_state moved
+        # under the releaser, which only the releaser writes — fail CLOSED
+        # rather than fall through to the reuse write and re-admit a member
+        # an operator cordoned.
+        if instance.cordoned?
+          return "cordoned" if ::System::InstanceCordonService.fence_admission!(instance, from: "claimed")
+
+          raise InvalidPoolStateError,
+                "instance #{instance.id} is cordoned and left pool_state=claimed " \
+                "(now #{instance.pool_state.inspect}) during release; not re-admitting it"
+        end
 
         # pool_warming_started_at doubles as the ready-TTL anchor in
         # recycle_stale_members! (F2-05) — without restarting it, a member

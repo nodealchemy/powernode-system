@@ -114,7 +114,7 @@ RSpec.describe System::InstanceCordonService do
       expect(member.reload.pool_state).to eq("claimed")
     end
 
-    it "refuses a warming member — promote_pool_ready! would re-admit it behind the marker" do
+    it "refuses a warming member — a cordon is not placed ahead of a member's admission" do
       member = ready_member
       member.update!(pool_state: "warming")
 
@@ -302,6 +302,118 @@ RSpec.describe System::InstanceCordonService do
       expect(result.error).to include("cordon attempts")
       expect(attempts).to eq(described_class::FENCE_ATTEMPTS)
       expect(relation.count).to eq(1)
+    end
+  end
+
+  # IMP-c9adb5a71dca — the marker has readers beyond the allocator's acquire!
+  # query. They all reach it through the ONE predicate this service owns
+  # (NodeInstance#cordoned? and the .cordoned / .not_cordoned scopes) so a
+  # change to the marker's shape has a single place to land.
+  describe "the marker's other readers" do
+    def acquire_raises!
+      expect {
+        ::System::InstancePoolService.acquire!(account: account, pool_id: pool.id)
+      }.to raise_error(::System::InstancePoolService::NoReadyMembersError)
+    end
+
+    describe "NodeInstance#cordoned? and the .cordoned / .not_cordoned scopes" do
+      it "agree with .cordoned? on every row shape, marker or bare draining" do
+        fenced = ready_member
+        described_class.cordon!(instance: fenced, user: user, reason: "patch")
+        bare_draining = ready_member
+        bare_draining.update!(pool_state: "draining")
+        plain = ready_member
+
+        expect(fenced.reload.cordoned?).to be(true)
+        expect(bare_draining.cordoned?).to be(false)
+        expect(plain.cordoned?).to be(false)
+        expect(::System::NodeInstance.cordoned.pluck(:id)).to contain_exactly(fenced.id)
+        expect(::System::NodeInstance.not_cordoned.pluck(:id)).to contain_exactly(bare_draining.id, plain.id)
+      end
+    end
+
+    # The cordon pre-flight refuses a warming member, so a marker reaches one
+    # only by a route this service did not take. The admission writer still
+    # has to honour it: seed the marker directly so the guard is tested on its
+    # own, with the real allocator as the oracle.
+    describe "NodeInstance#promote_pool_ready! on a cordoned warming member" do
+      def cordoned_warming_member
+        member = ready_member
+        member.update!(pool_state: "warming")
+        member.merge_config!(described_class::CONFIG_KEY => {
+          "cordoned_at" => Time.current.iso8601, "by_user_id" => user.id,
+          "reason" => "pre-admission", "pool_state_before" => "warming"
+        })
+        member
+      end
+
+      it "fences it to draining instead of admitting it, and emits no member_ready event" do
+        member = cordoned_warming_member
+
+        expect {
+          expect(member.promote_pool_ready!).to be(false)
+        }.not_to change { ::System::FleetEvent.where(kind: "system.pool.member_ready", node_instance_id: member.id).count }
+
+        expect(member.reload.pool_state).to eq("draining")
+        expect(described_class.cordoned?(member)).to be(true)
+        acquire_raises!
+      end
+
+      it "records ready as the state an uncordon restores, so the fence is reversible" do
+        member = cordoned_warming_member
+        member.promote_pool_ready!
+
+        result = described_class.uncordon!(instance: member.reload, user: user)
+
+        expect(result).to be_ok
+        expect(result.cordon_state).to eq("restored")
+        expect(member.reload.pool_state).to eq("ready")
+      end
+    end
+
+    describe "InstancePoolService#release! on a reuse_without_reset pool" do
+      def cordoned_claimed_member
+        pool.update!(metadata: { "reuse_without_reset" => true })
+        member = ready_member
+        member.update!(pool_state: "claimed", pool_acquired_at: Time.current)
+        result = described_class.cordon!(instance: member, user: user, reason: "patch")
+        expect(result.cordon_state).to eq("claimed")
+        member.reload
+      end
+
+      it "fences a cordoned member out of the allocator instead of re-admitting it" do
+        member = cordoned_claimed_member
+
+        disposition = ::System::InstancePoolService.release!(instance: member, pool: pool)
+
+        expect(disposition).to eq("cordoned")
+        expect(member.reload.pool_state).to eq("draining")
+        expect(member.pool_acquired_at).to be_nil
+        expect(member.status).to eq("running")
+        expect(described_class.cordoned?(member)).to be(true)
+        acquire_raises!
+      end
+
+      it "leaves the member restorable: an uncordon afterwards hands it back as ready" do
+        member = cordoned_claimed_member
+        ::System::InstancePoolService.release!(instance: member, pool: pool)
+
+        result = described_class.uncordon!(instance: member.reload, user: user)
+
+        expect(result).to be_ok
+        expect(result.cordon_state).to eq("restored")
+        expect(member.reload.pool_state).to eq("ready")
+        expect(described_class.cordoned?(member)).to be(false)
+      end
+
+      it "still re-admits an uncordoned member as ready (the reuse path is unchanged)" do
+        pool.update!(metadata: { "reuse_without_reset" => true })
+        member = ready_member
+        member.update!(pool_state: "claimed", pool_acquired_at: Time.current)
+
+        expect(::System::InstancePoolService.release!(instance: member, pool: pool)).to eq("reused")
+        expect(member.reload.pool_state).to eq("ready")
+      end
     end
   end
 end

@@ -1811,7 +1811,7 @@ module Ai
 
           # === CVE triage (M-D2-2 partial) ===
           "system_cve_triage" => {
-            description: "Triage a CVE entry against the fleet — risk-scored exposure list and remediation plan. Reads from System::CveExposure when persisted.",
+            description: "Triage a CVE entry against the fleet — risk-scored exposure list and remediation plan. Reads from System::CveExposure when persisted: only open/remediating rows count; a `suspected` row (keyword-only match — the CVE's package NAME appears in the module's name/repo, with no version evidence) is left out of exposed_modules and the risk score and reported as suspected_exposure_count, and the executor does not fall back to its own keyword stub once a Cve row exists.",
             parameters: {
               cve_id: { type: "string", required: true, description: "Canonical CVE id (e.g. CVE-2026-12345) to triage against the fleet" },
               severity: { type: "string", required: true, enum: ::System::Cve::SEVERITIES,
@@ -1947,14 +1947,14 @@ module Ai
             }
           },
           "system_cordon_instance" => {
-            description: "Cordon a NodeInstance: mark it unschedulable WITHOUT stopping it — the reversible half of system_drain_instance. A ready pool member is fenced out of the allocator (pool_state=draining, the one state InstancePoolService#acquire! never picks and the reaper never touches), so pool acquires, CI runner leases and agent-fleet missions stop landing on it; a claimed member is marked only (already un-acquirable); a non-pool instance is marked ONLY and FENCES NOTHING — there is no allocator, and the replica reconciler does not read the marker yet, so on a physical node, a dev cell or a deployment replica the cordon is a recorded intent rather than an enforced state (cordon_state=not_pooled says so). What is already running on it is left alone. Records who/why/when under the instance's `cordon` config key (visible on system_get_instance) and emits system.instance.cordoned. Refuses a warming member (its next heartbeat would re-admit it) and an already-cordoned instance. APPROVAL-GATED under action_category system.instance_cordon (require_approval by default): where policy requires approval the call returns a pending envelope (`pending: true`, deferred_operation_id) and the instance is NOT cordoned until an operator approves. system_uncordon_instance reverses it.",
+            description: "Cordon a NodeInstance: mark it unschedulable WITHOUT stopping it — the reversible half of system_drain_instance. A ready pool member is fenced out of the allocator (pool_state=draining, the one state InstancePoolService#acquire! never picks and the reaper never touches), so pool acquires, CI runner leases and agent-fleet missions stop landing on it; a claimed member is marked only (already un-acquirable — and when its consumer returns it to a reuse_without_reset pool it is fenced, pool_state=draining / disposition cordoned, rather than re-admitted); a non-pool instance is marked only (cordon_state=not_pooled). On a deployment replica the replica reconciler honours the marker: a cordoned replica is left OUT of the live count, so target_replicas reconciliation provisions its replacement, and it is the FIRST scale-in victim (then newest-first among the rest). What is already running on it is left alone. Records who/why/when under the instance's `cordon` config key (visible on system_get_instance) and emits system.instance.cordoned. Refuses a warming member (not acquirable yet; a cordon is not placed ahead of a member's admission — should a marker reach one by another route, NodeInstance#mark_pool_ready! fences it to draining rather than admitting it) and an already-cordoned instance. APPROVAL-GATED under action_category system.instance_cordon (require_approval by default): where policy requires approval the call returns a pending envelope (`pending: true`, deferred_operation_id) and the instance is NOT cordoned until an operator approves. system_uncordon_instance reverses it.",
             parameters: {
               instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to cordon (account-scoped)" },
               reason: { type: "string", required: true, description: "Why it is being cordoned — recorded on the instance and the fleet event; an unattributed cordon is indistinguishable from a bug later" }
             }
           },
           "system_uncordon_instance" => {
-            description: "Lift a cordon placed by system_cordon_instance: clears the `cordon` marker and, for a pool member this cordon fenced (pool_state_before=ready) that is still pool_state=draining AND running, hands it back to the allocator as ready with a fresh ready-TTL anchor. Refuses to re-admit a fenced member that is not running (start it first) and refuses an instance that is not cordoned. Never writes ready over a member that left draining while cordoned (recycled/errored) — it clears the marker and reports cordon_state=cleared. Emits system.instance.uncordoned. APPROVAL-GATED under the SAME action_category as the cordon, system.instance_cordon (require_approval by default): a pending envelope (`pending: true`, deferred_operation_id) means the instance is NOT yet re-admitted.",
+            description: "Lift a cordon placed by system_cordon_instance: clears the `cordon` marker and, for a pool member this cordon fenced (pool_state_before=ready — at cordon time, or when a return to a reuse_without_reset pool was fenced under the cordon) that is still pool_state=draining AND running, hands it back to the allocator as ready with a fresh ready-TTL anchor. A deployment replica re-enters the replica reconciler's live count. Refuses to re-admit a fenced member that is not running (start it first) and refuses an instance that is not cordoned. Never writes ready over a member that left draining while cordoned (recycled/errored) — it clears the marker and reports cordon_state=cleared. Emits system.instance.uncordoned. APPROVAL-GATED under the SAME action_category as the cordon, system.instance_cordon (require_approval by default): a pending envelope (`pending: true`, deferred_operation_id) means the instance is NOT yet re-admitted.",
             parameters: {
               instance_id: { type: "string", required: true, description: "UUID of the cordoned NodeInstance (account-scoped)" }
             }
@@ -1997,7 +1997,7 @@ module Ai
             parameters: { cve_id: { type: "string", required: true, description: "Canonical CVE id, format CVE-YYYY-NNNN (4+ digits)" } }
           },
           "system_get_cve_exposure" => {
-            description: "Fetch the exposure breakdown for a CVE — exposed modules + per-module assignment counts, account-scoped via CveExposure → NodeModuleVersion → NodeModule.",
+            description: "Fetch the exposure breakdown for a CVE — exposed modules + per-module assignment counts, account-scoped via CveExposure → NodeModuleVersion → NodeModule. exposed_modules / exposed_module_count / exposed_instance_count cover open, remediating, resolved and wont_fix rows (per-module `states` breaks them down); a `suspected` row — a keyword-only match with no version evidence, the state the calculator mints when a module has no SBOM — is NEVER counted there and is returned separately as suspected_exposure_count + suspected_modules. A suspected row becomes open only when an SBOM version match confirms it.",
             parameters: { cve_id: { type: "string", required: true, description: "Canonical CVE id (e.g. CVE-2026-12345) to compute account exposure for" } }
           },
           "system_create_cve" => {
@@ -2038,7 +2038,7 @@ module Ai
 
           # === Gap remediation slice 3 — pool ops + canary marking ===
           "system_return_pooled_instance" => {
-            description: "Return a claimed instance back to its pool. Default disposition is 'recycled': the member drains + terminates and the replenisher provisions a fresh one (no cross-mission data residue). Pools with metadata reuse_without_reset=true (same-trust-domain workloads only) instead re-mark the member 'ready' for reuse ('reused' disposition).",
+            description: "Return a claimed instance back to its pool. Default disposition is 'recycled': the member drains + terminates and the replenisher provisions a fresh one (no cross-mission data residue). Pools with metadata reuse_without_reset=true (same-trust-domain workloads only) instead re-mark the member 'ready' for reuse ('reused' disposition) — unless it is cordoned (system_cordon_instance), in which case it is fenced instead: pool_state=draining, 'cordoned' disposition, and system_uncordon_instance re-admits it.",
             parameters: {
               instance_id: { type: "string", required: true, description: "UUID of the claimed pool NodeInstance to return to its pool" }
             }
@@ -7077,8 +7077,16 @@ module Ai
                        .where(system_node_modules: { account_id: @account.id })
                        .includes(node_module_version: :node_module)
 
+        # IMP-7bba0413c36a — a `suspected` row is a keyword-only match with no
+        # version evidence (the calculator's fallback for a module without an
+        # SBOM). It is a suspicion, not an exposure: reported on its own below,
+        # never in the exposed_* counts. Every open critical exposure on the
+        # 2026-09-03 control plane was one of these (2009 CVEs matched on the
+        # names qemu-guest-agent and nginx).
+        confirmed, suspected = exposures.to_a.partition { |e| !e.suspected? }
+
         # Group by module for the operator-friendly aggregate shape.
-        by_module = exposures.group_by { |e| e.node_module_version.node_module }
+        by_module = confirmed.group_by { |e| e.node_module_version.node_module }
 
         exposed_modules = by_module.map do |mod, exps|
           {
@@ -7090,13 +7098,24 @@ module Ai
           }
         end
 
+        suspected_modules = suspected.group_by { |e| e.node_module_version.node_module }.map do |mod, exps|
+          {
+            id: mod.id,
+            name: mod.name,
+            version_number: exps.first.node_module_version.version_number,
+            package_names: exps.map(&:package_name).uniq
+          }
+        end
+
         success_result(
           cve_id: cve.cve_id,
           severity: cve.severity,
           severity_weight: cve.severity_weight,
           exposed_modules: exposed_modules,
           exposed_module_count: exposed_modules.size,
-          exposed_instance_count: exposed_modules.sum { |m| m[:assignment_count] }
+          exposed_instance_count: exposed_modules.sum { |m| m[:assignment_count] },
+          suspected_exposure_count: suspected.size,
+          suspected_modules: suspected_modules
         )
       end
 
@@ -7221,7 +7240,9 @@ module Ai
       # re-serving the prior consumer's on-disk state / credentials / agent
       # memory to the next mission. Pools whose consumers share one trust
       # domain may opt into reuse via metadata["reuse_without_reset"], which
-      # restores the claimed → 'ready' flip ("reused" disposition).
+      # restores the claimed → 'ready' flip ("reused" disposition) — except
+      # for a CORDONED member, which release! fences instead ("cordoned"
+      # disposition, pool_state draining; IMP-c9adb5a71dca).
       def return_pooled_instance(params)
         instance = account_instances.find(params[:instance_id])
 

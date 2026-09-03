@@ -441,4 +441,97 @@ RSpec.describe System::Platform::ReplicaReconciler do
       expect(result.refused_reason).to eq(:no_provisioning_node)
     end
   end
+
+  # IMP-c9adb5a71dca — the cordon marker (System::InstanceCordonService,
+  # IMP-0467eee9fc57) is honoured HERE, not only by the pool allocator. Two
+  # halves, operator ruling 2026-09-03: a cordoned replica is OUTSIDE the live
+  # count (so the reconciler provisions its replacement) and FIRST in the
+  # scale-in victim order (then the existing newest-first among the rest).
+  # Before this the reconciler read no marker at all, so on a deployment
+  # replica a cordon recorded intent and fenced nothing.
+  describe "cordoned replicas" do
+    let(:user) { create(:user, account: account) }
+
+    def cordon!(instance)
+      result = ::System::InstanceCordonService.cordon!(instance: instance, user: user, reason: "maintenance")
+      raise result.error unless result.ok?
+
+      instance.reload
+    end
+
+    def auto_approve_scale_in!
+      allow_any_instance_of(::Ai::InterventionPolicyService)
+        .to receive(:resolve).and_return({ policy: "auto_approve" })
+      allow(::System::ProvisioningService).to receive(:terminate_instance) do |instance:|
+        instance.update_column(:status, "terminated")
+        ::System::Runtime::Result.ok(data: {})
+      end
+    end
+
+    it "excludes a cordoned replica from the live count and provisions its replacement" do
+      node
+      live_instance!
+      cordon!(live_instance!)
+      deployment.update!(target_replicas: 2)
+      release_scale_out!(ceiling: 3)
+      stub_provision
+
+      result = reconciler.reconcile!(deployment)
+
+      expect(result.ok?).to be true
+      expect(result.actual_before).to eq(1)
+      expect(result.provisioned_instance_ids.size).to eq(1)
+      expect(result.actual_after).to eq(2)
+    end
+
+    # A cordon leaves what is running alone: being outside the live count must
+    # not by itself read as "above target" and get the cordoned replica killed.
+    it "never scales in on the strength of a cordon alone" do
+      node
+      live_instance!
+      cordoned = cordon!(live_instance!)
+      auto_approve_scale_in!
+      expect(::System::ProvisioningService).not_to receive(:terminate_instance)
+
+      result = reconciler.reconcile!(deployment)
+
+      expect(result.ok?).to be true
+      expect(result.terminated_instance_ids).to be_empty
+      expect(result.pending_removal_instance_ids).to be_empty
+      expect(cordoned.reload.status).to eq("running")
+    end
+
+    it "prefers the cordoned replica as the scale-in victim, then the newest of the rest" do
+      node
+      cordoned = cordon!(live_instance!)
+      survivor_a = live_instance!
+      survivor_b = live_instance!
+      newest = live_instance!
+      deployment.update!(target_replicas: 1)
+      auto_approve_scale_in!
+
+      result = reconciler.reconcile!(deployment)
+
+      expect(result.ok?).to be true
+      expect(result.terminated_instance_ids).to eq([ cordoned.id, newest.id ])
+      expect(survivor_a.reload.status).to eq("running")
+      expect(survivor_b.reload.status).to eq("running")
+    end
+
+    # The cordoned replica is the OLDEST here on purpose: newest-first would
+    # already put a newly created one in front, and the example would pass
+    # without the marker being read.
+    it "names the cordoned replica first among pending removals when the policy parks" do
+      node
+      cordoned = cordon!(live_instance!)
+      live_instance!
+      live_instance!
+      deployment.update!(target_replicas: 1)
+
+      result = reconciler.reconcile!(deployment)
+
+      expect(result.terminated_instance_ids).to be_empty
+      expect(result.pending_removal_instance_ids.first).to eq(cordoned.id)
+    end
+  end
 end

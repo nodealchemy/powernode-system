@@ -13,13 +13,42 @@ module System
     # created or removed an instance to match it, so "scaled to 3" meant a
     # column said 3 while the fleet stayed at 1.
     #
-    # WHAT COUNTS AS A REPLICA. The same rail the Scaling panel reports on —
-    # NodeInstance rows in `active` status whose Node carries the deployment's
-    # node_template_id. Deliberately NOT NodeInstance::LIVE_REPLICA_STATUSES:
-    # this service must converge the number an operator SEES in the panel, and
-    # the panel's count is the narrower `active` scope
-    # (deployments_controller#compute_actual_replicas). Two different numbers
-    # for one deployment is how a reconciler ends up fighting its own display.
+    # WHAT COUNTS AS A REPLICA. NodeInstance rows in `active` status whose Node
+    # carries the deployment's node_template_id — the same STATUS rail the
+    # Scaling panel reports on. Deliberately NOT
+    # NodeInstance::LIVE_REPLICA_STATUSES: this service converges toward the
+    # number an operator SEES in the panel, and the panel's count is the
+    # narrower `active` scope (deployments_controller#compute_actual_replicas).
+    #
+    # ...MINUS CORDONED REPLICAS (IMP-c9adb5a71dca, operator ruling
+    # 2026-09-03). An instance an operator cordoned (system_cordon_instance;
+    # the marker is NodeInstance#cordoned? / the .cordoned scope, owned by
+    # System::InstanceCordonService) is unschedulable but still running, so:
+    #   - it is OUTSIDE #live_scope — the deficit it leaves is reconciled by
+    #     provisioning a replacement, which is what a cordon is for;
+    #   - it is FIRST in the #scale_in victim order, ahead of the existing
+    #     newest-first order among the rest — when the fleet shrinks, the
+    #     replica nobody wants work landing on is the one to go.
+    # A cordon alone never triggers a scale-in: the excess is measured on the
+    # un-cordoned count, and a pass that spends its budget on cordoned
+    # victims converges the remaining excess on the next pass (the message
+    # says so). Before this, the reconciler read no marker at all, and on a
+    # deployment replica a cordon recorded intent and fenced nothing.
+    #
+    # THE TWO ARE NO LONGER THE SAME QUERY, and that is stated here rather
+    # than left to be discovered (IMP-c9adb5a71dca): #live_scope subtracts
+    # cordoned replicas and `compute_actual_replicas` does not (`command grep
+    # -c "cordon" app/controllers/api/v1/system/platform/deployments_controller
+    # .rb` -> 0). So with target_replicas=2, two active replicas, and an
+    # operator cordoning one: the reconciler sees 1 live, provisions a
+    # replacement, and the Scaling panel then renders 3 active against a
+    # target of 2 — a standing, visible drift that pressing reconcile again
+    # will NOT clear, because live_scope already reads 2 == target. Reading
+    # the panel's number as "active rows, cordoned included" and this
+    # service's as "rows work can land on" reconciles them by hand. Teaching
+    # the panel the difference (subtract the cordoned rows, or report them as
+    # a labelled second number) is a follow-up on the controller and
+    # ScalingPanel.tsx, neither of which this change owns.
     #
     # WHAT IT REFUSES. A deployment whose template is the template of THIS
     # control plane's own hosting node (System::Autonomy::SelfManagementFence,
@@ -268,7 +297,7 @@ module System
       end
 
       def scale_in(deployment, count, before, target)
-        victims = live_scope(deployment).order(created_at: :desc, id: :desc).limit(count).to_a
+        victims = scale_in_victims(deployment, count)
 
         unless authorized_for?(TERMINATE_PERMISSION)
           return refusal(
@@ -297,6 +326,7 @@ module System
 
         terminated = []
         failures = []
+        cordoned_ids = victims.select(&:cordoned?).map(&:id)
         victims.each do |instance|
           result = ::System::ProvisioningService.terminate_instance(instance: instance)
           if result.respond_to?(:success?) && result.success?
@@ -314,8 +344,32 @@ module System
           actual_before: before, actual_after: live_scope(deployment).count,
           provisioned_instance_ids: [], terminated_instance_ids: terminated,
           pending_removal_instance_ids: [], pending_provision_count: 0, failures: failures,
-          message: "Terminated #{terminated.size} of #{count} replica(s) above target."
+          message: "Terminated #{terminated.size} of #{count} replica(s) above target." \
+                   "#{cordoned_victims_note(terminated & cordoned_ids)}"
         )
+      end
+
+      # Cordoned replicas first (newest-first among them), then the existing
+      # newest-first order among the live rest — `count` in total. Two
+      # queries rather than one ORDER BY on the marker so the marker's SQL
+      # stays in the one place that owns it (InstanceCordonService).
+      def scale_in_victims(deployment, count)
+        cordoned = replica_scope(deployment).cordoned
+                                            .order(created_at: :desc, id: :desc).limit(count).to_a
+        remaining = count - cordoned.size
+        return cordoned unless remaining.positive?
+
+        cordoned + live_scope(deployment).order(created_at: :desc, id: :desc).limit(remaining).to_a
+      end
+
+      # A cordoned victim is outside the live count, so removing it does not
+      # move that count: say so, rather than report "1 of 1" over a number
+      # that did not change.
+      def cordoned_victims_note(cordoned_terminated_ids)
+        return "" if cordoned_terminated_ids.empty?
+
+        " #{cordoned_terminated_ids.size} of them cordoned, removed first; a cordoned replica is " \
+          "outside the live count, so re-run to converge any remaining excess."
       end
 
       # The scale-out gate: nil when the pass may actuate, otherwise the reason
@@ -405,12 +459,18 @@ module System
         false
       end
 
-      def live_scope(deployment)
+      # Everything the deployment owns, cordoned replicas included — the
+      # victim pool for #scale_in. The live COUNT is #live_scope.
+      def replica_scope(deployment)
         ::System::NodeInstance
           .joins(:node)
           .where(system_nodes: { node_template_id: deployment.node_template_id,
                                  account_id: @account.id })
           .active
+      end
+
+      def live_scope(deployment)
+        replica_scope(deployment).not_cordoned
       end
 
       def provisioning_node(deployment)
