@@ -15,19 +15,24 @@ module System
       # executor never read (IMP-51e5c6184ae4 found the same split on the
       # architecture executors first).
       #
-      # WHAT THAT CHANGES FOR AN OPERATOR: the retired underscored spelling had
-      # no policy row anywhere (it was declared by no set that ever shipped), so
-      # this executor used to fall through to
-      # Ai::InterventionPolicyService#default_policy = require_approval, whatever
-      # the modal showed. It now resolves the row an operator can actually see
-      # and edit — and that row is ALREADY the live gate for the same action on
-      # the other door (System::Fleet::FleetAutonomyService ADVANCEMENT_ACTIONS
-      # gates system.package_module.create for the fleet-autonomy path). So an
-      # operator who had loosened "package module create" was already loosening
-      # this behaviour there; the skill door now honours the same verdict
-      # instead of gating independently. That convergence is the point of the
-      # fix, and it is the direction that can LOOSEN a gate, so it is stated
-      # here rather than left to be discovered.
+      # WHAT THAT CHANGES FOR AN OPERATOR — say it plainly, because it is the
+      # direction that can LOOSEN a gate. Before this release NOTHING resolved
+      # system.package_module.create. This executor resolved the underscored
+      # derivation, and no other door read the dotted spelling either: it has
+      # no System::Fleet::DecisionEngine::SIGNAL_BINDINGS entry (the only
+      # source of the action_category both FleetAutonomyService#gate_action!
+      # call sites receive), and its membership in
+      # System::Fleet::FleetAutonomyService::ADVANCEMENT_ACTIONS selects a 4h
+      # rather than 1h approval TTL — a classifier, not a gate. So the dotted
+      # row was operator-VISIBLE (the Autonomy modal lists it) but INERT, and
+      # an install that loosened it believing it controlled package module
+      # creation was in fact still gated: both spellings shipped at
+      # require_approval, and the unmatched underscored name fell through to
+      # Ai::InterventionPolicyService#default_policy, also require_approval.
+      # From this release the dotted row IS the gate. The retirement migration
+      # db/migrate/20260903120000_retire_underscored_package_module_autonomy_policy.rb
+      # is where an operator meets that at deploy time: it reads every
+      # surviving dotted row and warns when the verb is not require_approval.
       class PackageModuleCreateExecutor < BaseSkillExecutor
         skill_descriptor(
           name:        "package_module_create",
