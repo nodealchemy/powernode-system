@@ -51,6 +51,7 @@ SYSTEM_SEED_FILES = %w[
   system_kg_entities_seed.rb
   system_instance_pool_policies.rb
   system_volume_snapshot_policies.rb
+  system_instance_cordon_policies.rb
   system_manual_operation_policies.rb
   system_provisioning_intervention_policies.rb
   system_provisioning_mission_template.rb

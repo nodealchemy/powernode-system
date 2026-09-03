@@ -278,6 +278,11 @@ module Ai
         # system_get_silent_instances: read-only view aligned with InstanceStatusSensor.
         # system_validate_module_manifest: pure validation; no DB writes.
         "system_drain_instance"           => "system.instances.control",
+        # IMP-0467eee9fc57 — cordon-only mode. Same grant as the drain: a
+        # cordon takes an instance out of scheduling (the drain's cordon half
+        # without the stop), and its reversal re-admits one.
+        "system_cordon_instance"          => "system.instances.control",
+        "system_uncordon_instance"        => "system.instances.control",
         "system_get_silent_instances"     => "system.node_instances.read",
         "system_validate_module_manifest" => "system.modules.read",
 
@@ -417,6 +422,13 @@ module Ai
       # gives; that the two agree is pinned by
       # spec/services/ai/tools/system_fleet_volume_snapshot_gating_spec.rb.
       VOLUME_SNAPSHOT_DELETE_CATEGORY = "system.volume_snapshot_delete"
+      # IMP-0467eee9fc57 — the category system_cordon_instance AND
+      # system_uncordon_instance gate on: ONE operator control over the
+      # unschedulable mode, both directions. Declared in
+      # PolicyDeclarations::INSTANCE_CORDON_OPERATOR_POLICIES in the same
+      # change; agreement pinned by
+      # spec/services/ai/tools/system_fleet_instance_cordon_gating_spec.rb.
+      INSTANCE_CORDON_CATEGORY = "system.instance_cordon"
       # IMP-0b4f18ae4384 — the category system_gitops_apply_proposal gates
       # on. Already seeded, unlike the two above: System::Governance::
       # PolicyDeclarations::GITOPS_RECONCILER_POLICIES has carried it as
@@ -543,6 +555,24 @@ module Ai
       declare_action "system_clone_template", mutating: true
       declare_action "system_compliance_snapshot", mutating: false
       declare_action "system_compose_preview_template", mutating: false
+      # IMP-0467eee9fc57 — cordon-only (unschedulable) mode, approval-gated
+      # under system.instance_cordon (operator direction: require_approval
+      # default). Same shape as system_delete_volume_snapshot: the generic
+      # replay executor re-invokes THIS action as the original principal on
+      # approval, so #cordon_instance stays the single door onto
+      # System::InstanceCordonService, and the gate context resolves the
+      # instance under the account BEFORE parking so an unknown or foreign id
+      # keeps its inline error instead of becoming an approval that could
+      # only ever fail. The uncordon (declared beside system_unassign_...
+      # below) is gated under the SAME category on purpose: an agent
+      # re-admitting a node an operator cordoned for maintenance is the
+      # ops-hold lesson — a hold that lifts itself is worse than no hold.
+      declare_action "system_cordon_instance",
+                     mutating: true,
+                     action_category: INSTANCE_CORDON_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :cordon_instance_gate_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_create_cve", mutating: true
       # IMP-067f39468350 — the MCP half of the instance-pool spend-ceiling gate.
       # IMP-24daa05e7a22 gated POST /instance_pools under
@@ -797,6 +827,13 @@ module Ai
       declare_action "system_terminate_ci_worker", mutating: true
       declare_action "system_test_nfs_export", mutating: false
       declare_action "system_unassign_module_from_template", mutating: true
+      # IMP-0467eee9fc57 — see system_cordon_instance above.
+      declare_action "system_uncordon_instance",
+                     mutating: true,
+                     action_category: INSTANCE_CORDON_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :uncordon_instance_gate_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_unmark_module_canary", mutating: true
       declare_action "system_update_instance", mutating: true
       # IMP-067f39468350 — the other half. `pool.update!(attrs)` over a slice
@@ -1873,6 +1910,19 @@ module Ai
               instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to cordon and stop" }
             }
           },
+          "system_cordon_instance" => {
+            description: "Cordon a NodeInstance: mark it unschedulable WITHOUT stopping it — the reversible half of system_drain_instance. A ready pool member is fenced out of the allocator (pool_state=draining, the one state InstancePoolService#acquire! never picks and the reaper never touches), so pool acquires, CI runner leases and agent-fleet missions stop landing on it; a claimed member is marked only (already un-acquirable); a non-pool instance is marked ONLY and FENCES NOTHING — there is no allocator, and the replica reconciler does not read the marker yet, so on a physical node, a dev cell or a deployment replica the cordon is a recorded intent rather than an enforced state (cordon_state=not_pooled says so). What is already running on it is left alone. Records who/why/when under the instance's `cordon` config key (visible on system_get_instance) and emits system.instance.cordoned. Refuses a warming member (its next heartbeat would re-admit it) and an already-cordoned instance. APPROVAL-GATED under action_category system.instance_cordon (require_approval by default): where policy requires approval the call returns a pending envelope (`pending: true`, deferred_operation_id) and the instance is NOT cordoned until an operator approves. system_uncordon_instance reverses it.",
+            parameters: {
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to cordon (account-scoped)" },
+              reason: { type: "string", required: true, description: "Why it is being cordoned — recorded on the instance and the fleet event; an unattributed cordon is indistinguishable from a bug later" }
+            }
+          },
+          "system_uncordon_instance" => {
+            description: "Lift a cordon placed by system_cordon_instance: clears the `cordon` marker and, for a pool member this cordon fenced (pool_state_before=ready) that is still pool_state=draining AND running, hands it back to the allocator as ready with a fresh ready-TTL anchor. Refuses to re-admit a fenced member that is not running (start it first) and refuses an instance that is not cordoned. Never writes ready over a member that left draining while cordoned (recycled/errored) — it clears the marker and reports cordon_state=cleared. Emits system.instance.uncordoned. APPROVAL-GATED under the SAME action_category as the cordon, system.instance_cordon (require_approval by default): a pending envelope (`pending: true`, deferred_operation_id) means the instance is NOT yet re-admitted.",
+            parameters: {
+              instance_id: { type: "string", required: true, description: "UUID of the cordoned NodeInstance (account-scoped)" }
+            }
+          },
           "system_get_silent_instances" => {
             description: "List NodeInstances whose last_heartbeat_at is older than this account's configured silent threshold (system_get_sensor_config -> instance_status.silent_threshold_seconds; 180s by default), or null. Reports the threshold it used. Useful for fleet-health dashboards and pre-upgrade gates.",
             parameters: {
@@ -2089,7 +2139,7 @@ module Ai
             }
           },
           "system_gitops_sync_repository" => {
-            description: "Trigger an immediate reconcile run for a registered repository. Creates a GitopsSyncRun row + opens proposals for any diffs found. The reconcile runs SYNCHRONOUSLY — `ok`, `diff_count`, `proposal_ids` and `error` are already final when this returns, so there is nothing to poll for. Returns `sync_run_id`: the id of the GitopsSyncRun this call finalized, for passing to system_gitops_get_sync_run to re-read the full record (timings, diff_summary, error_message) later. CAUTION: on a standby control plane the reconcile is skipped entirely and still returns ok:true with diff_count 0 and no error — indistinguishable from a repository that is fully in sync. Check `diff_summary` for a `skipped` marker before concluding the fleet matches the repo.",
+            description: "Trigger an immediate reconcile run for a registered repository. Creates a GitopsSyncRun row + opens proposals for any diffs found. The reconcile runs SYNCHRONOUSLY — `diff_count`, `proposal_ids` and `diff_summary` are already final when this returns, so there is nothing to poll for. Returns `sync_run_id`: the id of the GitopsSyncRun this call finalized, for passing to system_gitops_get_sync_run to re-read the full record (timings, diff_summary, error_message) later. A reconcile that FAILED (clone/pull refused, fleet.yaml did not parse, diff raised) returns success: false with the reason in `error` and the same fields — sync_run_id included — under `data`; do not conclude the fleet matches the repository on that response. When this control plane is not permitted to actuate — standby: not elected, or the quorum gate itself errored — the call refuses BEFORE starting the reconcile: success: false, refusal_code `standby_control_plane`, retryable: false (a retry against THIS plane cannot succeed), and no sync run is created. A success response carries a non-nil `error` only for a `partial` run, where the per-tick proposal cap truncated the proposal set (diff_count exceeds proposal_ids.length).",
             parameters: {
               id: { type: "string", required: true, description: "GitopsRepository id" }
             }
@@ -2392,6 +2442,10 @@ module Ai
         when "system_recycle_pool"             then recycle_pool(params)
         # Gap remediation slice 1 (Phase 4)
         when "system_drain_instance"           then drain_instance(params)
+        # IMP-0467eee9fc57 — cordon-only mode (approval-gated; these arms are
+        # reached on :proceed and on the DeferredToolCall replay).
+        when "system_cordon_instance"          then cordon_instance(params)
+        when "system_uncordon_instance"        then uncordon_instance(params)
         when "system_get_silent_instances"     then get_silent_instances(params)
         # IMP-ca485128072e (APO-2e) — operator-tunable sensor thresholds.
         when "system_get_sensor_config"        then get_sensor_config(params)
@@ -6059,7 +6113,12 @@ module Ai
           #
           # Reads the ONE key rather than handing the caller the whole `config`
           # jsonb, which also holds operator- and provider-written material.
-          boot_lkg: i.config&.dig(::System::BootLkgStateWriter::CONFIG_KEY)
+          boot_lkg: i.config&.dig(::System::BootLkgStateWriter::CONFIG_KEY),
+          # IMP-0467eee9fc57 — the cordon marker (who/why/when, and the
+          # pool_state an uncordon restores), or nil when not cordoned. Same
+          # one-key read as boot_lkg: a mode nobody can read back is the
+          # drain_* marker defect over again.
+          cordon: ::System::InstanceCordonService.marker(i)
         )
       end
 
@@ -6784,6 +6843,110 @@ module Ai
             recommendations: Array(payload[:recommendations])
           )
         )
+      end
+
+      # IMP-0467eee9fc57 — cordon-only (unschedulable) mode. The reversible
+      # "stop scheduling new work here, leave what is running alone" the
+      # runbook's phantom `cordon_only` parameter implied, as its own pair of
+      # verbs rather than a flag on the drain: a drain STOPS, and a boolean
+      # that turns a stop into a not-stop is the kind of parameter that gets
+      # dropped silently (BaseTool#validate_params! never rejects an extra
+      # key — which is exactly how `cordon_only: false` "worked" for years).
+      #
+      # Both verbs are approval-gated under INSTANCE_CORDON_CATEGORY (see the
+      # declarations), so these bodies run on :proceed and on the replay; the
+      # gate contexts below resolve the instance under the account first, so
+      # an unknown or foreign id keeps its inline error instead of parking.
+      #
+      # System::InstanceCordonService is the single author of the mode (the
+      # marker, the pool_state fence and its conditional restore); the class
+      # comment there is the contract. `user:` is attribution only — the
+      # permission is ACTION_PERMISSIONS' system.instances.control, checked
+      # before the gate; an internal caller has no User and records nil.
+      def cordon_instance(params)
+        instance = find_cordon_target(params[:instance_id])
+        return error_result("Instance not found") unless instance
+
+        result = ::System::InstanceCordonService.cordon!(instance: instance, user: @user,
+                                                         reason: params[:reason].to_s)
+        return error_result(result.error) unless result.ok?
+
+        success_result(cordon_result_payload(result))
+      end
+
+      def uncordon_instance(params)
+        instance = find_cordon_target(params[:instance_id])
+        return error_result("Instance not found") unless instance
+
+        result = ::System::InstanceCordonService.uncordon!(instance: instance, user: @user)
+        return error_result(result.error) unless result.ok?
+
+        success_result(cordon_result_payload(result))
+      end
+
+      def cordon_result_payload(result)
+        instance = result.instance.reload
+        {
+          instance_id: instance.id,
+          instance_name: instance.name,
+          cordoned: ::System::InstanceCordonService.cordoned?(instance),
+          cordon_state: result.cordon_state,
+          cordon: ::System::InstanceCordonService.marker(instance),
+          pool_state: instance.pool_state,
+          status: instance.status,
+          message: result.message
+        }
+      end
+
+      # Gate contexts: source_type/source_id anchor the parked operation to
+      # the instance row (arms Ai::DeferredOperation
+      # #assert_source_within_account!); the description names the row's
+      # values, never caller-supplied ones. RecordNotFound and ArgumentError
+      # are the raises BaseTool#run_through_autonomy_gate converts to the
+      # inline error — VALIDATE FIRST (the IMP-785d60f5ec3e shape), so a
+      # cordon that could only ever be refused on replay (already cordoned,
+      # blank reason, warming member) or an uncordon of something not
+      # cordoned keeps its error instead of parking an approval an operator
+      # then has to dispose of. The service re-asks the same question on the
+      # replay, so the two cannot disagree.
+      def cordon_instance_gate_context(params)
+        instance = find_cordon_target(params[:instance_id])
+        raise ActiveRecord::RecordNotFound, "Instance not found" unless instance
+
+        why = ::System::InstanceCordonService.cordon_refusal(instance: instance, reason: params[:reason].to_s)
+        raise ArgumentError, why if why
+
+        deferred_tool_call_context(params).merge(
+          source_type: "System::NodeInstance",
+          source_id: instance.id,
+          description: "Cordon instance '#{instance.name}' (#{instance.status}, " \
+                       "pool_state #{instance.pool_state.inspect}) — stops new work being " \
+                       "scheduled on it; nothing running is touched"
+        )
+      end
+
+      def uncordon_instance_gate_context(params)
+        instance = find_cordon_target(params[:instance_id])
+        raise ActiveRecord::RecordNotFound, "Instance not found" unless instance
+
+        why = ::System::InstanceCordonService.uncordon_refusal(instance: instance)
+        raise ArgumentError, why if why
+
+        marker = ::System::InstanceCordonService.marker(instance) || {}
+        deferred_tool_call_context(params).merge(
+          source_type: "System::NodeInstance",
+          source_id: instance.id,
+          description: "Uncordon instance '#{instance.name}' (cordoned #{marker['cordoned_at'] || 'never'}, " \
+                       "reason: #{marker['reason'] || 'none'}) — re-admits it to scheduling"
+        )
+      end
+
+      # Account-scoped by the instance's OWN account_id (account_instances),
+      # the fence every other instance verb here applies.
+      def find_cordon_target(instance_id)
+        return nil if instance_id.blank?
+
+        account_instances.find_by(id: instance_id)
       end
 
       # Returns NodeInstances whose last_heartbeat_at is older than the
@@ -7555,19 +7718,69 @@ module Ai
         # (IMP-d4923c10977e). The run is already terminal when this returns:
         # reconcile! is synchronous, so sync_run_id is a handle for fetching
         # the finalized record, not for polling a pending one.
+        #
+        # IMP-8ce4d88499a0 — refuse on a standby control plane BEFORE the run
+        # exists. The reconciler's own fence (reconciler.rb, "Dual-plane fence")
+        # performs nothing on standby and returns ok?: true, diff_count 0, no
+        # error, finalizing whatever run it was handed as "success" with a
+        # `skipped` note in diff_summary — the exact shape of a fully in-sync
+        # repository. The description used to CAUTION callers to sniff
+        # diff_summary for that marker; a prose caveat is not a contract. Asking
+        # ControlPlaneRole here is the same authority the reconciler asks, not
+        # a second implementation of the rule, and refusing first means no
+        # "success" run row is minted for a reconcile that never happened (the
+        # internal cron path likewise creates none on standby). retryable:
+        # false — a retry against THIS plane cannot succeed. active? is false
+        # for :standby AND :gate_error (control_plane_role.rb #status), and
+        # :gate_error knows nothing about who IS active, so neither the code
+        # nor the message asserts that an active peer exists — only that this
+        # plane may not act. A role flip between this read and the reconciler's
+        # (readings expire in seconds) still lands on the reconciler's skip
+        # Result, which is ok?: true; that residual window is the reconciler's
+        # contract to close, not this verb's.
+        unless ::System::Autonomy::ControlPlaneRole.active?
+          return error_result(
+            "standby control plane — this plane is not permitted to reconcile repository " \
+            "#{repo.id} (not elected, or the quorum gate itself errored); reconcile not performed"
+          ).merge(refusal_code: "standby_control_plane", retryable: false, data: { repository_id: repo.id })
+        end
+
         run = repo.schedule_sync!
         result = ::System::Gitops::Reconciler.reconcile!(repository: repo, sync_run: run)
 
-        success_result(
+        payload = {
           repository_id: repo.id,
           sync_run_id: run.id,
           ok: result.ok?,
           diff_count: result.diff_count,
           proposal_ids: result.proposal_ids,
           synced_revision: result.synced_revision,
-          diff_summary: result.diff_summary,
-          error: result.error
-        )
+          diff_summary: result.diff_summary
+        }
+
+        # IMP-8ce4d88499a0 — a reconcile that FAILED is a failure, and a
+        # failure must not ride the success channel. This used to end
+        # unconditionally in success_result(ok: result.ok?, ..., error:
+        # result.error): the reason was in the payload, and the one field a
+        # program branches on said the sync succeeded. Sync PRECEDES apply in
+        # the GitOps workflow, so a caller that read a failed sync as success
+        # concluded the fleet matched the repository and never opened the
+        # proposals it should have. Same shape as gitops_apply_proposal's
+        # refusal arm (IMP-4a3a45df69bc): the reason moves from data.error to
+        # top-level `error`, where error_result puts it and where the MCP
+        # transport derives isError (streamable_http_controller.rb,
+        # `result[:success] == false`); every other field keeps its dig path
+        # under `data`, including sync_run_id — the failure path is the one the
+        # description sells that id for (re-read error_message later).
+        #
+        # ok? is false ONLY for status "failed" (reconciler.rb #finalize). A
+        # "partial" run — the per-tick proposal cap truncated the proposal set
+        # — is ok?: true WITH a message, and stays on the success arm with
+        # that note under data.error; it is the one case a success response
+        # carries a non-nil data.error, and the description says so.
+        return { success: false, error: result.error.presence || "reconcile failed", data: payload } unless result.ok?
+
+        success_result(**payload, error: result.error)
       end
 
       def gitops_get_sync_run(params)

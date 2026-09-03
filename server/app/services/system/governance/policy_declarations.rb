@@ -1072,6 +1072,25 @@ module System
         "system.volume_snapshot_delete" => "require_approval" # destroys a restore point
       }.freeze
 
+      # IMP-0467eee9fc57 — the cordon-only (unschedulable) mode for a
+      # NodeInstance, gated by Ai::Tools::SystemFleetTool's
+      # system_cordon_instance AND system_uncordon_instance under ONE category:
+      # the same operator control governs taking a node out of scheduling and
+      # putting it back (an agent re-admitting a node an operator cordoned for
+      # maintenance is the ops-hold lesson — a hold that lifts itself is
+      # worse than no hold). require_approval by operator direction: a cordon
+      # removes capacity from every pool consumer at once and the replenisher
+      # spends to backfill it. GLOBAL (operator) scope like the snapshot set —
+      # no sensor lane routes it. The row is written by
+      # db/seeds/system_instance_cordon_policies.rb on a first boot and by
+      # PolicyReconciler on an install that had already booted; as with the
+      # snapshot set the declared verb EQUALS the unmatched default, so the
+      # oracle for "is the control there" is the resolved RECORD — see
+      # spec/db/seeds/system_instance_cordon_operator_policies_spec.rb.
+      INSTANCE_CORDON_OPERATOR_POLICIES = {
+        "system.instance_cordon" => "require_approval" # takes capacity out of / back into scheduling
+      }.freeze
+
       # DELIBERATELY THE GATED SUBSET, NOT ALL SEVEN. The other four runtime
       # categories have no gate site, so an operator row for them would render
       # as a working control that nothing reads —
@@ -1147,7 +1166,9 @@ module System
         { key: "platform-scaling",   agent_key: nil,                  scope: "global",
           priority: 5,  conditions: {}, policies: PLATFORM_SCALING_POLICIES },
         { key: "volume-snapshot-operator", agent_key: nil,            scope: "global",
-          priority: 5,  conditions: {}, policies: VOLUME_SNAPSHOT_OPERATOR_POLICIES }
+          priority: 5,  conditions: {}, policies: VOLUME_SNAPSHOT_OPERATOR_POLICIES },
+        { key: "instance-cordon-operator", agent_key: nil,            scope: "global",
+          priority: 5,  conditions: {}, policies: INSTANCE_CORDON_OPERATOR_POLICIES }
       ].freeze
     end
   end
