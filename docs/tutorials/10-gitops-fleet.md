@@ -292,14 +292,22 @@ parameter that changes it.
 platform.system_gitops_sync_repository({
   id: "gitops-repo-1"          // the GitopsRepository id
 })
-// → { repository_id, ok, diff_count, proposal_ids, synced_revision,
-//     diff_summary, error }
+// → { success: true, data: { repository_id, sync_run_id, ok: true, diff_count,
+//     proposal_ids, synced_revision, diff_summary, error } }
 ```
 
-The reconcile runs **synchronously** inside this call — `ok` and `error` are
-already final when it returns. Note that the response carries no sync-run id,
-despite the verb's own description promising one; Step 4 shows where to get
-it.
+The reconcile runs **synchronously** inside this call — `diff_count`,
+`proposal_ids` and `diff_summary` are already final when it returns, and
+`sync_run_id` is the run this call finalized (Step 4 reads it back). A reconcile
+that **failed** — clone/pull refused, `fleet.yaml` did not parse, the diff
+raised — comes back as `{ success: false, error: "<reason>", data: { ...,
+ok: false, sync_run_id } }`: branch on `success`, not on `ok` or on the shape of
+`diff_summary`, and do not conclude the fleet matches the repository on that
+response. On a **standby** control plane the verb refuses outright with
+`refusal_code: "standby_control_plane"` (`retryable: false`) and creates no run
+— the active plane owns the reconcile. The one success response that carries a
+non-nil `error` is a `partial` run, where the per-tick proposal cap truncated
+the proposal set (`diff_count` exceeds `proposal_ids.length`).
 
 The reconciler:
 
@@ -311,11 +319,16 @@ The reconciler:
 
 ## Step 4 — Review the diff
 
-Run ids come from REST — no MCP verb returns or lists one. The REST twin of
-Step 3 hands the id back directly:
+Step 3 already handed the run id back as `data.sync_run_id` — pass it straight
+to `system_gitops_get_sync_run` below. REST offers the same trigger, and is
+still the only way to LIST past runs: no MCP verb enumerates them.
 
 ```bash
-# Trigger + get the run id in one call (the REST equivalent of Step 3)
+# Trigger + get the run id in one call (the REST twin of Step 3). Unlike the
+# MCP verb, this endpoint answers 2xx for a reconcile that FAILED — branch on
+# the returned run's `status`/`error_message`, not on the HTTP status — and on
+# a standby control plane it creates a run and finalizes it `success` with a
+# `skipped` note in `diff_summary` instead of refusing.
 curl -X POST -H "Authorization: Bearer $JWT" \
   http://localhost:3000/api/v1/system/gitops_repositories/gitops-repo-1/sync_now
 # → { sync_run: { id, status, error_message, ... }, ok, diff_count, proposal_ids, diff_summary }
@@ -507,7 +520,9 @@ the last *successful* sync, so the row reads "failing now, last good was
 
 Two notes on what the row does not cover. A **standby** control plane skips
 the whole reconcile and writes nothing here, by design — the active plane owns
-this row. And per-diff problems are not repository-level status either: a
+this row (over MCP, `system_gitops_sync_repository` refuses on standby with
+`refusal_code: "standby_control_plane"` rather than reporting a skipped run as
+success). And per-diff problems are not repository-level status either: a
 proposal that could not be opened is only logged (on the sync run it shows up
 implicitly, as `diff_count` exceeding the number of `proposal_ids`), and an
 auto-apply failure is not recorded on the sync run at all — it comes back on
