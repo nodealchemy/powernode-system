@@ -31,6 +31,10 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # bootstrappers (k3s_modules, sdwan_overlay_module, docker_runtime_module,
 # public_package_repositories_seed) are deliberately excluded — they're
 # either destructive, expensive, or operator-only.
+# `system_agent_hierarchy.rb` runs AFTER every agent seed and after
+# `system_skill_bindings_seed.rb`: it attaches the seven domain agents under
+# System Concierge and derives each delegation policy from POLICY_SETS and the
+# SkillBindings registry (HIER-P1), so every agent it names must already exist.
 # `system_autonomy_orphan_cleanup.rb` is last: a garbage-collection pass wants
 # to see every row the seeds above wrote. It is order-independent all the same
 # (its predicate is the boot category registry, not any seed's declarations) —
@@ -63,6 +67,7 @@ SYSTEM_SEED_FILES = %w[
   system_kb_seed.rb
   node_module_catalog.rb
   role_modules_seed.rb
+  system_agent_hierarchy.rb
   system_autonomy_orphan_cleanup.rb
 ].freeze
 

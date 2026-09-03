@@ -117,6 +117,11 @@ module System
         Account.find_by(name: account_name) || Account.first
       end
 
+      # Raised when a seed's canonical agent collides with an ACCOUNT-scoped
+      # row of the same name and type. Names the row so the operator can
+      # decide (rename the account agent, or delete it) — the seed never does.
+      class CanonicalAgentConflict < StandardError; end
+
       # Find-or-initialize a GLOBAL (account_id nil) fundamental system agent.
       #
       # Fundamental core/system agents are platform-provided DEFAULTS shared
@@ -124,11 +129,16 @@ module System
       # can override one with its own copy via Ai::Agent#clone_to_account, and
       # resolution prefers the account's row (Ai::Agent.resolve_for).
       #
-      # Converts a pre-globalization ACCOUNT-scoped row of the same name in
-      # place (account_id → nil) rather than creating a duplicate — the id stays
-      # stable, so the agent's trust score, intervention policies, and skill
-      # bindings (all keyed by ai_agent_id) keep pointing at it. The caller
-      # assigns the rest of the attributes and saves.
+      # CANONICAL RULE (HIER-P1, operator ruling 2026-09-03 §5): a seed NEVER
+      # adopts a stray account-scoped agent. This helper used to convert an
+      # account row of the same name in place (account_id → nil) as a
+      # pre-globalization migration — which also silently turned an operator's
+      # own clone into the canonical, taking its prompt, trust score and
+      # bindings with it. Now: no global row + an account row of the same
+      # (name, agent_type) ⇒ CanonicalAgentConflict naming that row. Once the
+      # global row exists, account rows of the same name are the expected
+      # override shape and are left alone. The caller assigns the rest of the
+      # attributes and saves.
       #
       # NOTE: a global agent has no account of its own — its operational config
       # (trust score, intervention policies, approval chain) is still seeded
@@ -136,9 +146,21 @@ module System
       # tick gates actions. The DEFINITION (name, prompt, type, model
       # requirements, skill bindings) is global; the POLICY is per-account.
       def find_or_initialize_global_agent(name:, agent_type:, source_key:)
-        agent = ::Ai::Agent.find_by(account_id: nil, name: name, agent_type: agent_type) ||
-                ::Ai::Agent.where(name: name, agent_type: agent_type).where.not(account_id: nil).first ||
-                ::Ai::Agent.new(name: name, agent_type: agent_type)
+        agent = ::Ai::Agent.find_by(account_id: nil, name: name, agent_type: agent_type)
+
+        unless agent
+          stray = ::Ai::Agent.where(name: name, agent_type: agent_type).where.not(account_id: nil).first
+          if stray
+            raise CanonicalAgentConflict,
+                  "refusing to seed canonical #{source_key.inspect}: an ACCOUNT-scoped agent " \
+                  "#{name.inspect} (#{agent_type}) already exists — id=#{stray.id} " \
+                  "account_id=#{stray.account_id}. Seeds never adopt an account agent as the " \
+                  "canonical; rename or remove that row, then re-run the seed."
+          end
+
+          agent = ::Ai::Agent.new(name: name, agent_type: agent_type)
+        end
+
         agent.account_id = nil
         agent.source_key = source_key
         agent.is_system  = true
