@@ -22,10 +22,11 @@ RSpec.describe "system_disk_image_manager_agent seed" do
 
   let(:agent) { Ai::Agent.global.find_by(name: "Disk Image Manager") }
 
-  # HIER-P2F review — the RUNTIME door (AgentToolBridgeService#scope_to_tool_families)
-  # has no bootstrap union of its own, unlike the exporter's ToolAllowlist: a
-  # family list is the whole catalog this agent is served at run time. So the
-  # investigate lane's reads (its declared
+  # HIER-P2F review — historical note: until HIER-P2H the RUNTIME door
+  # (AgentToolBridgeService#scope_to_tool_families) had no bootstrap union of
+  # its own; it now unions Ai::Tools::BootstrapVerbs::ACTIONS like the
+  # exporter's ToolAllowlist, so a family list is no longer the whole run-time
+  # catalog. The investigate lane's reads (its declared
   # `system.disk_image_publication_investigate` row) and the two skill-discovery
   # verbs are listed explicitly, the way the Topology Designer's seed lists them.
   DISK_IMAGE_TOOL_FAMILIES = %w[

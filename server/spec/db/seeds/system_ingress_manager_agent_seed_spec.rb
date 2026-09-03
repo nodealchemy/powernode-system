@@ -138,9 +138,11 @@ it "admits no ungated write outside the declared set (no ACME renew/revoke/DNS c
   expect(actions).to include("system_acme_provision_certificate", "system_acme_get_certificate")
 end
 
-# The exporter re-adds BOOTSTRAP_ACTIONS; the RUNTIME bridge adds nothing,
-# so a families list that omits the discovery/knowledge tools removes the
-# very tools BASE_GUARDRAILS orders the agent to call ("query platform
+# Historical (pre-HIER-P2H): the exporter re-added BOOTSTRAP_ACTIONS while the
+# RUNTIME bridge added nothing. Since HIER-P2H both union
+# Ai::Tools::BootstrapVerbs::ACTIONS, so a families list that omits the
+# discovery/knowledge tools no longer removes the tools BASE_GUARDRAILS orders
+# the agent to call ("query platform
 # guidance (search_knowledge tag:guidance-*)", "Reuse first: …
 # discover_skills"). Exercise the bridge's own matcher over the real
 # registry names rather than re-deriving the family semantics here.

@@ -58,7 +58,7 @@ A family entry matches by `<family>_` **prefix**, so a bare family silently wide
 - **`system_update_service`** — `SystemIngressTool#update_service` writes `backend_vip_id` / `backend_host` / `backend_port` and regenerates the proxy when the service is exposed. That is the same blackhole blast radius the **gated** `system_set_service_backends` exists to control, with no gate on it, so it stays an operator door.
 - **`system_delete_service`** — unpublishing is the unexpose verbs; deleting the record is an operator door.
 
-The discovery/knowledge entries are the counterweight in the other direction: the Claude Code exporter re-adds its own `BOOTSTRAP_ACTIONS`, but `Ai::AgentToolBridgeService#scope_to_tool_families` adds nothing, so any families list that omits them removes the very tools the always-on `BASE_GUARDRAILS` instruct the agent to call. The seed spec asserts the **bridge's** scoped list, not only the exporter's.
+The discovery/knowledge entries no longer need to be listed defensively: since HIER-P2H both the Claude Code exporter and `Ai::AgentToolBridgeService#scope_to_tool_families` union the shared `Ai::Tools::BootstrapVerbs::ACTIONS` onto every scoped family list, so a families list that omits them still keeps the tools `BASE_GUARDRAILS` orders the agent to call.
 
 ---
 

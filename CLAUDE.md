@@ -88,7 +88,7 @@ The full action catalog regenerates via `cd server && bundle exec rails mcp:gene
 1. Always check existing skill executors before writing a new orchestration. 64 already cover most fleet/SDWAN/runtime/topology workflows. See `docs/SKILL_EXECUTORS.md`.
 2. New skills must have BOTH an executor at `app/services/system/ai/skills/<name>_executor.rb` AND an `Ai::Skill` record (seeded via one of the three skills seeds — see the Skill executors row above). Without the row, `SkillBindings.validate!` raises unrescued and zeroes every `Ai::AgentSkill`.
 3. New autonomy actions must have a `system.<action>` intervention policy declared in `System::Governance::PolicyDeclarations`, in the set of the agent that OWNS the category (the seeds consume those constants; `PolicyReconciler` creates missing rows on every boot and re-homes rows whose owner moved — record a move in `PolicyReconciler::FORMER_OWNERS`). A sensor-routed category also declares that agent as `owner:` on its `DecisionEngine::SIGNAL_BINDINGS` entry — `sensor_owner_gating_spec` pins that the two agree. An operator-only set gets an agent twin (`PolicyDeclarations::OPERATOR_TWINS`).
-4. Cross-account safety: use `find_or_create_by` with `account: account` scoping. The KG seeds + skill seeds follow this pattern.
+4. Cross-account safety: account-owned rows use `find_or_create_by` with `account: account` scoping (the KG seeds follow this). Official agents AND skills are GLOBAL seeded canonicals (`account_id NULL`, `source_key`, `is_system`; `find_or_initialize_global_agent` / `db/seeds/concerns/skill_setup_helpers.rb`) — an account customises one by cloning it, never by a second account-scoped row of the same key (HIER-P1 / HIER-P2G).
 
 ### Submodule mechanics
 

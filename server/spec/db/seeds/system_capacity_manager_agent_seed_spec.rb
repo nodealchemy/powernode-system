@@ -215,9 +215,12 @@ RSpec.describe "system_capacity_manager_agent seed" do
          .each { |f| require_dependency f }
     end
 
+    # attach_storage joined in HIER-P2SWEEP: it runs during subdomain
+    # provisioning, so it belongs to the capacity plane, not the volume plane.
     CAPACITY_SKILLS = %w[
       system-replace-instance system-reap-instance system-relocate-workload
       system-scale-project system-provision-full-stack system-platform-resilience
+      system-attach-storage
     ].freeze
 
     before do
@@ -231,7 +234,7 @@ RSpec.describe "system_capacity_manager_agent seed" do
       Ai::AgentSkill.where(ai_agent_id: owner.id, is_active: true).joins(:skill).pluck("ai_skills.slug")
     end
 
-    it "materialises the six capacity executors on the Capacity Manager" do
+    it "materialises the seven capacity executors on the Capacity Manager" do
       expect(bound_slugs("Capacity Manager")).to match_array(CAPACITY_SKILLS)
     end
 
