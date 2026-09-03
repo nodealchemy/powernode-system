@@ -1246,7 +1246,7 @@ module Ai
               reason: { type: "string", required: false,
                         description: "Why the instance is unrecoverable — carried onto every step's FleetEvent" },
               reap: { type: "boolean", required: false,
-                      description: "Ask for the failed instance to be terminated once its workload has moved. Raises a SEPARATE approval under system.instance_reap; this verb never terminates anything itself. Refused for an MCP instance principal, which the deny overlay bars from system_reap_instance." },
+                      description: "Ask for the failed instance to be terminated once its workload has moved. Raises a SEPARATE approval under system.instance_reap; this verb never terminates anything itself. Never read for an MCP instance principal: since operator ruling R5 (IMP-4d6423bf4eb3) the deny overlay bars that principal from system_replace_instance itself, so the whole call is refused before this parameter is considered." },
               accept_running: { type: "boolean", required: false,
                                 description: "Assert the target is unrecoverable even though it is still running and still reporting. Only for evidence the platform cannot see (a hypervisor console, a hardware fault) — the approval card records that the classification was ASSERTED rather than observed." },
               dry_run: { type: "boolean", required: false,

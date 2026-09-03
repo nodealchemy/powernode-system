@@ -139,6 +139,25 @@ RSpec.describe "SystemFleetTool replace/reap MCP verbs (IMP-4e49eb79c5e0)" do
         expect(reap).to match(/pending/i)
       end
     end
+
+    # IMP-72df91c7b9db (driver note) — the `reap` parameter's description
+    # still said the deny overlay bars an instance principal "from
+    # system_reap_instance", which described the pre-R5 world where the replace
+    # itself was reachable and only its reap half was refused. Since operator
+    # ruling R5 (IMP-4d6423bf4eb3) the overlay's `*replace_instance*` pattern
+    # bars that principal from system_replace_instance outright, so the
+    # parameter is never read for it. The catalog an agent plans against must
+    # say which door is shut.
+    it "describes the reap refusal as the overlay barring the replace itself (R5)" do
+      reap_param = Ai::Tools::SystemFleetTool.action_definitions
+                                              .dig("system_replace_instance", :parameters, :reap, :description)
+
+      aggregate_failures do
+        expect(reap_param).not_to include("bars from system_reap_instance")
+        expect(reap_param).to include("system_replace_instance")
+        expect(reap_param).to match(/deny overlay/)
+      end
+    end
   end
 
   describe "the declarations" do
