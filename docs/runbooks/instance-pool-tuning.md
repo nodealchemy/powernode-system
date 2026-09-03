@@ -84,71 +84,112 @@ occupancy from `ready_count` / `warming_count` / `claimed_count` and treat
 
 ```javascript
 platform.system_acquire_pooled_instance({
-  pool_id: "<pool-id>"            // or pool_name: "ci-runner-pool"
+  pool_id: "<pool-id>",           // or pool_name: "ci-runner-pool"
                                   // or lifecycle_class: "ephemeral" (any matching pool)
+  acquired_by: "ci-job-12345",    // optional — the claiming actor
+  acquired_for: "build-pipeline-1234"  // optional — the workload
 })
-// → { instance: { id, name, status, pool_state: "claimed", instance_pool_id,
+// → { claim:    { id, acquired_by, acquired_for, acquired_at, event_kind },
+//     instance: { id, name, status, pool_state: "claimed", instance_pool_id,
 //                 pool_acquired_at, private_ip_address, public_ip_address } }
 ```
 
-`pool_name`, `pool_id` and `lifecycle_class` are the **only three** parameters
-this verb declares, and all three are optional. `resolve_pool!` tries them in
-that order and does not complain about the combination: `pool_id` wins outright
-if present, then `pool_name`, and with **neither** it falls back to *any* active
-pool that has a ready member (narrowed by `lifecycle_class` when you pass one).
-Passing both is not an error and `pool_name` is simply ignored — so pass one.
+`pool_name`, `pool_id` and `lifecycle_class` select the pool, and all three are
+optional. `resolve_pool!` tries them in that order and does not complain about
+the combination: `pool_id` wins outright if present, then `pool_name`, and with
+**neither** it falls back to *any* active pool that has a ready member (narrowed
+by `lifecycle_class` when you pass one). Passing both is not an error and
+`pool_name` is simply ignored — so pass one. `acquired_by` and `acquired_for`
+are free text and select nothing; they are recorded on the claim (below).
 
-> ### ⚠️ Acquisition records NO caller attribution
+> ### ✅ Acquisition records caller attribution (IMP-68403ec0358d)
 >
-> **What the claim writes.** `InstancePoolService.acquire!` updates the winning
-> member row with exactly two columns:
+> **This section used to say the opposite, and the correction is deliberate.**
+> Until IMP-68403ec0358d, `acquired_by` and `acquired_for` were *documented but
+> undeclared*: `BaseTool#validate_params!` — in the **core** platform tree, not
+> this extension: `<powernode>/server/app/services/ai/tools/base_tool.rb:778` —
+> checks only that every **required** parameter is present and never rejects an
+> *undeclared* key, so a call passing them succeeded, the member really was
+> claimed, and the attribution was discarded with nothing in the response to
+> say so. Both keys are now declared on the verb and both are recorded.
 >
-> | Column | Value |
-> |---|---|
-> | `pool_state` | `"claimed"` |
-> | `pool_acquired_at` | the acquisition timestamp |
+> | Key | Status | What it does |
+> |---|---|---|
+> | `acquired_by` | **Declared, optional, free text** | The claiming actor (e.g. `"ci-job-12345"`), written to the claim record |
+> | `acquired_for` | **Declared, optional, free text** | The workload the member is claimed for (e.g. `"build-pipeline-1234"`), written to the claim record |
+> | `claim_id` (response) | **Returned**, as `claim.id` | Correlates the claim to its release. It is a claim id, not a row id in some claims table — see below |
+> | `host_address` (response) | **Still not a returned field.** | The addresses are `private_ip_address` and `public_ip_address` |
 >
-> Nothing else on the row is touched, and there is no separate claim table —
-> **the claim IS the `system_node_instances` row.** Its four pool columns are
-> `instance_pool_id`, `pool_state`, `pool_acquired_at` and
-> `pool_warming_started_at`; `instance_pool_id` and `pool_warming_started_at`
-> were both set when the member was provisioned, not by your claim. No
-> `FleetEvent` is emitted (unlike `system_drain_instance`, which emits
-> `platform.resilience.drain_started` carrying `by_user`). The only trace of
-> who acquired is a `Rails.logger.info` line carrying `pool_id` and `member_id`
-> — no caller identity at all.
+> **What the claim record is.** Two `System::FleetEvent` rows, correlated by the
+> claim id, written by `System::InstancePoolService`:
 >
-> **Two arguments this runbook used to document are NOT ACCEPTED.** The example
-> above previously passed `acquired_by: "ci-job-12345"` and
-> `acquired_for: "build-pipeline-1234"` under the comment "Optional metadata
-> stamped on the claim record". They are listed rather than deleted, because an
-> operator who planned around them for audit or cost attribution needs to see
-> them withdrawn:
+> | Kind | Written by | Payload |
+> |---|---|---|
+> | `system.pool.claimed` | `acquire!`, **inside its transaction** | `claim_id`, `pool_id`, `pool_name`, `node_instance_id`, `instance_name`, `acquired_by`, `acquired_for`, `acquired_at` |
+> | `system.pool.released` | `release!`, on **every** disposition | the same, plus `disposition` (`reused` \| `recycled` \| `errored`), `released_at` and `held_seconds` |
 >
-> | Old key | What is actually true |
-> |---|---|
-> | `acquired_by` | Not declared. Nothing on the claimed row records the caller. |
-> | `acquired_for` | Not declared. Nothing on the claimed row records the workload. |
-> | `claim_id` (response) | Not returned. There is no claim id, because there is no claim record other than the instance row itself — use `instance.id`. |
-> | `host_address` (response) | Not a returned field. The addresses are `private_ip_address` and `public_ip_address`. |
+> The member row still writes exactly `pool_state: "claimed"` and
+> `pool_acquired_at`, and `release!` still nulls `pool_acquired_at` on every
+> path. **That is precisely why the attribution is not on the row.** A column
+> is erased when the member is returned, and "who used this last month" is the
+> only question attribution exists to answer. The events outlive the claim.
 >
-> **This does not fail loudly.** `BaseTool#validate_params!` — in the **core**
-> platform tree, not this extension:
-> `<powernode>/server/app/services/ai/tools/base_tool.rb:443` — checks only
-> that every **required** parameter is present; it never rejects an
-> *undeclared* key. So a
-> call passing `acquired_by` succeeds, the member really is claimed, and the
-> attribution is discarded with nothing in the response to say so. The cost is
-> paid much later, by whoever opens the pool and finds every claim
-> indistinguishable.
+> `system.pool.released` carries the attribution **forward** rather than only
+> pointing back at the claim, so summing `held_seconds` by `acquired_by` over a
+> month is one query on one kind with no self-join. It fires on the `errored`
+> disposition too — the branch where the recycle's terminate failed and the
+> member rests at `pool_state: "errored"` with a VM that may still exist and
+> still bill. A billing VM with nobody recorded against it is the exact case
+> attribution is for.
 >
-> **If you need attribution today**, do not claim through this verb. Use
-> `platform.system_lease_ci_runner({ pool_name, purpose, workflow_run_id, workflow_run_repo })`
-> — it wraps this same `acquire!` and writes a
-> `System::CiRunnerLease` row that *does* carry the attribution
-> (`purpose`, `git_owner`, `git_repo`, `workflow_run_id`, `leased_at`,
-> `expires_at`) alongside `node_instance_id`. It is scoped to Gitea Act runner
-> leases; there is no general-purpose equivalent for other pool consumers.
+> **Reading it back.** No new verb — `system_recent_signals` already filters
+> fleet events by kind and by correlation id:
+>
+> ```javascript
+> platform.system_recent_signals({ kind: "system.pool.released", limit: 200 })
+> // → { events: [ { kind, node_instance_id, correlation_id, payload: {
+> //       claim_id, pool_id, pool_name, acquired_by, acquired_for,
+> //       acquired_at, released_at, held_seconds, disposition } } ], count }
+> ```
+>
+> Pass `correlation_id: "<claim.id>"` instead to get one claim's pair of rows.
+> These two kinds are **not** pushed over `SystemFleetChannel`: the live-UI
+> broadcast rides on `System::Fleet::EventBroadcaster.emit!`, and the claim
+> writes deliberately bypass that seam (see the fail-closed note below).
+> They are a queryable record, not a live feed.
+>
+> **Three honest limits.**
+>
+> - **The record is retained, not archived.** The nightly
+>   `retention_sweep` (`Api::V1::System::WorkerApi::FleetController`) deletes
+>   `low`/`medium` fleet events past `POWERNODE_FLEET_EVENT_RETENTION_DAYS`
+>   (default **90**) and `high`/`critical` ones past
+>   `POWERNODE_FLEET_EVENT_CRITICAL_RETENTION_DAYS` (default 365). Both claim
+>   kinds are `low`, so the ledger answers "who used this last month" and
+>   roughly the last quarter — it is **not** a permanent cost archive. Export
+>   what you need to keep, or raise the retention window fleet-wide.
+>
+> - **The write is fail-closed, not best-effort.** Both rows go straight to
+>   `System::FleetEvent.create!`, *not* through
+>   `System::Fleet::EventBroadcaster.emit!`, which rescues `StandardError` and
+>   returns `nil` — that seam would have restored the silent-drop this change
+>   removes. Because the claim row is written inside `acquire!`'s transaction,
+>   a ledger that cannot record the claim rolls the claim back rather than
+>   handing out an unattributed member.
+> - **Only `release!` closes a claim.** An instance terminated *while claimed*
+>   (`system_terminate_instance`) leaves its `system.pool.claimed` row with no
+>   matching release, so `held_seconds` is unknown for it. The claim and its
+>   acquirer are still recorded; the reaper's `system.pool.claimed_stale` event
+>   is the existing surface for a claim nobody returned.
+>
+> **For CI runner leases, prefer**
+> `platform.system_lease_ci_runner({ pool_name, purpose, workflow_run_id, workflow_run_repo })`.
+> It wraps this same `acquire!` and additionally writes a
+> `System::CiRunnerLease` row carrying the Gitea-specific correlation
+> (`runner_name`, `git_owner`, `git_repo`, `workflow_run_id`, `expires_at`) and
+> the lease state machine. The claim record above is the general-purpose
+> equivalent for every other pool consumer — it is attribution, not a lease:
+> append-only, with no lifecycle of its own.
 
 The claim is **atomic**: the platform uses `SELECT ... FOR UPDATE SKIP LOCKED` on the pool member rows to ensure only one caller claims each member (the oldest `ready` member by `pool_warming_started_at`). If no `ready` member exists, the claim raises `NoReadyMembersError`.
 
@@ -466,7 +507,7 @@ reds that guard and forces this table to be updated in the same change.
 
 ## Observing pool health
 
-Pool activity emits **seven** `system.pool.*` FleetEvent kinds, so most of it
+Pool activity emits **nine** `system.pool.*` FleetEvent kinds, so most of it
 is queryable via `recent_events` rather than only greppable in the worker log.
 Routine replenish/recycle *decisions* (how many members were provisioned or
 swept on a tick) are log-only; the events fire on the outcomes worth alerting
@@ -475,6 +516,8 @@ on:
 | Kind | Severity | Fires when |
 |---|---|---|
 | `system.pool.member_ready` | low | A warming member's agent posted `phase=ready` and it flipped to `ready` |
+| `system.pool.claimed` | low | A member was claimed. This IS the claim record — carries `claim_id`, `acquired_by`, `acquired_for`, `acquired_at` |
+| `system.pool.released` | low | The claim was closed. Carries the same attribution plus `disposition` and `held_seconds` |
 | `system.pool.claimed_stale` | medium | A claimed member passed `claimed_ttl_seconds` (flag only — never auto-terminated) |
 | `system.pool.claimed_stale_heartbeat_flagged` | medium | A claimed member's agent heartbeat went stale (flag only, same rationale) |
 | `system.pool.ready_stale_heartbeat_recycled` | medium | A ready member's heartbeat went stale and it was recycled early |
@@ -517,4 +560,4 @@ When an operator chats "I need 50 ephemeral instances for an ML run" / "claim a 
 - [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md) — `provision_cluster` for one-shot multi-instance bursts
 - [`FLEET_SENSORS.md`](../FLEET_SENSORS.md) — `instance_status_sensor` covers pool members
 
-_Last verified: 2026-08-31_
+_Last verified: 2026-09-03_
