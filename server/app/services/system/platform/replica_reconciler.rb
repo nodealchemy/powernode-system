@@ -14,16 +14,18 @@ module System
     # column said 3 while the fleet stayed at 1.
     #
     # WHAT COUNTS AS A REPLICA. NodeInstance rows in `active` status whose Node
-    # carries the deployment's node_template_id — the same STATUS rail the
-    # Scaling panel reports on. Deliberately NOT
+    # carries the deployment's node_template_id, MINUS the cordoned ones —
+    # the same number the Scaling panel reports as `actual_replicas`
+    # (deployments_controller#compute_actual_replicas). Deliberately NOT
     # NodeInstance::LIVE_REPLICA_STATUSES: this service converges toward the
     # number an operator SEES in the panel, and the panel's count is the
-    # narrower `active` scope (deployments_controller#compute_actual_replicas).
+    # narrower `active` scope.
     #
     # ...MINUS CORDONED REPLICAS (IMP-c9adb5a71dca, operator ruling
     # 2026-09-03). An instance an operator cordoned (system_cordon_instance;
-    # the marker is NodeInstance#cordoned? / the .cordoned scope, owned by
-    # System::InstanceCordonService) is unschedulable but still running, so:
+    # the marker is NodeInstance#cordoned? / the .cordoned and .not_cordoned
+    # scopes, owned by System::InstanceCordonService) is unschedulable but
+    # still running, so:
     #   - it is OUTSIDE #live_scope — the deficit it leaves is reconciled by
     #     provisioning a replacement, which is what a cordon is for;
     #   - it is FIRST in the #scale_in victim order, ahead of the existing
@@ -35,20 +37,15 @@ module System
     # says so). Before this, the reconciler read no marker at all, and on a
     # deployment replica a cordon recorded intent and fenced nothing.
     #
-    # THE TWO ARE NO LONGER THE SAME QUERY, and that is stated here rather
-    # than left to be discovered (IMP-c9adb5a71dca): #live_scope subtracts
-    # cordoned replicas and `compute_actual_replicas` does not (`command grep
-    # -c "cordon" app/controllers/api/v1/system/platform/deployments_controller
-    # .rb` -> 0). So with target_replicas=2, two active replicas, and an
-    # operator cordoning one: the reconciler sees 1 live, provisions a
-    # replacement, and the Scaling panel then renders 3 active against a
-    # target of 2 — a standing, visible drift that pressing reconcile again
-    # will NOT clear, because live_scope already reads 2 == target. Reading
-    # the panel's number as "active rows, cordoned included" and this
-    # service's as "rows work can land on" reconciles them by hand. Teaching
-    # the panel the difference (subtract the cordoned rows, or report them as
-    # a labelled second number) is a follow-up on the controller and
-    # ScalingPanel.tsx, neither of which this change owns.
+    # #live_scope and `compute_actual_replicas` are ONE query, both built on
+    # NodeInstance.active.not_cordoned (IMP-3d4058389afa): the panel's
+    # `actual_replicas` is this service's live count, and the cordoned rows
+    # the subtraction removed are disclosed beside it as `cordoned_count`.
+    # So with target_replicas=2, two active replicas, and an operator
+    # cordoning one: the reconciler sees 1 live and provisions a replacement,
+    # and the panel then reads 2 live + 1 cordoned against a target of 2 —
+    # converged, with the cordon showing as the labelled second number rather
+    # than as drift.
     #
     # WHAT IT REFUSES. A deployment whose template is the template of THIS
     # control plane's own hosting node (System::Autonomy::SelfManagementFence,

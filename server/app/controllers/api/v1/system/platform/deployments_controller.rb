@@ -231,7 +231,7 @@ module Api
           end
 
           def serialize(deployment)
-            actual, by_status = compute_actual_replicas(deployment)
+            actual, by_status, cordoned = compute_actual_replicas(deployment)
             {
               id: deployment.id,
               name: deployment.name,
@@ -239,6 +239,7 @@ module Api
               target_replicas: deployment.target_replicas,
               actual_replicas: actual,
               actual_by_status: by_status,
+              cordoned_count: cordoned,
               public_dns_hostname: deployment.public_dns_hostname,
               satellite_extension_slug: deployment.satellite_extension_slug,
               node_template: deployment.node_template && {
@@ -257,29 +258,46 @@ module Api
             }
           end
 
-          # Counts active NodeInstance rows whose Node references the
-          # deployment's template. "active" = pending|provisioning|running|stopped
-          # — NOT "anything not terminated/errored", as this comment used to
-          # claim: the scope also drops starting/stopping/rebooting. That is
-          # narrower than System::NodeInstance::LIVE_REPLICA_STATUSES, which
-          # mission capacity metrics use, and the two are deliberately
-          # different. This panel reports what an operator can act on right
-          # now and pairs the number with a per-status breakdown (`by_status`
-          # below), so a transitional row is shown rather than hidden; a
-          # capacity metric has no such breakdown and must not read a routine
-          # reboot as lost capacity. The Node model overrides
-          # table_name to "system_nodes" so the WHERE clause references
-          # the actual table name, not the association name.
+          # Returns [actual, by_status, cordoned] for the NodeInstance rows
+          # whose Node references the deployment's template.
+          #
+          # `actual` is the SAME number System::Platform::ReplicaReconciler
+          # #live_scope converges toward: rows in `active` status MINUS the
+          # cordoned ones (IMP-3d4058389afa). Both readers go through the one
+          # scope pair System::InstanceCordonService owns (NodeInstance
+          # .not_cordoned / .cordoned), so they cannot disagree on a row. Before
+          # this the panel counted `active` alone, and a cordon followed by its
+          # reconciled replacement rendered target+1 with nothing saying why —
+          # a standing "drift" that pressing reconcile could never clear.
+          #
+          # `cordoned` is the count the subtraction removed — active rows an
+          # operator cordoned (system_cordon_instance). It is returned as its
+          # own labelled number rather than folded away: the replicas are still
+          # running, still cost money, and are the first scale-in victims.
+          #
+          # "active" = pending|provisioning|running|stopped — NOT "anything not
+          # terminated/errored", as this comment used to claim: the scope also
+          # drops starting/stopping/rebooting. That is narrower than
+          # System::NodeInstance::LIVE_REPLICA_STATUSES, which mission capacity
+          # metrics use, and the two are deliberately different. This panel
+          # reports what an operator can act on right now and pairs the number
+          # with a per-status breakdown (`by_status` below, over EVERY row,
+          # cordoned included), so a transitional row is shown rather than
+          # hidden; a capacity metric has no such breakdown and must not read a
+          # routine reboot as lost capacity. The Node model overrides table_name
+          # to "system_nodes" so the WHERE clause references the actual table
+          # name, not the association name.
           def compute_actual_replicas(deployment)
-            return [ 0, {} ] unless deployment.node_template_id
+            return [ 0, {}, 0 ] unless deployment.node_template_id
 
             instance_scope = ::System::NodeInstance
                                .joins(:node)
                                .where(system_nodes: { node_template_id: deployment.node_template_id,
                                                        account_id: current_account.id })
-            [ instance_scope.active.count, instance_scope.group(:status).count ]
+            active = instance_scope.active
+            [ active.not_cordoned.count, instance_scope.group(:status).count, active.cordoned.count ]
           rescue StandardError
-            [ 0, {} ]
+            [ 0, {}, 0 ]
           end
 
           # `internal:` is FALSE by construction here: this is an operator

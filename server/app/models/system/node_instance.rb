@@ -453,7 +453,10 @@ module System
     # System::InstanceCordonService) read through its single author. Every
     # reader that is not the allocator's own pool_state fence — the replica
     # reconciler's live count and victim order, #mark_pool_ready!,
-    # InstancePoolService#release! — comes through here, so the marker's
+    # InstancePoolService#release!, and the Scaling panel's actual/cordoned
+    # counts (deployments_controller#compute_actual_replicas, which reads the
+    # SAME pair so the panel and the reconciler cannot disagree on a row —
+    # IMP-3d4058389afa) — comes through here, so the marker's
     # shape is defined in ONE file. The scopes are the SQL twins of
     # #cordoned?; instance_cordon_service_spec pins that they agree.
     scope :cordoned,     -> { ::System::InstanceCordonService.cordoned_relation(all) }
