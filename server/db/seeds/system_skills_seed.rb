@@ -1033,6 +1033,122 @@ SKILLS_DATA = [
       holding volumes or a VIP must be replaced first, or the data goes with the VM.
     PROMPT
   },
+  # ── HIER-P2F — Disk Image Manager skills (R4 of the 2026-06-28 campaign) ──
+  {
+    name: "Disk Image Promote",
+    slug: "system-disk-image-promote",
+    description: "Promote a published disk-image publication to its NodePlatform's active default; the previously active publication is retired in the same transaction",
+    category: "release_management",
+    subdomain: "disk_image",
+    executor: "System::Ai::Skills::DiskImagePromoteExecutor",
+    tags: %w[disk-image publication promote boot-image release],
+    system_prompt: <<~PROMPT.strip
+      Promote a verified disk-image publication to the platform default every new
+      instance on that NodePlatform boots from.
+      Inputs: publication_id (required — must be in status published; a retired
+      publication is reactivated by system-disk-image-rollback, not here).
+      Wraps System::Executors::DiskImage::PromotePublication: repoints the
+      platform's file_object / sha256 / oci_ref / git_sha atomically and retires the
+      prior published row.
+      APPROVAL-GATED on system.disk_image_publication_promote (require_approval by
+      default) — changes what the whole fleet boots next.
+    PROMPT
+  },
+  {
+    name: "Disk Image Rollback",
+    slug: "system-disk-image-rollback",
+    description: "Roll a NodePlatform's active disk image back to a prior publication — an explicit one, or the newest retired / non-current published one",
+    category: "release_management",
+    subdomain: "disk_image",
+    executor: "System::Ai::Skills::DiskImageRollbackExecutor",
+    tags: %w[disk-image publication rollback revert boot-image],
+    system_prompt: <<~PROMPT.strip
+      Revert a NodePlatform to a prior disk-image publication after a regression.
+      Inputs: platform_id (required), publication_id (optional — omitted selects the
+      newest retired publication, else the newest published one that is not current).
+      Refuses purged targets and targets with no stored artifact. Wraps
+      System::Executors::DiskImage::RollbackPublication: restores a soft-deleted
+      artifact, reactivates a retired row and retires the previously active one.
+      APPROVAL-GATED on system.disk_image_publication_rollback (require_approval by
+      default) — the rollback is itself a fleet event.
+    PROMPT
+  },
+  {
+    name: "Disk Image Retention",
+    slug: "system-disk-image-retention",
+    description: "Set a NodePlatform's disk-image retention count (1..50) — how many publications the purge sweep keeps",
+    category: "release_management",
+    subdomain: "disk_image",
+    executor: "System::Ai::Skills::DiskImageRetentionExecutor",
+    tags: %w[disk-image retention purge gc],
+    system_prompt: <<~PROMPT.strip
+      Tune how many disk-image publications a NodePlatform keeps before the purge
+      sweep soft-deletes older artifacts.
+      Inputs: platform_id (required), retention_count (required, 1..50).
+      Wraps System::Executors::DiskImage::UpdateRetention. Reversible GC
+      configuration — gated on system.disk_image_retention_update, which the Disk
+      Image Manager declares auto_approve.
+    PROMPT
+  },
+  # ── HIER-P2F — GitOps Reconciler skills (thin over the reconciler services) ──
+  {
+    name: "GitOps Sync Repository",
+    slug: "system-gitops-sync-repository",
+    description: "Sync one registered GitOps repository now — clone/fast-forward, diff desired vs live fleet state, open one proposal per drifted resource; applies nothing",
+    category: "devops",
+    subdomain: "gitops",
+    executor: "System::Ai::Skills::GitopsSyncRepositoryExecutor",
+    tags: %w[gitops sync reconcile drift declarative],
+    system_prompt: <<~PROMPT.strip
+      Run one reconcile pass for a registered System::GitopsRepository.
+      Inputs: repository_id (required).
+      Mints a System::GitopsSyncRun and hands it to System::Gitops::Reconciler; the
+      run is finalized when the skill returns (sync_run_id is a handle to read it
+      back, not to poll). Refuses on a standby control plane before any run exists.
+      The READ side of GitOps: it opens Ai::AgentProposal rows for drift and applies
+      nothing — gated on system.gitops_sync_repository (auto_approve by default).
+    PROMPT
+  },
+  {
+    name: "GitOps Apply Proposal",
+    slug: "system-gitops-apply-proposal",
+    description: "Apply one approved GitOps drift proposal to live fleet state and mark it implemented; a stale conflict is refused with the reason",
+    category: "devops",
+    subdomain: "gitops",
+    executor: "System::Ai::Skills::GitopsApplyProposalExecutor",
+    tags: %w[gitops apply proposal drift declarative],
+    system_prompt: <<~PROMPT.strip
+      Write one approved GitOps proposal's diff (template / module / assignment /
+      pool / platform) to the live fleet through System::Gitops::ApplyService.
+      Inputs: proposal_id (required — an approved Ai::AgentProposal with source
+      gitops).
+      A proposal that is not approved, has no gitops source, or whose target moved
+      underneath it (stale_conflict) is refused with the service's reason; STOP on a
+      stale conflict and re-sync for a fresh proposal.
+      APPROVAL-GATED on system.gitops_apply_proposal (require_approval by default) —
+      the same control the system_gitops_apply_proposal MCP verb parks under.
+    PROMPT
+  },
+  {
+    name: "GitOps Register Repository",
+    slug: "system-gitops-register-repository",
+    description: "Register a Git repository as a declarative source of fleet state the GitOps Reconciler syncs every 5 minutes",
+    category: "devops",
+    subdomain: "gitops",
+    executor: "System::Ai::Skills::GitopsRegisterRepositoryExecutor",
+    tags: %w[gitops repository register declarative],
+    system_prompt: <<~PROMPT.strip
+      Register a new System::GitopsRepository for the account.
+      Inputs: name (required, unique per account), repo_url (required — never with
+      credentials in it), branch (default main), vault_credential_path,
+      path_prefix (default repo root), auto_apply (default false).
+      The first sync runs on the next reconcile tick (or via
+      system-gitops-sync-repository). Validation failures (duplicate name, missing
+      URL) come back as a failure, not a raise.
+      APPROVAL-GATED on system.gitops_register_repository (require_approval by
+      default) — a new source of truth the reconciler will act on.
+    PROMPT
+  },
 ].freeze
 
 # ─────────────────────────────────────────────────────────────────────

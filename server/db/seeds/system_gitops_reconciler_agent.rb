@@ -79,7 +79,16 @@ gitops_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   source_key: "gitops-reconciler"
 )
 gitops_agent.assign_attributes(
-  description: "Declarative fleet-state reconciler — diffs registered Git repositories against live state and authors drift proposals; owns operator-initiated GitOps actions",
+  # ROUTING description (HIER-P2F): the first sentence is what
+  # Ai::ClaudeExport::RoutingDescription folds into the Claude Code subagent
+  # description, the rest is the platform-side trigger/exclusion. Kept under
+  # RoutingDescription::MAX_CHARS (400), and the first sentence under its
+  # MAX_DESCRIPTION_CHARS (140) so the export carries it whole, not elided.
+  description: "Declarative fleet-state reconciliation: sync a GitOps repository, diff it against the " \
+               "live fleet, apply an approved drift proposal. Use when an operator asks to " \
+               "register, sync or apply GitOps repositories or proposals. Do not use for node or module " \
+               "drift remediation — use Fleet Autonomy — nor for SDWAN topology work — use System " \
+               "Topology Designer.",
   status: "active",
   autonomy_config: {
     "interval_seconds" => 300, # matches SystemGitopsSyncJob's 5-minute staleness window
@@ -99,9 +108,19 @@ gitops_agent.assign_attributes(
 # reasoning over declarative manifests warrants a reasoning-tier model —
 # resolved at runtime by Ai::AgentModelSelector from the account's credentialed
 # providers (no hardcoded model id).
+#
+# tool_access.tool_families LISTS ONLY THE FAMILIES THIS AGENT NEEDS (HIER-P2F):
+# the `system_gitops` prefix admits exactly the seven system_gitops_* verbs
+# (register / sync / apply plus the four reads) and nothing else — pinned by
+# spec/db/seeds/system_gitops_reconciler_agent_seed_spec.rb, which also holds
+# the count so a verb registered later under the prefix is noticed. The two
+# skill-discovery verbs are named explicitly because the RUNTIME door
+# (AgentToolBridgeService#scope_to_tool_families) is a plain select over the
+# registry — only the exporter's ToolAllowlist unions BOOTSTRAP_ACTIONS in.
 gitops_agent.system_prompt = gitops_prompt
 gitops_agent.mcp_metadata = (gitops_agent.mcp_metadata || {}).merge(
-  "model_config" => { "model_requirements" => { "tier" => "reasoning" } }
+  "model_config" => { "model_requirements" => { "tier" => "reasoning" } },
+  "tool_access" => { "tool_families" => %w[system_gitops discover_skills get_skill_context] }
 )
 if gitops_agent.new_record?
   gitops_agent.creator  = creator

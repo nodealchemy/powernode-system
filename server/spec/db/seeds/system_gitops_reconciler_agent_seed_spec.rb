@@ -89,6 +89,35 @@ RSpec.describe "system_gitops_reconciler_agent seed" do
       expect(chain.status).to eq("active")
     end
 
+    # HIER-P2F — made whole: routing description, tool-family scope, skills.
+    it "carries a routing description within the export budget, naming Fleet Autonomy as the sibling" do
+      description = agent.description.to_s
+      expect(description.length).to be <= Ai::ClaudeExport::RoutingDescription::MAX_CHARS
+      expect(description).to match(/Use when/)
+      expect(description).to match(/Do not use for/)
+      expect(description).to include("Fleet Autonomy")
+    end
+
+    # HIER-P2F review — `system_gitops` is a family PREFIX and that is deliberate
+    # here: it admits the seven system_gitops_* verbs and nothing else (pinned by
+    # the count below). The two skill-discovery verbs are listed explicitly
+    # because the RUNTIME door (AgentToolBridgeService#scope_to_tool_families)
+    # serves no bootstrap set of its own — only the exporter unions one in.
+    it "scopes tool access to the system_gitops_* family — exactly the seven GitOps verbs" do
+      expect(agent.mcp_metadata.dig("tool_access", "tool_families"))
+        .to eq(%w[system_gitops discover_skills get_skill_context])
+
+      registry = Ai::ClaudeExport::ToolAllowlist::Registry.snapshot
+      tools = Ai::ClaudeExport::ToolAllowlist.for(agent, registry: registry)
+      platform_tools = tools.select { |t| t.start_with?(Ai::ClaudeExport::ToolAllowlist::MCP_PREFIX) }
+                            .map { |t| t.delete_prefix(Ai::ClaudeExport::ToolAllowlist::MCP_PREFIX) }
+      gitops_verbs = Ai::Tools::PlatformApiToolRegistry.all_tools.keys.map(&:to_s).select { |n| n.start_with?("system_gitops_") }
+      expect(gitops_verbs.size).to eq(7)
+      expect(platform_tools).to match_array(
+        Ai::ClaudeExport::ToolAllowlist::BOOTSTRAP_ACTIONS | gitops_verbs | %w[discover_skills get_skill_context]
+      )
+    end
+
     it "is idempotent across re-runs (no duplicate global row)" do
       expect { load_seed!("system_gitops_reconciler_agent.rb") }
         .not_to change { Ai::Agent.global.where(name: "GitOps Reconciler").count }.from(1)
@@ -138,6 +167,23 @@ RSpec.describe "system_gitops_reconciler_agent seed" do
       )
       expect(policy).to be_present
       expect(policy.policy).to eq("notify_and_proceed")
+    end
+  end
+
+  # HIER-P2F — the three GitOps executors (sync / apply / register) bind here.
+  describe "its skills" do
+    before do
+      load_seed!("system_gitops_reconciler_agent.rb")
+      load_seed!("system_skills_seed.rb")
+      load_seed!("system_provisioning_skills_seed.rb")
+      load_seed!("system_dr_skills_seed.rb")
+      load_seed!("system_skill_bindings_seed.rb")
+    end
+
+    it "binds the sync, apply and register executors, and nothing else" do
+      expect(agent.reload.skill_slugs).to contain_exactly(
+        "system-gitops-sync-repository", "system-gitops-apply-proposal", "system-gitops-register-repository"
+      )
     end
   end
 end

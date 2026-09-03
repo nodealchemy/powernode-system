@@ -62,9 +62,10 @@ module System
       # for is a child of the Concierge — the six original policy-carrying
       # agents, the System Topology Designer (declared there since
       # HIER-P2DECL, when it took the topology set; before that it was merged
-      # in here by hand under the key "system-topology-designer", which is
-      # still its seed's source_key — #resolve_agent falls through to the
-      # name+type lookup, so the edge is the same edge) and the four wave-1
+      # in here by hand under the key "system-topology-designer" — HIER-P2F
+      # aligned the SEED's source_key to the declared key "topology-designer",
+      # so the source_key fallback resolves it too, not just the name+type
+      # primary path; the edge is the same edge) and the four wave-1
       # managers (Capacity / Storage / Ingress / Supply Chain). Those four
       # have NO seed until wave 2: they resolve to nothing, and an absent
       # child is a "<key>(agent absent)" line in `skipped` — reported as drift

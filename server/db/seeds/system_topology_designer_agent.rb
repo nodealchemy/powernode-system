@@ -26,6 +26,15 @@ require_relative "concerns/agent_setup_helpers"
 # provider/creator on new records, trust score bootstrap, idempotent skill
 # bindings).
 #
+# HIER-P2F: since HIER-P2DECL this agent carries the topology policy set
+# (PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES — the three composer
+# executor gates); this seed now consumes it like its siblings, adds the
+# "Topology Designer Actions" approval chain those require_approval gates
+# route to, a routing description and a tool-family scope. The composer
+# executors (sdwan_federation_compose / multi_tenant_isolation /
+# service_discovery_composer) bind here via `binds_to "topology_designer"`;
+# system_skill_bindings_seed.rb materialises the rows.
+#
 # Phase O6 follow-up — first specialist agent in the cross-cutting design
 # track.
 
@@ -97,7 +106,10 @@ system_prompt = <<~PROMPT
   ## Read Surface
 
   You have read access to the broader topology context:
-    - `system_sdwan_*` — full SDWAN read + compose actions
+    - the SDWAN read verbs (`system_sdwan_get_*` / `system_sdwan_list_*`)
+      plus the COMPOSITION writes (bridges, OVN, IPFIX, networks, route
+      policies, federation). Day-to-day peer / VIP / BGP remediation is
+      deliberately NOT in your grant — hand that to the SDWAN Manager.
     - `kubernetes_list_*` / `kubernetes_get_*` — cluster + node topology
     - `docker_list_networks` / `docker_list_volumes` — container
       networking + storage topology
@@ -135,10 +147,18 @@ PROMPT
 topology_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "System Topology Designer",
   agent_type: "assistant",
-  source_key: "system-topology-designer"
+  source_key: "topology-designer"
 )
 topology_agent.assign_attributes(
-  description: "Specialist agent for cross-cutting platform topology design — SDWAN composition (today), container networking + storage topology (future). Invoked by Concierge for topology work; owns the SDWAN compose skill family.",
+  # ROUTING description (HIER-P2F): the first sentence is what
+  # Ai::ClaudeExport::RoutingDescription folds into the Claude Code subagent
+  # description, the rest is the platform-side trigger/exclusion. Kept under
+  # RoutingDescription::MAX_CHARS (400), and the first sentence under its
+  # MAX_DESCRIPTION_CHARS (140) so the export carries it whole, not elided.
+  description: "Cross-cutting topology composition: SDWAN bridges, OVN networks, IPFIX collectors, " \
+               "federation overlays, tenant isolation, service discovery. Use when an operator asks to " \
+               "design or compose a network topology. Do not use for day-to-day SDWAN peer, VIP or BGP " \
+               "remediation — use SDWAN Manager — nor for node lifecycle work — use Fleet Autonomy.",
   status: "active",
   system_prompt: system_prompt,
   metadata: (topology_agent.metadata || {}).merge(
@@ -176,8 +196,92 @@ end
 # Cross-cutting topology composition is reasoning-heavy. Reassign mcp_metadata
 # (not in-place) so the tier persists alongside the in-place system_prompt.
 # No hardcoded model id — AgentModelSelector resolves it.
+#
+# tool_access.tool_families LISTS ONLY THE FAMILIES THIS AGENT NEEDS (HIER-P2F)
+# in the vocabulary AgentToolBridgeService#scope_to_tool_families and
+# Ai::ClaudeExport::ToolAllowlist read: exact registry name, or `<family>_`
+# prefix. EXACT NAMES, never the bare `system_sdwan` prefix — that one entry
+# would admit every system_sdwan_* verb there is, deletes, VIP failover and
+# user-device issuance included, i.e. exactly the day-to-day remediation this
+# agent's own description hands to the SDWAN Manager. So: the SDWAN READ
+# surface, the COMPOSITION writes (bridges, OVN, IPFIX, networks, route
+# policies, federation), the two other composer gates, the K8s / Docker
+# topology reads, and skill discovery — which the runtime door needs listed
+# because, unlike the exporter, it unions in no bootstrap set of its own.
+#
+# A list matching nothing fails OPEN to the full registry, so every entry must
+# match a registered action; the seed spec holds that AND an equality oracle
+# over the derived allowlist, so a verb registered later under one of these
+# names' prefixes cannot widen the grant unnoticed. `docker_get_network`, named
+# by the filter above but registered nowhere, is absent for the same reason.
 topology_agent.mcp_metadata = (topology_agent.mcp_metadata || {}).merge(
-  "model_config" => { "model_requirements" => { "tier" => "reasoning" } }
+  "model_config" => { "model_requirements" => { "tier" => "reasoning" } },
+  "tool_access" => {
+    "tool_families" => %w[
+      system_sdwan_get_account_bgp
+      system_sdwan_get_audit_log
+      system_sdwan_get_bgp_config_for_peer
+      system_sdwan_get_bgp_sessions
+      system_sdwan_get_federation_peer
+      system_sdwan_get_firewall_rule
+      system_sdwan_get_host_bridge
+      system_sdwan_get_ipfix_collector
+      system_sdwan_get_network
+      system_sdwan_get_ovn_deployment
+      system_sdwan_get_peer
+      system_sdwan_get_port_mapping
+      system_sdwan_get_route_policy
+      system_sdwan_get_routing_summary
+      system_sdwan_get_topology
+      system_sdwan_get_virtual_ip
+      system_sdwan_list_access_grants
+      system_sdwan_list_federation_peers
+      system_sdwan_list_firewall_rules
+      system_sdwan_list_host_bridges
+      system_sdwan_list_ipfix_collectors
+      system_sdwan_list_networks
+      system_sdwan_list_ovn_acls
+      system_sdwan_list_ovn_deployments
+      system_sdwan_list_ovn_logical_switches
+      system_sdwan_list_peers
+      system_sdwan_list_port_mappings
+      system_sdwan_list_route_policies
+      system_sdwan_list_subnet_advertisements
+      system_sdwan_list_user_devices
+      system_sdwan_list_vip_assignments
+      system_sdwan_list_virtual_ips
+      system_sdwan_activate_host_bridge
+      system_sdwan_activate_ovn_logical_switch
+      system_sdwan_activate_ovn_logical_switch_port
+      system_sdwan_compile_ovn_plan
+      system_sdwan_compile_route_policy
+      system_sdwan_create_host_bridge
+      system_sdwan_create_ipfix_collector
+      system_sdwan_create_network
+      system_sdwan_create_ovn_acl
+      system_sdwan_create_ovn_deployment
+      system_sdwan_create_ovn_logical_switch
+      system_sdwan_create_ovn_logical_switch_port
+      system_sdwan_create_route_policy
+      system_sdwan_federation_compose
+      system_sdwan_federation_scan
+      system_sdwan_propose_federation_peer
+      system_sdwan_update_ipfix_collector
+      system_sdwan_update_network
+      system_sdwan_update_network_routing_mode
+      system_sdwan_update_route_policy
+      system_multi_tenant_isolation
+      system_service_discovery_compose
+      kubernetes_list_clusters
+      kubernetes_list_nodes
+      kubernetes_get_cluster
+      kubernetes_get_kubeconfig
+      docker_list_networks
+      docker_list_volumes
+      discover_skills
+      get_skill_context
+    ]
+  }
 )
 topology_agent.save!
 
@@ -194,3 +298,52 @@ System::Seeds::AgentSetupHelpers.ensure_trust_score!(
 )
 
 puts "  ✅ System Topology Designer agent: #{topology_agent.previously_new_record? ? 'created' : 'updated'} (id=#{topology_agent.id})"
+
+# ── Intervention policies (HIER-P2F) ──────────────────────────────────────
+# The topology set (PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES — the three
+# composer executor gates, declared on this agent since HIER-P2DECL) is
+# consumed here the way every sibling seed consumes its constant, so a FIRST
+# boot lands the rows without waiting for the next boot's PolicyReconciler
+# pass. The reconciler still asserts the same set on every later boot (it
+# creates only what is absent — an operator-tuned verb is never reset by it),
+# and the two agree by construction: same constant, same row shape.
+topology_policies = System::Governance::PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES
+
+topology_policy_count = System::Seeds::AgentSetupHelpers.upsert_policies!(
+  account: admin_account, agent: topology_agent,
+  definitions: topology_policies
+)
+System::Seeds::AgentSetupHelpers.clean_stale_policies!(
+  account: admin_account, agent: topology_agent,
+  keep_keys: topology_policies.keys
+)
+puts "  ✅ System Topology Designer policies: #{topology_policy_count} changed (#{topology_policies.size} total)"
+
+# ── Topology Designer Approval Chain (HIER-P2F) ───────────────────────────
+# Single-step chain for the require_approval composer gates (federation
+# overlay, multi-tenant isolation, service-discovery composition). Composition
+# is operator/Concierge-driven design work that can wait for a reviewer within
+# the workday, so the timeout matches the GitOps Reconciler's rather than the
+# SDWAN Manager's 4h remediation window.
+topology_chain = Ai::ApprovalChain.find_or_initialize_by(
+  account: admin_account,
+  name: "Topology Designer Actions"
+)
+topology_chain.assign_attributes(
+  trigger_type: "autonomy_action",
+  status: "active",
+  is_sequential: true,
+  timeout_action: "reject",
+  timeout_hours: 8,
+  steps: [ {
+    "name" => "Topology Operator Approval",
+    "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
+    "required_approvals" => 1
+  } ]
+)
+if topology_chain.new_record? || topology_chain.changed?
+  topology_chain.save!
+  puts "  ✅ Topology Designer Approval Chain: created/updated"
+else
+  puts "  ✅ Topology Designer Approval Chain: already up to date"
+end

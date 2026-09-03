@@ -52,10 +52,60 @@ disk_image_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_ag
   source_key: "disk-image-manager"
 )
 disk_image_agent.assign_attributes(
-  description: "Disk image CI orchestrator — publication promotion, rollback, retention",
+  # ROUTING description (HIER-P2F): the first sentence is what
+  # Ai::ClaudeExport::RoutingDescription folds into the Claude Code subagent
+  # description ("Use this agent when the task involves …"), the rest is the
+  # platform-side trigger/exclusion the Concierge router reads. Kept under
+  # RoutingDescription::MAX_CHARS (400), and the first sentence under its
+  # MAX_DESCRIPTION_CHARS (140) so the export carries it whole, not elided.
+  description: "Disk-image CI publication lifecycle: promote a verified publication to the boot default, " \
+               "roll a platform back, tune retention. Use when an operator asks to promote, revert or " \
+               "retain disk images. Do not use for node lifecycle or module drift work — use Fleet " \
+               "Autonomy — nor for the CI build pipeline itself (Gitea workflows, CI workers).",
   status: "active",
-  system_prompt: disk_image_prompt,
   autonomy_config: { "interval_seconds" => 300, "extension" => "system", "scope" => "disk_image" }
+)
+# Persona prompt, model TIER and tool-family scope. system_prompt= writes into
+# mcp_metadata in place; set it FIRST, then reassign mcp_metadata to a fresh
+# merged hash so all three survive AR dirty-tracking (the same shape as the
+# sibling seeds). A 5-minute monitor stays on the STANDARD tier — declared as a
+# tier, never a pinned model id; AgentModelSelector resolves it.
+#
+# tool_access.tool_families LISTS ONLY THE FAMILIES THIS AGENT NEEDS (HIER-P2F).
+# AgentToolBridgeService#scope_to_tool_families and
+# Ai::ClaudeExport::ToolAllowlist match each entry by exact registry name or
+# `<family>_` prefix, and a list matching nothing fails OPEN to the full
+# registry — so every entry names a registered action (pinned by
+# spec/db/seeds/system_disk_image_manager_agent_seed_spec.rb). Exact names: the
+# disk-image verbs share no prefix of their own (system_revert_disk_image,
+# system_set_default_disk_image_publication…). The CI-worker and webhook
+# PROVISIONING verbs (DiskImageOperatorTool) are deliberately absent — the
+# guide says this agent does not own CI worker provisioning.
+#
+# The three signal/task READS and the two skill-discovery verbs are listed
+# because the RUNTIME door has no bootstrap set: AgentToolBridgeService
+# #scope_to_tool_families is a plain select over the registry, while only the
+# exporter's ToolAllowlist unions BOOTSTRAP_ACTIONS in. Without them this
+# monitor could not read the signals its declared
+# `system.disk_image_publication_investigate` lane is about, nor discover a
+# skill, once the family scope is in force.
+disk_image_agent.system_prompt = disk_image_prompt
+disk_image_agent.mcp_metadata = (disk_image_agent.mcp_metadata || {}).merge(
+  "model_config" => { "model_requirements" => { "tier" => "standard" } },
+  "tool_access" => {
+    "tool_families" => %w[
+      system_list_disk_image_publications
+      system_set_default_disk_image_publication
+      system_revert_disk_image
+      system_set_disk_image_retention
+      system_list_disk_image_webhooks
+      system_recent_signals
+      system_list_tasks
+      system_get_task
+      discover_skills
+      get_skill_context
+    ]
+  }
 )
 if disk_image_agent.new_record?
   disk_image_agent.creator  = creator
