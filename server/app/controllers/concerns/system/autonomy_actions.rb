@@ -36,13 +36,20 @@ module System
     # agent left out has its rows DROPPED from the pivot; an agent with no
     # policies added in ships a permanently empty bucket.
     #
-    # That is why this is six of the extension's eight seeded agents. System
-    # Concierge (`assistant`, chat router) and System Topology Designer
-    # (`assistant`, compose specialist) carry no intervention policies at all —
-    # their seeds write no policy row — so they are deliberately absent rather
-    # than overlooked. GitOps Reconciler WAS overlooked: it landed in the same
-    # wave as Topology Designer with three seeded `system.gitops_*` policies
-    # and this list was not extended with it (IMP-e3a30e2dd5ee).
+    # That is why this is eleven of the extension's twelve official agents:
+    # every agent that keys an agent-scoped set in
+    # System::Governance::PolicyDeclarations::POLICY_SETS. System Concierge
+    # (`assistant`, chat router) carries no intervention policies — its seed
+    # writes no policy row and no set declares it — so it is deliberately
+    # absent rather than overlooked. GitOps Reconciler WAS overlooked: it
+    # landed in the same wave as Topology Designer with three seeded
+    # `system.gitops_*` policies and this list was not extended with it
+    # (IMP-e3a30e2dd5ee). System Topology Designer used to be absent for the
+    # Concierge's reason and is listed since HIER-P2DECL, when it took the
+    # topology set (TOPOLOGY_DESIGNER_POLICIES); the four wave-1 managers are
+    # listed from the moment their sets are declared — the rows the
+    # reconciler writes for them the first boot after wave 2 seeds the agents
+    # must have a bucket waiting, not be dropped until someone remembers.
     #
     # ORDER IS NOT SIGNIFICANT here, unlike DOMAIN_PREFIXES immediately below.
     # That map resolves with `find` on a string PREFIX, so an entry extending
@@ -57,14 +64,21 @@ module System
     # would report no system agents; an operator's own agent holding one system
     # policy would be promoted into this list). The DERIVATION lives in the
     # oracle instead — spec/controllers/api/v1/system/autonomy_agent_pivot_spec.rb
-    # scans the seed files and fails on drift in either direction.
+    # derives the set from POLICY_SETS × AGENT_IDENTITIES (the population
+    # PolicyReconciler writes agent-scoped rows for) and fails on drift in
+    # either direction.
     SYSTEM_AGENT_NAMES = [
       "Fleet Autonomy",
       "SDWAN Manager",
       "CVE Responder",
       "Disk Image Manager",
       "Runtime Manager",
-      "GitOps Reconciler"
+      "GitOps Reconciler",
+      "Capacity Manager",
+      "Storage Manager",
+      "Ingress Manager",
+      "Supply Chain Manager",
+      "System Topology Designer"
     ].freeze
 
     # ORDER IS SIGNIFICANT. `by_domain_pivot` resolves with `find`, so the FIRST
@@ -94,12 +108,12 @@ module System
     DOMAIN_PREFIXES = {
       "instance_pool"     => %w[system.instance_pool_],
       "cve"               => %w[system.cve_ system.module_critical_upgrade_],
-      # The System Topology Designer's composer trio. Only
-      # system.sdwan_federation_compose is still registered-and-unseeded (its
-      # rows arrive only via #update); multi_tenant_isolation and
-      # service_discovery_compose have been declared in FLEET_AUTONOMY_POLICIES
-      # since IMP-4ba48fd088ce and are seeded like any other row — they stay
-      # here because the pivot is by FAMILY, not by whether a seed exists.
+      # The System Topology Designer's composer trio — since HIER-P2DECL all
+      # three are declared on that agent's own set
+      # (PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES; sdwan_federation_
+      # compose was registered-and-unseeded until then, the other two sat in
+      # FLEET_AUTONOMY_POLICIES since IMP-4ba48fd088ce). Kept as a family
+      # here regardless of ownership: the pivot is by FAMILY, not by owner.
       # Declared BEFORE "sdwan" because system.sdwan_federation_compose
       # extends system.sdwan_ and first match wins.
       "topology"          => %w[system.sdwan_federation_compose system.multi_tenant_isolation system.service_discovery_compose],
@@ -127,12 +141,11 @@ module System
       "storage"           => %w[system.storage_ system.restore_volume system.volume_snapshot_],
       # Service exposure + certificate issuance (APO-1c gated executors).
       # system.service_backends_ — the SystemIngressTool backend-set gate
-      # (IMP-0c10b9fd5596). This is a UI BUCKET, not an ownership claim: the
-      # category is declared in FLEET_AUTONOMY_POLICIES and gated by Fleet
-      # Autonomy, and HIER-P2A deliberately left that alone. Filed here only
-      # so it does not strand in the "other" catch-all the panel drops
-      # (autonomy_domain_pivot_spec); HIER-P2D still decides whether the
-      # category itself travels with the ingress group.
+      # (IMP-0c10b9fd5596). A UI BUCKET, and since HIER-P2DECL also where the
+      # category is OWNED: it travels with the ingress group in
+      # PolicyDeclarations::INGRESS_MANAGER_POLICIES (HIER-P2A had filed it
+      # here while leaving ownership on Fleet Autonomy; the two axes agree
+      # now).
       "ingress"           => %w[system.expose_service_ system.acme_certificate_ system.service_backends_],
       # Platform-deployment scaling (APO-3b): the hub-excluded replica reconciler.
       "platform"          => %w[system.platform.],

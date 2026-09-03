@@ -12,12 +12,14 @@ module System
   # `Powernode::ExtensionRegistry` and never names it.
   #
   # THE ANSWER COMES FROM THE EXISTING GATE. `Ai::InterventionPolicy`
-  # resolution plus the Fleet Autonomy agent's `Ai::ApprovalChain`, reached
-  # through `FleetAutonomyService#gate_action!` — the same call every other
-  # fleet remediation makes, so an adaptation inherits policy resolution,
-  # request dedup, the consent budget and the rejection cooldown for free. A
-  # second approval namespace was explicitly rejected; nothing here mints its
-  # own chain shape.
+  # resolution plus the owning agent's `Ai::ApprovalChain`, reached through
+  # `FleetAutonomyService#gate_action!` on the gate `#for_owner` returns for
+  # the category's declared owner — the Capacity Manager since HIER-P2DECL,
+  # Fleet Autonomy as the fallback while that agent is unseeded — the same
+  # call every other fleet remediation makes, so an adaptation inherits policy
+  # resolution, request dedup, the consent budget and the rejection cooldown
+  # for free. A second approval namespace was explicitly rejected; nothing
+  # here mints its own chain shape.
   #
   # Two invariants:
   #
@@ -145,9 +147,29 @@ module System
           return from_existing(existing, plan: plan, auto_apply_eligible: auto_apply_eligible)
         end
 
-        gate = ::System::Fleet::FleetAutonomyService
+        # HIER-P2DECL: the project.* categories are declared on the Capacity
+        # Manager (PolicyDeclarations::CAPACITY_MANAGER_POLICIES), so this
+        # router gates under that agent exactly as the DecisionEngine's three
+        # project_* bindings do — through #for_owner, which resolves the
+        # declared owner override-aware and falls back to Fleet Autonomy (with
+        # a fleet.owner_agent_missing event) until wave 2 seeds it. Gating as
+        # Fleet Autonomy directly would resolve against rows the reconciler
+        # has moved off it: the "row the gate never reads" defect, one router
+        # over.
+        #
+        # COST OF THE FALLBACK, until wave 2 seeds the Capacity Manager: the
+        # service memoizes owner gates PER INSTANCE (@owner_gates) and this
+        # router builds a fresh one per call, so every adaptation disposition
+        # writes one fleet.owner_agent_missing FleetEvent — unlike the tick,
+        # which builds its service once and warns once. Accepted, not hoisted:
+        # no sensor consumes OWNER_MISSING_EVENT_KIND, the volume is one row
+        # per plan evaluated, and it is a visible countdown on work wave 2
+        # ends. adaptation_gate_spec pins the one-event-per-disposition shape,
+        # so hoisting later is a spec change, not a silent one.
+        owner_gate = ::System::Fleet::FleetAutonomyService
           .new(account: account, agent: agent)
-          .gate_action!(
+          .for_owner(::System::Governance::PolicyDeclarations.owner_of(category))
+        gate = owner_gate.gate_action!(
             category,
             metadata: metadata_for(mission, plan, change_type),
             reasoning: { summary: summary_for(mission, plan, change_type) },
@@ -193,7 +215,8 @@ module System
             { disposition: ROUTED, approval_request_id: nil,
               cause: CAUSE_POLICY_MISSING,
               detail: "no intervention policy row for #{category} on the " \
-                      "#{FLEET_AGENT_NAME} agent — re-run that agent's seed against this database" }
+                      "#{owner_gate.agent&.name || FLEET_AGENT_NAME} agent — run the governance " \
+                      "reconcile (rake system:governance:reconcile) against this database" }
           else
             { disposition: ROUTED, approval_request_id: nil,
               cause: CAUSE_POLICY_BLOCKED,

@@ -61,8 +61,9 @@ module System
         # system.instance_replace (which governs whether the replace runs at
         # all) precisely so the additive half can be tuned to proceed while the
         # terminate still needs a person. Declared in
-        # System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES so
-        # the reconciler lands a row on a running install. It is the category
+        # System::Governance::PolicyDeclarations::CAPACITY_MANAGER_POLICIES
+        # (HIER-P2DECL moved the capacity group off FLEET_AUTONOMY_POLICIES)
+        # so the reconciler lands a row on a running install. It is the category
         # ReapInstanceExecutor declares — named here rather than reached for
         # through that class so the constant reads at the call site that asks
         # for the approval.

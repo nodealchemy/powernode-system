@@ -5,10 +5,16 @@
 # ungated before 2026-05-10 — pool create/delete/drain operations would
 # auto-execute regardless of operator intent.
 #
-# Scoped to the Fleet Autonomy agent (the most sensible owner — pools are
-# fleet capacity machinery) AND seeded as global for the GATED SUBSET ONLY, so
-# manual ops are covered exactly where a gate site reads the row — see the note
-# at the manual-scope call below (IMP-5a2b801f3386).
+# Scoped to the Fleet Autonomy agent AND seeded as global for the GATED SUBSET
+# ONLY, so manual ops are covered exactly where a gate site reads the row — see
+# the note at the manual-scope call below (IMP-5a2b801f3386).
+#
+# OWNER SINCE HIER-P2DECL: the Capacity Manager (PolicyDeclarations::
+# CAPACITY_MANAGER_POLICIES carries all eight at the agent shape). This
+# first-boot seed still writes them onto Fleet Autonomy — wave 2 re-points it
+# with the agent seed — and PolicyReconciler re-homes them onto the Capacity
+# Manager (PolicyReconciler::FORMER_OWNERS) the first boot after that agent
+# exists, so the rows end up where the gate reads them either way.
 
 puts "\n  Seeding instance pool policies..."
 

@@ -87,8 +87,10 @@ module System
         #
         #     "system.replica_promote"         => "require_approval",
         #
-        # next to system.instance_replace / system.instance_reap, which this
-        # lane is the DR sibling of — and docs/FLEET_SENSORS.md's
+        # (system.instance_replace / system.instance_reap, which this lane is
+        # the DR sibling of, sat next to it there until HIER-P2DECL moved them
+        # to CAPACITY_MANAGER_POLICIES; this key stayed) — and
+        # docs/FLEET_SENSORS.md's
         # "### Fleet Autonomy agent (N policies)" heading counts it, which is
         # what spec/docs/reference_counts_spec.rb pins. So
         # System::Autonomy::ActionCategoryRouter sees a declared routed lane

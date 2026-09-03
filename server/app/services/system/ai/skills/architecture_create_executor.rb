@@ -29,7 +29,8 @@ module System
           requires_approval: true,
           # DECLARED, not derived (IMP-51e5c6184ae4). The operator control for
           # this action already exists as the SEEDED
-          # FLEET_AUTONOMY_POLICIES row "system.architecture.create"; the
+          # SUPPLY_CHAIN_MANAGER_POLICIES row "system.architecture.create"
+          # (FLEET_AUTONOMY_POLICIES until HIER-P2DECL moved it); the
           # "<domain>.<skill name>" default would resolve
           # "system.architecture_create" instead, a second row over the same
           # behaviour that an operator tuning the first would never touch.

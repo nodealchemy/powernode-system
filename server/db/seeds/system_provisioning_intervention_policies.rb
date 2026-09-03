@@ -7,9 +7,13 @@
 # (cross-region relocate, schema, security) require explicit approval.
 #
 # Pattern reference: extensions/system/server/db/seeds/fleet_autonomy_agent.rb.
-# The Fleet Autonomy agent owns these policies — they are scoped to that
-# agent so DecisionEngine routing through FleetAutonomyService#gate_action!
-# resolves the right policy for each project.* signal.
+# These are scoped to the Fleet Autonomy agent here; since HIER-P2DECL their
+# OWNER is the Capacity Manager (PolicyDeclarations::CAPACITY_MANAGER_POLICIES,
+# `owner: "capacity-manager"` on the three project_* bindings and on
+# System::AdaptationGate). Wave 2 re-points this seed with the agent seed;
+# until then PolicyReconciler re-homes the rows (PolicyReconciler::FORMER_OWNERS)
+# the first boot after the Capacity Manager exists, and the tick gates them
+# under Fleet Autonomy as the fallback owner while it does not.
 #
 # Idempotent: re-running updates the existing rows by (action_category, scope,
 # ai_agent_id) without duplicating.

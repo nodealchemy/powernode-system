@@ -34,7 +34,17 @@ module System
           # gitops executor can `binds_to "gitops_reconciler"`. No executor
           # binds to it yet.
           "gitops_reconciler"  => "GitOps Reconciler",
-          "topology_designer"  => "System Topology Designer"
+          "topology_designer"  => "System Topology Designer",
+          # HIER-P2DECL: the four wave-1 operations managers, added with their
+          # policy sets (PolicyDeclarations::AGENT_IDENTITIES) ahead of the
+          # wave-2 seeds and executor re-binding. No executor binds to them
+          # yet; the alias targets are pinned to the declared identity names
+          # by policy_declarations_ownership_spec so a typo cannot bind to
+          # nobody.
+          "capacity_manager"     => "Capacity Manager",
+          "storage_manager"      => "Storage Manager",
+          "ingress_manager"      => "Ingress Manager",
+          "supply_chain_manager" => "Supply Chain Manager"
         }.freeze
 
         class << self

@@ -56,8 +56,10 @@ module System
           },
           requires_approval: true,
           # DECLARED, not derived (IMP-2effedffc990). The operator control for
-          # this action already exists as the SEEDED FLEET_AUTONOMY_POLICIES
-          # row "system.package_module.create"; the "<domain>.<skill name>"
+          # this action already exists as the SEEDED
+          # SUPPLY_CHAIN_MANAGER_POLICIES row "system.package_module.create"
+          # (FLEET_AUTONOMY_POLICIES until HIER-P2DECL moved the supply-chain
+          # group); the "<domain>.<skill name>"
           # default would resolve "system.package_module_create" instead, a
           # second row over the same behaviour that an operator tuning the
           # first would never touch.

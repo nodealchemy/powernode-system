@@ -333,9 +333,17 @@ module Ai
 
       # When propose_architecture is called outside of an MCP session
       # (e.g. via Rails runner) there's no @agent. Fall back to the
-      # account's Fleet Autonomy agent — it owns the architecture
-      # intervention policies anyway, so attributing proposals to it
-      # is semantically correct.
+      # account's Fleet Autonomy agent.
+      #
+      # NOTE the reason is no longer ownership: since HIER-P2DECL the
+      # system.architecture.* categories are declared on the Supply Chain
+      # Manager (PolicyDeclarations::SUPPLY_CHAIN_MANAGER_POLICIES), not on
+      # Fleet Autonomy. Fleet Autonomy remains the ATTRIBUTION fallback
+      # because it is the one agent every account is seeded with and this
+      # path only names an actor on the proposal record — it does not gate
+      # anything (the gate is ArchitectureProposeExecutor's, and it resolves
+      # against the agent actually executing). Re-point it at the Supply
+      # Chain Manager in wave 2, alongside the executor re-binding.
       def default_proposal_agent
         return nil unless @user&.account && defined?(::Ai::Agent)
 

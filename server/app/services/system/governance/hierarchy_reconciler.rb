@@ -58,11 +58,21 @@ module System
       ROOT_KEY = "system-concierge"
       ROOT_IDENTITY = { name: "System Concierge", agent_type: "assistant" }.freeze
 
-      # PolicyDeclarations keys the six policy-carrying agents; the Topology
-      # Designer carries skills but no policy set, so it is declared here.
-      CHILD_IDENTITIES = PolicyDeclarations::AGENT_IDENTITIES.merge(
-        "system-topology-designer" => { name: "System Topology Designer", agent_type: "assistant" }
-      ).freeze
+      # THE ATTACH LIST. Every agent PolicyDeclarations declares an identity
+      # for is a child of the Concierge — the six original policy-carrying
+      # agents, the System Topology Designer (declared there since
+      # HIER-P2DECL, when it took the topology set; before that it was merged
+      # in here by hand under the key "system-topology-designer", which is
+      # still its seed's source_key — #resolve_agent falls through to the
+      # name+type lookup, so the edge is the same edge) and the four wave-1
+      # managers (Capacity / Storage / Ingress / Supply Chain). Those four
+      # have NO seed until wave 2: they resolve to nothing, and an absent
+      # child is a "<key>(agent absent)" line in `skipped` — reported as drift
+      # by `drift`, never an error — so the next seed run after wave 2 lands
+      # writes their lineage + delegation rows with no further edit here.
+      # Delegation defaults are the P1 ruling for every child: conservative,
+      # max_depth 2, no delegate types (a leaf).
+      CHILD_IDENTITIES = PolicyDeclarations::AGENT_IDENTITIES
 
       # The core forest's root, attached under System Concierge. It keeps the
       # delegation policy the CORE seed gives it (none today) — this reconciler

@@ -79,17 +79,20 @@ module System
     # PRESERVED, an AuditLog row written. Still never a verb change, still
     # never a delete. Idempotent: once moved, the row is simply present on B.
     #
-    # WHAT THIS PROTECTS, EXACTLY. The candidate test is structural, not a
-    # record of who created the row: it is re-homable when it sits on a
-    # DECLARED agent (one in AGENT_IDENTITIES) whose sets no longer declare
-    # that category. So a row on an agent OUTSIDE AGENT_IDENTITIES is never
-    # touched. That is not the same claim as "an operator's own row is never
-    # touched": System::AutonomyActions#update takes an arbitrary agent_id and
-    # does not check that the agent declares the category, so an operator CAN
-    # hold an agent-shape row on one of the declared agents, and if the
-    # declared owner happens to lack that row it will be moved. The AuditLog
-    # row is the record of that; narrowing the candidate to an explicit
-    # former-owner map is the fix if it ever bites.
+    # WHAT THIS PROTECTS, EXACTLY. Since HIER-P2DECL the candidate test is
+    # the explicit FORMER_OWNERS map first: a key the map names is re-homed
+    # only from the agent(s) the map records as its former owner. The P2A
+    # STRUCTURAL rule — any DECLARED agent (one in AGENT_IDENTITIES) whose
+    # sets no longer declare the category — is the FALLBACK for a key the
+    # map does not record, and it WARNS when it fires, because that rule also
+    # matches an operator's own row: System::AutonomyActions#update takes an
+    # arbitrary agent_id and does not check that the agent declares the
+    # category, so an operator CAN park an agent-shape row on a declared
+    # agent, and the structural rule would move it if the declared owner
+    # lacked the row. A row on an agent OUTSIDE AGENT_IDENTITIES is never
+    # touched by either rule. The AuditLog row is the record of every move;
+    # the warn line is the record of a move nobody declared — record it in
+    # FORMER_OWNERS or leave the row alone, but do not let it stay silent.
     class PolicyReconciler
       # The audit action every re-home writes. Registered into the core
       # AuditActions seam by lib/powernode_system/engine.rb beside the
@@ -98,6 +101,93 @@ module System
       # and roll back — rather than land unrecorded.
       REHOME_AUDIT_ACTION = "system.intervention_policy.rehomed"
       AUDITED_ACTIONS = [ REHOME_AUDIT_ACTION ].freeze
+
+      # action_category → the AGENT_IDENTITIES keys that DECLARED it before
+      # its current owner did. The record of every ownership move, written
+      # when the move is made; #rehomable_row prefers it over the structural
+      # rule (see the class header). An entry is honoured only while the
+      # declarations agree with it — the named former agent must be a
+      # declared identity and must not be the current owner —
+      # policy_reconciler_rehome_spec pins that consistency so a key moved
+      # BACK cannot leave a stale entry that re-homes the wrong way.
+      #
+      # Keys that gained an agent row without ever having one are NOT moves
+      # and are deliberately absent: the platform-scaling pair, the cordon and
+      # snapshot-delete keys (operator-only until wave 1 gave them a twin) and
+      # system.sdwan_federation_compose (registered, declared by no set until
+      # wave 1). Nothing held them at the agent shape, so there is nothing to
+      # re-home and a map entry would name a former owner that never existed.
+      FORMER_OWNERS = {
+        # ---- HIER-P2A (recorded retroactively; the reconciler ran these on
+        # the structural rule before the map existed). The 14 SDWAN / federation
+        # remediations → SDWAN Manager, gitops drift → GitOps Reconciler, the
+        # publication streak → Disk Image Manager. All from Fleet Autonomy.
+        "system.federation_peer_remediate"            => %w[fleet-autonomy],
+        "system.sdwan_peer_remediate"                 => %w[fleet-autonomy],
+        "system.sdwan_key_rotate"                     => %w[fleet-autonomy],
+        "system.sdwan_failover"                       => %w[fleet-autonomy],
+        "system.sdwan_user_device_revoke"             => %w[fleet-autonomy],
+        "system.sdwan_bgp_session_remediate"          => %w[fleet-autonomy],
+        "system.sdwan_vip_failover"                   => %w[fleet-autonomy],
+        "system.sdwan_credential_refresh"             => %w[fleet-autonomy],
+        "system.sdwan_service_health_investigate"     => %w[fleet-autonomy],
+        "system.sdwan_ovn_deployment_investigate"     => %w[fleet-autonomy],
+        "system.sdwan_bgp_observation_investigate"    => %w[fleet-autonomy],
+        "system.sdwan_apply_investigate"              => %w[fleet-autonomy],
+        "system.sdwan_user_device_config_investigate" => %w[fleet-autonomy],
+        "system.federation_acceptance"                => %w[fleet-autonomy],
+        "system.gitops_drift_remediate"               => %w[fleet-autonomy],
+        "system.disk_image_publication_investigate"   => %w[fleet-autonomy],
+
+        # ---- HIER-P2DECL wave 1: 35 keys off Fleet Autonomy.
+        # → Capacity Manager: the capacity group (5), the instance-pool agent
+        #   set (8, formerly the "instance-pool-agent" set keyed
+        #   fleet-autonomy) and the provisioning set (6, formerly the
+        #   "provisioning" set keyed fleet-autonomy).
+        "system.instance_replace"            => %w[fleet-autonomy],
+        "system.instance_reap"               => %w[fleet-autonomy],
+        "system.region_expansion"            => %w[fleet-autonomy],
+        "system.capacity_resize"             => %w[fleet-autonomy],
+        "system.relocate_workload"           => %w[fleet-autonomy],
+        "system.instance_pool_create"        => %w[fleet-autonomy],
+        "system.instance_pool_update"        => %w[fleet-autonomy],
+        "system.instance_pool_ceiling_raise" => %w[fleet-autonomy],
+        "system.instance_pool_archive"       => %w[fleet-autonomy],
+        "system.instance_pool_delete"        => %w[fleet-autonomy],
+        "system.instance_pool_replenish"     => %w[fleet-autonomy],
+        "system.instance_pool_drain"         => %w[fleet-autonomy],
+        "system.instance_pool_acquire"       => %w[fleet-autonomy],
+        "project.adapt"                      => %w[fleet-autonomy],
+        "project.cost_control"               => %w[fleet-autonomy],
+        "project.scale_horizontal"           => %w[fleet-autonomy],
+        "project.relocate"                   => %w[fleet-autonomy],
+        "project.schema_change"              => %w[fleet-autonomy],
+        "project.security_change"            => %w[fleet-autonomy],
+        # → Storage Manager: the storage group (2).
+        "system.storage_assignment_reconcile" => %w[fleet-autonomy],
+        "system.restore_volume"               => %w[fleet-autonomy],
+        # → Ingress Manager: the ingress group (4) + service_backends_update.
+        "system.acme_certificate_provision" => %w[fleet-autonomy],
+        "system.expose_service_local"       => %w[fleet-autonomy],
+        "system.expose_service_public_tcp"  => %w[fleet-autonomy],
+        "system.expose_service_publicly"    => %w[fleet-autonomy],
+        "system.service_backends_update"    => %w[fleet-autonomy],
+        # → Supply Chain Manager: the supply-chain group (7).
+        "system.package_repository.sync" => %w[fleet-autonomy],
+        "system.package_module.create"   => %w[fleet-autonomy],
+        "system.package_module.refresh"  => %w[fleet-autonomy],
+        "system.architecture.propose"    => %w[fleet-autonomy],
+        "system.architecture.create"     => %w[fleet-autonomy],
+        "system.architecture.update"     => %w[fleet-autonomy],
+        "system.architecture.delete"     => %w[fleet-autonomy],
+        # → System Topology Designer: the two composer categories (2). THESE
+        #   TWO RE-HOME ON WAVE 1, unlike the 33 above: that agent is already
+        #   seeded, so its set is not skipped and the first reconcile after
+        #   the declarations deploy moves them (policy_reconciler_rehome_spec
+        #   pins it). See the wave-1 header in PolicyDeclarations.
+        "system.multi_tenant_isolation"    => %w[fleet-autonomy],
+        "system.service_discovery_compose" => %w[fleet-autonomy]
+      }.freeze
 
       Result = Struct.new(:created, :already_present, :created_categories,
                           :skipped_sets, :shadowed, :rehomed, keyword_init: true) do
@@ -108,7 +198,7 @@ module System
         # A SKIPPED set is drift, not a neutral outcome. An install that enables
         # this extension AFTER its first boot never seeds the agents (db:seed is
         # first-boot only — the whole argument this class exists for), so every
-        # agent set skips — the eight agent-keyed sets, which hold roughly
+        # agent set skips — the eleven agent-keyed sets, which hold roughly
         # two-thirds of every row PolicyDeclarations declares. Counting only
         # `missing` reported that install as CLEAN: the skipped set contributes
         # no missing rows precisely because it was never examined. (No literal
@@ -316,11 +406,19 @@ module System
       # ---- re-homing ----------------------------------------------------------
 
       # The row a FORMER owner still holds for a key now declared on `agent`,
-      # or nil. A former owner is a DECLARED agent (one of AGENT_IDENTITIES,
-      # resolved the same way) whose agent-scoped sets no longer declare the
-      # category; a row on any other agent is an operator's own and is never a
-      # candidate. Only agent-shape rows (scope "agent", no user) qualify — an
+      # or nil. Only agent-shape rows (scope "agent", no user) qualify — an
       # operator-shape row is a different audience, not a former home.
+      #
+      # Two rules, in order (HIER-P2DECL):
+      #   1. FORMER_OWNERS names the category → a candidate is a row on one of
+      #      the agents it names (resolved the same way the sets are). A row
+      #      on any other agent — declared or not — is left alone.
+      #   2. Otherwise the P2A STRUCTURAL rule: a DECLARED agent (one of
+      #      AGENT_IDENTITIES) whose agent-scoped sets no longer declare the
+      #      category. Fires with a WARN naming the gap in the map, once per
+      #      category per run.
+      # A row on an agent outside AGENT_IDENTITIES is an operator's own and
+      # is never a candidate under either rule.
       #
       # Deterministic: the oldest candidate wins. Two former owners holding the
       # same key is not a state the declarations can produce (a category is
@@ -329,11 +427,30 @@ module System
       def rehomable_row(set, agent, action_category)
         return nil unless set[:scope] == "agent" && agent
 
-        ::Ai::InterventionPolicy
+        candidates = ::Ai::InterventionPolicy
           .where(account: @account, scope: "agent", user_id: nil, action_category: action_category)
           .where.not(ai_agent_id: [ nil, agent.id ])
           .order(:created_at, :id)
-          .detect { |row| former_owner_key(row.ai_agent_id, action_category) }
+
+        if (recorded = FORMER_OWNERS[action_category])
+          former_ids = recorded.filter_map { |key| resolve_agent(key)&.id }
+          return candidates.detect { |row| former_ids.include?(row.ai_agent_id) }
+        end
+
+        stale = candidates.detect { |row| former_owner_key(row.ai_agent_id, action_category) }
+        warn_unrecorded_move(set, action_category, stale) if stale
+        stale
+      end
+
+      def warn_unrecorded_move(set, action_category, row)
+        @warned_unrecorded ||= Set.new
+        return unless @warned_unrecorded.add?(action_category)
+
+        @logger.warn(
+          "[GovernanceReconciler] #{set[:key]}/#{action_category} is re-homable from " \
+          "#{stale_owner_name(row)} by the structural rule, but that move is not recorded in " \
+          "PolicyReconciler::FORMER_OWNERS — record it, or the row is an operator's own and should stay"
+        )
       end
 
       # The declared key of the agent holding `agent_id`, when that agent's own

@@ -317,16 +317,28 @@ module System
       # is_active / conditions / priority preserved, audit row written) rather
       # than creating a fresh one and leaving the tuned one stale.
       #
-      # What is still here is grouped into named sub-hashes so the next
-      # increments (Capacity / Storage / Ingress / Supply Chain managers,
-      # HIER-P2B..E) can lift a whole domain into its new agent's set with a
-      # one-line change: move the constant into the new set, and re-point the
-      # bindings' `owner:`. The verbs do not move with the owner.
+      # HIER-P2DECL (Phase 2 wave 1, operator rulings 2026-09-03) LIFTED the
+      # named groups P2A left here onto their own agents: CAPACITY_POLICY_KEYS
+      # → Capacity Manager, STORAGE_POLICY_KEYS → Storage Manager,
+      # INGRESS_POLICY_KEYS → Ingress Manager, SUPPLY_CHAIN_POLICY_KEYS →
+      # Supply Chain Manager, and the topology pair → System Topology
+      # Designer (see the wave-1 block below PROVISIONING_CONDITION_OVERRIDES).
+      # The groups stay as named constants so each agent set reads as "the
+      # group plus what else it took", and the verbs did not move with the
+      # owner. The agents are SEEDED in wave 2; until then their sets skip in
+      # PolicyReconciler ("agent absent") and the fleet tick gates their
+      # bindings under Fleet Autonomy with a fleet.owner_agent_missing event
+      # (FleetAutonomyService#for_owner) — where an established install still
+      # holds the rows, because the reconciler moves nothing off a former
+      # owner until the new one exists.
 
       # Capacity-shaped node-lifecycle keys: the DR replace/reap pair, the two
       # cost-bearing expansions, and workload relocation. instance_reboot /
-      # _reprovision / _terminate stay in the core literal below — they are
-      # remediation lanes for a silent or compromised instance, not capacity.
+      # _reprovision / _terminate stay in the Fleet Autonomy literal below —
+      # they are remediation lanes for a silent or compromised instance, not
+      # capacity. Owned by the Capacity Manager since HIER-P2DECL
+      # (CAPACITY_MANAGER_POLICIES); the instance_unrecoverable binding
+      # declares that owner.
       CAPACITY_POLICY_KEYS = {
         # IMP-e2f53e87d090 (APO-2b) — the disaster-recovery lane.
         # InstanceUnrecoverableSensor emits system.instance_unrecoverable for a
@@ -366,6 +378,10 @@ module System
         "system.relocate_workload"       => "require_approval"
       }.freeze
 
+      # Owned by the Storage Manager since HIER-P2DECL (STORAGE_MANAGER_POLICIES,
+      # with the snapshot delete beside them); the storage_assignment_drift
+      # binding declares that owner. No binding routes system.restore_volume —
+      # it is a gated executor category (RestoreVolumeExecutor).
       STORAGE_POLICY_KEYS = {
         # Stale storage assignment re-reconciliation (StorageAssignmentDriftSensor,
         # audit F3-07). notify_and_proceed: it re-runs the same reconciliation the
@@ -384,6 +400,12 @@ module System
       # TUNABLE through PATCH /api/v1/system/autonomy, and satisfies
       # routed_lane_policy_coherence_spec — BaseSkillExecutor is a declared
       # ActionCategoryRouter, so its categories are routed categories.
+      #
+      # Owned by the Ingress Manager since HIER-P2DECL (INGRESS_MANAGER_POLICIES,
+      # with system.service_backends_update beside them). NO SIGNAL_BINDINGS
+      # entry routes to any of these: they gate the executor / MCP doors only
+      # (sensor_owner_gating_spec asserts that rather than assuming it), so the
+      # Ingress Manager owns rows but, today, no sensor lane.
       INGRESS_POLICY_KEYS = {
         "system.acme_certificate_provision" => "require_approval",
         "system.expose_service_local"       => "require_approval",
@@ -391,6 +413,10 @@ module System
         "system.expose_service_publicly"    => "require_approval"
       }.freeze
 
+      # Owned by the Supply Chain Manager since HIER-P2DECL
+      # (SUPPLY_CHAIN_MANAGER_POLICIES is exactly this group); the
+      # package_drift_pressure binding declares that owner. The architecture
+      # rows gate the executor door only.
       SUPPLY_CHAIN_POLICY_KEYS = {
         # Package repository ingestion. Sync is routine + reversible (just
         # refreshes cached metadata); module creation is supply-chain critical
@@ -557,30 +583,14 @@ module System
         # otherwise score ineffective forever and trip a false remediation_stuck.
         "system.capability_gap_review" => "require_approval",
 
-        # The category system_set_service_backends gates on
-        # (Ai::Tools::SystemIngressTool::SERVICE_BACKENDS_CATEGORY, IMP-0c10b9fd5596).
-        # It was gated before it was declared: the verdict already fell to the
-        # unmatched default (require_approval), but the engine registers only
-        # declared categories, so System::AutonomyActions#update refused every
-        # operator edit to it — a correct control nobody could see or tune.
-        # Deliberately NOT in INGRESS_POLICY_KEYS (HIER-P2A ruling: it stays
-        # where it is); HIER-P2D decides whether it travels with the ingress
-        # group when that group is lifted onto an Ingress Manager. Note the
-        # two axes are independent and must not be read as one answer: OWNERSHIP
-        # (which agent's set declares it, and therefore which agent gates it) is
-        # Fleet Autonomy and undecided past that; the UI DOMAIN it is bucketed
-        # under in System::AutonomyActions::DOMAIN_PREFIXES is "ingress", which
-        # only says where an operator finds the row in the Autonomy panel. The
-        # pivot files it beside the ingress rows because it would otherwise
-        # strand in the "other" catch-all the panel drops.
-        "system.service_backends_update"    => "require_approval",
-        # Gated skill executors (APO-1c) that are neither ingress nor supply
-        # chain — see INGRESS_POLICY_KEYS for the rationale that applies to all
-        # of them.
-        "system.fulfill_capability_request" => "require_approval",
-        "system.multi_tenant_isolation"     => "require_approval",
-        "system.service_discovery_compose"  => "require_approval"
-      }.merge(CAPACITY_POLICY_KEYS, STORAGE_POLICY_KEYS, INGRESS_POLICY_KEYS, SUPPLY_CHAIN_POLICY_KEYS).freeze
+        # Gated skill executor (APO-1c) that is neither ingress nor supply
+        # chain nor topology — see INGRESS_POLICY_KEYS for the rationale. The
+        # other two of the old "neither" trio (system.multi_tenant_isolation,
+        # system.service_discovery_compose) are Topology Designer composer
+        # skills and moved to TOPOLOGY_DESIGNER_POLICIES at HIER-P2DECL;
+        # system.service_backends_update moved to INGRESS_MANAGER_POLICIES.
+        "system.fulfill_capability_request" => "require_approval"
+      }.freeze
 
       # The AUTONOMOUS SDWAN / federation remediation rows, gated under SDWAN
       # Manager by the fleet tick (the sensors run on Fleet Autonomy's tick; the
@@ -985,8 +995,16 @@ module System
       # every install that boots past it; an operator who deactivated one by
       # hand beforehand lost nothing, since the row was equally inert.
       #
-      # The AGENT set is untouched and keeps all eight: Fleet Autonomy's own
-      # dispatch vocabulary is a different audience on a different path.
+      # The AGENT set is untouched and keeps all eight: the agent's own
+      # dispatch vocabulary is a different audience on a different path. That
+      # agent is the Capacity Manager since HIER-P2DECL (the whole of
+      # INSTANCE_POOL_POLICIES is merged into CAPACITY_MANAGER_POLICIES; the
+      # "instance-pool-agent" set on Fleet Autonomy is gone, and this operator
+      # set is its declared twin — OPERATOR_TWINS). Which keys an AGENT path
+      # actually reads: the four gated ones through Ai::GatedActions when the
+      # caller is an agent principal, and `_acquire` / `_replenish` through
+      # System::Executors::InstancePool when Fleet-side capacity work runs as
+      # that agent; no SIGNAL_BINDINGS entry routes to any of them.
       INSTANCE_POOL_OPERATOR_GATED_KEYS = %w[
         system.instance_pool_create
         system.instance_pool_delete
@@ -1034,10 +1052,14 @@ module System
       # modal is derived from POLICY_SETS in the engine initializer, so this
       # declaration is the only edit either category needs.
       #
-      # Global scope, no agent: the reconciler is reached from the operator's
-      # Concierge-bound platform_resilience skill and the Scaling panel, not
-      # from a monitor agent's tick, so an agent-scoped row would resolve for
-      # nobody who can call it.
+      # Global scope, no agent, for the OPERATOR row: the reconciler is reached
+      # from the operator's Concierge-bound platform_resilience skill and the
+      # Scaling panel, not from a monitor agent's tick. Since HIER-P2DECL the
+      # pair is ALSO declared on the Capacity Manager's agent set
+      # (CAPACITY_MANAGER_POLICIES; this set is its twin — OPERATOR_TWINS): the
+      # agent row resolves only when the reconciler is invoked AS that agent
+      # (an executor bound to it in wave 2), and no SIGNAL_BINDINGS entry
+      # routes to either key. The operator row stays the one an operator tunes.
       PLATFORM_SCALING_POLICIES = {
         "system.platform.scale_out" => "auto_approve",
         "system.platform.scale_in" => "require_approval"
@@ -1058,16 +1080,16 @@ module System
       # OPERATOR (global) shape, like the instance-pool operator set: the MCP
       # verb is called by a user or an agent, and Ai::InterventionPolicyService
       # resolves both against scope-"global" rows ("Agent-BINDING by design").
-      # It is deliberately NOT in FLEET_AUTONOMY_POLICIES yet — that agent
-      # audience is read only by FleetAutonomyService#permitted_actions, i.e.
-      # by a sensor-routed lane, and no such lane exists until the snapshot
-      # schedule sensor lands (its retention pruning must then ask THIS
-      # category, so one operator row governs a delete whichever door it
-      # arrives through — see System::VolumeManagementService
-      # .snapshot_schedule_for, and improvement
-      # 01a065df-4ab7-7a04-8293-8069d805b0b1, which tracks that sensor).
-      # Adding the agent row before that lane exists would be a control
-      # nothing reads.
+      # It is NOT in FLEET_AUTONOMY_POLICIES. Since HIER-P2DECL it is also
+      # declared on the Storage Manager's agent set (STORAGE_MANAGER_POLICIES;
+      # this set is its twin — OPERATOR_TWINS, operator ruling: every
+      # operator-only set gets an agent twin). What reads the agent row today:
+      # the MCP verb when the caller is an agent principal (the Storage
+      # Manager, once wave 2 binds it). No SIGNAL_BINDINGS entry routes to it
+      # yet — the snapshot schedule sensor (improvement
+      # 01a065df-4ab7-7a04-8293-8069d805b0b1) must ask THIS category when it
+      # lands, so one row governs a delete whichever door it arrives through
+      # (System::VolumeManagementService.snapshot_schedule_for).
       #
       # BOTH WRITERS, as for the instance-pool operator set: declaring here
       # makes the gate resolve, but the row an operator actually tunes is
@@ -1090,7 +1112,10 @@ module System
       # worse than no hold). require_approval by operator direction: a cordon
       # removes capacity from every pool consumer at once and the replenisher
       # spends to backfill it. GLOBAL (operator) scope like the snapshot set —
-      # no sensor lane routes it. The row is written by
+      # no sensor lane routes it; since HIER-P2DECL the key is also on the
+      # Capacity Manager's agent set (CAPACITY_MANAGER_POLICIES, this set's
+      # twin), read only when the cordon verb is called AS that agent. The
+      # operator row is written by
       # db/seeds/system_instance_cordon_policies.rb on a first boot and by
       # PolicyReconciler on an install that had already booted; as with the
       # snapshot set the declared verb EQUALS the unmatched default, so the
@@ -1124,48 +1149,215 @@ module System
         }.freeze
       }.freeze
 
+      # ================================================================
+      # PHASE 2 WAVE 1 (HIER-P2DECL) — THE FOUR OPERATIONS MANAGERS, THE
+      # TOPOLOGY OWNER AND THE OPERATOR-SET TWINS
+      # ================================================================
+      # Operator rulings 2026-09-03, not re-litigated here: Fleet Autonomy is
+      # split into a Capacity Manager, a Storage Manager, an Ingress Manager
+      # and a Supply Chain Manager; the System Topology Designer takes the
+      # topology set; every operator-only set is paired with the agent set
+      # that carries the same keys; all official agents are global seeded
+      # canonicals under the System Concierge (HIER-P1).
+      #
+      # THIS WAVE MOVES DECLARATIONS ONLY. The FOUR MANAGERS (identity,
+      # prompt, chain, trust, skills) are seeded in wave 2. Until then, for
+      # those four sets — and ONLY those four:
+      #   * PolicyReconciler skips the set ("agent absent") and leaves the
+      #     moved rows on Fleet Autonomy — it re-homes them, in place, the
+      #     first reconcile after the agent exists (its FORMER_OWNERS map
+      #     records every key below as moved off fleet-autonomy);
+      #   * the fleet tick gates each re-pointed binding under Fleet Autonomy
+      #     with a fleet.owner_agent_missing event, where those rows are.
+      #
+      # THE TOPOLOGY DESIGNER IS THE EXCEPTION, and it is the one wave-1 owner
+      # that ALREADY EXISTS: db/seeds/system_topology_designer_agent.rb seeds
+      # name "System Topology Designer" / agent_type "assistant", exactly the
+      # AGENT_IDENTITIES entry below, so AgentResolver resolves it and its set
+      # is NOT skipped. The first `rake system:governance:reconcile` after this
+      # wave deploys re-homes system.multi_tenant_isolation and
+      # system.service_discovery_compose off Fleet Autonomy onto it and CREATES
+      # system.sdwan_federation_compose. All three declare require_approval,
+      # which is also the unmatched default the composer executors resolved
+      # while those rows sat on an agent they never run as — so no verdict
+      # changes on a row nobody tuned. What DOES change: the three executors
+      # `binds_to "System Topology Designer"` and BaseSkillExecutor resolves
+      # the policy against the EXECUTING agent, so a Fleet Autonomy row an
+      # operator had TUNED (auto_approve, say) stops being invisible to them
+      # and starts applying — a loosening, on this wave alone.
+      # policy_reconciler_rehome_spec pins the move.
+      #
+      # So an established install sees exactly those three rows change when
+      # this wave is deployed by itself; the other 33 of FORMER_OWNERS's 35
+      # wave-1 keys wait for wave 2.
+      # A FRESH install seeded between the waves has no row anywhere for the
+      # moved sensor-routed lanes (the Fleet Autonomy seed no longer declares
+      # them and no seed exists for the four managers) — wave 2's seeds close
+      # it.
+      #
+      # WHAT IS AGENT-ROUTED, PER SET. Stated because the operator ruling's
+      # "twin where a sensor or executor lane exists" is a fact about each key:
+      #   Capacity: system.instance_replace (instance_unrecoverable binding) and
+      #     project.adapt / project.cost_control (the three project_* bindings
+      #     and System::AdaptationGate) are sensor-routed; the other
+      #     project.* verbs and the DR/expansion keys gate executors; the eight
+      #     instance_pool keys, the platform-scaling pair and the cordon key are
+      #     operator-door twins (Ai::GatedActions / SystemFleetTool /
+      #     ReplicaReconciler), read at the agent shape only for a call made AS
+      #     the Capacity Manager.
+      #   Storage: system.storage_assignment_reconcile is sensor-routed
+      #     (storage_assignment_drift); restore_volume gates an executor;
+      #     volume_snapshot_delete is an operator-door twin.
+      #   Ingress: nothing sensor-routed — five executor/MCP gates.
+      #   Supply chain: system.package_repository.sync is sensor-routed
+      #     (package_drift_pressure); the other six gate executors.
+      #   Topology: nothing sensor-routed — three composer executor gates.
+
+      # Capacity Manager = the capacity-shaped node-lifecycle keys + the eight
+      # instance-pool keys (agent shape; the operator shape stays the gated
+      # four) + the six project.* provisioning keys (with their per-category
+      # condition override, carried on the POLICY_SETS entry) + the
+      # platform-scaling pair + the cordon key. 22 keys. The former
+      # "instance-pool-agent" and "provisioning" sets on Fleet Autonomy are
+      # REPLACED by this one; every key here is new to Capacity Manager and,
+      # except the three operator-twin-only keys, moved off Fleet Autonomy.
+      CAPACITY_MANAGER_POLICIES = CAPACITY_POLICY_KEYS.merge(
+        INSTANCE_POOL_POLICIES, PROVISIONING_POLICIES,
+        PLATFORM_SCALING_POLICIES, INSTANCE_CORDON_OPERATOR_POLICIES
+      ).freeze
+
+      # Storage Manager = the two storage keys + the snapshot delete (twin of
+      # the volume-snapshot operator set). 3 keys.
+      STORAGE_MANAGER_POLICIES = STORAGE_POLICY_KEYS.merge(VOLUME_SNAPSHOT_OPERATOR_POLICIES).freeze
+
+      # Ingress Manager = the four ingress executor gates + system.service_
+      # backends_update. 5 keys.
+      #
+      # service_backends_update TRAVELS WITH THE INGRESS GROUP (the decision
+      # HIER-P2A deferred to this increment): the category gates
+      # Ai::Tools::SystemIngressTool#system_set_service_backends
+      # (SERVICE_BACKENDS_CATEGORY, IMP-0c10b9fd5596), which writes a
+      # published service's backend set — the same Sdwan::Service the four
+      # expose_* verbs publish and the ACME verb certifies. The agent that
+      # owns the ingress WRITER owns the row that gates it; leaving it on
+      # Fleet Autonomy would have put one ingress write behind a different
+      # agent's chain than its siblings. The UI domain (DOMAIN_PREFIXES
+      # "ingress") and the ownership now agree.
+      INGRESS_MANAGER_POLICIES = {
+        "system.service_backends_update" => "require_approval"
+      }.merge(INGRESS_POLICY_KEYS).freeze
+
+      # Supply Chain Manager = the packages + architecture keys. 7 keys.
+      # Nothing beyond the group today; written as a merge rather than an
+      # alias so the text scan in spec/docs/reference_counts_spec.rb expands
+      # it the way it expands its siblings.
+      SUPPLY_CHAIN_MANAGER_POLICIES = SUPPLY_CHAIN_POLICY_KEYS.merge({}).freeze
+
+      # System Topology Designer = the two composer categories that were in
+      # FLEET_AUTONOMY_POLICIES since IMP-4ba48fd088ce, plus
+      # system.sdwan_federation_compose, which was REGISTERED (an explicit
+      # concat in lib/powernode_system/engine.rb) but declared by no set —
+      # so it had no row anywhere, resolved the unmatched default and could
+      # be tuned but never reconciled. Declared require_approval, which IS
+      # that default: landing the row changes no verdict, it makes the
+      # control visible and reconcilable. All three are
+      # SdwanFederationComposeExecutor / MultiTenantIsolationExecutor /
+      # ServiceDiscoveryComposerExecutor gates, bound to this assistant. The
+      # Topology Designer is the EXISTING assistant (seeded by
+      # db/seeds/system_topology_designer_agent.rb); it gains a policy set,
+      # not a new identity. 3 keys, none sensor-routed.
+      TOPOLOGY_DESIGNER_POLICIES = {
+        "system.multi_tenant_isolation"    => "require_approval",
+        "system.service_discovery_compose" => "require_approval",
+        "system.sdwan_federation_compose"  => "require_approval"
+      }.freeze
+
+      # operator-set key → the agent-set key that carries the same keys at the
+      # agent shape (operator ruling: every operator-only set gets an agent
+      # twin). Declared so a new operator set cannot land unpaired;
+      # policy_declarations_ownership_spec checks each pair against the sets
+      # themselves (every operator key present on the twin, same verb). The
+      # manual-operations set is NOT a POLICY_SETS entry and stays
+      # operator-only by design — System::Task commands are an operator
+      # vocabulary; PolicyReconciler#manual_set is its only home.
+      OPERATOR_TWINS = {
+        "sdwan-operator"           => "sdwan-manager",
+        "runtime-operator"         => "runtime-manager",
+        "instance-pool-operator"   => "capacity-manager",
+        "platform-scaling"         => "capacity-manager",
+        "instance-cordon-operator" => "capacity-manager",
+        "volume-snapshot-operator" => "storage-manager"
+      }.freeze
+
       # Agent identity is keyed on SOURCE_KEY, not name. The seeds look agents
       # up by name, but every seeded agent also carries a source_key and the
       # model documents these as "platform-provided, seed-managed by
       # source_key" — so an operator who renames one keeps a resolvable
       # declaration instead of silently losing its whole policy set.
+      #
+      # HIER-P2DECL adds the four wave-1 managers (seeded in wave 2 — an
+      # identity here with no agent behind it is exactly the state
+      # PolicyReconciler reports as "<set>(agent absent)" and the tick warns
+      # about as fleet.owner_agent_missing) and the System Topology Designer,
+      # which is the EXISTING assistant: its seed carries source_key
+      # "system-topology-designer", so it resolves through the name+type
+      # primary path here, not the source_key fallback.
       AGENT_IDENTITIES = {
-        "fleet-autonomy"     => { name: "Fleet Autonomy",      agent_type: "monitor" },
-        "sdwan-manager"      => { name: "SDWAN Manager",       agent_type: "monitor" },
-        "cve-responder"      => { name: "CVE Responder",       agent_type: "monitor" },
-        "disk-image-manager" => { name: "Disk Image Manager",  agent_type: "monitor" },
-        "gitops-reconciler"  => { name: "GitOps Reconciler",   agent_type: "monitor" },
-        "runtime-manager"    => { name: "Runtime Manager",     agent_type: "monitor" }
+        "fleet-autonomy"       => { name: "Fleet Autonomy",           agent_type: "monitor" },
+        "sdwan-manager"        => { name: "SDWAN Manager",            agent_type: "monitor" },
+        "cve-responder"        => { name: "CVE Responder",            agent_type: "monitor" },
+        "disk-image-manager"   => { name: "Disk Image Manager",       agent_type: "monitor" },
+        "gitops-reconciler"    => { name: "GitOps Reconciler",        agent_type: "monitor" },
+        "runtime-manager"      => { name: "Runtime Manager",          agent_type: "monitor" },
+        "capacity-manager"     => { name: "Capacity Manager",         agent_type: "monitor" },
+        "storage-manager"      => { name: "Storage Manager",          agent_type: "monitor" },
+        "ingress-manager"      => { name: "Ingress Manager",          agent_type: "monitor" },
+        "supply-chain-manager" => { name: "Supply Chain Manager",     agent_type: "monitor" },
+        "topology-designer"    => { name: "System Topology Designer", agent_type: "assistant" }
       }.freeze
 
       # Every declared row group, with the SHAPE it resolves at. `agent_key`
       # nil means an agent-less row; a set whose agent is absent is SKIPPED,
       # never guessed at another shape.
       #
-      # NOTE the dual-shape instance-pool entries: the same family is declared
-      # at BOTH the operator (global) and agent shapes, exactly as its seed
-      # writes them, because the two bind different callers — but NOT the same
-      # rows. The agent set carries all eight categories; the operator set
-      # carries only the four a gate site passes (IMP-5a2b801f3386, see
-      # INSTANCE_POOL_OPERATOR_GATED_KEYS above).
+      # NOTE the dual-shape operator/agent pairs (OPERATOR_TWINS): a family is
+      # declared at BOTH the operator (global / action_type) and agent shapes
+      # because the two bind different callers — but NOT the same rows. The
+      # instance-pool agent shape (on the Capacity Manager since HIER-P2DECL)
+      # carries all eight categories; the operator set carries only the four
+      # a gate site passes (IMP-5a2b801f3386, see
+      # INSTANCE_POOL_OPERATOR_GATED_KEYS above). One agent, ONE set: the
+      # former "instance-pool-agent" and "provisioning" sets that keyed
+      # fleet-autonomy a second and third time are folded into the
+      # capacity-manager set, so `agent_key` is unique across the agent
+      # entries and a key is declared exactly once.
       POLICY_SETS = [
-        { key: "fleet-autonomy",     agent_key: "fleet-autonomy",     scope: "agent",
+        { key: "fleet-autonomy",       agent_key: "fleet-autonomy",       scope: "agent",
           priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: FLEET_AUTONOMY_POLICIES },
-        { key: "sdwan-manager",      agent_key: "sdwan-manager",      scope: "agent",
+        { key: "sdwan-manager",        agent_key: "sdwan-manager",        scope: "agent",
           priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: SDWAN_MANAGER_POLICIES },
-        { key: "cve-responder",      agent_key: "cve-responder",      scope: "agent",
+        { key: "cve-responder",        agent_key: "cve-responder",        scope: "agent",
           priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: CVE_RESPONDER_POLICIES },
-        { key: "disk-image-manager", agent_key: "disk-image-manager", scope: "agent",
+        { key: "disk-image-manager",   agent_key: "disk-image-manager",   scope: "agent",
           priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: DISK_IMAGE_MANAGER_POLICIES },
-        { key: "gitops-reconciler",  agent_key: "gitops-reconciler",  scope: "agent",
+        { key: "gitops-reconciler",    agent_key: "gitops-reconciler",    scope: "agent",
           priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: GITOPS_RECONCILER_POLICIES },
-        { key: "runtime-manager",    agent_key: "runtime-manager",    scope: "agent",
+        { key: "runtime-manager",      agent_key: "runtime-manager",      scope: "agent",
           priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: RUNTIME_MANAGER_POLICIES },
-        { key: "instance-pool-agent", agent_key: "fleet-autonomy",    scope: "agent",
-          priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: INSTANCE_POOL_POLICIES },
-        { key: "provisioning",       agent_key: "fleet-autonomy",     scope: "agent",
-          priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: PROVISIONING_POLICIES,
+        # HIER-P2DECL wave 1. The capacity set carries the provisioning
+        # override that the old "provisioning" set carried (a set-level
+        # `conditions` cannot express project.scale_horizontal's window).
+        { key: "capacity-manager",     agent_key: "capacity-manager",     scope: "agent",
+          priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: CAPACITY_MANAGER_POLICIES,
           condition_overrides: PROVISIONING_CONDITION_OVERRIDES },
+        { key: "storage-manager",      agent_key: "storage-manager",      scope: "agent",
+          priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: STORAGE_MANAGER_POLICIES },
+        { key: "ingress-manager",      agent_key: "ingress-manager",      scope: "agent",
+          priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: INGRESS_MANAGER_POLICIES },
+        { key: "supply-chain-manager", agent_key: "supply-chain-manager", scope: "agent",
+          priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: SUPPLY_CHAIN_MANAGER_POLICIES },
+        { key: "topology-designer",    agent_key: "topology-designer",    scope: "agent",
+          priority: 10, conditions: DEFAULT_TRUST_CONDITIONS, policies: TOPOLOGY_DESIGNER_POLICIES },
         { key: "sdwan-operator",     agent_key: nil,                  scope: "action_type",
           priority: 5,  conditions: DEFAULT_TRUST_CONDITIONS, policies: SDWAN_OPERATOR_POLICIES },
         { key: "runtime-operator",   agent_key: nil,                  scope: "action_type",
@@ -1187,10 +1379,11 @@ module System
       # agree, and PolicyReconciler uses it to tell a row whose owner CHANGED
       # (re-home) from a row an operator put on an agent of their own (leave).
       #
-      # nil for a category no agent set declares — operator-only sets
-      # (volume-snapshot, cordon, platform-scaling, manual operations) and
-      # unknown names alike. Unambiguous by construction: no category is
-      # declared on two agents (policy_declarations_ownership_spec pins it).
+      # nil for a category no agent set declares — since HIER-P2DECL every
+      # operator set has an agent twin, so that is the manual-operations set
+      # (system.task.*) and unknown names alike. Unambiguous by construction:
+      # no category is declared on two agents, and none twice on one
+      # (policy_declarations_ownership_spec pins both).
       AGENT_SET_OWNERS = POLICY_SETS
         .select { |set| set[:scope] == "agent" && set[:agent_key] }
         .each_with_object({}) { |set, owners| set[:policies].each_key { |c| owners[c] ||= set[:agent_key] } }

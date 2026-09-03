@@ -32,9 +32,12 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # public_package_repositories_seed) are deliberately excluded — they're
 # either destructive, expensive, or operator-only.
 # `system_agent_hierarchy.rb` runs AFTER every agent seed and after
-# `system_skill_bindings_seed.rb`: it attaches the seven domain agents under
-# System Concierge and derives each delegation policy from POLICY_SETS and the
-# SkillBindings registry (HIER-P1), so every agent it names must already exist.
+# `system_skill_bindings_seed.rb`: it attaches every declared domain agent
+# (PolicyDeclarations::AGENT_IDENTITIES — seven seeded today, plus the four
+# wave-1 managers HIER-P2DECL declared ahead of their wave-2 seeds, which it
+# reports as skipped) under System Concierge and derives each delegation policy
+# from POLICY_SETS and the SkillBindings registry (HIER-P1), so every agent it
+# attaches must already exist.
 # `system_autonomy_orphan_cleanup.rb` is last: a garbage-collection pass wants
 # to see every row the seeds above wrote. It is order-independent all the same
 # (its predicate is the boot category registry, not any seed's declarations) —

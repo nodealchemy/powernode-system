@@ -180,6 +180,11 @@ module System
         "system.instance_unrecoverable" => {
           skill: ::System::Ai::Skills::ReplaceInstanceExecutor,
           action_category: "system.instance_replace",
+          # HIER-P2DECL: the DR replace lane is capacity work — the category
+          # is declared in CAPACITY_MANAGER_POLICIES. The sibling
+          # instance_silent / instance_state_drifted lanes stay on Fleet
+          # Autonomy: a reboot is remediation, not capacity.
+          owner: "capacity-manager",
           side_effectful: true,
           dry_run_supported: true,
           # operation_id is the idempotency key every step of the executor is
@@ -618,17 +623,25 @@ module System
         # Routing is to the `project.adapt` / `project.cost_control` action
         # categories — operator policies decide whether to auto-approve
         # (notify_and_proceed) or block via require_approval.
+        #
+        # HIER-P2DECL: the six project.* categories are declared in
+        # CAPACITY_MANAGER_POLICIES (they were the "provisioning" set on Fleet
+        # Autonomy), so these three bindings and System::AdaptationGate — the
+        # other router of project.* — gate under the Capacity Manager.
         "system.project_slo_violation" => {
           skill: nil,
-          action_category: "project.adapt"
+          action_category: "project.adapt",
+          owner: "capacity-manager"
         },
         "system.project_drift" => {
           skill: nil,
-          action_category: "project.adapt"
+          action_category: "project.adapt",
+          owner: "capacity-manager"
         },
         "system.project_cost_breach" => {
           skill: nil,
-          action_category: "project.cost_control"
+          action_category: "project.cost_control",
+          owner: "capacity-manager"
         },
         # CVE Responder bindings (2026-05-11 wiring completion). The
         # binding's skill is CveResponseExecutor — a side-effect-free
@@ -706,13 +719,15 @@ module System
         # enqueue.
         "system.package_drift_pressure" => {
           skill: nil,
-          action_category: "system.package_repository.sync"
+          action_category: "system.package_repository.sync",
+          owner: "supply-chain-manager" # HIER-P2DECL: SUPPLY_CHAIN_MANAGER_POLICIES
         },
         # Stale storage assignment → re-run reconciliation via the
         # remediation applier (REMEDIATION_APPLIERS) once the gate proceeds.
         "system.storage_assignment_drift" => {
           skill: nil,
-          action_category: "system.storage_assignment_reconcile"
+          action_category: "system.storage_assignment_reconcile",
+          owner: "storage-manager" # HIER-P2DECL: STORAGE_MANAGER_POLICIES
         },
         # GitOps drift (GitopsDriftSensor) → notify_and_proceed in the fleet
         # seed. No skill: the reconciler (System::Gitops::Reconciler, driven by
@@ -858,7 +873,10 @@ module System
       # under the agent whose policy set DECLARES the binding's action_category
       # (PolicyDeclarations.owner_of). Each binding names that agent with
       # `owner: "<agent_key>"`; a binding that names none gates under the tick
-      # agent. The owner lives on the BINDING and not on the SENSORS entry
+      # agent. HIER-P2DECL re-pointed six more: instance_unrecoverable and the
+      # three project_* kinds to capacity-manager, storage_assignment_drift to
+      # storage-manager, package_drift_pressure to supply-chain-manager. No
+      # binding routes to an Ingress Manager or Topology Designer category. The owner lives on the BINDING and not on the SENSORS entry
       # because ownership is a property of the action category — the thing a
       # policy row is keyed on — and one sensor can emit kinds that land on
       # different owners: SdwanBgpSessionHealthSensor routes

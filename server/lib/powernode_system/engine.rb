@@ -688,24 +688,19 @@ module PowernodeSystem
         # they're registered so any operator-authored intervention policy for
         # them validates uniformly.
         #
-        # Only the three COMPOSE categories are listed here now:
-        # system.federation_peer_remediate is declared on the SDWAN Manager
+        # NO EXPLICIT LIST HERE any more (HIER-P2DECL). system.federation_
+        # peer_remediate is declared on the SDWAN Manager
         # (PolicyDeclarations::SDWAN_REMEDIATION_POLICIES, since HIER-P2A) and
-        # so arrives through the derivation above. Of the three, only
-        # system.sdwan_federation_compose is declared by NO policy set — the
-        # explicit name below is its sole registration. The other two are no
-        # longer in that position: the branch-health pass of 2026-09-02
-        # (IMP-4ba48fd088ce) declared system.multi_tenant_isolation and
-        # system.service_discovery_compose in FLEET_AUTONOMY_POLICIES, so they
-        # arrive through the derivation above and their entries here are
-        # belt-and-braces. autonomy_categories_registration_spec.rb pins the
-        # deliberately-unseeded set to system.sdwan_federation_compose alone,
-        # so a fourth name added here without a declaration reds there.
-        categories.concat(%w[
-          system.sdwan_federation_compose
-          system.multi_tenant_isolation
-          system.service_discovery_compose
-        ])
+        # all three compose categories are declared on the System Topology
+        # Designer (PolicyDeclarations::TOPOLOGY_DESIGNER_POLICIES): the two
+        # that IMP-4ba48fd088ce had put in FLEET_AUTONOMY_POLICIES moved
+        # there, and system.sdwan_federation_compose — until then declared by
+        # NO set, so a `concat` here was its sole registration and it had a
+        # tunable control with no row anywhere — is declared require_approval
+        # beside them. Every one now arrives through the derivation above.
+        # autonomy_categories_registration_spec.rb pins the deliberately-
+        # unseeded set to EMPTY, so a name added by concat without a
+        # declaration reds there.
 
         # APO-1c (IMP-7e2bdc1774e4) — the approval-gated SKILL categories.
         #
@@ -750,10 +745,11 @@ module PowernodeSystem
         # PolicyDeclarations (which registers it here), and if its action
         # already has a seeded row under another spelling, declare THAT
         # spelling as `action_category:` rather than adding a name anywhere.
-        # Only a gated category that is deliberately seeded by NO set belongs
-        # in an explicit concat — today that is system.sdwan_federation_compose
-        # alone, in the composer concat above (see the note there), and the
-        # registration spec pins that set so a new one cannot land unremarked.
+        # Only a gated category that is deliberately seeded by NO set would
+        # belong in an explicit concat — and since HIER-P2DECL there is none
+        # (system.sdwan_federation_compose, the last, is declared on the
+        # Topology Designer); the registration spec pins that set as empty so
+        # a new one cannot land unremarked.
         #
         # system.federation_acceptance (Skills::FederationAcceptanceExecutor)
         # is NOT a second spelling of sdwan.federation_peer_accept: that policy
