@@ -55,9 +55,10 @@ require "yaml"
 #     - a MCP_API_REFERENCE.md table row promising a `(filter by ...)` list the
 #       verb does not declare — mechanically, by reading action_definitions,
 #       not by pinning the one row we know about;
-#     - the tutorial's fleet.yaml drifting away from the schema note beside it,
-#       in BOTH directions, because the note is compared against the real
-#       DesiredStateValidator run over the doc's actual bytes;
+#     - the tutorial's fleet.yaml re-acquiring a top-level key the real
+#       DesiredStateValidator rejects (run over the doc's actual bytes), or its
+#       `lifecycle_class:` lines leaving the `pools` section, the only section
+#       where the knob is a real one;
 #     - any of the code premises above changing.
 #
 #   CANNOT SEE:
@@ -536,34 +537,43 @@ RSpec.describe "System::Node lifecycle_class docs vs. what the code does" do
 
   describe NodeLifecycleClassDocs::GITOPS do
     let(:doc) { self.class.read(ext_root, NodeLifecycleClassDocs::GITOPS) }
+    let(:block) { doc[/^```yaml\n(# fleet\.yaml\n.*?)^```/m, 1] }
 
     # The strongest oracle available here: run the REAL validator over the
-    # doc's ACTUAL bytes, and require the note beside the block to name
-    # exactly the keys it rejects. Equality, not containment — a note that
-    # over-claims is as wrong as one that under-claims, and either direction
-    # reddens when the example or the schema moves.
-    it "names exactly the top-level keys the real validator rejects" do
-      block = doc[/^```yaml\n(.*?)^```/m, 1]
+    # doc's ACTUAL bytes. Until IMP-7cacd5924fc9 the example carried a `nodes:`
+    # block (and `version:` / `account:` / `sdwan:`), every one of them
+    # rejected as an unknown top-level key, and a "Schema note" beside it that
+    # was required to name exactly the rejected set. The example now validates
+    # and the note is gone; this pins that it STAYS that way, so a `nodes:`
+    # block cannot creep back in under a fresh caveat. The full validate /
+    # parse / diff round-trip is gitops_fleet_yaml_tutorial_fidelity_spec.rb.
+    it "carries no top-level key the real validator rejects, and no schema note excusing one" do
       expect(block).not_to be_nil, "no fleet.yaml block found — this check would be vacuous"
 
       raw = YAML.safe_load(block, permitted_classes: [ Symbol, Date, Time ], aliases: true)
       result = System::Gitops::DesiredStateValidator.call(raw)
       rejected = result.errors.select { |_k, v| v.any? { |m| m.include?("unknown top-level key") } }.keys.sort
 
-      note = doc[/> \*\*Schema note.*?\n(?:>.*\n)*/]
-      expect(note).not_to be_nil, "no schema note beside the fleet.yaml block; the validator rejects #{rejected.inspect}"
-
-      named = note.scan(/`(\w+):`/).flatten.sort
-      expect(named).to eq(rejected)
+      expect(rejected).to eq([])
+      expect(raw.keys).not_to include("nodes")
+      expect(doc).not_to include("**Schema note")
     end
 
-    it "marks the nodes block's lifecycle_class as unsupported rather than teaching it" do
+    it "teaches lifecycle_class only under pools, with a value the pool model accepts" do
       pattern = /^\s+lifecycle_class: \w+$/
       expect(self.class.match_count(doc, pattern)).to be > 0,
                                                       "no YAML lifecycle_class line — this containment check is vacuous"
+
+      raw = YAML.safe_load(block, permitted_classes: [ Symbol, Date, Time ], aliases: true)
+      in_pools = raw.fetch("pools").values.map { |attrs| attrs["lifecycle_class"] }.compact
+      expect(in_pools.size).to eq(self.class.match_count(block, pattern)),
+                               "a lifecycle_class: line sits outside the pools section"
+      expect(in_pools - ::System::InstancePool::LIFECYCLE_CLASSES).to be_empty
+
       expect(self.class.absent(doc, [
         /there is no `node` kind/,
-        /Node's `lifecycle_class` is not GitOps-declarable/
+        /Node's `lifecycle_class` is not GitOps-declarable/,
+        /class lives on the `System::InstancePool`/
       ])).to be_empty
     end
   end
