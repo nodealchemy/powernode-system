@@ -314,10 +314,66 @@ module System
           metadata&.dig("payload", key) || metadata&.dig(:payload, key.to_sym)
       end
 
+      # IMP-0de0a6b4db59 — the surviving half of APO-2d (IMP-25949cfd28fd).
+      # The fleet twin's #notify_action gained a durable, broadcast FleetEvent;
+      # this arm was out of that lane and stayed one Rails.logger line, so a
+      # security-domain notify_and_proceed reached no operator surface. Same
+      # NOTIFY_EVENT_KIND as the twin so every reader keyed on it (approval UI,
+      # system_recent_signals, system_inspect_correlation, compliance reads)
+      # sees both lanes; source stays "cve_responder" so they remain tellable
+      # apart. The log line is kept.
       def notify_action(action_category, metadata:, reasoning:)
+        summary = reasoning[:summary] || reasoning["summary"]
         Rails.logger.info(
-          "[CveResponder] Auto-execute: #{action_category} — " \
-          "#{reasoning[:summary]&.truncate(120) || reasoning['summary']&.truncate(120)}"
+          "[CveResponder] Auto-execute: #{action_category} — #{summary&.to_s&.truncate(120)}"
+        )
+
+        md = metadata.is_a?(Hash) ? metadata.deep_stringify_keys : {}
+
+        # Correlate on the signal fingerprint when the caller carried one
+        # (DecisionEngine#skill_metadata_payload stamps it — "cve_pub:<cve_id>"
+        # / "crit_upgrade:<link>:<version>" for this lane's sensors — and
+        # EventBroadcaster#emit_decision! keys its decision events off the same
+        # value), so the notification lands in the SAME correlation walk as the
+        # decision it belongs to rather than in a chain of its own.
+        correlation = md["signal_fingerprint"].presence || "notify:#{SecureRandom.hex(8)}"
+
+        # Resource refs ride in the payload: EventBroadcaster maps these keys
+        # onto the FleetEvent ref columns. `cve_id` here is the CVE identifier
+        # string ("CVE-…"), not the row UUID the ref column holds — the uuid
+        # cast leaves the column nil and the identifier stays in the payload,
+        # exactly as #dispatch_single's inline_dispatch event already does.
+        refs = md.slice("node_id", "instance_id", "module_id", "module_version_id",
+                        "certificate_id", "cve_id").compact
+
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: account,
+          kind: ::System::Fleet::FleetAutonomyService::NOTIFY_EVENT_KIND,
+          # medium, not low: an operator chose notify_and_proceed BECAUSE they
+          # want to be told. Low severity is the routine-telemetry band.
+          severity: :medium,
+          source: "cve_responder",
+          correlation_id: correlation,
+          # This lane's signals name the module as `node_module_id` (the
+          # column name), which the payload-derived mapping does not read —
+          # pass it as the explicit ref so the event is filterable per module.
+          node_module_id: md["node_module_id"].presence,
+          payload: refs.merge(
+            "action_category" => action_category,
+            "gate" => "notify_and_proceed",
+            # Bounded on the way into a persisted, broadcast payload for the
+            # same reason BaseSkillExecutor bounds its error text: a summary is
+            # free-form, caller-supplied, and now leaves the reconciler host.
+            # The untruncated value stays on the log line above.
+            "summary" => summary&.to_s&.truncate(::System::Fleet::FleetAutonomyService::NOTIFY_SUMMARY_LIMIT),
+            # The plural shape module_critical_upgrade_ready carries, and the
+            # module list both sensors carry — what the operator needs to act.
+            "cve_ids" => md["cve_ids"],
+            "affected_module_ids" => md["affected_module_ids"],
+            "signal_kind" => md["signal_kind"],
+            "signal_fingerprint" => md["signal_fingerprint"],
+            "agent_id" => agent&.id
+          ).compact
         )
       end
 
