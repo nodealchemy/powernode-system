@@ -177,6 +177,33 @@ module System
             "Operable provider types: #{available_providers.join(', ')}."
         end
 
+        # THE APO-7 write-side predicate, spelled once (IMP-4c825848bb79).
+        # Every door that mints a System::Provider row, binds a connection to
+        # one, or issues a credential verdict asks this before it writes and
+        # refuses on a non-nil answer; the door keeps only its own response
+        # shape (422 / error_result / [false, msg]). It used to be hand-rolled
+        # at six sites, each free to drift, and
+        # spec/lint/provider_type_writer_census_spec.rb now fails on any copy
+        # of the clauses below outside this directory.
+        #
+        # `supported?` gates the predicate: types with no registry adapter at
+        # all (digitalocean/linode/vultr/custom) are outside it by design and
+        # answer nil here, as does nil/blank input — refusing is only ever
+        # about a MAPPED adapter that cannot run in this build.
+        #
+        # @param provider_type [String, Symbol, nil] The provider type a door
+        #   is about to write
+        # @return [String, nil] Operator-actionable refusal text naming the
+        #   missing gem, or nil when the door may proceed
+        def sdk_refusal(provider_type)
+          type = provider_type.to_s
+          return nil if type.empty?
+          return nil unless supported?(type)
+          return nil if sdk_available?(type)
+
+          sdk_missing_message(type)
+        end
+
         # Register a custom provider (for extensions/plugins)
         #
         # @param provider_type [String] The provider type identifier

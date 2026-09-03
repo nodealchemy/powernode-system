@@ -87,22 +87,20 @@ module Api
         # doors has been wrong three times running, so this comment does not
         # carry one.
         #
-        # `supported?` gates the predicate: types with no registry adapter at
+        # The predicate itself is Registry.sdk_refusal (IMP-4c825848bb79) —
+        # `supported?` gating included, so types with no registry adapter at
         # all (digitalocean/linode/vultr/custom) are outside it by design, as
-        # at every other door.
+        # at every other door. This method owns only the 422 shape.
         #
         # @param provider_type [String, nil] the type the request asks for
         # @return [Boolean] true when a refusal was rendered and the caller
         #   must return without writing
         def refuse_inoperable_provider_type(provider_type)
-          type = provider_type.to_s
-          return false if type.blank?
-
           registry = ::System::Providers::Registry
-          return false unless registry.supported?(type)
-          return false if registry.sdk_available?(type)
+          refusal = registry.sdk_refusal(provider_type)
+          return false unless refusal
 
-          render_error(registry.sdk_missing_message(type),
+          render_error(refusal,
                        status: :unprocessable_content,
                        code: "PROVIDER_SDK_MISSING")
           true

@@ -115,17 +115,15 @@ module Api
           render_not_found("Provider Connection")
         end
 
+        # The predicate itself is Registry.sdk_refusal (IMP-4c825848bb79);
+        # this only unwraps the provider, which is nil when the request
+        # names none.
+        #
         # @param provider [System::Provider, nil]
         # @return [String, nil] refusal text naming the missing gem, or nil
         def provider_sdk_refusal(provider)
-          provider_type = provider&.provider_type
-          return nil if provider_type.blank?
-
           registry = ::System::Providers::Registry
-          return nil unless registry.supported?(provider_type)
-          return nil if registry.sdk_available?(provider_type)
-
-          registry.sdk_missing_message(provider_type)
+          registry.sdk_refusal(provider&.provider_type)
         end
 
         def connection_params

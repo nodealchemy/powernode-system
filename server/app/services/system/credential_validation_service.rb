@@ -68,28 +68,24 @@ module System
     private
 
     # WHAT KEEPS UNREGISTERED TYPES OUT is the call ORDER, not the
-    # `supported?` line below. #test returns early when
-    # Registry.adapter_for is nil, and adapter_for is nil on exactly the keys
-    # `supported?` is false on — both read PROVIDER_CLASSES with the same
-    # normalisation — so digitalocean/linode/vultr/custom keep the "no
-    # adapter" verdict above without this helper ever running. That first
-    # line therefore cannot fire from this call site: it is defence-in-depth
-    # for a future caller that reaches the helper without the early return,
-    # and deleting it does NOT red the suite. The controller's copy of the
-    # same clause (ProvidersController#refuse_inoperable_provider_type) has
-    # no such early return in front of it and IS reachable — do not reason
-    # from one to the other.
+    # `supported?` clause inside Registry.sdk_refusal. #test returns early
+    # when Registry.adapter_for is nil, and adapter_for is nil on exactly the
+    # keys `supported?` is false on — both read PROVIDER_CLASSES with the
+    # same normalisation — so digitalocean/linode/vultr/custom keep the "no
+    # adapter" verdict above without this helper ever running. That clause
+    # therefore cannot fire from this call site: it is defence-in-depth for
+    # a future caller that reaches the helper without the early return. The
+    # controller door (ProvidersController#refuse_inoperable_provider_type)
+    # has no such early return in front of it and the clause IS reachable
+    # there — do not reason from one to the other.
+    #
+    # The predicate itself is Registry.sdk_refusal (IMP-4c825848bb79).
     #
     # @return [String, nil] refusal text naming the missing gem, or nil when
     #   the adapter is operable here
     def sdk_refusal
       registry = ::System::Providers::Registry
-      provider_type = provider_type_label
-
-      return nil unless registry.supported?(provider_type)
-      return nil if registry.sdk_available?(provider_type)
-
-      registry.sdk_missing_message(provider_type)
+      registry.sdk_refusal(provider_type_label)
     end
 
     def effective_credentials

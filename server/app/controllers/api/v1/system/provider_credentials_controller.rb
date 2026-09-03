@@ -202,16 +202,13 @@ module Api
         # spec/lint/provider_type_writer_census_spec.rb is the enumeration of
         # record.
         #
+        # The predicate itself is Registry.sdk_refusal (IMP-4c825848bb79).
+        #
         # @param provider_type [String]
         # @return [String, nil] refusal text naming the missing gem, or nil
         def provider_sdk_refusal(provider_type)
-          return nil if provider_type.blank?
-
           registry = ::System::Providers::Registry
-          return nil unless registry.supported?(provider_type)
-          return nil if registry.sdk_available?(provider_type)
-
-          registry.sdk_missing_message(provider_type)
+          registry.sdk_refusal(provider_type)
         end
 
         # Refuse in the shape each action promises: #create answers 422

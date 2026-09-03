@@ -7671,10 +7671,9 @@ module Ai
         # first provisioning call then raised a bare NameError from inside
         # the adapter, which an MCP caller sees as -32603 rather than as a
         # refusal naming the gem it is missing.
-        provider_type = params[:provider_type].to_s
         registry = ::System::Providers::Registry
-        if registry.supported?(provider_type) && !registry.sdk_available?(provider_type)
-          return error_result(registry.sdk_missing_message(provider_type))
+        if (refusal = registry.sdk_refusal(params[:provider_type]))
+          return error_result(refusal)
         end
 
         provider = ::System::Provider.new(
@@ -7736,10 +7735,9 @@ module Ai
         # system.connections.create reaches this action directly. Refuse
         # BEFORE the write: test_connection! below only reports the later
         # failure, by which point the dead row has already landed.
-        provider_type = provider.provider_type.to_s
         registry = ::System::Providers::Registry
-        if registry.supported?(provider_type) && !registry.sdk_available?(provider_type)
-          return error_result(registry.sdk_missing_message(provider_type))
+        if (refusal = registry.sdk_refusal(provider.provider_type))
+          return error_result(refusal)
         end
 
         connection = ::System::ProviderConnection.new(

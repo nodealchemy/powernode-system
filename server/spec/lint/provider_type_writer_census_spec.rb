@@ -27,8 +27,8 @@ require "pathname"
 # the seventh, which is precisely how the fifth and sixth survived.
 #
 # EVERY ENTRY DECLARES ITS GUARD. Either :registry_sdk_predicate — the site
-# applies `Registry.supported? && !Registry.sdk_available?` before the write —
-# or a named exemption. The exemption is not free: the "guarded sites really
+# asks `Registry.sdk_refusal(type)` before the write and refuses on a non-nil
+# answer — or a named exemption. The exemption is not free: the "guarded sites really
 # contain the predicate" example below reads the file and checks the tokens are
 # actually there, so an entry cannot claim a guard the code does not have. A
 # one-line addition to a bare array of paths reads as tidying up and gets
@@ -102,7 +102,31 @@ module ProviderTypeWriterCensus
   SYSTEM_PROVIDER_RE = /(?:::)?System::Provider(?![A-Za-z_])|system_providers/
 
   # The predicate tokens a site claiming :registry_sdk_predicate must contain.
-  GUARD_TOKENS = [ /Providers::Registry|registry\s*=/, /sdk_available\?/ ].freeze
+  # ONE spelling (IMP-4c825848bb79): the door calls Registry.sdk_refusal and
+  # keeps only the door-shaped part of the answer. The leading `\.` is
+  # load-bearing — a controller's own `provider_sdk_refusal(` helper must not
+  # satisfy the token on its name alone.
+  GUARD_TOKENS = [ /Providers::Registry|registry\s*=/, /\.sdk_refusal\(/ ].freeze
+
+  # The clauses the single spelling replaced. Any of these outside the
+  # registry and its adapter classes is the predicate being hand-rolled again
+  # — the drift the helper exists to prevent. Adapter classes DEFINE
+  # `self.sdk_available?` and the registry composes them, so PREDICATE_HOME
+  # names those two shapes rather than exempting the whole directory:
+  # catalog_sync_service.rb and the local_qemu/pro_cloud/proxmox subtrees sit
+  # in app/services/system/providers/ too and are IN scope.
+  #
+  # NO TRAILING `\b`. `?` is a non-word character, so a `\b` after
+  # `sdk_available\?` demands a word character NEXT and therefore matches
+  # nothing at all — `sdk_available?(`, `sdk_available?` at end of line and
+  # `def self.sdk_available?` all fail it, which would leave a third of this
+  # pattern inert while the example below still passed. Same backtracking
+  # family as the `(?!\w)` tail on WRITE_RE above. The two word-final
+  # alternatives carry an explicit `(?![A-Za-z0-9_])` instead, and the example
+  # asserts the pattern still matches every spelling the six doors contained.
+  PREDICATE_CLAUSE_RE = /(?<![A-Za-z0-9_])(?:sdk_available\?|sdk_missing_message(?![A-Za-z0-9_])|missing_sdk_gem(?![A-Za-z0-9_]))/
+  PREDICATE_HOME       = %r{\Aapp/services/system/providers/(?:registry|[a-z0-9_]*provider)\.rb\z}
+  PREDICATE_HOME_LABEL = "app/services/system/providers/{registry.rb,*provider.rb}"
 
   EXEMPTIONS = %i[
     fixed_type_constant
@@ -200,6 +224,39 @@ module ProviderTypeWriterCensus
     end
   end
 
+  # Every non-comment line outside PREDICATE_HOME that mentions one of the
+  # clauses the single spelling replaced. Same roots and globs as the writer
+  # scan, so a hand-rolled copy in core or a sibling extension is a finding
+  # here exactly as an unlisted writer would be.
+  #
+  # @return [Array<String>] "<prefix><rel>:<line>: <source>"
+  # The files hand_rolled_predicate_sites reads, separated out so the example
+  # can assert the set is non-empty and contains a door it knows about: an
+  # empty file set and a clean tree are the same green otherwise.
+  #
+  # @return [Array<Array(String, String, String)>] [key prefix, rel, abs]
+  def self.predicate_scan_files
+    scan_roots.flat_map do |prefix, root|
+      SCAN_GLOBS.flat_map { |glob| Dir.glob(root.join(glob).to_s) }.sort.filter_map do |abs|
+        rel = Pathname.new(abs).relative_path_from(root).to_s
+        next if rel.match?(PREDICATE_HOME)
+
+        [ prefix, rel, abs ]
+      end
+    end
+  end
+
+  def self.hand_rolled_predicate_sites
+    predicate_scan_files.flat_map do |prefix, rel, abs|
+      File.read(abs).each_line.with_index.filter_map do |line, idx|
+        next if line.strip.start_with?("#")
+        next unless line.match?(PREDICATE_CLAUSE_RE)
+
+        "#{prefix}#{rel}:#{idx + 1}: #{line.strip}"
+      end
+    end
+  end
+
   def self.entry(rel, idx, line, token, abs: nil)
     { key: "#{rel}##{token}", path: rel, abs: abs, line: idx + 1, source: line.strip }
   end
@@ -283,8 +340,8 @@ RSpec.describe "System::Provider provider_type writer census (IMP-0ddfd8a60032)"
       be refused AT THE WRITE (APO-7). Either apply the predicate
 
         registry = ::System::Providers::Registry
-        if registry.supported?(type) && !registry.sdk_available?(type)
-          # refuse, naming registry.sdk_missing_message(type)
+        if (refusal = registry.sdk_refusal(type))
+          # refuse, answering `refusal` in the door's own shape
         end
 
       and add the site to CENSUS with guard: :registry_sdk_predicate, or add it
@@ -323,5 +380,47 @@ RSpec.describe "System::Provider provider_type writer census (IMP-0ddfd8a60032)"
         expect(body).to match(token), "#{key} claims :registry_sdk_predicate but does not match #{token.inspect}"
       end
     end
+  end
+
+  # IMP-4c825848bb79. The predicate used to be spelled six times —
+  # `supported? && !sdk_available?` then `sdk_missing_message` — once per
+  # door, and each copy could drift on its own. The census's PRESENCE check
+  # above then had to recognise every spelling, which is the same rot in a
+  # second place. Registry.sdk_refusal is now the one spelling; a door that
+  # reaches for the clauses behind it is re-rolling the predicate.
+  it "spells the SDK predicate once, in the Registry" do
+    # Anti-vacuity, on both ways this scanner can go silently blind: the
+    # pattern must still match every spelling the six doors carried before the
+    # collapse (a dead alternative reports a clean tree), and the file set it
+    # reads must be non-empty and contain a door it knows about.
+    [
+      "if registry.supported?(type) && !registry.sdk_available?(type)",
+      "return error_result(registry.sdk_missing_message(type))",
+      "gem = ::System::Providers::Registry.missing_sdk_gem(provider_type)",
+      "adapter_class.sdk_available?",
+      "def self.sdk_available?"
+    ].each do |spelling|
+      expect(spelling).to match(ProviderTypeWriterCensus::PREDICATE_CLAUSE_RE),
+        "PREDICATE_CLAUSE_RE no longer matches #{spelling.inspect} — the scanner is blind to it"
+    end
+
+    [ "registry.sdk_missing_message_for(type)", "no_sdk_available?", "legacy_missing_sdk_gems" ].each do |lookalike|
+      expect(lookalike).not_to match(ProviderTypeWriterCensus::PREDICATE_CLAUSE_RE),
+        "PREDICATE_CLAUSE_RE now matches the lookalike #{lookalike.inspect}"
+    end
+
+    scanned = ProviderTypeWriterCensus.predicate_scan_files
+    expect(scanned.map { |(prefix, rel, _abs)| "#{prefix}#{rel}" })
+      .to include("app/services/ai/tools/system_fleet_tool.rb")
+
+    hand_rolled = ProviderTypeWriterCensus.hand_rolled_predicate_sites
+    expect(hand_rolled).to be_empty, <<~MSG
+      The APO-7 SDK predicate is hand-rolled outside #{ProviderTypeWriterCensus::PREDICATE_HOME_LABEL}:
+
+        #{hand_rolled.join("\n  ")}
+
+      Call ::System::Providers::Registry.sdk_refusal(type) instead and refuse
+      on a non-nil answer; the door keeps only its own response shape.
+    MSG
   end
 end
