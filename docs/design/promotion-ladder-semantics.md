@@ -326,9 +326,11 @@ lifecycle-gating questions filed separately") · `docs/FLEET_SENSORS.md`.
 Pinned by `spec/services/system/fleet/promotion_ladder_decision_spec.rb`, whose fixtures
 are built through `PackageBuildWebhookService` — the real CI-callback path — rather than
 by stamping `promotion_state: "blessed"` by hand. Every pre-existing fixture for
-`#newer_blessed_version_for` stamps it
-(`cve_remediation_orchestration_executor_spec.rb:90, 255, 275, 301, 325`), which is why
-none of them could see that the input set was unreachable.
+`#newer_blessed_version_for` stamps it — every `promotion_state: "blessed"` literal in
+`cve_remediation_orchestration_executor_spec.rb` is a candidate created by hand (cited by
+shape rather than by line: an earlier version of this sentence listed line numbers and
+they were falsified by the next edit to that file) — which is why none of them could see
+that the input set was unreachable.
 
 ## 6. What this does not decide
 

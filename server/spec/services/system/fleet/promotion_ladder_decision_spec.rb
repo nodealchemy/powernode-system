@@ -10,8 +10,10 @@ require "rails_helper"
 #
 # Why this file exists at all, and why it does not stamp `blessed` by hand:
 # every existing fixture for #newer_blessed_version_for creates its candidate
-# with `promotion_state: "blessed"` directly (see
-# cve_remediation_orchestration_executor_spec.rb:90, :255, :275, :301, :325).
+# with `promotion_state: "blessed"` directly (every such literal in
+# cve_remediation_orchestration_executor_spec.rb — cited by shape, not by line:
+# the line numbers this comment used to carry were falsified by the next edit
+# to that file).
 # Those pass against a pipeline that has never produced a `blessed` row, so
 # they can only ever prove the method's own arithmetic — never that its input
 # set is reachable. The fixtures below are built through
