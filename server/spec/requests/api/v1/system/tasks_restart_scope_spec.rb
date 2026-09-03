@@ -25,7 +25,10 @@ RSpec.describe "POST /api/v1/system/tasks restart scope", type: :request do
   # Forces the gate's :proceed branch, where ExecuteTask runs inline. No
   # InterventionPolicy rows exist in a spec account, so the service otherwise
   # falls through to its require_approval default and the task is only built at
-  # approval time. Production seeds `system.task.restart` as auto_approve.
+  # approval time. Production DECLARES `system.task.restart` as require_approval
+  # (IMP-0c1a7dca5781) — an install seeded before that change may still hold the
+  # older auto_approve row — so the stub, not the seed, is what puts this spec on
+  # the :proceed branch.
   before do
     allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
       { policy: "auto_approve", channels: [], conditions: {}, record: nil }

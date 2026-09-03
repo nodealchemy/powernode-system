@@ -210,10 +210,14 @@ module Api
         # POST /api/v1/system/nodes/:node_id/node_instances/:id/start
         # All instance lifecycle actions flow through the autonomy gate for
         # uniform audit + chain-of-custody. Manual operation policies default
-        # start/stop/restart/reboot to auto_approve, so steady-state behavior
-        # is identical — but operators can flip any of them to require_approval
-        # from the System Settings → Manual Operations tab if they want a
-        # double-check before bouncing nodes.
+        # start/stop/reboot to auto_approve, so steady-state behavior is
+        # identical for those — `restart` defaults to require_approval since
+        # IMP-0c1a7dca5781, because its unit-scoped reading carries a
+        # caller-chosen options["unit"] into systemctl on the node. Operators
+        # can flip any of them either way from the System Settings → Manual
+        # Operations tab; an install seeded before that change still holds the
+        # older auto_approve row, since PolicyReconciler never rewrites an
+        # existing verb.
         def start
           require_permission("system.instances.control")
           gate_or_execute(:start)
