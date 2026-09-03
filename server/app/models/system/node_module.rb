@@ -524,15 +524,19 @@ module System
       System::ModuleVersionService.new(self, current_user: current_user)
     end
 
-    # Create a new version with changelog
+    # Create a new version with changelog. Records the row ONLY — it does not
+    # move current_version_id (IMP-b7abf6c777da); promotion is
+    # #promote_to_version!, a separate, explicit decision.
     def create_version!(changelog: nil, user: nil)
       version_service(current_user: user).create_version(changelog: changelog)
     end
 
-    # Rollback to a specific version. allow_confinement_removal: see
-    # ModuleVersionService#rollback_to — restoring a snapshot that lacks the
-    # module's current `security`/`verify` block requires the caller to state
-    # that intent explicitly.
+    # Rollback to a specific version. Unlike #create_version! this IS a
+    # promotion: the rollback version becomes current through
+    # #promote_to_version! (and so arms restart_after_update).
+    # allow_confinement_removal: see ModuleVersionService#rollback_to —
+    # restoring a snapshot that lacks the module's current `security`/`verify`
+    # block requires the caller to state that intent explicitly.
     def rollback_to!(version, changelog: nil, user: nil, allow_confinement_removal: false)
       version_service(current_user: user).rollback_to(
         version, changelog: changelog, allow_confinement_removal: allow_confinement_removal
@@ -591,13 +595,16 @@ module System
     # #arm_restart_after_update! below, which is arm!'s single call site outside
     # spec/. It is NOT, and never was, "the platform's only
     # choke point for 'this version is now what the fleet runs'" — the comment
-    # that stood here said exactly that, and it was false when written. SIX
-    # sites write current_version_id; FIVE of them reach the column without
-    # passing this method, the most reachable being ModuleVersionService
-    # #create_version, which the `after_update :auto_create_version` callback
-    # above (line 265) invokes on ANY save touching VERSIONED_ATTRIBUTES.
+    # that stood here said exactly that, and it was false when written. Other
+    # sites write current_version_id without passing this method;
     # spec/lint/node_module_current_version_write_seam_spec.rb is the executable
-    # census, and it fails if a seventh appears.
+    # census of them, and it fails if a new one appears. The most reachable of
+    # them used to be ModuleVersionService#create_version, which the
+    # `after_update :auto_create_version` callback above invokes on ANY save
+    # touching VERSIONED_ATTRIBUTES — so an ordinary spec edit moved the fleet.
+    # IMP-b7abf6c777da removed that write: #create_version mints a row only, and
+    # the rollback route it also serves now moves the pointer through THIS
+    # method (ModuleVersionService#rollback_to), so it arms like any other move.
     #
     # The four POLICY guards are NOT here and must not be assumed to have run:
     # the auto_promote opt-out, the non-empty artifact floor, the
@@ -608,7 +615,9 @@ module System
     # ARMING IS KEYED TO THE TRANSITION, not to the call site — that is what
     # makes a ROLLBACK re-arm (and therefore restart) while a republished tag
     # stays quiet, since #set_current_version! returns false without writing
-    # when the version is already current.
+    # when the version is already current. Every rollback route (the MCP verb,
+    # POST /api/v1/system/node_modules/:id/rollback and the worker-API rollback,
+    # the latter two via ModuleVersionService#rollback_to) passes through here.
     #
     #   nil -> X  first promotion. ARMS TODAY, deliberately: the armed stamp
     #             lives on the VERSION and persists, so it is what fires the
@@ -823,6 +832,15 @@ module System
       Rails.logger.warn("[NodeModule##{id}] restart_after_update arm failed: #{e.class}: #{e.message}")
     end
 
+    # Records a version of the edited spec. It does NOT move current_version_id
+    # — ModuleVersionService#create_version stopped writing it in
+    # IMP-b7abf6c777da — so an edit through the model no longer changes what
+    # the fleet MOUNTS (has_data_file / the download artifact, which resolve
+    # through current_version); promotion is a separate, explicit
+    # #promote_to_version! call. It was never a gate on the spec itself: the
+    # node-API manifest serves mask/file_spec/package_spec/dependency_spec/
+    # protected_spec/config off this ROW, so an edit reaches attached instances
+    # on the next reconcile regardless of where the pointer sits.
     def auto_create_version
       # Skip if we're in the middle of a rollback or manual version creation
       return if @skip_auto_version
