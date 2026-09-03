@@ -181,11 +181,16 @@ RSpec.describe 'System::NodeModule versioning', type: :model do
         expect(version.file_spec).to eq({ 'file' => 'spec' })
       end
 
-      it 'updates current_version reference' do
+      # IMP-b7abf6c777da — minting is not promoting.
+      it 'does not touch the current_version reference' do
+        served = create(:system_node_module_version, node_module: node_module, version_number: 1)
+        node_module.promote_to_version!(served)
+
         version = node_module.create_version!(changelog: 'New version')
 
-        expect(node_module.reload.current_version).to eq(version)
-        expect(node_module.current_version_number).to eq(version.version_number)
+        expect(version).to be_persisted
+        expect(node_module.reload.current_version).to eq(served)
+        expect(node_module.current_version_number).to eq(1)
       end
 
       it 'raises error when module is locked' do
@@ -249,7 +254,7 @@ RSpec.describe 'System::NodeModule versioning', type: :model do
         node_module.update!(mask: { 'v1' => true })
         node_module.create_version!(changelog: 'Version 1')
         node_module.update!(mask: { 'v2' => true })
-        node_module.create_version!(changelog: 'Version 2')
+        node_module.promote_to_version!(node_module.create_version!(changelog: 'Version 2'))
       end
 
       it 'rolls back to the previous version' do
@@ -262,7 +267,7 @@ RSpec.describe 'System::NodeModule versioning', type: :model do
 
       it 'raises error when no previous version exists' do
         new_module = create(:system_node_module, account: account)
-        new_module.create_version!(changelog: 'First version')
+        new_module.promote_to_version!(new_module.create_version!(changelog: 'First version'))
 
         expect {
           new_module.rollback_to_previous!
@@ -445,6 +450,54 @@ RSpec.describe 'System::NodeModule versioning', type: :model do
         expect(declaring.promote_to_version!(d1)).to be true
         expect(declaring.reload.current_version_id).to eq(d1.id)
       end
+    end
+  end
+
+  # IMP-b7abf6c777da — a spec edit records a version; it does NOT move what the
+  # fleet runs.
+  #
+  # `after_update :auto_create_version` fires on ANY save touching
+  # VERSIONED_ATTRIBUTES and used to reach ModuleVersionService#create_version,
+  # which repointed current_version_id at the version it had just minted — a
+  # live X->Y move on a running fleet with no promotion guard and nothing armed
+  # to restart. Operator direction (sprint batch 6): auto-versioning creates a
+  # built version only; promotion stays behind the promote seam
+  # (#promote_to_version!, censused in
+  # spec/lint/node_module_current_version_write_seam_spec.rb).
+  #
+  # ORACLE: the module's own column after a REAL versioned-attribute save
+  # through the model — never a service return value.
+  describe 'auto_create_version leaves the fleet pointer (IMP-b7abf6c777da)' do
+    let(:declaring) do
+      create(:system_node_module, account: account, config: {
+               'restart_after_update' => [
+                 { 'module' => 'powernode-hub-backend', 'services' => [ 'rails' ] }
+               ]
+             })
+    end
+    let!(:served) { create(:system_node_module_version, node_module: declaring, version_number: 1) }
+
+    before { declaring.promote_to_version!(served) }
+
+    it 'records a new version but leaves current_version_id on what the fleet runs' do
+      expect(declaring.reload.current_version_id).to eq(served.id)
+
+      expect { declaring.update!(file_spec: { 'edited' => 'spec' }) }
+        .to change { declaring.versions.count }.by(1)
+
+      declaring.reload
+      expect(declaring.current_version_id).to eq(served.id)
+      expect(declaring.current_version_number).to eq(1)
+      expect(declaring.latest_version.changelog).to eq('Auto-versioned on update')
+      expect(declaring.latest_version.id).not_to eq(served.id)
+    end
+
+    it 'arms nothing — a module that declares restart_after_update gets no restart from an edit' do
+      expect(::System::RestartAfterUpdate).not_to receive(:arm!)
+
+      declaring.update!(file_spec: { 'edited' => 'spec' })
+
+      expect(::System::RestartAfterUpdate.armed?(declaring.reload.latest_version)).to be false
     end
   end
 end

@@ -33,11 +33,18 @@ require "tmpdir"
 #
 # WHAT THIS SPEC ACTUALLY FOUND. The finding that opened this task named four
 # writers. Re-deriving the set from the COLUMN rather than from the finding
-# turned up a fifth (module_version_service.rb:49) and this scanner, run for the
-# first time, turned up a SIXTH (cutover_renamed_modules.rb:74) that no human
-# enumeration had listed. That is the argument for a ratchet in one sentence:
-# the enumeration is the part that rots, so the enumeration is the part that has
-# to be executable.
+# turned up a fifth (ModuleVersionService#create_version) and this scanner, run
+# for the first time, turned up a SIXTH (cutover_renamed_modules.rb:74) that no
+# human enumeration had listed. That is the argument for a ratchet in one
+# sentence: the enumeration is the part that rots, so the enumeration is the
+# part that has to be executable.
+#
+# The fifth is gone: IMP-b7abf6c777da made #create_version mint a row without
+# touching the pointer (its widest caller was the `after_update
+# :auto_create_version` callback, i.e. every ordinary spec edit), and routed
+# the rollback path through NodeModule#promote_to_version!. The census below is
+# the FIVE that remain; the "carries no stale CENSUS entries" example is what
+# forced the entry out when the write went.
 #
 # THE PROPERTY, stated as an EQUALITY. The set of source sites that write
 # `current_version_id` (or the `current_version` association that denormalizes
@@ -128,21 +135,6 @@ module NodeModuleCurrentVersionSeam
       bypasses: %i[auto_promote_optout artifact_floor core_provenance batch_hold]
     },
 
-    "app/services/system/module_version_service.rb#node_module" => {
-      why: "BYPASS — the most reachable of them all, and the one the opening finding " \
-           "missed. #create_version (module_version_service.rb:49) repoints the module at " \
-           "every version it mints. Reached from the operator rollback route " \
-           "(node_modules_controller.rb:194 -> #rollback_to -> #create_version), from " \
-           "NodeModule#create_version!, and — the wide one — from NodeModule's " \
-           "`after_update :auto_create_version` callback, so ANY save touching " \
-           "NodeModule::VERSIONED_ATTRIBUTES moves the fleet pointer as a side effect. " \
-           "That is a live X->Y move on a running fleet with no guard at all, including no " \
-           "restart arming: the sanctioned writer's own comment used to claim arming there " \
-           "is 'what makes a ROLLBACK re-arm', while THIS operator rollback route never " \
-           "passes through it.",
-      bypasses: GUARDS
-    },
-
     "app/services/system/manifest_import_service.rb#mod" => {
       why: "BYPASS — #snapshot_version (manifest_import_service.rb:1075), reached from " \
            "#import! (:197) ONLY when `create_version: true`, which is worth stating " \
@@ -200,8 +192,8 @@ module NodeModuleCurrentVersionSeam
   #   kwarg   — `x.update!(current_version: v)`, `update_columns`, `update_column`,
   #             `update_all(current_version_id: nil)`, `assign_attributes`, INCLUDING
   #             the multi-line form where the key sits on a later line. That form is
-  #             not an edge case: it is how module_version_service.rb:49 — the writer
-  #             the finding missed — is spelled.
+  #             not an edge case: it is how ModuleVersionService#create_version — the
+  #             writer the finding missed, since removed — was spelled.
   #   inplace — `x.current_version = v` / `self.current_version_id = ...`, which
   #             mutate the loaded record for a later `save!`. (`self.` needs no rule
   #             of its own: `self` matches the receiver pattern and is reported as
@@ -227,10 +219,12 @@ module NodeModuleCurrentVersionSeam
   CREATE_BLOCK_RE = /#{CREATE_VERB_RE.source}.*\bdo\s*\|\s*(?<var>\w+)\s*\|/o
   CONT_BLOCK_RE   = /\A\s*\)\s*do\s*\|\s*(?<var>\w+)\s*\|/
   CREATE_LOOKBACK = 6
-  # How many lines past a write verb to keep reading for its arguments. 4 covers
-  # every multi-line call in the tree today (the widest is
-  # module_version_service.rb:49-52, three lines). A key on the fifth line is a
-  # known miss — see the tripwire limits above.
+  # How many lines past a write verb to keep reading for its arguments. 4 covered
+  # the widest multi-line call the tree has carried (the since-removed
+  # ModuleVersionService#create_version write, three lines); every remaining
+  # writer is single-line, and the synthetic discriminator below keeps the
+  # multi-line shape pinned. A key on the fifth line is a known miss — see the
+  # tripwire limits above.
   KW_WINDOW = 4
 
   # The argument text of the call whose open bracket sits at `start_col`, and
@@ -475,10 +469,14 @@ RSpec.describe "System::NodeModule#current_version_id write seam", type: :lint d
     it "reads the real tree, and finds every censused writer in it" do
       expect(hits).not_to be_empty
       expect(keys).to match_array(seam::CENSUS.keys)
-      # The sanctioned writer and the multi-line bypass the finding missed. If
-      # either drops out, the scan degraded — it did not get cleaner.
+      # The sanctioned writer and the most reachable remaining bypass (the
+      # manifest-import snapshot behind the REST import route and the MCP
+      # create verb). If either drops out, the scan degraded — it did not get
+      # cleaner. (The multi-line bypass this once pinned,
+      # ModuleVersionService#create_version, was REMOVED by IMP-b7abf6c777da;
+      # the multi-line shape stays pinned by the synthetic example above.)
       expect(keys).to include("app/models/system/node_module.rb#self")
-      expect(keys).to include("app/services/system/module_version_service.rb#node_module")
+      expect(keys).to include("app/services/system/manifest_import_service.rb#mod")
     end
 
     # The sibling guard must survive this file being loaded in the same process.
@@ -510,31 +508,32 @@ RSpec.describe "System::NodeModule#current_version_id write seam", type: :lint d
 
   # ── the behavioural half ──────────────────────────────────────────────────
   #
-  # The source scan proves the writers exist. This proves the consequence, and
-  # it asserts the MODULE'S OWN COLUMN rather than any writer's return value: a
-  # service that returns a NodeModuleVersion tells you nothing about whether the
-  # pointer moved, and reading the return value is how a bypass looks like a
-  # success.
+  # The source scan proves the writers exist. This proves the consequence — or,
+  # for the writer that was removed, its ABSENCE — and it asserts the MODULE'S
+  # OWN COLUMN rather than any writer's return value: a service that returns a
+  # NodeModuleVersion tells you nothing about whether the pointer moved, and
+  # reading the return value is how a bypass looks like a success.
   describe "the consequence, executed" do
     let(:account) { create(:account) }
     let(:node_module) do
       create(:system_node_module, account: account, auto_promote: false)
     end
 
-    it "moves the fleet pointer on a module whose auto_promote opt-out is set" do
+    # This example used to assert the opposite — that #create_version moved the
+    # pointer on an opted-out module — as the executed proof of the bypass. It
+    # now pins the removal (IMP-b7abf6c777da): the same call, the same column,
+    # unchanged.
+    it "leaves the fleet pointer alone on a module whose auto_promote opt-out is set" do
       v1 = create(:system_node_module_version, node_module: node_module, version_number: 1)
       node_module.update_columns(current_version_id: v1.id, current_version_number: 1)
 
       expect(::System::ModulePublicationProcessor.auto_promote?(node_module)).to be(false)
 
-      # The bypass, exercised through the service the operator rollback route
-      # reaches (module_version_service.rb:49).
-      ::System::ModuleVersionService.new(node_module).create_version(changelog: "bypass")
+      minted = ::System::ModuleVersionService.new(node_module).create_version(changelog: "edit")
 
-      # The module says the fleet is now on a different version, on a module
-      # that has explicitly opted out of automatic promotion. Read the COLUMN.
-      expect(node_module.reload.current_version_id).not_to eq(v1.id)
-      expect(node_module.current_version_id).to eq(node_module.versions.order(:version_number).last.id)
+      expect(minted).to be_persisted
+      expect(node_module.reload.current_version_id).to eq(v1.id)
+      expect(node_module.current_version_number).to eq(1)
     end
   end
 end

@@ -15,7 +15,28 @@ module System
       @current_user = current_user
     end
 
-    # Create a new version of the module, capturing current state
+    # Create a new version of the module, capturing current state.
+    #
+    # MINTS A VERSION ROW ONLY — it does NOT move current_version_id.
+    # (IMP-b7abf6c777da.) That column is the ARTIFACT actuator: it decides what
+    # every instance carrying the module MOUNTS — has_data_file, the reported
+    # current_version and the download artifact all resolve through
+    # mod.current_version (NodeModuleNodeApiSerializer#serialize_module, and
+    # node_api/modules_controller's download). It is not the whole manifest:
+    # mask/file_spec/package_spec/dependency_spec/protected_spec/config are
+    # served straight off the module ROW and always have been, so a spec edit
+    # reaches attached instances either way. This method used to repoint the
+    # column at every version it minted, and its widest caller is NodeModule's
+    # `after_update :auto_create_version` callback, which fires on ANY save
+    # touching NodeModule::VERSIONED_ATTRIBUTES — so an ordinary spec edit also
+    # moved what the fleet MOUNTS, as a side effect, onto a version with no
+    # build behind it, past every promotion guard (auto_promote opt-out,
+    # non-empty artifact floor, core-provenance verdict, batch-atomic hold) and
+    # with nothing armed to restart. Operator
+    # direction: auto-versioning records a built version; promotion stays
+    # behind the promote seam — NodeModule#promote_to_version! — and is the
+    # CALLER's explicit decision (see #rollback_to, which makes it).
+    #
     # @param changelog [String] optional description of changes
     # @param user [User] optional user who created this version
     # @param source_version [System::NodeModuleVersion] optional version to
@@ -44,18 +65,14 @@ module System
         }
         attrs.merge!(artifact_bundle_of(source_version)) if source_version
 
-        version = node_module.versions.create!(attrs)
-
-        node_module.update!(
-          current_version: version,
-          current_version_number: version.version_number
-        )
-
-        version
+        node_module.versions.create!(attrs)
       end
     end
 
-    # Create initial version when module is first created
+    # Create initial version when module is first created. Like
+    # #create_version it records the row without promoting it; a caller that
+    # wants the fleet to serve it promotes through
+    # NodeModule#promote_to_version!.
     # @return [System::NodeModuleVersion] the initial version
     def create_initial_version
       return if node_module.versions.exists?
@@ -63,7 +80,20 @@ module System
       create_version(changelog: "Initial version")
     end
 
-    # Rollback to a specific version
+    # Rollback to a specific version.
+    #
+    # Rollback IS a promotion — the operator is saying "serve this instead" —
+    # so, unlike #create_version, it moves current_version_id: onto the new
+    # rollback version, through NodeModule#promote_to_version!, the sanctioned
+    # writer. That is an X -> Y transition and so it ARMS
+    # System::RestartAfterUpdate (NodeModule::ARM_ON_TRANSITIONS) — subject to
+    # arm!'s own guard: a module that declares no restart_after_update unit
+    # arms nothing, by design. Before IMP-b7abf6c777da this route reached the
+    # column through #create_version's own `update!` and armed nothing at all:
+    # the rolled-back artifact was served, but no unit was restarted onto it,
+    # so instances kept RUNNING the build the operator had just rolled back
+    # FROM until something else restarted them.
+    #
     # @param version [System::NodeModuleVersion] the version to rollback to
     # @param changelog [String] optional description for the rollback
     # @param allow_confinement_removal [Boolean] a snapshot cannot be edited
@@ -106,11 +136,28 @@ module System
         # version is spec-only: current_version&.artifact comes back nil and
         # the agent has nothing to deploy — rollback strands the module
         # instead of restoring the prior build.
-        create_version(changelog: changelog, source_version: version)
+        rollback_version = create_version(changelog: changelog, source_version: version)
+
+        # The promotion decision, made explicitly and through the seam.
+        node_module.promote_to_version!(rollback_version)
+
+        rollback_version
       end
     end
 
-    # Rollback to the previous version
+    # Rollback to the previous version — the one before whatever is CURRENTLY
+    # SERVED, not the one before the newest row minted.
+    #
+    # Raises RollbackError when current_version is nil, and since
+    # IMP-b7abf6c777da that state is reachable: #create_version no longer
+    # repoints the pointer, so a module whose promotion was withheld
+    # (auto_promote opt-out, artifact floor, provenance verdict, batch hold)
+    # can hold version rows with nothing promoted. The refusal is the intended
+    # answer — nothing was ever served, so there is nothing to roll back FROM —
+    # and the operator's route in that state is #rollback_to with an explicit
+    # target. Pinned in spec/requests/api/v1/system/node_modules_rollback_spec.rb
+    # ("no previous version" context).
+    #
     # @return [System::NodeModuleVersion] new version created from rollback
     def rollback_to_previous(allow_confinement_removal: false)
       current = node_module.current_version

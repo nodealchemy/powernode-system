@@ -52,11 +52,28 @@ RSpec.describe System::ModuleVersionService, type: :service do
       expect(version.data_file_size).to eq(1024)
     end
 
-    it 'updates current_version on module' do
-      version = service.create_version
+    # IMP-b7abf6c777da — minting a version is NOT a promotion. The pointer is
+    # the fleet actuator; it moves only through NodeModule#promote_to_version!
+    # (see spec/lint/node_module_current_version_write_seam_spec.rb).
+    it 'does not move current_version on a module with nothing served yet (stays nil)' do
+      version = nil
+      expect { version = service.create_version }
+        .not_to change { node_module.reload.current_version_number } # column default is 0
 
-      expect(node_module.reload.current_version).to eq(version)
-      expect(node_module.current_version_number).to eq(version.version_number)
+      expect(version).to be_persisted
+      expect(node_module.reload.current_version_id).to be_nil
+    end
+
+    it 'does not move current_version off what the fleet runs' do
+      served = create(:system_node_module_version, node_module: node_module, version_number: 1)
+      node_module.promote_to_version!(served)
+
+      version = service.create_version(changelog: 'edit')
+
+      expect(version.id).not_to eq(served.id)
+      node_module.reload
+      expect(node_module.current_version_id).to eq(served.id)
+      expect(node_module.current_version_number).to eq(1)
     end
 
     it 'sets created_by from current_user' do
@@ -178,6 +195,50 @@ RSpec.describe System::ModuleVersionService, type: :service do
       expect(rollback_version.vex_uri).to eq('https://example.com/v1.vex')
     end
 
+    # The rollback route used to reach the pointer through #create_version and
+    # armed NOTHING — the fleet kept running the version the operator had just
+    # rolled back FROM until something else restarted it. Rollback is an
+    # explicit promotion, so it goes through the promote seam and arms.
+    context 'promotion of the rollback version (IMP-b7abf6c777da)' do
+      let(:declaring) do
+        create(:system_node_module, account: account, config: {
+                 'restart_after_update' => [
+                   { 'module' => 'powernode-hub-backend', 'services' => [ 'rails' ] }
+                 ]
+               })
+      end
+      let(:declaring_service) { described_class.new(declaring, current_user: user) }
+      let!(:good) do
+        create(:system_node_module_version, node_module: declaring, version_number: 1,
+               config: declaring.config,
+               artifacts: { 'erofs' => { 'oci_digest' => 'sha256:aaa' } }, oci_digest: 'sha256:aaa')
+      end
+      let!(:bad) do
+        v = create(:system_node_module_version, node_module: declaring, version_number: 2,
+                   config: declaring.config)
+        declaring.promote_to_version!(v)
+        v
+      end
+
+      it 'moves current_version_id onto the rollback version through #promote_to_version!' do
+        expect(declaring.reload.current_version_id).to eq(bad.id)
+        expect(declaring).to receive(:promote_to_version!).and_call_original
+
+        rolled = declaring_service.rollback_to(good)
+
+        declaring.reload
+        expect(declaring.current_version_id).to eq(rolled.id)
+        expect(declaring.current_version_number).to eq(rolled.version_number)
+        expect(rolled.oci_digest).to eq('sha256:aaa')
+      end
+
+      it 'arms restart_after_update on the rollback version' do
+        rolled = declaring_service.rollback_to(good)
+
+        expect(::System::RestartAfterUpdate.armed?(rolled.reload)).to be true
+      end
+    end
+
     it 'does not carry artifacts onto ordinary (non-rollback) versions' do
       v1.update!(artifacts: { 'erofs' => { 'oci_digest' => 'sha256:aaa' } })
 
@@ -189,11 +250,13 @@ RSpec.describe System::ModuleVersionService, type: :service do
   end
 
   describe '#rollback_to_previous' do
+    # #create_version no longer promotes, so "current" has to be an explicit
+    # promotion — as it is in production.
     before do
       node_module.update!(mask: { 'v1' => true })
       service.create_version(changelog: 'V1')
       node_module.update!(mask: { 'v2' => true })
-      service.create_version(changelog: 'V2')
+      node_module.promote_to_version!(service.create_version(changelog: 'V2'))
     end
 
     it 'rolls back to the version before current' do
@@ -217,7 +280,7 @@ RSpec.describe System::ModuleVersionService, type: :service do
     it 'raises RollbackError when no previous version' do
       single_version_module = create(:system_node_module, account: account)
       sv_service = described_class.new(single_version_module)
-      sv_service.create_version(changelog: 'Only version')
+      single_version_module.promote_to_version!(sv_service.create_version(changelog: 'Only version'))
 
       expect {
         sv_service.rollback_to_previous
@@ -328,6 +391,7 @@ RSpec.describe System::ModuleVersionService, type: :service do
       3.times do |i|
         history_service.create_version(changelog: "Version #{i + 1}")
       end
+      history_module.promote_to_version!(history_module.versions.find_by(version_number: 2))
     end
 
     it 'returns array of version summaries' do
@@ -357,11 +421,12 @@ RSpec.describe System::ModuleVersionService, type: :service do
       )
     end
 
-    it 'marks current version' do
+    it 'marks current version — the PROMOTED one, not the newest' do
       history = history_service.version_history
 
-      current = history.find { |h| h[:is_current] }
-      expect(current[:version_number]).to eq(history_module.current_version_number)
+      current = history.select { |h| h[:is_current] }
+      expect(current.map { |h| h[:version_number] }).to eq([ 2 ])
+      expect(history_module.current_version_number).to eq(2)
     end
 
     it 'respects limit parameter' do
