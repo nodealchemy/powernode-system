@@ -3,7 +3,10 @@
 # Boot-time governance policy reconcile (IMP-d02b258eb303). Run by
 # rails-start.sh right after the schema-drift backstop. Creates the declared
 # governance rows an account is MISSING (System::Governance::PolicyReconciler is
-# absence-only: it never updates a verb and never deletes).
+# absence-only: it never updates a verb and never deletes), then reconciles
+# the agent ↔ skill bindings from the SkillBindings registry (HIER-P2G,
+# System::Ai::Skills::SkillBindingsReconciler — upserts declared pairs,
+# removes undeclared ones on registry agents).
 #
 # WHY AT BOOT: `db:seed` is first-boot only (rails-start.sh gates it behind the
 # durable .db-initialized marker), so a policy row added to a seed after an
@@ -106,9 +109,36 @@ begin
       warn "[governance-reconcile]   account #{account_id} now shadowing a global row: #{categories.join(', ')}"
     end
 
+    # Skill bindings (HIER-P2G). The SkillBindings registry — every executor's
+    # `binds_to` — materialised as Ai::AgentSkill rows, GLOBAL skill to GLOBAL
+    # agent. Same reason as the policies above: db:seed is first-boot only, so
+    # an executor re-bound after an install's first boot never reached it
+    # (HIER-P2B: no boot-time reconciler re-materialised Ai::AgentSkill).
+    # Lenient: a registered skill whose Ai::Skill row this install lacks is
+    # named and skipped, never raised. ALWAYS prints its own summary line.
+    begin
+      bindings = ::System::Ai::Skills::SkillBindingsReconciler.new(strict: false).reconcile!
+      warn "[governance-reconcile] skill-bindings upserted=#{bindings.upserted} removed=#{bindings.removed} " \
+           "missing_skills=#{bindings.missing_skills.size} unknown_agents=#{bindings.unknown_agents.size}"
+      if bindings.registry_empty
+        warn "[governance-reconcile]   skill-bindings: registry loaded EMPTY (executor files not found) — " \
+             "nothing upserted and drift correction SKIPPED (never an unbind-everything instruction)"
+      end
+      if bindings.missing_skills.any?
+        warn "[governance-reconcile]   skill-bindings: no Ai::Skill row for #{bindings.missing_skills.join(', ')} " \
+             "(the skill catalog seeds never ran here — the bindings were skipped)"
+      end
+      if bindings.unknown_agents.any?
+        warn "[governance-reconcile]   skill-bindings: agents not seeded: #{bindings.unknown_agents.join(', ')}"
+      end
+    rescue StandardError => e
+      failed << { account_id: "(skill-bindings)", error: "#{e.class}: #{e.message}" }
+      warn "[governance-reconcile] skill-bindings reconcile failed (non-fatal): #{e.class}: #{e.message}"
+    end
+
     if failed.any?
       warn "=" * 72
-      warn "[governance-reconcile] !!! RECONCILE FAILED for #{failed.size} account(s) !!!"
+      warn "[governance-reconcile] !!! RECONCILE FAILED for #{failed.size} account(s)/step(s) !!!"
       failed.each { |f| warn "[governance-reconcile]   account #{f[:account_id]}: #{f[:error]}" }
       warn "[governance-reconcile] declared governance rows may be MISSING — the gate will"
       warn "[governance-reconcile] resolve them through the require_approval default"

@@ -13,7 +13,7 @@
 # the already-initialized branches. It is idempotent and creates absence only.
 namespace :system do
   namespace :governance do
-    desc "Create declared governance policy rows this database is missing (absence only; never overwrites)"
+    desc "Create declared governance policy rows this database is missing (absence only; never overwrites) and reconcile skill bindings"
     task reconcile: :environment do
       accounts = ::Account.all
       total = 0
@@ -36,9 +36,27 @@ namespace :system do
       end
 
       puts(total.zero? ? "✅ Governance policies already in sync" : "✅ Governance reconcile created #{total} row(s)")
+
+      # Skill bindings (HIER-P2G): the SkillBindings registry (every
+      # executor's `binds_to`) materialised as Ai::AgentSkill rows, GLOBAL
+      # skill to GLOBAL agent. Lenient — a registered skill whose row this
+      # install lacks is reported, not raised; the seed is the strict caller.
+      bindings = ::System::Ai::Skills::SkillBindingsReconciler.new(strict: false).reconcile!
+      if bindings.registry_empty
+        puts "  ⚠️  skill bindings: the SkillBindings registry loaded EMPTY (executors not loaded) — " \
+             "nothing upserted and drift correction SKIPPED"
+      end
+      if bindings.unknown_agents.any?
+        puts "  skill bindings: agents not seeded (their bindings skipped): #{bindings.unknown_agents.join(', ')}"
+      end
+      if bindings.missing_skills.any?
+        puts "  skill bindings: registered skills with no Ai::Skill row (skipped): #{bindings.missing_skills.join(', ')}"
+      end
+      puts(bindings.changed? ? "✅ Skill bindings reconcile upserted #{bindings.upserted}, removed #{bindings.removed}" \
+                             : "✅ Skill bindings already in sync")
     end
 
-    desc "Report declared governance rows missing from this database (read-only; exits 1 on drift)"
+    desc "Report declared governance rows and skill bindings missing from this database (read-only; exits 1 on drift)"
     task drift: :environment do
       drifted = false
 
@@ -55,6 +73,20 @@ namespace :system do
 
         drifted = true
         warn "  [#{account.id}] MISSING #{report.missing.size}: #{report.missing.join(', ')}"
+      end
+
+      bindings = ::System::Ai::Skills::SkillBindingsReconciler.new(strict: false).drift
+      if bindings.registry_empty
+        warn "  ⚠️  skill bindings: the SkillBindings registry loaded EMPTY (executors not loaded) — " \
+             "no binding drift can be reported"
+      end
+      if bindings.missing_skills.any?
+        warn "  skill bindings: registered skills with no Ai::Skill row: #{bindings.missing_skills.join(', ')}"
+      end
+      if bindings.drifted?
+        drifted = true
+        warn "  skill bindings MISSING #{bindings.missing.size}: #{bindings.missing.join(', ')}" if bindings.missing.any?
+        warn "  skill bindings STALE #{bindings.stale.size}: #{bindings.stale.join(', ')}" if bindings.stale.any?
       end
 
       if drifted
