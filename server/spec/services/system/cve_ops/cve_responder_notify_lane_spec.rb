@@ -8,14 +8,18 @@ require "rails_helper"
 # System::FleetEvent (kind autonomy.notified) instead of terminating in
 # Rails.logger. CveResponderService carries its OWN notify_and_proceed arm and
 # its OWN #notify_action, which was out of that task's lane: it stayed one
-# Rails.logger.info line. A security-domain notification an operator cannot see
-# in the approval UI, system_recent_signals, system_inspect_correlation, or any
-# compliance read is the same defect on the CVE side.
+# Rails.logger.info line — a security-domain notification that reached no
+# operator surface at all, the same defect on the CVE side.
 #
 # Deliberately independent of Ai::ApprovalChain (business extension) so it runs
 # in core mode too — cve_responder_service_spec.rb skips wholesale without it.
-# This spec pins the EMIT: same event kind as the fleet twin (so every reader
-# keyed on autonomy.notified sees both lanes), correlated to the CVE signal.
+# This spec pins the EMIT: a durable FleetEvent carrying the fleet twin's event
+# kind, correlated to the CVE signal. The surfaces that gain it are the two
+# KIND-AGNOSTIC FleetEvent reads — system_recent_signals and
+# system_inspect_correlation — plus the account's fleet-channel broadcast; the
+# approval UI is NOT among them, because notify_and_proceed mints no
+# Ai::ApprovalRequest. Nothing keys on autonomy.notified today; the shared kind
+# is what lets the two notify lanes be read as one when something does.
 RSpec.describe System::CveOps::CveResponderService, "notify_and_proceed operator record" do
   let(:account)  { create(:account) }
   let(:user)     { create(:user, account: account) }

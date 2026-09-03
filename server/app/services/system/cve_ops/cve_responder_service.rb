@@ -384,11 +384,17 @@ module System
       # IMP-0de0a6b4db59 — the surviving half of APO-2d (IMP-25949cfd28fd).
       # The fleet twin's #notify_action gained a durable, broadcast FleetEvent;
       # this arm was out of that lane and stayed one Rails.logger line, so a
-      # security-domain notify_and_proceed reached no operator surface. Same
-      # NOTIFY_EVENT_KIND as the twin so every reader keyed on it (approval UI,
-      # system_recent_signals, system_inspect_correlation, compliance reads)
-      # sees both lanes; source stays "cve_responder" so they remain tellable
-      # apart. The log line is kept.
+      # security-domain notify_and_proceed reached no operator surface at all.
+      #
+      # What the emit buys, precisely: the two KIND-AGNOSTIC FleetEvent reads
+      # — system_recent_signals and system_inspect_correlation (SystemFleetTool)
+      # — plus the account's SystemFleetChannel broadcast. NOT the approval UI:
+      # notify_and_proceed mints no Ai::ApprovalRequest (only the
+      # require_approval arm above does), so this lane reaches no approval
+      # queue on either side of the twin. Nothing keys on NOTIFY_EVENT_KIND
+      # today — the shared kind is what makes the two lanes queryable as ONE
+      # once something does; source stays "cve_responder" so they remain
+      # tellable apart. The log line is kept.
       def notify_action(action_category, metadata:, reasoning:)
         summary = reasoning[:summary] || reasoning["summary"]
         Rails.logger.info(
