@@ -178,7 +178,7 @@ Backed by `Ai::Tools::SystemPackageRepositoryTool`. Manages apt/rpm package repo
 | `system_gitops_sync_repository` | Trigger a sync (fetch + parse fleet.yaml + compute diff against effective state) | operator, agent |
 | `system_gitops_get_sync_run` | Fetch one sync run with the diff payload + proposed change set | operator, agent |
 | `system_gitops_get_drift_report` | Per-repository drift summary (rows that diverge from declared state) | operator, agent |
-| `system_gitops_apply_proposal` | Apply a proposed change set — gated via `Ai::AgentProposal` approval | operator, agent |
+| `system_gitops_apply_proposal` | Apply a proposed change set — the proposal must already be `approved`, AND the call is approval-gated under `system.gitops_apply_proposal` (`Ai::AutonomyGate`, replayed by `Ai::Executors::DeferredToolCall`): when policy requires approval it answers `pending: true` and applies nothing until an operator approves | operator, agent |
 
 **Permissions:** not one family — read the map in `SystemFleetTool::ACTION_PERMISSIONS`, not this
 heading. `system_gitops_get_repository` / `system_gitops_list_repositories` gate on

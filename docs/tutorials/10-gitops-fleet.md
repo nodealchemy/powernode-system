@@ -371,6 +371,15 @@ platform.system_gitops_apply_proposal({
 //   (re-sync to regenerate a fresh proposal, then re-approve).
 ```
 
+The call itself is approval-gated under the `system.gitops_apply_proposal`
+autonomy category (seeded `require_approval` on the GitOps Reconciler).
+When the resolved policy requires approval, the response is
+`pending: true` with a `deferred_operation_id`, nothing has been written,
+and the apply runs when an operator approves the request — do not retry
+it. `auto_approve` and `notify_and_proceed` apply inline and answer with
+the normal envelope; `block` refuses. Approving the `Ai::AgentProposal` (Step 5) says the diff is wanted;
+this gate says an agent may write it.
+
 Apply in dependency order: templates → modules → assignments → pools /
 platforms (each `pool`/`platform` create resolves its `node_template` by
 name, and each assignment resolves its `template` and `module`, so a
