@@ -273,6 +273,38 @@ RSpec.describe Ai::Tools::SystemArchitectureCatalogTool do
       expect(proposal.proposed_changes["attributes"]["name"]).to eq("proposed_arch")
       expect(proposal.description).to match(/Justification: Three operators/)
     end
+
+    # HIER-P2E — the agent-less fallback attribution. `system.architecture.*`
+    # moved off Fleet Autonomy onto the Supply Chain Manager (P2DECL declared
+    # the set, this wave seeds the agent and re-binds the executors), so a
+    # proposal filed with no @agent must name the CURRENT owner. Fleet Autonomy
+    # stays the fallback-of-the-fallback: it is the one agent every account is
+    # seeded with, and an established install may not have run the wave-2 seed
+    # yet. Attribution only — the gate is ArchitectureProposeExecutor's.
+    context "when no agent context is passed (Rails runner / non-MCP caller)" do
+      it "attributes the proposal to the Supply Chain Manager when it is seeded" do
+        supply_chain = Ai::Agent.create!(
+          name: "Supply Chain Manager", agent_type: "monitor", source_key: "supply-chain-manager",
+          status: "active", account: account, creator: account.users.first || create(:user, account: account),
+          provider: ::Ai::Provider.first || create(:ai_provider), system_prompt: "stub"
+        )
+
+        r = call_as(propose_user, "system_propose_architecture", name: "scm_attributed", family: "other")
+
+        expect(r[:success]).to be true
+        expect(Ai::AgentProposal.find(r.dig(:data, :proposal_id)).ai_agent_id).to eq(supply_chain.id)
+      end
+
+      it "falls back to Fleet Autonomy on an install that has not seeded the Supply Chain Manager" do
+        expect(Ai::Agent.resolve_for(account.id, name: "Supply Chain Manager", agent_type: "monitor")).to be_nil
+
+        r = call_as(propose_user, "system_propose_architecture", name: "fa_attributed", family: "other")
+
+        fleet = Ai::Agent.resolve_for(account.id, name: "Fleet Autonomy", agent_type: "monitor")
+        expect(r[:success]).to be true
+        expect(Ai::AgentProposal.find(r.dig(:data, :proposal_id)).ai_agent_id).to eq(fleet.id)
+      end
+    end
   end
 
   # IMP-54bf2643f542 — action_permitted? used to read `@user.nil?` as

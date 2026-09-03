@@ -253,7 +253,7 @@ module Ai
         return error_result("Ai::AgentProposal not available in this environment") unless defined?(::Ai::AgentProposal)
 
         proposing_agent = @agent || default_proposal_agent
-        return error_result("No agent context available to attribute the proposal to — pass agent: when constructing the tool, or seed a Fleet Autonomy agent for the account.") unless proposing_agent
+        return error_result("No agent context available to attribute the proposal to — pass agent: when constructing the tool, or seed a Supply Chain Manager (or Fleet Autonomy) agent for the account.") unless proposing_agent
 
         title = "Add architecture: #{params[:name]}"
 
@@ -333,21 +333,26 @@ module Ai
 
       # When propose_architecture is called outside of an MCP session
       # (e.g. via Rails runner) there's no @agent. Fall back to the
-      # account's Fleet Autonomy agent.
+      # account's OWNER agent for system.architecture.*.
       #
-      # NOTE the reason is no longer ownership: since HIER-P2DECL the
-      # system.architecture.* categories are declared on the Supply Chain
-      # Manager (PolicyDeclarations::SUPPLY_CHAIN_MANAGER_POLICIES), not on
-      # Fleet Autonomy. Fleet Autonomy remains the ATTRIBUTION fallback
-      # because it is the one agent every account is seeded with and this
-      # path only names an actor on the proposal record — it does not gate
-      # anything (the gate is ArchitectureProposeExecutor's, and it resolves
-      # against the agent actually executing). Re-point it at the Supply
-      # Chain Manager in wave 2, alongside the executor re-binding.
+      # HIER-P2DECL declared those categories on the Supply Chain Manager
+      # (PolicyDeclarations::SUPPLY_CHAIN_MANAGER_POLICIES) and HIER-P2E
+      # seeded that agent and re-bound the architecture executors onto it, so
+      # the owner is who an agent-less proposal names. Fleet Autonomy stays
+      # the fallback-of-the-fallback: db:seed is first-boot only, so an
+      # ESTABLISHED install may not have run the wave-2 seed yet, and Fleet
+      # Autonomy is the one agent every account is seeded with. Attribution
+      # only — this path names an actor on the proposal record and gates
+      # nothing (the gate is ArchitectureProposeExecutor's, resolved against
+      # the agent actually executing).
+      PROPOSAL_ATTRIBUTION_AGENTS = [ "Supply Chain Manager", "Fleet Autonomy" ].freeze
+
       def default_proposal_agent
         return nil unless @user&.account && defined?(::Ai::Agent)
 
-        ::Ai::Agent.resolve_for(@user.account.id, name: "Fleet Autonomy", agent_type: "monitor")
+        PROPOSAL_ATTRIBUTION_AGENTS.lazy.filter_map do |name|
+          ::Ai::Agent.resolve_for(@user.account.id, name: name, agent_type: "monitor")
+        end.first
       end
 
       def bool(v)
