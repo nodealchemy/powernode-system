@@ -761,4 +761,85 @@ RSpec.describe System::NodeInstance, type: :model do
       end
     end
   end
+
+  # IMP-39f80a13c536: #module_drift / #module_drifted? is the single definition
+  # of module drift — four call sites (SystemFleetTool#drift_report,
+  # ModuleDriftSensor, PlatformMaintenanceExecutor drift_check, the compliance
+  # snapshot) were converged onto it. Until this block existed the owning
+  # model's spec never called either method: the driver's mutation replay
+  # dropped `|| drift[:mismatched].any?` from #module_drifted? and this file
+  # stayed at 112 examples, 0 failures — the only detector in the tree was one
+  # example in a downstream consumer's spec.
+  #
+  # Each limb is pinned by its own fixture so that dropping any ONE `.any?`
+  # clause kills exactly one example here. The `mismatched` fixture is the
+  # discriminating one: the SAME keys as the assignment with DIFFERENT values —
+  # the stale-digest instance a failed rolling upgrade produces, and the case
+  # the retired key-set-only copies were blind to.
+  describe '#module_drift / #module_drifted?' do
+    let(:account) { create(:account) }
+    let(:node) { create(:system_node, account: account) }
+    let(:instance) { create(:system_node_instance, node: node) }
+
+    # An assigned module whose CURRENT version carries `want` — the digest an
+    # instance of this node is supposed to be running. A module with no
+    # current-version digest is not part of the assignment #module_drift
+    # measures against, so every fixture here needs one.
+    def assign_module(want:)
+      node_module = create(:system_node_module, account: account)
+      version = create(:system_node_module_version, node_module: node_module, oci_digest: want)
+      node_module.set_current_version!(version)
+      create(:system_node_module_assignment, node: node, node_module: node_module)
+      node_module
+    end
+
+    context 'when the instance reports the assigned module at a different digest (mismatched)' do
+      it 'is drifted and names the module with its want/have pair' do
+        node_module = assign_module(want: "sha256:want")
+        instance.update!(running_module_digests: { node_module.id.to_s => "sha256:stale" })
+
+        drift = instance.module_drift
+        expect(drift[:mismatched]).to eq(node_module.id => { want: "sha256:want", have: "sha256:stale" })
+        expect(drift[:missing]).to be_empty
+        expect(drift[:extra]).to be_empty
+        expect(instance.module_drifted?).to be true
+      end
+    end
+
+    context 'when an assigned module is not reported mounted at all (missing)' do
+      it 'is drifted and lists the module under :missing only' do
+        node_module = assign_module(want: "sha256:want")
+        instance.update!(running_module_digests: {})
+
+        drift = instance.module_drift
+        expect(drift[:missing]).to eq(node_module.id => "sha256:want")
+        expect(drift[:extra]).to be_empty
+        expect(drift[:mismatched]).to be_empty
+        expect(instance.module_drifted?).to be true
+      end
+    end
+
+    context 'when the instance reports a module the node is no longer assigned (extra)' do
+      it 'is drifted and lists the module under :extra only' do
+        unassigned_id = SecureRandom.uuid
+        instance.update!(running_module_digests: { unassigned_id => "sha256:orphan" })
+
+        drift = instance.module_drift
+        expect(drift[:extra]).to eq(unassigned_id => "sha256:orphan")
+        expect(drift[:missing]).to be_empty
+        expect(drift[:mismatched]).to be_empty
+        expect(instance.module_drifted?).to be true
+      end
+    end
+
+    context 'when every assigned module is reported at its current digest' do
+      it 'is not drifted and every limb is empty' do
+        node_module = assign_module(want: "sha256:want")
+        instance.update!(running_module_digests: { node_module.id.to_s => "sha256:want" })
+
+        expect(instance.module_drift).to eq(missing: {}, extra: {}, mismatched: {})
+        expect(instance.module_drifted?).to be false
+      end
+    end
+  end
 end
