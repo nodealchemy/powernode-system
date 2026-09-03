@@ -3684,13 +3684,18 @@ end
       # The FAILURE path is the case the description actually sells: "re-read
       # the full record (… error_message) later". A fix that returned the id
       # only on the success branch would satisfy every assertion above.
+      #
+      # IMP-8ce4d88499a0 — a FAILED reconcile is success: false with the reason
+      # at top-level `error` (it used to be success: true with data.ok false).
+      # The id keeps its dig path under data on the failure envelope.
       it "returns a resolvable id for a FAILED reconcile, carrying the error_message" do
         allow(::System::Gitops::RepoSyncService).to receive(:sync!)
           .and_return(double(ok?: false, work_tree_path: nil, commit_sha: nil, error: "clone refused: bad deploy key"))
 
         r = call("system_gitops_sync_repository", id: repo.id)
 
-        expect(r[:success]).to be true
+        expect(r[:success]).to be false
+        expect(r[:error]).to eq("clone refused: bad deploy key")
         expect(r[:data][:ok]).to be false
         run = ::System::GitopsSyncRun.find(r[:data][:sync_run_id])
         expect(run.status).to eq("failed")
