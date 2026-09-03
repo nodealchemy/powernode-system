@@ -86,7 +86,7 @@ module System
         # --- Instance lifecycle (server-dispatched, ExecutionDispatcher::COMMAND_REGISTRY)
         "start" => "auto_approve",
         "stop" => "auto_approve",
-        "restart" => "auto_approve",
+        "restart" => "require_approval",        # unit-scoped: agent takes options["unit"] into systemctl as root; gate sites only, RestartAfterUpdate never meets the gate (IMP-0c1a7dca5781)
         "reboot" => "auto_approve",
         "terminate" => "require_approval",         # destroys the instance
         "sync_modules" => "auto_approve",

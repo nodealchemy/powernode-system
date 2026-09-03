@@ -45,9 +45,9 @@ module System
     # write with one that proceeds.
     #
     # As declared today that is a MINORITY of the set: of the 20 rows in
-    # PolicyDeclarations::MANUAL_OPERATION_POLICIES, 6 are auto_approve and 5
-    # notify_and_proceed — 11 that proceed without an approval where absence
-    # would have parked. The other 9 are require_approval and so are no-ops on
+    # PolicyDeclarations::MANUAL_OPERATION_POLICIES, 5 are auto_approve and 5
+    # notify_and_proceed — 10 that proceed without an approval where absence
+    # would have parked. The other 10 are require_approval and so are no-ops on
     # resolution. Note that notify_and_proceed counts as a widening here: it
     # proceeds.
     #

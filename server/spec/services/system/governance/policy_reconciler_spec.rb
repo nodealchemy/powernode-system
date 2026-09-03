@@ -299,21 +299,21 @@ RSpec.describe System::Governance::PolicyReconciler do
     # of pinning it: the reconciler's header states these numbers as its
     # justification for widening, and a command added without a verb decision
     # would silently change how much it widens.
-    it "declares 20 rows in a 6/5/9 split" do
+    it "declares 20 rows in a 5/5/10 split" do
       expect(declared.size).to eq(20)
       expect(declared.size).to eq(System::Task::COMMANDS.size)
       expect(declared.values.tally).to eq(
-        "auto_approve" => 6,
+        "auto_approve" => 5,
         "notify_and_proceed" => 5,
-        "require_approval" => 9
+        "require_approval" => 10
       )
     end
 
-    it "widens 11 of them relative to the absence they replace" do
+    it "widens 10 of them relative to the absence they replace" do
       widening, no_op = declared.partition { |_, verb| proceeds_unattended.include?(verb) }
 
-      expect(widening.size).to eq(11)
-      expect(no_op.size).to eq(9)
+      expect(widening.size).to eq(10)
+      expect(no_op.size).to eq(10)
       expect(no_op.map(&:last).uniq).to eq(%w[require_approval])
     end
 
