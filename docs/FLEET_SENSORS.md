@@ -2,17 +2,17 @@
 
 > Status: active
 
-The `fleet/sensors/` directory at `extensions/system/server/app/services/system/fleet/sensors/` holds **34 files**: one `BaseSensor` abstract class and **33 sensors registered** for the live tick loop via `FleetAutonomyService::SENSORS`. (A further 2 CVE sensors live under `cve_ops/sensors/` and are owned by the CVE Responder agent — see [its section](#cve-responder-agent-5-policies) — not part of this directory's count.) Each sensor inspects a slice of fleet state on a recurring tick, emits typed `FleetEvent` signals when thresholds trip, and feeds the autonomy `DecisionEngine` which gates remediation actions per intervention policy.
+The `fleet/sensors/` directory at `extensions/system/server/app/services/system/fleet/sensors/` holds **35 files**: one `BaseSensor` abstract class and **34 sensors registered** for the live tick loop via `FleetAutonomyService::SENSORS`. (A further 2 CVE sensors live under `cve_ops/sensors/` and are owned by the CVE Responder agent — see [its section](#cve-responder-agent-5-policies) — not part of this directory's count.) Each sensor inspects a slice of fleet state on a recurring tick, emits typed `FleetEvent` signals when thresholds trip, and feeds the autonomy `DecisionEngine` which gates remediation actions per intervention policy.
 
-The 33 registered sensors, in `SENSORS` order: `StuckTaskBacklogSensor`, `InstanceStatusSensor`, `InstanceUnrecoverableSensor`, `InstanceStateDriftSensor`, `ModuleDriftSensor`, `TemplateClosureDriftSensor`, `BootImageDriftSensor`, `CertificateExpirySensor`, `CertExpirySensor`, `ModulePromotionSensor`, `ModulePromotionBacklogSensor`, `CapabilityGapSensor`, `ConfigDriftSensor`, `SloViolationSensor`, `HoneypotAccessSensor`, `TradingPressureSensor`, `SdwanDriftSensor`, `SdwanReachabilitySensor`, `SdwanBgpSessionHealthSensor`, `SdwanVipReachabilitySensor`, `GitopsDriftSensor`, `ProjectSloSensor`, `FederationPeerLivenessSensor`, `PackageDriftSensor`, `SdwanCredentialExpirySensor`, `StorageAssignmentDriftSensor`, `DiskImagePublicationFailureStreakSensor`, `SdwanServiceHealthSensor`, `SdwanOvnDeploymentHealthSensor`, `SdwanApplyHealthSensor`, `SdwanUserDeviceConfigStalenessSensor`, `ModuleVerifyFailedSensor`, `BootLkgArmSensor`. (`PackageDriftSensor`, `SdwanCredentialExpirySensor`, and `StorageAssignmentDriftSensor` were dead code until audit F3-07 registered them — they previously appeared here as "running via separate invocation paths", which was never true. `TemplateClosureDriftSensor` (campaign 019f6084 §2.4.3), `CapabilityGapSensor` (IMP-4019664a524b), `DiskImagePublicationFailureStreakSensor` (disk-image-CI restoration DK3), `SdwanServiceHealthSensor` (IMP-c7d663f24a0b), `SdwanOvnDeploymentHealthSensor` (IMP-57e9a90598ee), `SdwanApplyHealthSensor` (IMP-da1b772c2596), `SdwanUserDeviceConfigStalenessSensor` (IMP-7034199a5a19), and `BootLkgArmSensor` (IMP-a8f9fa74284d) were registered later still — all are now in `SENSORS`, so no sensor in this directory currently runs outside it.)
+The 34 registered sensors, in `SENSORS` order: `StuckTaskBacklogSensor`, `InstanceStatusSensor`, `InstanceUnrecoverableSensor`, `InstanceStateDriftSensor`, `ModuleDriftSensor`, `TemplateClosureDriftSensor`, `BootImageDriftSensor`, `CertificateExpirySensor`, `CertExpirySensor`, `ModulePromotionSensor`, `ModulePromotionBacklogSensor`, `CapabilityGapSensor`, `ConfigDriftSensor`, `SloViolationSensor`, `HoneypotAccessSensor`, `TradingPressureSensor`, `SdwanDriftSensor`, `SdwanReachabilitySensor`, `SdwanBgpSessionHealthSensor`, `SdwanVipReachabilitySensor`, `GitopsDriftSensor`, `ProjectSloSensor`, `FederationPeerLivenessSensor`, `PackageDriftSensor`, `SdwanCredentialExpirySensor`, `StorageAssignmentDriftSensor`, `DiskImagePublicationFailureStreakSensor`, `SdwanServiceHealthSensor`, `SdwanOvnDeploymentHealthSensor`, `SdwanApplyHealthSensor`, `SdwanUserDeviceConfigStalenessSensor`, `ModuleVerifyFailedSensor`, `BootLkgArmSensor`, `ReplicaLagSensor`. (`PackageDriftSensor`, `SdwanCredentialExpirySensor`, and `StorageAssignmentDriftSensor` were dead code until audit F3-07 registered them — they previously appeared here as "running via separate invocation paths", which was never true. `TemplateClosureDriftSensor` (campaign 019f6084 §2.4.3), `CapabilityGapSensor` (IMP-4019664a524b), `DiskImagePublicationFailureStreakSensor` (disk-image-CI restoration DK3), `SdwanServiceHealthSensor` (IMP-c7d663f24a0b), `SdwanOvnDeploymentHealthSensor` (IMP-57e9a90598ee), `SdwanApplyHealthSensor` (IMP-da1b772c2596), `SdwanUserDeviceConfigStalenessSensor` (IMP-7034199a5a19), `BootLkgArmSensor` (IMP-a8f9fa74284d), and `ReplicaLagSensor` (IMP-5b38cd356010) were registered later still — all are now in `SENSORS`, so no sensor in this directory currently runs outside it.)
 
-Every sensor above except one reads **infrastructure** — is the node up, is the tunnel up, is the cert fresh. `SdwanServiceHealthSensor` is the first to read a **workload**: whether the thing at the end of a published service's overlay path is actually serving. That distinction is the platform-wide gap recorded in `docs/operations/autonomous-infrastructure-readiness-2026-08-12.md`, and this sensor closes it for `Sdwan::Service` only — deployed app code and containers remain unsensed.
+Every sensor above except two reads **infrastructure** — is the node up, is the tunnel up, is the cert fresh. `SdwanServiceHealthSensor` was the first to read a **workload**: whether the thing at the end of a published service's overlay path is actually serving. That distinction is the platform-wide gap recorded in `docs/operations/autonomous-infrastructure-readiness-2026-08-12.md`, and that sensor closes it for `Sdwan::Service` only. `ReplicaLagSensor` is the second: it reads the platform database's own replication catalog for the postgres cluster_member lane. Deployed app code and containers remain unsensed.
 
 ## Architecture (one-paragraph summary)
 
 The Fleet Autonomy reconciler runs every 60s (configurable via `autonomy_config.interval_seconds` on the Fleet Autonomy agent; with the 2026-05-10 7-agent split, CVE / SDWAN / Disk Image / Runtime Manager agents each carry their own `interval_seconds` for their respective scopes). Each tick:
 
-1. The 33 sensors in `FleetAutonomyService::SENSORS` run in series (cheap; per-sensor work is bounded by the data it inspects).
+1. The 34 sensors in `FleetAutonomyService::SENSORS` run in series (cheap; per-sensor work is bounded by the data it inspects).
 2. Each sensor emits zero or more `FleetEvent` signals with `kind`, `severity`, `payload`, `correlation_id`
 3. The DecisionEngine maps signals → action categories → intervention policy lookup
 4. Policy = `auto_approve` → executor runs immediately
@@ -21,7 +21,7 @@ The Fleet Autonomy reconciler runs every 60s (configurable via `autonomy_config.
 
 ```mermaid
 flowchart LR
-    subgraph Sensors["32 fleet sensors (registered for the Fleet Autonomy tick)"]
+    subgraph Sensors["34 fleet sensors (registered for the Fleet Autonomy tick)"]
         S0[stuck_task_backlog]
         S1[instance_status]
         S2[module_drift]
@@ -54,6 +54,7 @@ flowchart LR
         S25[module_verify_failed]
         S26[boot_lkg_arm]
         S27[module_promotion_backlog]
+        S28[replica_lag]
     end
     subgraph Signals["Sensor signal kinds (FleetEvent also carries non-sensor kinds, e.g. sdwan.credential_issued)"]
         Sig[system.* — every sensor kind is system.-prefixed<br/>system.instance_silent / system.module_drift / system.cert_expiring<br/>system.sdwan_peer_drift / system.slo_violation / system.project_drift]
@@ -555,6 +556,22 @@ Both aggregates carry `instance_count`, a `count_is_floor` flag when the sweep h
 
 **Recommended remediation:** None automated, and none possible. The LKG is frozen on the node's own disk by the agent at boot; nothing the platform dispatches re-arms it, and the repair is a person restoring or re-capturing it. Surfaces via the `system.node_lkg_investigate` gate (Fleet Autonomy `notify_and_proceed`, same seeding rationale as `module_verify_investigate` above), and the category is listed in `RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES` for the same F3-11 reason.
 
+### `replica_lag_sensor` — Postgres replica lag (the promote gate's sampler)
+
+**Source:** `replica_lag_sensor.rb` (IMP-5b38cd356010, APO-6b). Consumer: `System::Ai::Skills::PromoteReplicaExecutor` (`promote_replica_executor.rb`), whose data-loss gate reads the sample this sensor writes.
+
+**Watches:** every `System::FederationPeer` on the account with `spawn_mode` `cluster_member` and `spawn_role` `parent` whose `metadata["cluster_pg"]` record (stamped by `System::ClusterMember::PgReplicaSetupService`) is in state `ready` and names a replication slot. For each, it reads `pg_stat_replication` joined to `pg_replication_slots` by that slot name **on the platform's own database connection** — which *is* the primary every cluster_member child streams from (the setup service created the slot on the same connection) — and takes `pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)` as the lag in bytes.
+
+**What it writes — the one sensor that does.** `BaseSensor`'s contract is read-side and every other sensor keeps it; this is the single sanctioned exception, scoped in [Adding a New Sensor](#adding-a-new-sensor) (amending `BaseSensor`'s own comment to name it is outstanding — deferred, not blocked: the change that introduced the exception added a new sensor and edited none of the shared sensor scaffolding, so until that amendment lands this document and the sensor's own class comment are where the exception is written down). This one is a *sampler* (operator direction, APO-6b): it writes `replication_lag_bytes`, `lag_sampled_at` and `lag_sample_state` into the peer's `cluster_pg` record, under the peer's row lock and re-checked inside it so a promote stamping the same record is never clobbered, via `update_columns` so the peer's own timestamps are untouched. Before this sensor existed nothing wrote those keys, the executor's gate refused every real promote, and the operator ruling's auto arm (proceed when the primary is provider-confirmed down *and* the replica is caught up) was unreachable — every promote needed `accept_data_loss: true`. It also stamps `lag_attempted_at` — a key the executor does **not** read — on every peer it looks at, including the ones no sample could be taken for; `max_per_tick` truncates a due list ordered by that stamp, so the budget rotates instead of handing the same low-id peers every slot and starving the rest back into the staleness the gate refuses on.
+
+**What it does not write.** No walsender on the slot means the replica is not streaming *right now*; that is not a lag of zero and it is no sample, so the last sample is left as it stands and the executor's freshness window is what retires it. A read that raises (the platform's own database in recovery; a role that cannot see LSNs — `pg_stat_replication` hides them from roles without `pg_read_all_stats`, which the sensor reports as unknown, not as not-streaming) writes nothing either. The executor's rule — a missing or stale sample is a refusal — is only safe because the sampler never manufactures a sample it did not take.
+
+**Threshold:** Configurable per **account** via `system_update_sensor_config` (`replica_lag`): `sample_interval_seconds` default **60** (one tick; a peer whose sample is younger is skipped), `max_per_tick` default **25**. The executor's freshness window is a separate, DB-resolved SiteSetting with a 300-second default: an operator who widens the interval past that window has made every promote a waiver again. The lag *bound* is not this sensor's to tune — it is resolved from the executor's own SiteSetting (default 16 MiB, one WAL segment), so the alarm below fires exactly where the gate refuses. See [Configuring Sensor Thresholds](#configuring-sensor-thresholds).
+
+**Signals:** `system.replica_lag_unsafe` (severity `:high`, fingerprint per peer and reason) — the sample just taken is one the executor would refuse on: `reason` is `over_bound` (payload carries `replication_lag_bytes` and `max_lag_bytes`) or `not_streaming` (payload carries the `last_sampled_at` that is now ageing out). A caught-up replica emits nothing. No recovery counterpart exists; recovery is the fingerprint's absence on a later tick.
+
+**Recommended remediation:** None automated, deliberately. The safe answers to a lagging replica are "wait" and "look at the primary's write load", both a person's, and a promote is only ever an answer to a *dead* primary — the executor refuses a live one regardless. Surfaces via the `system.observation` gate (Fleet Autonomy `auto_approve`, no operator notification); a dedicated notify-level category needs a `PolicyDeclarations` entry and is the recorded follow-up. The category is listed in `RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES`.
+
 ## Decision Engine Flow
 
 ```mermaid
@@ -631,6 +648,8 @@ perception pass.
 | `instance_unrecoverable` | `max_per_tick` | 25 | Provider reads this sensor may make in one tick |
 | `instance_unrecoverable` | `emit_window_seconds` | 3600 | Emit-once window per instance |
 | `instance_unrecoverable` | `reboot_attempt_threshold` | 2 | Ineffective reboots before the lane is called spent |
+| `replica_lag` | `sample_interval_seconds` | 60 | Age at which a cluster_member peer's replication-lag sample is re-taken |
+| `replica_lag` | `max_per_tick` | 25 | Catalog reads this sensor may make in one tick |
 
 `instance_unrecoverable` deliberately has **no** silent-threshold key of its
 own: it classifies exactly the population `instance_status` calls silent, and
@@ -660,6 +679,8 @@ System::Fleet::SensorConfig.upsert_for(
 3. Register the sensor in `Fleet::Reconciler` so it runs on each autonomy tick.
 4. Add an intervention policy entry in `fleet_autonomy_agent.rb` for the action category your sensor's recommendation maps to.
 5. Add a corresponding skill executor (if remediation is automatable) — see `SKILL_EXECUTORS.md`.
+
+**Sensors are read-side, with exactly one sanctioned exception.** `BaseSensor`'s class comment states the rule without qualification ("Sensors are pure read-side: they may not mutate the database") and the sibling sensors cite it as binding; a sensor that wanted to write has been sent back before (see `storage_assignment_drift_sensor`). The one exception is `replica_lag_sensor`, a *sampler* whose product **is** the sample — granted by operator direction (APO-6b) because a replication-lag reading has nowhere else to live, and constrained so it stays closed: the write is confined to one sub-hash of the peer's `cluster_pg` record, taken under the peer's row lock and re-checked inside that lock, and applied with `update_columns` so the row's own timestamps and callbacks are untouched. Do not read that class as licence; a new writing sensor needs the same operator ruling and the same constraints, and this list is where it gets recorded.
 
 ## Intervention Policy Reference
 
