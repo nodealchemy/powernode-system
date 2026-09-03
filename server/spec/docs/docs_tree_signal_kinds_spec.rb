@@ -44,8 +44,19 @@ require_relative "../support/fleet_signal_kinds"
 #       - REGEX ARTIFACTS — `system.sdwan_`, `system.disk_image_`, matched out of
 #         prose like "emits `system.sdwan_*` signals";
 #       - NO PRODUCER ANYWHERE, i.e. probably the same defect again —
-#         `federation.peer.accepted` (only in a spec), `module.upgrade`,
-#         `system.disk_image_regression_reported`, `system.cert.rotation_failed`.
+#         `module.upgrade`, `system.disk_image_regression_reported`,
+#         `system.cert.rotation_failed`.
+#     CORRECTED 2026-09-03 (IMP-72df91c7b9db): `federation.peer.accepted` was
+#     listed above as "NO PRODUCER ANYWHERE (only in a spec)". It has TWO, both
+#     invisible to a literal grep because they INTERPOLATE the last segment:
+#     System::Federation::FederationAcceptanceService#emit_event! builds
+#     `kind: "federation.peer.#{action}"` (:512) and is called with
+#     action: "accepted" (:170), and System::FederationPeer
+#     #broadcast_status_transition! reaches the same name via
+#     broadcast_peer_state!(kind: status) for the "accepted" member of STATUSES
+#     (federation_peer.rb:32,:374,:400). A variable producer is invisible to a
+#     literal scan, so absence of a literal is not absence of a producer —
+#     which is why the widening sketched below still needs each survivor read.
 #     Allowlisting all thirteen to reach green would LAUNDER that third group —
 #     exactly the false-corroboration move this task was told to avoid. Widening
 #     the emitted set to "any kind literal in extension source" shrinks the

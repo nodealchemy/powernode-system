@@ -317,9 +317,12 @@ module ModuleDocsMcpCallSignatures
       system_promote_module_version system_provision_instance system_terminate_instance
       system_unassign_module_from_template system_validate_module_manifest
     ],
+    # IMP-72df91c7b9db dropped the `recent_events` token: Step 4's
+    # kind_prefix poll was withdrawn to prose (nothing emits module.upgrade.*),
+    # not renamed, so the file carries one call site fewer on purpose.
     "docs/tutorials/06-rolling-upgrade.md" => %w[
       agent_introspect create_learning list_agents()
-      recent_events system_get_instance system_get_instance
+      system_get_instance system_get_instance
       system_list_instances system_list_module_versions system_list_module_versions
       system_platform_maintenance system_refresh_instance_modules system_rollback_module_version
       system_rollback_module_version
@@ -329,7 +332,7 @@ module ModuleDocsMcpCallSignatures
     ],
     "docs/runbooks/disk-image-ci.md" => %w[
       dispatch_gitea_workflow get_gitea_job_logs get_gitea_workflow_run
-      provision_disk_image_webhook recent_events system_list_ci_workers()
+      provision_disk_image_webhook system_list_ci_workers() system_recent_signals
       system_list_disk_image_publications system_list_disk_image_webhooks() system_provision_ci_worker
       system_set_default_disk_image_publication system_set_default_disk_image_publication system_set_disk_image_retention
       system_terminate_ci_worker
@@ -417,8 +420,24 @@ module ModuleDocsMcpCallSignatures
     # survived a rewrite of the code it described.
     # IMP-0467eee9fc57 — the cordon-only pair the runbook's phantom
     # `cordon_only` parameter was standing in for.
+    # IMP-72df91c7b9db — system_recent_signals replaced the `platform.recent_events`
+    # the stuck-state table sent operators to (that verb reads Ai::ExecutionEvent,
+    # never a FleetEvent). Pinned so the real reader's call shape stays checked.
     "docs/runbooks/node-provisioning.md" => %w[system_create_node system_drain_instance
-                                              system_cordon_instance system_uncordon_instance]
+                                              system_cordon_instance system_uncordon_instance
+                                              system_recent_signals],
+    # IMP-72df91c7b9db — every `platform.recent_events({ kind_prefix: ... })` /
+    # `({ source: ... })` / `({ since: ... })` poll in these four docs was
+    # rewritten as a system_recent_signals call with an exact `kind`. The verb
+    # existed all along (an introspection tool over Ai::ExecutionEvent), so the
+    # tree-wide existence sweep never saw the defect; what these pins buy is the
+    # unknown-key check on the REAL reader, so a `kind_prefix:` written back
+    # onto it reddens. spec/docs/fleet_event_reader_verb_spec.rb runs the same
+    # key check ungated for this one verb and adds the prose containment.
+    "docs/tutorials/09-honeypot-canary.md" => %w[system_recent_signals],
+    "docs/tutorials/11-federation.md" => %w[system_recent_signals],
+    "docs/tutorials/12-disk-image-ci.md" => %w[system_recent_signals],
+    "docs/runbooks/federation-troubleshooting.md" => %w[system_recent_signals]
   }.freeze
 
   # Call sites left BROKEN on purpose, each tracked by a filed finding, because
@@ -428,16 +447,19 @@ module ModuleDocsMcpCallSignatures
   # Asserted STILL BROKEN rather than skipped, so the exclusion retires itself:
   # fixing the underlying finding reddens the example and forces its removal.
   KNOWN_BROKEN = {
-    # 01a05174-974f-7968-9cf3-e665f42fdf17 — recent_events declares only
-    # source_type/status/limit, emits no `kind` field, and NOTHING in the repo
-    # emits the module.upgrade.* events this step tells an operator to poll for
-    # (RollingModuleUpgradeExecutor is plan-only and has no emitter).
-    ["docs/tutorials/06-rolling-upgrade.md", "recent_events"] => %w[kind_prefix],
-    # Same finding, second call site (IMP-84c318bf31f9 batch 4): the
-    # troubleshooting table tells an operator to poll
-    # system.disk_image_publish_failed through a `kind_prefix` recent_events
-    # does not declare.
-    ["docs/runbooks/disk-image-ci.md", "recent_events"] => %w[kind_prefix]
+    # RETIRED by IMP-72df91c7b9db. Was:
+    #   ["docs/tutorials/06-rolling-upgrade.md", "recent_events"] => %w[kind_prefix]
+    #   ["docs/runbooks/disk-image-ci.md", "recent_events"]      => %w[kind_prefix]
+    # (01a05174-974f-7968-9cf3-e665f42fdf17 and IMP-84c318bf31f9 batch 4:
+    # recent_events declares only source_type/status/limit and emits no `kind`
+    # field.) Both sites were rewritten. disk-image-ci.md now calls
+    # system_recent_signals with the exact kind system.disk_image_publish_failed,
+    # which IS emitted (DiskImagePublicationProcessor). 06-rolling-upgrade.md's
+    # poll was withdrawn to prose rather than renamed: NOTHING emits
+    # module.upgrade.* (RollingModuleUpgradeExecutor is plan-only), so there is
+    # no kind to hand the real reader and a renamed call would be a verified-
+    # looking poll for events that never come. Neither file needs an exclusion.
+    #
     # RETIRED by IMP-e8dc40813adb (this spec's own instruction: the entry
     # matched no call site once the example was removed).
     #
