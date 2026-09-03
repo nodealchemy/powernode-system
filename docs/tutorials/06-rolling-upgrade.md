@@ -236,13 +236,13 @@ is no rollout — and there is no batch size to edit even in principle. Editing
 
 ## Step 4 — Watch progress — NOT IMPLEMENTED
 
-```javascript
-// NOT IMPLEMENTED — nothing in the platform emits module.upgrade.* events.
-// `recent_events` does not declare a `kind_prefix` parameter either, so this
-// call is doubly wrong: it would not filter even if the events existed.
-platform.recent_events({ kind_prefix: "module.upgrade", limit: 100 })
-// → no module.upgrade.* events, ever
-```
+There is nothing to watch, and no call to make. Nothing in the platform
+emits `module.upgrade.*` events, so there is no `kind` to hand the fleet
+event reader `system_recent_signals` (which filters by one exact `kind` or a
+`correlation_id`; it has no prefix filter). An earlier revision of this step
+polled `recent_events({ kind_prefix: "module.upgrade" })` — wrong twice: that
+introspection verb reads agent execution events and never returns a
+FleetEvent, and no verb takes a `kind_prefix`.
 
 There is no "Active rolling upgrades" panel at `/app/system/operations`.
 

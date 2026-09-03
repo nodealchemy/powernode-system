@@ -59,8 +59,9 @@ instance), and authenticates clients via mTLS. The CA hierarchy is rooted
 in `InternalCaService` (Vault PKI when available; fixture PEM in dev).
 
 The daemon is provisioned via the `runtime/handshake` API — a stateless
-phase machine the agent walks through (`wants_cert` → `wants_config` →
-`ready`) on heartbeat ticks. The platform creates the corresponding
+phase machine the agent walks through (`wants_cert` → `ready`, plus
+`stopped` on teardown — those three are the whole allow-list in
+`RuntimeController::PHASES_BY_RUNTIME`) on heartbeat ticks. The platform creates the corresponding
 `Devops::DockerHost` row when the agent posts `wants_cert`. Host status
 moves `pending → connected` only when the agent reports `ready`
 (promotion is `system_mark_docker_ready` under the hood). Honest caveat:
@@ -132,17 +133,24 @@ platform.system_assign_module_to_template({
 
 ## Step 3 — Watch the handshake
 
+There is no event stream to poll for this. Nothing in the platform emits a
+`system.docker.*` FleetEvent — the handshake phases (`wants_cert` →
+`ready`) are recorded only as the `Devops::DockerHost` row's status, so the
+observable is the host row itself:
+
 ```javascript
-platform.recent_events({ kind_prefix: "system.docker", limit: 20 })
-// → events: [
-//      { kind: "system.docker.module.assigned",      ... },
-//      { kind: "system.docker.runtime.installing",   ... },
-//      { kind: "system.docker.handshake.wants_cert", ... },
-//      { kind: "system.docker.handshake.cert_signed", ... },
-//      { kind: "system.docker.handshake.ready",      ... },
-//      { kind: "system.docker.provisioned",          ... }
-//    ]
+platform.docker_list_hosts()
+// → { hosts: [{ node_instance_id: "<instance-id>", status: "pending", ... }] }
+//   `pending` appears when the agent posts wants_cert; it flips to
+//   `connected` when the agent reports ready. No row yet = the agent has not
+//   picked up the assignment (wait for the next heartbeat, ~60s).
 ```
+
+An earlier revision of this step polled
+`recent_events({ kind_prefix: "system.docker" })`. That introspection verb
+reads agent execution events and never returns a FleetEvent; the fleet event
+reader is `system_recent_signals`, which filters by one exact `kind` with no
+prefix filter — and there is no docker handshake kind for it to return.
 
 **Expected outcome:** ~2–3 min wall clock for the full sequence on a warm
 instance. The new `Devops::DockerHost` appears:
@@ -246,8 +254,10 @@ If `VaultCaAdapter`, verify Vault's `pki_int` mount is reachable and the
 `node` role exists. Per `project_vault_pki_state` memory, dev environments
 typically run on `LocalCaAdapter` (fixture PEM) — that's expected.
 
-**Handshake fails at `wants_config`** — the agent received the cert but
-can't write `daemon.json`. SSH to the instance and check
+**Handshake stalls after `wants_cert`** — the agent received the cert but
+can't write `daemon.json`, so it never posts `ready`. (There is no
+`wants_config` phase; writing the config is the agent-local `applying` step
+between the two posts — see `agent/internal/dockerd/doc.go`.) SSH to the instance and check
 `journalctl -u powernode-agent.service` for permissions errors. Common cause:
 `/etc/docker/` is missing or owned by a non-root user.
 

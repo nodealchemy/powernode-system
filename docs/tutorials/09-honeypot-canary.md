@@ -18,10 +18,12 @@
 
 <!-- signal-kind-corrections:start -->
 > **Corrected 2026-08-31 (IMP-e491c01f5c01).** This tutorial named a signal
-> kind that does not exist, in nine places — including copy-pasteable
-> `platform.recent_events` calls. Those calls returned an empty list with
-> `success: true`: a successful-looking response, and no indication that the
-> kind was never emitted.
+> kind that does not exist, in nine places — including copy-pasteable event
+> polls. Those calls returned an empty list with `success: true`: a
+> successful-looking response, and no indication that the kind was never
+> emitted. (The polls were also aimed at the wrong verb — `recent_events`
+> reads agent execution events, never a FleetEvent; the fleet event reader
+> is `system_recent_signals`, used below. IMP-72df91c7b9db.)
 >
 > | Named here until 2026-08-31 | Actually emitted |
 > |---|---|
@@ -174,20 +176,36 @@ detects the read and posts to platform.
 ## Step 4 — Observe sensor firing
 
 ```javascript
-platform.recent_events({ kind: "system.honeypot_triggered", limit: 10 })
+platform.system_recent_signals({ kind: "system.honeypot_triggered", limit: 10 })
 // → events: [{
 //      kind: "system.honeypot_triggered",
 //      severity: "high",
+//      node_module_id: "<canary module id>",  // the accessed canary
+//      node_instance_id: null,                // this kind carries NO instance ref
+//      source: "honeypot",
 //      payload: {
-//        node_instance_id: "...",
-//        canary_path: "/etc/cluster-admin-credentials.yaml",
-//        accessing_process: "bash",
-//        accessing_user: "root",
-//        accessed_at: "2026-05-17T13:42:01Z"
+//        module_id: "<canary module id>",
+//        module_name: "cluster-admin-credentials",
+//        source: "drill",
+//        context: {                           // free-form; whatever the caller passed
+//          canary_path: "/etc/cluster-admin-credentials.yaml",
+//          accessing_process: "bash",
+//          accessing_user: "drill-attacker",
+//          accessed_at: "2026-05-17T13:42:01Z"
+//        }
 //      },
-//      correlation_id: "..."
+//      emitted_at: "2026-05-17T13:42:01.000Z"
 //    }]
 ```
+
+The payload is exactly what `CanaryModuleService.observe_access!` writes —
+`module_id`, `module_name`, `source` and a free-form `context` — plus the
+`node_module_id` column. **There is no `node_instance_id` on this kind.**
+`EventBroadcaster#resource_refs_from_payload` fills that column from
+`payload["instance_id"]`, which this producer never sets, and the drill's
+per-access detail (`canary_path`, `accessing_process`, ...) is nested inside
+`context`, not at the top of the payload. Which instance was hit is carried by
+the OTHER kind below.
 
 Two kinds are involved, and filtering on the wrong one returns an empty
 list with `success: true`:
@@ -196,16 +214,21 @@ list with `success: true`:
   (`System::Honeypot::CanaryModuleService.observe_access!`). This is the
   event you query above.
 - `system.honeypot_access` — the ESCALATION signal `honeypot_access_sensor`
-  emits after reading the event above. `DecisionEngine::SIGNAL_BINDINGS`
-  keys on this one, which is what drives the intervention policy.
+  emits after reading the event above, ONE PER RUNNING INSTANCE that hosts the
+  accessed canary (`payload.instance_id` / `payload.node_id`, which the
+  broadcaster lifts into the `node_instance_id` / `node_id` columns).
+  `DecisionEngine::SIGNAL_BINDINGS` keys on this one, which is what drives the
+  intervention policy. It is also a persisted FleetEvent in its own right:
+  `DecisionEngine#decide` calls `EventBroadcaster.emit_signal!` on every signal
+  before any routing, so `system_recent_signals` can read it back.
 
 Within 60s, `honeypot_access_sensor` runs in the autonomy reconciler.
 It:
 
 1. Sees the `system.honeypot_triggered` event
-2. Emits a `system.honeypot_access` signal (severity: **critical**) — an
-   in-memory `System::Fleet::Signal` consumed by the DecisionEngine, not a
-   persisted FleetEvent
+2. Emits a `system.honeypot_access` signal (severity: **critical**) per
+   hosting instance — a `System::Fleet::Signal` consumed by the DecisionEngine,
+   which persists it as a FleetEvent of the same kind on the way in
 3. Per intervention policy, surfaces in operator dashboard
 
 ## Step 5 — Operator response
@@ -222,7 +245,7 @@ platform.governance_dashboard()
 > `Ai::Tools::GovernanceTool#governance_dashboard` returns COUNTS over
 > `Ai::GovernanceReport` and `Ai::CollusionIndicator`, and reads no FleetEvent
 > at all — so neither `system.honeypot_access` nor `system.honeypot_triggered`
-> appears there. To see the honeypot events, use `platform.recent_events` as in
+> appears there. To see the honeypot events, use `system_recent_signals` as in
 > Step 4.
 
 Recommended response (the muscle memory you're building):
@@ -239,14 +262,14 @@ Recommended response (the muscle memory you're building):
 **Event recorded:**
 
 ```javascript
-platform.recent_events({ kind: "system.honeypot_triggered" })
-// → at least one event with the right canary_path
+platform.system_recent_signals({ kind: "system.honeypot_triggered" })
+// → at least one event whose payload.context.canary_path is the file you read
 ```
 
 **Escalation visible:**
 
 ```javascript
-platform.recent_events({ kind: "system.honeypot_access" })
+platform.system_recent_signals({ kind: "system.honeypot_access" })
 // → the sensor's escalation signal, if the reconciler has ticked
 ```
 
@@ -297,9 +320,12 @@ platform.system_terminate_instance({ instance_id: "<test-instance-id>" })
 
 - Inotify watcher daemon isn't running on the instance. SSH and check:
   `systemctl status powernode-honeypot-watcher.service`
-- Agent isn't posting events. Check
-  `platform.recent_events({ kind_prefix: "system.heartbeat" })` —
-  if heartbeats are missing, the agent's offline.
+- Agent isn't heartbeating. Heartbeats are not FleetEvents (there is no
+  `system.heartbeat*` kind for `system_recent_signals` to filter on); check
+  `platform.system_get_silent_instances()` — if the instance is listed, its
+  `last_heartbeat_at` is past the silent threshold and the agent's offline —
+  or read `last_heartbeat_at` straight off
+  `platform.system_get_instance({ instance_id: "<instance-id>" })`.
 - Sensor is disabled in the agent's intervention policy. Check via
   `platform.agent_introspect`.
 
@@ -314,13 +340,22 @@ fixes:
 within minutes, lateral movement is likely; escalate to incident
 immediately. Watch via:
 
+Correlate on the ESCALATION kind, not the detection kind:
+`system.honeypot_triggered` names the canary MODULE and carries no instance
+ref (see Step 4), so counting instances on it always yields zero.
+`honeypot_access_sensor` is what resolves the hosting instances, one signal
+each, and `node_instance_id` is populated on those.
+
 ```javascript
-platform.recent_events({
-  kind: "system.honeypot_triggered",
-  since: "1 hour ago"
-})
-// → if >1 instance in the list, escalate
+// No time filter on this verb — take a page and bound it on emitted_at.
+platform.system_recent_signals({ kind: "system.honeypot_access", limit: 100 })
+// → count distinct node_instance_id among events whose emitted_at is within
+//   the last hour; if >1 instance, escalate
 ```
+
+If the reconciler has not ticked yet (up to 60s), only the detection event
+exists; poll `system.honeypot_triggered` and count distinct `node_module_id`
+to see how many canaries were touched in the meantime.
 
 **Drill vs real** — always tag drill events explicitly (learning title
 prefixed with `DRILL:`); never confuse drill response with real IR.

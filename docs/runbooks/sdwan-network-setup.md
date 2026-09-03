@@ -395,8 +395,8 @@ _Last verified: 2026-06-03_
 
 <!-- signal-kind-corrections:start -->
 > **Corrected 2026-08-31 (IMP-e491c01f5c01).** Two fabricated signal kinds were
-> named in this runbook. Both are **NOT IMPLEMENTED** — a `platform.recent_events`
-> filter or intervention policy keyed on either returns empty with
+> named in this runbook. Both are **NOT IMPLEMENTED** — a `system_recent_signals`
+> `kind` filter or intervention policy keyed on either returns empty with
 > `success: true`, giving no sign that the kind does not exist.
 >
 > | Named here until 2026-08-31 | Actually emitted |

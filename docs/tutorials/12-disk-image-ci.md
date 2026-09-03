@@ -267,12 +267,14 @@ dominate). Subsequent builds are much faster with cached layers.
 After the workflow's webhook step succeeds:
 
 ```javascript
-platform.recent_events({ kind_prefix: "system.disk_image", limit: 20 })
+// One exact kind per call — system_recent_signals has no prefix filter.
+platform.system_recent_signals({ kind: "system.disk_image_published", limit: 20 })
 // → events: [
 //      { kind: "system.disk_image_published",
 //        payload: { publication_id, node_platform_id, oci_ref, sha256, ... } }
 //    ]
-// (failure path emits: system.disk_image_publish_failed with error_message)
+// Nothing listed? Ask for the failure kind:
+platform.system_recent_signals({ kind: "system.disk_image_publish_failed", limit: 20 })
 // (retention emits: system.disk_image_retention_swept)
 ```
 

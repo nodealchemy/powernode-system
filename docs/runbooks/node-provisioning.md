@@ -248,7 +248,7 @@ The platform marks the instance `status=running` after the first `phase=ready` P
 
 **What to watch:**
 - Bootstrap timeline: ~90 s from kernel boot to `phase=ready` on warm cache; +30-60 s on first run when modules aren't cached. Slice 7 instance pools cut this to <30 s by pre-warming.
-- Stuck in `bootstrapping`: usually a module pull failure (signature verify, network, OCI 404). Check `journalctl -u powernode-agent` on the node, or `platform.recent_events` for the instance.
+- Stuck in `bootstrapping`: usually a module pull failure (signature verify, network, OCI 404). Check `journalctl -u powernode-agent` on the node, the provision task's `error_message` (`system_list_tasks({ instance_id })` → `system_get_task`), or the instance's FleetEvents via `system_recent_signals` (exact `kind` or `correlation_id`; the verb has no per-instance filter, so read `node_instance_id` off each event). Not the introspection verb `recent_events` — it reads agent execution events and never returns a FleetEvent.
 - Bootstrap token rotation: tokens expire 24 h after issue. Re-provision if you see `BootstrapTokenExpiredError`.
 
 ## Phase 4 — Run ✅
@@ -531,11 +531,11 @@ moves `running → stopping → stopped` or `→ terminated`), not states.
 
 | Stuck in… | Likely cause | Recovery |
 |---|---|---|
-| `pending` (>5 min) | Worker queue stalled or provider quota | Check `platform.recent_events` for `provider_quota_exceeded`; restart worker via `sudo systemctl restart 'powernode-*-sidekiq.service'`; retry with the **same `operation_id`** |
+| `pending` (>5 min) | Worker queue stalled or provider quota | Read the provision task's `error_message` (`system_list_tasks({ instance_id })` → `system_get_task`) — a provider quota refusal lands there; no `provider_quota_exceeded` FleetEvent kind is emitted. Restart worker via `sudo systemctl restart 'powernode-*-sidekiq.service'`; retry with the **same `operation_id`** |
 | `provisioning` (>10 min) | Provider API timeout, libvirt domain creation hung | `platform.system_cancel_task` the provision task; investigate provider. `terminate` does **not** fire from `provisioning` today — see "Clearing a stuck `provisioning` instance" below |
 | `provisioning`, agent up but never `running` (>5 min after first heartbeat) | Module pull failure | SSH to node (if SDWAN attached) → `journalctl -u powernode-agent` shows the failed module + reason; common: cosign signature mismatch, OCI 404, network |
-| `running` but no heartbeats >3 min | Network partition or agent crash | `platform.recent_events` for `system.instance_silent`; SSH or console-access via libvirt; manual restart of `powernode-agent.service` |
-| `error` (terminal) | Provider/boot failure drove `mark_errored` | Inspect `platform.recent_events`; once the cause is understood, `system_terminate_instance` (allowed from `error`) to release provider resources, then re-provision with a fresh `operation_id` |
+| `running` but no heartbeats >3 min | Network partition or agent crash | `platform.system_recent_signals({ kind: "system.instance_silent", limit: 50 })` (or `system_get_silent_instances()` for the live list); SSH or console-access via libvirt; manual restart of `powernode-agent.service` |
+| `error` (terminal) | Provider/boot failure drove `mark_errored` | Read the failing task's `error_message` via `system_get_task`, then `system_attribute_failure({ instance_id })` to rank recent module changes; once the cause is understood, `system_terminate_instance` (allowed from `error`) to release provider resources, then re-provision with a fresh `operation_id` |
 | Drain stalled (>30 min) | Pods can't reschedule (capacity) | Add capacity, or hard-terminate via `system_terminate_instance` |
 | Terminate stalled (>5 min) | Provider VM teardown stuck | Check provider console; in the worst case `system_cancel_task` the teardown task and clean orphan rows manually |
 

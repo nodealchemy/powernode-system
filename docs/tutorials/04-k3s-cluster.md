@@ -119,18 +119,17 @@ platform.system_assign_module_to_template({
 **Expected outcome:** within ~60s, the agent picks up the new assignment
 and installs k3s. The bootstrap handshake completes in ~30–60s after that.
 
-Watch via:
+Watch via the cluster row, not an event poll — nothing emits a
+`system.k3s.*` handshake FleetEvent (the only `system.k3s*` kind in the
+platform is `system.k3s_ambiguous_cluster_join_refused`, and the fleet event
+reader `system_recent_signals` filters by one exact `kind`, with no prefix
+filter):
 
 ```javascript
-platform.recent_events({ kind_prefix: "system.k3s", limit: 20 })
-// → events: [
-//      { kind: "system.k3s.module.assigned",       ... },
-//      { kind: "system.k3s.runtime.installing",    ... },
-//      { kind: "system.k3s.handshake.bootstrap",   ... },
-//      { kind: "system.sdwan.virtual_ip.allocated", payload: { vip: "fd00:abcd:1::100", purpose: "k3s_api_endpoint" } },
-//      { kind: "system.k3s.cluster.bootstrapped",  ... },
-//      { kind: "system.k3s.handshake.ready",       ... }
-//    ]
+platform.kubernetes_list_clusters()
+// → { clusters: [{ id: "cluster-<uuid>", status: "bootstrapping", api_endpoint: "https://[fd00:abcd:1::100]:6443", ... }] }
+//   The row appears when the agent posts phase=bootstrap (VIP allocated,
+//   api_endpoint set) and moves to `active` when it posts phase=ready.
 ```
 
 ## Step 3 — Verify the cluster
@@ -201,10 +200,18 @@ platform.system_assign_module_to_template({
 the join token, and joins:
 
 ```javascript
-platform.recent_events({ kind_prefix: "system.k3s.handshake.join", limit: 5 })
-// → { kind: "system.k3s.handshake.join_request", ... }
-// → { kind: "system.k3s.handshake.join_token_issued", ... }
-// → { kind: "system.k3s.handshake.ready", ... }
+platform.kubernetes_list_nodes({ cluster_id: "cluster-<uuid>" })
+// → { nodes: [{ role: "server", status: "active", ... },
+//             { role: "agent",  status: "active", ... }] }   // the new worker
+```
+
+No `system.k3s.handshake.*` FleetEvent exists to poll for the join. The one
+join-related kind, `system.k3s_ambiguous_cluster_join_refused`, fires only
+when the join is REFUSED (see the banner above), so it is the thing to check
+when the worker never appears:
+
+```javascript
+platform.system_recent_signals({ kind: "system.k3s_ambiguous_cluster_join_refused", limit: 5 })
 ```
 
 ## Step 6 — Retrieve kubeconfig + use kubectl

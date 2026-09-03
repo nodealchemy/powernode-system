@@ -227,8 +227,8 @@ sequenceDiagram
 > | `sdwan.bgp_unhealthy` | `system.sdwan_bgp_session_unhealthy` (and `system.sdwan_bgp_session_stale`) |
 > | `sdwan.vip_holder_silent` | `system.sdwan_vip_unreachable` |
 >
-> The left-hand names are **NOT IMPLEMENTED**. A `platform.recent_events`
-> filter or intervention policy keyed on one returns empty with
+> The left-hand names are **NOT IMPLEMENTED**. A `system_recent_signals`
+> `kind` filter or intervention policy keyed on one returns empty with
 > `success: true` — no error, no warning.
 <!-- signal-kind-corrections:end -->
 
@@ -288,7 +288,7 @@ platform.emergency_resume
 
 Every decision SDWAN Manager makes lands in three places:
 
-1. **FleetEvent log** — `System::FleetEvent` rows with `source: "sdwan_manager"`, queryable via `platform.recent_events` or the Fleet Dashboard
+1. **FleetEvent log** — `System::FleetEvent` rows with `source: "sdwan_manager"`, queryable via `system_recent_signals` (filter by exact `kind` or `correlation_id`; `source` is returned on each event but is not a filter) or the Fleet Dashboard. Not the introspection verb `recent_events`, which reads agent execution events and never returns a FleetEvent.
 2. **ActionCable broadcast** — live UI updates on `SystemFleetChannel` (subscribers see decisions stream into the dashboard)
 3. **Approval queue** — `Ai::ApprovalRequest` rows for `require_approval` actions, visible at `/ai/autonomy/approvals` in the operator UI
 

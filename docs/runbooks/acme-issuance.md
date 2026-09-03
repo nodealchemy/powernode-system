@@ -299,7 +299,11 @@ curl -s -X POST \
 # endpoints every endpoint_probe_interval_seconds (default 300s). There is no
 # manual probe trigger; observe current reachability via the Platform Peers
 # detail (GET /api/v1/system/platform/peers/:id — its endpoints array carries
-# last_verified_at / last_failure_at) or platform.recent_events (federation. prefix).
+# last_verified_at / last_failure_at) or system_recent_signals filtered on an
+# exact federation.peer.* kind — federation.peer.heartbeat_stale,
+# federation.peer.unreachable, federation.peer.rehandshaked. The verb has no
+# prefix filter, and the introspection verb recent_events (agent execution events) never
+# returns a FleetEvent at all.
 ```
 
 ## Step 7 — Traefik termination + dynamic config

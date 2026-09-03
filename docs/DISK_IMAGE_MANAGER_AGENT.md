@@ -219,7 +219,7 @@ set-default to pin a specific publication.
 
 Every Disk Image Manager decision lands in three places:
 
-1. **FleetEvent log** — `System::FleetEvent` rows with `source: "disk_image_manager"`, queryable via `platform.recent_events` or the Fleet Dashboard. The payload includes the `DiskImagePublication` id and the previous + new active publication for promotions.
+1. **FleetEvent log** — `System::FleetEvent` rows with `source: "disk_image_manager"`, queryable via `system_recent_signals` (filter by exact `kind` or `correlation_id`; `source` is returned on each event but is not a filter) or the Fleet Dashboard. Not the introspection verb `recent_events`, which reads agent execution events and never returns a FleetEvent. The payload includes the `DiskImagePublication` id and the previous + new active publication for promotions.
 2. **ActionCable broadcast** — live UI updates on `SystemFleetChannel` (operators watching the dashboard see promotions stream in)
 3. **Approval queue** — `Ai::ApprovalRequest` rows for `require_approval` actions, visible at `/ai/autonomy/approvals` in the operator UI
 

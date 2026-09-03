@@ -352,7 +352,7 @@ for any claimed members to finish their normal terminate, then delete.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Pool stuck at 0 members despite `target_size: 5` | Provider quota exhausted, or template references a missing module version | Check `recent_events` for `provider_quota_exceeded` or `module_pull_failed`; resolve and the reaper retries |
+| Pool stuck at 0 members despite `target_size: 5` | Provider quota exhausted, or template references a missing module version | Read the warming members' provision tasks (`system_list_tasks({ instance_id })` → `system_get_task` → `error_message`) — a quota refusal or a module pull failure lands there; neither is a FleetEvent kind, so `system_recent_signals` cannot filter for it. Resolve and the reaper retries |
 | Members stuck `warming` >10 min | Bootstrap failed (module pull, mTLS handshake) | Use `attribute_failure` skill; common causes: missing `Sdwan::Peer`, expired bootstrap token |
 | `NoReadyMembersError` despite 5 members in dashboard | All 5 members are still `warming` (`ready_count: 0`) | Either wait, increase `target_size`, or pre-bake a faster boot image |
 | Pool stuck `draining` | Provider VM teardown stalled, or claimed members still running | Check provider console; for a stalled teardown task cancel via `system_cancel_task` |
@@ -533,7 +533,8 @@ reds that guard and forces this table to be updated in the same change.
 ## Observing pool health
 
 Pool activity emits **nine** `system.pool.*` FleetEvent kinds, so most of it
-is queryable via `recent_events` rather than only greppable in the worker log.
+is queryable via `system_recent_signals` (one exact `kind` per call — there
+is no prefix filter) rather than only greppable in the worker log.
 Routine replenish/recycle *decisions* (how many members were provisioned or
 swept on a tick) are log-only; the events fire on the outcomes worth alerting
 on:
@@ -556,15 +557,17 @@ To observe a pool:
   `warming_count`, `claimed_count`, `errored_count` (nested under `pool`). A
   `ready_count` that sits at 0 while `target_size > 0` is the user-visible
   failure mode.
-- **Pool events** — query `recent_events` for the `system.pool.*` kinds above.
-  The two `high` terminate kinds are the ones that cost money: both mean a VM
-  may still be running and billing.
+- **Pool events** — query `system_recent_signals` for the `system.pool.*`
+  kinds above, one exact `kind` per call. The two `high` terminate kinds are
+  the ones that cost money: both mean a VM may still be running and billing.
 - **Worker log** — `journalctl -u 'powernode-*-sidekiq.service' -f | grep
   InstancePool` shows each tick's replenish/recycle/drain *counts*, which the
   events above deliberately do not carry.
-- **Underlying instance events** — individual member provision / terminate
-  flows surface in `recent_events` like any other NodeInstance lifecycle
-  (e.g. `provider_quota_exceeded`, `module_pull_failed`).
+- **Underlying instance failures** — a member's provision / terminate flow
+  is a `System::Task`; its failure reason is the task's `error_message`
+  (`system_list_tasks({ instance_id })` → `system_get_task`), not a
+  FleetEvent. There is no `provider_quota_exceeded` or `module_pull_failed`
+  kind for `system_recent_signals` to filter on.
 
 Alert on a sustained `ready_count == 0` (with `target_size > 0`) — that
 means claims will start raising `NoReadyMembersError`.

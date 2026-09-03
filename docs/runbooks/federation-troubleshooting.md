@@ -340,11 +340,15 @@ puts peer.last_heartbeat_at            # how stale
 # Check the remediation FleetEvent for the probe error:
 ```
 
-```
-platform.recent_events
-  source: "federation_peer_remediate_executor"
-  since: <ISO timestamp>
-# look for kind "federation.peer.degraded" with the probe error in payload.detail
+```javascript
+// system_recent_signals filters by ONE exact kind (or a correlation_id) — it
+// has no source or time filter, so bound the window on emitted_at yourself.
+// The probe's own event is federation.peer.unreachable (source
+// "federation_peer_remediate_executor"; payload.detail carries the probe
+// error); the active → degraded transition is broadcast separately as
+// federation.peer.degraded (source "federation_peer").
+platform.system_recent_signals({ kind: "federation.peer.unreachable", limit: 20 })
+platform.system_recent_signals({ kind: "federation.peer.degraded", limit: 20 })
 ```
 
 **Fix:** if the remote is genuinely back, its next inbound heartbeat fires
@@ -466,13 +470,16 @@ see [`expose-service.md`](./expose-service.md). Discovery architecture:
 
 When the runbook above doesn't resolve the issue:
 
-1. **Check the FleetEvent log for federation events:**
-   ```
-   platform.recent_events
-     source: "federation_heartbeat_sweep"   # or "sdwan_manager", "accept_controller",
-                                             # "federation_acceptance_service",
-                                             # "federation_peer_remediate_executor"
-     since: <ISO timestamp>
+1. **Check the FleetEvent log for federation events** — with
+   `system_recent_signals`, one exact `kind` per call. `source`
+   (`federation_heartbeat_sweep`, `federation_acceptance_service`,
+   `federation_peer_remediate_executor`, `federation_peer`) is returned on
+   each event but is not a filter, and there is no time filter — bound the
+   window on `emitted_at` yourself:
+   ```javascript
+   platform.system_recent_signals({ kind: "federation.peer.heartbeat_stale", limit: 50 })
+   platform.system_recent_signals({ kind: "federation.peer.accepted", limit: 50 })
+   platform.system_recent_signals({ kind: "federation.peer.unreachable", limit: 50 })
    ```
    The accept chain emits `federation.peer.accepted` from
    `federation_acceptance_service`; the liveness loop emits

@@ -136,16 +136,17 @@ curl -X POST https://parent.example.org/api/v1/system/federation/children/spawn 
 ## Step 2 — Watch the child boot + handshake
 
 ```javascript
-platform.recent_events({ kind_prefix: "federation.", limit: 20 })
+// system_recent_signals filters by ONE exact kind — there is no prefix
+// filter, so ask for the kind the handshake emits:
+platform.system_recent_signals({ kind: "federation.peer.accepted", limit: 20 })
 // → events: [
 //      // Emitted on the parent side when the child completes its
 //      // acceptance handshake against the AcceptController:
-//      { kind: "federation.peer.accepted", payload: { peer_id, peer_kind: "platform",
+//      { kind: "federation.peer.accepted", payload: { federation_peer_id, peer_kind: "platform",
 //        spawn_role: "parent", spawn_mode: "autonomous_peer", contract_version, ... } },
-//
-//      // Future on-tick events (heartbeat_stale, grant.archived, etc.) will
-//      // appear here as the federation governance loop runs.
 //    ]
+// The on-tick kinds (federation.peer.heartbeat_stale, federation.grant.archived,
+// ...) are each a separate call as the governance loop runs.
 ```
 
 **Note (2026-05-19 doc audit):** earlier revisions of this step listed a richer event stream (`system.federation.spawn.fwcfg_stamped`, `system.federation.schema_negotiated`, `system.federation.peer.active`, etc.) — those events are not currently emitted. The actual federation event surface today uses the `federation.` prefix (not `system.federation.`) and includes:
@@ -426,11 +427,12 @@ bound to **SDWAN Manager**), which branches on the reason:
 Watch it run:
 
 ```javascript
-platform.recent_events({
-  source: "federation_peer_remediate_executor",
-  limit: 20
-})
-// → federation.peer.rehandshaked / .degraded / .unreachable / .cert_rotation_required
+// One exact kind per call; `source` is returned on each event but is not a
+// filter. The executor emits federation.peer.rehandshaked / .unreachable /
+// .cert_rotation_required; the active → degraded transition is broadcast by
+// the peer row itself as federation.peer.degraded.
+platform.system_recent_signals({ kind: "federation.peer.unreachable", limit: 20 })
+platform.system_recent_signals({ kind: "federation.peer.degraded", limit: 20 })
 ```
 
 **Expected outcome:** a peer that briefly goes quiet self-recovers
@@ -542,8 +544,8 @@ yet; supply both endpoints so the first slice creates it.
 `federation_peer_remediate` executor probed the peer over mTLS and it was
 unreachable, so it degraded an `active` peer. If the remote is genuinely
 back, its next inbound heartbeat self-recovers it `degraded → active`. Check
-`recent_events({ source: "federation_peer_remediate_executor" })` for the
-probe error.
+`platform.system_recent_signals({ kind: "federation.peer.unreachable" })` for
+the probe error (`payload.detail`).
 
 ## What's next
 

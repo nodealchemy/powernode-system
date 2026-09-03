@@ -305,8 +305,12 @@ journalctl -u k3s-agent.service -n 200        # k3s-agent
 
 There is no run-arbitrary-command-on-an-instance MCP action — SSH (above) is
 the primary path for ad-hoc log retrieval. To drive instance lifecycle through
-MCP instead, use `system_provision_instance` (and `system_terminate_instance`)
-and watch `platform.recent_events` for task progress.
+MCP instead, use `system_provision_instance` (and `system_terminate_instance`),
+follow the returned task with `system_get_task` (status, progress,
+`error_message`), and read the instance's FleetEvents with
+`system_recent_signals` (exact `kind`, e.g. `system.instance_silent`, or a
+`correlation_id`). Not the introspection verb `recent_events`: it reads agent
+execution events (`Ai::ExecutionEvent`) and never returns a FleetEvent.
 
 ### CNI selection (Phase O4 — shipped)
 
