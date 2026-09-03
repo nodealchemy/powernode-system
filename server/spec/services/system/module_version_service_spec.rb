@@ -268,6 +268,38 @@ RSpec.describe System::ModuleVersionService, type: :service do
       expect(node_module.reload.mask).to eq(previous.mask)
     end
 
+    # The one semantic the fix's comment claims and nothing pinned: "previous"
+    # is relative to what is SERVED, not to the newest row minted. Before
+    # IMP-b7abf6c777da the two were always the same version, because
+    # #create_version promoted every row it minted. Now an ordinary spec edit
+    # mints without promoting, so the pointer can lag the newest row by any
+    # number of versions — and a default operator rollback restores from the
+    # row before the SERVED one, discarding the unpromoted edits above it.
+    it 'takes "previous" from the served version, not from the newest minted row' do
+      lagging = create(:system_node_module, account: account)
+      lagging_service = described_class.new(lagging, current_user: user)
+
+      # update_columns, not update!: it skips after_update :auto_create_version,
+      # so the version rows here are exactly the four minted below.
+      minted = %w[v1 v2 v3 v4].map do |tag|
+        lagging.update_columns(mask: { tag => true })
+        lagging_service.create_version(changelog: tag.upcase)
+      end
+      expect(lagging.versions.count).to eq(4)
+
+      served = minted[1]
+      lagging.promote_to_version!(served)
+      expect(lagging.reload.current_version_id).to eq(served.id)
+
+      lagging_service.rollback_to_previous
+
+      # minted[0] — the row before the SERVED one. NOT minted[2], the row before
+      # the newest, which is what "previous" meant while create_version promoted.
+      expect(lagging.reload.mask).to eq(minted[0].mask)
+      expect(lagging.mask).not_to eq(minted[2].mask)
+      expect(lagging.current_version.mask).to eq(minted[0].mask)
+    end
+
     it 'raises RollbackError when no current version' do
       new_module = create(:system_node_module, account: account)
       new_service = described_class.new(new_module)

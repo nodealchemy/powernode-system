@@ -128,6 +128,22 @@ RSpec.describe "module-promotion docs vs. what the node-facing serve path reads"
       expect(diagnosis_section).to include("rollback_usable?")
       expect(diagnosis_section).to include("system.module_publish.min_artifact_bytes")
     end
+
+    # IMP-b7abf6c777da removed the mechanism cause 2 blamed: an ordinary
+    # VERSIONED_ATTRIBUTES save still mints a version row, but no longer points
+    # current_version_id at it. Both halves are pinned, because dropping the
+    # false sentence alone would leave the row with no writer named at all and
+    # send an operator looking at the wrong one. Region-scoped to the
+    # diagnosis section; a file-level check is vacuous here (the same words
+    # appear in the ladder discussion below it).
+    it "does not blame the auto-version callback for moving the pointer, and names what does" do
+      expect(diagnosis_section).not_to match(
+        /creates a new version row and points\s+`?current_version_id`? at it/i
+      )
+      expect(diagnosis_section).to match(/ordinary spec edit is no longer a cause/i)
+      expect(diagnosis_section).to include("import_manifest")
+      expect(diagnosis_section).to include("package build webhook")
+    end
   end
 
   describe "docs/FLEET_SENSORS.md" do
