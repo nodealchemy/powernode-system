@@ -65,7 +65,10 @@ module System
   # the .cordoned / .not_cordoned scopes (#cordoned_relation /
   # #not_cordoned_relation below): System::Platform::ReplicaReconciler keeps a
   # cordoned replica OUT of the live count (so it provisions a replacement)
-  # and takes it FIRST as a scale-in victim (IMP-c9adb5a71dca). The node_api
+  # and takes it FIRST as a scale-in victim (IMP-c9adb5a71dca), and the
+  # Scaling panel's DeploymentsController#compute_actual_replicas reads the
+  # SAME pair for actual_replicas / cordoned_count so the panel and the
+  # reconciler cannot disagree on a row (IMP-3d4058389afa). The node_api
   # task lease does not read the marker (recorded on the task).
   #
   # The fence write is CONDITIONAL (update_all ... where pool_state: "ready"):

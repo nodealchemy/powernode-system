@@ -4,14 +4,19 @@ module System
   module Ai
     module Skills
       # Skill executor for refreshing a NodeModule when its source package
-      # version drifts upstream. Triggered by PackageDriftSensor.
+      # version drifts upstream.
       #
-      # Approval policy:
-      #   * CVE-flagged refresh → auto-approve (4h cooldown)
-      #   * Non-CVE drift refresh → human approval required
-      # The CVE check happens in the Fleet Autonomy intervention policy
-      # layer, not here — this executor unconditionally enqueues; the
-      # autonomy framework gates whether the enqueue is allowed.
+      # HOW IT IS REACHED (verified 2026-09-03, IMP-9f69531f042d follow-up):
+      # nothing sensor-routed. PackageDriftSensor's signal
+      # (system.package_drift_pressure) binds to package_repository.sync, not to
+      # this executor; the only caller is CveRemediationOrchestrationExecutor
+      # #dispatch_refreshes, which invokes #execute directly for each exposed
+      # module under the CVE lane's own gate. This executor does not gate
+      # itself and unconditionally enqueues SystemPackageModuleRefreshJob
+      # through System::WorkerJobEnqueuer. The seeded
+      # system.package_module.refresh policy row (require_approval) is declared
+      # for a future sensor-routed refresh lane and is read by nothing today;
+      # there is no CVE-flagged / non-CVE approval split.
       class PackageModuleRefreshExecutor < BaseSkillExecutor
         skill_descriptor(
           name:        "package_module_refresh",

@@ -618,9 +618,15 @@ module System
 
         # Package repository ingestion. Sync is routine + reversible (just
         # refreshes cached metadata); module creation is supply-chain critical
-        # (operator audits each new package entering the fleet); refresh requires
-        # approval for non-CVE drifts (intervention policy splits CVE-flagged
-        # refresh out into auto-approve via the executor's payload metadata).
+        # (operator audits each new package entering the fleet). The refresh row
+        # is DECLARED BUT UNREAD today: no DecisionEngine binding routes a signal
+        # to system.package_module.refresh (system.package_drift_pressure routes
+        # to package_repository.sync), and the only caller of
+        # PackageModuleRefreshExecutor is CveRemediationOrchestrationExecutor
+        # #dispatch_refreshes, which invokes it directly under the CVE lane's own
+        # gate. There is no CVE-flagged/non-CVE split anywhere — that claim was
+        # aspirational prose. The row stays so a future sensor-routed refresh
+        # lane starts at require_approval rather than the unmatched default.
         "system.package_repository.sync" => "auto_approve",
         "system.package_module.create"   => "require_approval",
         "system.package_module.refresh"  => "require_approval",
