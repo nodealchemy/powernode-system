@@ -262,9 +262,11 @@ module System
               node_module_id: link.node_module_id,
               package_module_link_id: link.id,
               ok: result[:success] == true,
-              # The executor's own evidence that a job was queued. It succeeds
-              # even when it queues nothing, so this — not `ok` — is what
-              # #dispatched_module_ids may treat as remediation in flight.
+              # The executor's own evidence that a job was queued (it reaches
+              # the worker through WorkerJobEnqueuer since IMP-594bfa5e1be5
+              # and fails when nothing is queued). Still keyed separately from
+              # `ok`: this — not `ok` — is what #dispatched_module_ids may
+              # treat as remediation in flight.
               enqueued: result.dig(:data, :enqueued) == true,
               error: result[:error]
             }
