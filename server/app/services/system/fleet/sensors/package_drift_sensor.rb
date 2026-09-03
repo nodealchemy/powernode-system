@@ -7,11 +7,27 @@ module System
       # version has bumped beyond what the local NodeModule currently
       # carries. Emits `system.package_drift_pressure` signals; severity
       # boosted to :high when the package is CVE-affected (cross-references
-      # System::CveExposure via the linked NodeModule's current version).
+      # the module's unresolved, version-confirmed System::CveExposure rows).
       #
-      # Fleet Autonomy's `package_module.refresh` policy consumes these
-      # signals and proposes a refresh (auto-approved for CVE-flagged
-      # packages, human-approval required otherwise).
+      # WHERE THE SIGNAL ACTUALLY GOES (re-verified 2026-09-03 for
+      # IMP-9f69531f042d — the previous wording here named a
+      # `package_module.refresh` policy that NOTHING routes to; that category
+      # is permitted and dedup-keyed in FleetAutonomyService but no signal
+      # binds to it): DecisionEngine::SIGNAL_BINDINGS routes
+      # `system.package_drift_pressure` to action_category
+      # `system.package_repository.sync`, seeded `auto_approve` in
+      # Governance::PolicyDeclarations, and REMEDIATION_APPLIERS actuates it
+      # with DecisionEngine#sync_package_repository — a
+      # PackageRepositorySyncService.enqueue!, i.e. a repository METADATA
+      # refresh, not a module refresh.
+      #
+      # Severity is NOT an input to that gate: #gate_action! takes
+      # action_category/metadata/force_policy/advisory, and force_policy_for
+      # returns nil for every kind but system.template_closure_drift — so a
+      # :medium drift signal and a :high one take the same auto-approved path.
+      # What the boost below buys is the operator-facing severity on the
+      # signal record (and the `cve_flagged` payload flag), not a different
+      # approval outcome.
       class PackageDriftSensor < BaseSensor
         # Don't fire for very fresh links — newly-materialized modules with
         # a refresh delta will just churn. Wait until 24h after last sync.
@@ -63,12 +79,27 @@ module System
         end
 
         # Cross-references System::CveExposure rows touching this link's module.
-        # Returns true if any CveExposure exists tied to the module's current
-        # version. False if the platform doesn't have a CVE catalog active.
+        # True only for an UNRESOLVED (open / remediating) row whose match is
+        # VERSION-CONFIRMED (match_method sbom) — IMP-9f69531f042d. A
+        # `suspected` row is a keyword name-overlap with no version evidence,
+        # a resolved or wont_fix row carries a decision already, and a keyword
+        # row is unconfirmed in every state; none of those is evidence that
+        # THIS module's installed version is affected, so none of them may
+        # label the drift signal CVE-driven. False if the platform doesn't
+        # have a CVE catalog active.
+        #
+        # This is the CveResponseExecutor bar (unresolved + version_confirmed),
+        # and it is STRICTER than the rest of the CVE lanes:
+        # CriticalUpgradeAvailableSensor and the remediation orchestrator read
+        # `.unresolved` alone, AgedExposureEscalator keys on state: "open".
+        # The divergent case is a `remediating` keyword row — acted on there,
+        # not boosted here.
         def cve_flagged?(link)
           return false unless defined?(::System::CveExposure)
 
           ::System::CveExposure
+            .unresolved
+            .version_confirmed
             .joins(node_module_version: :node_module)
             .where(system_node_modules: { id: link.node_module_id })
             .exists?
