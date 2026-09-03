@@ -47,8 +47,8 @@ module System
     class MissingSdwanPeerError < ProvisionError; end
     class NoClusterAvailableError < ProvisionError; end
     # Raised when a join_request omits target_cluster_id but the account has
-    # more than one active cluster. Auto-select among many is refused — a node
-    # joining the wrong cluster is an isolation breach.
+    # more than one NON-ERROR cluster (pending/bootstrapping/active/degraded/
+    # disconnected). Auto-select among many is an isolation breach.
     class AmbiguousClusterError < ProvisionError; end
     # Phase O4 — raised when an operator-supplied cni_plugin disagrees
     # with the bootstrap NodeInstance's network_profile, OR when a
@@ -315,14 +315,14 @@ module System
       }
     end
 
-    # Record a refused ambiguous join (no target_cluster_id + >1 active cluster)
-    # for operator visibility before raising. Best-effort: an emit failure must
-    # not mask the AmbiguousClusterError.
-    def emit_ambiguous_join_refused!(count)
+    # Record a refused ambiguous join (no target_cluster_id + >1 non-error
+    # cluster) for operator visibility before raising. Best-effort: an emit
+    # failure must not mask the AmbiguousClusterError.
+    def emit_ambiguous_join_refused!(candidates)
       Rails.logger.warn(
         "[KubernetesClusterProvisionerService] refused ambiguous join for node_instance " \
-        "#{@node_instance&.id}: account #{@node_instance&.account_id} has #{count} active " \
-        "clusters and no target_cluster_id was provided"
+        "#{@node_instance&.id}: account #{@node_instance&.account_id} has #{candidates.size} non-error " \
+        "clusters, no target_cluster_id; candidates: #{candidate_digest(candidates, ids: true)}"
       )
       ::System::Fleet::EventBroadcaster.emit!(
         account: @node_instance.account,
@@ -330,7 +330,7 @@ module System
         severity: :high,
         source: "kubernetes_cluster_provisioner",
         payload: {
-          active_cluster_count: count,
+          non_error_cluster_count: candidates.size,
           node_instance_id: @node_instance.id
         },
         node_instance_id: @node_instance.id
@@ -389,15 +389,15 @@ module System
                      .where.not(status: "error")
                      .order(created_at: :desc)
                      .to_a
-      # Refuse to auto-select among multiple clusters — a node joining (or
-      # re-registering against) the wrong cluster is an isolation breach.
-      # The caller must pass target_cluster_id. A single active cluster
-      # is unambiguous and is still resolved without one.
+      # Refuse to auto-select among multiple clusters — a node joining the
+      # wrong cluster is an isolation breach. A single NON-ERROR cluster
+      # (never "a single ACTIVE cluster") is unambiguous and still resolves.
       if candidates.size > 1
-        emit_ambiguous_join_refused!(candidates.size)
+        emit_ambiguous_join_refused!(candidates)
         raise AmbiguousClusterError,
-              "account #{account.id} has #{candidates.size} active clusters; " \
-              "pass target_cluster_id to choose one (auto-select refused)"
+              "account #{account.id} has #{candidates.size} non-error clusters " \
+              "(#{counted_cluster_statuses} all count, only error is excluded): " \
+              "#{candidate_digest(candidates)}; pass target_cluster_id to choose one (auto-select refused)"
       end
       candidates.first
     end
@@ -664,6 +664,49 @@ module System
         holder_peer_ids: [ new_peer.id ],
         failover_holder_peer_ids: new_failover
       )
+    end
+
+    # ── Ambiguous-join message helpers ────────────────────────────────
+    # Deliberately below the resolvers that call them. Five documents and
+    # the k3sd Go comments cite this file by LINE (:135, :329, :351, :628;
+    # the Go citations are pinned by target_cluster_id_docs_accuracy_spec),
+    # so a method inserted above :628 silently repoints every one of those
+    # citations at whatever moved into the slot.
+
+    # How many candidates the ambiguity messages enumerate before collapsing
+    # the remainder into "and N more". The count clause already carries the
+    # total, and the 409 body sits on an agent retry path, so an account with
+    # many clusters must not turn it into a multi-kilobyte response. A
+    # formatting cap like EVENT_LOG_CAP, not an operational budget — hence a
+    # constant rather than a SiteSetting.
+    AMBIGUOUS_CANDIDATE_LIST_LIMIT = 5
+
+    # The candidate list an operator needs in order to disambiguate.
+    #
+    # `ids:` defaults to FALSE because the AmbiguousClusterError message is
+    # rendered verbatim as the 409 body to the refused NODE AGENT
+    # (runtime_handshake_handlers.rb). resolve_membership_cluster! accepts any
+    # target_cluster_id in the account with no membership check, and
+    # join_request! then hands back that cluster's agent_token and ca_pem — so
+    # printing sibling UUIDs to the refused agent would give it the join
+    # credentials for every other cluster in the account, which is the
+    # isolation breach the refusal exists to prevent. Names and statuses are
+    # inert as a lookup key (the resolver finds by id only). The ids reach the
+    # OPERATOR through the Rails.logger.warn line above, which the agent never
+    # sees; the FleetEvent payload carries the count, not the ids.
+    def candidate_digest(candidates, ids: false)
+      shown = candidates.first(AMBIGUOUS_CANDIDATE_LIST_LIMIT)
+      digest = shown.map { |c| ids ? "#{c.name} (#{c.status}, #{c.id})" : "#{c.name} (#{c.status})" }
+      remaining = candidates.size - shown.size
+      digest << "and #{remaining} more" if remaining.positive?
+      digest.join(", ")
+    end
+
+    # The statuses that make a cluster a membership candidate — every status
+    # but `error`, derived from the model so the message cannot drift from the
+    # `where.not(status: "error")` scope in resolve_membership_cluster!.
+    def counted_cluster_statuses
+      (::Devops::KubernetesCluster::STATUSES - %w[error]).join("/")
     end
 
     # Best-effort CA extraction from a kubeconfig YAML string. The

@@ -324,6 +324,121 @@ RSpec.describe System::KubernetesClusterProvisionerService do
         }.by(1)
       end
 
+      # IMP-c61a98e923c7. The candidate set is `where.not(status: "error")`,
+      # so every non-error status counts toward the refusal — but the 409
+      # body said "has N active clusters". An operator with one `active`
+      # and one `bootstrapping` cluster was told "has 2 active clusters",
+      # listed their active clusters, found one, and concluded the platform
+      # was wrong about its own state — while CONTAINER_RUNTIMES.md and
+      # multi-cluster-k3s.md correctly say the opposite. The body must name
+      # the real candidate set and the candidates themselves.
+      context "the refusal names the real candidate set (IMP-c61a98e923c7)" do
+        before do
+          @cluster_a.update_columns(status: "active")
+          @cluster_b.update_columns(status: "bootstrapping")
+        end
+
+        let(:message) do
+          described_class.join_request!(node_instance: agent_instance)
+          raise "expected AmbiguousClusterError to be raised"
+        rescue described_class::AmbiguousClusterError => e
+          e.message
+        end
+
+        it "says 'non-error clusters', never 'active clusters', when only one candidate is active" do
+          expect(message).to match(/has 2 non-error clusters/),
+                             "the 409 body does not name the non-error candidate set: #{message.inspect}"
+          expect(message).not_to match(/\d+ active clusters/),
+                                 "the 409 body still claims the candidates are active: #{message.inspect}"
+        end
+
+        it "states which statuses count and that only error is excluded" do
+          counted = (::Devops::KubernetesCluster::STATUSES - %w[error]).join("/")
+          expect(message).to include("#{counted} all count"),
+                             "the 409 body does not enumerate the counted statuses: #{message.inspect}"
+          expect(message).to match(/only error is excluded/),
+                             "the 409 body does not state the exclusion: #{message.inspect}"
+        end
+
+        it "lists each candidate by name and status so a non-active candidate is visible" do
+          expect(message).to include("#{@cluster_a.name} (active)")
+          expect(message).to include("#{@cluster_b.name} (bootstrapping)")
+        end
+
+        # The AmbiguousClusterError message is rendered VERBATIM as the 409
+        # body to the refused node agent (runtime_handshake_handlers.rb:169),
+        # and resolve_membership_cluster! honours any target_cluster_id in the
+        # account with no membership check — join_request! then returns that
+        # cluster's agent_token and ca_pem. Printing sibling UUIDs to the agent
+        # would therefore hand it the join credentials for every other cluster,
+        # which is the isolation breach the refusal exists to prevent. Names
+        # and statuses are inert: the resolver looks clusters up by id only.
+        it "withholds the sibling cluster ids from the body the agent receives" do
+          expect(message).not_to include(@cluster_a.id),
+                                 "the 409 body leaks a sibling cluster id to the refused agent: #{message.inspect}"
+          expect(message).not_to include(@cluster_b.id),
+                                 "the 409 body leaks a sibling cluster id to the refused agent: #{message.inspect}"
+        end
+
+        it "still carries the remedy" do
+          expect(message).to match(/pass target_cluster_id to choose one \(auto-select refused\)/)
+        end
+
+        # The operator half of the same refusal: the ids the body withholds
+        # have to reach someone, and the log line is the surface the agent
+        # never sees.
+        it "logs the refusal against the non-error set, with the candidate ids" do
+          logged = []
+          allow(Rails.logger).to receive(:warn) { |msg| logged << msg.to_s }
+          message
+
+          refusal = logged.find { |m| m.include?("refused ambiguous join") }
+          expect(refusal).to be_present, "no refusal warning was logged: #{logged.inspect}"
+          expect(refusal).to match(/has 2 non-error clusters/)
+          expect(refusal).not_to match(/\d+ active clusters/)
+          expect(refusal).to include(@cluster_a.id),
+                             "the operator log withholds the ids the 409 body also withholds: #{refusal.inspect}"
+          expect(refusal).to include(@cluster_b.id)
+        end
+
+        # The machine-readable copy of the same claim. Renamed with the
+        # message: a payload key asserting "active" while counting non-error
+        # clusters is the identical defect one layer down, and the event is
+        # exactly where the runbooks send an operator to confirm the refusal.
+        it "counts the non-error set in the FleetEvent payload, not an 'active' one" do
+          message
+
+          event = ::System::FleetEvent
+                    .where(account: account, kind: "system.k3s_ambiguous_cluster_join_refused")
+                    .order(created_at: :desc).first
+          expect(event).to be_present
+          payload = event.payload.to_h
+          expect(payload["non_error_cluster_count"]).to eq(2)
+          expect(payload).not_to have_key("active_cluster_count")
+        end
+
+        # The body is on an agent RETRY path, so the enumeration cannot grow
+        # without bound: past the cap the count clause carries the total and
+        # the tail collapses into "and N more".
+        it "caps the enumerated candidates and states how many were elided" do
+          4.times do |i|
+            ::Devops::KubernetesCluster.create!(
+              account: account,
+              name: "extra-cluster-#{i}",
+              slug: "extra-cluster-#{i}-#{SecureRandom.hex(4)}",
+              api_endpoint: "https://10.90.0.#{i + 1}:6443",
+              flavor: "k3s", environment: "development",
+              status: "pending", cni_plugin: "flannel"
+            )
+          end
+
+          limit = described_class::AMBIGUOUS_CANDIDATE_LIST_LIMIT
+          expect(message).to match(/has 6 non-error clusters/)
+          expect(message.scan(/\((?:pending|bootstrapping|active|degraded|disconnected)\)/).size).to eq(limit)
+          expect(message).to include("and #{6 - limit} more")
+        end
+      end
+
       it "joins the specified cluster when target_cluster_id matches" do
         result = described_class.join_request!(
           node_instance: agent_instance,
@@ -714,7 +829,7 @@ RSpec.describe System::KubernetesClusterProvisionerService do
 
       # The outer `before` block already bootstrapped an ovn_kubernetes
       # cluster on server_instance, so the account now legitimately has
-      # 2 active clusters — target_cluster_id disambiguates which one
+      # 2 non-error clusters (both still bootstrapping) — target_cluster_id disambiguates which one
       # hw_worker means to join (auto-select is correctly refused above).
       expect {
         described_class.register_node_join!(
