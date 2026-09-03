@@ -13,8 +13,10 @@ require "tmpdir"
 # one — replenish, which provisions VMs and mints `ephemeral`/`spot` Nodes —
 # does not, and is additionally driven unattended by
 # `System::InstancePoolReplenisherJob`, a 60 s Sidekiq cron
-# (worker/config/sidekiq.yml) that POSTs the replenish route for every
-# active/draining pool.
+# (worker/config/sidekiq.yml) that POSTs the replenish route for every ACTIVE
+# pool. It lists active AND draining pools — draining ones for the recycle
+# phase — but since IMP-cb2da06a384b it skips replenish for them, and
+# InstancePoolService#replenish! refuses any non-active pool outright.
 #
 # WHAT THE ANSWER IS. Ungated is the DECISION, not the defect, and the decision
 # was already recorded one file away:

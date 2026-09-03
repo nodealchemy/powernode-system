@@ -199,6 +199,29 @@ describe('InstancePoolsPage', () => {
     );
   });
 
+  // IMP-cb2da06a384b — InstancePoolService#replenish! refuses every status
+  // but 'active', so the control must not be offered on a draining pool: the
+  // click could only ever produce a "pool 'spot-fleet' is draining" toast.
+  // POOL_B is the draining fixture; POOL_A (active) keeps the control, which
+  // is what stops this from passing against a permanently-disabled button.
+  it('disables Replenish for a draining pool and keeps it for an active one', async () => {
+    mockGet.mockResolvedValueOnce(listResponse([POOL_A, POOL_B]));
+
+    renderPage();
+
+    const drainingRow = await waitFor(() =>
+      screen.getByTestId('pool-row-pool-b'),
+    );
+    expect(
+      within(drainingRow).getByLabelText(/replenish spot-fleet/i),
+    ).toBeDisabled();
+
+    const activeRow = screen.getByTestId('pool-row-pool-a');
+    expect(
+      within(activeRow).getByLabelText(/replenish web-warm/i),
+    ).toBeEnabled();
+  });
+
   it('triggers drain via POST when the Drain action is clicked', async () => {
     mockGet.mockResolvedValueOnce(listResponse([POOL_A]));
     mockPost.mockResolvedValueOnce(

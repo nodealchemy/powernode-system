@@ -16,6 +16,11 @@ module System
         end
 
         def summarize = "Drain instance pool #{params[:pool_id]}"
+        # "Halts replenishment" is enforced, not aspirational: replenish!
+        # refuses any pool that is not active, and the worker reaper skips its
+        # replenish phase for one (IMP-cb2da06a384b). Before that this card
+        # promised an operator something the code did not do — the reaper
+        # re-provisioned the drained members on the next 60 s tick.
         def impact    = "Halts replenishment + terminates ready members; in-use members untouched"
       end
     end

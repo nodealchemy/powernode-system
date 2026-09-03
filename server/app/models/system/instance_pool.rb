@@ -36,7 +36,11 @@ module System
   #      membership.
   #   5. Operator-driven drain! sets pool.status="draining". Reaper
   #      stops replenishing, terminates ready members. Claimed members
-  #      keep running until normally terminated.
+  #      keep running until normally terminated. The reaper keeps
+  #      RECYCLING a draining pool — that is what empties it; only the
+  #      top-up stops (replenish! refuses any non-active pool,
+  #      IMP-cb2da06a384b). target_size is left standing so
+  #      status -> "active" warms the pool back to the size it had.
   class InstancePool < BaseRecord
     include System::Base
 
@@ -80,7 +84,16 @@ module System
     scope :active, -> { where(status: "active") }
     scope :paused, -> { where(status: "paused") }
     scope :draining, -> { where(status: "draining") }
-    scope :replenishable, -> { where(status: %w[active draining]) }
+    # ACTIVE ONLY, and the name is the point: this must name exactly the set
+    # InstancePoolService#replenish! accepts. It used to read
+    # %w[active draining] — the reaper's LISTING set, which is a different
+    # question (a draining pool is still listed, because recycling is what
+    # empties it) and which made the scope assert the very thing
+    # IMP-cb2da06a384b fixed: that a draining pool gets topped up.
+    #
+    # Pinned against replenish!'s guard, status by status, in
+    # spec/services/system/instance_pool_service_spec.rb.
+    scope :replenishable, -> { where(status: "active") }
     scope :by_oldest_replenish, -> { order(Arel.sql("last_replenished_at NULLS FIRST")) }
     scope :for_account, ->(account) { where(account_id: account.is_a?(::Account) ? account.id : account) }
     # GPU-bearing pools — a pool's accelerator capability derives from its bound

@@ -131,9 +131,10 @@ RSpec.describe "Api::V1::System::InstancePools update gating", type: :request do
       expect(pool.reload.description).to eq("retuned")
     end
 
-    # `paused` is the one status replenish! refuses, so pausing REMOVES spend.
-    # Draining is left ungated too — #drain itself is ungated, and the operator
-    # direction gates the archive transition only.
+    # Since IMP-cb2da06a384b replenish! refuses every status but `active`,
+    # so pausing REMOVES spend (and so does draining). Draining is left ungated
+    # too — #drain itself is ungated, and the operator direction gates the
+    # archive transition only.
     it "applies status:paused inline" do
       expect { patch_pool(status: "paused") }.not_to change(::Ai::DeferredOperation, :count)
 

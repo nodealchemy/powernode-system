@@ -666,9 +666,12 @@ const InstancePoolsPage: React.FC = () => {
                             variant="outline"
                             size="sm"
                             onClick={() => handleReplenish(pool)}
-                            disabled={
-                              isActioning || pool.status === 'archived'
-                            }
+                            /* Replenish is refused for every status but
+                               'active' (InstancePoolService#replenish!), so
+                               offering it on a paused/draining/archived pool
+                               is an action that can only ever toast an
+                               error. IMP-cb2da06a384b. */
+                            disabled={isActioning || pool.status !== 'active'}
                             title="Replenish pool"
                             aria-label={`Replenish ${pool.name}`}
                           >
@@ -949,7 +952,8 @@ const InstancePoolsPage: React.FC = () => {
                       variant="outline"
                       size="sm"
                       onClick={() => handleReplenish(pool)}
-                      disabled={isActioning || pool.status === 'archived'}
+                      /* Active-only, same reason as the table-row button. */
+                      disabled={isActioning || pool.status !== 'active'}
                       aria-label={`Replenish ${pool.name}`}
                     >
                       <RefreshCw
@@ -1127,9 +1131,11 @@ const InstancePoolsPage: React.FC = () => {
       >
         <div className="space-y-3">
           <p className="text-theme-primary">
-            Archive pool <strong>{deletePool?.name}</strong>? The reaper will
-            stop replenishing and ready members will be terminated. Already-
-            claimed instances keep running until the operator terminates them.
+            Archive pool <strong>{deletePool?.name}</strong>? The reaper stops
+            replenishing it. Members are <strong>not</strong> terminated —
+            ready and claimed instances keep running until the operator
+            terminates them. Drain the pool first if you want its ready
+            members torn down.
           </p>
           {deletePool && deletePool.claimed_count > 0 && (
             <div className="p-3 bg-theme-warning-bg border border-theme-warning-border/30 rounded-lg">

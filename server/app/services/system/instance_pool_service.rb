@@ -312,7 +312,28 @@ module System
     # called from StatusController#heartbeat once the instance's on-node
     # agent enrolls and reports in).
     def replenish!(pool:)
-      raise PoolNotActiveError, "pool is paused" if pool.paused?
+      # IMP-cb2da06a384b — ACTIVE ONLY. This used to read `pool.paused?` and
+      # nothing else, so a pool in ANY other non-active status was topped up
+      # normally. "draining" is the status that made that expensive: drain!
+      # terminates the ready members and deliberately leaves target_size
+      # standing (so re-activating the pool warms it again), which left the
+      # deficit exactly as it was — and InstancePoolReplenisherJob, which
+      # lists active AND draining pools every 60 s, provisioned the whole pool
+      # straight back. A terminate/re-provision cycle billing real VMs, on the
+      # one path an operator uses to wind a pool down.
+      #
+      # Drain now means what every operator-facing description of it already
+      # said: stop topping up, let the members recycle out. The recycle phase
+      # is untouched and still runs for a draining pool — that is the
+      # mechanism that empties it (stale-warming, ready-TTL and the errored
+      # terminate ladder all live in recycle_stale_members!). "archived" rides
+      # the same guard for the same reason; it is strictly more terminal.
+      #
+      # Same shape as acquire! (:144), which has refused a non-active pool
+      # since F2-02. The pool's own status is quoted in the message because
+      # the two refusals now mean different things to the caller: paused is
+      # resumable, draining is a wind-down.
+      raise PoolNotActiveError, "pool '#{pool.name}' is #{pool.status}" unless pool.active?
 
       # Audit plan P2.5 gap #6 — cap deficit by max_size so a transient
       # burst (e.g., concurrent autonomy ticks during a slow provision
@@ -343,7 +364,15 @@ module System
 
     # Drain — set pool to draining, terminate ready members. Claimed
     # members stay running until normal lifecycle terminate. Reaper
-    # stops replenishing draining pools.
+    # stops replenishing draining pools (the `unless pool.active?` guard in
+    # replenish! above, IMP-cb2da06a384b) and keeps recycling them.
+    #
+    # target_size is deliberately NOT zeroed: draining is reversible via an
+    # ungated `PATCH status: "active"`, which warms the pool back to the size
+    # it already had. Nothing ACTS on target_size while the pool is draining
+    # (#deficit still computes from it, and to_summary still reports that
+    # deficit to the UI — it just never becomes a provision), so leaving it
+    # standing costs nothing and preserves the operator's setting.
     def drain!(pool:)
       ::ActiveRecord::Base.transaction do
         pool.update!(status: "draining")

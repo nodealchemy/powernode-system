@@ -22,7 +22,21 @@ module System
           pool ? "Delete instance pool '#{pool.name}'" : "Delete instance pool #{params[:pool_id]}"
         end
 
-        def impact = "Terminates all warm instances + halts replenishment"
+        # Replenishment ends with the row — the reaper lists pools from the
+        # API and a destroyed pool is never returned (and replenish! refuses
+        # any non-active pool anyway, IMP-cb2da06a384b).
+        #
+        # It does NOT terminate anything, and this card used to say it did.
+        # #perform is `pool.destroy!`; node_instances is `dependent: :nullify`,
+        # so surviving members are DETACHED from the pool and their VMs keep
+        # running (and billing) with no pool left to recycle them. The MCP
+        # verb refuses outright while members remain
+        # (SystemFleetTool#delete_instance_pool) — this gated REST path does
+        # not, which is what makes the difference worth stating on the card.
+        def impact
+          "Deletes the pool + ends its replenishment; member VMs are NOT " \
+            "terminated — surviving members are detached and keep running"
+        end
       end
     end
   end

@@ -24,8 +24,10 @@ module System
       # System::InstancePoolReplenisherJob
       # (worker/app/jobs/system/instance_pool_replenisher_job.rb), reaches the
       # first of those over HTTP on a 60 s Sidekiq cron
-      # (worker/config/sidekiq.yml), POSTing for every pool it lists with
-      # status=active,draining. (db/seeds/example_instance_pool.rb calls the
+      # (worker/config/sidekiq.yml). It LISTS with status=active,draining —
+      # draining pools for the recycle phase — but POSTs replenish only for
+      # the active ones (IMP-cb2da06a384b; replenish! refuses a non-active
+      # pool either way). (db/seeds/example_instance_pool.rb calls the
       # service too, on a seeded pool.) Note which way round that runs: the
       # two verbs that ARE gated are pool creation and teardown, while the
       # verb with the spend attached is not. (_drain and _acquire are ungated

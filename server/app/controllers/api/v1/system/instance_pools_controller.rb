@@ -118,9 +118,10 @@ module Api
         #
         # Everything else is applied inline, by operator direction: DECREASES
         # (they remove spend), min_size, description, regions, metadata, and
-        # status "paused"/"draining". `paused` is the one status replenish!
-        # refuses, so pausing is a brake, not a commitment; `draining` is left
-        # ungated because #drain itself is (its declared require_approval row
+        # status "paused"/"draining". Since IMP-cb2da06a384b `replenish!`
+        # refuses EVERY status but `active` — pausing and draining are both
+        # brakes, neither is a commitment. `draining` is left ungated because
+        # #drain itself is (its declared require_approval row
         # has no gate site — a separately tracked gap, censused in
         # spec/lint/instance_pool_replenish_gating_spec.rb).
         #
@@ -248,10 +249,12 @@ module Api
         # WHAT A GATE HERE WOULD COST. This is the route
         # System::InstancePoolReplenisherJob
         # (worker/app/jobs/system/instance_pool_replenisher_job.rb) POSTs on a
-        # 60 s Sidekiq cron for every pool it lists (status=active,draining): a
-        # require_approval gate here would park one approval per pool per
-        # minute and stall replenishment fleet-wide, which is an availability
-        # decision, not a control. Note also that authorize_write! below
+        # 60 s Sidekiq cron for every ACTIVE pool it lists (it lists
+        # status=active,draining and skips phase 2 for the draining ones,
+        # IMP-cb2da06a384b): a require_approval gate here would park one
+        # approval per pool per minute and stall replenishment fleet-wide,
+        # which is an availability decision, not a control. Note also that
+        # authorize_write! below
         # short-circuits on worker_authenticated?, so that cron clears the
         # permission check as well as the (absent) gate.
         #

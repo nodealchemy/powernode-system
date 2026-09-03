@@ -186,11 +186,13 @@ errors  = []
   end
 
   # Seeded PAUSED, not active. An active pool with target_size >= 1 hands
-  # control to the 60s reaper (InstancePool.replenishable scope = active +
-  # draining) the instant this seed loads, which means real VM provisioning
-  # on every account, unbidden. Paused pools are excluded from the reaper's
-  # listing — a true no-op until an operator deliberately flips status to
-  # "active". target_size stays modest (1) as belt-and-suspenders once armed.
+  # control to the 60s reaper (which replenishes ACTIVE pools only —
+  # InstancePool.replenishable; it also lists draining ones, but only to
+  # recycle them) the instant this seed loads, which means real VM
+  # provisioning on every account, unbidden. Paused pools are excluded from
+  # the reaper's listing altogether — a true no-op until an operator
+  # deliberately flips status to "active". target_size stays modest (1) as
+  # belt-and-suspenders once armed.
   #
   # Sizing/status/provider bindings are operator-tunable after creation, so
   # only set them on first creation — re-runs must not clobber a drain or

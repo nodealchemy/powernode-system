@@ -73,11 +73,25 @@ puts "  ✅ InstancePool: #{pool.name} (target_size=#{pool.target_size})"
 # ── Trigger replenishment ─────────────────────────────────────────────────
 
 replenisher = ::System::InstancePoolService.new(account: account)
-replenish_result = replenisher.replenish!(pool: pool)
+
+# `status: "active"` is assigned only on `pool.new_record?` above, so a re-seed
+# over a pool the tutorial told you to drain (08-instance-pool.md) reaches here
+# with status draining/paused/archived. Since IMP-cb2da06a384b `replenish!`
+# refuses every one of those, and an unrescued raise would abort the whole seed
+# file on a documented workflow. Report the brake and carry on, the way the
+# NoReadyMembersError arm below does.
+replenish_result =
+  begin
+    replenisher.replenish!(pool: pool)
+  rescue ::System::InstancePoolService::PoolNotActiveError => e
+    puts "  ℹ️  #{e.message} — skipping replenish (pool status=#{pool.status})"
+    puts "       Re-activate with: PATCH /api/v1/system/instance_pools/#{pool.id} status=active"
+    nil
+  end
 
 if replenish_result.is_a?(Hash) && replenish_result[:success]
   puts "  ✅ Replenisher kicked: provisioned=#{replenish_result[:provisioned] || 0}"
-else
+elsif replenish_result
   puts "  ℹ️  Replenisher returned non-success — likely needs the worker job to run"
   puts "       (system_pool_replenish Sidekiq job handles this in production)"
 end

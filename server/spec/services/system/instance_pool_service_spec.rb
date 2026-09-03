@@ -316,6 +316,84 @@ RSpec.describe System::InstancePoolService, type: :service do
         }.to raise_error(System::InstancePoolService::PoolNotActiveError)
       end
     end
+
+    # IMP-cb2da06a384b — a DRAINING pool is never topped up.
+    #
+    # `paused?` was the only status this method read, so every other
+    # non-active status replenished normally. That mattered most for
+    # "draining", the one an operator reaches deliberately: drain! terminates
+    # the ready members and leaves target_size alone, so up to 60 s later the
+    # reaper saw the same deficit and provisioned the whole pool back — a
+    # terminate/re-provision cycle billing real VMs on the exact path used to
+    # wind a pool down. Recycling still runs for a draining pool (that is what
+    # empties it); only the top-up stops. Mirrors acquire!, which has refused
+    # a non-active pool since F2-02.
+    context "when pool is draining" do
+      before do
+        allow(::System::ProvisioningService).to receive(:provision_instance)
+        pool.update!(status: "draining")
+      end
+
+      it "raises PoolNotActiveError and provisions nothing" do
+        expect {
+          described_class.replenish!(pool: pool)
+        }.to raise_error(System::InstancePoolService::PoolNotActiveError, /draining/)
+
+        expect(::System::ProvisioningService).not_to have_received(:provision_instance)
+        expect(pool.reload.warming_count).to eq(0)
+      end
+    end
+
+    # EQUALITY ORACLE — the model's vocabulary against the service's guard.
+    #
+    # `InstancePool.replenishable` exists to NAME the set replenish! accepts,
+    # and has no callers of its own: that is exactly how it came to read
+    # %w[active draining] (the reaper's LISTING set, a different question)
+    # while asserting the very behaviour IMP-cb2da06a384b removed. Walk every
+    # declared status and require the two sides to agree, so neither can move
+    # alone. The trailing literal keeps the pair from agreeing on the empty
+    # set if both break at once.
+    it "matches the replenishable scope to the statuses replenish! accepts" do
+      # At capacity, so the accepted status returns before provisioning
+      # anything — no provider stub, and the oracle is the guard alone.
+      3.times { seed_pool_member(state: "ready") }
+
+      accepted = System::InstancePool::STATUSES.select do |status|
+        pool.update!(status: status)
+        begin
+          described_class.replenish!(pool: pool)
+          true
+        rescue System::InstancePoolService::PoolNotActiveError
+          false
+        end
+      end
+
+      scoped = System::InstancePool::STATUSES.select do |status|
+        pool.update!(status: status)
+        System::InstancePool.replenishable.exists?(id: pool.id)
+      end
+
+      expect(accepted).to eq(scoped)
+      expect(accepted).to eq([ "active" ])
+    end
+
+    # Same guard, the terminal status. An archived pool replenished for the
+    # same reason draining did — nothing in this method read the status.
+    context "when pool is archived" do
+      before do
+        allow(::System::ProvisioningService).to receive(:provision_instance)
+        pool.update!(status: "archived")
+      end
+
+      it "raises PoolNotActiveError and provisions nothing" do
+        expect {
+          described_class.replenish!(pool: pool)
+        }.to raise_error(System::InstancePoolService::PoolNotActiveError, /archived/)
+
+        expect(::System::ProvisioningService).not_to have_received(:provision_instance)
+        expect(pool.reload.warming_count).to eq(0)
+      end
+    end
   end
 
   describe ".drain!" do
