@@ -5,10 +5,12 @@
 The **SDWAN Manager** is one of the autonomous agents seeded into every Powernode account. It owns **operator-initiated SDWAN CRUD** — the approval/notification gating on every change to networks, peers, firewall rules, VIPs, route policies, port mappings, access grants, user devices, and federation peers. Carved out of Fleet Autonomy on 2026-05-10 so SDWAN ops have an independent intervention queue — operators can pause SDWAN during a network maintenance window without halting fleet ops.
 
 > **Prefix split (important).** Two distinct action prefixes govern SDWAN, and they live on **two different agents**:
-> - **`sdwan.*`** — operator-initiated CRUD. These **25** policies live **here** on the SDWAN Manager.
-> - **`system.sdwan_*`** — autonomous, sensor-triggered remediations (peer remediate, key rotate, failover, VIP failover, BGP session remediate, route-policy audit, user-device revoke). These **7** policies live on **Fleet Autonomy** (part of its 27-policy set), because the Fleet sensors that emit them run in the fleet autonomy pipeline. See [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) §Intervention Policy Reference.
+> - **`sdwan.*`** — operator-initiated CRUD. These **43** policies live **here** on the SDWAN Manager, at both the operator (`action_type`) and agent shapes.
+> - **`system.sdwan_*`** / **`system.federation_*`** — autonomous, sensor-triggered remediations (peer remediate, key rotate, failover, VIP failover, BGP session remediate, credential refresh, user-device revoke, the five `*_investigate` lanes) plus the gated `system.federation_acceptance` executor. These **14** policies also live **here** since HIER-P2A (`PolicyDeclarations::SDWAN_REMEDIATION_POLICIES`), at the agent shape only. The Fleet sensors that emit them still run on the Fleet Autonomy tick, but each `DecisionEngine::SIGNAL_BINDINGS` entry declares `owner: "sdwan-manager"`, so the policy row, approval chain and event attribution are this agent's. See [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) §Intervention Policy Reference.
 >
-> This guide documents the SDWAN Manager's own (`sdwan.*`) policies. The autonomous remediations are summarized below in [Sensor → Action Map](#sensor--action-map) for cross-reference, but they are **not** owned here.
+> Total: **57** policies — 43 operator CRUD + 14 autonomous remediations.
+>
+> This guide documents the SDWAN Manager's `sdwan.*` operator policies in full. The 14 autonomous remediations it also owns are summarized below in [Sensor → Action Map](#sensor--action-map); their declarations live in `PolicyDeclarations::SDWAN_REMEDIATION_POLICIES` rather than in the seed file.
 
 Source of truth for this guide: `extensions/system/server/db/seeds/system_sdwan_manager_agent.rb`.
 
@@ -22,7 +24,7 @@ What it owns:
 - **Operator-initiated mutations** — every CRUD against networks, peers, firewall rules, VIPs, route policies, port mappings, access grants, user devices, and federation peers flows through this agent's `sdwan.*` policies + approval chain.
 
 What it does **not** own:
-- **Autonomous, sensor-triggered SDWAN remediation** (peer drift remediate, key rotate, hub/VIP failover, BGP session remediate, route-policy audit, user-device revoke) — these are the `system.sdwan_*` policies on **Fleet Autonomy**. The Fleet sensors emit `system.sdwan_*` signals into the fleet autonomy pipeline, and the matching skill executors live under `app/services/system/ai/skills/`. See [Sensor → Action Map](#sensor--action-map).
+- **Autonomous, sensor-triggered SDWAN remediation** (peer drift remediate, key rotate, hub/VIP failover, BGP session remediate, user-device revoke, credential refresh, the four `*_investigate` lanes, federation peer remediate/acceptance) — the 14 `system.sdwan_*` / `system.federation_*` policies in `PolicyDeclarations::SDWAN_REMEDIATION_POLICIES`, owned by **this agent since HIER-P2A**. The Fleet sensors still emit `system.sdwan_*` signals on the Fleet Autonomy tick, but each binding declares `owner: "sdwan-manager"` and the tick gates the decision under the SDWAN Manager's row, chain and attribution. The matching skill executors live under `app/services/system/ai/skills/` (their `binds_to` still names Fleet Autonomy — re-binding is a separate increment). See [Sensor → Action Map](#sensor--action-map).
 - Container runtime provisioning (→ Runtime Manager)
 - CVE response (→ CVE Responder)
 - Cross-cutting topology composition like OVN logical networks + IPFIX collectors (→ System Topology Designer)
@@ -32,7 +34,7 @@ What it does **not** own:
 
 ## Intervention Policies
 
-The agent ships with **41 intervention policies** — all `sdwan.*` operator-initiated CRUD (source: `system_sdwan_manager_agent.rb`). Each policy maps an `action_category` to one of four policy types:
+The agent ships with **57 intervention policies** — **43** `sdwan.*` operator-initiated CRUD (source: `system_sdwan_manager_agent.rb`, which consumes `PolicyDeclarations::SDWAN_OPERATOR_POLICIES`) plus the **14** autonomous `system.sdwan_*` / `system.federation_*` remediations it gained at HIER-P2A (`PolicyDeclarations::SDWAN_REMEDIATION_POLICIES`). Each policy maps an `action_category` to one of four policy types:
 
 | Policy type | Behavior |
 |---|---|
@@ -43,7 +45,7 @@ The agent ships with **41 intervention policies** — all `sdwan.*` operator-ini
 
 ### Policy table
 
-> The autonomous `system.sdwan_*` remediation policies (peer remediate, key rotate, hub failover, user-device revoke, BGP session remediate, VIP failover, route-policy audit) are **not** in this table — they live on **Fleet Autonomy**. See [Sensor → Action Map](#sensor--action-map) and [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) §Intervention Policy Reference.
+> The 14 autonomous `system.sdwan_*` / `system.federation_*` remediation policies are **not** in this table — this table is the operator (`sdwan.*`) set. They are owned by this agent too (since HIER-P2A) but declared in `PolicyDeclarations::SDWAN_REMEDIATION_POLICIES`; see [Sensor → Action Map](#sensor--action-map) and [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) §Intervention Policy Reference.
 
 #### Network CRUD (operator-initiated)
 | Action | Policy |
@@ -147,7 +149,7 @@ To add additional approvers (e.g., a security review for `federation_peer_*` act
 
 ## Skill Bindings
 
-The four autonomous SDWAN remediation executors (`app/services/system/ai/skills/`) are surfaced via bound skills. Note these are **Fleet Autonomy's** skills, invoked when the corresponding `system.sdwan_*` policy fires — the SDWAN Manager itself gates `sdwan.*` CRUD and does not carry these remediation skills:
+The four autonomous SDWAN remediation executors (`app/services/system/ai/skills/`) are surfaced via bound skills. Note these skills are still **bound to Fleet Autonomy** (`binds_to`), and are invoked with the SDWAN Manager as the acting agent when the corresponding `system.sdwan_*` policy — owned by the SDWAN Manager since HIER-P2A — fires; re-binding the skills is a separate increment:
 
 - `sdwan_failover_executor` — hub failover planner
 - `sdwan_peer_remediate_executor` — peer key rotation + re-enrollment
@@ -247,7 +249,7 @@ agent.update!(status: "paused")
 
 The agent will skip its next tick. Existing approvals already in the queue are unaffected (they stay pending; operators can still approve or reject them).
 
-> **Maintenance gate (drain → verify → reattach → resume).** Pausing the SDWAN Manager stops *operator-initiated CRUD gating*, but the autonomous `system.sdwan_*` remediations on **Fleet Autonomy** keep running and can still fight your manual BGP/WireGuard changes. For a true maintenance window:
+> **Maintenance gate (drain → verify → reattach → resume).** Pausing the SDWAN Manager stops *operator-initiated CRUD gating* and, since HIER-P2A, is also the agent the autonomous `system.sdwan_*` remediations gate under — but the SENSORS still run on the **Fleet Autonomy** tick (a paused SDWAN Manager still resolves as the owner; its policy rows decide). For a true maintenance window:
 > 1. **Pause both** — pause the SDWAN Manager (above) **and** pause Fleet Autonomy (`Ai::Agent.find_by(name: "Fleet Autonomy").update!(status: "paused")`), so neither the CRUD gate nor the autonomous failover/remediation loop acts during the window.
 > 2. **Drain / detach** the peer or VIP you're servicing (e.g. `system_sdwan_detach_peer`), so traffic is steered away before you touch it.
 > 3. **Verify BGP is idle** — confirm the affected iBGP sessions have quiesced (`system_sdwan_get_bgp_sessions`) before applying manual `vtysh` changes; you don't want the compiler racing a half-applied route-map.

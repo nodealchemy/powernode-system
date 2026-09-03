@@ -19,9 +19,10 @@ require "spec_helper"
 # (binds_to-declaring) executor count, the total fleet/sensors/ file count,
 # the count of sensors actually registered in FleetAutonomyService::SENSORS,
 # the exact (ordered) list of sensor class names named in the doc's
-# inventory sentence, the Fleet Autonomy "(N policies)" heading count
-# against the actual key count of the `fleet_policies` hash literal seeded
-# in db/seeds/fleet_autonomy_agent.rb, CLAUDE.md's three separate citations
+# inventory sentence, every per-agent "(N policies)" heading, seed bullet and
+# the eight-agent total against the key counts of the PolicyDeclarations
+# constants (HIER-P2A — before that only Fleet Autonomy's heading was pinned),
+# CLAUDE.md's per-agent policy counts, CLAUDE.md's three separate citations
 # of the executor count (the table cell's total-files/concrete-classes pair,
 # the "already cover" convention line, and the Related Docs line), CLAUDE.md's
 # Capability Domains header count against its own table's actual row count,
@@ -95,18 +96,63 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
   end
   let(:declarations_text) { File.read(declarations_path) }
 
-  let(:seeded_policy_keys) do
-    start = declarations_text.index("FLEET_AUTONOMY_POLICIES = {")
+  # Keys of a declared constant, by TEXT SCAN, following its shape:
+  #
+  #   NAME = { "a" => "verb", ... }.freeze
+  #   NAME = { ... }.merge(GROUP_A, GROUP_B).freeze     # HIER-P2A sub-hashes
+  #   NAME = OTHER.merge(ANOTHER).freeze
+  #
+  # The slice runs from `NAME = ` to the FIRST `.freeze` after it (no policy
+  # literal carries that token in a comment — the scan raises if it does not
+  # find the end), comment lines are dropped so a commented-out key or a
+  # constant NAMED in prose is never counted, and every constant the head or
+  # a `.merge(...)` names is expanded recursively. `.uniq` mirrors real Hash
+  # semantics — a duplicate key collapses at runtime while the scan would see
+  # it twice.
+  def declared_keys(name)
+    start = declarations_text.index("      #{name} = ")
     unless start
-      raise "could not find `FLEET_AUTONOMY_POLICIES = {` in #{declarations_path} — " \
-            "has the declaration been restructured? update this spec's scan."
+      raise "could not find `#{name} = ` in #{declarations_path} — " \
+            "has the declaration been renamed? update this spec's scan."
     end
-    stop = declarations_text.index("}.freeze", start)
+    stop = declarations_text.index(".freeze", start)
     unless stop
-      raise "could not find the end of the FLEET_AUTONOMY_POLICIES block (`}.freeze`) " \
+      raise "could not find the end of the #{name} declaration (`.freeze`) " \
             "in #{declarations_path} — update this spec's scan."
     end
-    declarations_text[start...stop].scan(/"(system\.[a-zA-Z0-9_.]+)"\s*=>/).flatten.uniq
+    body = declarations_text[start...stop].lines.reject { |l| l.strip.start_with?("#") }.join
+
+    literal = body.scan(/"([a-z][a-z0-9_]*\.[a-zA-Z0-9_.]+)"\s*=>/).flatten
+    head = body[/\A\s*#{Regexp.escape(name)}\s*=\s*([A-Z][A-Z0-9_]*)\.merge/, 1]
+    merged = body.scan(/\.merge\(([^)]*)\)/).flatten.flat_map { |args| args.scan(/[A-Z][A-Z0-9_]*/) }
+    ([ head ].compact + merged).uniq.each { |other| literal.concat(declared_keys(other)) }
+    literal.uniq
+  end
+
+  let(:seeded_policy_keys) { declared_keys("FLEET_AUTONOMY_POLICIES") }
+
+  # The per-agent seed sets, keyed by the FLEET_SENSORS.md bullet / section
+  # name they are stated under. Eight seeded agents; two carry no policies.
+  let(:agent_policy_counts) do
+    {
+      "Fleet Autonomy"     => declared_keys("FLEET_AUTONOMY_POLICIES").size,
+      "Runtime Manager"    => declared_keys("RUNTIME_MANAGER_POLICIES").size,
+      "CVE Responder"      => declared_keys("CVE_RESPONDER_POLICIES").size,
+      "SDWAN Manager"      => declared_keys("SDWAN_MANAGER_POLICIES").size,
+      "Disk Image Manager" => declared_keys("DISK_IMAGE_MANAGER_POLICIES").size,
+      "GitOps Reconciler"  => declared_keys("GITOPS_RECONCILER_POLICIES").size
+    }
+  end
+
+  let(:agent_seed_files) do
+    {
+      "Fleet Autonomy"     => "fleet_autonomy_agent.rb",
+      "Runtime Manager"    => "system_runtime_manager_agent.rb",
+      "CVE Responder"      => "system_cve_responder_agent.rb",
+      "SDWAN Manager"      => "system_sdwan_manager_agent.rb",
+      "Disk Image Manager" => "system_disk_image_manager_agent.rb",
+      "GitOps Reconciler"  => "system_gitops_reconciler_agent.rb"
+    }
   end
 
   let(:executors_doc_text) { File.read(executors_doc_path) }
@@ -206,7 +252,7 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
       "FleetAutonomyService::SENSORS is actually #{registered_sensor_names.inspect}"
   end
 
-  it "FLEET_SENSORS.md's Fleet Autonomy policy count matches db/seeds/fleet_autonomy_agent.rb" do
+  it "FLEET_SENSORS.md's Fleet Autonomy policy count matches PolicyDeclarations::FLEET_AUTONOMY_POLICIES" do
     stated = doc_number(
       sensors_doc_text,
       /Fleet Autonomy agent \((\d+) policies\)/,
@@ -215,6 +261,117 @@ RSpec.describe "SKILL_EXECUTORS.md / FLEET_SENSORS.md / CLAUDE.md counts vs. rea
     expect(stated).to eq(seeded_policy_keys.size),
       "FLEET_SENSORS.md claims Fleet Autonomy has #{stated} policies; " \
       "#{declarations_path}'s FLEET_AUTONOMY_POLICIES actually has #{seeded_policy_keys.size} keys"
+  end
+
+  # The scan's own integrity: FLEET_AUTONOMY_POLICIES is a literal MERGED with
+  # four named groups (HIER-P2A), so a scan that stopped at the literal would
+  # under-count silently and every count below would pin the wrong figure.
+  it "expands the merged sub-hashes when scanning FLEET_AUTONOMY_POLICIES (guards the scan from under-counting)" do
+    groups = %w[CAPACITY_POLICY_KEYS STORAGE_POLICY_KEYS INGRESS_POLICY_KEYS SUPPLY_CHAIN_POLICY_KEYS]
+    group_keys = groups.flat_map { |g| declared_keys(g) }
+    expect(group_keys).not_to be_empty
+    expect(seeded_policy_keys).to include(*group_keys)
+    expect(declared_keys("SDWAN_MANAGER_POLICIES"))
+      .to match_array(declared_keys("SDWAN_OPERATOR_POLICIES") + declared_keys("SDWAN_REMEDIATION_POLICIES"))
+  end
+
+  # ==========================================================================
+  # HIER-P2A: every per-agent figure in FLEET_SENSORS.md's Intervention Policy
+  # Reference is pinned — the bullets, the section headers and the total.
+  # Until now only the Fleet Autonomy header was, and the bullets and the
+  # total drifted from it twice.
+  # ==========================================================================
+
+  it "FLEET_SENSORS.md's per-agent seed bullets match the PolicyDeclarations sets" do
+    agent_policy_counts.each do |agent, actual|
+      file = agent_seed_files.fetch(agent)
+      stated = doc_number(
+        sensors_doc_text,
+        /`db\/seeds\/#{Regexp.escape(file)}` — \*\*(\d+) policies\*\*/,
+        "#{agent} seed bullet count", sensors_doc_path
+      )
+      expect(stated).to eq(actual),
+        "FLEET_SENSORS.md's bullet for #{file} claims #{stated} policies; the declared set has #{actual}"
+    end
+  end
+
+  it "FLEET_SENSORS.md's per-agent section headers match the PolicyDeclarations sets" do
+    agent_policy_counts.each do |agent, actual|
+      stated = doc_number(
+        sensors_doc_text,
+        /### #{Regexp.escape(agent)} agent \((\d+) policies\)/,
+        "#{agent} section header count", sensors_doc_path
+      )
+      expect(stated).to eq(actual),
+        "FLEET_SENSORS.md's '### #{agent} agent (#{stated} policies)' header disagrees with the declared set (#{actual})"
+    end
+  end
+
+  it "FLEET_SENSORS.md's eight-agent total is the sum of the per-agent sets" do
+    stated = doc_number(
+      sensors_doc_text,
+      /\*\*= (\d+) action-category policies across the eight system-extension agents\*\*/,
+      "eight-agent policy total", sensors_doc_path
+    )
+    expect(stated).to eq(agent_policy_counts.values.sum),
+      "FLEET_SENSORS.md's total claims #{stated}; the six policy-carrying sets sum to #{agent_policy_counts.values.sum}"
+  end
+
+  # The per-agent OPERATOR GUIDES carry the same numbers as CLAUDE.md and
+  # FLEET_SENSORS.md and were the copies that rotted at HIER-P2A: the SDWAN
+  # guide still claimed the 14 autonomous remediations lived on Fleet Autonomy
+  # and that the agent shipped 41 policies, the Disk Image guide still said 6.
+  # Both were edited by that change, so the stale figures were on screen — the
+  # missing piece was a guard. These pin them to the same declared sets.
+  sdwan_guide_path = File.join(ext_root, "docs", "SDWAN_MANAGER_AGENT.md")
+  disk_guide_path  = File.join(ext_root, "docs", "DISK_IMAGE_MANAGER_AGENT.md")
+  let(:sdwan_guide_text) { File.read(sdwan_guide_path) }
+  let(:disk_guide_text)  { File.read(disk_guide_path) }
+
+  it "SDWAN_MANAGER_AGENT.md states the agent's total, operator and remediation counts correctly" do
+    total       = declared_keys("SDWAN_MANAGER_POLICIES").size
+    operator    = declared_keys("SDWAN_OPERATOR_POLICIES").size
+    remediation = declared_keys("SDWAN_REMEDIATION_POLICIES").size
+
+    expect(doc_number(sdwan_guide_text, /ships with \*\*(\d+) intervention policies\*\*/,
+                      "SDWAN guide total", sdwan_guide_path)).to eq(total)
+    expect(doc_number(sdwan_guide_text, /These \*\*(\d+)\*\* policies live \*\*here\*\*/,
+                      "SDWAN guide operator count", sdwan_guide_path)).to eq(operator)
+    expect(doc_number(sdwan_guide_text, /These \*\*(\d+)\*\* policies also live \*\*here\*\*/,
+                      "SDWAN guide remediation count", sdwan_guide_path)).to eq(remediation)
+    expect(doc_number(sdwan_guide_text, /Total: \*\*(\d+)\*\* policies/,
+                      "SDWAN guide prefix-split total", sdwan_guide_path)).to eq(total)
+  end
+
+  it "DISK_IMAGE_MANAGER_AGENT.md states the agent's policy count correctly, and its table lists every declared key" do
+    declared = declared_keys("DISK_IMAGE_MANAGER_POLICIES")
+
+    expect(doc_number(disk_guide_text, /ships with \*\*(\d+) intervention policies\*\*/,
+                      "Disk Image guide total", disk_guide_path)).to eq(declared.size)
+    expect(doc_number(disk_guide_text, /of the (\d+) policies below/,
+                      "Disk Image guide caveat count", disk_guide_path)).to eq(declared.size)
+
+    # The count agreeing while the TABLE omits the new row is exactly the
+    # half-fix this guard exists to refuse — so read the table\'s own rows, not
+    # the whole file: every key is also named in the surrounding prose, which
+    # would satisfy a document-wide `include?` while the table stayed short.
+    table_keys = disk_guide_text.scan(/^\| `(system\.[a-z0-9_]+)` \|/).flatten
+    missing = declared - table_keys
+    expect(missing).to be_empty,
+      "DISK_IMAGE_MANAGER_AGENT.md's policy table has no row for #{missing.join(', ')} " \
+      "(table rows found: #{table_keys.size}, declared: #{declared.size})"
+  end
+
+  it "CLAUDE.md's agent roster states each agent's intervention-policy count correctly" do
+    agent_policy_counts.each do |agent, actual|
+      stated = doc_number(
+        claude_md_text,
+        /- \*\*#{Regexp.escape(agent)}\*\*[^\n]*?(\d+) intervention policies/,
+        "CLAUDE.md #{agent} policy count", claude_md_path
+      )
+      expect(stated).to eq(actual),
+        "CLAUDE.md's roster claims #{agent} has #{stated} intervention policies; the declared set has #{actual}"
+    end
   end
 
   # ==========================================================================

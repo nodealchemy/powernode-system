@@ -29,7 +29,7 @@ flowchart TD
     RS --> DSP[DesiredStateParser]
     DSP --> DE[DiffEngine]
     DE -- "vs current platform state" --> Diff[Diff payload:<br/>add / update / delete<br/>across templates / modules /<br/>assignments / pools / platforms]
-    Diff --> AR[ApprovalRequest<br/>per Fleet Autonomy policy]
+    Diff --> AR[ApprovalRequest<br/>per GitOps Reconciler policy]
     AR --> Op2{Operator<br/>approves?}
     Op2 -->|yes| App[ApplyService<br/>walks diff in dependency order]
     App --> Done[Resources<br/>materialized in DB<br/>+ instances reconcile]
