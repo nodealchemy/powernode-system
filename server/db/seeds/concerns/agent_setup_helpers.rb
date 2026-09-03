@@ -56,7 +56,8 @@ module System
       #
       # `project.` is CORE's namespace, claimed here because this extension
       # seeds rows into it: system_provisioning_intervention_policies.rb writes
-      # the six `project.*` verbs onto Fleet Autonomy. Whoever creates a row has
+      # the six `project.*` verbs onto the Capacity Manager (onto Fleet
+      # Autonomy before HIER-P2B). Whoever creates a row has
       # to be able to collect it, or that row is orphaned by construction — the
       # defect this constant exists to close. Claiming it cannot reap a live core
       # row either: `project.*` are `Ai::InterventionPolicy::STATIC_CATEGORIES`,

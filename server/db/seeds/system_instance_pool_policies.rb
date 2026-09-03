@@ -5,16 +5,29 @@
 # ungated before 2026-05-10 — pool create/delete/drain operations would
 # auto-execute regardless of operator intent.
 #
-# Scoped to the Fleet Autonomy agent AND seeded as global for the GATED SUBSET
-# ONLY, so manual ops are covered exactly where a gate site reads the row — see
-# the note at the manual-scope call below (IMP-5a2b801f3386).
+# Scoped to the OWNING agent AND seeded as global for the GATED SUBSET ONLY,
+# so manual ops are covered exactly where a gate site reads the row — see the
+# note at the manual-scope call below (IMP-5a2b801f3386).
 #
 # OWNER SINCE HIER-P2DECL: the Capacity Manager (PolicyDeclarations::
-# CAPACITY_MANAGER_POLICIES carries all eight at the agent shape). This
-# first-boot seed still writes them onto Fleet Autonomy — wave 2 re-points it
-# with the agent seed — and PolicyReconciler re-homes them onto the Capacity
-# Manager (PolicyReconciler::FORMER_OWNERS) the first boot after that agent
-# exists, so the rows end up where the gate reads them either way.
+# CAPACITY_MANAGER_POLICIES carries all eight at the agent shape), and since
+# HIER-P2B this seed writes them there directly.
+#
+# WHY THE RE-POINT WAS NOT OPTIONAL. PolicyReconciler::FORMER_OWNERS re-homes
+# a row off Fleet Autonomy only when the OWNER IS MISSING THAT CATEGORY —
+# `reconcile!` answers `present` and skips `rehomable_row` entirely for a
+# category the owner already has. `db/seeds/system_capacity_manager_agent.rb`
+# runs at position 9 of SYSTEM_SEED_FILES and writes every declared row; this
+# file runs at 15. So while it resolved Fleet Autonomy, a FRESH install ended
+# up with eight active agent-scope pool rows on an agent that declares none of
+# them, permanently: nothing re-homes them (the owner is complete) and nothing
+# collects them (AgentSetupHelpers.clean_unregistered_policies! only collects
+# DEREGISTERED categories). An ESTABLISHED install is unaffected — db:seed is
+# first-boot only, and its pre-existing Fleet Autonomy rows are re-homed by
+# the reconciler exactly as before, because there the owner starts empty.
+# Pinned by spec/services/system/fleet/routed_lane_policy_coherence_spec.rb
+# ("leaves no Fleet Autonomy duplicate for a category the Capacity Manager
+# owns"), which loads the seeds in SYSTEM_SEED_FILES order.
 
 puts "\n  Seeding instance pool policies..."
 
@@ -69,11 +82,20 @@ count = upsert_pool_policies_for_scope!(admin_account, operator_policies, scope:
 puts "  ✅ Instance pool policies (manual): #{count} created/updated " \
      "(#{operator_policies.size} of #{pool_policies.size} gated)"
 
-# Agent scope (Fleet Autonomy creating pools as part of capacity expansion)
-fleet_agent = ::Ai::Agent.resolve_for(admin_account.id, name: "Fleet Autonomy", agent_type: "monitor")
-if fleet_agent
-  count = upsert_pool_policies_for_scope!(admin_account, pool_policies, scope: "agent", agent: fleet_agent)
-  puts "  ✅ Instance pool policies (Fleet Autonomy): #{count} created/updated"
+# Agent scope (the Capacity Manager creating pools as part of capacity
+# expansion). Resolved by NAME through Ai::Agent.resolve_for, exactly as the
+# runtime resolves it. The name is a LITERAL on purpose: it is the shape
+# spec/controllers/api/v1/system/autonomy_agent_pivot_spec.rb parses to build
+# its "which agents do the seeds write rows for" oracle, and a name that
+# derivation cannot read is dropped from the oracle SILENTLY. A rename of the
+# identity is still caught — spec/db/seeds/system_instance_pool_operator_policies_spec.rb
+# builds the agent from AGENT_IDENTITIES["capacity-manager"] and asserts this
+# seed lands its eight rows on it.
+capacity_agent = ::Ai::Agent.resolve_for(admin_account.id, name: "Capacity Manager", agent_type: "monitor")
+if capacity_agent
+  count = upsert_pool_policies_for_scope!(admin_account, pool_policies, scope: "agent", agent: capacity_agent)
+  puts "  ✅ Instance pool policies (Capacity Manager): #{count} created/updated"
 else
-  puts "  ⚠️  Fleet Autonomy agent not found — agent-scoped pool policies skipped"
+  puts "  ⚠️  Capacity Manager agent not found — agent-scoped pool policies skipped " \
+       "(PolicyReconciler writes them on the first boot after that agent exists)"
 end

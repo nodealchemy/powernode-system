@@ -217,13 +217,27 @@ RSpec.describe "Api::V1::System::Autonomy by_agent pivot", type: :request do
     expect(seeded_policy_agents).to include("Fleet Autonomy", "GitOps Reconciler", "SDWAN Manager")
     expect(declared_policy_agents.size).to be >= 11
     expect(declared_policy_agents).to include("Capacity Manager", "System Topology Designer")
-    # The declarations LEAD the seeds by exactly the wave-2 agents: the four
-    # managers (no seed yet) and the Topology Designer (its seed writes no
-    # policy row; the reconciler writes its set). When wave 2 lands, this
-    # shrinks — update it, do not widen it.
-    expect(declared_policy_agents - seeded_policy_agents).to match_array(
-      [ "Capacity Manager", "Storage Manager", "Ingress Manager", "Supply Chain Manager", "System Topology Designer" ]
-    )
+    # The declarations LEAD the seeds by AT MOST the wave-2 agents: the four
+    # managers and the Topology Designer, none of which had a seed writing a
+    # policy row when HIER-P2DECL declared them.
+    #
+    # HIER-P2B restated this as a MONOTONE ratchet rather than an equality.
+    # `match_array` against the full five made the example red for every lane
+    # BUT THE LAST: wave 2 is four concurrent lanes, each landing one seed, and
+    # an equality can only be true when all of them have. The invariant worth
+    # holding is that the gap never GROWS — a newly declared agent whose seed
+    # writes no row, or a seed that stops writing one, still fails here — while
+    # a landing lane shrinks it without needing to edit a literal another lane
+    # is editing at the same time. Do not add a name to this list: it is an
+    # upper bound on work known to be outstanding, not a permission slip.
+    wave_2_unseeded = [ "Capacity Manager", "Storage Manager", "Ingress Manager",
+                        "Supply Chain Manager", "System Topology Designer" ]
+    expect((declared_policy_agents - seeded_policy_agents) - wave_2_unseeded).to be_empty
+
+    # ...and the lanes that HAVE landed are asserted POSITIVELY, so shrinking
+    # the gap is pinned rather than merely permitted. Each wave-2 lane adds its
+    # own agent here when its seed lands.
+    expect(seeded_policy_agents).to include("Capacity Manager")
 
     # The identifier-resolution branch specifically: the GitOps Reconciler seed
     # passes a local variable to `find_or_initialize_global_agent`, so a scan

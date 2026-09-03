@@ -70,24 +70,36 @@ RSpec.describe "routed lane / intervention policy coherence" do
   # and the provisioning policy seed (which writes project.* onto the SAME
   # agent). Loading only one produced four false positives on the first run.
   # Every owner agent's seed is loaded, because every owner must carry its rows.
+  #
+  # HIER-P2B: listed in SYSTEM_SEED_FILES ORDER — every agent seed, then the
+  # first-boot POLICY seeds that write onto one of them. The order is
+  # load-bearing, not cosmetic: an agent seed writes its own declared set, and
+  # PolicyReconciler short-circuits on a category the owner already has
+  # (`existing.include?(action_category)`), so a policy seed that resolves the
+  # WRONG agent after the owner's seed ran leaves a duplicate the reconciler
+  # can never re-home. Loading these in the real order is what makes that
+  # visible here.
   SEEDS = %w[
     fleet_autonomy_agent
-    system_provisioning_intervention_policies
     system_cve_responder_agent
     system_sdwan_manager_agent
     system_gitops_reconciler_agent
     system_disk_image_manager_agent
     system_topology_designer_agent
+    system_capacity_manager_agent
     system_storage_manager_agent
     system_supply_chain_manager_agent
+    system_instance_pool_policies
+    system_provisioning_intervention_policies
   ].freeze
 
   # HIER-P2DECL: the boot that this spec models is seeds + PolicyReconciler —
   # the reconciler is what writes a declared set onto its agent on every boot
   # (and re-homes the rows wave 1 moved off Fleet Autonomy), and the four
-  # wave-1 managers have NO seed until wave 2. So the declared identities no
-  # seed produced are stubbed as the bare agents wave 2 will seed, and the
-  # reconciler runs once, exactly as it does at boot. Without the stubs the
+  # wave-1 managers had NO seed when it was written. So a declared identity no
+  # seed produces is stubbed as the bare agent its lane will seed, and the
+  # reconciler runs once, exactly as it does at boot. Only `ingress-manager`
+  # is still stubbed; the other three now load their real seed above. Without the stubs the
   # moved sensor-routed lanes (instance_replace, storage_assignment_reconcile,
   # package_repository.sync, project.adapt / cost_control) have a row NOWHERE
   # on a fresh install seeded between the waves — the tick's fallback gate
@@ -104,7 +116,8 @@ RSpec.describe "routed lane / intervention policy coherence" do
   # HIER-P2E removed supply-chain-manager for the same reason: its seed is in
   # SEEDS above, so the GLOBAL canonical exists and stubbing an account row
   # would both mask the seed and collide with the canonical guard.
-  WAVE_2_STUBS = %w[capacity-manager ingress-manager].freeze
+  # HIER-P2B removed capacity-manager on the same rule.
+  WAVE_2_STUBS = %w[ingress-manager].freeze
 
   # agent_setup_helpers#bootstrap_admin_context! resolves the account by name
   # (falling back to Account.first), then requires an admin user and an
@@ -209,8 +222,9 @@ RSpec.describe "routed lane / intervention policy coherence" do
     expect(policies_for("Storage Manager")).to include("system.storage_assignment_reconcile")
     expect(policies_for("Supply Chain Manager")).to include("system.package_repository.sync")
     expect(policies_for("System Topology Designer")).to include("system.sdwan_federation_compose")
-    # The provisioning seed wrote project.* onto Fleet Autonomy; the
-    # reconciler RE-HOMED them (no duplicate left behind).
+    # Since HIER-P2B the provisioning seed writes project.* onto the Capacity
+    # Manager directly, so there is no Fleet Autonomy row to re-home and none
+    # left behind either.
     expect(policies_for("Fleet Autonomy")).not_to include("project.adapt", "system.instance_replace")
   end
 
@@ -250,9 +264,56 @@ RSpec.describe "routed lane / intervention policy coherence" do
       expect(::Ai::InterventionPolicy.where(account: account, action_category: category)).to be_empty,
         "#{category} has a row on a fresh install although #{owner_name_for(category)} was never seeded"
     end
-    # project.* are the exception: their seed still writes them onto Fleet
-    # Autonomy, so the fallback gate does find them.
-    expect(policies_for("Fleet Autonomy")).to include("project.adapt")
+    # project.* used to be the exception (their seed wrote them onto Fleet
+    # Autonomy, so the fallback gate found them). HIER-P2B re-pointed that
+    # seed at the owner, so they are on the Capacity Manager now — and the
+    # example below pins that the owner's rows are not shadowed by a leftover
+    # copy on the former owner.
+    expect(policies_for("Fleet Autonomy")).not_to include("project.adapt")
+  end
+
+  # HIER-P2B: the capacity half of that gap is CLOSED, from the same boot
+  # model — the SYSTEM seeds plus the reconciler, with NO stub agent.
+  # `system.instance_replace` is the lane `instance_unrecoverable_sensor`
+  # routes to; before this seed a fresh install dropped every one of those
+  # disaster-recovery signals into the not_permitted arm, silently.
+  it "closes the fresh-install gap for the capacity lane (seed, no stub)" do
+    capacity = ::Ai::Agent.resolve_for(account.id, name: "Capacity Manager", agent_type: "monitor")
+    expect(capacity).to be_present, "the Capacity Manager seed did not run"
+    expect(capacity.account_id).to be_nil, "the Capacity Manager must be the GLOBAL canonical, not a stub"
+
+    System::Governance::PolicyReconciler.new(account: account, logger: Logger.new(IO::NULL)).reconcile!
+
+    expect(owner_name_for("system.instance_replace")).to eq("Capacity Manager")
+    expect(policies_for("Capacity Manager")).to include("system.instance_replace")
+    expect(::Ai::InterventionPolicy.where(account: account,
+                                          action_category: "system.instance_replace")).not_to be_empty
+  end
+
+  # HIER-P2B — the FIRST-BOOT DUPLICATE, which the reconciler provably cannot
+  # clean up. `db/seeds/system_capacity_manager_agent.rb` runs at position 9 of
+  # SYSTEM_SEED_FILES and writes every declared CAPACITY_MANAGER_POLICIES row;
+  # `system_instance_pool_policies.rb` (15) and
+  # `system_provisioning_intervention_policies.rb` (19) run after it. While
+  # those two resolved "Fleet Autonomy", a fresh install ended up with 14
+  # ACTIVE agent-scope rows on an agent that no longer declares any of them —
+  # including an auto_approve row for `project.scale_horizontal`. Nothing
+  # collects them: PolicyReconciler#reconcile! answers `present` and skips
+  # `rehomable_row` for a category the owner already has, and
+  # AgentSetupHelpers.clean_unregistered_policies! only collects DEREGISTERED
+  # categories. That is the "row the gate never reads" class this campaign
+  # exists to close, so it is asserted against the real seed order rather than
+  # argued about.
+  it "leaves no Fleet Autonomy duplicate for a category the Capacity Manager owns" do
+    boot!
+
+    owned = System::Governance::PolicyDeclarations::CAPACITY_MANAGER_POLICIES.keys
+    expect(owned).not_to be_empty
+
+    expect(policies_for("Capacity Manager")).to include(*owned)
+    expect(policies_for("Fleet Autonomy") & owned).to be_empty,
+      "first-boot policy seeds left rows on Fleet Autonomy for categories the " \
+      "Capacity Manager owns: #{(policies_for('Fleet Autonomy') & owned).sort.inspect}"
   end
 
   # HIER-P2C: the storage half of that gap is CLOSED, asserted from the same

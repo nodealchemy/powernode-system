@@ -7,13 +7,24 @@
 # (cross-region relocate, schema, security) require explicit approval.
 #
 # Pattern reference: extensions/system/server/db/seeds/fleet_autonomy_agent.rb.
-# These are scoped to the Fleet Autonomy agent here; since HIER-P2DECL their
-# OWNER is the Capacity Manager (PolicyDeclarations::CAPACITY_MANAGER_POLICIES,
-# `owner: "capacity-manager"` on the three project_* bindings and on
-# System::AdaptationGate). Wave 2 re-points this seed with the agent seed;
-# until then PolicyReconciler re-homes the rows (PolicyReconciler::FORMER_OWNERS)
-# the first boot after the Capacity Manager exists, and the tick gates them
-# under Fleet Autonomy as the fallback owner while it does not.
+# Since HIER-P2DECL their OWNER is the Capacity Manager
+# (PolicyDeclarations::CAPACITY_MANAGER_POLICIES, `owner: "capacity-manager"`
+# on the three project_* bindings and on System::AdaptationGate), and since
+# HIER-P2B this seed writes them onto that agent directly.
+#
+# WHY THE RE-POINT WAS NOT OPTIONAL. PolicyReconciler::FORMER_OWNERS re-homes
+# a row off Fleet Autonomy only when the OWNER IS MISSING THAT CATEGORY —
+# `reconcile!` answers `present` and skips `rehomable_row` for a category the
+# owner already has. `db/seeds/system_capacity_manager_agent.rb` runs at
+# position 9 of SYSTEM_SEED_FILES and writes every declared row; this file
+# runs at 19. So while it resolved Fleet Autonomy, a FRESH install ended up
+# with six active agent-scope `project.*` rows on an agent that declares none
+# of them — including an `auto_approve` row for `project.scale_horizontal` —
+# and nothing would ever re-home or collect them. An ESTABLISHED install is
+# unaffected: db:seed is first-boot only, and there the owner starts empty so
+# the reconciler re-homes as before. Pinned by
+# spec/services/system/fleet/routed_lane_policy_coherence_spec.rb ("leaves no
+# Fleet Autonomy duplicate for a category the Capacity Manager owns").
 #
 # Idempotent: re-running updates the existing rows by (action_category, scope,
 # ai_agent_id) without duplicating.
@@ -30,11 +41,15 @@ unless admin_account
   return
 end
 
-# Locate the Fleet Autonomy agent — its presence is a soft prerequisite.
-# Without it the policies still apply (scope = global), so we only warn.
-fleet_agent = ::Ai::Agent.resolve_for(admin_account.id, name: "Fleet Autonomy", agent_type: "monitor")
-if fleet_agent.nil?
-  puts "  ⚠️  Fleet Autonomy agent not seeded — provisioning policies will land at global scope"
+# Locate the OWNING agent — its presence is a soft prerequisite. Without it
+# the policies still apply (scope = global), so we only warn. The name is a
+# LITERAL on purpose: it is the shape
+# spec/controllers/api/v1/system/autonomy_agent_pivot_spec.rb parses to build
+# its seeded-agent oracle, and a name that derivation cannot read is dropped
+# from it silently.
+owner_agent = ::Ai::Agent.resolve_for(admin_account.id, name: "Capacity Manager", agent_type: "monitor")
+if owner_agent.nil?
+  puts "  ⚠️  Capacity Manager agent not seeded — provisioning policies will land at global scope"
 end
 
 # Action category → policy mapping. Mirrors the M2 plan.
@@ -49,8 +64,8 @@ end
 # assert it against a RUNNING database without executing this seed.
 PROVISIONING_POLICIES = System::Governance::PolicyDeclarations::PROVISIONING_POLICIES
 
-scope = fleet_agent ? "agent" : "global"
-ai_agent_id = fleet_agent&.id
+scope = owner_agent ? "agent" : "global"
+ai_agent_id = owner_agent&.id
 
 changed = 0
 PROVISIONING_POLICIES.each do |action_category, policy_type|

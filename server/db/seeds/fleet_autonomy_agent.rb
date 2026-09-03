@@ -97,10 +97,20 @@ count = System::Seeds::AgentSetupHelpers.upsert_policies!(
 System::Seeds::AgentSetupHelpers.clean_stale_policies!(
   account: admin_account, agent: fleet_agent,
   keep_keys: fleet_policies.keys,
-  # F3-10: Fleet Autonomy is a shared agent — sibling seeds attach project.*
-  # (system_provisioning_intervention_policies.rb) and system.instance_pool_*
-  # (system_instance_pool_policies.rb) policies to it. Clean only the
-  # namespace this seed owns so a targeted re-run can't destroy theirs.
+  # F3-10: Fleet Autonomy WAS a shared agent — sibling seeds attached
+  # project.* (system_provisioning_intervention_policies.rb) and
+  # system.instance_pool_* (system_instance_pool_policies.rb) rows to it.
+  # HIER-P2B re-pointed both at the Capacity Manager, so on a FRESH install
+  # neither writes here any more.
+  #
+  # The carve-out STAYS, for the established install. `db:seed` is first-boot
+  # only, but this file is also run on its own ("Invoke explicitly" above), and
+  # an install seeded before HIER-P2B still holds those eight rows here until
+  # PolicyReconciler re-homes them (PolicyReconciler::FORMER_OWNERS) — verb,
+  # is_active, conditions and priority preserved. Without the exclusion a
+  # targeted re-run would DELETE them first, discarding operator tuning the
+  # re-home was going to carry across. Same reasoning for `owned_prefixes`:
+  # clean only the namespace this seed writes.
   owned_prefixes: [ "system." ],
   excluded_prefixes: [ "system.instance_pool_" ]
 )

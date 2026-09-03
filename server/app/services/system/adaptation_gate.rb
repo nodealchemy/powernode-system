@@ -152,20 +152,27 @@ module System
         # router gates under that agent exactly as the DecisionEngine's three
         # project_* bindings do — through #for_owner, which resolves the
         # declared owner override-aware and falls back to Fleet Autonomy (with
-        # a fleet.owner_agent_missing event) until wave 2 seeds it. Gating as
-        # Fleet Autonomy directly would resolve against rows the reconciler
-        # has moved off it: the "row the gate never reads" defect, one router
-        # over.
+        # a fleet.owner_agent_missing event) when the Capacity Manager is
+        # absent. Gating as Fleet Autonomy directly would resolve against rows
+        # the reconciler has moved off it: the "row the gate never reads"
+        # defect, one router over.
         #
-        # COST OF THE FALLBACK, until wave 2 seeds the Capacity Manager: the
-        # service memoizes owner gates PER INSTANCE (@owner_gates) and this
-        # router builds a fresh one per call, so every adaptation disposition
-        # writes one fleet.owner_agent_missing FleetEvent — unlike the tick,
-        # which builds its service once and warns once. Accepted, not hoisted:
-        # no sensor consumes OWNER_MISSING_EVENT_KIND, the volume is one row
-        # per plan evaluated, and it is a visible countdown on work wave 2
-        # ends. adaptation_gate_spec pins the one-event-per-disposition shape,
-        # so hoisting later is a spec change, not a silent one.
+        # HIER-P2B seeded the Capacity Manager
+        # (db/seeds/system_capacity_manager_agent.rb) and re-pointed
+        # db/seeds/system_provisioning_intervention_policies.rb at it, so on a
+        # current install the owner exists and the fallback is not taken.
+        #
+        # COST OF THE FALLBACK where it IS still taken — an account whose
+        # first boot predates that seed and has not yet run
+        # PolicyReconciler/`rails system:governance:reconcile`: the service
+        # memoizes owner gates PER INSTANCE (@owner_gates) and this router
+        # builds a fresh one per call, so every adaptation disposition writes
+        # one fleet.owner_agent_missing FleetEvent — unlike the tick, which
+        # builds its service once and warns once. Accepted, not hoisted: no
+        # sensor consumes OWNER_MISSING_EVENT_KIND, the volume is one row per
+        # plan evaluated, and it is bounded by that one reconcile.
+        # adaptation_gate_spec pins the one-event-per-disposition shape, so
+        # hoisting later is a spec change, not a silent one.
         owner_gate = ::System::Fleet::FleetAutonomyService
           .new(account: account, agent: agent)
           .for_owner(::System::Governance::PolicyDeclarations.owner_of(category))

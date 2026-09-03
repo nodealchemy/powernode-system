@@ -55,6 +55,26 @@ RSpec.describe "instance-pool operator-path intervention policies" do
   # The seed resolves this agent by NAME through Ai::Agent.resolve_for, exactly
   # as the runtime does; without it the agent-scoped half of the seed skips and
   # the audience-separation examples below would be vacuous.
+  #
+  # HIER-P2B moved that half from Fleet Autonomy to the CAPACITY MANAGER, the
+  # declared owner of INSTANCE_POOL_POLICIES. The name is read from
+  # AGENT_IDENTITIES rather than written out, so this file follows a rename of
+  # the owner instead of silently going vacuous when the seed stops resolving
+  # the literal it used to.
+  let(:owner_identity) do
+    System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch("capacity-manager")
+  end
+
+  let!(:owner_agent) do
+    create(:ai_agent, account: account, provider: provider,
+           name: owner_identity[:name], agent_type: owner_identity[:agent_type])
+  end
+
+  # Fleet Autonomy is the FORMER owner. Kept present, and asserted EMPTY below:
+  # a seed that writes the agent set onto it leaves rows PolicyReconciler can
+  # never re-home once the owner's own seed has run (it short-circuits on a
+  # category the owner already has), so "no row here" is the assertion, not an
+  # absence of setup.
   let!(:fleet_agent) do
     create(:ai_agent, account: account, provider: provider,
            name: "Fleet Autonomy", agent_type: "monitor")
@@ -65,7 +85,7 @@ RSpec.describe "instance-pool operator-path intervention policies" do
   # fix, landed on the conditionless operator row instead. Scored here so the
   # agent-dispatch example below tests the agent's row rather than the
   # fall-through.
-  let!(:fleet_trust) { create(:ai_agent_trust_score, :monitored, account: account, agent: fleet_agent) }
+  let!(:owner_trust) { create(:ai_agent_trust_score, :monitored, account: account, agent: owner_agent) }
 
   def load_pool_policy_seed!
     silence_warnings do
@@ -157,29 +177,56 @@ RSpec.describe "instance-pool operator-path intervention policies" do
     end
   end
 
-  # The two audiences stay separate. Fleet Autonomy's agent-scoped set keeps
-  # ALL EIGHT categories: trimming the operator set must not shrink the agent's
-  # own vocabulary, which is a different decision on a different path.
-  it "still seeds the Fleet Autonomy agent every declared pool category" do
+  # The two audiences stay separate. The OWNING agent's set keeps ALL EIGHT
+  # categories: trimming the operator set must not shrink the agent's own
+  # vocabulary, which is a different decision on a different path.
+  it "still seeds the owning agent every declared pool category" do
     declared = System::Governance::PolicyDeclarations::INSTANCE_POOL_POLICIES.keys
 
     seeded = Ai::InterventionPolicy
-             .where(account: account, ai_agent_id: fleet_agent.id, scope: "agent")
+             .where(account: account, ai_agent_id: owner_agent.id, scope: "agent")
              .where(action_category: declared)
              .pluck(:action_category)
 
     expect(seeded).to match_array(declared)
   end
 
-  it "still resolves the agent-dispatch path against Fleet Autonomy's own rows" do
+  it "still resolves the agent-dispatch path against the owning agent's own rows" do
     categories = gated_verbs.keys + ungated_categories
 
     displaced = categories.reject do |category|
-      service.resolve(action_category: category, agent: fleet_agent)[:record]&.ai_agent_id == fleet_agent.id
+      service.resolve(action_category: category, agent: owner_agent)[:record]&.ai_agent_id == owner_agent.id
     end
 
     expect(displaced).to be_empty,
-                         "agent-path resolution lost Fleet Autonomy's row for: #{displaced.inspect}"
+                         "agent-path resolution lost #{owner_identity[:name]}'s row for: #{displaced.inspect}"
+  end
+
+  # HIER-P2B — the seed must write onto the DECLARED OWNER and nowhere else.
+  # PolicyReconciler cannot repair a miss here: `reconcile!` answers `present`
+  # and never consults `rehomable_row` for a category the owner already has,
+  # and `db/seeds/system_capacity_manager_agent.rb` runs BEFORE this seed in
+  # SYSTEM_SEED_FILES — so a row written onto the former owner on a FRESH
+  # install is an active control the gate never reads, permanently.
+  it "writes no agent-scoped pool row onto the former owner" do
+    declared = System::Governance::PolicyDeclarations::INSTANCE_POOL_POLICIES.keys
+
+    orphaned = Ai::InterventionPolicy
+               .where(account: account, ai_agent_id: fleet_agent.id, scope: "agent")
+               .where(action_category: declared)
+               .pluck(:action_category)
+
+    expect(orphaned).to be_empty,
+                        "pool rows seeded onto Fleet Autonomy, which no longer declares them: #{orphaned.inspect}"
+  end
+
+  # And the declaration really does name the Capacity Manager, so the rename
+  # above cannot be satisfied by pointing the seed at any agent at all.
+  it "derives the Capacity Manager as the declared owner of every pool category" do
+    System::Governance::PolicyDeclarations::INSTANCE_POOL_POLICIES.each_key do |category|
+      expect(System::Governance::PolicyDeclarations.owner_of(category)).to eq("capacity-manager"),
+        "#{category} is declared on #{System::Governance::PolicyDeclarations.owner_of(category).inspect}"
+    end
   end
 
   # The OTHER producer. PolicyReconciler creates declared rows an install is
