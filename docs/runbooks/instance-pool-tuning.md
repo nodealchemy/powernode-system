@@ -455,8 +455,13 @@ two reasons:
 
    - `System::Gitops::ApplyService#apply!`, whose `POOL_SCALAR_KEYS` include
      `target_size`, `min_size`, `max_size`, `lifecycle_class` and `status` — a
-     GitOps sync raises a ceiling from a repo commit, reached from
-     `system_gitops_apply_proposal` and from the decision engine.
+     GitOps sync raises a ceiling from a repo commit. Its MCP door
+     `system_gitops_apply_proposal` now gates under
+     `system.gitops_apply_proposal` (IMP-0b4f18ae4384); the callers that still
+     reach it with no approval are the reconciler's own auto-apply (the
+     repository's `auto_apply` opt-in) and the decision engine's
+     `apply_gitops_drift` (`system.gitops_drift_remediate`, seeded
+     `notify_and_proceed`).
    - `System::CiRunnerLeaseService`, which sets `target_size` from configured
      runner demand.
 

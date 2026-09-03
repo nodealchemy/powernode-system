@@ -60,10 +60,14 @@ module System
       #     Ai::Executors::DeferredToolCall. Decreases, min_size and status
       #     "paused"/"draining" stay inline on BOTH doors by operator
       #     direction, and TWO writers still move the same columns with no
-      #     approval at all: System::Gitops::ApplyService#apply!
-      #     (POOL_SCALAR_KEYS) and System::CiRunnerLeaseService. Both are
-      #     censused by file and count in
-      #     spec/lint/instance_pool_replenish_gating_spec.rb.
+      #     approval at all: System::Gitops::ApplyService#apply! (POOL_SCALAR_KEYS)
+      #     — whose MCP door system_gitops_apply_proposal now gates under
+      #     system.gitops_apply_proposal (IMP-0b4f18ae4384), leaving
+      #     Reconciler#auto_apply_proposal (the repository's own auto_apply
+      #     opt-in) and DecisionEngine#apply_gitops_drift (system.gitops_drift_
+      #     remediate, seeded notify_and_proceed) as its ungated callers — and
+      #     System::CiRunnerLeaseService. Both are censused by file and count
+      #     in spec/lint/instance_pool_replenish_gating_spec.rb.
       #   * #create is gated on BOTH DOORS as of IMP-067f39468350 — the REST
       #     route under "system.instance_pool_create" and the MCP verb
       #     system_create_instance_pool under the same category — but a pool

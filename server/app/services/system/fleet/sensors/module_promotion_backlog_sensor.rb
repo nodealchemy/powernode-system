@@ -24,7 +24,9 @@ module System
       # and must not be. Actuation is `NodeModule#current_version_id`, whose
       # SANCTIONED writer is `NodeModule#promote_to_version!` — sanctioned, not
       # sole: this comment used to quote that method's own "the platform's ONLY
-      # choke point" claim, which was false. Six sites write the column; see
+      # choke point" claim, which was false. Other sites write the column too
+      # (the count is not repeated here — it has changed once already, when
+      # IMP-b7abf6c777da removed a writer); the census is
       # spec/lint/node_module_current_version_write_seam_spec.rb. That does not
       # weaken this sensor — it reads the COLUMN, so it sees every writer — but
       # it does mean a backlog can be cleared by something that ran no promotion

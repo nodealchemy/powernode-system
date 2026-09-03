@@ -235,9 +235,16 @@ module Api
         #      spend. Still ungated ELSEWHERE, and censused by file and count
         #      in spec/lint/instance_pool_replenish_gating_spec.rb rather than
         #      left to a reader's memory: System::Gitops::ApplyService#apply!
-        #      (POOL_SCALAR_KEYS carries target_size/max_size/status) and
-        #      System::CiRunnerLeaseService. The gate narrows who can raise a
-        #      ceiling unattended; it does not make the column immutable.
+        #      (POOL_SCALAR_KEYS carries target_size/max_size/status) — its
+        #      MCP door system_gitops_apply_proposal now gates under
+        #      system.gitops_apply_proposal (IMP-0b4f18ae4384); the callers
+        #      that still reach it with no approval are
+        #      Reconciler#auto_apply_proposal (the repository's auto_apply
+        #      opt-in) and DecisionEngine#apply_gitops_drift
+        #      (system.gitops_drift_remediate, seeded notify_and_proceed) —
+        #      and System::CiRunnerLeaseService. The gate narrows who can
+        #      raise a ceiling unattended; it does not make the column
+        #      immutable.
         #   2. #create is gated on both doors too, as of IMP-067f39468350: the
         #      MCP verb system_create_instance_pool used to call
         #      System::InstancePool.create! directly, so a pool minted over MCP

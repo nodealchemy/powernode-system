@@ -363,9 +363,11 @@ module System
 
             **Operations attestation (required):**
 
-            - [ ] Fleet decision audit trail captured — `system.cve_critical_published`
-              → `system.cve_remediate` → `system.rolling_upgrade_complete` chain
-              visible in `platform.recent_events`
+            - [ ] Fleet decision audit trail captured — the `system.cve_critical_published`
+              signal, the `cve_responder.inline_dispatch` event for `system.cve_remediate`,
+              and the rolling upgrade's `skill.execute_finished` event, read with
+              `system_recent_signals` (the fleet-event reader; `platform.recent_events`
+              reads agent execution events, not fleet events)
             - [ ] Per-instance heartbeat continuity confirmed — no instance
               dropped heartbeat for >180s during the upgrade window
             - [ ] SLO impact assessed — `latency_p99_ms` + `error_rate_pct`

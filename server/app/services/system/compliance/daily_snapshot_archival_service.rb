@@ -11,12 +11,13 @@ module System
     #   - Auto-pruned by SystemFleetEventRetentionJob (90-day default;
     #     critical-severity bonus retention applies)
     #   - Account-scoped via the existing FleetEvent.account_id
-    #   - Audit-trail discoverable via `platform.recent_events kind:`
+    #   - Audit-trail discoverable via `system_recent_signals` (the fleet-event
+    #     reader — `platform.recent_events` reads Ai::ExecutionEvent, not FleetEvent)
     #
     # Why FleetEvent instead of a dedicated table or Ai::Document:
     #   - Zero new infrastructure (model/migration/retention sweep)
     #   - Retention semantics inherited from existing fleet event sweep
-    #   - Audit-discoverable via the same `recent_events` operators already use
+    #   - Audit-discoverable via the same `system_recent_signals` operators already use
     #   - JSON payload column comfortably holds typical snapshot sizes (<1 MB)
     #
     # Triggered by SystemComplianceSnapshotJob (worker side, daily) which
