@@ -16,19 +16,17 @@
 #
 # AI-Driven Provisioning plan — slice 4 (M0).
 #
-# Idempotent: re-running updates by slug.
+# Idempotent: re-running updates by slug. GLOBAL CANONICALS (HIER-P2G): every
+# row is account_id nil, source_key = slug, is_system — see
+# concerns/skill_setup_helpers.rb; no account is needed.
 #
 # Invoke explicitly:
 #   cd server && bundle exec rails runner \
 #     "load Rails.root.join('../extensions/system/server/db/seeds/system_provisioning_skills_seed.rb')"
 
-puts "\n  Seeding AI-driven provisioning skills..."
+require_relative "concerns/skill_setup_helpers"
 
-account = Account.first
-unless account
-  puts "  ⚠️  No account — run platform seeds first; aborting"
-  return
-end
+puts "\n  Seeding AI-driven provisioning skills..."
 
 PROVISIONING_SKILLS_DATA = [
   {
@@ -176,10 +174,9 @@ PROVISIONING_SKILLS_DATA.each do |data|
     next
   end
 
-  skill = ::Ai::Skill.find_or_initialize_by(slug: data[:slug])
+  skill = System::Seeds::SkillSetupHelpers.find_or_initialize_global_skill(slug: data[:slug])
   was_new = skill.new_record?
   skill.assign_attributes(
-    account: account,
     name: data[:name],
     description: data[:description],
     category: data[:category],
@@ -192,6 +189,9 @@ PROVISIONING_SKILLS_DATA.each do |data|
       "icon" => data[:subdomain],
       "system_subdomain" => data[:subdomain],
       "executor_class" => data[:executor],
+      # The executor's gate category — what the canonical Claude Code export
+      # turns into the agent's policy DOMAIN triggers (HIER-P2G).
+      "action_category" => System::Seeds::SkillSetupHelpers.executor_action_category(data[:executor]),
       "blast_radius" => data[:blast_radius],
       # === ConciergeRouter signals ===
       # Provisioning skills are multi-step by nature — they materialize
@@ -201,7 +201,7 @@ PROVISIONING_SKILLS_DATA.each do |data|
       # via data[:invocation_mode] if they're genuinely one-shot.
       "domain" => "system",
       "invocation_mode" => data[:invocation_mode] || "workflow_step"
-    },
+    }.compact,
     tags: data[:tags] + %w[system workspace provisioning],
     is_system: true,
     is_enabled: true,
@@ -222,10 +222,9 @@ puts "    ✓ Provisioning skills: #{created_count} created, #{updated_count} up
 # platform_provisioning_* MCP actions. The executor-backed provisioning skills
 # above are the DAG steps; this is the front door. No executor_class on
 # purpose: delegation never invokes an executor.
-entry = ::Ai::Skill.find_or_initialize_by(slug: "system-provision-infrastructure")
+entry = System::Seeds::SkillSetupHelpers.find_or_initialize_global_skill(slug: "system-provision-infrastructure")
 entry_was_new = entry.new_record?
 entry.assign_attributes(
-  account: account,
   name: "Provision Infrastructure",
   description: "Stand up or scale infrastructure from a natural-language brief — captures requirements, composes a provisioning plan, gates it for approval, and executes it end-to-end.",
   category: "devops",

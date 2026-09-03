@@ -55,7 +55,12 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # until the reconciler runs BEFORE them at first boot — a live install depends
 # on their idempotent upserts today; improvement 01a0696f-823f-7415-acc8-
 # a898facabff5 files the rewrite. Do not add a new one.
-# `system_autonomy_orphan_cleanup.rb` is last: a garbage-collection pass wants
+# `system_skill_graph_sync.rb` runs LAST, after every catalog seed: the catalog
+# skills are GLOBAL rows since HIER-P2G and a global row never fires the
+# per-account knowledge-graph sync hook, so without it every system skill is
+# invisible to `platform.discover_skills` and the ConciergeRouter (both read
+# skill NODES, not the ai_skills table).
+# `system_autonomy_orphan_cleanup.rb` is second-to-last: a garbage-collection pass wants
 # to see every row the seeds above wrote. It is order-independent all the same
 # (its predicate is the boot category registry, not any seed's declarations) —
 # IMP-0a3ff97f6fbb.
@@ -93,6 +98,7 @@ SYSTEM_SEED_FILES = %w[
   role_modules_seed.rb
   system_agent_hierarchy.rb
   system_autonomy_orphan_cleanup.rb
+  system_skill_graph_sync.rb
 ].freeze
 
 SYSTEM_SEED_FILES.each do |seed_file|

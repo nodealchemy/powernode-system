@@ -20,19 +20,21 @@
 # Idempotent: re-running the seed updates existing records by slug
 # without duplicating.
 #
+# GLOBAL CANONICALS (HIER-P2G): every row is account_id nil, keyed on
+# source_key = slug, is_system — see concerns/skill_setup_helpers.rb. No
+# account is needed; an established install's pre-P2G account-scoped rows are
+# converted in place (id stable), an account's own override (cloned_from_id)
+# is never touched.
+#
 # Spicy-bear plan slice 2.
 #
 # Invoke explicitly:
 #   cd server && bundle exec rails runner \
 #     "load Rails.root.join('../extensions/system/server/db/seeds/system_skills_seed.rb')"
 
-puts "\n  Seeding System extension AI skills catalog..."
+require_relative "concerns/skill_setup_helpers"
 
-account = Account.first
-unless account
-  puts "  ⚠️  No account — run platform seeds first; aborting"
-  return
-end
+puts "\n  Seeding System extension AI skills catalog..."
 
 # ─────────────────────────────────────────────────────────────────────
 # Skill metadata
@@ -1158,10 +1160,9 @@ created_count = 0
 updated_count = 0
 
 SKILLS_DATA.each do |data|
-  skill = ::Ai::Skill.find_or_initialize_by(slug: data[:slug])
+  skill = System::Seeds::SkillSetupHelpers.find_or_initialize_global_skill(slug: data[:slug])
   was_new = skill.new_record?
   skill.assign_attributes(
-    account: account,
     name: data[:name],
     description: data[:description],
     category: data[:category],
@@ -1174,6 +1175,9 @@ SKILLS_DATA.each do |data|
       "icon" => data[:subdomain],
       "system_subdomain" => data[:subdomain],
       "executor_class" => data[:executor],
+      # The executor's gate category — what the canonical Claude Code export
+      # turns into the agent's policy DOMAIN triggers (HIER-P2G).
+      "action_category" => System::Seeds::SkillSetupHelpers.executor_action_category(data[:executor]),
       # === ConciergeRouter signals ===
       # Domain is "system" for every skill in this extension's seed file —
       # extensions own their domain naming via Ai::Skill.register_domain
@@ -1181,7 +1185,7 @@ SKILLS_DATA.each do |data|
       # workflow_step on skills that require multi-step operator follow-up.
       "domain" => "system",
       "invocation_mode" => data[:invocation_mode] || "one_shot"
-    },
+    }.compact,
     tags: data[:tags] + %w[system workspace],
     is_system: true,
     is_enabled: true,

@@ -26,10 +26,11 @@
 #   cd server && rails runner \
 #     "load Rails.root.join('../extensions/system/server/db/seeds/system_dr_skills_seed.rb')"
 
-account = ::Account.first
-if account.nil?
-  puts "    ⏭  DR skills seed skipped (no Account yet)"
-else
+# GLOBAL CANONICALS (HIER-P2G): every row is account_id nil, source_key =
+# slug, is_system — see concerns/skill_setup_helpers.rb; no account is needed.
+require_relative "concerns/skill_setup_helpers"
+
+begin
   DR_SKILLS_DATA = [
     {
       name: "Promote Replica",
@@ -68,10 +69,9 @@ else
   updated_count = 0
 
   DR_SKILLS_DATA.each do |data|
-    skill = ::Ai::Skill.find_or_initialize_by(slug: data[:slug])
+    skill = System::Seeds::SkillSetupHelpers.find_or_initialize_global_skill(slug: data[:slug])
     was_new = skill.new_record?
     skill.assign_attributes(
-      account: account,
       name: data[:name],
       description: data[:description],
       category: data[:category],
@@ -84,9 +84,12 @@ else
         "icon" => data[:subdomain],
         "system_subdomain" => data[:subdomain],
         "executor_class" => data[:executor],
+        # The executor's gate category — what the canonical Claude Code export
+        # turns into the agent's policy DOMAIN triggers (HIER-P2G).
+        "action_category" => System::Seeds::SkillSetupHelpers.executor_action_category(data[:executor]),
         "domain" => "system",
         "invocation_mode" => data[:invocation_mode] || "one_shot"
-      },
+      }.compact,
       tags: data[:tags] + %w[system workspace],
       is_system: true,
       is_enabled: true,
