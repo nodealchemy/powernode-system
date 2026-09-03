@@ -14,7 +14,7 @@ Step-by-step operator guide for the full Node + NodeInstance lifecycle: from "I 
 | 2. Provision instance | Provider boots a VM with the netboot image | 30 s – 10 min | `system_provision_instance` |
 | 3. Bootstrap | Agent installs, mTLS handshake, module reconcile | ~90 s cold (5-10 min on slow providers) | none — agent-driven |
 | 4. Run | Heartbeats, reconcile loop, task lease | indefinite | `system_get_instance` |
-| 4b. Cordon | **Unschedulable, still running** — reversible; new pool acquires, CI runner leases and fleet missions stop landing on it, nothing running is touched | <1 s (approval-gated) | `system_cordon_instance` / `system_uncordon_instance` |
+| 4b. Cordon | **Unschedulable, still running** — reversible; new pool acquires, CI runner leases and fleet missions stop landing on it, the replica reconciler counts it as gone (and provisions its replacement) and takes it first on a scale-in, nothing running is touched | <1 s (approval-gated) | `system_cordon_instance` / `system_uncordon_instance` |
 | 5. Drain | **Cordon + STOP** — pool member fenced out of the allocator, then the VM is stopped; workload relocation is still manual and must happen FIRST | seconds (the call itself) | `system_drain_instance` |
 | 6. Decommission | Provider VM destroyed, FK cascades fire | <1 min | `system_terminate_instance` |
 
@@ -389,15 +389,16 @@ platform.system_uncordon_instance({
 | `cordon_state` | Meaning |
 |---|---|
 | `fenced` | Ready pool member flipped to `draining`. The allocator will not hand it out. **The replenisher counts it as gone** and will provision a replacement up to `target_size`/`max_size`; on uncordon the pool is over target, and nothing trims it back on purpose — `recycle_stale_members!` reaps a ready member once its `pool_warming_started_at` passes `ready_ttl_seconds`, irrespective of `target_size`, so the surplus drains by TTL expiry rather than by a target-aware trim (and the uncordoned member, whose anchor was just reset, is the LAST one it reaches). |
-| `claimed` | Pool member a consumer currently holds. Marker only — it is already un-acquirable, and both release paths guard on `pool_state == "claimed"`, so flipping it would strand it. When the consumer returns it, the default `recycled` disposition terminates it; only a pool opted into `reuse_without_reset` would re-admit it as `ready` (release does not read the marker — that is `InstancePoolService`'s file). |
+| `claimed` | Pool member a consumer currently holds. Marker only — it is already un-acquirable, and both release paths guard on `pool_state == "claimed"`, so flipping it would strand it. When the consumer returns it, the default `recycled` disposition terminates it; on a pool opted into `reuse_without_reset`, `InstancePoolService#release!` reads the marker and **fences** the member instead of re-admitting it (`pool_state=draining`, release disposition `cordoned`, restore target `ready`) — `system_uncordon_instance` then hands it back as `ready` (IMP-c9adb5a71dca). |
 | `already_fenced` | `pool_state` was already `draining` — a drain or recycle is in flight. Marker only; an uncordon will **not** restore it to `ready`. |
-| `not_pooled` | Not a pool member. Marker only — there is no allocator to fence. **INCOMPLETE, not final behaviour:** `System::Platform::ReplicaReconciler` does not read the marker (`#live_scope` / `#scale_in` pick victims by `created_at` alone), and neither does the node_api task lease, so on a physical node, a dev cell, ops-hub, or a deployment replica a cordon today records who/why/when and **fences nothing**. Honouring it in the reconciler is the outstanding half of IMP-0467eee9fc57 — it needs a hunk in `replica_reconciler.rb`, which this change could not touch. Until then, treat `not_pooled` as documentation of intent, not as an enforced state. |
+| `not_pooled` | Not a pool member. Marker only — there is no allocator to fence. On a **deployment replica** the marker is honoured by `System::Platform::ReplicaReconciler` (IMP-c9adb5a71dca): the cordoned replica is left **out of the live count** (`#live_scope`), so `target_replicas` reconciliation provisions its replacement, and it is the **first scale-in victim** (`#scale_in`: cordoned first, then newest-first among the rest). A cordon alone never triggers a scale-in — the excess is measured on the un-cordoned count — and a pass that spends its budget on cordoned victims converges the rest on the next pass (its message says so). **Read the Scaling panel accordingly:** its `actual_replicas` (`deployments_controller#compute_actual_replicas`) counts cordoned rows, the reconciler's live count does not, so once a replacement is provisioned the panel reads one ABOVE `target_replicas` for as long as the cordon stands. That is the cordon showing, not drift — pressing reconcile again will not clear it; uncordon or terminate the cordoned replica. On a physical node, a dev cell or ops-hub that no deployment owns, nothing schedules through the platform, so the marker is attribution only; the node_api task lease does not read it (recorded on the task). |
 
 **Refused outright** (an inline error, nothing written, and — because the gate
 asks `InstanceCordonService.cordon_refusal` first — no approval parked): a
-*warming* member —
-`NodeInstance#promote_pool_ready!` would flip it to `ready` on its next
-heartbeat, straight past the marker; an *errored* member (already on its way
+*warming* member — it is not acquirable yet, and a cordon is not placed ahead
+of a member's admission (should a marker reach a warming member by another
+route, `NodeInstance#mark_pool_ready!` honours it: the heartbeat promotion
+lands on `draining`, never `ready`); an *errored* member (already on its way
 out); a terminated instance; an instance that is already cordoned; a blank
 `reason`.
 
