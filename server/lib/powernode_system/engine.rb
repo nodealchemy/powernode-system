@@ -689,9 +689,16 @@ module PowernodeSystem
         #
         # Only the three COMPOSE categories are listed here now:
         # system.federation_peer_remediate is declared on Fleet Autonomy and so
-        # arrives through the derivation above. These three are not declared as
-        # policy rows by any seed — they are approval-gated composer skills — so
-        # they have no declaration to derive from and must be named explicitly.
+        # arrives through the derivation above. Of the three, only
+        # system.sdwan_federation_compose is declared by NO policy set — the
+        # explicit name below is its sole registration. The other two are no
+        # longer in that position: the branch-health pass of 2026-09-02
+        # (IMP-4ba48fd088ce) declared system.multi_tenant_isolation and
+        # system.service_discovery_compose in FLEET_AUTONOMY_POLICIES, so they
+        # arrive through the derivation above and their entries here are
+        # belt-and-braces. autonomy_categories_registration_spec.rb pins the
+        # deliberately-unseeded set to system.sdwan_federation_compose alone,
+        # so a fourth name added here without a declaration reds there.
         categories.concat(%w[
           system.sdwan_federation_compose
           system.multi_tenant_isolation
@@ -704,80 +711,54 @@ module PowernodeSystem
         # System::Ai::Skills::BaseSkillExecutor#execute now resolves
         # Ai::InterventionPolicy before #perform, and the category it resolves
         # is `<domain>.<skill name>` (or an explicit `action_category:` on the
-        # descriptor). An executor needs an entry HERE only when the category
-        # it resolves is registered by no other route, so the list below is a
-        # remainder rather than a roster of the flag — do not read a count of
-        # gate-required executors out of it (the earlier prose did, and the
-        # number went stale as executors landed).
-        #
-        # Already registered elsewhere, hence absent below:
-        # ServiceDiscoveryComposerExecutor (declares
-        # system.service_discovery_compose, listed just above),
-        # BootImageDriftRolloutExecutor (declares system.node_boot_image_drift,
-        # which arrives from the DecisionEngine binding), the three
-        # ARCHITECTURE executors (declare the seeded system.architecture.<verb>
-        # rows, which arrive through the derivation above — IMP-51e5c6184ae4),
-        # and MultiTenantIsolationExecutor, whose DERIVED name coincides with a
-        # name already listed. These eight are the rest.
-        #
-        # Registering them is not cosmetic HERE either, and for a sharper reason
-        # than the block above: with no policy row an unconfigured category
-        # resolves to Ai::InterventionPolicyService#default_policy =
-        # require_approval, so each of these gates on its first call. Without
-        # the registration an operator cannot turn that off through any
-        # supported door — System::AutonomyActions#update refuses an
-        # unregistered category (autonomy_actions.rb, `category_registered?`)
-        # and db/seeds/system_autonomy_orphan_cleanup.rb DELETES rows under an
+        # descriptor). Registering that category is not cosmetic, and for a
+        # sharper reason than the block above: with no policy row an
+        # unconfigured category resolves to
+        # Ai::InterventionPolicyService#default_policy = require_approval, so
+        # each of these gates on its first call. Without the registration an
+        # operator cannot turn that off through any supported door —
+        # System::AutonomyActions#update refuses an unregistered category
+        # (autonomy_actions.rb, `category_registered?`) and
+        # db/seeds/system_autonomy_orphan_cleanup.rb DELETES rows under an
         # owned prefix whose category is unregistered. A gate nobody can tune is
         # an outage with a policy name on it.
         #
-        # These used to be seeded by nothing, deliberately, like the three
-        # composer categories above — they reach an operator through the
-        # MCP/REST/Concierge doors rather than an agent seed. That is no longer
-        # true: the branch-health pass of 2026-09-02 added every one of them to
-        # FLEET_AUTONOMY_POLICIES at require_approval, so each now ALSO arrives
-        # through the derivation at the top of this block and the list below is
-        # belt-and-braces rather than the sole registration. (Only
-        # system.sdwan_federation_compose is still registered-and-unseeded —
-        # spec/lib/powernode_system/autonomy_categories_registration_spec.rb
-        # pins that set.) Each is backed by an executor:
-        #
-        #   system.acme_certificate_provision -> Skills::AcmeCertificateProvisionExecutor
-        #   system.expose_service_local       -> Skills::ExposeServiceLocalExecutor
-        #   system.expose_service_publicly    -> Skills::ExposeServicePubliclyExecutor
-        #   system.expose_service_public_tcp  -> Skills::ExposeServicePublicTcpExecutor
-        #   system.package_module_create      -> Skills::PackageModuleCreateExecutor
-        #   system.federation_acceptance      -> Skills::FederationAcceptanceExecutor
-        #   system.fulfill_capability_request -> Skills::FulfillCapabilityRequestExecutor
-        #   system.relocate_workload          -> Skills::RelocateWorkloadExecutor
-        #
-        # system.federation_acceptance is NOT a second spelling of
-        # sdwan.federation_peer_accept: that policy gates the STATUS TRANSITION
-        # alone (SdwanTool#accept_federation_peer, whose own description says so),
-        # while this skill runs the full accept chain — enroll, operator grant,
-        # bootstrap token, overlay attach, governance scan.
-        #
-        # The three ARCHITECTURE executors are deliberately not in this list
-        # (IMP-51e5c6184ae4). They used to be, under their derived
-        # system.architecture_<verb> spelling, while the seeded
-        # system.architecture.<verb> rows registered through the derivation
-        # above — one action, two registered controls, and an operator tuning
-        # either left the other's verdict standing. Each executor now DECLARES
-        # `action_category:` on the dotted seeded spelling, so it arrives here
-        # through the derivation like any other declared row. Do not re-add an
-        # underscored spelling; the uniqueness spec
+        # NO EXPLICIT LIST HERE any more (IMP-2effedffc990). One used to follow
+        # — the "remainder" of gated-executor categories registered by no
+        # other route — because these executors reach an operator through the
+        # MCP/REST/Concierge doors rather than an agent seed, so nothing
+        # declared them. That stopped being true when the branch-health pass of
+        # 2026-09-02 (IMP-4ba48fd088ce) put every one of them into
+        # FLEET_AUTONOMY_POLICIES at require_approval: each now arrives through
+        # the derivation at the top of this block, and the list had become a
+        # second hand-maintained copy of the same names — the exact defect the
+        # derivation exists to remove. Worse, it was where the DUPLICATE
+        # spellings lived: system.architecture_<verb> (IMP-51e5c6184ae4) and
+        # system.package_module_create (IMP-2effedffc990) were listed here
+        # while the seeded dotted rows for the same actions registered above,
+        # so one action carried two registered controls and an operator tuning
+        # either left the other's verdict standing. Those executors now DECLARE
+        # `action_category:` on the dotted seeded spelling; the uniqueness spec
         # (spec/lib/powernode_system/autonomy_category_spelling_uniqueness_spec.rb)
-        # reds on any second spelling of one action.
-        categories.concat(%w[
-          system.acme_certificate_provision
-          system.expose_service_local
-          system.expose_service_publicly
-          system.expose_service_public_tcp
-          system.package_module_create
-          system.federation_acceptance
-          system.fulfill_capability_request
-          system.relocate_workload
-        ])
+        # reds on any second spelling of one action, and
+        # spec/lib/powernode_system/autonomy_categories_registration_spec.rb
+        # reds on any gated executor whose category is registered nowhere.
+        #
+        # So the rule for a NEW gated executor is: declare its policy row in
+        # PolicyDeclarations (which registers it here), and if its action
+        # already has a seeded row under another spelling, declare THAT
+        # spelling as `action_category:` rather than adding a name anywhere.
+        # Only a gated category that is deliberately seeded by NO set belongs
+        # in an explicit concat — today that is system.sdwan_federation_compose
+        # alone, in the composer concat above (see the note there), and the
+        # registration spec pins that set so a new one cannot land unremarked.
+        #
+        # system.federation_acceptance (Skills::FederationAcceptanceExecutor)
+        # is NOT a second spelling of sdwan.federation_peer_accept: that policy
+        # gates the STATUS TRANSITION alone (SdwanTool#accept_federation_peer,
+        # whose own description says so), while this skill runs the full accept
+        # chain — enroll, operator grant, bootstrap token, overlay attach,
+        # governance scan.
 
         # GitOps Reconciler domain — operator-initiated gitops actions, seeded
         # by db/seeds/system_gitops_reconciler_agent.rb. (The AUTONOMOUS

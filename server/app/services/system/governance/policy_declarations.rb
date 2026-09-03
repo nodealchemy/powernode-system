@@ -656,15 +656,16 @@ module System
         # routed_lane_policy_coherence_spec — BaseSkillExecutor is a declared
         # ActionCategoryRouter, so its categories are routed categories.
         #
-        # ABSENT and must not be re-added (IMP-51e5c6184ae4):
-        # system.architecture_create / _update / _delete. Those three were the
-        # DERIVED "<domain>.<skill name>" categories of the architecture
-        # executors, seeded here beside the dotted rows the same executors'
-        # actions already had ("system.architecture.create" and siblings,
-        # declared above). Two rows over one action are two controls: an
-        # operator who tuned the dotted one did not tune the executor's gate.
-        # The executors now DECLARE `action_category:` on the dotted spelling,
-        # so there is nothing left to seed here — see
+        # ABSENT and must not be re-added (IMP-51e5c6184ae4, IMP-2effedffc990):
+        # system.architecture_create / _update / _delete and
+        # system.package_module_create. Those four were the DERIVED
+        # "<domain>.<skill name>" categories of gated executors, seeded here
+        # beside the dotted rows the same executors' actions already had
+        # ("system.architecture.create" and siblings, and
+        # "system.package_module.create", declared above). Two rows over one
+        # action are two controls: an operator who tuned the dotted one did not
+        # tune the executor's gate. The executors now DECLARE `action_category:`
+        # on the dotted spelling, so there is nothing left to seed here — see
         # spec/lib/powernode_system/autonomy_category_spelling_uniqueness_spec.rb.
         "system.acme_certificate_provision" => "require_approval",
         "system.expose_service_local"       => "require_approval",
@@ -673,7 +674,6 @@ module System
         "system.federation_acceptance"      => "require_approval",
         "system.fulfill_capability_request" => "require_approval",
         "system.multi_tenant_isolation"     => "require_approval",
-        "system.package_module_create"      => "require_approval",
         "system.relocate_workload"          => "require_approval",
         "system.service_discovery_compose"  => "require_approval",
         "system.restore_volume"             => "require_approval",

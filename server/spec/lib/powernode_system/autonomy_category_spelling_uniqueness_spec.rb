@@ -53,21 +53,13 @@ RSpec.describe "PowernodeSystem autonomy category spelling uniqueness", type: :l
   # One key per ACTION, whatever separator its spelling happens to use.
   def normalise(category) = category.downcase.gsub(/[._]+/, ".")
 
-  # The one pair this task did not settle, recorded rather than hidden.
-  #
-  # system.package_module.create (seeded, FLEET_AUTONOMY_POLICIES) and
-  # system.package_module_create (PackageModuleCreateExecutor's derived
-  # category, APO-1c) are the SAME defect with the same fix — declare
-  # action_category on the executor, retire the underscored row — but they are a
-  # different action family and a different executor, so settling them here
-  # would be a second change riding on this one. Filed separately.
-  #
-  # This exemption is PINNED PRESENT below, not merely subtracted: when that
-  # pair is fixed the pin reds and the exemption has to be deleted, so it cannot
-  # outlive the defect it describes and quietly excuse a future collision.
-  let(:recorded_duplicate_pair) do
-    %w[system.package_module.create system.package_module_create].freeze
-  end
+  # NO EXEMPTIONS. IMP-51e5c6184ae4 shipped one — system.package_module.create /
+  # system.package_module_create, the same defect in another action family —
+  # recorded by name and pinned present so it could not outlive its subject.
+  # IMP-2effedffc990 settled that pair the same way (the executor declares the
+  # dotted category, the underscored row is gone), so the assertion below is
+  # now the whole claim over every registered system./sdwan. category. Do not
+  # add a `reject` here: a second spelling is settled, not recorded.
 
   it "registers no two spellings of the same autonomy action" do
     expect(owned_categories).not_to be_empty,
@@ -77,7 +69,6 @@ RSpec.describe "PowernodeSystem autonomy category spelling uniqueness", type: :l
     collisions = owned_categories
                  .group_by { |c| normalise(c) }
                  .select { |_key, spellings| spellings.size > 1 }
-                 .reject { |_key, spellings| spellings.sort == recorded_duplicate_pair.sort }
 
     expect(collisions).to be_empty, <<~MSG
       #{collisions.size} autonomy action(s) are registered under more than one spelling:
@@ -95,26 +86,19 @@ RSpec.describe "PowernodeSystem autonomy category spelling uniqueness", type: :l
     MSG
   end
 
-  # Guards the exemption above against rotting into a blanket excuse.
-  it "still carries the recorded package_module duplicate the exemption names" do
-    still_registered = recorded_duplicate_pair.select { |c| Ai::InterventionPolicy.category_registered?(c) }
-
-    expect(still_registered).to match_array(recorded_duplicate_pair), <<~MSG
-      The recorded duplicate pair (#{recorded_duplicate_pair.join(' / ')}) is no longer
-      registered in full — registered now: #{still_registered.join(', ').presence || '(none)'}.
-
-      That pair is exempted from the uniqueness example above. If it has been settled,
-      DELETE the exemption rather than leaving it: an exemption whose subject is gone
-      silently excuses whatever collision lands on those names next.
-    MSG
-  end
-
-  describe "the architecture executors" do
+  # Every executor whose action already had a SEEDED dotted row when APO-1c
+  # started deriving "<domain>.<skill name>" for it. The architecture trio came
+  # first (IMP-51e5c6184ae4); PackageModuleCreateExecutor was the recorded
+  # second instance (IMP-2effedffc990) — FLEET_AUTONOMY_POLICIES seeds
+  # system.package_module.create while the derivation minted
+  # system.package_module_create.
+  describe "the executors whose action has a seeded dotted row" do
     let(:executors) do
       {
         System::Ai::Skills::ArchitectureCreateExecutor => "system.architecture.create",
         System::Ai::Skills::ArchitectureUpdateExecutor => "system.architecture.update",
-        System::Ai::Skills::ArchitectureDeleteExecutor => "system.architecture.delete"
+        System::Ai::Skills::ArchitectureDeleteExecutor => "system.architecture.delete",
+        System::Ai::Skills::PackageModuleCreateExecutor => "system.package_module.create"
       }
     end
 
@@ -134,6 +118,35 @@ RSpec.describe "PowernodeSystem autonomy category spelling uniqueness", type: :l
       declared = System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES.keys
 
       expect(declared).to include(*executors.values)
+    end
+
+    # The retired spellings must stay retired everywhere a name can be
+    # registered from — the declaration tables AND the engine's explicit
+    # concat lists — or the normalised-set example above reds again the next
+    # time someone re-adds the "obvious" underscored name beside the executor.
+    it "registers none of the retired underscored spellings" do
+      retired = executors.values.map { |dotted| dotted.sub(/\.(\w+)\z/, '_\\1') }
+
+      still_registered = retired.select { |c| Ai::InterventionPolicy.category_registered?(c) }
+
+      expect(still_registered).to be_empty,
+                                  "retired duplicate spelling(s) registered again: #{still_registered.join(', ')}"
+    end
+
+    # The Autonomy modal's domain pivot carried a prefix per retired spelling
+    # (`system.architecture_`, `system.package_module_`) so the two controls at
+    # least filed under one domain. Those prefixes came out with the spellings,
+    # and nothing else pins their removal: the pivot spec asserts reachability
+    # per DOMAIN, and both domains stay reachable through their dotted prefix,
+    # so a re-added underscored prefix would survive that suite untouched.
+    it "keeps no domain prefix that would match a retired spelling" do
+      retired = executors.values.map { |dotted| dotted.sub(/\.(\w+)\z/, '_\\1') }
+      prefixes = System::AutonomyActions::DOMAIN_PREFIXES.values.flatten
+
+      matching = prefixes.select { |prefix| retired.any? { |c| c.start_with?(prefix) } }
+
+      expect(matching).to be_empty,
+                          "domain prefix(es) still pivot a retired spelling: #{matching.join(', ')}"
     end
   end
 end

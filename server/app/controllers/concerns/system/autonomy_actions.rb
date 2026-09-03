@@ -94,16 +94,25 @@ module System
     DOMAIN_PREFIXES = {
       "instance_pool"     => %w[system.instance_pool_],
       "cve"               => %w[system.cve_ system.module_critical_upgrade_],
-      # The System Topology Designer's composer trio — registered but
-      # deliberately unseeded (rows arrive only via #update). Kept together as
-      # one family; declared BEFORE "sdwan" because system.sdwan_federation_compose
+      # The System Topology Designer's composer trio. Only
+      # system.sdwan_federation_compose is still registered-and-unseeded (its
+      # rows arrive only via #update); multi_tenant_isolation and
+      # service_discovery_compose have been declared in FLEET_AUTONOMY_POLICIES
+      # since IMP-4ba48fd088ce and are seeded like any other row — they stay
+      # here because the pivot is by FAMILY, not by whether a seed exists.
+      # Declared BEFORE "sdwan" because system.sdwan_federation_compose
       # extends system.sdwan_ and first match wins.
       "topology"          => %w[system.sdwan_federation_compose system.multi_tenant_isolation system.service_discovery_compose],
       "sdwan"             => %w[system.sdwan_ sdwan. system.federation_],
       "container_runtime" => %w[system.runtime_],
       "disk_image"        => %w[system.disk_image_],
       "gitops"            => %w[system.gitops_],
-      "packages"          => %w[system.package_module. system.package_module_ system.package_repository.],
+      # ONE spelling here too (IMP-2effedffc990): `system.package_module_` used
+      # to pivot PackageModuleCreateExecutor's derived
+      # system.package_module_create beside the seeded
+      # system.package_module.create row — same interim, same fix as the
+      # architecture family below.
+      "packages"          => %w[system.package_module. system.package_repository.],
       # ONE spelling (IMP-51e5c6184ae4). `system.architecture_<verb>` — the
       # gated executors' derived categories under APO-1c — used to be listed
       # here alongside the seeded `system.architecture.<verb>` rows so the modal
