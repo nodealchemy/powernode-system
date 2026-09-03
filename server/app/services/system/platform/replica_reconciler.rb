@@ -41,8 +41,16 @@ module System
     # THE TWO DIRECTIONS ARE NOT SYMMETRIC, on purpose:
     #
     #   scale OUT provisions through System::ProvisioningService. Additive and
-    #   reversible, so beyond the provision permission and the per-pass clamp it
-    #   runs on the caller's authority.
+    #   reversible, so it takes no approval row — but it is not unbounded
+    #   (IMP-f986d379120a, bulk review ruling D16): it resolves
+    #   `system.platform.scale_out` and actuates only when that policy
+    #   auto-executes AND the target sits inside the deployment's DECLARED
+    #   window (System::PlatformDeployment#scaling_bounds — the deployment-side
+    #   twin of Ai::Mission#scaling_bounds, fail-closed to "no ceiling").
+    #   Outside the window, or under a policy that does not auto-execute, the
+    #   pass PARKS: it provisions nothing, reports the deficit as
+    #   `pending_provision_count` and says why. It never clamps the target to
+    #   the ceiling, which would silently rewrite the operator's number.
     #
     #   scale IN terminates, which is irreversible, so it resolves TWO
     #   intervention policies first and takes the stricter: the platform's one
@@ -69,14 +77,19 @@ module System
       # destroy. An unclamped pass turns a fat-fingered `target_replicas` into
       # a fleet-sized event. FIVE, not ten: CLAUDE.md's bulk-operation rule
       # puts the confirm-first threshold at "more than 5 items", and a
-      # scale-out runs unattended on the caller's authority with no approval
-      # row behind it, so the per-pass ceiling has to sit at that threshold
-      # rather than at twice it. Re-running the same scale converges the rest
+      # scale-out runs unattended under an auto-executing policy row rather
+      # than a per-pass approval, so the per-pass ceiling has to sit at that
+      # threshold rather than at twice it. Re-running the same scale converges the rest
       # (a reconcile is idempotent against the live count), and the operator
       # can raise the ceiling deliberately via the SiteSetting.
       DEFAULT_MAX_DELTA = 5
       MAX_DELTA_SETTING_KEY = "system.platform.replica_reconcile_max_delta"
 
+      # Declared in System::Governance::PolicyDeclarations::PLATFORM_SCALING_
+      # POLICIES. scale_out seeds auto_approve and is bounded by the
+      # deployment's declared window (see the header); scale_in seeds
+      # require_approval and is additionally bound by TERMINATE_ACTION_CATEGORY.
+      SCALE_OUT_ACTION_CATEGORY = "system.platform.scale_out"
       SCALE_IN_ACTION_CATEGORY = "system.platform.scale_in"
 
       # The platform's ONE declared terminate category
@@ -111,10 +124,15 @@ module System
         "the consensus group, never the node being managed. Scale this deployment from " \
         "another plane, or by hand."
 
+      # `pending_provision_count` is the scale-out twin of
+      # `pending_removal_instance_ids`: the deficit a PARKED scale-out did not
+      # provision (0 on every other outcome). A count rather than ids because
+      # the instances do not exist yet.
       Result = Struct.new(
         :ok, :refused_reason, :message, :deployment_id, :target_replicas,
         :actual_before, :actual_after, :provisioned_instance_ids,
-        :terminated_instance_ids, :pending_removal_instance_ids, :failures,
+        :terminated_instance_ids, :pending_removal_instance_ids,
+        :pending_provision_count, :failures,
         keyword_init: true
       ) do
         def ok?
@@ -203,6 +221,22 @@ module System
           )
         end
 
+        # THE GATE, after the structural refusals on purpose: a deployment with
+        # nothing to provision onto gets the refusal that names that, not a
+        # park that sends the operator off to declare a window for it.
+        if (parked = scale_out_park_reason(deployment, target))
+          return Result.new(
+            ok: true, deployment_id: deployment.id, target_replicas: target,
+            actual_before: before, actual_after: before,
+            provisioned_instance_ids: [], terminated_instance_ids: [],
+            pending_removal_instance_ids: [], pending_provision_count: count, failures: [],
+            message: "#{count} replica(s) below target were NOT provisioned: #{parked}. " \
+                     "A scale-out auto-applies only inside the deployment's declared window " \
+                     "under an auto-executing #{SCALE_OUT_ACTION_CATEGORY} policy — declare or " \
+                     "widen the window, retune that policy, or provision by hand."
+          )
+        end
+
         created = []
         failures = []
         count.times do |i|
@@ -228,7 +262,7 @@ module System
           actual_before: before, actual_after: live_scope(deployment).count,
           provisioned_instance_ids: created.compact,
           terminated_instance_ids: [], pending_removal_instance_ids: [],
-          failures: failures,
+          pending_provision_count: 0, failures: failures,
           message: "Provisioned #{created.compact.size} of #{count} requested replica(s)."
         )
       end
@@ -252,7 +286,8 @@ module System
             ok: true, deployment_id: deployment.id, target_replicas: target,
             actual_before: before, actual_after: before,
             provisioned_instance_ids: [], terminated_instance_ids: [],
-            pending_removal_instance_ids: victims.map(&:id), failures: [],
+            pending_removal_instance_ids: victims.map(&:id),
+            pending_provision_count: 0, failures: [],
             message: "#{victims.size} replica(s) above target were NOT removed: the " \
                      "#{blocking.join(' and ')} policy does not auto-execute. Terminating an " \
                      "instance is irreversible — approve or retune that policy, or terminate " \
@@ -278,9 +313,58 @@ module System
           ok: true, deployment_id: deployment.id, target_replicas: target,
           actual_before: before, actual_after: live_scope(deployment).count,
           provisioned_instance_ids: [], terminated_instance_ids: terminated,
-          pending_removal_instance_ids: [], failures: failures,
+          pending_removal_instance_ids: [], pending_provision_count: 0, failures: failures,
           message: "Terminated #{terminated.size} of #{count} replica(s) above target."
         )
+      end
+
+      # The scale-out gate: nil when the pass may actuate, otherwise the reason
+      # it is PARKED. Two questions, both fail-closed, in this order:
+      #
+      #   1. does the `system.platform.scale_out` policy auto-execute?
+      #      (absent row → require_approval → parked; resolution error →
+      #      require_approval, see #resolved_policy_for)
+      #   2. does the target sit inside the deployment's DECLARED window?
+      #      No ceiling declared anywhere, an incoherent declaration, or a
+      #      target outside the range all park — mirroring the composer's
+      #      Ai::Mission::ScalingBounds#permits_replica_count? verdict exactly,
+      #      so a project window and a deployment window mean the same thing.
+      #
+      # `internal: true` is NOT exempt, any more than it is from the scale-in
+      # categories: the exemption is from the PERMISSION check (who may call),
+      # never from the operator's policy (what may run unattended).
+      def scale_out_park_reason(deployment, target)
+        policy = resolved_policy_for(SCALE_OUT_ACTION_CATEGORY)
+        unless AUTO_EXECUTE_POLICIES.include?(policy)
+          return "the #{SCALE_OUT_ACTION_CATEGORY} policy (#{policy}) does not auto-execute"
+        end
+
+        bounds = deployment.scaling_bounds
+        unless bounds.ceiling_declared?
+          # Name the REACHABLE rungs first. The deployment-metadata rung is
+          # only writable at creation (System::PlatformDeploymentService) or
+          # through GitOps — the Scaling panel's PATCH permits target_replicas
+          # and public_dns_hostname only — so leading with it would send the
+          # operator at a control the product does not expose.
+          return "no auto-scale ceiling is declared for this deployment (declare one on the " \
+                 "account's settings, or fleet-wide via SiteSetting " \
+                 "#{::System::PlatformDeployment::MAX_REPLICAS_SETTING}; the " \
+                 "#{::System::PlatformDeployment::MAX_REPLICAS_METADATA_KEY} metadata rung is " \
+                 "set at deployment creation or by GitOps, not by the Scaling panel)"
+        end
+        unless bounds.coherent?
+          return "the declared window (floor #{bounds.min}, ceiling #{bounds.max}) is incoherent, " \
+                 "so it clears nothing"
+        end
+        unless bounds.permits_replica_count?(target)
+          return "target #{target} is outside the declared window #{bounds.min}..#{bounds.max} " \
+                 "(ceiling #{bounds.max})"
+        end
+
+        nil
+      rescue StandardError => e
+        Rails.logger.error("[ReplicaReconciler] scale-out window resolution failed, parking: #{e.class}: #{e.message}")
+        "the deployment's scaling window could not be resolved (#{e.class})"
       end
 
       # STRICTER OF THE TWO. `system.task.terminate` is the platform's one
@@ -380,7 +464,7 @@ module System
           target_replicas: target || deployment.target_replicas.to_i,
           actual_before: actual_before, actual_after: actual_before,
           provisioned_instance_ids: [], terminated_instance_ids: [],
-          pending_removal_instance_ids: [], failures: []
+          pending_removal_instance_ids: [], pending_provision_count: 0, failures: []
         )
       end
 
@@ -389,7 +473,7 @@ module System
           ok: true, deployment_id: deployment.id, target_replicas: target,
           actual_before: before, actual_after: before,
           provisioned_instance_ids: [], terminated_instance_ids: [],
-          pending_removal_instance_ids: [], failures: [], message: message
+          pending_removal_instance_ids: [], pending_provision_count: 0, failures: [], message: message
         )
       end
     end

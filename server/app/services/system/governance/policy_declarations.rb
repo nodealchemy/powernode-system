@@ -983,14 +983,24 @@ module System
         "project.security_change" => "require_approval"
       }.freeze
 
-      # IMP-8c0f0fe9a8cf (APO-3b) — the destructive half of PlatformDeployment
-      # replica reconciliation (System::Platform::ReplicaReconciler).
+      # IMP-8c0f0fe9a8cf (APO-3b) — the two halves of PlatformDeployment
+      # replica reconciliation (System::Platform::ReplicaReconciler). Both
+      # categories have a resolving site in that service; a category the
+      # reconciler never resolves would render an operator control that
+      # governs nothing — the defect RUNTIME_OPERATOR_GATED_KEYS below exists
+      # to avoid.
       #
-      # Scale-OUT is deliberately NOT declared here: it provisions, which is
-      # additive and reversible, and it runs on the caller's own authority.
-      # Declaring a category the reconciler never resolves would render an
-      # operator control that governs nothing — the defect
-      # RUNTIME_OPERATOR_GATED_KEYS below exists to avoid.
+      # Scale-OUT (IMP-f986d379120a, bulk review ruling D16) is
+      # auto_apply_within_bounds: the row auto-executes, and the reconciler
+      # pairs that verdict with the deployment's DECLARED window
+      # (System::PlatformDeployment#scaling_bounds — metadata → account →
+      # SiteSetting, fail-closed to "no ceiling"), applying only when the
+      # target sits inside it and PARKING otherwise. The same pairing
+      # `project.scale_horizontal` uses on the project side. It used to run on
+      # the caller's authority with no category at all, matching the
+      # platform_deploy precedent; the window is what makes an auto-executing
+      # row safe to seed, because an install that declares no ceiling gets no
+      # unattended scale-out from this row.
       #
       # Scale-IN terminates instances, which is not reversible, so the
       # reconciler resolves this category before actuating and removes nothing
@@ -999,12 +1009,14 @@ module System
       # one thing: the control is REAL and retunable in the Autonomy modal
       # rather than a verdict with nothing behind it. Registration for that
       # modal is derived from POLICY_SETS in the engine initializer, so this
-      # declaration is the only edit the category needs.
+      # declaration is the only edit either category needs.
       #
       # Global scope, no agent: the reconciler is reached from the operator's
-      # Concierge-bound platform_resilience skill, not from a monitor agent's
-      # tick, so an agent-scoped row would resolve for nobody who can call it.
+      # Concierge-bound platform_resilience skill and the Scaling panel, not
+      # from a monitor agent's tick, so an agent-scoped row would resolve for
+      # nobody who can call it.
       PLATFORM_SCALING_POLICIES = {
+        "system.platform.scale_out" => "auto_approve",
         "system.platform.scale_in" => "require_approval"
       }.freeze
 
