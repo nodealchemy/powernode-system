@@ -136,14 +136,20 @@ module System
       #
       # It is NOT reached on every move of current_version_id, and the comment
       # here used to imply it was ("the platform's single choke point for 'this
-      # version is now what the fleet runs'"). FIVE other sites write that
-      # column directly and arm nothing — including the operator rollback route,
-      # which goes through ModuleVersionService rather than promote_to_version!.
-      # The executable census is
-      # spec/lint/node_module_current_version_write_seam_spec.rb. So the
-      # "ROLLBACK -> fires" row below holds for the MCP rollback verb
-      # (system_fleet_tool.rb:5865), not for POST
-      # /api/v1/system/node_modules/:id/rollback.
+      # version is now what the fleet runs'"). Other sites write that column
+      # directly and arm nothing. Do NOT take their count from this comment —
+      # a count written here is exactly what rotted last time; the executable
+      # census is spec/lint/node_module_current_version_write_seam_spec.rb,
+      # which names each writer and the guards it skips.
+      #
+      # The rollback ROUTES are no longer among them. Until IMP-b7abf6c777da,
+      # ModuleVersionService#rollback_to reached the column through
+      # #create_version's own `update!` and armed nothing, so the
+      # "ROLLBACK -> fires" row below held for the MCP rollback verb but not
+      # for POST /api/v1/system/node_modules/:id/rollback. That service now
+      # promotes through NodeModule#promote_to_version!
+      # (module_version_service.rb, #rollback_to), so the row holds for the MCP
+      # verb, the REST route and the worker-API rollback alike.
       #
       #   new publish     -> current_version moves -> fresh stamp -> fires
       #   republished tag -> already current, no move -> no re-stamp -> quiet

@@ -50,7 +50,7 @@ require "tmpdir"
 # `current_version_id` (or the `current_version` association that denormalizes
 # onto it) EQUALS the census below. Not "contains only known-bad ones", not "the
 # known writers still exist" — equality, checked in both directions. An
-# existence check over the writers you already know about cannot see a seventh
+# existence check over the writers you already know about cannot see a NEW one
 # appearing next month, which is precisely how the fifth and sixth survived.
 #
 # ══ THIS IS A TRIPWIRE, NOT THE WALL ══════════════════════════════════════
@@ -70,7 +70,7 @@ require "tmpdir"
 #     `call_args` counts brackets without parsing strings, so it stops early and
 #     the keyword after it is never seen. Note that the "finds every censused
 #     writer" example below does NOT catch this — that example only re-checks the
-#     six writers already in the census, so a NEWLY TYPED writer spelled this way
+#     writers already in the census, so a NEWLY TYPED writer spelled this way
 #     passes green. The mitigation is the shell twin in
 #     scripts/pattern-validation.sh, which has no bracket tracking and does catch
 #     it. The two guards miss different things ON PURPOSE; neither is a superset.

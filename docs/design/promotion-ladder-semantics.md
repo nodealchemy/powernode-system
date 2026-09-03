@@ -206,10 +206,13 @@ meaning and one owner:
 And it leaves the actuator untouched: `NodeModule#promote_to_version!` stays the
 **sanctioned** writer of `current_version_id` and the only thing that arms a restart.
 Sanctioned, *not* sole — this sentence used to say "sole writer", and that was wrong.
-Six sites write the column; five reach it without passing `promote_to_version!` at all,
-so they arm nothing. The executable census is
+Several other sites reach the column without passing `promote_to_version!` at all, so they
+arm nothing. No count is given here on purpose: the last one rotted when IMP-b7abf6c777da
+removed `ModuleVersionService#create_version`'s write (an ordinary spec edit had been
+reaching it through `after_update :auto_create_version`) and routed the rollback path
+through the seam. The executable census is
 `server/spec/lint/node_module_current_version_write_seam_spec.rb`, and it is the thing
-to trust over any prose count including this one.
+to trust over any prose count.
 `FLEET_SENSORS.md`'s `module_promotion_backlog_sensor` block
 already states this invariant from the other side — *"It does not read `promotion_state`,
 and must not"* — and (c) is what makes that consistent with the rest of the system rather

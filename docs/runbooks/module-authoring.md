@@ -544,12 +544,28 @@ withholds it in several cases, and the two publish paths report differently:
   the layer carries real content. A deferral needs no action — the orchestrator promotes the
   whole batch when its siblings finish.
 
-**2. The pointer was moved onto a spec-only version.** Editing a module's versioned
-attributes (`file_spec`, `config`, `dependency_spec`, `protected_spec`, …) fires
-`NodeModule#auto_create_version`, which creates a new version row and points
-`current_version_id` at it. That row carries no build artifact, so `download` returns
-"Module has no published artifact" and the agent has nothing to mount. Fix: republish so a
-build artifact lands on the new version, or repoint to the last version that has one.
+**2. The pointer was moved onto a spec-only version.** A version row with no build behind
+it became `current_version_id`, so `download` returns "Module has no published artifact"
+and the agent has nothing to mount.
+
+An **ordinary spec edit is no longer a cause.** Editing a module's versioned attributes
+(`file_spec`, `config`, `dependency_spec`, `protected_spec`, …) still fires
+`NodeModule#auto_create_version`, but since IMP-b7abf6c777da that records a version row and
+leaves the pointer where it was — promotion is a separate, explicit decision. (Note the
+edit still reaches attached instances: the node API serves `mask`/`file_spec`/`package_spec`/
+`dependency_spec`/`protected_spec`/`config` off the module ROW, not off the version.)
+
+Two writers still repoint without a build check, and they are what to look at here:
+
+- **Manifest import with `create_version: true`** — the REST route
+  `POST /api/v1/system/node_modules/:id/import_manifest` (the flag comes from params), and
+  MCP `system_create_module` with `manifest_yaml`, where it defaults to true.
+  `system_update_module` defaults it to false. Neither CI publish path passes the flag.
+- **The package build webhook**, on a non-default `system.package_builds.mode`.
+
+Fix: republish so a build artifact lands on the new version, or repoint to the last version
+that has one with `system_rollback_module_version`. The executable list of everything that
+writes the column is `server/spec/lint/node_module_current_version_write_seam_spec.rb`.
 
 Whether the promotion ladder *should* gate what the fleet serves is an open lifecycle-gating
 question tracked separately (IMP-c7d618b0b72f); this runbook describes current behaviour only.
