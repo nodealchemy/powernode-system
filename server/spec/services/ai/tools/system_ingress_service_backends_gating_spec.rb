@@ -68,6 +68,22 @@ RSpec.describe "SystemIngressTool set_service_backends gating (APO-3d)" do
       expect(defn[:description]).to include(Ai::Tools::SystemIngressTool::SERVICE_BACKENDS_CATEGORY)
       expect(defn[:description]).to match(/pending/i)
     end
+
+    # SWEEP-2026-09-03 (carried out of IMP-0c10b9fd5596) — the category was
+    # gated but DECLARED nowhere: without a PolicyDeclarations row the engine's
+    # register_categories! never registered it, so the verdict fell to the
+    # unmatched default (require_approval — the right answer) while
+    # System::AutonomyActions#update rejected every operator edit to it. The
+    # control was correct and invisible. Declared beside its ingress siblings.
+    it "is declared require_approval beside the ingress rows and registered for the Autonomy modal" do
+      category = Ai::Tools::SystemIngressTool::SERVICE_BACKENDS_CATEGORY
+      declared = ::System::Governance::PolicyDeclarations::FLEET_AUTONOMY_POLICIES
+
+      expect(declared.fetch(category, nil)).to eq("require_approval"),
+        "#{category} is not declared in FLEET_AUTONOMY_POLICIES"
+      expect(declared).to include("system.expose_service_local")
+      expect(Ai::InterventionPolicy.category_registered?(category)).to be(true)
+    end
   end
 
   describe "an ungated call" do

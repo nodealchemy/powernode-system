@@ -671,6 +671,13 @@ module System
         "system.expose_service_local"       => "require_approval",
         "system.expose_service_public_tcp"  => "require_approval",
         "system.expose_service_publicly"    => "require_approval",
+        # The category system_set_service_backends gates on
+        # (Ai::Tools::SystemIngressTool::SERVICE_BACKENDS_CATEGORY, IMP-0c10b9fd5596).
+        # It was gated before it was declared: the verdict already fell to the
+        # unmatched default (require_approval), but the engine registers only
+        # declared categories, so System::AutonomyActions#update refused every
+        # operator edit to it — a correct control nobody could see or tune.
+        "system.service_backends_update"    => "require_approval",
         "system.federation_acceptance"      => "require_approval",
         "system.fulfill_capability_request" => "require_approval",
         "system.multi_tenant_isolation"     => "require_approval",
@@ -963,18 +970,19 @@ module System
       # WITHDRAWING A DECLARATION DOES NOT DELETE A ROW. This is forward-only:
       # db:seed runs on first boot only, so an install that has already booted
       # keeps the four rows its first boot wrote, and its operator still sees
-      # `_drain` advertising an approval nothing enforces. Nothing collects
-      # them, by design and not by oversight — PolicyReconciler is create-only
-      # ("reconcile ABSENCE ONLY ... never delete": at this shape it cannot
-      # tell a stale seeded row from an operator's tuning),
+      # `_drain` advertising an approval nothing enforces. No RECURRING sweep
+      # collects them, by design and not by oversight — PolicyReconciler is
+      # create-only ("reconcile ABSENCE ONLY ... never delete": at this shape
+      # it cannot tell a stale seeded row from an operator's tuning),
       # clean_stale_operator_policies! keys on scope "action_type" rather than
       # "global", and clean_unregistered_policies! collects only DEREGISTERED
       # categories — these four stay registered via the agent set below, which
-      # is correct. Whether a bounded one-shot collection is warranted, and on
-      # what predicate, is a governance decision this task did not settle; it
-      # is filed as improvement 01a063db-c869-7117-b7f6-f88b7061ab4a. Until it
-      # is taken, deactivating one of the four by hand is harmless and equally
-      # inert.
+      # is correct. The bounded ONE-SHOT collection that question came down to
+      # (improvement 01a063db-c869-7117-b7f6-f88b7061ab4a) has been taken:
+      # db/migrate/20260903033000_collect_inert_instance_pool_operator_policies.rb
+      # (IMP-57a4b1ef94b3) deletes the four inert global-scope rows once on
+      # every install that boots past it; an operator who deactivated one by
+      # hand beforehand lost nothing, since the row was equally inert.
       #
       # The AGENT set is untouched and keeps all eight: Fleet Autonomy's own
       # dispatch vocabulary is a different audience on a different path.

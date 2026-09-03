@@ -113,6 +113,18 @@ module System
               "certificate_id, then retry)"
             )
           end
+          # The writer's SECOND silent-drop reason (IMP-0c10b9fd5596): every
+          # declared backend is draining, so no router was emitted rather than
+          # one with an empty `servers` list. Same soft-fail-into-success bug
+          # as the branch above, one key over — the facet is persisted, the
+          # service is not reachable, and success here would report a
+          # local_url nothing answers on.
+          if regen[:drained_service_ids]&.include?(service.id)
+            return failure(
+              "service saved but not reachable: every backend of /svc/#{service.slug} is draining " \
+              "— re-activate a member (system_set_service_backends) then retry"
+            )
+          end
           host = resolve_host(service)
 
           success(

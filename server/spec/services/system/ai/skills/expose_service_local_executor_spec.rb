@@ -124,5 +124,24 @@ RSpec.describe System::Ai::Skills::ExposeServiceLocalExecutor do
       # (once a cert exists) picks up from here rather than starting over.
       expect(service.reload.local_enabled).to be true
     end
+
+    # SWEEP-2026-09-03 (carried out of IMP-0c10b9fd5596) — the writer reports a
+    # SECOND way a service can be left with no router: every declared backend
+    # is draining (`drained_service_ids`, never rendered with an empty
+    # `servers` list). #perform read only skipped_service_ids, so a fully
+    # drained service fell through to success with a populated local_url.
+    it "fails clearly instead of reporting a misleading success when the writer emitted no router " \
+       "because every backend is draining" do
+      allow(::Sdwan::ServiceExposureWriter).to receive(:write!)
+        .and_return(output_path: "/tmp/local-services.yaml", route_count: 0,
+                    skipped_service_ids: [], drained_service_ids: [ service.id ])
+
+      r = exec.execute(service_id: service.id, auth_mode: "authenticated")
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/draining/i)
+      expect(r[:error]).to include("system_set_service_backends")
+      expect(service.reload.local_enabled).to be true
+    end
   end
 end

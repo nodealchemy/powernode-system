@@ -187,7 +187,7 @@ Every sensor in this directory is now registered in `FleetAutonomyService::SENSO
 
 **This asserts STATE, and deliberately not events.** The failure it exists to catch is silence. On 2026-08-25 the core-drift promote gate withheld several versions on a bogus provenance mismatch, then stopped emitting `system.module_promotion_withheld` altogether — and promotion still did not happen. An operator asking "was anything declined?" saw nothing and concluded all was well. So withheld/deferred events may **annotate** this signal (`last_withheld_reason` in the payload) but can never **clear** it; the only thing that clears it is `current_version_id` actually moving.
 
-**It does not read `promotion_state`, and must not.** The built → staging → blessed → live ladder writes nothing the agents materialize: a version can sit at ladder-live while the fleet serves something else, and several versions of one module can be ladder-live at once. Actuation is `NodeModule#current_version_id`, whose *sanctioned* writer is `NodeModule#promote_to_version!` — sanctioned, not sole. This sentence read "sole writer" and was wrong: six sites write that column, and the five that do not go through `promote_to_version!` apply none of the promotion guards and arm no restart. The sensor is unaffected (it reads the column, so it sees every writer), but "the pointer moved" must not be read as "a guarded promotion happened". The executable census is `server/spec/lint/node_module_current_version_write_seam_spec.rb`. Reading the ladder here would reproduce exactly the misreading the sensor exists to prevent — which is also why this is a genuinely different assertion from `module_promotion_sensor` above, rather than a duplicate of it: that sensor is level-triggered on rows resting at `staging`, this one on what the fleet serves.
+**It does not read `promotion_state`, and must not.** The built → staging → blessed → live ladder writes nothing the agents materialize: a version can sit at ladder-live while the fleet serves something else, and several versions of one module can be ladder-live at once. Actuation is `NodeModule#current_version_id`, whose *sanctioned* writer is `NodeModule#promote_to_version!` — sanctioned, not sole. This sentence read "sole writer" and was wrong: other sites write that column too, and the ones that do not go through `promote_to_version!` apply none of the promotion guards and arm no restart. The count is deliberately not repeated here — it has already changed once (IMP-b7abf6c777da removed a writer), and a count in prose is the part that rots. The sensor is unaffected (it reads the column, so it sees every writer), but "the pointer moved" must not be read as "a guarded promotion happened". The executable census is `server/spec/lint/node_module_current_version_write_seam_spec.rb`. Reading the ladder here would reproduce exactly the misreading the sensor exists to prevent — which is also why this is a genuinely different assertion from `module_promotion_sensor` above, rather than a duplicate of it: that sensor is level-triggered on rows resting at `staging`, this one on what the fleet serves.
 
 **Recommended remediation:** none, deliberately, and none may be added. Bound in `DecisionEngine` with `skill: nil` to the dedicated `system.module_promotion_investigate` category, seeded `notify_and_proceed` on Fleet Autonomy — seeded there, not elsewhere, for the mechanical reason `gate_action!` resolves policies with `where(ai_agent_id: agent.id)` against the agent running the tick. What the notify verb buys is a **separately tunable, operator-facing policy row** rather than the silent auto-approved bucket; be precise about the rest, because the name oversells it — `FleetAutonomyService#notify_action` writes a durable `autonomy.notified` `FleetEvent` (broadcast on the account's fleet channel, readable through `system_recent_signals` / `system_inspect_correlation`) plus a `Rails.logger` line — a record, not an operator page. The binding also carries `advisory: true`, which exempts this standing signal from the stalled module's per-module consent budget (the payload stamps `module_id`, so without the flag a stall re-decided every dedup TTL would drain that module's 24h ceiling and push its real remediations down the budget-exhausted branch — the defect already recorded on the `capability_gap` binding). An applier would repoint `current_version_id` past whatever gate, broken publish chain or deliberate hold declined to move it, autonomously, on the strength of a timer. **Not `system.observation`:** the seed maps that category to `auto_approve`, which files the signal for a dashboard and notifies nobody — leaving this sensor as silent as the stall it detects. The category is also listed in `RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES`: the fingerprint stands until a person promotes, withdraws or fixes the build, so without the exemption it would score ineffective every settle window and manufacture a false `fleet.remediation_stuck` escalation for a lane that never acted.
 
@@ -688,7 +688,7 @@ System::Fleet::SensorConfig.upsert_for(
 
 Seven AI agents seed intervention policies (action_category → policy mapping) since the 2026-05-10 domain split. Sourced from:
 
-- `db/seeds/fleet_autonomy_agent.rb` — **55 policies** (non-CVE / non-SDWAN / non-disk-image fleet ops, including the 7 AUTONOMOUS `system.sdwan_*` remediations Fleet Autonomy owns)
+- `db/seeds/fleet_autonomy_agent.rb` — **56 policies** (non-CVE / non-SDWAN / non-disk-image fleet ops, including the 7 AUTONOMOUS `system.sdwan_*` remediations Fleet Autonomy owns)
 - `db/seeds/system_runtime_manager_agent.rb` — **7 policies** (Phase 1 Docker + Phase 2 K3s runtime; the prior `system.runtime_docker_tls_rotate` was removed 2026-05-19 — no executor existed)
 - `db/seeds/system_cve_responder_agent.rb` — **5 policies** (CVE feed → exposure → remediation; CVE policies historically lived on Fleet Autonomy)
 - `db/seeds/system_sdwan_manager_agent.rb` — **43 policies** (operator-initiated `sdwan.*` CRUD — networks / peers / VIPs / firewall / route policies / federation; moved off Fleet Autonomy 2026-05-10)
@@ -696,7 +696,14 @@ Seven AI agents seed intervention policies (action_category → policy mapping) 
 - `db/seeds/system_concierge_agent.rb` — **0 action-category policies** — Concierge is a chat agent; intervention is via the `request_confirmation` skill, not policy gating
 - `db/seeds/system_topology_designer_agent.rb` — **0 action-category policies** — Topology Designer is a skill-gated specialist invoked by Concierge via `execute_agent`; intervention rides on the parent agent's queue
 
-**= 103 action-category policies across the seven system-extension agents.**
+**= 117 action-category policies across the seven system-extension agents** — the
+sum of the seven bullets above, and nothing else. (It read 103 until
+SWEEP-2026-09-03: that was the 2026-09-01 re-verify's Fleet-Autonomy figure of 42
+carried into a total whose other terms had since moved, so the bullets and the
+total disagreed by 14 with no check on either. Only the **section header** below
+is machine-pinned — `spec/docs/reference_counts_spec.rb` matches
+`/Fleet Autonomy agent \((\d+) policies\)/` — so the bullet and this total are
+still prose. Re-derive both from the bullets whenever one of them changes.)
 >
 > Counts verified by direct count of the seed hashes (2026-08-20), after an
 > off-by-one had been carried forward through several revisions: the
@@ -725,7 +732,7 @@ Seven AI agents seed intervention policies (action_category → policy mapping) 
 
 All policies decay to the agent's `trust_tier_minimum: monitored` condition — agents below trust threshold are auto-blocked regardless of policy.
 
-### Fleet Autonomy agent (55 policies)
+### Fleet Autonomy agent (56 policies)
 
 Source: `db/seeds/fleet_autonomy_agent.rb`. Approval chain: `Fleet Autonomy Actions` (4-hour timeout, `*` approver, sequential). **Note: as of 2026-05-10, CVE policies moved to `system_cve_responder_agent.rb`, the operator-initiated `sdwan.*` CRUD policies to `system_sdwan_manager_agent.rb`, and Disk Image policies to `system_disk_image_manager_agent.rb` — they no longer live here. Fleet Autonomy retains the 7 AUTONOMOUS `system.sdwan_*` remediation policies (peer remediate, key rotate, credential refresh, failover, user device revoke, BGP session remediate, VIP failover) plus later additions (`system.federation_peer_remediate`, `system.acme_cert_rotate`, `system.node_boot_image_drift`, `system.template_closure_apply`, `system.storage_assignment_reconcile`, `system.gitops_drift_remediate`, `system.disk_image_publication_investigate`, `system.sdwan_service_health_investigate`, `system.sdwan_ovn_deployment_investigate`, `system.sdwan_apply_investigate`, `system.sdwan_user_device_config_investigate`, `system.module_verify_investigate`, `system.sdwan_bgp_observation_investigate`, `system.task_backlog_investigate`, `system.node_lkg_investigate`, `system.module_promotion_investigate`) whose sensors also gate as this agent — which is why this count exceeds the categories tabulated below.**
 
@@ -751,8 +758,9 @@ Source: `db/seeds/fleet_autonomy_agent.rb`. Approval chain: `Fleet Autonomy Acti
 | `system.sdwan_user_device_config_investigate` | `notify_and_proceed` | An issued user-device WireGuard config predates a VIP / peer `lan_subnets` / federation prefix added since. No applier by design and none possible — the drifted artefact is a text file on a user's laptop; the repair is a person re-issuing the device |
 | `system.capability_gap_review` | `require_approval` | Advisory — an unprovided `capability:<tag>`; remediation is authoring a module behind the R1/R2/R3 gate |
 | `system.package_repository.sync` | `auto_approve` | Routine PackageRepository refresh |
-| `system.package_module.create` | `notify_and_proceed` | Materialises a NodeModule from PackageRepository |
-| `system.package_module.refresh` | `notify_and_proceed` | Re-resolves dependencies / re-validates manifest |
+| `system.package_module.create` | `require_approval` | Materialises a NodeModule from PackageRepository — since IMP-2effedffc990 this row is the real gate on the executor, not a derived twin |
+| `system.package_module.refresh` | `require_approval` | Re-resolves dependencies / re-validates manifest; same gate as `.create` |
+| `system.service_backends_update` | `require_approval` | `system_set_service_backends` declares a published service's backend set (the list IS the set; `[]` clears). Gated because a wrong set blackholes the service; declared beside the ingress rows (IMP-0c10b9fd5596) |
 | `system.architecture.propose` | `auto_approve` | `suggest_architectures_for_fleet` skill emits proposals |
 | `system.architecture.create` | `require_approval` | Catalog change — affects future provisioning |
 | `system.architecture.update` | `require_approval` | Catalog change |
