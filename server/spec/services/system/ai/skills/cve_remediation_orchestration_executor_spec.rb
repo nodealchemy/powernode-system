@@ -42,6 +42,11 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
 
   let(:executor) { described_class.new(account: account) }
 
+  # IMP-594bfa5e1be5 — PackageModuleRefreshExecutor now really enqueues via
+  # WorkerJobEnqueuer (raw LPUSH into the worker's Redis, which is LIVE on a
+  # dev host). Stub the seam for the whole file so no example pushes a job.
+  before { allow(::System::WorkerJobEnqueuer).to receive(:enqueue).and_return(SecureRandom.hex(12)) }
+
   describe ".descriptor" do
     it "advertises a security skill with cve_id input" do
       d = described_class.descriptor
@@ -67,21 +72,49 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
       expect(data[:refresh_dispatches]).not_to be_empty
       expect(data[:refresh_dispatches].first[:package_module_link_id]).to eq(link.id)
       expect(data[:refresh_dispatches].first[:ok]).to be true
-      # PackageModuleRefreshExecutor returns success whether or not it queued
-      # anything, and SystemPackageModuleRefreshJob is defined only in
-      # worker/, which the Rails server does not autoload. So `ok` is true and
-      # `enqueued` is false, and only the latter may count as remediation.
-      expect(data[:refresh_dispatches].first[:enqueued]).to be false
+      # IMP-594bfa5e1be5 — the refresh reaches the worker through the
+      # WorkerJobEnqueuer seam (SystemPackageModuleRefreshJob itself is
+      # worker-only and never resolves here), and `enqueued` is the
+      # executor's evidence that it did.
+      expect(data[:refresh_dispatches].first[:enqueued]).to be true
+      expect(::System::WorkerJobEnqueuer).to have_received(:enqueue).with(
+        hash_including(job_class: "SystemPackageModuleRefreshJob", args: [ link.id, false ])
+      )
     end
 
     it "does not treat a refresh that queued nothing as remediation in flight" do
+      # Pins the CONSUMER: #dispatched_module_ids must key on `enqueued`, not
+      # `ok`. The real executor no longer produces ok:true/enqueued:false (it
+      # fails when nothing is queued — see below), so the shape is stubbed
+      # here; this example is what kills `select { |d| d[:ok] }`.
+      allow_any_instance_of(::System::Ai::Skills::PackageModuleRefreshExecutor)
+        .to receive(:execute)
+        .and_return({ success: true, data: { enqueued: false, package_module_link_id: link.id } })
+
       r = executor.execute(cve_id: "CVE-2026-50001",
                            affected_module_ids: [ openssl_mod.id ],
                            exposure_ids: [ exposure.id ])
 
       expect(r.dig(:data, :refresh_dispatches).first[:ok]).to be true
+      expect(r.dig(:data, :refresh_dispatches).first[:enqueued]).to be false
       expect(r.dig(:data, :remediation_dispatched)).to be false
       expect(r.dig(:data, :exposures_remediating)).to eq(0)
+      expect(exposure.reload.state).to eq("open")
+    end
+
+    it "surfaces a refresh the worker seam could not queue as a failed dispatch" do
+      # WorkerJobEnqueuer is fail-soft: Redis down => nil jid, no raise.
+      allow(::System::WorkerJobEnqueuer).to receive(:enqueue).and_return(nil)
+
+      r = executor.execute(cve_id: "CVE-2026-50001",
+                           affected_module_ids: [ openssl_mod.id ],
+                           exposure_ids: [ exposure.id ])
+
+      dispatch = r.dig(:data, :refresh_dispatches).first
+      expect(dispatch[:ok]).to be false
+      expect(dispatch[:enqueued]).to be false
+      expect(dispatch[:error]).to match(/could not be enqueued/)
+      expect(r.dig(:data, :remediation_dispatched)).to be false
       expect(exposure.reload.state).to eq("open")
     end
 
@@ -104,6 +137,11 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
       let!(:node) { create(:system_node, account: account, node_template: template, name: "n1") }
 
       before do
+        # IMP-594bfa5e1be5 — the refresh lane now really dispatches (it used
+        # to be a silent no-op, which is the only reason these examples ever
+        # saw openssl-base as "nothing in flight"). To test the ROLLING lane's
+        # claim alone, the module must have no package link to refresh.
+        link.destroy!
         openssl_mod.update!(current_version: openssl_v1)
         System::NodeModuleAssignment.create!(node: node, node_module: openssl_mod,
                                             enabled: true, priority: 0)
@@ -147,6 +185,7 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
     end
 
     it "produces a rolling upgrade plan when a newer blessed version exists" do
+      link.destroy! # rolling lane only — see the context above (IMP-594bfa5e1be5)
       blessed = create(:system_node_module_version, node_module: openssl_mod,
                        version_number: 2, promotion_state: "blessed")
       openssl_mod.update!(current_version: openssl_v1)
@@ -213,6 +252,7 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
       # run would return a bare `failure` whose message says no plan can be
       # made, dropping the plan for openssl-base entirely.
       it "keeps a mixed run a success and carries the plan when another module is promotion-blocked" do
+        link.destroy! # rolling lane only — see the context above (IMP-594bfa5e1be5)
         create(:system_node_module_version, node_module: nginx_mod,
                version_number: 2, promotion_state: "built")
         blessed = create(:system_node_module_version, node_module: openssl_mod,
@@ -248,6 +288,7 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
       # nothing to show either, so the promotion block must still fail loudly
       # exactly as it did before IMP-79a808789805.
       it "still fails loudly when the only rolling plan failed and another module is promotion-blocked" do
+        link.destroy! # rolling lane only — see the context above (IMP-594bfa5e1be5)
         create(:system_node_module_version, node_module: nginx_mod,
                version_number: 2, promotion_state: "built")
         create(:system_node_module_version, node_module: openssl_mod,
@@ -444,6 +485,12 @@ RSpec.describe System::Ai::Skills::CveRemediationOrchestrationExecutor do
       # the plan-only context above: same fixtures, and the row DOES flip
       # once something evidences execution.
       it "lets an explicit exposure list NARROW the transition but never widen it" do
+        # IMP-594bfa5e1be5 — rolling lane only, same as the siblings above.
+        # With the link alive the refresh lane really dispatches for
+        # openssl-base, which would satisfy every assertion below on its own
+        # and silently retire the `executed`-vs-`ok` oracle this example
+        # exists for (flip the stub to `executed: false` and it must go red).
+        link.destroy!
         create(:system_node_module_version, node_module: openssl_mod,
                version_number: 2, promotion_state: "blessed")
         openssl_mod.update!(current_version: openssl_v1)

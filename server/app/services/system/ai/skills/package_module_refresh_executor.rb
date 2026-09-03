@@ -39,26 +39,54 @@ module System
                    .find_by(id: package_module_link_id)
           return failure("link not found or not accessible") unless link
 
-          # IMP-9b8d774298d5 — `enqueued` used to be the literal `true`
-          # regardless of whether the guard above fired. It does not fire in
-          # the Rails server: SystemPackageModuleRefreshJob is defined only in
-          # `worker/app/jobs/`, which is not on the server's autoload path
+          # IMP-594bfa5e1be5 — route through the server->worker seam. This used
+          # to call `SystemPackageModuleRefreshJob.perform_async` directly, but
+          # that class is defined only in the worker app (extensions/system/
+          # worker/app/jobs/), which the Rails server never autoloads
           # (`rails runner 'defined?(SystemPackageModuleRefreshJob)'` => nil),
-          # and this executor's autonomy caller (System::CveOps::
-          # CveResponderService#dispatch_inline) runs server-side. So the
-          # declared `enqueued: :boolean` output asserted a queued job on every
-          # call that never queued one, and a caller reading it as "remediation
-          # is in flight" would be wrong on the ONLY path that reaches it.
+          # so the callers that reach THIS executor — the CVE Responder's
+          # inline dispatch and the orchestrator's #dispatch_refreshes —
+          # queued nothing (IMP-9b8d774298d5 made the output admit that; this
+          # makes the delivery real).
           #
-          # Reporting the truth here does not by itself route the refresh to
-          # Sidekiq — that gap (this path predates ::System::WorkerJobEnqueuer
-          # and never adopted it) is a separate defect. This only stops the
-          # output from claiming otherwise.
-          enqueued = defined?(SystemPackageModuleRefreshJob) ? true : false
-          SystemPackageModuleRefreshJob.perform_async(link.id, !!force) if enqueued
+          # Not every door is fixed: Ai::Tools::SystemPackageRepositoryTool
+          # #refresh_package_module (the MCP `system_refresh_package_module`
+          # operator action) still does the same `perform_async if defined?`
+          # and still answers `enqueued: true`. It is owned by another lane
+          # and tracked separately — do not read this note as "all callers".
+          #
+          # WorkerJobEnqueuer writes the Sidekiq wire format straight into the
+          # worker's Redis, the same way PackageRepositorySyncService.enqueue!
+          # does. Wire contract of SystemPackageModuleRefreshJob#execute: args
+          # [link_id, force] on the "system" queue. `retry` is deliberately
+          # not passed: a raw LPUSH never consults the job's `sidekiq_options`,
+          # so the payload carries WorkerJobEnqueuer::DEFAULT_RETRY, which is
+          # the value the worker honours for this job.
+          jid = ::System::WorkerJobEnqueuer.enqueue(
+            job_class: "SystemPackageModuleRefreshJob",
+            args:      [ link.id, !!force ],
+            queue:     "system"
+          )
+
+          # The enqueuer is fail-soft (logs and returns nil on any Redis or
+          # serialization error — its log line carries the real exception).
+          # Nothing was queued then, and this executor's one job is to queue —
+          # so that is a failure, not a success with a flag a caller may never
+          # read. A BARE failure by contract: BaseSkillExecutor#failure's
+          # `**extra` is the composition runner's rollback payload and takes
+          # ONLY ids of resources this run created (see its note). This run
+          # created nothing; naming the pre-existing link there would make the
+          # failure outputs `present` and displace a retried step's genuine
+          # last_outputs. `enqueued` stays reconstructible for callers: a
+          # failure envelope has no :data, so `result.dig(:data, :enqueued)`
+          # is nil, which is what the orchestrator already reads.
+          unless jid
+            return failure("refresh job could not be enqueued " \
+                           "(worker seam returned no jid — see WorkerJobEnqueuer log)")
+          end
 
           success(
-            enqueued:               enqueued,
+            enqueued:               true,
             package_module_link_id: link.id,
             requires_approval:      false
           )
