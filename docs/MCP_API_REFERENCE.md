@@ -75,7 +75,7 @@ Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented
 | `system_get_instance` | Fetch NodeInstance details (status, last_heartbeat, running modules) | operator, agent |
 | `system_provision_instance` | Trigger provider VM creation; creates Task; returns NodeInstance | operator, agent |
 | `system_terminate_instance` | Destroy provider VM; cascade-FK cleanup | operator, agent |
-| `system_replace_instance` | DR: move an unrecoverable instance's volumes, SDWAN membership and VIPs onto a warm pool member. Approval-gated (`system.instance_replace`); terminates nothing — pass `reap: true` for a SECOND, separately-gated terminate. Refused for a target still running and still reporting unless `accept_running: true` | operator, agent |
+| `system_replace_instance` | DR: move an unrecoverable instance's volumes, SDWAN membership and VIPs onto a warm pool member. Approval-gated (`system.instance_replace`); terminates nothing — pass `reap: true` for a SECOND, separately-gated terminate. Refused for a target still running and still reporting unless `accept_running: true`; denied outright to MCP instance principals by the deny overlay (`*replace_instance*`), so `reap: true` cannot be smuggled through it | operator |
 | `system_reap_instance` | DR: terminate the unrecoverable instance whose workload `system_replace_instance` has already moved. Approval-gated (`system.instance_reap`); denied outright to MCP instance principals by the deny overlay | operator |
 | `system_drift_report` | Compare running module digests vs assigned modules | operator, agent |
 
