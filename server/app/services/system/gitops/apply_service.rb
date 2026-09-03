@@ -118,7 +118,7 @@ module System
           tmpl = ::System::NodeTemplate
                  .where(account_id: @proposal.account_id)
                  .find_by(id: diff["resource_id"] || diff[:resource_id])
-          raise StaleConflictError, "template #{diff[:resource_id]} no longer exists" unless tmpl
+          raise StaleConflictError, "template #{(diff['resource_id'] || diff[:resource_id]).inspect} no longer exists" unless tmpl
 
           # v1: only update the name (other fields like node_platform_id are
           # required at creation time + rare to GitOps-rotate). Future slice:
@@ -149,7 +149,7 @@ module System
           mod = ::System::NodeModule
                 .where(account_id: @proposal.account_id)
                 .find_by(id: diff["resource_id"] || diff[:resource_id])
-          raise StaleConflictError, "module #{diff[:resource_id]} no longer exists" unless mod
+          raise StaleConflictError, "module #{(diff['resource_id'] || diff[:resource_id]).inspect} no longer exists" unless mod
 
           attrs = (diff["desired"] || diff[:desired]) || {}
           updates = attrs.slice("description", :description, "variety", :variety).symbolize_keys
